@@ -9371,6 +9371,10 @@ def parser() -> argparse.ArgumentParser:
     products_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     products_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     resume_command = commands.add_parser("resume-products")
+    resume_command.add_argument("--native-contract-plan", type=Path,
+                                help="Capture the exact current native Contract plan before resuming in this invocation")
+    resume_command.add_argument("--native-contract-plan-artifact-id", type=int)
+    resume_command.add_argument("--native-contract-plan-artifact-sha256")
     resume_command.add_argument("--handoff", type=Path)
     resume_command.add_argument("--runtime-matrix", action="store_true",
                                 help="Elect Runtime work in the same private verification session")
@@ -9518,7 +9522,22 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
         from reuse_qualification import completed_frozen_options
-        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+        semantic_arguments = arguments
+        native_capture = None
+        if arguments.command == "resume-products":
+            native = (arguments.native_contract_plan, arguments.native_contract_plan_artifact_id,
+                      arguments.native_contract_plan_artifact_sha256)
+            if any(value is not None for value in native):
+                if any(value is None for value in native) or not arguments.completed_frozen_policy or not arguments.sdk_original_workflow_sha:
+                    raise ValueError("Native resume capture requires the exact plan, upload, native policy and publisher")
+                native_capture = arguments.plan.parent.parent
+                expected = {"plan": "plan/impact-plan.json", "discovery_root": "plan/product-reuse",
+                            "state_root": "state", "contract_handoff": "release/contract-input"}
+                if any(getattr(arguments, field).absolute() != (native_capture / path).absolute()
+                       for field, path in expected.items()):
+                    raise ValueError("Native resume capture requires the exact standard input layout")
+                semantic_arguments = {**vars(arguments), "plan": arguments.native_contract_plan}
+        with metadata_admission_options(semantic_arguments) as admissions, completed_frozen_options(semantic_arguments) as semantic:
             tooling = None
             if getattr(arguments, "sdk_validation_tooling", None) is not None:
                 tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
@@ -9646,6 +9665,12 @@ def main(argv: list[str] | None = None) -> int:
             elif arguments.command == "prepare-contract-release-controls":
                 prepare_contract_release_controls(arguments.handoff_root, arguments.destination)
             elif arguments.command == "resume-products":
+                if native_capture is not None:
+                    capture_product_resume_inputs(arguments.native_contract_plan, native_capture,
+                        uploads={"plan": {"artifactId": arguments.native_contract_plan_artifact_id,
+                                          "artifactSha256": arguments.native_contract_plan_artifact_sha256}},
+                        trusted_workflow_sha=arguments.sdk_original_workflow_sha,
+                        token=os.environ.get("GITHUB_TOKEN", ""), native_contract=True, **semantic)
                 resume_products(
                     arguments.plan, arguments.discovery_root, arguments.state_root,
                     arguments.contract_handoff, arguments.destination, arguments.github_output,

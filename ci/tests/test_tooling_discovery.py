@@ -47,7 +47,8 @@ class ToolingMetadataRotationTest(unittest.TestCase):
                         'commit': original, 'tree': git('rev-parse', 'HEAD^{tree}'), 'event': 'pull_request',
                         'runId': 7, 'runAttempt': 1, 'pullRequest': 31}
             commit('.reuse/approvals.json', '{"syntheticApproval":true}\n')
-            current = commit('.reuse/workflow-publication.json', '{"syntheticPublication":true}\n')
+            commit('.reuse/workflow-publication.json', '{"syntheticPublication":true}\n')
+            current = commit('.reuse/completed-reuse.json', '{"syntheticConsumerPolicy":true}\n')
             changed_parent = commit('.github/workflows/product-validation.yml', 'name: changed orchestration fixture\n')
             changed_child = commit('.github/workflows/contract-validation.yml', 'name: changed tooling attestation fixture\n')
             changed_code = commit('gradle/build-logic/src/main/kotlin/Tooling.kt', '// changed compiler input\n')
@@ -288,6 +289,29 @@ class ToolingDiscoveryTest(unittest.TestCase):
         self.assertEqual(["discovery.json"], sorted(
             path.relative_to(self.destination).as_posix()
             for path in self.destination.rglob("*") if path.is_file()))
+
+    def test_incompatible_compiler_hint_skips_body_but_unknown_tree_uses_full_authentication(self):
+        valid = self.artifact(930, self.fixture.raw)
+        api = self.api({self.fixture.producer['runId']: [valid]}, {930: (valid, self.fixture.raw)})
+        inventory = tooling_discovery.git_inventory
+        for unknown in (False, True):
+            def hinted(root, revision, paths):
+                if revision == self.fixture.producer['tree']:
+                    if unknown:
+                        raise subprocess.CalledProcessError(128, ['git', 'ls-tree'])
+                    return 'different compiler input inventory'
+                return inventory(root, revision, paths)
+            with self.subTest(unknown=unknown), mock.patch.object(tooling_discovery, 'git_inventory', side_effect=hinted), \
+                    mock.patch.object(tooling_discovery, 'download_artifact', wraps=tooling_discovery.download_artifact) as download:
+                self.destination = self.root / ('unknown-tree' if unknown else 'changed-compiler')
+                report = self.discover((self.fixture.producer['runId'],), api)
+                if unknown:
+                    self.assertEqual(930, report['selected']['artifactId'])
+                    download.assert_called_once()
+                else:
+                    self.assertIsNone(report['selected'])
+                    self.assertIn('incompatible compiler inputs', report['attempts'][0]['reason'])
+                    download.assert_not_called()
 
 
 class ToolingDiscoveryCliTest(unittest.TestCase):

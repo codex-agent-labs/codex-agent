@@ -18,10 +18,11 @@ from product_reuse import (
 from reuse import api_json, download_artifact, paginated_items
 from tooling_capture import capture_tooling_ci
 from products.inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    git_inventory, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     require_array, require_integer, require_sha256, run_git, verified_zip_contents, write_canonical_json,
 )
 from products.receipt import validate_producer
+from products.tooling import _COMPILER_INPUTS
 
 
 _API = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions"
@@ -69,6 +70,7 @@ def _original_tooling_workflow(producer, current_sha, token, *, repository_root=
             # child authority remains exact; capture still checks every compiler
             # input and actual JAR resource against current caller Git policy.
             if set(changed.split(b'\0')) - {b'', b'.reuse/approvals.json', b'.reuse/workflow-publication.json',
+                                          b'.reuse/completed-reuse.json',
                                           b'.github/workflows/product-validation.yml'}:
                 raise ValueError('Tooling publisher rotation changes executable or other source bytes')
             metadata_rotation = True
@@ -111,6 +113,7 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
     repository = Path(repository_root).resolve(strict=True)
     if run_git(repository, "rev-parse", f"{policy_revision}^{{commit}}").strip() != policy_revision:
         raise ValueError("Tooling discovery requires an exact caller policy commit")
+    compiler = git_inventory(repository, policy_revision, _COMPILER_INPUTS)
     if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
         raise ValueError("Tooling discovery requires a pinned workflow SHA")
     java = Path(java_executable)
@@ -142,6 +145,14 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                 attempt = {"runId": run_id, "artifactId": identifier_hint
                            if type(identifier_hint) is int and identifier_hint > 0 else None}
                 try:
+                    # A local tree hint can reject obsolete compiler inputs, never admit tooling.
+                    # Missing historical Git keeps the existing full authentication path.
+                    try:
+                        prior_compiler = git_inventory(repository, match[1], _COMPILER_INPUTS)
+                    except subprocess.CalledProcessError:
+                        prior_compiler = None
+                    if prior_compiler is not None and prior_compiler != compiler:
+                        raise ValueError("Tooling candidate Git hint has incompatible compiler inputs")
                     identifier = require_integer(artifact.get("id"), "Tooling candidate artifact ID", 1)
                     digest = require_sha256(artifact.get("digest"), "Tooling candidate digest")
                     detail_url = f"{_API}/artifacts/{identifier}"

@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
+import textwrap
 import unittest
+from unittest import mock
 
 from ci.tests.test_contract_attestation_workflow import workflow_job
 
@@ -77,7 +80,10 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn('restore-reuse-qualification@reuse-authority', plan)
         self.assertIn('completion=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', plan)
         self.assertIn("needs.plan.outputs.native_contract_complete == 'true' ||", self.job)
-        self.assertIn('controls=(--native-contract --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', self.job)
+        self.assertIn("if: needs.plan.outputs.native_contract_complete != 'true'", self.job)
+        self.assertIn('tooling+=(--native-contract-plan build/product-resume-plan/impact-plan.json', self.job)
+        self.assertIn('--native-contract-plan-artifact-id "$PLAN_ARTIFACT_ID"', self.job)
+        self.assertIn('plan-path: ${{ github.workspace }}/build/product-resume-plan/impact-plan.json', self.job)
         self.assertIn('if [ "$CONTRACT_COMPLETE" = true ] || [ "$NATIVE_CONTRACT_COMPLETE" = true ]; then', self.gate)
         self.assertIn('test "$PRODUCT_RESUME_RESULT" = success', self.gate)
         self.assertIn('test "$SDK_COMPLETE" = true || exit 1', self.gate)
@@ -88,6 +94,28 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         download = signer.split('      - name: Download original plan and source inventories', 1)[1].split('      - name:', 1)[0]
         self.assertIn('artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}', download)
         self.assertNotIn('plan_control_id', download)
+
+    def test_validation_precheck_only_skips_absent_uploads_and_keeps_full_admission(self):
+        step = self.workflow.split('      - id: validation-reuse\n', 1)[1].split('\n      - ', 1)[0]
+        script = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].rsplit('\n          PY', 1)[0])
+        name = 'codex-agent-ci-validation-' + 'a' * 40
+        for artifacts in ([], [{'name': name, 'expired': True}], [{'name': 'other', 'expired': False}],
+                          [{'name': name, 'expired': False}], OSError('offline')):
+            with self.subTest(artifacts=artifacts), tempfile.TemporaryDirectory() as scratch:
+                output = Path(scratch) / 'output'
+                with mock.patch.dict(os.environ, GITHUB_API_URL='https://api.invalid', GITHUB_TOKEN='test', GITHUB_OUTPUT=str(output)), \
+                        mock.patch('pathlib.Path.read_text', return_value='{"repository":"owner/repo","validationTree":"' + 'a' * 40 + '"}'), \
+                        mock.patch('reuse.paginated_items', **({'side_effect': artifacts} if isinstance(artifacts, Exception) else {'return_value': artifacts})) as listing, \
+                        mock.patch('subprocess.run') as discover:
+                    exec(compile(script, '<validation-precheck>', 'exec'), {})
+                listing.assert_called_once_with('https://api.invalid/repos/owner/repo/actions/artifacts?name=' + name, 'artifacts', 'test')
+                if artifacts == [{'name': name, 'expired': False}]:
+                    self.assertEqual(['ci/validation_reuse.py', 'discover'], discover.call_args.args[0][1:3])
+                    self.assertTrue(discover.call_args.kwargs['check'])
+                    self.assertFalse(output.exists())
+                else:
+                    discover.assert_not_called()
+                    self.assertEqual('reused=false\n', output.read_text())
 
     def test_exact_original_uploads_are_authenticated_before_resuming(self):
         downloads = re.findall(r"uses: actions/download-artifact@.*?(?=^      -|\Z)",
@@ -143,7 +171,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
     def test_apple_policy_comes_from_original_plan_before_authenticated_resume(self):
         policy = self.job.split("      - id: apple-policy\n", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", policy)
-        self.assertIn("plan-path: ${{ github.workspace }}/build/product-resume-inputs/plan/impact-plan.json", policy)
+        self.assertIn("plan-path: ${{ github.workspace }}/build/product-resume-plan/impact-plan.json", policy)
         self.assertIn("tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}", policy)
         self.assertLess(self.job.index("capture-product-resume-inputs"), self.job.index("      - id: apple-policy"))
         self.assertLess(self.job.index("      - id: apple-policy"), self.job.index(" resume-products"))

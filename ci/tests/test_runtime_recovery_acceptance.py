@@ -25,7 +25,7 @@ SELECTOR = "ci/products/selection.py"
 class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
     def test_sdk_selector_pin_matches_reviewed_throughput_bytes(self):
         root = HELPER.parents[3]
-        self.assertEqual("7f0fa04497d0f14cbc3be39be7cb1fe82eae8086", recovery.SDK_SELECTION_REVISION)
+        self.assertEqual("1ebcbc72e79abc273e428a470e8aa65966298fd8", recovery.SDK_SELECTION_REVISION)
         self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
                          (root / recovery.SDK_SELECTOR).read_bytes())
 

@@ -235,6 +235,8 @@ class ContractProductResumeTest(unittest.TestCase):
         return cap, discovery
 
     def test_native_discovery_and_capture_resume_without_contract_body_or_forwarding_jobs(self):
+        from contextlib import contextmanager, redirect_stderr
+        from functools import partial
         import io
         import zipfile
         from copy import deepcopy
@@ -275,21 +277,40 @@ class ContractProductResumeTest(unittest.TestCase):
             raw = packed.getvalue()
             artifact = {'id': 77, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw)}
             captured = self.scratch / 'native-inputs'
+            resumed = self.scratch / 'native-direct-resume'
+            @contextmanager
+            def native_authority(arguments):
+                self.assertEqual(self.plan_path, arguments['plan'])
+                yield {'completed_frozen': cap}
+            argv = ['resume-products', '--runtime-matrix',
+                '--native-contract-plan', str(self.plan_path), '--native-contract-plan-artifact-id', '77',
+                '--native-contract-plan-artifact-sha256', artifact['digest'],
+                '--completed-frozen-policy', str(self.scratch / 'synthetic-native-policy.json'),
+                '--plan', str(captured / 'plan/impact-plan.json'),
+                '--discovery-root', str(captured / 'plan/product-reuse'), '--state-root', str(captured / 'state'),
+                '--contract-handoff', str(captured / 'release/contract-input'), '--destination', str(resumed),
+                '--github-output', str(self.scratch / 'native-output'), '--sdk-original-workflow-sha', 'c' * 40]
             with mock.patch.object(adapter, '_observe_ci_producer_jobs', return_value=[{'run': {}}]) as observe, \
                     mock.patch.object(adapter, '_download_contract_ci_upload', return_value=(artifact, raw)) as download, \
-                    mock.patch.object(adapter, '_require_artifact_job_window'):
-                adapter.capture_product_resume_inputs(self.plan_path, captured, uploads={'plan': {
-                    'artifactId': 77, 'artifactSha256': artifact['digest']}}, trusted_workflow_sha='c' * 40,
-                    repository_root=self.repository, environ=self.environment, token='synthetic',
-                    native_contract=True, completed_frozen=cap)
+                    mock.patch.object(adapter, '_require_artifact_job_window'), \
+                    mock.patch('reuse_qualification.completed_frozen_options', side_effect=native_authority) as authority, \
+                    mock.patch.object(adapter, 'capture_product_resume_inputs', side_effect=partial(
+                        adapter.capture_product_resume_inputs, repository_root=self.repository, environ=self.environment)) as capture, \
+                    mock.patch.object(adapter, 'resume_products', side_effect=partial(
+                        adapter.resume_products, repository_root=self.repository, environ=self.environment)) as resume, \
+                    mock.patch('sdk_ios_binary_recovery.capture_completed_ios_binary', return_value=[]):
+                self.assertEqual(0, adapter.main(argv))
                 self.assertEqual({'plan': 'product-validation / plan'}, observe.call_args.kwargs['jobs_by_phase'])
                 download.assert_called_once()
-            resumed = self.scratch / 'native-direct-resume'
-            with mock.patch('sdk_ios_binary_recovery.capture_completed_ios_binary', return_value=[]):
-                adapter.resume_products(captured / 'plan/impact-plan.json', captured / 'plan/product-reuse',
-                    captured / 'state', captured / 'release/contract-input', resumed, self.scratch / 'native-output',
-                    repository_root=self.repository, environ=self.environment, completed_frozen=cap,
-                    routing_output=True, sdk_original_workflow_sha='c' * 40)
+                self.assertIs(cap, capture.call_args.kwargs['completed_frozen'])
+                self.assertIs(cap, resume.call_args.kwargs['completed_frozen'])
+                invalid = list(argv)
+                invalid[invalid.index('--state-root') + 1] = str(self.scratch / 'wrong-state')
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    adapter.main(invalid)
+                authority.assert_called_once()
+                capture.assert_called_once()
+                resume.assert_called_once()
         ordinary = self.resume(destination=self.scratch / 'ordinary-direct')
         self.assertEqual(load_canonical_json(ordinary / 'phase-plans/runtime-jvm-binary-jvm.json'),
                          load_canonical_json(resumed / 'phase-plans/runtime-jvm-binary-jvm.json'))
