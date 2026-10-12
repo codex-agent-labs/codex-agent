@@ -653,6 +653,7 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     cap.capture_object(row, root / "tampered-object.zip", **options)
 
     def test_resume_seeds_exact_original_controls_without_download_or_extraction(self):
+        import threading
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             cap, _ = self.fetched(root)
@@ -660,15 +661,34 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             def locator(_artifact, _workflow, instance, _job):
                 return {**{name: getattr(instance, name) for name in FIELDS},
                         "artifact": {"id": 71, "digest": POLICY}}
+            barrier, lock, started = threading.Barrier(4, timeout=5), threading.Lock(), []
+            def observe(*_args, **_kwargs):
+                # The first four reads must overlap; none may publish controls
+                # until all 46 original observations have passed admission.
+                with lock:
+                    started.append(threading.get_ident())
+                    first = len(started) <= 4
+                if first:
+                    barrier.wait()
+                self.assertFalse((root / 'prior').exists())
+                return {"id": 71, "digest": POLICY}, {}, [{"jobs": [{}]}], "a" * 40
             with patch.object(product_reuse, "_authenticate_runtime_original_reference_source",
-                    return_value=({"id": 71, "digest": POLICY}, {}, [{"jobs": [{}]}], "a" * 40)) as authenticate, \
+                    side_effect=observe) as authenticate, \
                     patch.object(product_reuse, "_matching_ci_jobs", return_value=[{}]), \
-                    patch.object(product_reuse, "_runtime_original_locator", side_effect=locator), \
+                    patch.object(product_reuse, "_runtime_original_locator", side_effect=locator) as original_locator, \
                     patch.object(product_reuse, "_download_contract_ci_upload", side_effect=AssertionError("body download")), \
                     patch.object(product_reuse, "safe_extract", side_effect=AssertionError("body extraction")):
                 rows = product_reuse._capture_completed_runtime_controls({}, producer, root / "prior", root,
                     completed_frozen=cap, trusted_workflow_sha="a" * 40, token="fixture")
-            self.assertEqual(46, authenticate.call_count)
+                self.assertEqual(46, authenticate.call_count)
+                self.assertEqual(4, len(set(started)))
+                authenticate.side_effect = None
+                authenticate.return_value = {"id": 71, "digest": POLICY}, {}, [{"jobs": [{}]}], "a" * 40
+                original_locator.side_effect = lambda *args: {**locator(*args), 'changed': True}
+                with self.assertRaisesRegex(ValueError, 'Fresh original locator'):
+                    product_reuse._capture_completed_runtime_controls({}, producer, root / 'rejected', root,
+                        completed_frozen=cap, trusted_workflow_sha='a' * 40, token='fixture')
+                self.assertFalse((root / 'rejected').exists())
             self.assertEqual(46, len(rows))
             self.assertFalse(list((root / "prior").rglob("*.zip")))
             for row in rows:

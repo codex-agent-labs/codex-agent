@@ -1825,6 +1825,7 @@ def _elected_prior_runtime_records(
                     for field in ("buildKey", "receiptSha256", "objectSha256"))}
 
 
+@measured
 @_fresh_ci_observations
 def _capture_completed_runtime_controls(plan, producer, destination, artifact_root, *,
                                         completed_frozen, trusted_workflow_sha, token):
@@ -1833,8 +1834,9 @@ def _capture_completed_runtime_controls(plan, producer, destination, artifact_ro
     if type(completed_frozen) is not CompletedFrozenReuse:
         raise ValueError("Completed Runtime capture requires native semantic authority")
     completed_frozen.check_consumer({"kind": "ci", "producer": producer})
-    records = []
-    for source in completed_frozen.runtime_sources():
+    from products.restore import bounded_verify
+
+    def authenticate(source):
         receipt = source["receipt"]
         instance = _identity(receipt)
         artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
@@ -1849,6 +1851,13 @@ def _capture_completed_runtime_controls(plan, producer, destination, artifact_ro
         record = {**_identity_record(instance), "buildKey": receipt["buildKey"],
                   "receiptSha256": sha256_bytes(receipt_bytes), "objectSha256": source["objectSha256"]}
         completed_frozen.envelope(record, receipt_bytes)
+        return instance, record, receipt_bytes, artifact, observed
+
+    # Independent read-only observations overlap; publish controls only after
+    # every exact original has passed its existing locator and receipt gates.
+    authenticated = bounded_verify(authenticate, completed_frozen.runtime_sources())
+    records = []
+    for instance, record, receipt_bytes, artifact, observed in authenticated:
         capture = destination / instance.component / instance.phase / instance.target
         shard = capture / "phases" / instance.phase / "original/shard"
         shard.mkdir(parents=True, exist_ok=False)
