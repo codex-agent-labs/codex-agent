@@ -72,6 +72,16 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertEqual({"plan", "contract-validation"},
                          {value.strip() for value in needs.group(1).split(",")})
 
+    def test_native_contract_route_uses_approved_policy_and_keeps_completion_required(self):
+        plan = workflow_job(self.workflow, 'plan')
+        self.assertIn('restore-reuse-qualification@reuse-authority', plan)
+        self.assertIn('completion=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', plan)
+        self.assertIn("needs.plan.outputs.native_contract_complete == 'true' ||", self.job)
+        self.assertIn('controls=(--native-contract --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', self.job)
+        self.assertIn('if [ "$CONTRACT_COMPLETE" = true ] || [ "$NATIVE_CONTRACT_COMPLETE" = true ]; then', self.gate)
+        self.assertIn('test "$PRODUCT_RESUME_RESULT" = success', self.gate)
+        self.assertIn('test "$SDK_COMPLETE" = true || exit 1', self.gate)
+
     def test_exact_original_uploads_are_authenticated_before_resuming(self):
         downloads = re.findall(r"uses: actions/download-artifact@.*?(?=^      -|\Z)",
                                self.job, re.MULTILINE | re.DOTALL)

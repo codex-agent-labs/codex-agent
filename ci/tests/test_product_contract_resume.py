@@ -163,7 +163,7 @@ class ContractProductResumeTest(unittest.TestCase):
                                     routing_output=routing_output, sdk_original_workflow_sha="c" * 40)
         return destination
 
-    def completed_contract_fixture(self):
+    def completed_contract_fixture(self, *, incremental=False):
         """Synthetic native qualification over the real signed fixture and original objects."""
         import reuse_qualification as qualification
         from products.inventory import canonical_json_bytes, sha256_bytes
@@ -216,15 +216,93 @@ class ContractProductResumeTest(unittest.TestCase):
             upstream_receipts=[load_canonical_json(self.receipts['metadata'])], contract_projection=projection)
         receipts.append(validate_phase_receipt({**receipts[0], **runtime_plan,
             'productVersion': fixture.VERSIONS['runtime-release']}))
+        sdk = {"spec": {}, "proof": {"sdkInputs": {"locator": {}, "files": sorted(sdk_files, key=lambda r: r['relativePath'])}}}
+        if incremental:
+            release = self.scratch / 'incremental-release'
+            adapter.prepare_contract_release_controls(self.handoff, release)
+            sdk['extension'] = {'spec': {'stateRoot': 'product-resume-state', 'completedPhases': []},
+                'proof': {'controls': {'product-resume-state/reuse-wave-request.json': request},
+                    'contractFiles': {row['relativePath']: (release / row['relativePath']).read_text()
+                                      for row in regular_file_inventory(release)}}}
         cap = qualification.CompletedFrozenReuse({"request": request, "expectedResult": result}, receipts,
             qualification._COMPLETED_FROZEN, revision=self.commit, originals=originals,
-            sdk={"spec": {}, "proof": {"sdkInputs": {"locator": {}, "files": sorted(sdk_files, key=lambda r: r['relativePath'])}}},
+            sdk=sdk,
             body_cache=self.scratch / 'body-cache')
         discovery = self.scratch / 'native-discovery'
         write_canonical_json(discovery / 'contract-reuse-request.json', request)
         write_canonical_json(discovery / 'contract-reuse-result.json', result)
         write_canonical_json(discovery / 'producer.json', self.producer)
         return cap, discovery
+
+    def test_native_discovery_and_capture_resume_without_contract_body_or_forwarding_jobs(self):
+        import io
+        import zipfile
+        from copy import deepcopy
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        cap, original = self.completed_contract_fixture(incremental=True)
+        discovery = self.scratch / 'seeded'
+        request = load_canonical_json(original / 'contract-reuse-request.json')
+        request['availableObjects'] = []
+        wave_request = adapter._wave_request
+        def original_location(*args, **kwargs):
+            # CI uses this fixed transport tag; the test keeps the original fixture immutable.
+            return {**wave_request(*args, **kwargs), 'artifactRoot': str(self.repository / 'build/product-reuse')}
+        with self.control_seams(), \
+                mock.patch.object(adapter, '_discover_catalogs', return_value=[]), \
+                mock.patch.object(adapter, 'verify_object', side_effect=AssertionError('Contract body opened')), \
+                mock.patch.object(adapter, 'advance_contract', side_effect=AssertionError('Contract continuation ran')):
+            with mock.patch.object(adapter, '_wave_request', side_effect=original_location):
+                result = adapter.discover(self.plan_path, discovery, self.scratch / 'discover-output',
+                    repository_root=self.repository, environ=self.environment, completed_frozen=cap)
+            self.assertEqual('native-contract-complete', result['reason'])
+            self.assertFalse(result['fullReuse'])  # The genuinely missing Runtime phase still must run.
+            self.assertIn('native_contract_complete=true', (self.scratch / 'discover-output').read_text())
+            tooling = discovery / 'tooling-discovery/capture/transport/original-upload.zip'
+            tooling.parent.mkdir(parents=True)
+            tooling.write_bytes(b'unneeded duplicate tooling transport')
+            handoff = self.scratch / 'published-discovery'
+            adapter._publish_discovery_handoff(discovery, handoff)
+            self.assertTrue(tooling.is_file())
+            self.assertFalse((handoff / 'tooling-discovery').exists())
+            discovery = handoff
+            files = regular_file_inventory(discovery)
+            self.assertFalse(any(row['relativePath'].endswith('.zip') for row in files))
+            packed = io.BytesIO()
+            with zipfile.ZipFile(packed, 'w') as archive:
+                archive.writestr('impact-plan.json', self.plan_path.read_bytes())
+                for row in files:
+                    archive.writestr('product-reuse/' + row['relativePath'], (discovery / row['relativePath']).read_bytes())
+            raw = packed.getvalue()
+            artifact = {'id': 77, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw)}
+            captured = self.scratch / 'native-inputs'
+            with mock.patch.object(adapter, '_observe_ci_producer_jobs', return_value=[{'run': {}}]) as observe, \
+                    mock.patch.object(adapter, '_download_contract_ci_upload', return_value=(artifact, raw)) as download, \
+                    mock.patch.object(adapter, '_require_artifact_job_window'):
+                adapter.capture_product_resume_inputs(self.plan_path, captured, uploads={'plan': {
+                    'artifactId': 77, 'artifactSha256': artifact['digest']}}, trusted_workflow_sha='c' * 40,
+                    repository_root=self.repository, environ=self.environment, token='synthetic',
+                    native_contract=True, completed_frozen=cap)
+                self.assertEqual({'plan': 'product-validation / plan'}, observe.call_args.kwargs['jobs_by_phase'])
+                download.assert_called_once()
+            resumed = self.scratch / 'native-direct-resume'
+            with mock.patch('sdk_ios_binary_recovery.capture_completed_ios_binary', return_value=[]):
+                adapter.resume_products(captured / 'plan/impact-plan.json', captured / 'plan/product-reuse',
+                    captured / 'state', captured / 'release/contract-input', resumed, self.scratch / 'native-output',
+                    repository_root=self.repository, environ=self.environment, completed_frozen=cap,
+                    routing_output=True, sdk_original_workflow_sha='c' * 40)
+        ordinary = self.resume(destination=self.scratch / 'ordinary-direct')
+        self.assertEqual(load_canonical_json(ordinary / 'phase-plans/runtime-jvm-binary-jvm.json'),
+                         load_canonical_json(resumed / 'phase-plans/runtime-jvm-binary-jvm.json'))
+        self.assertFalse(any(row['relativePath'].endswith('.zip') for row in regular_file_inventory(resumed)))
+        changed = deepcopy(request)
+        changed['catalogs']['samePr'] = [{'unexpected': 'candidate'}]
+        rejected = self.scratch / 'rejected-native-discovery'
+        rejected.mkdir()
+        trust = adapter._release_trust(self.repository, self.commit, rejected)
+        with self.assertRaisesRegex(ValueError, 'unchanged catalogs'):
+            adapter._seed_completed_contract_discovery(self.plan, changed, rejected,
+                self.repository, self.environment, cap, trust)
+        self.assertFalse((rejected / 'native-contract-state').exists())
 
     def test_native_contract_consumption_uses_bundle_once_and_reproduces_all_original_objects(self):
         from contextlib import contextmanager

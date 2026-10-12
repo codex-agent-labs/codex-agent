@@ -567,7 +567,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "53d6ad1e4d7cfba9267894af9b302e07f7cb6656",
                              "496c58d0dd91a8d5170d048792e252182ebf5968",
                              "dc9de1534ec42237c33a2c1506e046907df8e54a",
-                             "400b40cf06815101abd4a3f743b5d47cf19b190e")):
+                             "400b40cf06815101abd4a3f743b5d47cf19b190e",
+                             "5d5792eddc1c995a9d9998c4b2086307c86af19e")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -2943,6 +2944,10 @@ def _publish_discovery_handoff(destination: Path, handoff: Path) -> None:
         omitted = {name for name in _catalog_files(destination) if re.fullmatch(
             r"catalogs/(stable|promoted-main|same-pr)/[1-9][0-9]*/transport\.zip", name)
             and (destination / name).parent.joinpath("contents/product-index.json").is_file()}
+        if result["reason"] == "native-contract-complete":
+            # Successors recapture the selected original tooling by its output pins.
+            # The native Contract request contains no tooling evidence paths.
+            omitted.update(name for name in _catalog_files(destination) if name.startswith("tooling-discovery/"))
         if not omitted:
             publish_regular_tree(destination, handoff, allow_empty=True)
             return
@@ -3056,7 +3061,7 @@ def _result(
 def _finish(
     destination: Path, request: Mapping[str, Any], result: Mapping[str, Any],
     github_output_path: Path, *, contract_next_phase: str = "none",
-    contract_reconciliation_required: bool = False,
+    contract_reconciliation_required: bool = False, native_contract_complete: bool = False,
 ) -> dict[str, Any]:
     write_canonical_json(destination / "request.json", request)
     write_canonical_json(destination / "result.json", result)
@@ -3066,6 +3071,7 @@ def _finish(
         "product_reuse_reason": result["reason"],
         "contract_next_phase": contract_next_phase,
         "contract_reconciliation_required": contract_reconciliation_required,
+        "native_contract_complete": native_contract_complete,
     })
     return dict(result)
 
@@ -8294,19 +8300,19 @@ def capture_product_resume_inputs(
     environ: Mapping[str, str] | None = None, token: str,
     trusted_contract_workflow_path: str | None = None,
     trusted_contract_continuation_job: str | None = None,
-    control_uploads=None,
+    control_uploads=None, native_contract=False, completed_frozen=None,
 ) -> dict[str, Any]:
     """Capture exact caller-selected uploads; payload trust is verified on resume."""
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
     destination.rmdir()
     root = supplied_root.resolve()
-    require_exact_keys(uploads, {"plan", "state", "release"}, "Product resume uploads")
+    require_exact_keys(uploads, {"plan"} if native_contract else {"plan", "state", "release"}, "Product resume uploads")
     for name, record in uploads.items():
         require_exact_keys(record, {"artifactId", "artifactSha256"}, f"Product resume {name}")
         require_integer(record["artifactId"], f"Product resume {name} artifact ID", 1)
         require_sha256(record["artifactSha256"], f"Product resume {name} artifact digest")
-    if len({record["artifactId"] for record in uploads.values()}) != 3:
+    if len({record["artifactId"] for record in uploads.values()}) != len(uploads):
         raise ValueError("Product resume upload IDs must be distinct")
     with tempfile.TemporaryDirectory(prefix="codex-agent-resume-capture-", dir=root) as temporary:
         private = Path(temporary).resolve()
@@ -8318,6 +8324,45 @@ def capture_product_resume_inputs(
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("Product resume capture requires an authorized PR or merge-group run")
         producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+        if native_contract:
+            from reuse_qualification import CompletedFrozenReuse
+            if (type(completed_frozen) is not CompletedFrozenReuse or completed_frozen.sdk_extension() is None
+                    or control_uploads is not None or trusted_contract_workflow_path is not None
+                    or trusted_contract_continuation_job is not None):
+                raise ValueError("Native Contract capture requires explicit concrete completion and only the current plan")
+            completed_frozen.check_consumer({"kind": "ci", "producer": producer})
+            job = "product-validation / plan"
+            observed = _observe_ci_producer_jobs({"plan": producer}, jobs_by_phase={"plan": job},
+                trusted_workflow_sha=trusted_workflow_sha, token=token)
+            source = uploads["plan"]
+            artifact, raw = _download_contract_ci_upload(source["artifactId"], source["artifactSha256"],
+                f"codex-agent-ci-plan-{producer['tree']}", producer, observed[0]["run"], token,
+                max_bytes=16 * 1024 * 1024)
+            _require_artifact_job_window(observed[0], job, artifact)
+            archive = private / "plan.zip"
+            archive.write_bytes(raw)
+            verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+                **{**_CATALOG_ZIP_LIMITS, "max_archive_bytes": 16 * 1024 * 1024,
+                   "max_entry_bytes": 16 * 1024 * 1024, "max_total_bytes": 16 * 1024 * 1024})
+            prepared = private / "result"
+            safe_extract(archive, prepared / "plan")
+            if read_regular_file_bytes(prepared / "plan/impact-plan.json", reject_symlink_parents=True) != plan_bytes:
+                raise ValueError("Native Contract plan differs from the exact current consumer")
+            discovery = prepared / "plan/product-reuse"
+            environment = os.environ if environ is None else environ
+            _verify_completed_contract_state(plan, discovery, discovery / "native-contract-state", root,
+                environment, completed_frozen)
+            snapshot_regular_tree(discovery / "native-contract-state", prepared / "state")
+            snapshot_regular_tree(discovery / "native-contract-release", prepared / "release")
+            trust = _release_trust(root, plan["validationCommit"], prepared)
+            if trust is None:
+                raise ValueError("Native Contract capture lacks current release trust")
+            completed_frozen.verify_contract_handoff(prepared / "release/contract-input",
+                keyring=trust.keyring, keys_directory=trust.keys)
+            transport = {"artifacts": {"plan": artifact}, "captureProducer": producer, "observed": observed}
+            write_canonical_json(prepared / "capture-transport.json", transport)
+            publish_regular_tree(prepared, destination, allow_empty=True)
+            return transport
         if (trusted_contract_workflow_path is None) != (trusted_contract_continuation_job is None):
             raise ValueError("Contract original workflow path and job must be pinned together")
         workflow_policy = (
@@ -8913,6 +8958,65 @@ def resume_products(
     return result
 
 
+def _seed_completed_contract_discovery(plan, request, destination, root, environment, completed_frozen, trust):
+    """Elect unchanged Contract originals without materializing their product bodies."""
+    from reuse_qualification import CompletedFrozenReuse
+    if type(completed_frozen) is not CompletedFrozenReuse or completed_frozen.sdk_extension() is None:
+        raise ValueError("Native Contract discovery requires incremental native completion")
+    consumer = _consumer(plan, environment)
+    completed_frozen.check_consumer(consumer)
+    extension = completed_frozen.sdk_extension()
+    original = extension["proof"]["controls"][extension["spec"]["stateRoot"] + "/reuse-wave-request.json"]
+    records = [{**{field: row[field] for field in (*_IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256")},
+                "objectPath": f"native-contract-objects/{row['phase']}/" + object_relative_path(row["buildKey"], row["receiptSha256"])}
+               for row in original["availableObjects"] if row["product"] == "contract"]
+    if {row["phase"] for row in records} != {"binary", "package", "validation", "metadata"} or len(records) != 4:
+        raise ValueError("Native Contract discovery requires all four exact originals")
+    request["availableObjects"] = sorted(records, key=_identity)
+    completed_frozen.check_request(request)
+    result = _plan_with_sdk_tooling(request, None, completed_frozen=completed_frozen)
+    contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+    _, selected, _ = _validate_reuse_result(result, (contract,), require_complete=True)
+    for row in records:
+        if completed_frozen.envelope(row) is None:
+            raise ValueError("Native Contract election contains an unproved receipt")
+    state = destination / "native-contract-state"
+    state.mkdir(exist_ok=False)
+    for directory in (destination, state):
+        write_canonical_json(directory / "contract-reuse-result.json", result)
+        write_canonical_json(directory / "producer.json", consumer["producer"])
+    write_canonical_json(destination / "contract-reuse-request.json", request)
+    carrier_phases = []
+    by_id = {_identity(row): row for row in records}
+    for phase in result["phases"]:
+        row = by_id[_identity(phase)]
+        envelope = completed_frozen.envelope(row)
+        shard = state / "native-contract-objects" / row["phase"]
+        shard.mkdir(parents=True, exist_ok=False)
+        descriptor = {"schemaVersion": 1, **row,
+            "objectPath": object_relative_path(row["buildKey"], row["receiptSha256"])}
+        write_canonical_json(shard / PHASE_SHARD_NAME, descriptor)
+        (shard / PHASE_RECEIPT_NAME).write_bytes(envelope["receiptBytes"])
+        carrier_phases.append({**phase, "state": "reused", "source": "phase-shard", "transportSource": {
+            "kind": "phase-shard", "descriptorSha256": sha256_bytes(canonical_json_bytes(descriptor)),
+            "producer": envelope["receipt"]["producer"]}})
+    resolution = {"schemaVersion": 1, "result": "complete", "fullReuse": True,
+        "phases": carrier_phases, "matrices": {"contract": [], "runtime": [], "sdk": []}}
+    write_carrier(state / "carrier", resolution, selected,
+        {_identity(row): state / row["objectPath"] for row in records}, consumer,
+        object_root=state, completed_frozen=completed_frozen)
+    release = destination / "native-contract-release"
+    for name, value in extension["proof"]["contractFiles"].items():
+        path = release / require_relative_path(name, "Native Contract release control")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(value.encode("utf-8"))
+    if trust is None:
+        raise ValueError("Native Contract discovery lacks current release trust")
+    completed_frozen.verify_contract_handoff(release / "contract-input", keyring=trust.keyring, keys_directory=trust.keys)
+    _verify_completed_contract_state(plan, destination, state, root, environment, completed_frozen)
+    return result
+
+
 def discover(
     plan_path: Path, destination: Path, github_output_path: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -8927,7 +9031,7 @@ def discover(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     tooling_java_executable: Path | None = None,
     tooling_workflow_sha: str | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     automatic_tooling = tooling_java_executable is not None or tooling_workflow_sha is not None
     if automatic_tooling and (tooling_java_executable is None or tooling_workflow_sha is None
@@ -8940,6 +9044,7 @@ def discover(
         "product_reuse_reason": "not-evaluated",
         "contract_next_phase": "none",
         "contract_reconciliation_required": False,
+        "native_contract_complete": False,
         "tooling_artifact_id": "",
         "tooling_artifact_sha256": "",
         "tooling_transport_producer": "",
@@ -9087,6 +9192,18 @@ def discover(
         _merge_native_comparison_records(contract_request, sdk_records, key="sdkValidationEvidence")
         _merge_native_comparison_records(contract_request, apple_records, key="sdkAppleValidationEvidence")
         _merge_native_comparison_records(contract_request, aggregate_records, key=_AGGREGATE_REQUEST_KEY)
+        if completed_frozen is not None:
+            from reuse_qualification import CompletedFrozenReuse
+            if type(completed_frozen) is not CompletedFrozenReuse:
+                raise ValueError("Native Contract discovery requires the concrete semantic verifier")
+            if completed_frozen.sdk_extension() is not None:
+                # Exact request replay below rejects changed catalogs, authority,
+                # versions or evidence; no candidate disappears into a native hit.
+                complete = _seed_completed_contract_discovery(plan, contract_request, destination, root,
+                    environment, completed_frozen, trust)
+                return _finish(destination, request, _result(requested, complete=False,
+                    reason="native-contract-complete", reuse=complete), github_output_path,
+                    native_contract_complete=True)
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         contract_result = _plan_with_sdk_tooling(
@@ -9270,12 +9387,13 @@ def parser() -> argparse.ArgumentParser:
     resume_capture.add_argument("--trusted-workflow-sha", required=True)
     resume_capture.add_argument("--trusted-contract-workflow-path")
     resume_capture.add_argument("--trusted-contract-continuation-job")
+    resume_capture.add_argument("--native-contract", action="store_true")
     for name in ("state", "release"):
         resume_capture.add_argument(f"--{name}-control-id", type=int)
         resume_capture.add_argument(f"--{name}-control-sha256")
     for name in ("plan", "state", "release"):
-        resume_capture.add_argument(f"--{name}-artifact-id", type=int, required=True)
-        resume_capture.add_argument(f"--{name}-artifact-sha256", required=True)
+        resume_capture.add_argument(f"--{name}-artifact-id", type=int, required=name == "plan")
+        resume_capture.add_argument(f"--{name}-artifact-sha256", required=name == "plan")
     contract_controls = commands.add_parser("prepare-contract-resume-controls")
     for name in ("plan", "discovery-root", "state-root", "destination"):
         contract_controls.add_argument(f"--{name}", type=Path, required=True)
@@ -9388,7 +9506,7 @@ def parser() -> argparse.ArgumentParser:
                  "prepare-runtime-phase", "execute-runtime-phase"):
         add_metadata_admission_arguments(commands.choices[name])
     from reuse_qualification import add_completed_frozen_argument
-    for name in ("resume-products", "advance-products", "collect-runtime-workers",
+    for name in ("discover", "capture-product-resume-inputs", "resume-products", "advance-products", "collect-runtime-workers",
                  "capture-runtime-resume-upload", "runtime-worker-matrix",
                  "materialize-product-predecessors", "prepare-contract-resume-controls"):
         add_completed_frozen_argument(commands.choices[name])
@@ -9419,7 +9537,7 @@ def main(argv: list[str] | None = None) -> int:
                          aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                          adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),
                          sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
-                         **apple_options,
+                         **apple_options, **semantic,
                          **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
                             if arguments.sdk_maven_evidence else {}),
                          **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
@@ -9507,11 +9625,15 @@ def main(argv: list[str] | None = None) -> int:
                             for field in ("id", "sha256")]
                 if any(value is not None for value in controls) and any(value is None for value in controls):
                     raise ValueError("Contract resume requires both complete control upload pins")
+                if arguments.native_contract and any(getattr(arguments, f"{name}_artifact_{field}") is not None
+                        for name in ("state", "release") for field in ("id", "sha256")):
+                    raise ValueError("Native Contract capture accepts only its exact plan upload")
                 capture_product_resume_inputs(
-                    arguments.plan, arguments.destination,
+                    arguments.plan, arguments.destination, **semantic,
+                    **({"native_contract": True} if arguments.native_contract else {}),
                     uploads={name: {"artifactId": getattr(arguments, f"{name}_artifact_id"),
                                     "artifactSha256": getattr(arguments, f"{name}_artifact_sha256")}
-                             for name in ("plan", "state", "release")},
+                             for name in (("plan",) if arguments.native_contract else ("plan", "state", "release"))},
                     trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
                     trusted_contract_workflow_path=arguments.trusted_contract_workflow_path,
                     trusted_contract_continuation_job=arguments.trusted_contract_continuation_job,
