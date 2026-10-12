@@ -702,6 +702,18 @@ def _capture_completed_contract_receipts(spec, sdk, originals, destination, toke
         if row is None or row["sha256"] != expected["receiptSha256"] or not 0 < row["bytes"] <= LIMIT:
             raise ValueError("Native SDK receipt member differs from completed Contract evidence")
         rows.append(row)
+    if "extension" in sdk:
+        files = sdk["extension"]["proof"]["contractFiles"]
+        receipts = []
+        for row in rows:
+            name = row["relativePath"].removeprefix("sdk-inputs/inputs/contractAttestation/")
+            raw = files["contract-input/" + name].encode("utf-8")
+            if len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
+                raise ValueError("Incremental Contract receipt changes its native-qualified original")
+            receipts.append(validate_phase_receipt(load_canonical_json_bytes(raw)))
+        if _completed_contract_source(spec, receipts, originals) is None:
+            raise QualificationIncompatible("Completed Contract lacks native-qualified original stage coverage")
+        return receipts
     artifact, _, locator = _observe_completed_sdk_inputs(sdk["spec"], token)
     if locator != sdk["proof"]["sdkInputs"]["locator"]:
         raise ValueError("Completed Contract receipt source changed after native qualification")
@@ -800,6 +812,34 @@ class CompletedFrozenReuse:
     def sdk_original(self):
         self._values()
         return None if self._sdk is None else load_canonical_json_bytes(self._sdk)
+
+    def sdk_extension(self):
+        sdk = self.sdk_original()
+        return None if sdk is None else sdk.get("extension")
+
+    def observe_extended_sdk(self, record, *, producer, token):
+        from completed_sdk_reuse import observe_original, observe_source
+        import product_reuse as products
+        self.check_consumer({"kind": "ci", "producer": producer})
+        envelope = self.envelope(record)
+        extension = self.sdk_extension()
+        if extension is None or envelope is None:
+            raise ValueError("Incremental original lacks its concrete native completion")
+        spec, proof = extension["spec"], extension["proof"]
+        source = spec["source"]["producer"]
+        if (source["runId"], source["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
+            raise ValueError("Incremental completion must precede its consumer")
+        artifact, _, locator = observe_source(spec["source"], token)
+        if locator != proof["source"]:
+            raise ValueError("Incremental admitted source changed")
+        instance = products._identity(record)
+        originals = _phase_records(spec["originals"], "Incremental SDK originals")
+        if instance not in originals:
+            raise ValueError("Incremental original is outside its exact approved scope")
+        original, observed, locator = observe_original(originals[instance], envelope["receipt"], token)
+        if locator not in proof["originals"]:
+            raise ValueError("Incremental original changed after native admission")
+        return artifact, original, observed
 
     def contract_members(self):
         """Exact handoff members already consumed by the independent native SDK issuer."""
@@ -978,8 +1018,17 @@ class CompletedFrozenReuse:
                 trusted_workflow_sha=trusted_workflow_sha, token=token)
             return
         if record["product"] == "sdk":
-            artifact, _, _ = self.observe_sdk(plan=plan, producer=producer, token=token)
-            member = self.sdk_original()["proof"]["member"]
+            extension = self.sdk_extension()
+            if extension is not None and products._identity(record) in _phase_records(
+                    extension["spec"]["completedPhases"], "Incremental SDK phases"):
+                artifact, _, _ = self.observe_extended_sdk(record, producer=producer, token=token)
+                members = [row for row in extension["proof"]["members"] if row["sha256"] == record["objectSha256"]]
+                if len(members) != 1:
+                    raise ValueError("Incremental SDK object member is missing or ambiguous")
+                member = members[0]
+            else:
+                artifact, _, _ = self.observe_sdk(plan=plan, producer=producer, token=token)
+                member = self.sdk_original()["proof"]["member"]
             with open_reference_archive(artifact, token) as (archive, _stream):
                 copy_reference_member(archive, member["relativePath"], destination, member)
             return
@@ -1246,7 +1295,18 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
                 _phase_records(request[field], field)[instance]], key=products._identity)
         spec["expectedResult"]["phases"] = sorted([*spec["expectedResult"]["phases"], phase], key=products._identity)
         receipts.append(receipt)
-    report.update(completedFrozenPhases=len(phases), completedSdkPhases=int(sdk is not None), productBodiesDownloaded=0)
+        if "extension" in sdk:
+            from completed_sdk_reuse import validate_controls
+            extension = sdk["extension"]
+            request, additions, added_receipts = validate_controls(extension["spec"], extension["proof"]["controls"], spec)
+            identities = {products._identity(row) for row in additions}
+            for field in ("availableObjects", "phaseAuthorities"):
+                spec["request"][field] = sorted([*spec["request"][field],
+                    *(row for row in request[field] if products._identity(row) in identities)], key=products._identity)
+            spec["expectedResult"]["phases"] = sorted([*spec["expectedResult"]["phases"], *additions], key=products._identity)
+            receipts.extend(added_receipts)
+    count = int(sdk is not None) + (len(sdk["extension"]["spec"]["completedPhases"]) if sdk and "extension" in sdk else 0)
+    report.update(completedFrozenPhases=len(phases), completedSdkPhases=count, productBodiesDownloaded=0)
     return CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
         originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies"), report
 
@@ -1267,11 +1327,23 @@ def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token):
     _, captured = _fetch_qualification_archive(destination, **arguments, token=token, _completed_sdk=True)
     _authenticate_native_subject(captured["completion.json"], captured["bundle.jsonl"], "completion.json",
         signer_commit=arguments["signer_commit"], source_commit=arguments["source_commit"])
-    proof = require_exact_keys(load_canonical_json_bytes(captured["completion.json"]), {
-        "schemaVersion", "kind", "issuerCommit", "specSha256", "source", "original", "controls", "member", "sdkInputs"},
-        "Native completed SDK proof")
+    proof = load_canonical_json_bytes(captured["completion.json"])
+    return _validate_completed_sdk(proof, arguments, root=root, revision=revision, frozen=frozen, token=token)
+
+
+def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
+    """Validate only after native subject admission (or an admitted native parent)."""
+    import product_reuse as products
+    from products.inventory import git_regular_blob_bytes, tree_entries
+    from products.selection import phase_inventory_paths
     raw = git_regular_blob_bytes(root, arguments["signer_commit"], _SDK_COMPLETED_SPEC, max_bytes=LIMIT)
     spec = load_canonical_json_bytes(raw)
+    if spec.get("schemaVersion") == 2:
+        from completed_sdk_reuse import validate_extension
+        return validate_extension(spec, proof, arguments, root=root, revision=revision, frozen=frozen, token=token)
+    proof = require_exact_keys(proof, {
+        "schemaVersion", "kind", "issuerCommit", "specSha256", "source", "original", "controls", "member", "sdkInputs"},
+        "Native completed SDK proof")
     original = load_canonical_json_bytes(git_regular_blob_bytes(root, arguments["signer_commit"],
         "ci/tests/data/sdk-ios-qualification.json", max_bytes=LIMIT))
     if (type(proof["schemaVersion"]) is not int or proof["schemaVersion"] != 1
@@ -1454,6 +1526,9 @@ def issue_completed_sdk(work, token):
         _SDK_COMPLETED_SPEC, "ci/tests/data/sdk-ios-qualification.json", "ci/tests/data/hosted-frozen-reuse.json"))
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
+    if spec.get("schemaVersion") == 2:
+        from completed_sdk_reuse import issue_extension
+        return issue_extension(spec, work, root=root, revision=commit, frozen=frozen, token=token)
     artifact, observed, locator = _observe_completed_sdk_resume(spec, token)
     _, _, original_locator = _observe_completed_sdk_original(original,
         {"repository": REPOSITORY, "event": "pull_request"}, spec["producer"], token)

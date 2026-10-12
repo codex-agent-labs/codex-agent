@@ -1709,6 +1709,7 @@ def _prior_failed_runtime_objects(
     if not targets:
         raise ValueError("Prior failed Runtime capture is empty")
     records = []
+    prior_runs = {}  # Fresh for this readmission only; every receipt still checks its exact original job/upload.
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recheck-") as temporary:
         for member in targets:
             if member.name not in _RECOVERABLE_RUNTIME_COMPONENTS:
@@ -1740,9 +1741,11 @@ def _prior_failed_runtime_objects(
                         if (run_id > consumer_producer["runId"] or
                                 run_id == consumer_producer["runId"] and attempt >= consumer_producer["runAttempt"]):
                             raise ValueError("Prior failed Runtime producer is not earlier than its consumer")
-                        official = api_json(
-                            f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}/attempts/{attempt}",
-                            token)
+                        if (run_id, attempt) not in prior_runs:
+                            prior_runs[run_id, attempt] = api_json(
+                                f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}/attempts/{attempt}",
+                                token)
+                        official = prior_runs[run_id, attempt]
                         if (official.get("id") != run_id or official.get("run_attempt") != attempt
                                 or official.get("event") != "pull_request"
                                 or official.get("path") != ".github/workflows/ci.yml"
@@ -4276,9 +4279,11 @@ def _verified_product_state(
             trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
-    for phase in ("package", "validation", "metadata"):
-        instance = PhaseInstanceId("sdk", "javascript", phase, "node")
-        capture = discovery_root / ("prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
+    for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
+                                     ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
+        instance = PhaseInstanceId("sdk", component, phase, target)
+        capture = discovery_root / ("prior-failed-sdk-csharp" if component == "csharp" else
+            "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
         if (requested_scope is None or instance in closure) and (capture.exists() or capture.is_symlink()):
             if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
                 raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
@@ -4286,6 +4291,8 @@ def _verified_product_state(
             prior_records.extend(replay_prior_javascript_package(capture, discovery_root,
                 plan=plan, consumer_producer=consumer["producer"],
                 **({"phase": phase} if phase != "package" else {}),
+                **({"component": component} if component != "javascript" else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 trusted_workflow_sha=sdk_original_workflow_sha,
                 token=environment["GITHUB_TOKEN"], environ=environment))
     if requested_scope is not None:
@@ -8695,6 +8702,9 @@ def resume_products(
             prior_sdk_records = capture_completed_ios_binary(prepared / "prior-failed-sdk", prepared,
                 completed_frozen=completed_frozen, plan=plan, producer=current_producer,
                 token=environment.get("GITHUB_TOKEN"))
+            from sdk_ios_binary_recovery import capture_completed_javascript
+            prior_sdk_records.extend(capture_completed_javascript(prepared, prepared,
+                completed_frozen=completed_frozen, producer=current_producer, token=environment.get("GITHUB_TOKEN")))
             wave["availableObjects"] = sorted((*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
             completed_frozen.check_request(wave)
         ready_plans = {}
@@ -8718,7 +8728,8 @@ def resume_products(
                 or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
                     PhaseInstanceId("sdk", "javascript", "package", "node"),
                     PhaseInstanceId("sdk", "javascript", "validation", "node"),
-                    PhaseInstanceId("sdk", "javascript", "metadata", "node")}) for phase in reuse["phases"])
+                    PhaseInstanceId("sdk", "javascript", "metadata", "node"),
+                    PhaseInstanceId("sdk", "csharp", "binary", "desktop")}) for phase in reuse["phases"])
             recovery_hints = {}
             if recoverable and completed_frozen is not None and not any(
                     phase["state"] == "build" and (phase["product"] == "runtime"
@@ -8730,7 +8741,8 @@ def resume_products(
                 recovery_hints = {"required_artifact_prefixes": (
                     "codex-agent-sdk-worker-javascript-package-node-",
                     "codex-agent-sdk-worker-javascript-validation-node-",
-                    "codex-agent-sdk-worker-javascript-metadata-node-"),
+                    "codex-agent-sdk-worker-javascript-metadata-node-",
+                    "codex-agent-sdk-worker-sdk-csharp-binary-desktop-"),
                     "artifact_inventory": paginated_items(
                         f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
                         "artifacts", environment["GITHUB_TOKEN"])}
@@ -8791,17 +8803,20 @@ def resume_products(
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-            for phase in ("package", "validation", "metadata"):
-                instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+            for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
+                                             ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
+                instance = PhaseInstanceId("sdk", component, phase, target)
                 misses = [row for row in reuse["phases"]
                           if _identity(row) == instance and row["state"] == "build"]
                 if not misses:
                     continue
                 from sdk_ios_binary_recovery import capture_prior_javascript_package
-                capture = prepared / ("prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
+                capture = prepared / ("prior-failed-sdk-csharp" if component == "csharp" else
+                    "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
                 records = capture_prior_javascript_package(plan,
                     _consumer(plan, environment)["producer"], misses[0]["buildKey"], capture, prepared,
                     **({"phase": phase} if phase != "package" else {}),
+                    **({"component": component} if component != "javascript" else {}),
                     environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
                     token=environment["GITHUB_TOKEN"], attempts=attempts,
                     artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
@@ -8857,7 +8872,7 @@ def resume_products(
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
                 sdk_capture_root = (("prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)) if instance.component == "javascript"
-                                    else "prior-failed-sdk")
+                                    else "prior-failed-sdk-csharp" if instance.component == "csharp" else "prior-failed-sdk")
                 shard = (prepared / sdk_capture_root / instance.component / instance.phase /
                          instance.target / "original/shard" if instance.product == "sdk" else
                          prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /

@@ -184,7 +184,7 @@ class CompletedFrozenReuseTest(unittest.TestCase):
     def sdk_fixture(self):
         """Small synthetic transport around the real receipt shape, not hosted evidence."""
         original = load_canonical_json_bytes((Path(__file__).parent / "data/sdk-ios-qualification.json").read_bytes())
-        spec = load_canonical_json_bytes((Path(__file__).parent / "data/sdk-completed-resume.json").read_bytes())
+        spec = load_canonical_json_bytes((Path(__file__).parent / "data/sdk-completed-resume-v1.json").read_bytes())
         receipt = original["receipt"]
         body = b"synthetic completed SDK object"
         original["objectSha256"] = sha256_bytes(body)

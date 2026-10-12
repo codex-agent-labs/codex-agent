@@ -475,6 +475,7 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
     archive = fixture.SdkIosBinaryUploadTest.archive
     gates = IosBinaryRecoveryTest.gates
     javascript_phase = "package"
+    recovery_component, recovery_target = "javascript", "node"
 
     def setUp(self):
         fixture.SdkIosBinaryUploadTest.setUp(self)
@@ -483,10 +484,10 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
         (stage / "outputs/package.tgz").write_bytes(b"synthetic packaged JavaScript bytes\n")
         (stage / "outputs/package-inventory.json").write_bytes(b'{"synthetic":true}\n')
         (stage / "outputs/package-evidence.txt").write_bytes(b"synthetic evidence, not host acceptance\n")
-        manifest = write_output_manifest(stage, "sdk", "javascript", self.javascript_phase, "node", "0.3.0",
+        manifest = write_output_manifest(stage, "sdk", self.recovery_component, self.javascript_phase, self.recovery_target, "0.3.0",
                                          {"package": "outputs"})
-        receipt = write_receipt(self.work / "js-receipt.json", product="sdk", component="javascript",
-            phase=self.javascript_phase, target="node", outputs=manifest["outputs"], upstream=[], version="0.3.0",
+        receipt = write_receipt(self.work / "js-receipt.json", product="sdk", component=self.recovery_component,
+            phase=self.javascript_phase, target=self.recovery_target, outputs=manifest["outputs"], upstream=[], version="0.3.0",
             version_identity="0.3.0", context={"producer": self.producer})
         shard = self.work / "js-shard"
         verified = finalize_phase_object(stage_root=stage,
@@ -494,8 +495,8 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
             product_version="0.3.0", trust_domain="development", destination=shard)
         self.key = receipt["buildKey"]
         self.receipt_bytes = verified["receiptBytes"]
-        self.jobs[0]["name"] = f"product-validation / sdk-javascript-{self.javascript_phase}-node"
-        self.artifact["name"] = (f"codex-agent-sdk-worker-javascript-{self.javascript_phase}-node-{self.key.removeprefix('sha256:')}-"
+        self.jobs[0]["name"] = f"product-validation / sdk-{self.recovery_component}-{self.javascript_phase}-{self.recovery_target}"
+        self.artifact["name"] = (recovery.products._worker_artifact_prefix("sdk", recovery._javascript_instance(self.javascript_phase, self.recovery_component)) + f"{self.key.removeprefix('sha256:')}-"
                                  f"{self.producer['tree']}-attempt-2")
         self.files = {"shard/" + row["relativePath"]: (shard / row["relativePath"]).read_bytes()
                       for row in regular_file_inventory(shard)}
@@ -505,12 +506,12 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
     def capture(self):
         return recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
             self.key, self.output, self.work, trusted_workflow_sha=self.pin,
-            token="synthetic-token", environ={}, attempts=(self.run,), phase=self.javascript_phase)
+            token="synthetic-token", environ={}, attempts=(self.run,), phase=self.javascript_phase, component=self.recovery_component)
 
     def replay(self):
         return recovery.replay_prior_javascript_package(self.output, self.work, plan=self.plan,
             consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
-            token="synthetic-token", environ={}, phase=self.javascript_phase)
+            token="synthetic-token", environ={}, phase=self.javascript_phase, component=self.recovery_component)
 
     def test_original_successful_package_from_failed_parent_is_preserved_and_replayed(self):
         with self.gates(), verification_session(), \
@@ -523,7 +524,7 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
             self.assertEqual(inventory, regular_file_inventory(self.output, allow_empty=True))
             self.assertEqual(1, download.call_count)
             self.assertEqual(2, observe.call_count)
-        capture = self.output / f"javascript/{self.javascript_phase}/node"
+        capture = self.output / f"{self.recovery_component}/{self.javascript_phase}/{self.recovery_target}"
         self.assertEqual(self.receipt_bytes, (capture / "original/shard/phase-receipt.json").read_bytes())
         self.assertEqual(self.raw, (capture / "transport.zip").read_bytes())
         for name, contents in self.files.items():
@@ -567,12 +568,12 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
     def test_tampered_materialization_or_transport_cannot_replay(self):
         with self.gates():
             self.capture()
-            original = self.output / f"javascript/{self.javascript_phase}/node/original/execution/diagnostic.log"
+            original = self.output / f"{self.recovery_component}/{self.javascript_phase}/{self.recovery_target}/original/execution/diagnostic.log"
             original.write_bytes(b"tampered")
             with self.assertRaisesRegex(ValueError, "authenticated original upload"):
                 self.replay()
             original.write_bytes(b"")
-            transport = self.output / f"javascript/{self.javascript_phase}/node/capture-transport.json"
+            transport = self.output / f"{self.recovery_component}/{self.javascript_phase}/{self.recovery_target}/capture-transport.json"
             value = load_canonical_json_bytes(transport.read_bytes())
             value["artifact"]["size_in_bytes"] += 1
             transport.write_bytes(canonical_json_bytes(value))
@@ -593,8 +594,14 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "conflicting output inventories"):
                 recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
                     self.key, self.output, self.work, trusted_workflow_sha=self.pin,
-                    token="synthetic-token", environ={}, attempts=(self.run, other), phase=self.javascript_phase)
+                    token="synthetic-token", environ={}, attempts=(self.run, other), phase=self.javascript_phase, component=self.recovery_component)
         self.assertFalse(self.output.exists())
+
+
+class CsharpBinaryRecoveryTest(JavascriptPackageRecoveryTest):
+    """Preserve the exact successful C# binary after a failed collection job."""
+    javascript_phase = "binary"
+    recovery_component, recovery_target = "csharp", "desktop"
 
 
 class JavascriptValidationRecoveryTest(JavascriptPackageRecoveryTest):

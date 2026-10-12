@@ -238,6 +238,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/hydrated_evidence.py",
     "ci/hosted_reuse_proof.py",
     "ci/reuse_qualification.py",
+    "ci/completed_sdk_reuse.py",
     ".github/workflows/reuse-qualification.yml",
     ".github/actions/restore-reuse-qualification/action.yml",
     ".github/actions/restore-reuse-qualification/install-gh.sh",
