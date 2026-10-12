@@ -1,6 +1,6 @@
 """Real local K4-to-JVM planning with synthetic products, not Runtime execution."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, chdir
 import json
 from pathlib import Path
 import shutil
@@ -319,8 +319,12 @@ class ContractProductResumeTest(unittest.TestCase):
         cap, discovery = self.completed_contract_fixture()
         controls, release = self.scratch / 'controls', self.scratch / 'release'
         with self.control_seams():
-            adapter.prepare_contract_resume_controls(self.plan_path, discovery, self.state, controls,
-                completed_frozen=cap, repository_root=self.repository, environ=self.environment)
+            # Match the relative CLI paths used by the reusable workflow.
+            with chdir(self.repository):
+                adapter.prepare_contract_resume_controls(self.plan_path.relative_to(self.repository),
+                    discovery.relative_to(self.repository), self.state.relative_to(self.repository),
+                    controls.relative_to(self.repository), completed_frozen=cap,
+                    repository_root=self.repository, environ=self.environment)
             adapter.prepare_contract_release_controls(self.handoff, release)
             with mock.patch.object(adapter, 'advance_contract', side_effect=AssertionError('unexpected legacy replay')), \
                     mock.patch.object(adapter, 'materialize_contract', side_effect=AssertionError('routing hydrated a body')), \

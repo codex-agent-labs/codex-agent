@@ -3660,7 +3660,7 @@ def prepare_contract_resume_controls(plan_path, discovery_root, state_root, dest
     plan = _validate_plan(plan_path, root)
     if plan["remoteBuildAuthorized"] is not True or plan["event"] != "pull_request":
         raise ValueError("Contract controls require an authorized PR")
-    discovery_root, state_root = Path(discovery_root), Path(state_root)
+    discovery_root, state_root = Path(discovery_root).absolute(), Path(state_root).absolute()
     output = Path(destination).resolve(strict=False)
     for source in (Path(plan_path), discovery_root, state_root):
         source = source.resolve(strict=True)
