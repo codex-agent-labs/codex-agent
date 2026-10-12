@@ -76,7 +76,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         downloads = re.findall(r"uses: actions/download-artifact@.*?(?=^      -|\Z)",
                                self.job, re.MULTILINE | re.DOTALL)
         self.assertEqual(1, len(downloads))
-        self.assertIn("artifact-ids: ${{ needs.plan.outputs.plan_id }}", downloads[0])
+        self.assertIn("artifact-ids: ${{ needs.plan.outputs.plan_control_id }}", downloads[0])
         self.assertIn("path: build/product-resume-plan", downloads[0])
         self.assertNotRegex(downloads[0], re.compile(r"^          (?:name|pattern):", re.MULTILINE))
         for reference in (
