@@ -159,7 +159,7 @@ class JavaScriptValidationPhaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Callers cannot supply"):
             reuse_fixture.advance_reuse([metadata], forged, [], support.session(), **options)
 
-    def test_controller_authenticates_original_upload_before_selecting_original_source_policy(self):
+    def test_controller_authenticates_original_upload_with_current_verifier_and_original_sources(self):
         from ci.tests.test_runtime_resumed_phase import adapter
         from products.restore import store_local_object
 
@@ -194,7 +194,7 @@ class JavaScriptValidationPhaseTest(unittest.TestCase):
             calls.append("authenticated-original-upload")
             return {"originalConsumerDirectory": str(self.arguments["original_consumer_directory"])}
 
-        self.arguments["policy_revision"] = self.fixture.validation_commit
+        self.arguments["policy_revision"] = self.fixture.metadata_commit
         with patch("sdk_javascript_validation_locator.locate_javascript_validation_upload",
                    return_value={"artifact_id": 17, "artifact_sha256": "sha256:" + "a" * 64}), \
                 patch.object(adapter, "capture_sdk_javascript_validation_upload", capture), \
@@ -203,8 +203,8 @@ class JavaScriptValidationPhaseTest(unittest.TestCase):
             provider = adapter._javascript_projection_provider(request, policy, context)
             proof = provider(metadata, tuple(originals))
         self.assertEqual(calls, ["authenticated-original-upload"])
-        self.assertEqual(proof.policy_revision, self.fixture.validation_commit)
-        self.assertNotEqual(proof.policy_revision, request["repositoryRevision"])
+        self.assertEqual(proof.policy_revision, request["repositoryRevision"])
+        self.assertNotEqual(proof.policy_revision, validation["producer"]["commit"])
         self.assertEqual(proof.content_bytes(validation), self.replay_bytes)
 
     def test_original_git_plan_runtime_predecessor_and_complete_replay(self):

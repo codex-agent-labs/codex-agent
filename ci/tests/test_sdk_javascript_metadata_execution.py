@@ -196,8 +196,8 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.candidate_path = kwargs["metadata_receipt"].parent
         self.assertEqual(self.consumer, kwargs["original_consumer_directory"])
         self.assertEqual(self.repository, kwargs["repository"])
-        self.assertEqual(self.validation_producer["commit"], kwargs["policy_revision"])
-        self.assertNotEqual(self.arguments["policy_revision"], kwargs["policy_revision"])
+        self.assertEqual(self.arguments["policy_revision"], kwargs["policy_revision"])
+        self.assertNotEqual(self.validation_producer["commit"], kwargs["policy_revision"])
         for name in ("tooling_evidence", "tooling_public_key", "java_executable",
                      "required_trust_domain", "tooling_keyring", "tooling_keys_directory"):
             self.assertEqual(self.arguments[name], kwargs[name])

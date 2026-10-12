@@ -1,10 +1,13 @@
 """Retained Contract key/receipt admission; no hosted acceptance claimed."""
 
 import copy
+from contextlib import contextmanager
+import io
 import shutil
 import subprocess
 import unittest
 from unittest import mock
+import zipfile
 
 from ci.tests import test_contract_ci_originals as fixture
 from ci.tests import test_product_reuse as planner_fixture
@@ -256,9 +259,15 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
                    {"id": 701, "digest": digest, "expired": False,
                     "name": f"codex-agent-contract-release-handoff-{tree}"}]
 
-        def download(*args, **kwargs):
+        def metadata(*args, **kwargs):
             self.assertEqual((700, digest, uploads[0]["name"]), args[:3])
-            kwargs["destination"].write_bytes(raw)
+            return uploads[0]
+
+        @contextmanager
+        def hint(artifact, token):
+            self.assertEqual(uploads[0], artifact)
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                yield archive, None
 
         def capture(destination, **kwargs):
             self.assertEqual(self.source.producer, kwargs["original_producer"])
@@ -279,11 +288,19 @@ class ContractRetainedRecoveryTest(unittest.TestCase):
         output = self.source.root / "selected"
         attempts = tuple(dict(self.source.run, id=self.source.run["id"] + number)
                          for number in range(13, 0, -1)) + (self.source.run,)
-        with mock.patch.object(recovery.transport, "_prior_failed_pr_attempts",
-                side_effect=lambda *args, **kwargs: attempts[:kwargs.get("limit")]) as lookup, \
+
+        def lazy_attempts(*args, **kwargs):
+            yield from attempts
+            raise AssertionError("Discovery fetched older attempts after an authenticated match")
+
+        with mock.patch.object(recovery.transport, "_iter_prior_failed_pr_attempts",
+                side_effect=lazy_attempts) as lookup, \
                 mock.patch.object(recovery.transport, "paginated_items", side_effect=lambda url, *args:
                     uploads if f"/runs/{self.source.run['id']}/artifacts" in url else []), \
-                mock.patch.object(recovery.transport, "_download_contract_ci_upload", side_effect=download), \
+                mock.patch.object(recovery.transport, "_contract_ci_upload_metadata", side_effect=metadata), \
+                mock.patch.object(recovery, "open_reference_archive", side_effect=hint), \
+                mock.patch.object(recovery.transport, "_download_contract_ci_upload",
+                    side_effect=AssertionError("A discovery hint downloaded a full body")), \
                 mock.patch.object(recovery, "capture_retained_contract", side_effect=capture), \
                 mock.patch.object(recovery, "replay_retained_contract", side_effect=replay):
             selected = recovery.discover_retained_contract(

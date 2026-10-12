@@ -6,6 +6,7 @@ import os
 import tempfile
 
 import product_reuse as transport
+from runtime_reference_archive import open_reference_archive
 from products.contract_attestation import verify_contract_attestation, verify_contract_execution_closure
 from products.inventory import (
     load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
@@ -248,6 +249,7 @@ def discover_retained_contract(
     destination: Path, *, plan: dict, consumer_producer: dict, contract_request: dict,
     trusted_workflow_sha: str, keyring: Path, keys_directory: Path, token: str,
     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+    candidate_run_ids=None,
 ) -> dict | None:
     """Authenticate a prior signed closure and retain its current-key prefix."""
     artifact_root = Path(contract_request["artifactRoot"]).resolve(strict=True)
@@ -256,7 +258,8 @@ def discover_retained_contract(
     if destination.exists() or destination.is_symlink():
         raise ValueError("Retained Contract discovery destination already exists")
     # Unexpired authenticated originals must not age out merely because orchestration was retried.
-    attempts = transport._prior_failed_pr_attempts(plan, consumer_producer, token)
+    attempts = transport._iter_prior_failed_pr_attempts(plan, consumer_producer, token,
+        candidate_run_ids=candidate_run_ids)
     artifacts_by_run = {}
     for prior in attempts:
         pin = transport._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
@@ -283,16 +286,16 @@ def discover_retained_contract(
                 raise ValueError("Retained Contract release upload is ambiguous")
             with tempfile.TemporaryDirectory(prefix="contract-recovery-probe-", dir=artifact_root) as temporary:
                 root = Path(temporary).resolve()
-                archive = root / "inputs.zip"
                 # Only an untrusted producer hint is read here; admission below
                 # independently binds the original job, upload, receipts and objects.
-                transport._download_contract_ci_upload(
+                artifact = transport._contract_ci_upload_metadata(
                     candidate["id"], candidate["digest"], candidate["name"],
-                    {"runId": run_id}, prior, token, destination=archive)
-                _, contents, _ = transport.verified_zip_contents(
-                    archive, retained_paths=("execution-closure/receipts/metadata.json",),
-                    **transport._CATALOG_ZIP_LIMITS)
-                receipt = load_canonical_json_bytes(contents["execution-closure/receipts/metadata.json"])
+                    {"runId": run_id}, prior, token)
+                with open_reference_archive(artifact, token) as (archive, _):
+                    member = archive.getinfo("execution-closure/receipts/metadata.json")
+                    if member.is_dir() or not 0 < member.file_size <= 16 * 1024 * 1024:
+                        raise ValueError("Retained Contract producer hint exceeds its control bound")
+                    receipt = load_canonical_json_bytes(archive.read(member))
                 original = validate_producer(receipt["producer"], "Retained Contract producer hint")
                 if (original["runId"] != run_id or original["runAttempt"] != prior["run_attempt"]
                         or original["tree"] != tree

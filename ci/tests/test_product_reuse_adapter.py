@@ -387,6 +387,56 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
             self.assertEqual((same_run, self.run, older_attempt), product_reuse._prior_failed_pr_attempts(
                 self.plan, self.producer, "token"))
 
+    def test_lazy_recovery_authenticates_only_attempts_consumed_and_keeps_fallback(self):
+        self.producer = {"runId": 100, "runAttempt": 2}
+        same_run = {**self.run, "id": 100, "run_attempt": 1}
+        older_attempt = {**self.run, "run_attempt": 1}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[self.run]) as listing, \
+                mock.patch.object(product_reuse, "api_json", side_effect=[same_run, self.run, older_attempt]) as exact:
+            attempts = product_reuse._iter_prior_failed_pr_attempts(self.plan, self.producer, "token")
+            exact.assert_not_called()
+            self.assertEqual(same_run, next(attempts))
+            listing.assert_not_called()
+            exact.assert_called_once()
+            self.assertEqual((self.run, older_attempt), tuple(attempts))
+            self.assertEqual(3, exact.call_count)
+
+    def test_artifact_directed_recovery_keeps_all_candidates_and_authenticates_attempts(self):
+        prefix = "codex-agent-sdk-worker-javascript-validation-node-"
+        def artifact(run_id, attempt, **extra):
+            return {"name": f"{prefix}key-tree-attempt-{attempt}", "expired": False,
+                    "workflow_run": {"id": run_id}, **extra}
+        older = {**self.run, "id": 80, "run_attempt": 1}
+        rows = [artifact(90, 2), artifact(90, 2), artifact(80, 1),
+                artifact(100, 1), artifact(70, 1, expired=True),
+                artifact(60, 1, name="unrelated-upload")]
+        with mock.patch.object(product_reuse, "paginated_items") as listing, \
+                mock.patch.object(product_reuse, "api_json", side_effect=[self.run, older]) as exact:
+            self.assertEqual((self.run, older), product_reuse._prior_failed_pr_attempts(
+                self.plan, self.producer, "token", required_artifact_prefixes=(prefix,),
+                artifact_inventory=rows))
+            listing.assert_not_called()
+            self.assertEqual(["90/attempts/2", "80/attempts/1"],
+                             [call.args[0].split('/runs/')[1] for call in exact.call_args_list])
+        fork = {**self.run, "head_repository": {**self.run["head_repository"], "fork": True}}
+        with mock.patch.object(product_reuse, "api_json", return_value=fork):
+            with self.assertRaisesRegex(ValueError, "original PR attempt"):
+                product_reuse._prior_failed_pr_attempts(self.plan, self.producer, "token",
+                    required_artifact_prefixes=(prefix,), artifact_inventory=rows)
+
+    def test_contract_candidate_index_avoids_unrelated_attempt_queries(self):
+        older = {**self.run, "id": 80, "run_attempt": 1}
+        with mock.patch.object(product_reuse, "paginated_items", return_value=[self.run, older]), \
+                mock.patch.object(product_reuse, "api_json", return_value=older) as exact:
+            self.assertEqual((older,), tuple(product_reuse._iter_prior_failed_pr_attempts(
+                self.plan, self.producer, "token", candidate_run_ids=[80])))
+            exact.assert_called_once_with(
+                "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/80/attempts/1", "token")
+        with mock.patch.object(product_reuse, "paginated_items") as listing:
+            self.assertEqual((), tuple(product_reuse._iter_prior_failed_pr_attempts(
+                self.plan, self.producer, "token", candidate_run_ids=[])))
+            listing.assert_not_called()
+
     def test_cancelled_attempt_is_eligible_for_exact_phase_admission(self):
         cancelled = {**self.run, "conclusion": "cancelled"}
         with mock.patch.object(product_reuse, "paginated_items", return_value=[cancelled]), \

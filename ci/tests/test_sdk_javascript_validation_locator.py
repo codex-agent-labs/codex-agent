@@ -65,6 +65,17 @@ class SdkJavaScriptValidationLocatorTest(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 self.call()
 
+    def test_original_reviewed_workflow_survives_consumer_rotation(self):
+        original = "496c58d0dd91a8d5170d048792e252182ebf5968"
+        reference = self.f.run["referenced_workflows"][0]
+        reference["sha"] = original
+        reference["path"] = reference["path"].split('@')[0] + '@' + original
+        self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
+        reference["sha"] = "d" * 40
+        reference["path"] = reference["path"].split('@')[0] + '@' + reference["sha"]
+        with self.assertRaisesRegex(ValueError, "reviewed workflow"):
+            self.call()
+
     def test_observed_job_pin_run_window_and_detail_pairing_reject(self):
         baseline = deepcopy((self.f.run, self.f.jobs, self.f.artifact))
         for case in ("attempt", "job", "failure", "pin", "run", "head", "window", "timestamp", "detail", "url"):

@@ -374,16 +374,31 @@ def _same_pr_run(
 def _prior_failed_pr_attempts(
     plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
     *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),
-    limit: int | None = None,
+    limit: int | None = None, artifact_inventory: list[Any] | None = None,
 ) -> tuple[dict[str, Any], ...]:
+    return tuple(_iter_prior_failed_pr_attempts(plan, producer, token, api=api,
+        required_artifact_prefixes=required_artifact_prefixes, limit=limit,
+        artifact_inventory=artifact_inventory))
+
+
+def _iter_prior_failed_pr_attempts(
+    plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
+    *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),
+    limit: int | None = None, artifact_inventory: list[Any] | None = None,
+    candidate_run_ids: list[int] | None = None,
+):
     """List prior interrupted PR attempts; their phase uploads still need admission."""
     if plan["event"] != "pull_request" or plan["pullRequest"] is None:
-        return ()
+        return
     repository = plan["repository"]
     if repository != "codex-agent-labs/codex-agent":
         raise ValueError("Prior PR recovery requires the canonical repository")
     current_run = require_integer(producer["runId"], "Current product run ID", 1)
     current_attempt = require_integer(producer["runAttempt"], "Current product run attempt", 1)
+    candidate_runs = (None if candidate_run_ids is None else
+        {require_integer(value, "Recovery candidate run ID", 1) for value in candidate_run_ids})
+    if candidate_runs == set():
+        return
     prefix = f"{api}/repos/{repository}/actions/runs"
     artifact_lists: dict[int, list[Any]] = {}
 
@@ -415,8 +430,35 @@ def _prior_failed_pr_attempts(
                    and artifact["name"].endswith(f"-attempt-{attempt}")
                    for artifact in artifacts)
 
-    matches = []
-    if current_attempt > 1:
+    matches = 0
+    if artifact_inventory is not None:
+        if not required_artifact_prefixes:
+            raise ValueError("Artifact-directed recovery requires exact caller prefixes")
+        candidates = set()
+        for artifact in artifact_inventory:
+            if (not isinstance(artifact, dict) or artifact.get("expired") is not False
+                    or not isinstance(artifact.get("name"), str)
+                    or not artifact["name"].startswith(required_artifact_prefixes)):
+                continue
+            suffix = re.search(r"-attempt-([1-9][0-9]*)$", artifact["name"])
+            if suffix is None or not isinstance(artifact.get("workflow_run"), dict):
+                raise ValueError("Recovery candidate lacks its original run/attempt hint")
+            run_id = require_integer(artifact["workflow_run"].get("id"), "Recovery candidate run ID", 1)
+            attempt = int(suffix[1])
+            if (run_id, attempt) < (current_run, current_attempt):
+                candidates.add((run_id, attempt))
+        for run_id, attempt in sorted(candidates, reverse=True):
+            original = api_json(f"{prefix}/{run_id}/attempts/{attempt}", token)
+            if original.get("conclusion") not in {"failure", "cancelled"}:
+                continue
+            if not eligible(original, run_id, attempt):
+                raise ValueError("Artifact recovery hint differs from its original PR attempt")
+            yield original
+            matches += 1
+            if limit is not None and matches == limit:
+                return
+        return
+    if current_attempt > 1 and (candidate_runs is None or current_run in candidate_runs):
         for attempt in range(current_attempt - 1, 0, -1):
             previous = api_json(f"{prefix}/{current_run}/attempts/{attempt}", token)
             if previous.get("conclusion") not in {"failure", "cancelled"}:
@@ -424,15 +466,17 @@ def _prior_failed_pr_attempts(
             if not eligible(previous, current_run, attempt):
                 raise ValueError("Prior failed PR attempt differs from the current run")
             if has_required_artifact(current_run, attempt):
-                matches.append(previous)
-                if limit is not None and len(matches) == limit:
-                    return tuple(matches)
+                matches += 1
+                yield previous
+                if limit is not None and matches == limit:
+                    return
 
     runs = paginated_items(
         f"{prefix}?event=pull_request&status=completed",
         "workflow_runs", token)
     candidates = [run for run in runs if isinstance(run, dict)
                   and type(run.get("id")) is int and 0 < run["id"] < current_run
+                  and (candidate_runs is None or run["id"] in candidate_runs)
                   and run.get("path") == ".github/workflows/ci.yml"
                   and run.get("conclusion") in {"failure", "cancelled"}
                   and run_matches_pr(run, plan["pullRequest"])]
@@ -445,10 +489,10 @@ def _prior_failed_pr_attempts(
             if not eligible(original, selected["id"], attempt):
                 raise ValueError("Prior failed PR attempt differs from its official workflow listing")
             if has_required_artifact(selected["id"], attempt):
-                matches.append(original)
-                if limit is not None and len(matches) == limit:
-                    return tuple(matches)
-    return tuple(matches)
+                matches += 1
+                yield original
+                if limit is not None and matches == limit:
+                    return
 
 
 def _prior_failed_pr_attempt(
@@ -521,7 +565,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c",
                              "4dcf10739d30dc0462eb03090e17612d4ca6a97b",
                              "53d6ad1e4d7cfba9267894af9b302e07f7cb6656",
-                             "496c58d0dd91a8d5170d048792e252182ebf5968")):
+                             "496c58d0dd91a8d5170d048792e252182ebf5968",
+                             "dc9de1534ec42237c33a2c1506e046907df8e54a")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -2453,6 +2498,7 @@ def _discover_catalogs(
     environ: Mapping[str, str], versions: Mapping[str, str],
     repository_root: Path | None = None,
     tooling_candidate_runs: list[int] | None = None,
+    contract_candidate_runs: list[int] | None = None,
 ) -> list[Catalog]:
     token = environ.get("GITHUB_TOKEN")
     api = environ.get("GITHUB_API_URL")
@@ -2477,6 +2523,15 @@ def _discover_catalogs(
     if tooling_candidate_runs is not None:
         from tooling_discovery import candidate_run_ids
         tooling_candidate_runs.extend(candidate_run_ids(artifacts))
+    if contract_candidate_runs is not None:
+        for artifact in artifacts:
+            if (isinstance(artifact, dict) and artifact.get("expired") is False
+                    and isinstance(artifact.get("name"), str)
+                    and artifact["name"].startswith("codex-agent-contract-attestation-inputs-")):
+                original_run = artifact.get("workflow_run")
+                if not isinstance(original_run, dict):
+                    raise ValueError("Contract discovery candidate lacks its original run hint")
+                contract_candidate_runs.append(require_integer(original_run.get("id"), "Contract candidate run ID", 1))
     result = []
     closure = (set(_dependency_closure(_requested(plan))) if repository_root is not None
                else set(PHASE_INSTANCE_IDS))
@@ -3303,10 +3358,11 @@ def _javascript_projection_provider(request, tooling, original_context, *, compl
                     inputs[f"{name}_stage"], inputs[f"{name}_receipt"] = stages[identity], receipts[identity]
                 proofs[key] = verify_sdk_javascript_validation_projection(**inputs, **arguments,
                     original_consumer_directory=Path(transport["originalConsumerDirectory"]),
-                    # Deliberate original-source readmission, after observed
-                    # job/upload authentication; never a tooling-error fallback.
+                    # The installed verifier belongs to this invocation. The
+                    # matcher independently checks original Git inputs/keys from
+                    # each authenticated receipt's unchanged producer.
                     repository=original_context["repository_root"],
-                    policy_revision=validation["receipt"]["producer"]["commit"],
+                    policy_revision=request["repositoryRevision"],
                     required_trust_domain=policy["requiredTrustDomain"])
         return proofs[key]
 
@@ -7870,6 +7926,22 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     return transport
 
 
+def _observe_sdk_javascript_validation(producer, trusted_workflow_sha, token):
+    """Keep an original validation bound to its explicitly reviewed workflow."""
+    producer = validate_producer(producer, "Original JavaScript validation producer")
+    run_id = require_integer(producer["runId"], "Original validation run ID", 1)
+    attempt = require_integer(producer["runAttempt"], "Original validation attempt", 1)
+    if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
+        raise ValueError("JavaScript validation requires a pinned caller workflow")
+    run = api_json(f"https://api.github.com/repos/{producer['repository']}/actions/runs/{run_id}/attempts/{attempt}", token)
+    original_sha = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
+    if original_sha is None:
+        raise ValueError("Original JavaScript validation lacks a reviewed workflow")
+    return _observe_ci_producer_jobs({"javascript-validation": producer},
+        jobs_by_phase={"javascript-validation": "product-validation / sdk-javascript-validation-node"},
+        trusted_workflow_sha=original_sha, token=token)
+
+
 def capture_sdk_javascript_validation_upload(plan_path, destination, *, validation_receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
     """Retain observed original validation and its explicit cwd, not content trust."""
@@ -7904,8 +7976,7 @@ def capture_sdk_javascript_validation_upload(plan_path, destination, *, validati
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError("JavaScript validation capture requires an authorized PR or merge-group plan")
         job = "product-validation / sdk-javascript-validation-node"
-        observed = _observe_ci_producer_jobs({"javascript-validation": producer},
-            jobs_by_phase={"javascript-validation": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        observed = _observe_sdk_javascript_validation(producer, trusted_workflow_sha, token)
         name = (f"codex-agent-sdk-worker-javascript-validation-node-{receipt['buildKey'].removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
@@ -8415,8 +8486,22 @@ def resume_products(
                 or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
                     PhaseInstanceId("sdk", "javascript", "package", "node"),
                     PhaseInstanceId("sdk", "javascript", "validation", "node")}) for phase in reuse["phases"])
+            recovery_hints = {}
+            if recoverable and completed_frozen is not None and not any(
+                    phase["state"] == "build" and (phase["product"] == "runtime"
+                    or _identity(phase) == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
+                    for phase in reuse["phases"]):
+                # All Runtime/iOS predecessors are already proved. Discover every
+                # JS candidate from the fresh global index, then authenticate its
+                # exact failed attempt and ordinary original bytes/conflicts.
+                recovery_hints = {"required_artifact_prefixes": (
+                    "codex-agent-sdk-worker-javascript-package-node-",
+                    "codex-agent-sdk-worker-javascript-validation-node-"),
+                    "artifact_inventory": paginated_items(
+                        f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
+                        "artifacts", environment["GITHUB_TOKEN"])}
             attempts = (_prior_failed_pr_attempts(
-                plan, _consumer(plan, environment)["producer"], environment["GITHUB_TOKEN"])
+                plan, _consumer(plan, environment)["producer"], environment["GITHUB_TOKEN"], **recovery_hints)
                 if recoverable else [])
             artifacts_by_run, jobs_by_attempt, tried = {}, {}, set()
             while attempts:
@@ -8658,6 +8743,8 @@ def discover(
     trust = _release_trust(root, plan["validationCommit"], destination)
     apple_package_origin = _apple_package_origin(plan_path, root, tooling_workflow_sha, environment)
     tooling_runs: list[int] = []
+    contract_runs = [] if all(environment.get(key) for key in
+        ("GITHUB_TOKEN", "GITHUB_API_URL", "GITHUB_REPOSITORY")) else None
     needs_tooling = automatic_tooling and any(instance.product == "sdk" and (
         instance.component in NATIVE_BINDINGS and instance.phase in {"validation", "metadata"}
         or instance == PhaseInstanceId("sdk", "javascript", "metadata", "node")
@@ -8667,7 +8754,8 @@ def discover(
         "tooling_required": needs_tooling, "tooling_miss": needs_tooling,
     })
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root,
-        **({"tooling_candidate_runs": tooling_runs} if needs_tooling else {}))
+        **({"tooling_candidate_runs": tooling_runs} if needs_tooling else {}),
+        **({"contract_candidate_runs": contract_runs} if contract_runs is not None else {}))
     native_records = _capture_native_handoffs(
         native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
     adapter_records = _capture_native_handoffs(
@@ -8790,7 +8878,8 @@ def discover(
                     contract_request=contract_request, trusted_workflow_sha=tooling_workflow_sha,
                     keyring=trust.keyring, keys_directory=trust.keys, token=environment["GITHUB_TOKEN"],
                     sdk_validation_tooling=sdk_validation_tooling,
-                    sdk_apple_validation_policy=sdk_apple_validation_policy)
+                    sdk_apple_validation_policy=sdk_apple_validation_policy,
+                    candidate_run_ids=contract_runs)
                 if recovered is not None:
                     complete = recovered["result"]["fullReuse"]
                     publish_regular_tree(recovered["carrier"], destination / (

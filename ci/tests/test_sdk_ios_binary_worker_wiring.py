@@ -196,11 +196,12 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
     def test_early_binary_election_and_worker_use_only_the_required_sources(self):
         plan = self.job("sdk-ios-binary-plan")
         self.assertRegex(plan, r"(?m)^    needs: \[plan, product-resume, contract-validation\]$")
-        self.assertIn("uses: ./.github/actions/capture-sdk-tooling", plan)
-        self.assertIn("artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}", plan)
-        self.assertIn("artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}", plan)
-        self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", plan)
-        self.assertIn("sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}", plan)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state/route", plan)
+        self.assertIn("family: ios-binary", plan)
+        self.assertIn("routing: ${{ needs.product-resume.outputs.routing }}", plan)
+        self.assertIn("artifact-id: ${{ needs.product-resume.outputs.artifact_id }}", plan)
+        self.assertIn("artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}", plan)
+        self.assertNotIn("uses: ./.github/actions/capture-sdk-tooling", plan)
         self.assertNotIn("runtime-continuation", plan)
         self.assertNotIn("runtime-aggregate-continuation", plan)
         binary = self.job("sdk-ios-binary")
@@ -246,7 +247,10 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
                          tuple(locator['originalProducer'][field] for field in ('runId', 'runAttempt', 'commit', 'tree')))
         inputs = self.job('sdk-inputs')
         # Execute the real writer/strict reader with the preserved caller locator.
-        block = inputs.split('          if [ "$SDK_RECOVERY_ONLY" = true ] && [ "$SDK_SOURCE" = current-runtime ]; then\n', 1)[1].split('          fi\n', 1)[0]
+        block = re.search(
+            r'(?ms)^            if \[ "\$SDK_RECOVERY_ONLY" = true \] && \[ "\$SDK_SOURCE" = current-runtime \]; then\n'
+            r'(.*?)^            fi$', inputs,
+        )[1]
         with tempfile.TemporaryDirectory(prefix="sdk-original-locator-") as temporary:
             environment = dict(os.environ, RUNNER_TEMP=str(Path(temporary).resolve()),
                                ORIGINAL_RUNTIME_HANDOFF=re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])

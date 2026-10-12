@@ -31,8 +31,7 @@ def locate_javascript_validation_upload(validation_receipt_path, *, trusted_work
         raise ValueError("JavaScript validation locator requires the selected original validation receipt")
     producer = receipt["producer"]
     job = "product-validation / sdk-javascript-validation-node"
-    observation = products._observe_ci_producer_jobs({"javascript-validation": producer},
-        jobs_by_phase={"javascript-validation": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
+    observation = products._observe_sdk_javascript_validation(producer, trusted_workflow_sha, token)[0]
     api = f"https://api.github.com/repos/{producer['repository']}/actions"
     name = (f"codex-agent-sdk-worker-javascript-validation-node-{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
