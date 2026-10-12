@@ -1336,6 +1336,7 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     import product_reuse as products
     from products.inventory import git_regular_blob_bytes, tree_entries
     from products.selection import phase_inventory_paths
+    _ensure_native_issuer_commit(root, arguments["signer_commit"], token)
     raw = git_regular_blob_bytes(root, arguments["signer_commit"], _SDK_COMPLETED_SPEC, max_bytes=LIMIT)
     spec = load_canonical_json_bytes(raw)
     if spec.get("schemaVersion") == 2:
@@ -1356,6 +1357,7 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
             or proof["member"]["bytes"] > 8 * 1024**3):
         raise ValueError("Native completed SDK proof changes its consumed object")
     instance = products._identity(receipt)
+    _ensure_native_issuer_commit(root, spec["producer"]["commit"], token)
     before, after = (dict(tree_entries(root, commit)) for commit in (spec["producer"]["commit"], revision))
     paths = phase_inventory_paths(before, instance)
     if paths != phase_inventory_paths(after, instance) or any(before[path] != after[path] for path in paths):
@@ -1374,6 +1376,21 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     if inputs_locator != proof["sdkInputs"]["locator"]:
         raise ValueError("Completed SDK input native source changed")
     return {"spec": spec, "original": original, "proof": proof}
+
+
+def _ensure_native_issuer_commit(root, commit, token):
+    """A full branch fetch does not retain historical PR merge issuer commits."""
+    import product_reuse as products
+    from sdk_handoff import _ensure_pinned_git_commit
+    commit = _commit(commit)
+    present = subprocess.run(["git", "--no-replace-objects", "-C", str(root),
+        "cat-file", "-e", commit + "^{commit}"], capture_output=True, timeout=30)
+    if present.returncode == 0:
+        return
+    source = products.api_json(f"https://api.github.com/repos/{REPOSITORY}/git/commits/{commit}", token)
+    if source.get("sha") != commit:
+        raise ValueError("Native issuer Git source differs from its authenticated pin")
+    _ensure_pinned_git_commit(root, commit, _commit(source["tree"]["sha"]), token)
 
 
 def add_completed_frozen_argument(parser):

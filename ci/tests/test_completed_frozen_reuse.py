@@ -224,6 +224,7 @@ class CompletedFrozenReuseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve()
             native = stack.enter_context(patch.object(qualification, "_authenticate_native_subject"))
+            stack.enter_context(patch.object(qualification, "_ensure_native_issuer_commit"))
             stack.enter_context(patch.object(qualification, "_fetch_qualification_archive", side_effect=lambda *a, **kw:
                 ({}, {"completion.json": canonical_json_bytes(sdk["proof"]), "bundle.jsonl": b"synthetic"})))
             stack.enter_context(patch.object(inventory, "git_regular_blob_bytes", side_effect=lambda root, commit, path, **kw:

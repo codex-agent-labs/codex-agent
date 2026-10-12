@@ -112,6 +112,26 @@ class CompletedSdkControlsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'bounded original upload'):
             completed._spec(altered)
 
+    def test_native_parent_commit_is_fetched_only_when_missing_and_exactly_pinned(self):
+        import reuse_qualification as native
+        from types import SimpleNamespace
+        commit, tree = 'a' * 40, 'b' * 40
+        with patch.object(native.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+                patch('product_reuse.api_json') as observe, patch('sdk_handoff._ensure_pinned_git_commit') as fetch:
+            native._ensure_native_issuer_commit(Path.cwd(), commit, 'synthetic')
+            observe.assert_not_called()
+            fetch.assert_not_called()
+        with patch.object(native.subprocess, 'run', return_value=SimpleNamespace(returncode=128)), \
+                patch('product_reuse.api_json', return_value={'sha': commit, 'tree': {'sha': tree}}) as observe, \
+                patch('sdk_handoff._ensure_pinned_git_commit') as fetch:
+            native._ensure_native_issuer_commit(Path.cwd(), commit, 'synthetic')
+            fetch.assert_called_once_with(Path.cwd(), commit, tree, 'synthetic')
+            fetch.reset_mock()
+            observe.return_value['sha'] = 'c' * 40
+            with self.assertRaisesRegex(ValueError, 'authenticated pin'):
+                native._ensure_native_issuer_commit(Path.cwd(), commit, 'synthetic')
+            fetch.assert_not_called()
+
     def validate(self):
         return completed.validate_controls(self.spec, self.controls, self.base)
 

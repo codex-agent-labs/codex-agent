@@ -71,14 +71,21 @@ def stage_sdk_input_binding(plan_path, destination, *, sdk_inputs_source,
 
 def _ensure_observed_sdk_commit(repository, producer, token):
     """Fetch only a freshly authenticated immutable producer; leave refs/HEAD alone."""
-    import base64
-    import subprocess
     producer = product_reuse.validate_producer(producer)
     if (producer['repository'] != 'codex-agent-labs/codex-agent'
             or producer['workflowPath'] != '.github/workflows/ci.yml'):
         raise ValueError('Original SDK source repository/workflow is unsupported')
+    _ensure_pinned_git_commit(repository, producer['commit'], producer['tree'], token)
+
+
+def _ensure_pinned_git_commit(repository, commit, tree, token):
+    """Acquire exact Git objects; caller authentication remains outside this helper."""
+    import base64
+    import re
+    import subprocess
+    if any(type(value) is not str or re.fullmatch(r'[0-9a-f]{40}', value) is None for value in (commit, tree)):
+        raise ValueError('Original Git identity requires immutable commit and tree pins')
     command = ['git', '--no-replace-objects', '-C', str(repository)]
-    commit = producer['commit']
     def oid(value):
         return subprocess.check_output([*command, 'rev-parse', value], stderr=subprocess.PIPE).decode().strip()
     head = oid('HEAD')
@@ -93,9 +100,9 @@ def _ensure_observed_sdk_commit(repository, producer, token):
         if present.returncode != 0:
             subprocess.run([*command, 'fetch', '--no-tags', '--no-write-fetch-head',
                 '--no-recurse-submodules', '--no-auto-maintenance',
-                'https://github.com/' + producer['repository'] + '.git', commit],
+                'https://github.com/codex-agent-labs/codex-agent.git', commit],
                 env=environment, check=True, capture_output=True, timeout=120)
-        if (oid(commit + '^{commit}') != commit or oid(commit + '^{tree}') != producer['tree']
+        if (oid(commit + '^{commit}') != commit or oid(commit + '^{tree}') != tree
                 or oid('HEAD') != head):
             raise ValueError('Original SDK source identity or caller HEAD changed')
     except subprocess.CalledProcessError:
