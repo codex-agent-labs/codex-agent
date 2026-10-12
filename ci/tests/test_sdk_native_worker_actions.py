@@ -82,6 +82,28 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
         self.assertNotIn("cargo package", action)
         self.assertNotIn("native_wrappers.py package", action)
 
+    def test_every_dotnet_setup_is_isolated_and_binary_rejects_wrong_sdk_before_replay(self):
+        callers = 0
+        for path in (ROOT / ".github").rglob("*.yml"):
+            for step in re.split(r"(?m)^\s*- (?:uses|if|name|id):", path.read_text()):
+                if "actions/setup-dotnet@" not in step:
+                    continue
+                callers += 1
+                self.assertIn("DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419", step, str(path))
+                self.assertRegex(step, r"dotnet-version: ['\"]8\.0\.419['\"]")
+        self.assertEqual(6, callers)
+        action = (ROOT / ".github/actions/sdk-csharp-binary-worker/action.yml").read_text()
+        command = action.split("name: Compile the exact elected C# binary", 1)[1].split("run: |\n", 1)[1]
+        guard = textwrap.dedent(command.split("        policies=()", 1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "dotnet"
+            for version, expected in (("8.0.419", 0), ("10.0.100", 1)):
+                binary.write_text("#!/bin/sh\nprintf '%s\\n' '" + version + "'\n")
+                binary.chmod(0o700)
+                result = subprocess.run([shutil.which("bash"), "-c", guard],
+                    env={"PATH": temporary}, capture_output=True, check=False)
+                self.assertEqual(expected, result.returncode, result.stderr)
+
     def test_original_preparation_shell_handles_empty_optional_array_under_nounset(self):
         block = self.package.split("    - id: preparation\n", 1)[1].split("    - id: identity\n", 1)[0]
         script = textwrap.dedent(block.split("      run: |\n", 1)[1])
@@ -99,6 +121,7 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
             environment = {"PATH": str(binary), "RECORDED_ARGS": str(recorded),
                 "PLAN": "/original capture/impact-plan.json", "GITHUB_WORKSPACE": str(root),
                 "ARTIFACT_ID": "71", "ARTIFACT_SHA256": "sha256:" + "a" * 64,
+                "CURRENT_ARTIFACT_ID": "72",
                 "STATE_WAVE": "0", "TRUSTED_WORKFLOW_SHA": "b" * 40,
                 "GITHUB_OUTPUT": str(root / "output with spaces")}
             for wave in ("", "3"):
@@ -123,7 +146,8 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
                 self.assertIn("attempt-${{ github.run_attempt }}", block)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", self.package)
         self.assertIn("codex-agent-sdk-worker-${{ inputs.component }}-package-desktop-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}", self.package)
-        self.assertIn("path: build/sdk-worker", self.package)
+        self.assertIn("build/sdk-worker/shard", self.package)
+        self.assertIn("${{ job.status != 'success' && 'build/sdk-worker' || '' }}", self.package)
 
     def guard(self, action, environment):
         match = re.search(r"(?ms)^        python3 - <<'PY'\n(.*?)^        PY$", action)

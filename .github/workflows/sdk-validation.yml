@@ -240,6 +240,8 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         if: matrix.language == 'csharp'
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
         with:
           dotnet-version: "8.0.419"
       - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
@@ -417,6 +419,8 @@ jobs:
         with:
           python-version: "3.11"
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
         with:
           dotnet-version: "8.0.419"
       - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
@@ -554,6 +558,8 @@ jobs:
         with:
           python-version: "3.11"
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
         with:
           dotnet-version: "8.0.419"
       - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0

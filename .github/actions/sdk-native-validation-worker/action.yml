@@ -245,6 +245,8 @@ runs:
         python-version: '3.11'
     - if: inputs.component == 'csharp'
       uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
       with:
         dotnet-version: '8.0.419'
     - if: inputs.component == 'rust'

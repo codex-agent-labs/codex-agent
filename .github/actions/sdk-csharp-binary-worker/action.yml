@@ -81,6 +81,8 @@ runs:
         cache-read-only: 'true'
         product-worker: 'true'
     - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
       with:
         dotnet-version: '8.0.419'
     - name: Compile the exact elected C# binary from original signed inputs
@@ -98,6 +100,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
+        test "$(dotnet --version)" = 8.0.419
         policies=()
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then policies+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then policies+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
