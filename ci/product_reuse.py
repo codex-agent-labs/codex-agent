@@ -4532,11 +4532,17 @@ def _verified_product_state(
 def _sdk_input_selection(state, root, *, include_completed=False):
     """Route selected SDK content needs; this hint never grants execution trust."""
     return _sdk_input_selection_from_transition(state.plan, state.prior, state.sources,
-        state.expected_fixed["versions"], state.rebased_request, root, include_completed=include_completed)
+        state.expected_fixed["versions"], state.rebased_request, root, include_completed=include_completed,
+        completed_frozen=state.completed_frozen)
 
 
-def _sdk_input_selection_from_transition(plan, result, sources, versions, request, root, *, include_completed=False):
+def _sdk_input_selection_from_transition(plan, result, sources, versions, request, root, *, include_completed=False,
+                                         completed_frozen=None):
     """Use an already verified transition's objects and current policy for routing."""
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("SDK routing requires concrete native semantic evidence")
     consumers = []
     for record in result["phases"]:
         instance = _identity(record)
@@ -4552,8 +4558,10 @@ def _sdk_input_selection_from_transition(plan, result, sources, versions, reques
     policy = read_sdk_release_selection(root, revision)
     ranges = read_sdk_runtime_compatibility_policy(root, revision)
     record = next(row for row in result["phases"] if _identity(row) == contract)
-    original = verify_object(sources[contract], build_key=record["buildKey"],
-        receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+    original = None if completed_frozen is None else completed_frozen.envelope(record)
+    if original is None:
+        original = verify_object(sources[contract], build_key=record["buildKey"],
+            receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
     receipt = original["receipt"]
     outputs = receipt["outputs"]
     version = versions["contract"]

@@ -332,7 +332,8 @@ class ContractProductResumeTest(unittest.TestCase):
                 result = self.scratch / 'native-resume'
                 adapter.resume_products(controls / 'plan/impact-plan.json', controls / 'plan/product-reuse',
                     controls / 'state', release / 'contract-input', result, self.scratch / 'native-output',
-                    completed_frozen=cap, repository_root=self.repository, environ=self.environment)
+                    completed_frozen=cap, repository_root=self.repository, environ=self.environment,
+                    routing_output=True, sdk_original_workflow_sha='c' * 40)
                 verified = adapter._verified_product_state(controls / 'plan/impact-plan.json', result, result,
                     self.repository, self.environment, None, completed_frozen=cap)
         ordinary = self.resume(destination=self.scratch / 'ordinary')
@@ -342,6 +343,44 @@ class ContractProductResumeTest(unittest.TestCase):
         self.assertFalse(any(row['relativePath'].endswith('.zip') for row in regular_file_inventory(result)))
         self.assertLess(sum(row['bytes'] for row in regular_file_inventory(result)),
                         sum(row['bytes'] for row in regular_file_inventory(ordinary)))
+
+    def test_sdk_routing_uses_exact_native_contract_receipt_without_opening_deferred_body(self):
+        from types import SimpleNamespace
+        from sdk_native_continuation import emit
+        cap, discovery = self.completed_contract_fixture()
+        result = load_canonical_json(discovery / 'contract-reuse-result.json')
+        request = load_canonical_json(discovery / 'contract-reuse-request.json')
+        contract = adapter.PhaseInstanceId('contract', 'contract', 'metadata', 'common')
+        # Only the pending SDK election is synthetic; Contract identity, receipt
+        # and current Git selection are real. Routing grants no execution trust.
+        result['phases'].append({'product': 'sdk', 'component': 'javascript',
+                                 'phase': 'metadata', 'target': 'node', 'state': 'blocked'})
+        sources = {contract: self.state / next(row['objectPath'] for row in request['availableObjects']
+                                               if adapter._identity(row) == contract)}
+        expected = adapter._sdk_input_selection_from_transition(self.plan, result, sources,
+            fixture.VERSIONS, request, self.repository)
+        self.assertEqual(1, len(expected['consumers']))
+        sources[contract] = self.scratch / 'deferred-metadata.zip'
+        state = SimpleNamespace(plan=self.plan, prior=result, sources=sources,
+            expected_fixed={'versions': fixture.VERSIONS}, rebased_request=request, completed_frozen=cap)
+        with mock.patch.object(adapter, 'verify_object', side_effect=AssertionError('routing opened a body')):
+            self.assertEqual(expected, adapter._sdk_input_selection(state, self.repository))
+            output = self.scratch / 'routing-output'
+            emit(self.plan, result, [], sources, request, self.repository, self.environment, 'c' * 40,
+                 output, completed_frozen=cap)
+            fields = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            routing = json.loads(fields['routing_decisions'])
+            self.assertEqual(expected, json.loads(routing['runtime']['sdk_input_selection']))
+            record = next(row for row in result['phases'] if adapter._identity(row) == contract)
+            record['objectSha256'] = 'sha256:' + 'f' * 64
+            with self.assertRaisesRegex(ValueError, 'exact proved identity'):
+                adapter._sdk_input_selection(state, self.repository)
+        state.completed_frozen = None
+        with self.assertRaisesRegex(ValueError, 'missing or unsafe'):
+            adapter._sdk_input_selection(state, self.repository)
+        state.completed_frozen = SimpleNamespace(envelope=lambda row: {})
+        with self.assertRaisesRegex(ValueError, 'concrete native semantic evidence'):
+            adapter._sdk_input_selection(state, self.repository)
 
     def test_native_contract_controls_reject_mutation_and_changed_current_trust(self):
         cap, _ = self.completed_contract_fixture()

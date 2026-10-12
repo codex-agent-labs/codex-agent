@@ -186,7 +186,7 @@ def emit(plan, result, ready_plans, sources, request, root, environment, workflo
     if (aggregate not in phases or all(phases.get(identity, {}).get('state') in {'retained', 'reused'}
             for identity in products._dependency_closure((aggregate,)) if identity != aggregate)):
         selection = products._sdk_input_selection_from_transition(plan, result, sources,
-            request['versions'], request, root)
+            request['versions'], request, root, completed_frozen=completed_frozen)
         inspected = {'result': result, 'readyPlans': ready, 'sdkInputSelection': selection,
             products._AGGREGATE_REQUEST_KEY: request.get(products._AGGREGATE_REQUEST_KEY, [])}
         with tempfile.TemporaryDirectory(prefix='product-routing-') as temporary:

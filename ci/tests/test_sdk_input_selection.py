@@ -26,11 +26,13 @@ class SdkInputSelectionTest(unittest.TestCase):
         self.revision = "e" * 40
         self.contract_object = self.root / "original-contract-object.zip"
         self.state = SimpleNamespace(
-            prior={"phases": [self.phase("sdk", "python", "package", "desktop")]},
+            prior={"phases": [self.phase("sdk", "python", "package", "desktop"),
+                {**self.phase("contract", "contract", "metadata", "common", "retained"),
+                 "buildKey": KEY, "receiptSha256": RECEIPT, "objectSha256": OBJECT}]},
             sources={CONTRACT: self.contract_object},
             prior_carrier_phases={CONTRACT: {"buildKey": KEY, "receiptSha256": RECEIPT, "objectSha256": OBJECT}},
             producer={"commit": self.revision}, expected_fixed={"versions": {"contract": "0.8.0"}},
-            rebased_request={})
+            rebased_request={}, plan={"validationCommit": self.revision}, completed_frozen=None)
         self.receipt = {"productVersion": "0.8.0", "outputs": [
             {"kind": "contract-bundle", "relativePath": "outputs/codex-agent-contract-0.8.0.zip",
              "bytes": 123, "sha256": PAYLOAD}]}
