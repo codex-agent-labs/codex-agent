@@ -50,6 +50,9 @@ permissions:
   actions: read
   contents: read
 
+env:
+  CODEX_AGENT_THROUGHPUT_TRACE: '1'
+
 jobs:
   dispatch-authorization:
     if: github.event_name == 'workflow_dispatch'
@@ -220,6 +223,7 @@ jobs:
       android_evidence_required: ${{ steps.impact.outputs.android_evidence_required }}
       plan_artifact: codex-agent-ci-plan-${{ steps.impact.outputs.validation_tree }}
       plan_id: ${{ steps.upload_plan.outputs.artifact-id }}
+      plan_control_id: ${{ steps.upload_plan_control.outputs.artifact-id }}
       plan_digest: sha256:${{ steps.upload_plan.outputs.artifact-digest }}
       product_matrix: ${{ steps.product-selection.outputs.product_matrix }}
       contract_matrix: ${{ steps.product-selection.outputs.contract_matrix }}
@@ -361,6 +365,15 @@ jobs:
           CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}
         run: |
           test "$CONTRACT_NEXT_PHASE" = none
+      - id: upload_plan_control
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-ci-plan-control-${{ steps.impact.outputs.validation_tree }}
+          path: build/ci/impact-plan.json
+          compression-level: 0
+          retention-days: 90
       - id: upload_plan
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -504,6 +517,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
+      routing: ${{ steps.routing.outputs.routing }}
       artifact_id: ${{ steps.upload_resume.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
       full_reuse: ${{ steps.resume.outputs.full_reuse }}
@@ -512,6 +526,8 @@ jobs:
       runtime_workers_required: ${{ steps.resume.outputs.runtime_workers_required }}
       supervisor_key: ${{ steps.resume.outputs.supervisor_key }}
       wave_failed: 'false'
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -610,6 +626,17 @@ jobs:
           path: build/product-resume-transport
           compression-level: 0
           retention-days: 90
+      - id: routing
+        uses: ./.github/actions/capture-runtime-state/route
+        with:
+          mode: bind
+          routing: ${{ steps.resume.outputs.routing_decisions }}
+          artifact-id: ${{ steps.upload_resume.outputs.artifact-id }}
+          artifact-sha256: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
 
   runtime-linux-arm64-supervisor:
     name: runtime-linux-arm64-supervisor
@@ -619,6 +646,8 @@ jobs:
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -649,6 +678,7 @@ jobs:
       - id: captured
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -719,6 +749,7 @@ jobs:
       matrix: ${{ fromJSON(needs.product-resume.outputs.runtime_matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
       PYTHONDONTWRITEBYTECODE: '1'
       DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
       GIT_CONFIG_COUNT: '1'
@@ -805,11 +836,14 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
       runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -840,6 +874,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -865,6 +900,7 @@ jobs:
       matrix: ${{ fromJSON(needs.runtime-collect-1.outputs.runtime_matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
       PYTHONDONTWRITEBYTECODE: '1'
       DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
       GIT_CONFIG_COUNT: '1'
@@ -949,11 +985,14 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
       runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -984,6 +1023,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1009,6 +1049,7 @@ jobs:
       matrix: ${{ fromJSON(needs.runtime-collect-2.outputs.runtime_matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
       PYTHONDONTWRITEBYTECODE: '1'
       DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
       GIT_CONFIG_COUNT: '1'
@@ -1093,11 +1134,14 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
       runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1128,6 +1172,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1153,6 +1198,7 @@ jobs:
       matrix: ${{ fromJSON(needs.runtime-collect-3.outputs.runtime_matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
       PYTHONDONTWRITEBYTECODE: '1'
       DEVELOPER_DIR: ${{ startsWith(matrix.runner, 'macos-') && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
       GIT_CONFIG_COUNT: '1'
@@ -1237,11 +1283,14 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       runtime_matrix: ${{ steps.collect.outputs.runtime-matrix }}
       runtime_workers_required: ${{ steps.collect.outputs.runtime-workers-required }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1272,6 +1321,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1295,28 +1345,32 @@ jobs:
     outputs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      routing: ${{ steps.parent.outputs.routing }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
-      native_attestation_matrix: ${{ steps.retained.outputs.native_attestation_matrix || steps.captured.outputs.native_attestation_matrix }}
+      native_attestation_matrix: ${{ steps.retained.outputs.native_attestation_matrix || steps.routed.outputs.native_attestation_matrix || steps.captured.outputs.native_attestation_matrix }}
       retained_native_artifact_id: ${{ steps.retained-upload.outputs.artifact-id }}
       retained_native_artifact_digest: ${{ steps.retained-upload.outputs.artifact-digest }}
-      aggregate_state: ${{ steps.captured.outputs.aggregate_state }}
-      aggregate_key: ${{ steps.captured.outputs.aggregate_key }}
-      aggregate_receipt_sha256: ${{ steps.captured.outputs.aggregate_receipt_sha256 }}
-      aggregate_required: ${{ steps.captured.outputs.aggregate_required }}
-      aggregate_payload_complete: ${{ steps.captured.outputs.aggregate_payload_complete }}
-      sdk_handoff_required: ${{ steps.captured.outputs.sdk_handoff_required }}
-      sdk_input_selection: ${{ steps.captured.outputs.sdk_input_selection }}
+      aggregate_state: ${{ steps.routed.outputs.aggregate_state || steps.captured.outputs.aggregate_state }}
+      aggregate_key: ${{ steps.routed.outputs.aggregate_key || steps.captured.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.routed.outputs.aggregate_receipt_sha256 || steps.captured.outputs.aggregate_receipt_sha256 }}
+      aggregate_required: ${{ steps.routed.outputs.aggregate_required || steps.captured.outputs.aggregate_required }}
+      aggregate_payload_complete: ${{ steps.routed.outputs.aggregate_payload_complete || steps.captured.outputs.aggregate_payload_complete }}
+      sdk_handoff_required: ${{ steps.routed.outputs.sdk_handoff_required || steps.captured.outputs.sdk_handoff_required }}
+      sdk_input_selection: ${{ steps.routed.outputs.sdk_input_selection || steps.captured.outputs.sdk_input_selection }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+      - if: inputs.sdkRecoveryOnly != true
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
           source ci/select_caller_java.sh
@@ -1325,7 +1379,7 @@ jobs:
           test -f "$selected_java_home/bin/$java_binary"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1357,16 +1411,21 @@ jobs:
               digest = outputs.get('artifact_digest', '')
               if not re.fullmatch(r'[1-9][0-9]*', artifact) or not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
                   raise ValueError('Runtime state upload identity is missing')
-              selected = wave, artifact, digest
+              selected = wave, artifact, digest, outputs
           if selected is None:
               raise ValueError('No original Runtime state was selected')
-          wave, artifact, digest = selected
+          wave, artifact, digest, selected_outputs = selected
+          from ci.sdk_native_continuation import forward_routing
+          values = forward_routing(dict(state_wave=str(wave), sdk_state_wave="", artifact_id=artifact, artifact_digest=digest), selected_outputs)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'state_wave={wave}\nartifact_id={artifact}\nartifact_digest={digest}\n')
+              for name, value in values.items():
+                  output.write(f'{name}={value}\n')
           PY
       - id: captured
+        if: inputs.sdkRecoveryOnly != true
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1375,11 +1434,24 @@ jobs:
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
           continuation: selected
+      - id: routed
+        if: inputs.sdkRecoveryOnly
+        uses: ./.github/actions/capture-runtime-state/route
+        with:
+          family: runtime
+          routing: ${{ steps.parent.outputs.routing }}
+          artifact-id: ${{ steps.parent.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
+          state-wave: ${{ steps.parent.outputs.state_wave }}
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
       - name: Require the completed immutable Runtime aggregate for SDK continuation
         if: inputs.sdkRecoveryOnly
         env:
-          AGGREGATE_STATE: ${{ steps.captured.outputs.aggregate_state }}
-          AGGREGATE_PAYLOAD_COMPLETE: ${{ steps.captured.outputs.aggregate_payload_complete }}
+          AGGREGATE_STATE: ${{ steps.routed.outputs.aggregate_state || steps.captured.outputs.aggregate_state }}
+          AGGREGATE_PAYLOAD_COMPLETE: ${{ steps.routed.outputs.aggregate_payload_complete || steps.captured.outputs.aggregate_payload_complete }}
         run: |
           test "$AGGREGATE_STATE" = completed
           test "$AGGREGATE_PAYLOAD_COMPLETE" = true
@@ -1579,6 +1651,8 @@ jobs:
     # KGP exposes all five native publications with C interops only on macOS.
     # Imported publication assembly still has no Runtime compiler/linker edges.
     runs-on: macos-15
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1609,6 +1683,7 @@ jobs:
       - id: captured
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1701,12 +1776,15 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       full_reuse: ${{ steps.collect.outputs.full-reuse }}
       aggregate_payload_complete: ${{ steps.collect.outputs.aggregate-payload-complete }}
       aggregate_key: ${{ steps.collect.outputs.aggregate-key }}
       aggregate_receipt_sha256: ${{ steps.collect.outputs.aggregate-receipt-sha256 }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1737,6 +1815,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1760,10 +1839,13 @@ jobs:
     outputs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      routing: ${{ steps.parent.outputs.routing }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
       aggregate_key: ${{ steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs.aggregate_key || steps.captured.outputs.aggregate_key }}
       aggregate_receipt_sha256: ${{ steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs.aggregate_receipt_sha256 || steps.captured.outputs.aggregate_receipt_sha256 }}
       aggregate_payload_complete: ${{ steps.parent.outputs.reuse_completed == 'true' && steps.parent.outputs.aggregate_payload_complete || steps.captured.outputs.aggregate_payload_complete }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1813,6 +1895,10 @@ jobs:
           values = {'state_wave': wave, 'artifact_id': artifact, 'artifact_digest': digest,
                     'reuse_completed': str(reuse).lower(), 'aggregate_key': key,
                     'aggregate_receipt_sha256': receipt, 'aggregate_payload_complete': 'true'}
+          from ci.sdk_native_continuation import forward_routing
+          routed = forward_routing({**values, 'sdk_state_wave': ''}, selected)
+          if 'routing' in routed:
+              values['routing'] = routed['routing']
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               for name, value in values.items():
                   output.write(f'{name}={value}\n')
@@ -1846,6 +1932,7 @@ jobs:
         if: steps.parent.outputs.reuse_completed != 'true'
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -2079,6 +2166,8 @@ jobs:
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2089,12 +2178,12 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -2107,7 +2196,7 @@ jobs:
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ needs.plan.outputs.plan_id }}
+          artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/runtime-plan
           merge-multiple: true
       - name: Stage SDK inputs from the independently verified selection
@@ -2119,6 +2208,8 @@ jobs:
           STATE_ARTIFACT_ID: ${{ needs.runtime-continuation.outputs.artifact_id }}
           STATE_ARTIFACT_SHA256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
           STATE_WAVE: ${{ needs.runtime-continuation.outputs.state_wave }}
+          ROUTING: ${{ needs.runtime-continuation.outputs.routing }}
+          PLAN_ID: ${{ needs.plan.outputs.plan_id }}
           SDK_SOURCE: ${{ fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source }}
           ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
@@ -2172,6 +2263,7 @@ jobs:
             esac
             python3 -B -m ci.sdk_workflow --plan "$PLAN" --discovery-root "$discovery" --state-root "$state" \
               --destination "$destination" --repository-root "$GITHUB_WORKSPACE" \
+              --routing-json "$ROUTING" --plan-id "$PLAN_ID" \
               --state-capture-root "$capture" --state-wave "$STATE_WAVE" \
               --state-artifact-id "$STATE_ARTIFACT_ID" --state-artifact-sha256 "$STATE_ARTIFACT_SHA256" \
               --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
@@ -2326,42 +2418,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        shell: bash
-        run: |
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          product: sdk-ios-binary
+          family: ios-binary
+          routing: ${{ needs.product-resume.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.product-resume.outputs.artifact_id }}
           artifact-sha256: ${{ needs.product-resume.outputs.artifact_digest }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-binary:
     name: sdk-sdk-ios-binary-ios
@@ -2378,6 +2447,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2436,9 +2506,12 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       full_reuse: ${{ steps.collect.outputs.full-reuse }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2487,6 +2560,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           product: sdk-ios-binary
@@ -2515,6 +2589,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      routing: ${{ steps.parent.outputs.routing }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
       state_wave: ${{ steps.parent.outputs.state_wave }}
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
@@ -2527,28 +2602,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          test -f "$JAVA_HOME_17_X64/bin/java"
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: parent
         env:
           PREDECESSORS: ${{ toJSON(needs) }}
@@ -2579,11 +2634,11 @@ jobs:
               sdk_wave = '3'
           if parent['result'] != 'success':
               raise ValueError('SDK predecessor state is incomplete')
-          from ci.sdk_native_continuation import _locator
+          from ci.sdk_native_continuation import forward_routing
           values = {name: parent['outputs'][name] for name in ('artifact_id', 'artifact_digest')}
           values['state_wave'] = '0' if sdk_wave else parent['outputs']['state_wave']
           values['sdk_state_wave'] = sdk_wave
-          values = _locator(values)
+          values = forward_routing(values, parent['outputs'])
           if not values['artifact_id']:
               raise ValueError('SDK predecessor upload locator is missing')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -2591,17 +2646,18 @@ jobs:
                   output.write(name + '=' + value + '\n')
           PY
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          family: javascript
+          routing: ${{ steps.parent.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
           artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
           state-wave: ${{ steps.parent.outputs.state_wave }}
           sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-workers-1:
     name: sdk-javascript-${{ matrix.phase }}-node
@@ -2619,6 +2675,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2670,10 +2728,13 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       sdk_matrix: ${{ steps.collect.outputs.sdk-matrix }}
       sdk_workers_required: ${{ steps.collect.outputs.sdk-workers-required }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2703,6 +2764,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
@@ -2733,6 +2795,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-collect-1.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2785,7 +2849,10 @@ jobs:
     outputs:
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2815,6 +2882,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
@@ -2836,10 +2904,16 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.summary.outputs.artifact_id }}
+      routing: ${{ steps.summary.outputs.routing }}
       artifact_digest: ${{ steps.summary.outputs.artifact_digest }}
       state_wave: ${{ steps.summary.outputs.state_wave }}
       sdk_state_wave: ${{ steps.summary.outputs.sdk_state_wave }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ needs.plan.outputs.validation_commit }}
       - id: summary
         name: Fail after collecting every elected JavaScript result
         env:
@@ -2884,6 +2958,8 @@ jobs:
                       state['sdk_state_wave'] not in ('', '1', '2', '3', '4', '5', '6') or
                       (state['sdk_state_wave'] and state['state_wave'] != '0')):
                   raise ValueError('Invalid SDK terminal state artifact identity or wave')
+              from ci.sdk_native_continuation import forward_routing
+              state = forward_routing(state, parent)
               with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                   for name, value in state.items():
                       output.write(name + '=' + value + '\n')
@@ -2907,41 +2983,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          test -f "$JAVA_HOME_17_X64/bin/java"
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: csharp-binary
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          family: csharp-binary
+          routing: ${{ needs.sdk-javascript-metadata-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-javascript-metadata-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-csharp-binary:
     name: sdk-csharp-binary-desktop
@@ -2958,6 +3014,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-csharp-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3009,8 +3067,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3040,6 +3101,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: csharp-binary
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
@@ -3062,6 +3124,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -3106,41 +3169,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          test -f "$JAVA_HOME_17_X64/bin/java"
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: native-package
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          family: native-package
+          routing: ${{ needs.sdk-csharp-binary-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-native-prepare:
     name: sdk-native-prepare
@@ -3164,6 +3207,8 @@ jobs:
       preparation_state_digest: ${{ steps.prepare.outputs.preparation-state-sha256 }}
       preparation_state_wave: ${{ steps.prepare.outputs.preparation-state-wave }}
       preparation_sdk_state_wave: ${{ steps.prepare.outputs.preparation-sdk-state-wave }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3224,6 +3269,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-native-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3285,8 +3332,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3316,6 +3366,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: native-package
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
@@ -3337,6 +3388,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -3376,45 +3428,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: ios-package
+          family: ios-package
+          routing: ${{ needs.sdk-native-packages.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-native-packages.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-native-packages.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-native-packages.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-native-packages.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-package:
     name: sdk-sdk-ios-package-ios
@@ -3430,6 +3458,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-ios-package-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3488,8 +3518,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3521,6 +3554,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: ios-package
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -3542,6 +3576,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -3581,45 +3616,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: javascript-metadata
+          family: javascript-metadata
+          routing: ${{ needs.sdk-javascript.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-javascript.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-javascript.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-javascript.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-javascript-metadata:
     name: sdk-javascript-metadata-node
@@ -3635,6 +3646,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-javascript-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3690,8 +3703,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3723,6 +3739,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: javascript-metadata
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -3744,6 +3761,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -3783,45 +3801,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: native-validation
+          family: native-validation
+          routing: ${{ needs.sdk-ios-packages.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-native-validation:
     name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}
@@ -3838,6 +3832,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-native-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3922,8 +3918,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3955,6 +3954,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: native-validation
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -3976,6 +3976,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -4015,45 +4016,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          java_binary=java
-          if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
-          test -f "$selected_java_home/bin/$java_binary"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: native-metadata
+          family: native-metadata
+          routing: ${{ needs.sdk-native-validation-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-native-validation-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-native-validation-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-native-validation-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-native-validation-result.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-native-metadata:
     name: sdk-${{ matrix.component }}-metadata-${{ matrix.target }}
@@ -4070,6 +4047,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-native-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4136,8 +4115,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4169,6 +4151,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: native-metadata
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -4190,6 +4173,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -4228,54 +4212,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.tooling_required == 'true'
-        with:
-          artifact-ids: ${{ needs.plan.outputs.plan_id }}
-          path: ${{ runner.temp }}/sdk-apple-plan
-          merge-multiple: true
-      - id: apple-policy
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/prepare-sdk-apple-policy
-        with:
-          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
-          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: ios-validation
+          family: ios-validation
+          routing: ${{ needs.sdk-native-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-native-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-validation:
     name: sdk-sdk-ios-validation-${{ matrix.target }}
@@ -4291,6 +4242,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4356,6 +4309,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4457,8 +4412,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4497,6 +4455,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: ios-validation
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -4518,6 +4477,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -4556,54 +4516,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.tooling_required == 'true'
-        with:
-          artifact-ids: ${{ needs.plan.outputs.plan_id }}
-          path: ${{ runner.temp }}/sdk-apple-plan
-          merge-multiple: true
-      - id: apple-policy
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/prepare-sdk-apple-policy
-        with:
-          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
-          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: ios-metadata
+          family: ios-metadata
+          routing: ${{ needs.sdk-ios-validation-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-ios-validation-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-ios-validation-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-ios-validation-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-ios-validation-result.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-metadata:
     name: sdk-sdk-ios-metadata-${{ matrix.target }}
@@ -4619,6 +4546,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-ios-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4678,8 +4607,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4718,6 +4650,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: ios-metadata
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -4739,6 +4672,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}
@@ -4795,54 +4729,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.tooling_required == 'true'
-        with:
-          artifact-ids: ${{ needs.plan.outputs.plan_id }}
-          path: ${{ runner.temp }}/sdk-apple-plan
-          merge-multiple: true
-      - id: apple-policy
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/prepare-sdk-apple-policy
-        with:
-          plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
-          tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: core-package
+          family: core-package
+          routing: ${{ needs.sdk-core-binary-wave.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-core-binary-wave.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-core-binary-wave.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-core-binary-wave.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-core-binary-wave.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-core-package-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-binary-wave, sdk-core-package-plan]
@@ -4939,43 +4840,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-          plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: android-package
+          family: android-package
+          routing: ${{ needs.sdk-android-binary-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-android-binary-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-android-binary-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-android-binary-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-android-binary-result.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-android-package-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-plan]
@@ -5017,43 +4896,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-          plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: android-validation
+          family: android-validation
+          routing: ${{ needs.sdk-android-package-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-android-package-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-android-package-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-android-package-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-android-package-result.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-android-validation-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan]
@@ -5092,43 +4949,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - name: Select installed caller Java
-        if: needs.plan.outputs.tooling_required == 'true'
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
-        uses: ./.github/actions/capture-sdk-tooling
-        with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ needs.plan.outputs.validation_commit }}
-          plan-id: ${{ needs.plan.outputs.plan_id }}
       - id: capture
-        uses: ./.github/actions/capture-runtime-state
+        uses: ./.github/actions/capture-runtime-state/route
         with:
-          product: sdk
-          sdk-family: android-metadata
+          family: android-metadata
+          routing: ${{ needs.sdk-android-validation-result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-android-validation-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-android-validation-result.outputs.artifact_digest }}
           state-wave: ${{ needs.sdk-android-validation-result.outputs.state_wave }}
           sdk-state-wave: ${{ needs.sdk-android-validation-result.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-android-metadata-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-plan]
@@ -5165,9 +5000,12 @@ jobs:
       phase_count: ${{ steps.completion.outputs.phaseCount }}
       full_reuse: ${{ steps.completion.outputs.fullReuse }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
+      routing: ${{ steps.parent.outputs.routing }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
       state_wave: ${{ steps.parent.outputs.state_wave }}
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5222,6 +5060,7 @@ jobs:
       - id: capture
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
@@ -5293,6 +5132,8 @@ jobs:
        needs.sdk-collect-9.result == 'failure' || needs.sdk-collect-9.result == 'cancelled' ||
        needs.sdk-collect-10.result == 'failure' || needs.sdk-collect-10.result == 'cancelled')
     runs-on: ubuntu-24.04
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5373,6 +5214,7 @@ jobs:
       - id: capture
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ steps.parent.outputs.artifact_id }}
@@ -5449,6 +5291,8 @@ jobs:
       index_sha256: ${{ steps.catalog.outputs.indexSha256 }}
       public_key_sha256: ${{ steps.catalog.outputs.publicKeySha256 }}
       object_bytes: ${{ steps.catalog.outputs.objectBytes }}
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5491,6 +5335,7 @@ jobs:
       - id: capture
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-completion.outputs.artifact_id }}

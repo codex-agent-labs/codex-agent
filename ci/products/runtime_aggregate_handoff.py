@@ -20,7 +20,7 @@ from .inventory import (
 )
 from .receipt import verify_output_manifest_identity
 from .registry import NATIVE_TARGETS, PhaseInstanceId
-from .restore import verify_phase_shard
+from .restore import verify_phase_shard, verification_session, memoized_file_inventory as regular_file_inventory
 from .runtime_aggregate import _adapter_receipt_identities
 from .runtime_attestation import read_runtime_variant_handoff
 from .sdk_runtime_content import verify_native_runtime_validation_content
@@ -393,8 +393,8 @@ def verified_runtime_aggregate_handoff(root: Path, *, keyring: Path, keys_direct
     names = {path.name for path in root.iterdir()}
     if names not in (roots, roots | {"selected-state-transport"}):
         raise ValueError("Aggregate handoff requires its exact direct original carrier layout")
-    before = regular_file_inventory(root, allow_empty=True)
-    with tempfile.TemporaryDirectory(prefix="runtime-aggregate-handoff-") as temporary:
+    with verification_session(), tempfile.TemporaryDirectory(prefix="runtime-aggregate-handoff-") as temporary:
+        before = regular_file_inventory(root, allow_empty=True)
         private = Path(temporary).resolve()
         paths, policy_bytes = _public_policy(keyring, keys_directory, private / "policy")
         policy_inventory = regular_file_inventory(private / "policy")

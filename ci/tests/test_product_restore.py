@@ -629,6 +629,11 @@ class ProductRestoreTest(unittest.TestCase):
         self.assertEqual(1, len(value["objects"]))
         with self.assertRaises(CacheObjectError):
             verify_carrier(root, identities, consumer)
+        unrelated.unlink()
+        self.assertEqual(phases[:1], verify_carrier(root, identities, consumer,
+            selected_instances=identities[:1])['resolution']['phases'])
+        with self.assertRaises((CacheObjectError, ValueError, FileNotFoundError)):
+            verify_carrier(root, identities, consumer)
         selected = root / object_relative_path(phases[0]["buildKey"], phases[0]["receiptSha256"])
         selected.write_bytes(b"damaged required original")
         with self.assertRaises(CacheObjectError):

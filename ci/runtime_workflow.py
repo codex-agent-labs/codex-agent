@@ -56,6 +56,12 @@ def continuation(plan_path, discovery_root, state_root, github_output_path, *,
         **({"sdk_original_workflow_sha": sdk_original_workflow_sha} if sdk_original_workflow_sha is not None else {}),
         **({"sdk_facade_metadata_admission": sdk_facade_metadata_admission} if sdk_facade_metadata_admission is not None else {}),
         **({"sdk_android_metadata_admission": sdk_android_metadata_admission} if sdk_android_metadata_admission is not None else {}))
+    return continuation_from_inspection(inspected, github_output_path,
+        require_completed=require_completed, if_selected=if_selected)
+
+
+def continuation_from_inspection(inspected, github_output_path, *, require_completed=False, if_selected=False):
+    """Route an already authenticated transition; no replay or transported trust."""
     sdk = inspected.get("sdkInputSelection")
     sdk_outputs = {"sdk_handoff_required": sdk is not None,
                    "sdk_input_selection": canonical_json_bytes(sdk).decode().strip()}
@@ -226,7 +232,8 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     handoff = destination / "handoff"
     advanced = products.advance_products(
         plan, discovery, state, shards, handoff / "runtime-state", github_output_path,
-        repository_root=repository_root, environ=environ, failed_instances=failures,
+        repository_root=repository_root, environ=environ, failed_instances=failures, routing_output=True,
+        runtime_collection_wave=wave,
         **({"runtime_aggregate_only": True} if wave == 5 else {"runtime_workers_only": True}), **tooling)
     # Original input and receipt bytes are forwarded, not regenerated. Collection
     # diagnostics have their own upload, avoiding recursively nested wave archives.
@@ -239,19 +246,11 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
                 "aggregate_state": "failed", "aggregate_key": "", "aggregate_receipt_sha256": "",
                 "aggregate_required": False, "aggregate_payload_complete": False,
             })
-        else:
-            continuation(handoff / "product-resume-inputs/plan/impact-plan.json",
-                         handoff / "product-resume-state", handoff / "runtime-state", github_output_path,
-                         repository_root=repository_root, environ=environ, require_completed=True, **tooling)
     elif failures:
         github_output(github_output_path, {"runtime_matrix": '{"include":[]}',
                                           "runtime_workers_required": False, "supervisor_key": ""})
-    else:
-        next_matrix = matrix(handoff / "product-resume-inputs/plan/impact-plan.json",
-                             handoff / "product-resume-state", handoff / "runtime-state", github_output_path,
-                             repository_root=repository_root, environ=environ, **tooling)
-        if wave == 4 and next_matrix["include"]:
-            raise ValueError("Runtime workers remain after four dependency-ordered waves")
+    # advance_products emits the route from its completed full replay and
+    # enforces the final worker/aggregate-wave gates before publishing state.
     return advanced
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ if __package__:
 import product_reuse
 import sdk_handoff
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+from runtime_reference_transport import measured
+
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
@@ -494,20 +497,42 @@ def _selection(plan, discovery, state, repository_root, environ, sdk_validation_
     return validated, selection, plan_bytes
 
 
+def _routed_selection(plan, repository_root, environ, trusted_workflow_sha, routing_state):
+    """A successful current transition may route to the signed Runtime bridge.
+
+    The bridge still authenticates the selected aggregate, Contract digest and
+    current Git compatibility policy. This hint never admits a product phase.
+    """
+    from sdk_native_continuation import select
+    validated = product_reuse._validate_plan(plan, repository_root)
+    value, locator, plan_id = routing_state
+    expected = {**product_reuse._consumer(validated, environ)["producer"],
+                "workflowSha": trusted_workflow_sha, "planId": plan_id}
+    outputs = select(value, locator, expected, family="runtime")
+    selection = json.loads(outputs["sdk_input_selection"])
+    if outputs["sdk_handoff_required"] != "true" or not isinstance(selection, dict):
+        raise ValueError("Routing has no selected SDK consumers")
+    return validated, selection
+
+
+@measured
 def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
           artifact_sha256=None, expected_build_key=None, expected_metadata_receipt_sha256=None,
           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
           runtime_original_producer=None, runtime_original_workflow_sha=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, routing_state=None):
     """Delegate source selection and both destination policies, never grant trust."""
     if (runtime_original_producer is None) != (runtime_original_workflow_sha is None):
         raise ValueError("Retained Runtime producer and original workflow pin must be paired")
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
-    validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
-                                         trusted_workflow_sha=trusted_workflow_sha, **tooling)
+    if routing_state is None:
+        validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
+                                             trusted_workflow_sha=trusted_workflow_sha, **tooling)
+    else:
+        validated, selection = _routed_selection(plan, repository_root, environ, trusted_workflow_sha, routing_state)
     if selection.get("source") == "released-default":
         if runtime_original_producer is not None:
             raise ValueError("Retained current Runtime identity cannot override a released default")
@@ -527,6 +552,7 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
         sdk_version=selection["sdkVersion"], compatible_release_range=selection["compatibleReleaseRange"],
         compatible_runtime_compatibility_range=selection["compatibleRuntimeCompatibilityRange"],
         expected_contract_payload_sha256=selection["contractPayloadSha256"],
+        reference_runtime=True,
         keyring=keyring, keys_directory=keys_directory, selection_repository_root=repository_root,
         selection_revision=validated["validationCommit"], repository_root=repository_root, environ=environ, token=token,
         **({"original_producer": runtime_original_producer} if runtime_original_producer is not None else {}))
@@ -698,7 +724,7 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         producer=producer, product_version=version, trust_domain=trust, destination=destination / "shard")
 
 
-def _write_matrix(ready_plans, github_output_path, *, ios_binary=False, family=None):
+def _matrix_from_plans(ready_plans, *, ios_binary=False, family=None):
     """Route a caller-authenticated election; never load a transported matrix."""
     from sdk_phase import route
 
@@ -733,10 +759,25 @@ def _write_matrix(ready_plans, github_output_path, *, ios_binary=False, family=N
              **worker_route(ready)}
             for ready in ready_plans
             if selected(product_reuse._identity(ready))]
-    value = {"include": rows}
+    return {"include": rows}
+
+
+def _write_matrix(ready_plans, github_output_path, *, ios_binary=False, family=None):
+    value = _matrix_from_plans(ready_plans, ios_binary=ios_binary, family=family)
     github_output(github_output_path, {"sdk_matrix": canonical_json_bytes(value).decode().strip(),
-                                      "sdk_workers_required": bool(rows)})
+                                      "sdk_workers_required": bool(value["include"])})
     return value
+
+
+def _read_scope(ios_binary, family):
+    selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
+        if (product_reuse._sdk_family_worker_instance(instance, family) if family is not None else
+            (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
+             product_reuse._sdk_javascript_worker_instance)(instance)))
+    if family == "native-package":
+        selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
+            if instance.product == "sdk" and instance.component in NATIVE_BINDINGS)
+    return selected
 
 
 def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
@@ -750,14 +791,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
         product_reuse._sdk_family_worker_instance(None, family)
         if ios_binary:
             raise ValueError("SDK family and binary projection are mutually exclusive")
-    selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
-        if (product_reuse._sdk_family_worker_instance(instance, family) if family is not None else
-            (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
-             product_reuse._sdk_javascript_worker_instance)(instance)))
-    if family == "native-package":
-        # Preparation may be needed for validation/metadata after a package hit.
-        selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
-            if instance.product == "sdk" and instance.component in NATIVE_BINDINGS)
+    selected = _read_scope(ios_binary, family)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ,
         requested_scope=selected,
@@ -774,11 +808,12 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
 
 
 @verification_scoped
+@measured
 def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, scope_inputs=False):
     """Capture exact original state, then replay SDK readiness independently."""
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
@@ -786,10 +821,14 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         product_reuse._sdk_family_worker_instance(None, family)
         if ios_binary:
             raise ValueError("SDK family and binary projection are mutually exclusive")
+    if type(scope_inputs) is not bool or scope_inputs and (ios_binary or family not in
+            {None, 'javascript-metadata', 'native-package', 'native-validation', 'native-metadata', 'csharp-binary'}):
+        raise ValueError('SDK capture scope requires a worker with independent scoped admission')
     product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
         state_wave=state_wave, **({"sdk_state_wave": sdk_state_wave} if sdk_state_wave is not None else {}),
-        repository_root=repository_root, environ=environ, token=token, allow_earlier_attempt=True)
+        repository_root=repository_root, environ=environ, token=token, allow_earlier_attempt=True,
+        **({'requested_scope': _read_scope(ios_binary, family)} if scope_inputs else {}))
     original = destination / "original"
     paths = {"input_root": original,
         "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
@@ -848,6 +887,7 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
 
 
 @verification_scoped
+@measured
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
@@ -890,6 +930,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     handoff = destination / "handoff"
     advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
         github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
+        routing_output=True,
         sdk_original_workflow_sha=trusted_workflow_sha,
         **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
         **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
@@ -1121,6 +1162,7 @@ def _workflow_main(argv):
     captured.add_argument("--artifact-sha256", required=True)
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
+    captured.add_argument("--scope-inputs", action="store_true")
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
     parsers["collect"].add_argument("--wave", type=int, choices=range(1, 20), required=True)
     parsers["collect"].add_argument("--sdk-worker-workflow-path")
@@ -1300,6 +1342,8 @@ def main(argv=None):
     parser.add_argument("--state-capture-root", type=Path)
     parser.add_argument("--state-wave", type=int, default=0)
     if not worker and not native_prepare:
+        parser.add_argument("--routing-json")
+        parser.add_argument("--plan-id")
         parser.add_argument("--runtime-original-producer", type=Path, default=argparse.SUPPRESS)
         parser.add_argument("--runtime-original-workflow-sha", default=argparse.SUPPRESS)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
@@ -1315,6 +1359,10 @@ def main(argv=None):
             plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
             state_locator = [arguments.pop(name) for name in ("state_artifact_id", "state_artifact_sha256", "state_capture_root")]
             state_wave = arguments.pop("state_wave")
+            routing_json = arguments.pop("routing_json", None)
+            plan_id = arguments.pop("plan_id", None)
+            if (routing_json is None) != (plan_id is None):
+                raise ValueError("SDK routing requires its current plan upload identity")
             if any(value is not None for value in state_locator):
                 if worker or any(value is None for value in state_locator) or arguments["trusted_workflow_sha"] is None:
                     raise ValueError("SDK input staging requires the complete caller-owned Runtime state locator")
@@ -1323,10 +1371,23 @@ def main(argv=None):
                 expected_state = capture_root / ("original/runtime-state" if state_wave else "original/product-resume-state")
                 if discovery != expected_discovery or state != expected_state:
                     raise ValueError("SDK input staging paths differ from the caller-selected Runtime capture")
-                product_reuse.capture_runtime_resume_upload(plan, capture_root,
-                    artifact_id=identifier, artifact_sha256=digest, state_wave=state_wave,
-                    trusted_workflow_sha=arguments["trusted_workflow_sha"], repository_root=arguments["repository_root"],
-                    environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                routed = None
+                if routing_json is not None:
+                    if len(routing_json.encode()) > 128 * 1024:
+                        raise ValueError("SDK routing control exceeds its bound")
+                    routing_state = (json.loads(routing_json), dict(artifact_id=str(identifier),
+                        artifact_digest=digest, state_wave=str(state_wave), sdk_state_wave=""), plan_id)
+                    _, routed = _routed_selection(plan, arguments["repository_root"], os.environ,
+                                                  arguments["trusted_workflow_sha"], routing_state)
+                if routed is not None and routed.get("source") == "current-runtime":
+                    arguments["routing_state"] = routing_state
+                else:
+                    product_reuse.capture_runtime_resume_upload(plan, capture_root,
+                        artifact_id=identifier, artifact_sha256=digest, state_wave=state_wave,
+                        trusted_workflow_sha=arguments["trusted_workflow_sha"], repository_root=arguments["repository_root"],
+                        environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+            elif routing_json is not None:
+                raise ValueError("SDK routing requires its exact state locator")
             elif state_wave:
                 raise ValueError("SDK input staging state wave requires its complete capture locator")
             action = prepare_native if native_prepare else execute_javascript if javascript else stage

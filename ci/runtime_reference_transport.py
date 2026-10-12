@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import json
+import sys
+import time
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 import tempfile
 
@@ -21,7 +26,36 @@ from products.inventory import (
 
 REFERENCE_NAME = "runtime-references.json"
 ORIGINAL_REFERENCE_NAME = "runtime-original-references.json"
+SDK_REFERENCE_NAME = 'sdk-runtime-reference.json'
 _ROOTS = {"product-resume-inputs", "product-resume-state", "runtime-state"}
+_MEASUREMENTS = ContextVar('throughput_measurements', default=())
+
+
+def count(name, amount=1):
+    """Inclusive operation counters; never identifiers, arguments or credentials."""
+    for counters in _MEASUREMENTS.get():
+        counters[name] = counters.get(name, 0) + amount
+
+
+def measured(operation):
+    @wraps(operation)
+    def timed(*args, **kwargs):
+        if os.environ.get('CODEX_AGENT_THROUGHPUT_TRACE') != '1':
+            return operation(*args, **kwargs)
+        counters = {}
+        token = _MEASUREMENTS.set((*_MEASUREMENTS.get(), counters))
+        wall, cpu, succeeded = time.perf_counter(), time.process_time(), False
+        try:
+            result = operation(*args, **kwargs)
+            succeeded = True
+            return result
+        finally:
+            _MEASUREMENTS.reset(token)
+            print('throughput ' + json.dumps(dict(operation=operation.__name__, success=succeeded,
+                elapsedSeconds=round(time.perf_counter() - wall, 6),
+                processCpuSeconds=round(time.process_time() - cpu, 6),
+                inclusiveCounters=counters), sort_keys=True), file=sys.stderr)
+    return timed
 
 
 def _path(value):
@@ -117,6 +151,8 @@ def _copy_exact(source, destination, record, *, destination_directory=None):
                 raise ValueError("Runtime reference source changed during resolution")
         if "sha256:" + digest.hexdigest() != record["sha256"]:
             raise ValueError("Runtime reference source digest differs from its immutable identity")
+        count('verifiedCopyBytes', record['bytes'])
+        count('verifiedCopies')
     finally:
         os.close(descriptor)
 
@@ -160,7 +196,73 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     return value
 
 
-def resolve_reference_handoff(original, base_root, value, *, state_wave, sdk_state_wave=None):
+def selected_reference_paths(value, *, omit_sdk_ios_binary=False):
+    """A worker may omit the unrelated iOS object, keeping every control.
+
+    The full authenticated manifest still declares every preserved byte. This
+    selects materialization only; full collectors never request a partial view.
+    Concrete legacy members remain present. New original references make the
+    large binary and its aliases selectable before downloading any body.
+    """
+    if type(omit_sdk_ios_binary) is not bool:
+        raise ValueError("SDK reference selection must be boolean")
+    bodies = {(row['bytes'], row['sha256']) for row in value['inventory']
+        if omit_sdk_ios_binary and row['relativePath'].startswith(
+            'product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original/shard/')
+        and '/v1/objects/sha256/' in row['relativePath'] and row['relativePath'].endswith('.zip')}
+    inherited = {row['relativePath'] for row in value['references']}
+    return {row['relativePath'] for row in value['inventory']
+        if row['relativePath'] not in inherited or (row['bytes'], row['sha256']) not in bodies}
+
+
+def validate_sdk_runtime_reference(value):
+    """Current-plan SDK transport may refer to its exact original Runtime upload."""
+    from products.receipt import validate_producer
+    value = require_exact_keys(value, {'schemaVersion', 'source', 'inventory'}, 'SDK Runtime reference')
+    if type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
+        raise ValueError('Unsupported SDK Runtime reference schema')
+    source = require_exact_keys(value['source'], {'artifactId', 'artifactSha256', 'producer',
+        'workflowSha', 'buildKey', 'metadataReceiptSha256'}, 'SDK Runtime original source')
+    require_integer(source['artifactId'], 'SDK Runtime original artifact ID', 1)
+    for field in ('artifactSha256', 'buildKey', 'metadataReceiptSha256'):
+        require_sha256(source[field], 'SDK Runtime original ' + field)
+    import re
+    if type(source['workflowSha']) is not str or re.fullmatch('[0-9a-f]{40}', source['workflowSha']) is None:
+        raise ValueError('SDK Runtime original workflow is not exact')
+    validate_producer(source['producer'])
+    inventory = require_sorted_unique_records(value['inventory'], 'SDK Runtime logical inventory')
+    if not inventory or len(inventory) > 16_384:
+        raise ValueError('SDK Runtime reference exceeds the member bound')
+    for row in inventory:
+        validate_file_record(row, 'SDK Runtime reference file', with_kind=False, allow_empty=True)
+        path = require_relative_path(row['relativePath'], 'SDK Runtime reference path')
+        if path.split('/')[0] not in {'runtime-capture', 'sdk-inputs'} or '/' not in path:
+            raise ValueError('SDK Runtime reference changes the standard input layout')
+    if (sum(row['bytes'] for row in inventory) > 16 * 1024**3
+            or any(row['bytes'] > 8 * 1024**3 for row in inventory)):
+        raise ValueError('SDK Runtime reference exceeds the byte bound')
+    if not any(row['relativePath'].startswith('runtime-capture/original/') for row in inventory):
+        raise ValueError('SDK Runtime reference has no original body')
+    return value
+
+
+def sdk_runtime_reference_inventory(archive, physical):
+    """Read only after complete enclosing ZIP authentication; return logical files."""
+    if SDK_REFERENCE_NAME not in {row['relativePath'] for row in physical}:
+        return None
+    import zipfile
+    with zipfile.ZipFile(archive) as zipped:
+        if zipped.getinfo(SDK_REFERENCE_NAME).file_size > PRODUCT_JSON_LIMIT:
+            raise ValueError('SDK Runtime reference exceeds its control bound')
+        value = validate_sdk_runtime_reference(load_canonical_json_bytes(zipped.read(SDK_REFERENCE_NAME)))
+    expected = [row for row in value['inventory']
+                if not row['relativePath'].startswith('runtime-capture/original/')]
+    if [row for row in physical if row['relativePath'] != SDK_REFERENCE_NAME] != expected:
+        raise ValueError('SDK Runtime reference has missing, overlapping or unexpected concrete bytes')
+    return value
+
+
+def resolve_reference_handoff(original, base_root, value, *, state_wave, sdk_state_wave=None, selected_paths=None):
     """Resolve a freshly authenticated base; caller must still admit all phases."""
     value = validate_references(value, state_wave, sdk_state_wave=sdk_state_wave)
     referenced = {record["relativePath"] for record in value["references"]}
@@ -168,11 +270,14 @@ def resolve_reference_handoff(original, base_root, value, *, state_wave, sdk_sta
     if materialized != [record for record in value["inventory"] if record["relativePath"] not in referenced]:
         raise ValueError("Runtime reference delta has missing, overlapping or unexpected files")
     for record in value["references"]:
+        if selected_paths is not None and record['relativePath'] not in selected_paths:
+            continue
         _copy_exact(Path(base_root) / record["sourcePath"], Path(original) / record["relativePath"], record)
     (Path(original) / REFERENCE_NAME).unlink()
-    if regular_file_inventory(original, allow_empty=True) != value["inventory"]:
+    inventory = [row for row in value['inventory'] if selected_paths is None or row['relativePath'] in selected_paths]
+    if regular_file_inventory(original, allow_empty=True) != inventory:
         raise ValueError("Resolved Runtime reference inventory differs from the frozen bytes")
-    return value["inventory"]
+    return inventory
 
 
 def validate_original_references(value):
@@ -181,7 +286,7 @@ def validate_original_references(value):
     from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
     value = require_exact_keys(value, {"schemaVersion", "inventory", "sources", "references"},
                                "Runtime original references")
-    if value["schemaVersion"] != 1 or type(value["schemaVersion"]) is not int:
+    if value["schemaVersion"] not in (1, 2) or type(value["schemaVersion"]) is not int:
         raise ValueError("Unsupported Runtime original references schema")
     inventory = require_sorted_unique_records(value["inventory"], "Original reference inventory")
     if not inventory or len(inventory) > 16_384:
@@ -196,7 +301,7 @@ def validate_original_references(value):
             or any(row["bytes"] > 8 * 1024**3 for row in inventory)):
         raise ValueError("Original reference inventory exceeds the transport byte bounds")
     sources = require_sorted_unique_records(value["sources"], "Original reference sources")
-    if len(sources) > 47:
+    if len(sources) > (47 if value["schemaVersion"] == 1 else 48):
         raise ValueError("Original references exceed the registered Runtime source bound")
     by_source = {}
     for source in sources:
@@ -204,9 +309,13 @@ def validate_original_references(value):
                            "Original reference source")
         receipt = validate_phase_receipt(source["receipt"])
         instance = PhaseInstanceId(*(receipt[key] for key in ("product", "component", "phase", "target")))
-        if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime":
+        sdk_binary = (value["schemaVersion"] == 2 and source["kind"] == "sdk-binary"
+                      and instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
+        if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" and not sdk_binary:
             raise ValueError("Original reference is not a registered Runtime phase")
-        if source["kind"] == "phase":
+        if sdk_binary:
+            prefix = "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original"
+        elif source["kind"] == "phase":
             prefix = (f"product-resume-state/prior-failed-runtime/{instance.component}/{instance.phase}/"
                       f"{instance.target}/phases/{instance.phase}/original")
         elif source["kind"] == "aggregate" and instance == PhaseInstanceId(
@@ -251,6 +360,8 @@ def validate_original_references(value):
                 raise ValueError("Original member reference changes its registered source path")
             if by_source[prefix]["kind"] == "phase" and source_path.startswith("inputs/"):
                 raise ValueError("Original phase reference includes unretained predecessor inputs")
+            if by_source[prefix]["kind"] == "sdk-binary" and not source_path.startswith("shard/"):
+                raise ValueError("SDK original references are limited to their authenticated binary shard")
             used.add(prefix)
     if used != set(by_source):
         raise ValueError("Original reference transport has unused source locators")
@@ -295,7 +406,8 @@ def stage_original_reference_handoff(roots, sources, destination):
         else:
             concrete.append(row)
             contents[identity] = row["relativePath"]
-    value = validate_original_references({"schemaVersion": 1, "inventory": inventory,
+    value = validate_original_references({"schemaVersion": 2 if any(source["kind"] == "sdk-binary" for source in sources) else 1,
+        "inventory": inventory,
         "sources": sorted((source for source in sources if source["relativePath"] in used),
                           key=lambda row: row["relativePath"]), "references": references})
     with tempfile.TemporaryDirectory(prefix="runtime-original-reference-export-") as temporary:
@@ -314,7 +426,7 @@ def stage_original_reference_handoff(roots, sources, destination):
     return value
 
 
-def resolve_original_reference_handoff(original, value, capture_source):
+def resolve_original_reference_handoff(original, value, capture_source, *, selected_paths=None):
     """Resolve qualified members, then let existing admission replay authenticate phases."""
     value = validate_original_references(value)
     targets = {row["relativePath"] for row in value["references"]}
@@ -322,12 +434,15 @@ def resolve_original_reference_handoff(original, value, capture_source):
             row for row in value["inventory"] if row["relativePath"] not in targets]:
         raise ValueError("Original reference delta has missing, overlapping or unexpected files")
     for source in value["sources"]:
-        capture_source(source, [row for row in value["references"] if row["source"] == source["relativePath"]],
-                       Path(original))
+        records = [row for row in value['references'] if row['source'] == source['relativePath']
+                   and (selected_paths is None or row['relativePath'] in selected_paths)]
+        if records:
+            capture_source(source, records, Path(original))
     for row in value["references"]:
-        if row["source"] is None:
+        if row["source"] is None and (selected_paths is None or row['relativePath'] in selected_paths):
             _copy_exact(Path(original) / row["sourcePath"], Path(original) / row["relativePath"], row)
-    if regular_file_inventory(original, allow_empty=True, excluded_paths=(ORIGINAL_REFERENCE_NAME,)) != value["inventory"]:
+    inventory = [row for row in value['inventory'] if selected_paths is None or row['relativePath'] in selected_paths]
+    if regular_file_inventory(original, allow_empty=True, excluded_paths=(ORIGINAL_REFERENCE_NAME,)) != inventory:
         raise ValueError("Resolved original reference inventory differs from its frozen bytes")
     (Path(original) / ORIGINAL_REFERENCE_NAME).unlink()
-    return value["inventory"]
+    return inventory

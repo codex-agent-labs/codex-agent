@@ -29,7 +29,7 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         caller = job(source, "sdk-android-validation-result")
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", plan)
         self.assertIn("needs.sdk-android-package-result.result == 'success'", plan)
-        self.assertIn("sdk-family: android-validation", plan)
+        self.assertIn("family: android-validation", plan)
         self.assertIn("uses: ./.github/workflows/sdk-android-validation.yml", caller)
         self.assertIn("protectedAndroidAuthority: ''", caller)
         for gate in ("sdk-completion", "sdk-parity", "merge-gate"):

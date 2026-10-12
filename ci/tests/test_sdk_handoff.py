@@ -117,6 +117,31 @@ class SdkHandoffTest(unittest.TestCase):
         self.assertFalse((self.output / "runtime-capture/transport.zip").exists())
         self.assertEqual({"inventory": "explicitly mocked bridge result"}, result)
 
+    def test_reference_handoff_keeps_exact_original_inventory_without_copying_history(self):
+        import json
+        from runtime_reference_transport import SDK_REFERENCE_NAME, validate_sdk_runtime_reference
+        self.options['reference_runtime'] = True
+        producer = dict(repository='codex-agent-labs/codex-agent', workflowPath='.github/workflows/ci.yml',
+            commit='a' * 40, tree='b' * 40, event='pull_request', runId=7, runAttempt=1, pullRequest=31)
+        def captured(plan, destination, **kwargs):
+            captured_fixture(plan, destination, self.original)
+            (destination / 'capture-transport.json').write_bytes(canonical_json_bytes(dict(
+                artifact=dict(id=self.options['artifact_id'], digest=self.options['artifact_sha256']),
+                captureProducer=producer, aggregateBuildKey=self.options['expected_build_key'],
+                aggregateReceiptSha256=self.options['expected_metadata_receipt_sha256'])))
+        with patch.object(caller.product_reuse, 'capture_runtime_aggregate_release_upload', side_effect=captured), \
+                patch.object(caller, 'stage_protected_runtime_sdk_inputs', side_effect=lambda *a, **kw:
+                    (self.calls.append('capture'), self.bridge(*a, **kw))[1]):
+            caller.capture_sdk_handoff(self.plan, self.output, **self.options)
+        value = validate_sdk_runtime_reference(json.loads((self.output / SDK_REFERENCE_NAME).read_bytes()))
+        self.assertFalse((self.output / 'runtime-capture/original').exists())
+        prefix = 'runtime-capture/original/'
+        self.assertEqual(regular_file_inventory(self.original, allow_empty=True),
+            [{**row, 'relativePath': row['relativePath'].removeprefix(prefix)} for row in value['inventory']
+             if row['relativePath'].startswith(prefix)])
+        self.assertEqual(producer, value['source']['producer'])
+        self.assertEqual(self.options['artifact_sha256'], value['source']['artifactSha256'])
+
     def test_capture_or_full_bridge_failure_never_publishes(self):
         for failure in ("capture", "bridge"):
             self.calls.clear()
@@ -236,6 +261,11 @@ class SignedSdkHandoffCompositionTest(unittest.TestCase):
                 self.assertEqual(source.key, arguments["expected_build_key"])
                 self.assertEqual(source.digest, arguments["expected_metadata_receipt_sha256"])
                 captured_fixture(plan_path, destination, source.retained)
+                import json
+                producer = json.loads((source.retained / 'caller.json').read_bytes())['transportProducer']
+                (destination / 'capture-transport.json').write_bytes(canonical_json_bytes(dict(
+                    artifact=dict(id=42, digest='sha256:' + 'a' * 64), captureProducer=producer,
+                    aggregateBuildKey=source.key, aggregateReceiptSha256=source.digest)))
 
             with patch.object(caller.product_reuse, "capture_runtime_aggregate_release_upload", side_effect=capture), \
                     patch("reuse.api_request", side_effect=AssertionError("unexpected network")), \
@@ -246,9 +276,16 @@ class SignedSdkHandoffCompositionTest(unittest.TestCase):
                     compatible_release_range=">=0.2.0 <0.3.0", compatible_runtime_compatibility_range=">=0.2.0 <0.3.0",
                     keyring=source.keyring, keys_directory=source.keys, selection_repository_root=source.selection,
                     selection_revision=source.revision, repository_root=source.source.source.repository,
-                    environ={}, token="synthetic-token", expected_contract_payload_sha256=source.contract_payload_digest)
+                    environ={}, token="synthetic-token", expected_contract_payload_sha256=source.contract_payload_digest,
+                    reference_runtime=True)
             self.assertEqual(before, regular_file_inventory(source.retained, allow_empty=True))
-            self.assertEqual(before, regular_file_inventory(output / "runtime-capture/original", allow_empty=True))
+            import json
+            from runtime_reference_transport import SDK_REFERENCE_NAME, validate_sdk_runtime_reference
+            value = validate_sdk_runtime_reference(json.loads((output / SDK_REFERENCE_NAME).read_bytes()))
+            prefix = 'runtime-capture/original/'
+            self.assertEqual(before, [{**row, 'relativePath': row['relativePath'].removeprefix(prefix)}
+                for row in value['inventory'] if row['relativePath'].startswith(prefix)])
+            self.assertFalse((output / 'runtime-capture/original').exists())
             self.assertTrue((output / "sdk-inputs/sdk-compatibility-request.json").is_file())
 
 

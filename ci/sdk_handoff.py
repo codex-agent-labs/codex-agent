@@ -17,6 +17,8 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from runtime_reference_transport import measured
+
 from products.inventory import (
     publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
     require_regular_directory, require_sha256, snapshot_regular_tree,
@@ -29,6 +31,7 @@ from products.sdk_release_selection import read_sdk_release_selection, require_s
 
 
 @verification_scoped
+@measured
 def capture_sdk_handoff(
     plan_path: Path, destination: Path, *, artifact_id: int, artifact_sha256: str,
     trusted_workflow_sha: str, expected_build_key: str, expected_metadata_receipt_sha256: str,
@@ -36,11 +39,13 @@ def capture_sdk_handoff(
     keyring: Path, keys_directory: Path, selection_repository_root: Path, selection_revision: str,
     repository_root: Path | None = None, environ=None, token: str,
     expected_contract_payload_sha256: str | None = None,
-    original_producer=None,
+    original_producer=None, reference_runtime=False,
 ) -> dict:
     """Publish original upload evidence and SDK inputs only after both gates exit."""
     if expected_contract_payload_sha256 is not None:
         require_sha256(expected_contract_payload_sha256, "Expected Contract payload SHA-256")
+    if type(reference_runtime) is not bool:
+        raise ValueError('SDK Runtime reference selection must be boolean')
     repository = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
     selection = Path(selection_repository_root).absolute()
     plan, destination = Path(plan_path).absolute(), Path(destination).absolute()
@@ -81,6 +86,7 @@ def capture_sdk_handoff(
         capture_inventory = regular_file_inventory(capture, allow_empty=True)
         forwarded = private / "forwarded"
         result = stage_protected_runtime_sdk_inputs(capture / "original", forwarded,
+            retain_runtime=False,
             expected_metadata_receipt_sha256=expected_metadata_receipt_sha256, expected_build_key=expected_build_key,
             sdk_version=sdk_version, compatible_release_range=compatible_release_range,
             compatible_runtime_compatibility_range=compatible_runtime_compatibility_range,
@@ -90,15 +96,34 @@ def capture_sdk_handoff(
                if expected_contract_payload_sha256 is not None else {}))
         # SDK consumers authenticate their own complete SDK upload and verify
         # the raw signed Runtime carrier. They never use its enclosing ZIP.
-        for name in ("plan", "original"):
+        for name in (("plan",) if reference_runtime else ("plan", "original")):
             snapshot_regular_tree(capture / name, prepared / "runtime-capture" / name, allow_empty=True)
         transport_bytes = read_regular_file_bytes(capture / "capture-transport.json", reject_symlink_parents=True)
         (prepared / "runtime-capture/capture-transport.json").write_bytes(transport_bytes)
         sdk_inventory = regular_file_inventory(forwarded / "sdk-inputs")
         snapshot_regular_tree(forwarded / "sdk-inputs", prepared / "sdk-inputs")
+        logical_capture = [record for record in capture_inventory if record['relativePath'] != 'transport.zip']
+        if reference_runtime:
+            from runtime_reference_transport import SDK_REFERENCE_NAME, validate_sdk_runtime_reference
+            from products.inventory import load_canonical_json_bytes, write_canonical_json
+            transport = load_canonical_json_bytes(transport_bytes)
+            if (transport['artifact']['id'] != artifact_id or transport['artifact']['digest'] != artifact_sha256
+                    or transport['aggregateBuildKey'] != expected_build_key
+                    or transport['aggregateReceiptSha256'] != expected_metadata_receipt_sha256):
+                raise ValueError('SDK Runtime reference differs from its authenticated capture')
+            value = validate_sdk_runtime_reference(dict(schemaVersion=1,
+                source=dict(artifactId=artifact_id, artifactSha256=artifact_sha256,
+                    producer=transport['captureProducer'], workflowSha=trusted_workflow_sha,
+                    buildKey=expected_build_key, metadataReceiptSha256=expected_metadata_receipt_sha256),
+                inventory=sorted([
+                    *({**row, 'relativePath': 'runtime-capture/' + row['relativePath']} for row in logical_capture),
+                    *({**row, 'relativePath': 'sdk-inputs/' + row['relativePath']} for row in sdk_inventory),
+                ], key=lambda row: row['relativePath'])))
+            write_canonical_json(prepared / SDK_REFERENCE_NAME, value)
         if (regular_file_inventory(capture, allow_empty=True) != capture_inventory
                 or regular_file_inventory(prepared / "runtime-capture", allow_empty=True)
-                   != [record for record in capture_inventory if record["relativePath"] != "transport.zip"]
+                   != [record for record in logical_capture
+                       if not reference_runtime or not record['relativePath'].startswith('original/')]
                 or regular_file_inventory(forwarded / "sdk-inputs") != sdk_inventory
                 or regular_file_inventory(prepared / "sdk-inputs") != sdk_inventory
                 or read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_bytes

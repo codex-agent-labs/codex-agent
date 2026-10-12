@@ -49,7 +49,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         collector = self.job("sdk-collect-7")
         self.assertIn("needs.sdk-ios-packages.result == 'success'", plan)
         self.assertIn("needs.sdk-ios-packages.outputs.artifact_id != ''", plan)
-        self.assertIn("sdk-family: native-validation", plan)
+        self.assertIn("family: native-validation", plan)
         self.assertNotIn("setup-kmp", plan)
         self.assertIn("name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}", worker)
         self.assertIn("fail-fast: false", worker)
@@ -69,6 +69,10 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
             self.assertIn("needs.plan.outputs.event_authorized == 'true'", job)
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", job)
             self.assertIn("sdk-plan", job.split("    if:", 1)[0])
+            for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
+                                ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
+                self.assertIn(flag + ": ${{ needs.sdk-ios-packages.outputs." + field + " }}", job)
+        for job in (worker, collector):
             self.assertIn('source ci/select_caller_java.sh', job)
             self.assertIn("if [ \"$RUNNER_OS\" = Windows ]; then java_binary=java.exe; fi", job)
             self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", job)
@@ -76,9 +80,6 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
             for flag, field in (("artifact-id", "tooling_artifact_id"), ("artifact-sha256", "tooling_artifact_sha256"),
                                 ("transport-producer", "tooling_transport_producer")):
                 self.assertIn(flag + ": ${{ needs.sdk-plan.outputs." + field + " }}", job)
-            for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
-                                ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-                self.assertIn(flag + ": ${{ needs.sdk-ios-packages.outputs." + field + " }}", job)
 
     def test_only_elected_dart_warms_external_cache_and_retains_diagnostics_after_failure(self):
         worker = self.job("sdk-native-validation")
@@ -96,18 +97,20 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         self.assertIn("include-hidden-files: true", diagnostic)
         self.assertNotIn("pub get", worker)
 
-    def test_election_tooling_is_conditional_but_elected_execution_and_collection_require_it(self):
+    def test_election_uses_controls_and_elected_execution_and_collection_require_tooling(self):
         for name in ("sdk-native-validation-plan", "sdk-native-metadata-plan",
                      "sdk-native-validation", "sdk-native-metadata", "sdk-collect-7", "sdk-collect-8"):
             job = self.job(name)
+            if name.endswith("-plan"):
+                self.assertIn("uses: ./.github/actions/capture-runtime-state/route", job)
+                self.assertNotIn("capture-sdk-tooling", job)
+                self.assertNotIn("select_caller_java", job)
+                continue
             java = job.split("      - name: Select installed caller Java for SDK tooling\n", 1)[1].split("\n      - ", 1)[0]
             tooling = job.split("      - id: tooling\n", 1)[1].split("\n      - ", 1)[0]
             with self.subTest(job=name):
                 for block in (java, tooling):
-                    if name.endswith("-plan"):
-                        self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", block)
-                    else:
-                        self.assertNotIn("if:", block)
+                    self.assertNotIn("if:", block)
                 self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", job)
 
     def test_collection_runs_after_failed_workers_and_merge_waits_for_final_gate(self):

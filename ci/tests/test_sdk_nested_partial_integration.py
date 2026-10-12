@@ -163,8 +163,16 @@ class NestedSdkPlannerReplayTest(unittest.TestCase):
         with self.control_seams():
             result = adapter.advance_products(self.plan_path, resumed, None, [shard],
                 advanced, self.scratch / "advance-output", repository_root=self.repository,
-                environ=self.environment)
+                environ=self.environment, routing_output=True, sdk_original_workflow_sha="c" * 40)
         self.assertTrue(result["fullReuse"])
+        outputs = dict(line.split("=", 1) for line in (self.scratch / "advance-output").read_text().splitlines())
+        from ci import sdk_native_continuation as routing
+        decisions = json.loads(outputs["routing_decisions"])
+        self.assertEqual([], decisions["ready"])
+        self.assertEqual(self.producer, decisions["producer"])
+        bound = routing.bind(decisions, dict(artifact_id="101", artifact_digest="sha256:" + "a" * 64,
+            state_wave="0", sdk_state_wave="11"), {**self.producer, "workflowSha": "c" * 40, "planId": "100"})
+        self.assertEqual("not-selected", bound["decisions"]["runtime"]["aggregate_state"])
 
         files = {"product-resume-inputs/plan/impact-plan.json": self.plan_path.read_bytes()}
         for source, prefix in ((resumed, "product-resume-state"), (advanced, "runtime-state")):

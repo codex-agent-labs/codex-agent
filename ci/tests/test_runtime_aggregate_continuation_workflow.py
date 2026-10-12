@@ -23,6 +23,7 @@ class RuntimeAggregateContinuationWorkflowTest(unittest.TestCase):
         if len(scripts) != 1:
             raise AssertionError("Expected the sole completed-state selector")
         cls.script = textwrap.dedent(scripts[0])
+        cls.script = 'import sys; sys.path.insert(0, ' + repr(str(Path(__file__).resolve().parents[2])) + ')\n' + cls.script
 
     def fixture(self, fresh):
         output = {"aggregate_required": str(fresh).lower(), "aggregate_state": "ready" if fresh else "completed",

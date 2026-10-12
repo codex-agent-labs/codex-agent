@@ -109,7 +109,7 @@ runs:
       if: inputs.plan-id != ''
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
-        artifact-ids: ${{ inputs.plan-id }}
+        artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || inputs.plan-id }}
         path: ${{ steps.capture.outputs.plan_directory }}
         merge-multiple: true
     - id: apple-policy

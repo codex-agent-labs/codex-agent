@@ -167,6 +167,7 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                             or producer["runAttempt"] != int(match[2])):
                         raise ValueError("Tooling locator differs from original upload identity")
                     policy = capture_tooling_ci(prepared / "capture", repository,
+                        transport_archive=archive,
                         artifact_id=identifier, artifact_sha256=digest, transport_producer=producer,
                         policy_revision=policy_revision, java_executable=java, token=token,
                         **_original_tooling_workflow(producer, trusted_workflow_sha, token,

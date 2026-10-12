@@ -1,6 +1,9 @@
 name: Capture authenticated Runtime state
 description: Verify the exact parent upload and re-elect work before any platform setup.
 inputs:
+  plan-directory:
+    default: ''
+    description: Existing same-job exact plan download, still validated by each consumer.
   preflight-wave:
     default: ''
     description: Collector-only wave; fail on absent uploads before recovering the parent.
@@ -101,14 +104,16 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - if: inputs.plan-directory == ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
-        artifact-ids: ${{ inputs.plan-id }}
+        artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || inputs.plan-id }}
         path: build/runtime-plan
         merge-multiple: true
     - if: inputs.preflight-wave != ''
       shell: bash
       env:
+        PLAN_DIRECTORY: ${{ inputs.plan-directory || 'build/runtime-plan' }}
         PRODUCT: ${{ inputs.product }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
         WAVE: ${{ inputs.preflight-wave }}
@@ -118,18 +123,20 @@ runs:
         set -euo pipefail
         family=()
         if [ -n "$SDK_FAMILY" ]; then family=(--family "$SDK_FAMILY"); fi
-        python3 -B ci/runtime_workflow.py preflight --plan build/runtime-plan/impact-plan.json \
+        python3 -B ci/runtime_workflow.py preflight --plan "$PLAN_DIRECTORY/impact-plan.json" \
           --product "$PRODUCT" --wave "$WAVE" ${family[@]+"${family[@]}"} \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
     - id: capture
       uses: ./.github/actions/hydrated-evidence-cache
       env:
+        PLAN_DIRECTORY: ${{ inputs.plan-directory || 'build/runtime-plan' }}
         ARTIFACT_ID: ${{ inputs.artifact-id }}
         ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         STATE_WAVE: ${{ inputs.state-wave }}
         CONTINUATION: ${{ inputs.continuation }}
         STATE_PRODUCT: ${{ inputs.product }}
+        PREFLIGHT_WAVE: ${{ inputs.preflight-wave }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
@@ -167,6 +174,12 @@ runs:
                 ;;
               *) echo 'Unknown product state projection' >&2; exit 1 ;;
             esac
+            if [ "$STATE_PRODUCT" = sdk ] && [ -z "$PREFLIGHT_WAVE" ]; then
+              case "$SDK_FAMILY" in
+                ''|javascript-metadata|native-package|native-validation|native-metadata|csharp-binary)
+                  selected+=(--scope-inputs) ;;
+              esac
+            fi
             if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
               selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
             fi
@@ -191,7 +204,7 @@ runs:
               selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
             fi
             "${command[@]}" \
-              --plan build/runtime-plan/impact-plan.json --destination build/runtime-input \
+              --plan "$PLAN_DIRECTORY/impact-plan.json" --destination build/runtime-input \
               --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
               --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
               --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}

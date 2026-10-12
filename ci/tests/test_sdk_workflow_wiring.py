@@ -29,12 +29,12 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         self.workflow = (ROOT / ".github/workflows/sdk-core-validation.yml").read_text()
         self.assertRegex(self.workflow, r"(?s)reuseQualification:\n.*?default: ''\n")
         self.assertRegex(self.workflow, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        self.assertEqual(6, self.workflow.count("${{ secrets.authority_read_token }}"))
+        self.assertEqual(4, self.workflow.count("${{ secrets.authority_read_token }}"))
         self.assertIn("independently reviewed", self.workflow)
         fields = {"artifact-id": "artifactId", "artifact-sha256": "artifactSha256",
                   "run-id": "runId", "run-attempt": "runAttempt",
                   "issuer-sha": "issuerSha", "source-sha": "sourceSha"}
-        for name in ("sdk-core-validation-plan", "sdk-core-validation", "sdk-collect-13"):
+        for name in ("sdk-core-validation", "sdk-collect-13"):
             with self.subTest(job=name):
                 job = self.job(name)
                 restore = re.search(r"(?ms)^      - if: inputs.reuseQualification != ''\n"
@@ -78,7 +78,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if not root:
                     child_names.add(path.name)
                     self.assertRegex(text, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        self.assertEqual(63, restored)
+        self.assertEqual(45, restored)
         parent = (ROOT / ".github/workflows/product-validation.yml").read_text()
         for name in child_names:
             job = next(body for _, body in re.findall(

@@ -35,7 +35,7 @@ class AndroidBinaryWorkflowTest(unittest.TestCase):
         worker = job(source, "sdk-android-binary")
         collect = job(source, "sdk-collect-15")
         result = job(source, "sdk-android-binary-result")
-        self.assertIn("sdk-family: android-binary", plan)
+        self.assertIn("family: android-binary", plan)
         self.assertIn("fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14'", worker)
         for field in ("metadata_build_key", "metadata_original_context", "metadata_receipt_sha256",
                       "metadata_artifact_id", "metadata_artifact_sha256"):

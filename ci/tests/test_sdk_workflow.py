@@ -3,6 +3,7 @@
 from contextlib import ExitStack, nullcontext, contextmanager
 from copy import deepcopy
 import os
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -427,6 +428,29 @@ class SdkWorkflowTest(unittest.TestCase):
     def stage(self, **changes):
         return workflow.stage(self.plan, self.discovery, self.state, self.destination, **{**self.arguments, **changes})
 
+    def test_current_job_routing_skips_replay_but_keeps_signed_bridge_and_context_checks(self):
+        from ci.tests.test_product_routing import ProductRoutingTest
+        from ci import sdk_native_continuation as routing
+        fixture = ProductRoutingTest()
+        fixture.setUp()
+        fixture.decisions['runtime'] = dict(sdk_handoff_required='true', sdk_input_selection=json.dumps(self.selection))
+        value = routing.bind(fixture.decisions, fixture.locator, fixture.expected)
+        self.validate.return_value = dict(repository=fixture.producer['repository'], event='pull_request',
+            pullRequest=31, validationCommit=fixture.producer['commit'], validationTree=fixture.producer['tree'])
+        self.arguments['environ'] = dict(GITHUB_RUN_ID='7', GITHUB_RUN_ATTEMPT='1')
+        upload = {**self.upload, 'trusted_workflow_sha': fixture.expected['workflowSha']}
+        route = (value, fixture.locator, fixture.expected['planId'])
+        self.assertEqual({'synthetic': 'fresh result'}, self.stage(**upload, routing_state=route))
+        self.inspect.assert_not_called()
+        self.fresh.assert_called_once()
+        self.assertEqual(self.selection['contractPayloadSha256'],
+                         self.fresh.call_args.kwargs['expected_contract_payload_sha256'])
+        self.assertEqual(upload['expected_build_key'], self.fresh.call_args.kwargs['expected_build_key'])
+        for field in ('artifact_id', 'artifact_digest', 'state_wave', 'sdk_state_wave'):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.stage(**upload, routing_state=(value, {**fixture.locator, field: 'changed'}, '41'))
+        self.fresh.assert_called_once()
+
     def test_current_runtime_forwards_replayed_policy_contract_digest_and_exact_upload(self):
         before = deepcopy(self.selection)
         self.assertEqual({"synthetic": "fresh result"}, self.stage(**self.upload))
@@ -437,7 +461,7 @@ class SdkWorkflowTest(unittest.TestCase):
         self.fresh.assert_called_once_with(self.plan, self.destination, **self.upload,
             sdk_version=self.selection["sdkVersion"], compatible_release_range=self.selection["compatibleReleaseRange"],
             compatible_runtime_compatibility_range=self.selection["compatibleRuntimeCompatibilityRange"],
-            expected_contract_payload_sha256=self.selection["contractPayloadSha256"],
+            expected_contract_payload_sha256=self.selection["contractPayloadSha256"], reference_runtime=True,
             keyring=self.arguments["keyring"], keys_directory=self.arguments["keys_directory"],
             selection_repository_root=self.repository, selection_revision=self.revision,
             repository_root=self.repository, environ=self.arguments["environ"], token=self.arguments["token"])

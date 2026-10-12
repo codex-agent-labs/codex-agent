@@ -149,9 +149,19 @@ class RuntimeWorkflowTest(unittest.TestCase):
         return {"rows": [row(JVM, result="success", shardDirectory="good/shard")]}
 
     def advanced(self, _plan, _discovery, _state, _shards, destination, _output, **_keywords):
+        if _keywords.get('runtime_collection_wave') in (4, 5) and not _keywords.get('failed_instances'):
+            self.emit_transition(getattr(self, 'routed_fixture', self.final_fixture('retained')),
+                                 _keywords['runtime_collection_wave'])
         self.write_tree(destination, {"reused-carrier/object.zip": b"new original Runtime object\xff",
                                       "reuse-wave-result.json": b"derived continuation control\n"})
         return {"fullReuse": False, "fixture": "actual gate is mocked"}
+
+    def emit_transition(self, inspected, wave):
+        from sdk_native_continuation import emit
+        plan = dict(repository='codex-agent-labs/codex-agent', event='pull_request', pullRequest=31,
+                    validationCommit='a' * 40, validationTree='b' * 40)
+        emit(plan, inspected['result'], inspected['readyPlans'], {}, {'versions': {}},
+             self.root, self.environment, PIN, self.output, runtime_wave=wave)
 
     def collect(self, destination, wave=1, **changes):
         return workflow.collect(self.input, destination, self.output, wave=wave,
@@ -558,12 +568,9 @@ class RuntimeWorkflowTest(unittest.TestCase):
                 advance.assert_called_once_with(plan, discovery, state, [destination / "collection/good/shard"],
                                                 handoff / "runtime-state", self.output,
                                                 repository_root=self.root, environ=self.environment,
-                                                failed_instances=(), runtime_workers_only=True,
+                                                failed_instances=(), routing_output=True, runtime_collection_wave=wave, runtime_workers_only=True,
                                                 sdk_original_workflow_sha=PIN)
-                gate.assert_called_once_with(handoff / "product-resume-inputs/plan/impact-plan.json",
-                                             handoff / "product-resume-state", handoff / "runtime-state",
-                                             repository_root=self.root, environ=self.environment,
-                                             sdk_original_workflow_sha=PIN)
+                gate.assert_not_called()  # Already routed inside the verified transition.
                 self.assertEqual({"fullReuse": False, "fixture": "actual gate is mocked"}, result)
                 self.assertEqual({"product-resume-inputs", "product-resume-state", "runtime-state"},
                                  {path.name for path in handoff.iterdir()})
@@ -612,17 +619,14 @@ class RuntimeWorkflowTest(unittest.TestCase):
         handoff = destination / "handoff"
         advance.assert_called_once_with(plan, self.input / "product-resume-state", self.input / "runtime-state",
             [destination / "collection/good/shard"], handoff / "runtime-state", self.output,
-            repository_root=self.root, environ=self.environment, failed_instances=(), runtime_aggregate_only=True,
+            repository_root=self.root, environ=self.environment, failed_instances=(), routing_output=True, runtime_collection_wave=5, runtime_aggregate_only=True,
             sdk_original_workflow_sha=PIN)
-        route.assert_called_once_with(handoff / "product-resume-inputs/plan/impact-plan.json",
-            handoff / "product-resume-state", handoff / "runtime-state", self.output,
-            repository_root=self.root, environ=self.environment, require_completed=True,
-            sdk_original_workflow_sha=PIN)
-        inspect.assert_called_once()
+        route.assert_not_called()
+        inspect.assert_not_called()
         self.assertEqual("completed", self.outputs()["aggregate_state"])
         self.assertEqual("true", self.outputs()["aggregate_payload_complete"])
-        self.assertNotIn("runtime_matrix", self.outputs())
-        self.assertNotIn("runtime_workers_required", self.outputs())
+        self.assertEqual('{"include":[]}', self.outputs()['runtime_matrix'])
+        self.assertEqual('false', self.outputs()['runtime_workers_required'])
         self.assertEqual(before, regular_file_inventory(self.input, allow_empty=True))
         for name, raw in self.base.items():
             self.assertEqual(raw, (handoff / name).read_bytes())
@@ -670,16 +674,17 @@ class RuntimeWorkflowTest(unittest.TestCase):
             self.assertFalse(self.output.exists())
 
     def test_fifth_wave_success_cannot_publish_ready_or_rejected_payload_as_completed(self):
-        for index, error in enumerate((None, ValueError("full replay rejected"))):
-            destination = self.root / f"aggregate-incomplete-{index}"
+        self.routed_fixture = self.final_fixture()
+        for index, error in enumerate((None, ValueError('full replay rejected'))):
+            destination = self.root / f'aggregate-incomplete-{index}'
             with self.subTest(error=error), \
-                    mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=self.aggregate_collection), \
-                    mock.patch.object(workflow.products, "advance_products", side_effect=self.advanced), \
-                    mock.patch.object(workflow.products, "inspect_products", return_value=self.final_fixture(), side_effect=error), \
+                    mock.patch.object(workflow.products, 'collect_runtime_workers', side_effect=self.aggregate_collection), \
+                    mock.patch.object(workflow.products, 'advance_products', side_effect=error or self.advanced), \
                     self.assertRaises(ValueError):
                 self.collect(destination, 5)
-            self.assertFalse(self.output.exists())
-            self.assertTrue((destination / "handoff/runtime-state/reused-carrier/object.zip").is_file())
+            self.assertFalse((destination / 'handoff/runtime-state').exists())
+            if self.output.exists():
+                self.assertNotEqual('completed', self.outputs().get('aggregate_state'))
         with mock.patch.object(workflow.products, "inspect_products") as inspect, self.assertRaisesRegex(ValueError, "boolean"):
             workflow.continuation(self.root / "plan", self.root / "discovery", self.root / "state", self.output,
                                   require_completed="true")
@@ -747,11 +752,11 @@ class RuntimeWorkflowTest(unittest.TestCase):
         destination = self.root / "wave-four"
         with mock.patch.object(workflow.products, "collect_runtime_workers", side_effect=self.collection), \
                 mock.patch.object(workflow.products, "advance_products", side_effect=self.advanced), \
-                mock.patch.object(workflow.products, "runtime_worker_matrix", return_value={"include": [row(NODE)]}):
+                mock.patch.object(workflow.products, "_runtime_matrix_from_plans", return_value={"include": [row(NODE)]}):
             with self.assertRaisesRegex(ValueError, "remain after four"):
                 self.collect(destination, 4)
         self.assertTrue((destination / "collection/good/shard/phase-receipt.json").is_file())
-        self.assertTrue((destination / "handoff/runtime-state/reused-carrier/object.zip").is_file())
+        self.assertFalse((destination / "handoff/runtime-state").exists())
 
     def test_cli_requires_complete_worker_identity_and_forwards_current_wave(self):
         capture_args = ["capture", "--plan", "plan", "--destination", str(self.root / "cli-capture"),
@@ -791,7 +796,7 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                 products.preflight_worker_uploads(fixture.plan_path, product='sdk', wave=2,
                     trusted_workflow_sha=fixture.pin, token='fixture', repository_root=fixture.root,
                     environ=fixture.environment)
-            for names in ([], [name.replace('-attempt-3', '-attempt-4')], [name.replace('-validation-', '-package-')]):
+            for names in ([], [name.replace('-attempt-3', '-attempt-4')]):
                 artifacts.return_value = [{'name': value} for value in names]
                 with self.assertRaisesRegex(ValueError, 'parent recovery was not started'):
                     preflight()
@@ -800,6 +805,12 @@ class WorkerUploadPreflightTest(unittest.TestCase):
             artifacts.return_value = [{'name': name}, {'name': 'unrelated diagnostic'}]
             preflight()
             artifacts.return_value = [{"name": name.replace("-attempt-3", "-attempt-2")}]
+            preflight()
+            # A retained package makes validation the first physical JS wave.
+            products.preflight_worker_uploads(fixture.plan_path, product='sdk', wave=1,
+                trusted_workflow_sha=fixture.pin, token='fixture', repository_root=fixture.root,
+                environ=fixture.environment)
+            artifacts.return_value = [{"name": name.replace("-validation-", "-package-")}]
             preflight()
             observe.assert_not_called()  # Presence grants no admission.
 

@@ -400,7 +400,8 @@ def verify_carrier(
     """Verify a carrier, or explicitly return only a caller-selected object view.
 
     A selected view authenticates no other object. Full admission callers leave
-    selected_instances unset. All carrier controls and path structure still check.
+    selected_instances unset. All carrier controls and path structure still check;
+    a selected view may omit only unselected object bodies, never controls.
     """
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -477,9 +478,13 @@ def verify_carrier(
             raise ValueError("Product carrier transport does not match its resolution or consumer")
         return {**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"],
                 **({"originalObjectPath": references[object_path]} if references else {})}
+    optional_paths = set()
     for record in records:
         if not references:
-            expected_paths.add(object_relative_path(record["buildKey"], record["receiptSha256"]))
+            path = object_relative_path(record["buildKey"], record["receiptSha256"])
+            expected_paths.add(path)
+            if selected_instances is not None and _carrier_identity(record, 'Carrier object') not in selected:
+                optional_paths.add(path)
         expected_paths.add(transport_relative_path(record["buildKey"], record["receiptSha256"], record["transportSha256"]))
     verified = bounded_verify(verify_member, (
         pair for pair in zip(records, phases, strict=True)
@@ -487,7 +492,7 @@ def verify_carrier(
     actual_paths = ({Path(path).relative_to(root).as_posix() for path, _ in before if Path(path).is_file()}
                     if before is not None else
                     {record["relativePath"] for record in regular_file_inventory(root)})
-    if actual_paths != expected_paths:
+    if not expected_paths - optional_paths <= actual_paths <= expected_paths:
         raise ValueError("Product carrier file inventory is incomplete or unexpected")
     if before is not None and _stage_fingerprint(root) != before:
         raise ValueError("Selected carrier view changed during verification")

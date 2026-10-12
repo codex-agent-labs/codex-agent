@@ -9,6 +9,10 @@ import re
 import subprocess
 import tempfile
 import time
+import sys
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -55,13 +59,13 @@ def _commit(value):
 def validate(value):
     value = require_exact_keys(value, {"schemaVersion", "sourceCommit", "verifierPolicySha256", "originals"},
                                "Reuse qualification")
-    if type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1:
+    if type(value["schemaVersion"]) is not int or value["schemaVersion"] not in (1, 2):
         raise ValueError("Unsupported qualification schema")
     _commit(value["sourceCommit"])
     policy = require_sha256(value["verifierPolicySha256"], "Qualification verifier policy")
     originals = require_array(value["originals"], "Qualified originals")
-    if not 1 <= len(originals) <= 46:
-        raise ValueError("Qualification exceeds the Runtime original phase bound")
+    if not 1 <= len(originals) <= (46 if value["schemaVersion"] == 1 else 47):
+        raise ValueError("Qualification exceeds the original phase bound")
     locators, outputs = set(), {}
     for record in originals:
         require_exact_keys(record, {"identity", "receipt", "receiptSha256", "objectSha256", "originalFiles"},
@@ -75,8 +79,10 @@ def validate(value):
         receipt = validate_phase_receipt(record["receipt"])
         # Aggregate metadata is also an original phase object. The distinct
         # signed release handoff remains outside export_originals' phase gate.
-        if receipt["product"] != "runtime":
-            raise ValueError("Qualification is limited to original Runtime phases")
+        sdk_binary = tuple(receipt[k] for k in ("product", "component", "phase", "target")) == (
+            "sdk", "sdk-ios", "binary", "ios")
+        if receipt["product"] != "runtime" and not (value["schemaVersion"] == 2 and sdk_binary):
+            raise ValueError("Qualification does not support this original phase")
         if locator["instance"] != {k: receipt[k] for k in ("product", "component", "phase", "target")}:
             raise ValueError("Qualification changes its original phase")
         receipt_sha = sha256_bytes(canonical_json_bytes(receipt))
@@ -88,6 +94,8 @@ def validate(value):
             raise ValueError("Qualified original inventory exceeds its fixed bound")
         for row in files:
             validate_file_record(row, "Qualified original member", with_kind=False, allow_empty=True)
+            if sdk_binary and not row["relativePath"].startswith("shard/"):
+                raise ValueError("SDK qualification covers only the fully verified original shard")
         if sum(row["bytes"] for row in files) > 16 * 1024**3:
             raise ValueError("Qualified original inventory exceeds its byte bound")
         key = canonical_json_bytes(locator)
@@ -120,13 +128,18 @@ def export_originals(sources, destination, *, plan, producer, source_commit, tru
     policy = _source_identity()
     originals = []
     for source in sources:
-        if source["kind"] != "phase":
+        if source["kind"] not in {"phase", "sdk-binary"}:
             raise ValueError("Original qualification cannot replace aggregate signature admission")
         artifact, _original, observed, workflow = products._authenticate_runtime_original_reference_source(
             plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
         instance = products._identity(source["receipt"])
-        job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
-        job = next(row for row in observed[0]["jobs"] if row.get("name") == job_name)
+        prefix = "sdk" if source["kind"] == "sdk-binary" else "runtime"
+        job_name = f"product-validation / {prefix}-{instance.component}-{instance.phase}-{instance.target}"
+        matches = products._matching_ci_jobs(observed[0]["jobs"], job_name,
+            **({"expected_build_key": source["receipt"]["buildKey"]} if prefix == "sdk" else {}))
+        if len(matches) != 1:
+            raise ValueError("Qualified original job is missing or ambiguous")
+        job = matches[0]
         locator = products._runtime_original_locator(artifact, workflow, instance, job)
         record = persistent.read(locator)
         if record is None or record["receipt"] != source["receipt"]:
@@ -134,7 +147,8 @@ def export_originals(sources, destination, *, plan, producer, source_commit, tru
         originals.append({**record, "receiptSha256": sha256_bytes(canonical_json_bytes(record["receipt"]))})
     if persistent.policy != policy or _source_identity() != policy:
         raise ValueError("Qualification verifier policy changed during issue")
-    value = validate({"schemaVersion": 1, "sourceCommit": source_commit,
+    value = validate({"schemaVersion": 2 if any(row["receipt"]["product"] == "sdk" for row in originals) else 1,
+                      "sourceCommit": source_commit,
                       "verifierPolicySha256": policy, "originals": originals})
     # The fixed issuer owns a private output directory. Never rewrite an issued
     # claim; native attestation subsequently signs these exact immutable bytes.
@@ -164,7 +178,7 @@ def _compatible_verifier(commit):
     suffixes = {".py", ".json", ".yml", ".yaml", ".sh", ".js", ".mjs"}
     with tempfile.TemporaryDirectory(prefix="reuse-policy-baseline-") as temporary:
         baseline = Path(temporary).resolve()
-        total = 0
+        sources = {}
         for entry in listing.split(b"\0"):
             if not entry:
                 continue
@@ -179,11 +193,12 @@ def _compatible_verifier(commit):
             mode, kind, oid = header.decode().split()
             if mode not in {"100644", "100755"} or kind != "blob":
                 raise ValueError("Trusted verifier source is not a regular Git blob")
-            raw = subprocess.run(command + ["cat-file", "blob", oid], check=True,
-                                 capture_output=True, timeout=30).stdout
-            total += len(raw)
-            if len(raw) > LIMIT or total > 64 * 1024 * 1024:
-                raise ValueError("Qualification baseline exceeds source-byte bound")
+            sources[relative] = oid
+        blobs = read_blobs(root, sources.values(), max_bytes=LIMIT, total_bytes=64 * 1024 * 1024)
+        if sum(len(blobs[oid]) for oid in sources.values()) > 64 * 1024 * 1024:
+            raise ValueError("Qualification baseline exceeds source-byte bound")
+        for relative, oid in sources.items():
+            raw = blobs[oid]
             expected[relative.as_posix()] = sha256_bytes(raw)
             target = baseline / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -443,6 +458,52 @@ def process_read_bytes():
     return int(fields["rchar"])
 
 
+def _qualify_frozen_sdk_ios(work, root, commit, token):
+    """Fixed issuer-owned original, never a caller-selected SDK authority."""
+    import hydrated_evidence
+    import product_reuse as products
+    from products.inventory import git_regular_blob_bytes, write_canonical_json
+    from products.restore import verify_phase_shard
+    from products.registry import PhaseInstanceId
+
+    path = "ci/tests/data/sdk-ios-qualification.json"
+    raw = read_regular_file_bytes(root / path, max_bytes=LIMIT, reject_symlink_parents=True)
+    if git_regular_blob_bytes(root, commit, path, max_bytes=LIMIT) != raw:
+        raise ValueError("Fixed SDK qualification fixture differs from issuer source")
+    spec = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "artifactId", "artifactSha256", "workflowSha", "receiptSha256",
+        "objectSha256", "plan", "receipt"}, "Fixed SDK qualification")
+    receipt = validate_phase_receipt(spec["receipt"])
+    if (spec["schemaVersion"] != 1 or spec["artifactId"] != 11641964270
+            or spec["artifactSha256"] != "sha256:15cf919b4d5cd388c1dc7b12e7933ae5fa75f3ef73de1f155da6bce2eb229f9b"
+            or spec["workflowSha"] != "4dcf10739d30dc0462eb03090e17612d4ca6a97b"
+            or sha256_bytes(canonical_json_bytes(receipt)) != spec["receiptSha256"]
+            or spec["receiptSha256"] != "sha256:03cc3614dd1f44e844c30fc73fda7a4716c8a0783f20fd7468818908cf751d00"
+            or spec["objectSha256"] != "sha256:d77bf933a9b15d375cd2e65c3f3d504c7f83e3b55ddf86c480439221481c655c"
+            or spec["plan"]["validationCommit"] != receipt["producer"]["commit"]
+            or spec["plan"]["validationTree"] != receipt["producer"]["tree"]):
+        raise ValueError("Fixed SDK qualification changes its independently reviewed original")
+    plan_path, receipt_path = work / "sdk-original-plan.json", work / "sdk-original-receipt.json"
+    write_canonical_json(plan_path, spec["plan"])
+    write_canonical_json(receipt_path, receipt)
+    capture = work / "sdk-original-capture"
+    products.capture_sdk_ios_binary_upload(plan_path, capture,
+        binary_receipt_path=receipt_path, artifact_id=spec["artifactId"],
+        artifact_sha256=spec["artifactSha256"], trusted_workflow_sha=spec["workflowSha"],
+        repository_root=root, token=token, compact_recovery=True, qualify_original=True)
+    verified = verify_phase_shard(capture / "original/shard", PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
+    if verified["receiptSha256"] != spec["receiptSha256"] or verified["objectSha256"] != spec["objectSha256"]:
+        raise ValueError("Cold SDK qualification changes original receipt/object")
+    files = products.regular_file_inventory(capture / "original", allow_empty=True)
+    for row in files:
+        hydrated_evidence.retain(row, capture / "original" / row["relativePath"])
+    manifest = work / "cache-manifest.json"
+    existing = load_canonical_json_bytes(read_regular_file_bytes(manifest))
+    write_canonical_json(manifest, [*existing, *({"bytes": row["bytes"], "sha256": row["sha256"]} for row in files)])
+    return {"kind": "sdk-binary", "receipt": receipt, "artifactId": spec["artifactId"],
+            "artifactSha256": spec["artifactSha256"]}
+
+
 def issue_frozen(work, token):
     """Fixed issuer entrypoint: authenticate preserved evidence, produce no bytes."""
     import os
@@ -501,11 +562,13 @@ def issue_frozen(work, token):
             shutil.rmtree(capture)
             receipt_path.unlink()
             print(json.dumps({"fullyAuthenticatedOriginal": number + 1, "of": 46}), flush=True)
-        if session.get("downloadedArtifactCount", 0) < 47:
+        sources.append(_qualify_frozen_sdk_ios(work, root, commit, token))
+        if len(sources) != 47 or session.get("downloadedArtifactCount", 0) < 48:
             raise ValueError("Controlled cold issuer did not freshly authenticate every original upload")
         export_originals(sources, work / "qualification.json",
             plan={"event": "pull_request", "pullRequest": 31, "repository": REPOSITORY},
-            producer=proof.PRODUCER, source_commit=commit,
+            producer={"pullRequest": 31, "runId": int(os.environ["GITHUB_RUN_ID"]),
+                      "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"])}, source_commit=commit,
             trusted_workflow_sha=spec["carrier"]["workflowSha"], token=token)
         proof.verify(spec, work, token)
         report = {"mode": "cold-original-qualification", "seconds": str(time.perf_counter() - started),
@@ -539,3 +602,45 @@ if __name__ == "__main__":
         reuse_qualification.fetch_qualification(args.work, artifact_id=args.artifact_id,
             artifact_sha256=args.artifact_sha256, run_id=args.run_id, run_attempt=args.run_attempt,
             signer_commit=args.signer_commit, source_commit=args.source_commit, token=os.environ["GITHUB_TOKEN"])
+
+
+def read_blobs(repository, objects, *, max_bytes, total_bytes):
+    """Read exact blob IDs in two processes; bound bytes before requesting bodies."""
+    if any(type(limit) is not int or limit < 0 for limit in (max_bytes, total_bytes)):
+        raise ValueError("Control Git byte bounds must be nonnegative integers")
+    identifiers = tuple(dict.fromkeys(objects))
+    if any(type(oid) is not str or re.fullmatch(r"[0-9a-f]{40}", oid) is None for oid in identifiers):
+        raise ValueError("Control Git reads require exact object IDs")
+    if not identifiers:
+        return {}
+    command = ["git", "--no-replace-objects", "-C", str(repository), "cat-file"]
+    request = "".join(oid + "\n" for oid in identifiers).encode("ascii")
+    headers = subprocess.run(command + ["--batch-check"], input=request,
+        capture_output=True, check=True, timeout=30).stdout.splitlines()
+    if len(headers) != len(identifiers):
+        raise ValueError("Control Git metadata count differs")
+    sizes, total = [], 0
+    for oid, header in zip(identifiers, headers, strict=True):
+        fields = header.split()
+        if len(fields) != 3 or fields[:2] != [oid.encode(), b"blob"] or not fields[2].isdigit():
+            raise ValueError("Control Git object is missing or is not the exact blob")
+        size = int(fields[2])
+        total += size
+        if size > max_bytes or total > total_bytes:
+            raise ValueError("Control Git blobs exceed the source-byte bound")
+        sizes.append(size)
+    raw = subprocess.run(command + ["--batch"], input=request,
+        capture_output=True, check=True, timeout=30).stdout
+    result, offset = {}, 0
+    for oid, size in zip(identifiers, sizes, strict=True):
+        header = f"{oid} blob {size}\n".encode("ascii")
+        if raw[offset:offset + len(header)] != header:
+            raise ValueError("Control Git blob identity or size changed")
+        start = offset + len(header)
+        offset = start + size + 1
+        if len(raw[start:offset - 1]) != size or raw[offset - 1:offset] != b"\n":
+            raise ValueError("Control Git blob response is truncated")
+        result[oid] = raw[start:offset - 1]
+    if offset != len(raw):
+        raise ValueError("Control Git batch has unexpected trailing data")
+    return result

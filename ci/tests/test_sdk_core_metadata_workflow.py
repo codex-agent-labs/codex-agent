@@ -34,7 +34,7 @@ class CoreMetadataWorkflowTest(unittest.TestCase):
         for block in (plan, worker, collect, result):
             self.assertIn("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'", block)
             self.assertIn("fromJSON(inputs.validationWave).result == 'success'", block)
-        self.assertIn("sdk-family: core-metadata", plan)
+        self.assertIn("family: core-metadata", plan)
         self.assertIn("sdk-family: core-metadata", collect)
         self.assertIn("wave: '14'", collect)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-core-metadata-validation.yml", collect)

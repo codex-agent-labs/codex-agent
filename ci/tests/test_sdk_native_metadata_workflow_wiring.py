@@ -64,8 +64,10 @@ class SdkNativeMetadataWorkflowWiringTest(unittest.TestCase):
     def test_plan_and_linux_worker_use_the_validation_state_and_original_preparation(self):
         planned = self.job("sdk-native-metadata-plan")
         self.assertIn("sdk-native-validation-result.result == 'success'", planned)
-        self.assertIn("sdk-family: native-metadata", planned)
-        self.assertLess(planned.index("capture-sdk-tooling"), planned.index("capture-runtime-state"))
+        self.assertIn("family: native-metadata", planned)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state/route", planned)
+        self.assertIn("routing: ${{ needs.sdk-native-validation-result.outputs.routing }}", planned)
+        self.assertNotIn("capture-sdk-tooling", planned)
         for field in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):
             output = "artifact-sha256" if field == "artifact_digest" else field.replace("_", "-")
             self.assertIn(f"{output}: ${{{{ needs.sdk-native-validation-result.outputs.{field} }}}}", planned)

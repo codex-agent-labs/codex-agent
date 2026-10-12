@@ -8,16 +8,19 @@ import tempfile
 import zipfile
 
 if __package__ == "products":  # Script entry points in ci/ use this namespace.
+    from reuse_qualification import read_blobs
     from impact import effective_pathspecs
     from receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 else:
+    from ..reuse_qualification import read_blobs
     from ..impact import effective_pathspecs
     from ..receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 from .inventory import (
-    git_inventory, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
+    git_inventory, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
-    require_relative_path, require_sha256, run_git, sha256_bytes, snapshot_regular_tree, write_canonical_json,
+    require_relative_path, require_sha256, run_git, sha256_bytes, snapshot_regular_tree, tree_entries, write_canonical_json,
 )
+from .restore import memoized_file_inventory as regular_file_inventory, verification_session
 from .receipt import validate_producer
 from .signatures import (
     load_keyring, public_key_for_metadata, sign_manifest, validate_signing_metadata,
@@ -180,8 +183,17 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
     # The authenticated build recipe and all Kotlin source above define this
     # resource allow-list. Verify every actual embedded resource against Git;
     # do not maintain a second parser/list of Kotlin's packaging declarations.
+    entries = dict(tree_entries(repository, revision))
+    sources = {}
+    for path in resources:
+        fields = entries.get(path, "").split("\t", 3)
+        if len(fields) != 4 or fields[0] not in {"100644", "100755"} or fields[1] != "blob" or fields[3] != path:
+            raise ValueError(f"Authenticated tooling resource lacks a regular Git blob: {path}")
+        sources[path] = fields[2]
+    blobs = read_blobs(repository, sources.values(), max_bytes=64 * 1024 * 1024,
+                       total_bytes=512 * 1024 * 1024)
     for path, data in resources.items():
-        if data != git_regular_blob_bytes(repository, revision, path, max_bytes=64 * 1024 * 1024):
+        if data != blobs[sources[path]]:
             raise ValueError(f"Authenticated tooling resource differs from applicable policy: {path}")
 
 
@@ -196,8 +208,8 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
     placement of an imported plan. This does not grant SDK/host receipt admission.
     """
     evidence, repository, public_key = Path(evidence), Path(repository), Path(public_key)
-    before = regular_file_inventory(evidence, allow_empty=True)
-    with tempfile.TemporaryDirectory(prefix="verified-tooling-") as temporary:
+    with verification_session(), tempfile.TemporaryDirectory(prefix="verified-tooling-") as temporary:
+        before = regular_file_inventory(evidence, allow_empty=True)
         root = Path(temporary).resolve()
         captured = root / "evidence"
         snapshot_regular_tree(evidence, captured, allow_empty=True)

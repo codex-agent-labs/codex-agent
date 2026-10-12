@@ -36,7 +36,7 @@ class CorePackageWorkflowTest(unittest.TestCase):
         for block in (worker, collect, result):
             self.assertIn("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'", block)
             self.assertIn("fromJSON(inputs.binaryWave).result == 'success'", block)
-        self.assertIn("sdk-family: core-package", plan)
+        self.assertIn("family: core-package", plan)
         self.assertIn("sdk-family: core-package", collect)
         self.assertIn("wave: '12'", collect)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-core-package-validation.yml", collect)

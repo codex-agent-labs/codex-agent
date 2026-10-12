@@ -95,6 +95,15 @@ class SdkProtectedRuntimeTest(unittest.TestCase):
                 (self.output / "sdk-inputs" / INVENTORY_NAME).read_bytes()))
         self.assertEqual(inventories[0], inventories[1])
 
+    def test_caller_retaining_original_avoids_redundant_history_copy(self):
+        before = regular_file_inventory(self.carrier, allow_empty=True)
+        with patch.object(forwarding, 'snapshot_regular_tree', side_effect=AssertionError('redundant history copy')):
+            result = self.stage(retain_runtime=False, expected_contract_payload_sha256=self.contract_payload_digest)
+        self.assertEqual({'sdk-inputs'}, {path.name for path in self.output.iterdir()})
+        self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+        self.assertEqual(result['inventory'], load_canonical_json_bytes(
+            (self.output / 'sdk-inputs' / INVENTORY_NAME).read_bytes()))
+
     def test_optional_contract_payload_mismatch_does_not_publish_protected_history(self):
         before = regular_file_inventory(self.carrier, allow_empty=True)
         self.assertNotEqual(self.contract_payload_digest, self.digest)

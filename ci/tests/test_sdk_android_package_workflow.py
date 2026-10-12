@@ -22,7 +22,7 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         source = PARENT.read_text()
         plan = job(source, "sdk-android-package-plan")
         caller = job(source, "sdk-android-package-result")
-        self.assertIn("sdk-family: android-package", plan)
+        self.assertIn("family: android-package", plan)
         self.assertIn("needs.sdk-android-binary-result.result == 'success'", plan)
         self.assertIn("uses: ./.github/workflows/sdk-android-package-validation.yml", caller)
         for field in ("sdk-inputs", "sdk-core-validation-wave", "sdk-core-metadata-wave",

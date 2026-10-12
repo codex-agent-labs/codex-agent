@@ -118,7 +118,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", planned)
         self.assertIn("steps.capture.outputs.native-preparation-required", planned)
         self.assertNotIn("inspect_products", planned)
-        self.assertIn("sdk-family: native-package", planned)
+        self.assertIn("family: native-package", planned)
         self.assertNotIn("setup-kmp", planned)
 
         legacy = self.job("sdk-native-wrappers")
@@ -166,7 +166,7 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         native = self.job("sdk-native-plan")
         for job in (planned, worker, result, native):
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", job)
-        self.assertIn("sdk-family: csharp-binary", planned)
+        self.assertIn("family: csharp-binary", planned)
         self.assertNotIn("setup-kmp", planned)
         self.assertIn("fromJSON(needs.sdk-csharp-binary-plan.outputs.sdk_matrix", worker)
         self.assertIn("uses: ./.github/actions/sdk-csharp-binary-worker", worker)

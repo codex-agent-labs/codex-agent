@@ -1,0 +1,106 @@
+name: Route an authenticated product transition
+description: Forward bounded current-workflow decisions; workers independently authenticate originals.
+inputs:
+  mode:
+    description: bind or select.
+    default: 'select'
+  family:
+    description: Fixed selected family; runtime only for completed Runtime routing.
+    default: 'javascript'
+  routing:
+    description: Current trusted producer job output, never an artifact or dispatch input.
+    required: true
+  artifact-id:
+    description: Exact state upload ID.
+    required: true
+  artifact-sha256:
+    description: Exact state upload digest.
+    required: true
+  state-wave:
+    description: Exact Runtime wave.
+    default: '0'
+  sdk-state-wave:
+    description: Exact SDK wave or empty.
+    default: ''
+  plan-id:
+    description: Current plan upload ID.
+    required: true
+  validation-commit:
+    description: Current plan commit.
+    required: true
+  validation-tree:
+    description: Current plan tree.
+    required: true
+  trusted-workflow-sha:
+    description: Current reviewed workflow pin.
+    required: true
+outputs:
+  routing:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.routing }}
+  sdk-matrix:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.sdk_matrix }}
+  sdk-workers-required:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.sdk_workers_required }}
+  native-preparation-required:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_preparation_required }}
+  native-preparation-component:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_preparation_component }}
+  native-preparation-phase:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_preparation_phase }}
+  native-preparation-target:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_preparation_target }}
+  native-preparation-build-key:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_preparation_build_key }}
+  native_attestation_matrix:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_attestation_matrix }}
+  native_receipt_sha256s:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.native_receipt_sha256s }}
+  aggregate_state:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.aggregate_state }}
+  aggregate_key:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.aggregate_key }}
+  aggregate_receipt_sha256:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.aggregate_receipt_sha256 }}
+  aggregate_required:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.aggregate_required }}
+  aggregate_payload_complete:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.aggregate_payload_complete }}
+  sdk_handoff_required:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.sdk_handoff_required }}
+  sdk_input_selection:
+    description: Current-workflow routing hint.
+    value: ${{ steps.route.outputs.sdk_input_selection }}
+runs:
+  using: composite
+  steps:
+    - id: route
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        FAMILY: ${{ inputs.family }}
+        ROUTING: ${{ inputs.routing }}
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        PLAN_ID: ${{ inputs.plan-id }}
+        VALIDATION_COMMIT: ${{ inputs.validation-commit }}
+        VALIDATION_TREE: ${{ inputs.validation-tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+      run: python3 -B -m ci.sdk_native_continuation "$MODE" --family "$FAMILY"

@@ -17,6 +17,8 @@ inputs:
     required: false
     description: Existing caller-owned capture command, only for execute mode.
 outputs:
+  routing_decisions:
+    description: Routing hints emitted by the authenticated transition.
   aggregate_key:
     description: Original capture command output.
   aggregate_payload_complete:

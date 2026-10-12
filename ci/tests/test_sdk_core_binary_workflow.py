@@ -34,7 +34,7 @@ class SdkCoreBinaryWorkflowTest(unittest.TestCase):
                 self.assertIn("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'", block)
                 self.assertIn("fromJSON(inputs.iosMetadataResult).result == 'success'", block)
                 self.assertIn("fromJSON(inputs.iosMetadataResult).outputs.artifact_id", block)
-        self.assertIn("sdk-family: core-binary", plan)
+        self.assertIn("family: core-binary", plan)
         self.assertIn("sdk-family: core-binary", collect)
         self.assertIn("runs-on: ${{ matrix.runner }}", worker)
         self.assertIn("uses: ./.github/actions/sdk-core-maven-worker", worker)

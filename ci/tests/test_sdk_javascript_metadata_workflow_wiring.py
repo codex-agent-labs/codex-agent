@@ -24,7 +24,7 @@ class SdkJavaScriptMetadataWorkflowWiringTest(unittest.TestCase):
     @staticmethod
     def needs():
         return {
-            "sdk-ios-packages": {"result": "success", "outputs": {
+            "sdk-javascript": {"result": "success", "outputs": {
                 "artifact_id": "75", "artifact_digest": "sha256:" + "a" * 64,
                 "state_wave": "0", "sdk_state_wave": "4"}},
             "sdk-javascript-metadata-plan": {"result": "success", "outputs": {"sdk_workers_required": "true"}},
@@ -40,14 +40,16 @@ class SdkJavaScriptMetadataWorkflowWiringTest(unittest.TestCase):
         select.assert_called_once_with(needs, stage="javascript-metadata")
         return result
 
-    def test_exact_ios_package_parent_and_local_tooling_flow_to_metadata_capture_worker_and_collection(self):
+    def test_exact_javascript_parent_and_local_tooling_flow_to_worker_and_collection(self):
         plan = self.job("sdk-javascript-metadata-plan")
         worker = self.job("sdk-javascript-metadata")
         collector = self.job("sdk-collect-6")
-        self.assertIn("needs.sdk-ios-packages.result == 'success'", plan)
-        self.assertIn("needs.sdk-ios-packages.outputs.artifact_id != ''", plan)
-        self.assertIn("uses: ./.github/actions/capture-runtime-state", plan)
-        self.assertIn("sdk-family: javascript-metadata", plan)
+        self.assertIn("needs.sdk-javascript.result == 'success'", plan)
+        self.assertIn("needs.sdk-javascript.outputs.artifact_id != ''", plan)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state/route", plan)
+        self.assertNotIn("capture-sdk-tooling", plan)
+        self.assertIn("routing: ${{ needs.sdk-javascript.outputs.routing }}", plan)
+        self.assertIn("family: javascript-metadata", plan)
         self.assertNotIn("setup-kmp", plan)
         self.assertIn("name: sdk-javascript-metadata-node", worker)
         self.assertIn("runs-on: ${{ matrix.runner }}", worker)
@@ -74,18 +76,19 @@ class SdkJavaScriptMetadataWorkflowWiringTest(unittest.TestCase):
             self.assertIn("needs.plan.outputs.event_authorized == 'true'", job)
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", job)
             self.assertIn("sdk-plan", job.split("    if:", 1)[0])
+            for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
+                                ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
+                self.assertIn(flag + ": ${{ needs.sdk-javascript.outputs." + field + " }}", job)
+            self.assertNotIn("needs.sdk-native-packages", job)
+        for job in (worker, collector):
             self.assertIn("uses: ./.github/actions/capture-sdk-tooling", job)
             self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", job)
             self.assertLess(job.index("- id: tooling"), job.index("sdk-validation-tooling:"))
             for flag, field in (("artifact-id", "tooling_artifact_id"), ("artifact-sha256", "tooling_artifact_sha256"),
                                 ("transport-producer", "tooling_transport_producer")):
                 self.assertIn(flag + ": ${{ needs.sdk-plan.outputs." + field + " }}", job)
-            for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
-                                ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-                self.assertIn(flag + ": ${{ needs.sdk-ios-packages.outputs." + field + " }}", job)
-            self.assertNotIn("needs.sdk-native-packages", job)
 
-    def test_collect6_waits_for_worker_failure_and_final_gate_feeds_native_validation(self):
+    def test_collect6_waits_for_worker_failure_and_final_gate_feeds_csharp_binary(self):
         collector = self.job("sdk-collect-6")
         self.assertIn("sdk-javascript-metadata", collector.split("    if:", 1)[0])
         condition = collector.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0]
@@ -100,7 +103,7 @@ class SdkJavaScriptMetadataWorkflowWiringTest(unittest.TestCase):
         self.assertIn("always()", gate)
         for name in self.needs():
             self.assertIn(name, gate.split("    runs-on:", 1)[0])
-        for name in ("sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7"):
+        for name in ("sdk-csharp-binary-plan", "sdk-csharp-binary", "sdk-collect-19"):
             child = self.job(name)
             self.assertIn("sdk-javascript-metadata-result", child.split("    if:", 1)[0])
             self.assertIn("artifact-id: ${{ needs.sdk-javascript-metadata-result.outputs.artifact_id }}", child)
@@ -128,13 +131,13 @@ class SdkJavaScriptMetadataWorkflowWiringTest(unittest.TestCase):
         base["sdk-javascript-metadata-plan"]["outputs"]["sdk_workers_required"] = "false"
         for name in ("sdk-javascript-metadata", "sdk-collect-6"):
             base[name] = {"result": "skipped", "outputs": {}}
-        self.assertEqual(base["sdk-ios-packages"]["outputs"], self.summary(base))
+        self.assertEqual(base["sdk-javascript"]["outputs"], self.summary(base))
         for name in ("sdk-javascript-metadata", "sdk-collect-6"):
             needs = deepcopy(base)
             needs[name]["result"] = "success"
             with self.subTest(unexpected=name), self.assertRaises(ValueError):
                 self.summary(needs)
-        base["sdk-ios-packages"]["outputs"] = {}
+        base["sdk-javascript"]["outputs"] = {}
         base["sdk-javascript-metadata-plan"] = {"result": "skipped", "outputs": {}}
         self.assertEqual(dict(artifact_id="", artifact_digest="", state_wave="", sdk_state_wave=""), self.summary(base))
         base["sdk-javascript-metadata-plan"]["result"] = "success"

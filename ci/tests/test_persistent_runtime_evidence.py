@@ -84,6 +84,26 @@ def probe(shared, mode):
 
 
 class PersistentRuntimeEvidenceTest(unittest.TestCase):
+    def test_immutable_code_cache_keeps_filename_and_loaded_mutation_identity(self):
+        from products.verified_evidence import _code_identity, _source_identity
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.verified_evidence import _policy_value
+        from products.restore import verification_session
+        original = adapter._runtime_prior_workflow_sha.__code__
+        changed = original.replace(co_filename=original.co_filename + '-changed')
+        with verification_session():
+            for code in (original, changed, original):
+                self.assertEqual(sha256_bytes(canonical_json_bytes(_policy_value(code))),
+                                 _code_identity(code, None))
+            self.assertNotEqual(_code_identity(original, None), _code_identity(changed, None))
+            before = _source_identity()
+            try:
+                adapter._runtime_prior_workflow_sha.__code__ = changed
+                self.assertNotEqual(before, _source_identity())
+            finally:
+                adapter._runtime_prior_workflow_sha.__code__ = original
+            self.assertEqual(before, _source_identity())
+
     def test_actual_cli_loaded_policy_is_bound_without_importing_another_verifier(self):
         script = '''
 import runpy, sys, types

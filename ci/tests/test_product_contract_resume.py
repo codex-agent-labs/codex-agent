@@ -1,6 +1,7 @@
 """Real local K4-to-JVM planning with synthetic products, not Runtime execution."""
 
 from contextlib import ExitStack
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -152,13 +153,14 @@ class ContractProductResumeTest(unittest.TestCase):
         for path, inventory in self.immutable.items():
             self.assertEqual(inventory, regular_file_inventory(path, allow_empty=True), str(path))
 
-    def resume(self, *, handoff=None, environ=None, destination=None):
+    def resume(self, *, handoff=None, environ=None, destination=None, routing_output=False):
         destination = self.scratch / "resumed" if destination is None else destination
         with self.control_seams():
             adapter.resume_products(self.plan_path, self.discovery, self.state,
                                     self.handoff if handoff is None else handoff, destination,
                                     self.scratch / "github-output", repository_root=self.repository,
-                                    environ=self.environment if environ is None else environ)
+                                    environ=self.environment if environ is None else environ,
+                                    routing_output=routing_output, sdk_original_workflow_sha="c" * 40)
         return destination
 
     def test_prior_attempt_contract_snapshot_preserves_originals_and_current_consumer(self):
@@ -309,6 +311,10 @@ class ContractProductResumeTest(unittest.TestCase):
             return result
 
         def capture(plan, producer, key, destination, artifact_root, **kwargs):
+            if kwargs.get("phase") == "validation":
+                self.assertEqual("sha256:" + "c" * 64, key)
+                self.assertEqual("prior-failed-sdk-javascript-validation", destination.name)
+                return []  # This package-only fixture contains no successful validation.
             self.assertEqual(receipt["buildKey"], key)
             self.assertEqual("prior-failed-sdk-javascript", destination.name)
             fixture.finalize_phase_object(stage_root=stage, phase_plan=package_plan,
@@ -335,7 +341,8 @@ class ContractProductResumeTest(unittest.TestCase):
             result = adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff, resumed,
                 self.scratch / "js-output", repository_root=self.repository,
                 environ={**self.environment, "GITHUB_TOKEN": "synthetic"}, sdk_original_workflow_sha="a" * 40)
-        captured.assert_called_once()
+        self.assertEqual(2, captured.call_count)
+        self.assertEqual("validation", captured.call_args.kwargs["phase"])
         reuse = load_canonical_json(resumed / "reuse-wave-result.json")
         self.assertEqual(["validation"], [row["phase"] for row in reuse["matrices"]["sdk"]])
         retained = next(row for row in reuse["phases"] if adapter._identity(row) == package)
@@ -354,7 +361,7 @@ class ContractProductResumeTest(unittest.TestCase):
             self.assertFalse((self.scratch / field).exists())
 
     def test_completed_original_contract_unlocks_real_runtime_plan_and_retains_signed_catalog(self):
-        resumed = self.resume()
+        resumed = self.resume(routing_output=True)
         request = load_canonical_json(resumed / "reuse-wave-request.json")
         result = load_canonical_json(resumed / "reuse-wave-result.json")
         self.assertFalse(result["fullReuse"])
@@ -363,6 +370,12 @@ class ContractProductResumeTest(unittest.TestCase):
         self.assertEqual(1, len(result["matrices"]["runtime"]))
         ready = load_canonical_json(resumed / "phase-plans/runtime-jvm-binary-jvm.json")
         self.assertEqual(ready["buildKey"], result["matrices"]["runtime"][0]["buildKey"])
+        outputs = dict(line.split("=", 1) for line in (self.scratch / "github-output").read_text().splitlines())
+        self.assertEqual(ready["buildKey"], json.loads(outputs["runtime_matrix"])["include"][0]["buildKey"])
+        decisions = json.loads(outputs["routing_decisions"])
+        self.assertEqual(self.producer, decisions["producer"])
+        self.assertEqual([], decisions["ready"])
+        self.assertEqual("not-selected", decisions["runtime"]["aggregate_state"])
         self.assertEqual(adapter._identity_record(JVM), {field: ready[field] for field in adapter._IDENTITY_KEYS})
         self.assertEqual("release", request["contractEvidence"]["expectedTrustDomain"])
         self.assertEqual(4, len(request["availableObjects"]))

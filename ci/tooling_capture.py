@@ -48,7 +48,7 @@ def _ensure_original_source(repository, producer):
 def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sha256,
                       transport_producer, trusted_workflow_sha, policy_revision,
                       java_executable, token, trusted_workflow_path=None,
-                      trusted_job_name=None):
+                      trusted_job_name=None, transport_archive=None):
     """Create the existing SDK tooling policy from independently authenticated bytes.
 
     Upload ID/digest and producer come from the trusted caller, not the download.
@@ -91,7 +91,8 @@ def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sh
         name = (f"codex-agent-release-tooling-{transport_producer['tree']}"
                 f"-attempt-{transport_producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name,
-            transport_producer, observed[0]["run"], token)
+            transport_producer, observed[0]["run"], token,
+            **({"transport_archive": transport_archive} if transport_archive is not None else {}))
         _require_artifact_job_window(observed[0], job, artifact)
         prepared = root / "prepared"
         transport = prepared / "transport"

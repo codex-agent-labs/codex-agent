@@ -59,6 +59,26 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 "run_id": 71, "head_sha": self.run["head_sha"], "status": "completed", "conclusion": "success",
                 "started_at": "2026-09-06T10:00:00Z", "completed_at": "2026-09-06T10:30:00Z"})
 
+    def test_completed_attempt_observations_are_shared_only_inside_one_operation(self):
+        from products.restore import verification_session
+        with mock.patch('reuse.api_request', side_effect=self.api()) as http:
+            with verification_session(), adapter._ci_observation_batch():
+                for index, phase in enumerate(fixture.PHASES):
+                    adapter._observe_ci_producer_jobs({phase: self.producer},
+                        jobs_by_phase={phase: self.jobs[index]['name']}, trusted_workflow_sha=self.pin,
+                        token='not-a-real-token')
+                    if index == 0:
+                        first = http.call_count
+                    self.assertEqual(first, http.call_count)
+                with self.assertRaises(ValueError):
+                    adapter._observe_ci_producer_jobs({'binary': self.producer},
+                        jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha='0' * 40,
+                        token='not-a-real-token')
+            adapter._observe_ci_producer_jobs({'binary': self.producer},
+                jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                token='not-a-real-token')
+            self.assertEqual(2 * first, http.call_count)
+
     def capture(self, **changes):
         with mock.patch("reuse.api_request", side_effect=self.api(**changes)):
             return adapter.capture_runtime_original_ci_phases(self.receipts, self.output,

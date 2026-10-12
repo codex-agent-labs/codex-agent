@@ -59,6 +59,124 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
             token="synthetic-token", environ={})
 
+    def test_sdk_original_reference_keeps_binary_upstream_and_authenticates_selected_members(self):
+        from runtime_reference_transport import (stage_original_reference_handoff,
+            resolve_original_reference_handoff, validate_original_references)
+        from products.inventory import snapshot_regular_tree
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        receipt = load_canonical_json_bytes(self.receipt_bytes)
+        prefix = 'product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original'
+        with self.gates():
+            cold = self.work / 'reference-cold'
+            recovery.products.capture_sdk_ios_binary_upload(self.plan_path, cold,
+                binary_receipt_path=self.receipt_path, artifact_id=self.artifact['id'],
+                artifact_sha256=self.artifact['digest'], trusted_workflow_sha=self.pin,
+                repository_root=self.root, environ={}, token='synthetic-token', compact_recovery=True)
+            roots = {name: self.work / 'reference-inputs' / name for name in
+                     ('product-resume-inputs', 'product-resume-state')}
+            roots['product-resume-inputs'].mkdir(parents=True)
+            (roots['product-resume-inputs'] / 'control').write_bytes(b'current plan')
+            snapshot_regular_tree(cold / 'original', self.work / 'reference-inputs' / prefix)
+            source = dict(relativePath=prefix, kind='sdk-binary', receipt=receipt,
+                          artifactId=self.artifact['id'], artifactSha256=self.artifact['digest'])
+            thin = self.work / 'thin-sdk'
+            value = stage_original_reference_handoff(roots, [source], thin)
+            self.assertEqual(2, value['schemaVersion'])
+            self.assertFalse((thin / prefix).exists())
+            self.assertTrue(all(row['sourcePath'].startswith('shard/') for row in value['references']))
+            for mutate in (
+                    lambda v: v.update(schemaVersion=1),
+                    lambda v: v['sources'][0].update(kind='phase'),
+                    lambda v: v['sources'][0].update(relativePath=prefix + '-other'),
+                    lambda v: v['references'][0].update(sourcePath='native-original/unqualified')):
+                changed = deepcopy(value)
+                mutate(changed)
+                with self.assertRaises(ValueError):
+                    validate_original_references(changed)
+            from runtime_reference_transport import selected_reference_paths
+            selected = selected_reference_paths(value, omit_sdk_ios_binary=True)
+            omitted = [row for row in value['inventory'] if row['relativePath'] not in selected]
+            self.assertEqual(1, len(omitted))
+            self.assertTrue(omitted[0]['relativePath'].endswith('.zip'))
+            partial = self.work / 'scoped-sdk'
+            snapshot_regular_tree(thin, partial)
+            ranges = RangeOpener({self.artifact['id']: self.raw})
+            def capture(source, records, target):
+                return recovery.products._capture_runtime_original_reference_members(self.plan,
+                    {**self.producer, 'runId': 72}, source, records, target,
+                    trusted_workflow_sha=self.pin, token='synthetic-token')
+            with patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
+                    patch.object(recovery.products, 'download_artifact_to_file',
+                                 side_effect=AssertionError('whole SDK original downloaded')):
+                resolve_original_reference_handoff(thin, value, capture)
+                def scoped_capture(source, records, target):
+                    self.assertFalse(any(row['sourcePath'].endswith('.zip') for row in records))
+                    return capture(source, records, target)
+                resolve_original_reference_handoff(partial, value, scoped_capture, selected_paths=selected)
+            self.assertEqual([row for row in value['inventory'] if row['relativePath'] in selected],
+                             regular_file_inventory(partial, allow_empty=True))
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                product_restore.verify_phase_shard(partial / prefix / 'shard', recovery.INSTANCE)
+            self.assertEqual(value['inventory'], regular_file_inventory(thin, allow_empty=True))
+            self.assertEqual(receipt, value['sources'][0]['receipt'])
+
+    def test_explicit_sdk_qualification_preserves_originals_and_skips_whole_archive_only_after_native_gate(self):
+        import json
+        import subprocess
+        import hydrated_evidence
+        import reuse_qualification as qualification
+        from products.verified_evidence import runtime_original_cache
+        from products.inventory import sha256_bytes
+        receipt = load_canonical_json_bytes(self.receipt_bytes)
+        cold = self.work / 'qualified-cold'
+        key = self.work / 'private-authority'
+        cache = self.work / 'private-records'
+        raw_cache = self.work / 'hydrated-bodies'
+        with self.gates(), patch('products.verified_evidence._authority_root', return_value=key), \
+                patch('products.verified_evidence.native_cache_root', return_value=cache), \
+                patch.dict(os.environ, {'CODEX_AGENT_HYDRATED_EVIDENCE': str(raw_cache)}):
+            arguments = dict(binary_receipt_path=self.receipt_path, artifact_id=self.artifact['id'],
+                artifact_sha256=self.artifact['digest'], trusted_workflow_sha=self.pin,
+                repository_root=self.root, environ={}, token='synthetic-token', compact_recovery=True)
+            captured = recovery.products.capture_sdk_ios_binary_upload(self.plan_path, cold,
+                **arguments, qualify_original=True)
+            self.assertEqual(1, recovery.products.download_artifact_to_file.call_count)
+            source = dict(kind='sdk-binary', receipt=receipt, artifactId=self.artifact['id'],
+                          artifactSha256=self.artifact['digest'])
+            subject = self.work / 'sdk-qualification.json'
+            claim = qualification.export_originals([source], subject, plan=self.plan,
+                producer={**self.producer, 'runId': 72}, source_commit='a' * 40,
+                trusted_workflow_sha=self.pin, token='synthetic-token')
+            self.assertEqual(2, claim['schemaVersion'])
+            self.assertEqual(receipt, claim['originals'][0]['receipt'])
+            with self.assertRaises(ValueError):
+                qualification.validate({**claim, 'schemaVersion': 1})
+            for row in claim['originals'][0]['originalFiles']:
+                self.assertTrue(row['relativePath'].startswith('shard/'))
+                hydrated_evidence.retain(row, cold / 'original' / row['relativePath'])
+            bundle = self.work / 'native-bundle'
+            bundle.write_bytes(b'synthetic native authority boundary; not hosted acceptance')
+            options = dict(CODEX_AGENT_REUSE_QUALIFICATION=str(subject),
+                CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE=str(bundle),
+                CODEX_AGENT_REUSE_QUALIFICATION_ISSUER='a' * 40,
+                CODEX_AGENT_REUSE_QUALIFICATION_SOURCE='b' * 40)
+            native = subprocess.CompletedProcess([], 0, b'[{"verificationResult":{"fixture":true}}]', b'')
+            with patch.dict(os.environ, options), verification_session(), \
+                    patch.object(qualification.subprocess, 'run', return_value=native) as authority, \
+                    patch.object(recovery.products, 'download_artifact_to_file', side_effect=AssertionError('whole archive')):
+                warm = self.work / 'qualified-warm'
+                observed = recovery.products.capture_sdk_ios_binary_upload(self.plan_path, warm, **arguments)
+                self.assertEqual(captured, observed)
+                self.assertEqual(regular_file_inventory(cold), regular_file_inventory(warm))
+                authority.assert_called_once()
+                with patch.dict(self.jobs[0], {'conclusion': 'failure'}), self.assertRaises(ValueError):
+                    recovery.products.capture_sdk_ios_binary_upload(self.plan_path, self.work / 'failed-job', **arguments)
+            member = claim['originals'][0]['originalFiles'][0]
+            hydrated_evidence.blob(member).write_bytes(b'corrupt qualified body')
+            with patch.dict(os.environ, options), verification_session(), \
+                    patch.object(qualification.subprocess, 'run', return_value=native), self.assertRaises(ValueError):
+                recovery.products.capture_sdk_ios_binary_upload(self.plan_path, self.work / 'corrupt', **arguments)
+
     def test_initial_capture_seals_only_its_completed_operation(self):
         with self.gates():
             download = recovery.products.download_artifact_to_file
@@ -356,6 +474,7 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
     api = fixture.SdkIosBinaryUploadTest.api
     archive = fixture.SdkIosBinaryUploadTest.archive
     gates = IosBinaryRecoveryTest.gates
+    javascript_phase = "package"
 
     def setUp(self):
         fixture.SdkIosBinaryUploadTest.setUp(self)
@@ -364,10 +483,10 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
         (stage / "outputs/package.tgz").write_bytes(b"synthetic packaged JavaScript bytes\n")
         (stage / "outputs/package-inventory.json").write_bytes(b'{"synthetic":true}\n')
         (stage / "outputs/package-evidence.txt").write_bytes(b"synthetic evidence, not host acceptance\n")
-        manifest = write_output_manifest(stage, "sdk", "javascript", "package", "node", "0.3.0",
+        manifest = write_output_manifest(stage, "sdk", "javascript", self.javascript_phase, "node", "0.3.0",
                                          {"package": "outputs"})
         receipt = write_receipt(self.work / "js-receipt.json", product="sdk", component="javascript",
-            phase="package", target="node", outputs=manifest["outputs"], upstream=[], version="0.3.0",
+            phase=self.javascript_phase, target="node", outputs=manifest["outputs"], upstream=[], version="0.3.0",
             version_identity="0.3.0", context={"producer": self.producer})
         shard = self.work / "js-shard"
         verified = finalize_phase_object(stage_root=stage,
@@ -375,8 +494,8 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
             product_version="0.3.0", trust_domain="development", destination=shard)
         self.key = receipt["buildKey"]
         self.receipt_bytes = verified["receiptBytes"]
-        self.jobs[0]["name"] = "product-validation / sdk-javascript-package-node"
-        self.artifact["name"] = (f"codex-agent-sdk-worker-javascript-package-node-{self.key.removeprefix('sha256:')}-"
+        self.jobs[0]["name"] = f"product-validation / sdk-javascript-{self.javascript_phase}-node"
+        self.artifact["name"] = (f"codex-agent-sdk-worker-javascript-{self.javascript_phase}-node-{self.key.removeprefix('sha256:')}-"
                                  f"{self.producer['tree']}-attempt-2")
         self.files = {"shard/" + row["relativePath"]: (shard / row["relativePath"]).read_bytes()
                       for row in regular_file_inventory(shard)}
@@ -386,12 +505,12 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
     def capture(self):
         return recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
             self.key, self.output, self.work, trusted_workflow_sha=self.pin,
-            token="synthetic-token", environ={}, attempts=(self.run,))
+            token="synthetic-token", environ={}, attempts=(self.run,), phase=self.javascript_phase)
 
     def replay(self):
         return recovery.replay_prior_javascript_package(self.output, self.work, plan=self.plan,
             consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
-            token="synthetic-token", environ={})
+            token="synthetic-token", environ={}, phase=self.javascript_phase)
 
     def test_original_successful_package_from_failed_parent_is_preserved_and_replayed(self):
         with self.gates(), verification_session(), \
@@ -404,7 +523,7 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
             self.assertEqual(inventory, regular_file_inventory(self.output, allow_empty=True))
             self.assertEqual(1, download.call_count)
             self.assertEqual(2, observe.call_count)
-        capture = self.output / "javascript/package/node"
+        capture = self.output / f"javascript/{self.javascript_phase}/node"
         self.assertEqual(self.receipt_bytes, (capture / "original/shard/phase-receipt.json").read_bytes())
         self.assertEqual(self.raw, (capture / "transport.zip").read_bytes())
         for name, contents in self.files.items():
@@ -448,12 +567,12 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
     def test_tampered_materialization_or_transport_cannot_replay(self):
         with self.gates():
             self.capture()
-            original = self.output / "javascript/package/node/original/execution/diagnostic.log"
+            original = self.output / f"javascript/{self.javascript_phase}/node/original/execution/diagnostic.log"
             original.write_bytes(b"tampered")
             with self.assertRaisesRegex(ValueError, "authenticated original upload"):
                 self.replay()
             original.write_bytes(b"")
-            transport = self.output / "javascript/package/node/capture-transport.json"
+            transport = self.output / f"javascript/{self.javascript_phase}/node/capture-transport.json"
             value = load_canonical_json_bytes(transport.read_bytes())
             value["artifact"]["size_in_bytes"] += 1
             transport.write_bytes(canonical_json_bytes(value))
@@ -474,8 +593,13 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "conflicting output inventories"):
                 recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
                     self.key, self.output, self.work, trusted_workflow_sha=self.pin,
-                    token="synthetic-token", environ={}, attempts=(self.run, other))
+                    token="synthetic-token", environ={}, attempts=(self.run, other), phase=self.javascript_phase)
         self.assertFalse(self.output.exists())
+
+
+class JavascriptValidationRecoveryTest(JavascriptPackageRecoveryTest):
+    """Same independent original gates, including failed-parent and conflict cases."""
+    javascript_phase = "validation"
 
 
 if __name__ == "__main__":

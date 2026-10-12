@@ -1918,6 +1918,41 @@ class ProductReuseAdapterTest(unittest.TestCase):
             product_reuse._publish_discovery_handoff(source, root / "handoff")
             self.assertEqual({"request.json", "result.json"}, {p.name for p in (root / "handoff").iterdir()})
 
+    def test_partial_discovery_omits_only_redundant_outer_catalog_archives(self) -> None:
+        source = self.root.resolve() / "discovery"
+        source.mkdir()
+        files = {
+            "catalogs/same-pr/42/transport.zip": b"original outer upload",
+            "catalogs/same-pr/42/contents/product-index.json": b"signed index",
+            "catalogs/same-pr/42/contents/product-index.sig": b"signature",
+            "catalogs/same-pr/42/workflow-provenance.json": b"original observation",
+            "catalogs/same-pr/42/contents/objects/transport.zip": b"required object ZIP",
+            "unrelated/transport.zip": b"required retained upload",
+            "diagnostics.log": b"",
+        }
+        for name, raw in files.items():
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        product_inventory.write_canonical_json(source / "result.json", {"fullReuse": False})
+        before = product_inventory.regular_file_inventory(source, allow_empty=True)
+        handoff = self.root.resolve() / "partial-handoff"
+        product_reuse._publish_discovery_handoff(source, handoff)
+        omitted = "catalogs/same-pr/42/transport.zip"
+        self.assertEqual([row for row in before if row["relativePath"] != omitted],
+                         product_inventory.regular_file_inventory(handoff, allow_empty=True))
+        self.assertEqual(before, product_inventory.regular_file_inventory(source, allow_empty=True))
+        # A concurrent change to retained evidence must prevent publication.
+        from runtime_reference_transport import _copy_exact
+        def changed_copy(src, dst, record):
+            _copy_exact(src, dst, record)
+            if record["relativePath"] == "diagnostics.log":
+                src.write_bytes(b"changed after copy")
+        with mock.patch("runtime_reference_transport._copy_exact", side_effect=changed_copy), \
+                self.assertRaisesRegex(ValueError, "changed during handoff"):
+            product_reuse._publish_discovery_handoff(source, self.root.resolve() / "rejected-handoff")
+        self.assertFalse((self.root.resolve() / "rejected-handoff").exists())
+
     def test_contract_advance_rejects_mutated_request_and_producer_controls(self) -> None:
         fixture = self.contract_advance_controls()
         request_path = fixture["discovery"] / "contract-reuse-request.json"

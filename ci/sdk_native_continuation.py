@@ -7,6 +7,9 @@ This final gate never schedules or suppresses sibling-failure collection.
 
 from pathlib import Path
 import re
+import json
+import os
+import tempfile
 import sys
 
 if __package__:
@@ -18,6 +21,9 @@ from products.inventory import (
 )
 from products.receipt import compute_build_key, validate_receipt_inputs
 from products.registry import NATIVE_BINDINGS, PHASE_INSTANCE_IDS, PhaseInstanceId
+from products.inventory import canonical_json_bytes
+from products.receipt import validate_producer
+from reuse import github_output
 from products.restore import PHASE_PLAN_KEYS
 from sdk_native_prepare import validate_anchor
 
@@ -94,6 +100,21 @@ def _locator(outputs):
     return result
 
 
+def forward_routing(locator, outputs):
+    """Forward a job hint only with its exact immutable state locator."""
+    state = _locator(locator)
+    routing = outputs.get("routing")
+    if routing:
+        import json
+        if type(routing) is not str or len(routing.encode()) > 128 * 1024 or "\n" in routing or "\r" in routing:
+            raise ValueError("Invalid routing control")
+        value = json.loads(routing)
+        if type(value) is not dict or value.get("locator") != state:
+            raise ValueError("Routing control differs from the selected state")
+        state["routing"] = routing
+    return state
+
+
 def select_native_state(needs, *, stage):
     """Return a collected locator or the exact unchanged parent after final gates.
 
@@ -134,7 +155,157 @@ def select_native_state(needs, *, stage):
     if workers["result"] != expected or collector["result"] != expected:
         raise ValueError("Native workers or collection failed or differed from election")
     if required == "false":
-        return state
+        return forward_routing(state, parent["outputs"])
     if collector["outputs"].get("wave_failed") != "false":
         raise ValueError("Native collection retained failed or incomplete siblings")
-    return _locator({**collector["outputs"], "state_wave": "0", "sdk_state_wave": wave})
+    return forward_routing({**collector["outputs"], "state_wave": "0", "sdk_state_wave": wave}, collector["outputs"])
+
+
+def emit(plan, result, ready_plans, sources, request, root, environment, workflow_sha, output, *, runtime_wave=None):
+    """Called inside an authenticated transition, before its successful job gate."""
+    import product_reuse as products
+    from runtime_workflow import continuation_from_inspection
+    ready = list(ready_plans)
+    sdk_ready = [row for row in ready if row['product'] == 'sdk']
+    runtime = products._runtime_matrix_from_plans(ready)
+    if runtime_wave is not None:
+        if type(runtime_wave) is not int or runtime_wave not in range(1, 6):
+            raise ValueError('Runtime routing wave must be one through five')
+        if runtime_wave == 4 and runtime['include']:
+            raise ValueError('Runtime workers remain after four dependency-ordered waves')
+    github_output(output, {
+        'runtime_matrix': canonical_json_bytes(runtime).decode().strip(),
+        'runtime_workers_required': bool(runtime['include']),
+        'supervisor_key': next((row['buildKey'] for row in runtime['include']
+            if (row['component'], row['phase'], row['target']) == ('linux-arm64', 'binary', 'linux-arm64')), ''),
+    })
+    continuation = None
+    aggregate = PhaseInstanceId('runtime', 'runtime-aggregate', 'metadata', 'aggregate')
+    phases = {products._identity(row): row for row in result['phases']}
+    if (aggregate not in phases or all(phases.get(identity, {}).get('state') in {'retained', 'reused'}
+            for identity in products._dependency_closure((aggregate,)) if identity != aggregate)):
+        selection = products._sdk_input_selection_from_transition(plan, result, sources,
+            request['versions'], request, root)
+        inspected = {'result': result, 'readyPlans': ready, 'sdkInputSelection': selection,
+            products._AGGREGATE_REQUEST_KEY: request.get(products._AGGREGATE_REQUEST_KEY, [])}
+        with tempfile.TemporaryDirectory(prefix='product-routing-') as temporary:
+            path = Path(temporary) / 'outputs'
+            continuation_from_inspection(inspected, path, if_selected=True)
+            continuation = dict(line.split('=', 1) for line in path.read_text().splitlines())
+    if runtime_wave == 5:
+        if continuation is None or continuation['aggregate_state'] != 'completed':
+            raise ValueError('Runtime aggregate payload remains incomplete after collection')
+        github_output(output, continuation)
+    decisions = dict(schemaVersion=1, producer=products._consumer(plan, environment)['producer'],
+        workflowSha=workflow_sha, ready=[{key: row[key] for key in
+            ('product', 'component', 'phase', 'target', 'buildKey')} for row in sdk_ready],
+        preparation=select_preparation_anchor([row for row in sdk_ready if row["phase"] != "binary"]), runtime=continuation)
+    github_output(output, {'routing_decisions': canonical_json_bytes(decisions).decode().strip()})
+
+
+def context(environment):
+    return {key: environment[name] for key, name in (
+        ('commit', 'VALIDATION_COMMIT'), ('tree', 'VALIDATION_TREE'),
+        ('workflowSha', 'TRUSTED_WORKFLOW_SHA'), ('planId', 'PLAN_ID'),
+        ('repository', 'GITHUB_REPOSITORY'), ('runId', 'GITHUB_RUN_ID'),
+        ('runAttempt', 'GITHUB_RUN_ATTEMPT'))}
+
+
+def _decisions(value, expected):
+    require_exact_keys(value, {'schemaVersion', 'producer', 'workflowSha', 'ready', 'preparation', 'runtime'},
+                       'Routing decisions')
+    producer = validate_producer(value['producer'])
+    if (type(value['schemaVersion']) is not int or value['schemaVersion'] != 1 or value['workflowSha'] != expected['workflowSha']
+            or any(str(producer[key]) != str(expected[key]) for key in
+                   ('repository', 'commit', 'tree', 'runId', 'runAttempt'))):
+        raise ValueError('Routing decisions differ from current plan/run/policy')
+    if type(value['ready']) is not list or len(value['ready']) > len(PHASE_INSTANCE_IDS):
+        raise ValueError('Routing frontier is oversized or malformed')
+    seen = set()
+    for row in value['ready']:
+        require_exact_keys(row, {'product', 'component', 'phase', 'target', 'buildKey'}, 'Routing phase')
+        identity = PhaseInstanceId(*(row[key] for key in ('product', 'component', 'phase', 'target')))
+        if identity not in PHASE_INSTANCE_IDS or identity.product != 'sdk' or identity in seen:
+            raise ValueError('Unknown or duplicate SDK routing identity')
+        seen.add(identity)
+        require_sha256(row['buildKey'], 'Routing elected key')
+    preparation = require_exact_keys(value['preparation'],
+        {'preparation_required', 'component', 'phase', 'target', 'build_key'}, 'Routing preparation')
+    from products.registry import NATIVE_BINDINGS
+    candidates = [row for row in value['ready'] if row['component'] in NATIVE_BINDINGS and row['phase'] != 'binary']
+    if type(preparation['preparation_required']) is not bool:
+        raise ValueError('Routing preparation must be boolean')
+    if candidates:
+        priority = {'package': 0, 'validation': 1, 'metadata': 2}
+        candidate = min(candidates, key=lambda row: (priority[row['phase']],
+            *(row[key] for key in ('product', 'component', 'phase', 'target'))))
+        expected_preparation = dict(preparation_required=True, component=candidate['component'],
+            phase=candidate['phase'], target=candidate['target'], build_key=candidate['buildKey'])
+    else:
+        expected_preparation = dict(preparation_required=False, component='', phase='', target='', build_key='')
+    if preparation != expected_preparation:
+        raise ValueError('Routing preparation differs from the elected frontier')
+    runtime_keys = {'sdk_handoff_required', 'sdk_input_selection', 'native_attestation_matrix',
+        'native_receipt_sha256s', 'aggregate_state', 'aggregate_key', 'aggregate_receipt_sha256',
+        'aggregate_required', 'aggregate_payload_complete'}
+    if value['runtime'] is not None and (type(value['runtime']) is not dict or
+            not set(value['runtime']) <= runtime_keys or
+            any(type(member) is not str or '\n' in member or '\r' in member for member in value['runtime'].values())):
+        raise ValueError('Runtime routing outputs are malformed')
+    return value
+
+
+def bind(decisions, locator, expected):
+    value = {'schemaVersion': 1, 'planId': expected['planId'],
+             'locator': _locator(locator), 'decisions': _decisions(decisions, expected)}
+    if not value['locator']['artifact_id']:
+        raise ValueError('Routing requires its completed state upload')
+    if len(canonical_json_bytes(value)) > 128 * 1024:
+        raise ValueError('Routing control exceeds its bound')
+    return value
+
+
+def select(value, locator, expected, *, family):
+    from sdk_workflow import _matrix_from_plans
+    require_exact_keys(value, {'schemaVersion', 'planId', 'locator', 'decisions'}, 'Bound routing')
+    if (type(value['schemaVersion']) is not int or value['schemaVersion'] != 1 or value['planId'] != expected['planId']
+            or value['locator'] != _locator(locator) or not value['locator']['artifact_id']):
+        raise ValueError('Routing plan or immutable state locator changed')
+    decisions = _decisions(value['decisions'], expected)
+    if family == 'runtime':
+        if type(decisions['runtime']) is not dict:
+            raise ValueError('Runtime transition still needs authenticated continuation')
+        return decisions['runtime']
+    matrix = _matrix_from_plans(decisions['ready'], ios_binary=family == 'ios-binary',
+        family=None if family in {'javascript', 'ios-binary'} else family)
+    result = {'sdk_matrix': canonical_json_bytes(matrix).decode().strip(),
+              'sdk_workers_required': bool(matrix['include'])}
+    if family == 'native-package':
+        result.update({'native_preparation_' + name.removeprefix('preparation_'): member
+                       for name, member in decisions['preparation'].items()})
+    return result
+
+
+def main():
+    """Inputs are fixed workflow expressions, never artifacts or user dispatch JSON."""
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('bind', 'select'))
+    parser.add_argument('--family', default='javascript')
+    arguments = parser.parse_args()
+    expected = context(os.environ)
+    locator = (json.loads(os.environ['ROUTING_LOCATOR']) if 'ROUTING_LOCATOR' in os.environ else
+        {key: os.environ[name] for key, name in (('artifact_id', 'ARTIFACT_ID'),
+            ('artifact_digest', 'ARTIFACT_SHA256'), ('state_wave', 'STATE_WAVE'),
+            ('sdk_state_wave', 'SDK_STATE_WAVE'))})
+    raw = os.environ['ROUTING']
+    if len(raw.encode()) > 128 * 1024:
+        raise ValueError('Routing control exceeds its bound')
+    value = json.loads(raw)
+    outputs = ({'routing': canonical_json_bytes(bind(value, locator, expected)).decode().strip()}
+               if arguments.command == 'bind' else select(value, locator, expected, family=arguments.family))
+    github_output(Path(os.environ['GITHUB_OUTPUT']), outputs)
+
+
+if __name__ == '__main__':
+    main()

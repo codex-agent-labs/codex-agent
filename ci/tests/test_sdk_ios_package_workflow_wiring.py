@@ -87,8 +87,10 @@ class SdkIosPackageWorkflowWiringTest(unittest.TestCase):
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", condition)
         self.assertIn("needs.sdk-native-packages.result == 'success'", condition)
         self.assertIn("needs.sdk-native-packages.outputs.artifact_id != ''", condition)
-        self.assertIn("sdk-family: ios-package", planned)
-        self.assertLess(planned.index("capture-sdk-tooling"), planned.index("capture-runtime-state"))
+        self.assertIn("family: ios-package", planned)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state/route", planned)
+        self.assertIn("routing: ${{ needs.sdk-native-packages.outputs.routing }}", planned)
+        self.assertNotIn("capture-sdk-tooling", planned)
 
         worker = self.job("sdk-ios-package")
         self.assertIn("name: sdk-sdk-ios-package-ios", worker)
@@ -137,10 +139,10 @@ class SdkIosPackageWorkflowWiringTest(unittest.TestCase):
         self.assertIn("sdk-ios-packages", self.job("merge-gate").split("    runs-on:", 1)[0])
 
         for name in (
-            "sdk-javascript-metadata-plan",
-            "sdk-javascript-metadata",
-            "sdk-collect-6",
-            "sdk-javascript-metadata-result",
+            "sdk-native-validation-plan",
+            "sdk-native-validation",
+            "sdk-collect-7",
+            "sdk-native-validation-result",
         ):
             job = self.job(name)
             header = job.split("    runs-on:", 1)[0]

@@ -35,6 +35,8 @@ on:
     outputs:
       artifact_id:
         value: ${{ jobs.sdk-android-metadata-result.outputs.artifact_id }}
+      routing:
+        value: ${{ jobs.sdk-android-metadata-result.outputs.routing }}
       artifact_digest:
         value: ${{ jobs.sdk-android-metadata-result.outputs.artifact_digest }}
       state_wave:
@@ -45,6 +47,10 @@ on:
 permissions:
   actions: read
   contents: read
+
+env:
+  CODEX_AGENT_THROUGHPUT_TRACE: '1'
+  CODEX_AGENT_PLAN_CONTROL_ID: ${{ fromJSON(inputs.planOutputs).plan_control_id }}
 
 jobs:
   sdk-android-metadata:
@@ -126,6 +132,7 @@ jobs:
         name: Re-elect original Android validation from wave 16
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: android-validation
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
@@ -337,6 +344,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
+      routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
     steps:
@@ -365,6 +373,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: android-metadata
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
@@ -391,6 +400,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
+      routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
       state_wave: ${{ steps.result.outputs.state_wave }}
       sdk_state_wave: ${{ steps.result.outputs.sdk_state_wave }}

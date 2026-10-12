@@ -21,6 +21,44 @@ adapter, TARGET = fixture.adapter, fixture.TARGET
 
 
 class ReuseQualificationTest(unittest.TestCase):
+    def test_fixed_sdk_issuer_pins_original_and_requires_cold_capture(self):
+        from products.inventory import write_canonical_json
+        original = Path(__file__).resolve().parents[2] / "ci/tests/data/sdk-ios-qualification.json"
+        spec = load_canonical_json_bytes(original.read_bytes())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_path = root / "ci/tests/data/sdk-ios-qualification.json"
+            fixture_path.parent.mkdir(parents=True)
+            work = root / "work"
+            work.mkdir()
+            write_canonical_json(work / "cache-manifest.json", [])
+            def capture(plan, destination, **kwargs):
+                self.assertTrue(kwargs["compact_recovery"])
+                self.assertTrue(kwargs["qualify_original"])
+                self.assertEqual(spec["workflowSha"], kwargs["trusted_workflow_sha"])
+                self.assertEqual(spec["plan"], load_canonical_json_bytes(plan.read_bytes()))
+                self.assertEqual(spec["receipt"], load_canonical_json_bytes(kwargs["binary_receipt_path"].read_bytes()))
+                (destination / "original/shard").mkdir(parents=True)
+                (destination / "original/shard/control.json").write_bytes(b"{}\n")
+            fixture_path.write_bytes(original.read_bytes())
+            with patch("products.inventory.git_regular_blob_bytes", return_value=original.read_bytes()), \
+                    patch.object(adapter, "capture_sdk_ios_binary_upload", side_effect=capture) as cold, \
+                    patch("products.restore.verify_phase_shard", return_value={
+                        "receiptSha256": spec["receiptSha256"], "objectSha256": spec["objectSha256"]}), \
+                    patch("hydrated_evidence.retain") as retain:
+                source = qualification._qualify_frozen_sdk_ios(work, root, "a" * 40, "fixture")
+                self.assertEqual("sdk-binary", source["kind"])
+                self.assertEqual(spec["receipt"], source["receipt"])
+                cold.assert_called_once()
+                retain.assert_called_once()
+            changed = {**spec, "artifactId": spec["artifactId"] + 1}
+            fixture_path.write_bytes(canonical_json_bytes(changed))
+            with patch("products.inventory.git_regular_blob_bytes", return_value=fixture_path.read_bytes()), \
+                    patch.object(adapter, "capture_sdk_ios_binary_upload") as cold, \
+                    self.assertRaisesRegex(ValueError, "independently reviewed original"):
+                qualification._qualify_frozen_sdk_ios(work, root, "a" * 40, "fixture")
+            cold.assert_not_called()
+
     def test_frozen_inventory_scope_reports_unrelated_sdk_changes(self):
         import hosted_reuse_proof as proof
         path = "gradle/build-logic/src/main/kotlin/CrossLanguageJavaScriptMetadataEvidence.kt"

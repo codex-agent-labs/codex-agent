@@ -34,6 +34,30 @@ class RangeOpener:
 
 
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_metrics_count_nested_work_without_recording_credentials_and_keep_failure(self):
+        import os
+        import json
+        from contextlib import redirect_stderr
+        from runtime_reference_transport import measured, count
+        @measured
+        def child(token):
+            count('verifiedCopyBytes', 23)
+            if token == 'rejected-secret':
+                raise ValueError('fixture rejection')
+        @measured
+        def parent(token):
+            child(token)
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {'CODEX_AGENT_THROUGHPUT_TRACE': '1'}), redirect_stderr(output):
+            parent('private-secret')
+            with self.assertRaisesRegex(ValueError, 'fixture rejection'):
+                parent('rejected-secret')
+        records = [json.loads(line.removeprefix('throughput ')) for line in output.getvalue().splitlines()]
+        self.assertEqual(['child', 'parent', 'child', 'parent'], [row['operation'] for row in records])
+        self.assertEqual([True, True, False, False], [row['success'] for row in records])
+        self.assertTrue(all(row['inclusiveCounters'] == {'verifiedCopyBytes': 23} for row in records))
+        self.assertNotIn('secret', output.getvalue())
+
     def test_initial_resume_local_aliases_keep_exact_logical_inventory(self):
         from runtime_reference_transport import (ORIGINAL_REFERENCE_NAME,
             stage_original_reference_handoff, validate_original_references)

@@ -1,6 +1,9 @@
 name: Collect a Runtime product wave
 description: Preserve every original worker result, advance the same planner, and upload state before the final failure gate.
 inputs:
+  plan-directory:
+    default: ''
+    description: Existing same-job exact plan download, still validated by each consumer.
   product:
     default: runtime
     description: Fixed runtime, sdk JavaScript, or sdk-ios-binary collection scope.
@@ -50,6 +53,8 @@ inputs:
     required: true
     description: Exact tested tree.
 outputs:
+  routing:
+    value: ${{ steps.routing.outputs.routing }}
   sdk-matrix:
     value: ${{ steps.collect.outputs.sdk_matrix }}
   sdk-workers-required:
@@ -78,6 +83,7 @@ runs:
     - id: captured
       uses: ./.github/actions/capture-runtime-state
       with:
+        plan-directory: ${{ inputs.plan-directory }}
         preflight-wave: ${{ inputs.wave }}
         product: ${{ inputs.product }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
@@ -162,6 +168,29 @@ runs:
         include-hidden-files: true
         compression-level: 0
         retention-days: 90
+    - id: routing
+      if: steps.collect.outputs.wave_failed == 'false'
+      shell: bash
+      env:
+        ROUTING: ${{ steps.collect.outputs.routing_decisions }}
+        ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        ARTIFACT_SHA256: sha256:${{ steps.upload.outputs.artifact-digest }}
+        STATE_WAVE: ${{ inputs.product == 'runtime' && inputs.wave || '0' }}
+        SDK_STATE_WAVE: ${{ inputs.product != 'runtime' && inputs.wave || '' }}
+        PLAN_ID: ${{ inputs.plan-id }}
+        PLAN_PATH: ${{ steps.captured.outputs.plan-path }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, sys
+        from ci.sdk_native_continuation import main
+        from pathlib import Path
+        plan = json.loads(Path(os.environ['PLAN_PATH']).read_text())
+        os.environ['VALIDATION_COMMIT'] = plan['validationCommit']
+        os.environ['VALIDATION_TREE'] = plan['validationTree']
+        sys.argv = ['routing', 'bind']
+        main()
+        PY
     - if: ${{ failure() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

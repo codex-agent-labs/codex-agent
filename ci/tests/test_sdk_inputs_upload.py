@@ -67,6 +67,44 @@ class SdkInputsUploadTest(unittest.TestCase):
             self.plan_validation_call = validate.call_args
             return result
 
+    def test_current_plan_reference_resolves_original_runtime_and_retains_archive_proof(self):
+        from runtime_reference_transport import SDK_REFERENCE_NAME
+        self.source('current-runtime')
+        member = 'runtime-capture/original/body.bin'
+        body = b'original signed Runtime carrier remains subject to the full consumer gate'
+        files = {**self.files, member: body}
+        inventory = sorted([dict(relativePath=name, bytes=len(raw), sha256=sha256_bytes(raw))
+                            for name, raw in files.items()], key=lambda row: row['relativePath'])
+        source = dict(artifactId=702, artifactSha256='sha256:' + 'e' * 64, producer=self.producer,
+            workflowSha=self.pin, buildKey='sha256:' + 'f' * 64,
+            metadataReceiptSha256='sha256:' + 'd' * 64)
+        self.files[SDK_REFERENCE_NAME] = canonical_json_bytes(dict(schemaVersion=1,
+            source=source, inventory=inventory))
+        self.archive()
+        def original(plan, destination, **kwargs):
+            self.assertEqual(source['artifactId'], kwargs['artifact_id'])
+            self.assertEqual(source['artifactSha256'], kwargs['artifact_sha256'])
+            self.assertEqual(source['workflowSha'], kwargs['trusted_workflow_sha'])
+            self.assertEqual(source['buildKey'], kwargs['expected_build_key'])
+            self.assertEqual(source['metadataReceiptSha256'], kwargs['expected_metadata_receipt_sha256'])
+            self.assertEqual(self.plan['validationCommit'], kwargs['expected_plan_revision'])
+            (destination / 'original').mkdir(parents=True)
+            (destination / 'original/body.bin').write_bytes(body)
+        with patch.object(capture, 'capture_runtime_aggregate_release_upload', side_effect=original) as gate:
+            self.call()
+        gate.assert_called_once()
+        self.assertEqual(inventory, regular_file_inventory(self.output / 'original', allow_empty=True))
+        self.assertEqual(self.raw, (self.output / 'transport.zip').read_bytes())
+        capture._verify_retained_sdk_upload_archive(self.output, self.artifact)
+        (self.output / 'original' / member).write_bytes(b'changed original')
+        with self.assertRaisesRegex(ValueError, 'differs from its original archive'):
+            capture._verify_retained_sdk_upload_archive(self.output, self.artifact)
+        self.output = self.work / 'rejected-reference'
+        with patch.object(capture, 'capture_runtime_aggregate_release_upload', side_effect=ValueError('failed original source')):
+            with self.assertRaisesRegex(ValueError, 'failed original source'):
+                self.call()
+        self.assertFalse(self.output.exists())
+
     def test_retry_keeps_original_source_attempt_and_environment(self):
         environment = {"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "3"}
         before = dict(environment)

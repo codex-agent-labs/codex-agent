@@ -63,6 +63,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         if len(matches) != 1:
             raise AssertionError("Expected the sole original Runtime parent-selector heredoc")
         cls.selector = textwrap.dedent(matches[0])
+        cls.selector = 'import sys; sys.path.insert(0, ' + repr(str(Path(__file__).resolve().parents[2])) + ')\n' + cls.selector
 
     def predecessors(self, successful=()):
         values = {"plan": {"result": "success", "outputs": {}}}
@@ -96,7 +97,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr.decode(errors="replace"))
             selected = "product-resume" if expected_wave == 0 else f"runtime-collect-{expected_wave}"
             original = predecessors[selected]["outputs"]
-            self.assertEqual({"state_wave": str(expected_wave), "artifact_id": original["artifact_id"],
+            self.assertEqual({"state_wave": str(expected_wave), "sdk_state_wave": "", "artifact_id": original["artifact_id"],
                               "artifact_digest": original["artifact_digest"]},
                              dict(line.split("=", 1) for line in output.read_text().splitlines()))
 
@@ -169,19 +170,17 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
                          {name.strip() for name in needs.group(1).split(",")})
 
     def test_capture_precedes_full_replay_without_setup_signing_or_product_build(self):
-        self.assertEqual(1, self.job.count("uses: ./.github/actions/capture-runtime-state"))
-        self.assertEqual(1, self.job.count("ci/runtime_workflow.py continuation --if-selected"))
+        self.assertIn("if: inputs.sdkRecoveryOnly != true\n        uses: ./.github/actions/capture-runtime-state", self.job)
+        self.assertIn("if: inputs.sdkRecoveryOnly\n        uses: ./.github/actions/capture-runtime-state/route", self.job)
         self.assertLess(self.job.index("id: parent"), self.job.index("id: captured"))
-        self.assertLess(self.job.index("id: captured"), self.job.index("id: route"))
         for forwarding in ("artifact-id: ${{ steps.parent.outputs.artifact_id }}",
                            "artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}",
                            "state-wave: ${{ steps.parent.outputs.state_wave }}",
-                           "trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}",
-                           "PLAN: ${{ steps.captured.outputs.plan-path }}",
-                           "DISCOVERY: ${{ steps.captured.outputs.discovery-root }}",
-                           "STATE: ${{ steps.captured.outputs.state-root }}"):
+                           "trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}",
+                           "routing: ${{ steps.parent.outputs.routing }}",
+                           "continuation: selected"):
             self.assertIn(forwarding, self.job)
-        self.assertNotRegex(self.job, r"secrets\.|PRIVATE_KEY|ssh-keygen|actions/setup-|actions/cache|\.github/actions/setup-")
+        self.assertNotRegex(self.job, r"PRIVATE_KEY|ssh-keygen|actions/setup-|actions/cache|\.github/actions/setup-")
         self.assertNotRegex(self.job, r"(?:\./gradlew|\bcargo\s+(?:build|test)|\bcmake\s|\bxcodebuild\b|\bnpm\s+(?:ci|install|run)|\bpip\s+install)")
         needs = re.search(r"(?m)^    needs: \[(.*?)\]$", self.gate)
         self.assertIsNotNone(needs)

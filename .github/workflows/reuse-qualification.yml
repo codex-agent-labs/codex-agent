@@ -42,6 +42,8 @@ jobs:
         run: |
           git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}' || git fetch --no-tags origin db38c174a2db6f02ff6b6e2091e809681d83a4d9
           git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}'
+          git cat-file -e '57ab0d09097d90141bf0e0bf3bc70bf3b0dda542^{tree}' || git fetch --no-tags origin 57ab0d09097d90141bf0e0bf3bc70bf3b0dda542
+          git cat-file -e '57ab0d09097d90141bf0e0bf3bc70bf3b0dda542^{tree}'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'

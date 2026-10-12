@@ -63,7 +63,7 @@ def retain(record, source):
         os.close(parent)
 
 
-def hosted(mode, references, directory):
+def hosted(mode, references, directory, *, selected_paths=None):
     """Storage only, called after the enclosing reference manifest authenticates."""
     backend = os.environ.get("CODEX_AGENT_HOSTED_CACHE_BACKEND")
     if backend is None:
@@ -73,7 +73,8 @@ def hosted(mode, references, directory):
     references = validate_original_references(references)
     sources = {source["relativePath"] for source in references["sources"]}
     records = [row for row in references["references"] if row["source"] in sources
-               and row["relativePath"].startswith(row["source"] + "/")]
+               and row["relativePath"].startswith(row["source"] + "/")
+               and (selected_paths is None or row['relativePath'] in selected_paths)]
     manifest = Path(directory) / ("cache-" + mode + "-manifest.json")
     write_canonical_json(manifest, [{"sha256": row["sha256"], "bytes": row["bytes"]} for row in records])
     subprocess.run([os.environ["CODEX_AGENT_CACHE_NODE"], backend], check=True,
