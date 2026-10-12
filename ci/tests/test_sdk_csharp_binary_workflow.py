@@ -75,11 +75,15 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         finally:
             self.calls.append("verified-s858-exit")
 
-    def materialize(self, state, instance, destination, expected_build_key, root):
+    def materialize(self, state, instance, destination, expected_build_key, root, *, materialized_scope):
         self.assertEqual(workflow._INSTANCE, instance)
         self.assertEqual(self.root, root)
         self.assertEqual(self.ready, state.prior_ready_plans[instance])
         self.assertEqual(self.ready["buildKey"], expected_build_key)
+        self.assertEqual({("contract", "contract", phase, "common") for phase in
+                          ("binary", "package", "validation", "metadata")},
+                         {tuple(getattr(item, field) for field in ("product", "component", "phase", "target"))
+                          for item in materialized_scope})
         destination.mkdir(parents=True)
         for phase, record in self.records.items():
             prefix = destination / f"contract-contract-{phase}-common"
@@ -128,8 +132,8 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         return {"stage": stage, "outputInventory": workflow._inventory(stage)}
 
     def invoke(self, *, mutate_materialized_controls=False):
-        def materialize(*args):
-            result = self.materialize(*args)
+        def materialize(*args, **kwargs):
+            result = self.materialize(*args, **kwargs)
             if mutate_materialized_controls:
                 (self.state / "changed.json").write_bytes(b"changed during materialization")
             return result

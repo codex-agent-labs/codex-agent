@@ -4687,8 +4687,6 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
                                  if external and dependency.product == "runtime")
     if any(dependency not in state.sources for dependency in dependencies):
         raise ValueError("Elected product phase lacks an authenticated original predecessor")
-    if any(dependency not in (sdk_runtime_originals or {}) for dependency in runtime_dependencies):
-        raise ValueError("Elected SDK phase lacks an authenticated original Runtime predecessor")
     if materialized_scope is not None:
         if (not isinstance(materialized_scope, tuple) or not materialized_scope
                 or len(set(materialized_scope)) != len(materialized_scope)
@@ -4698,6 +4696,8 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
         # key. Workers explicitly declare which original stages they will read.
         dependencies = tuple(item for item in dependencies if item in materialized_scope)
         runtime_dependencies = tuple(item for item in runtime_dependencies if item in materialized_scope)
+    if any(dependency not in (sdk_runtime_originals or {}) for dependency in runtime_dependencies):
+        raise ValueError("Elected SDK phase lacks an authenticated original Runtime predecessor")
     destination = _prepare_destination(destination, root)
     destination.rmdir()
     with tempfile.TemporaryDirectory(prefix="codex-agent-product-inputs-", dir=root) as temporary:

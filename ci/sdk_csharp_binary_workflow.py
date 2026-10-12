@@ -409,7 +409,9 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             # The binary consumes only Contract predecessors. Restore them from
             # this complete replay while the original controls remain unchanged.
             ready = product_reuse._materialize_product_predecessors(
-                verified_state, _INSTANCE, predecessors, expected_build_key, root)
+                verified_state, _INSTANCE, predecessors, expected_build_key, root,
+                materialized_scope=tuple(product_reuse.PhaseInstanceId("contract", "contract", phase, "common")
+                    for phase in ("binary", "package", "validation", "metadata")))
             if ready != expected_plan:
                 raise ValueError("C# binary predecessor materialization changed its elected plan")
             producer = product_reuse.validate_producer(product_reuse._canonical_control(

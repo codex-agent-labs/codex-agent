@@ -291,6 +291,26 @@ class SdkRuntimePredecessorMaterializationTest(unittest.TestCase):
             for identity in (*CONTRACT_PHASES, *runtime))}, {path.name for path in destination.iterdir()})
         self.assertEqual(before, regular_file_inventory(self.released, allow_empty=True))
 
+    def test_contract_only_scope_keeps_original_contract_without_external_runtime_bodies(self):
+        state, ready, _, _ = self.inputs()
+        destination = self.scratch / "contract-only"
+        with mock.patch.object(adapter, "_restore_product_objects", wraps=adapter._restore_product_objects) as restore:
+            result = adapter._materialize_product_predecessors(state, self.SDK, destination,
+                ready["buildKey"], self.repository, materialized_scope=CONTRACT_PHASES)
+        self.assertEqual(ready, result)
+        self.assertEqual(CONTRACT_PHASES, restore.call_args.args[1])
+        self.assertEqual({"phase-plan.json", "producer.json", *(
+            "-".join((i.product, i.component, i.phase, i.target)) for i in CONTRACT_PHASES)},
+            {path.name for path in destination.iterdir()})
+        for identity in CONTRACT_PHASES:
+            original = destination / f"contract-contract-{identity.phase}-common/phase-receipt.json"
+            self.assertEqual(self.original_bytes[identity.phase], original.read_bytes())
+        runtime = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        with self.assertRaisesRegex(ValueError, "original Runtime predecessor"):
+            adapter._materialize_product_predecessors(state, self.SDK, self.scratch / "missing-runtime",
+                ready["buildKey"], self.repository, materialized_scope=(runtime,))
+        self.assertFalse((self.scratch / "missing-runtime").exists())
+
     def test_missing_external_original_rejects_before_publication(self):
         state, ready, _, captured = self.inputs()
         missing = dict(captured)
