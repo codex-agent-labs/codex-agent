@@ -297,7 +297,7 @@ def completed_environment(root, work, value):
     document = completed_descriptor(raw, value)
     acquired = [history(root, record) for record in document["gitHistory"]]
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
-        document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json"))
+        document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
         raise ValueError("Approved SDK source pin differs from the native issuer's fixed source")
     # This only distributes caller-owned pins. Each actual CLI independently
