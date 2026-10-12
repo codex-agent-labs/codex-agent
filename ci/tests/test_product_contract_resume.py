@@ -163,6 +163,167 @@ class ContractProductResumeTest(unittest.TestCase):
                                     routing_output=routing_output, sdk_original_workflow_sha="c" * 40)
         return destination
 
+    def completed_contract_fixture(self):
+        """Synthetic native qualification over the real signed fixture and original objects."""
+        import reuse_qualification as qualification
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from products.restore import object_relative_path
+        contract = adapter.PhaseInstanceId("contract", "contract", "metadata", "common")
+        records, _ = adapter._completed_contract_objects(self.plan, self.state, self.state, self.environment)
+        authorities, _ = adapter._authorities(self.repository, self.commit, adapter._dependency_closure((contract,)))
+        request = adapter._wave_request(self.plan, self.repository, self.repository / "build/product-reuse",
+            (contract,), fixture.VERSIONS, authorities, [], None)
+        request["availableObjects"] = records
+        result = adapter._plan_with_sdk_tooling({**request, "artifactRoot": str(self.state)}, None)
+        receipts = [load_canonical_json(self.receipts[phase]) for phase in ("binary", "package", "validation", "metadata")]
+        files = []
+        for receipt in receipts:
+            prefix = f"inputs/predecessors/contract-contract-{receipt['phase']}-common/"
+            raw = canonical_json_bytes(receipt)
+            files.append({"relativePath": prefix + "phase-receipt.json", "bytes": len(raw), "sha256": sha256_bytes(raw)})
+            files.extend({**row, "relativePath": prefix + "stage/" + row["relativePath"]}
+                for row in regular_file_inventory(self.original / (receipt['phase'] + '-stage')))
+        first = records[0]
+        files.append({"relativePath": "shard/" + object_relative_path(first['buildKey'], first['receiptSha256']),
+            "bytes": (self.state / first['objectPath']).stat().st_size, "sha256": first['objectSha256']})
+        originals = [{"receipt": receipts[0], "receiptSha256": first['receiptSha256'],
+            "objectSha256": first['objectSha256'], "identity": {"locator": {
+                "artifact": {"id": 71, "digest": first['objectSha256']}}}, "originalFiles": files}]
+        sdk_files = []
+        for row in regular_file_inventory(self.handoff):
+            name = row['relativePath']
+            prefix = ('contractPayload' if name.endswith('.zip') and '/' not in name else
+                      'contractPublicKey' if name == 'public-key.pub' else
+                      'contractAttestationSignature' if name.endswith('.sig') else 'contractAttestation')
+            sdk_files.append({**row, "relativePath": f"sdk-inputs/inputs/{prefix}/{name}"})
+        sdk_files.extend({"relativePath": name, "bytes": 2, "sha256": sha256_bytes(b'{}')}
+            for name in ('runtime-capture/plan/impact-plan.json', 'runtime-capture/capture-transport.json'))
+        from products.contract_projection import verify_contract_component_projection
+        from products.plan import plan_phase as native_plan
+        from products.selection import phase_git_inventory as native_inventory
+        from products.receipt import validate_phase_receipt
+        projection = verify_contract_component_projection(self.original / 'metadata-stage', self.receipts['metadata'],
+            self.handoff / 'codex-agent-contract-0.2.0.attestation.json',
+            self.handoff / 'codex-agent-contract-0.2.0.attestation.sig', self.handoff / 'public-key.pub',
+            expected_trust_domain='release', expected_contract_version='0.2.0', required_components=('jvm',),
+            keyring=self.repository / 'gradle/release/product-signing-keys.json',
+            keys_directory=self.repository / 'gradle/release/keys')
+        runtime_authorities, _ = adapter._authorities(self.repository, self.commit, (JVM,))
+        authority = runtime_authorities[0]
+        runtime_plan = native_plan(JVM, inventory=native_inventory(self.repository, self.commit, JVM),
+            versions=fixture.VERSIONS, toolchain_profile_digest=authority['toolchainProfileDigest'],
+            flags_digest=authority['flagsDigest'], output_schema_version=authority['outputSchemaVersion'],
+            upstream_receipts=[load_canonical_json(self.receipts['metadata'])], contract_projection=projection)
+        receipts.append(validate_phase_receipt({**receipts[0], **runtime_plan,
+            'productVersion': fixture.VERSIONS['runtime-release']}))
+        cap = qualification.CompletedFrozenReuse({"request": request, "expectedResult": result}, receipts,
+            qualification._COMPLETED_FROZEN, revision=self.commit, originals=originals,
+            sdk={"spec": {}, "proof": {"sdkInputs": {"locator": {}, "files": sorted(sdk_files, key=lambda r: r['relativePath'])}}},
+            body_cache=self.scratch / 'body-cache')
+        discovery = self.scratch / 'native-discovery'
+        write_canonical_json(discovery / 'contract-reuse-request.json', request)
+        write_canonical_json(discovery / 'contract-reuse-result.json', result)
+        write_canonical_json(discovery / 'producer.json', self.producer)
+        return cap, discovery
+
+    def test_native_contract_consumption_uses_bundle_once_and_reproduces_all_original_objects(self):
+        from contextlib import contextmanager
+        import io
+        import zipfile
+        import reuse_qualification as qualification
+        from products.inventory import load_canonical_json_bytes
+        from runtime_reference_archive import copy_reference_member
+        cap, _ = self.completed_contract_fixture()
+        native = load_canonical_json_bytes(cap._contract)
+        sdk_raw, original_raw = io.BytesIO(), io.BytesIO()
+        with zipfile.ZipFile(sdk_raw, 'w') as archive:
+            for row in cap.sdk_original()['proof']['sdkInputs']['files']:
+                if row['relativePath'].endswith('.zip'):
+                    name = row['relativePath'].split('/', 3)[3]
+                    archive.writestr(row['relativePath'], (self.handoff / name).read_bytes())
+        with zipfile.ZipFile(original_raw, 'w') as archive:
+            for phase in ('binary', 'package', 'validation', 'metadata'):
+                for row in regular_file_inventory(self.original / (phase + '-stage')):
+                    name = f"inputs/predecessors/contract-contract-{phase}-common/stage/" + row['relativePath']
+                    archive.writestr(name, (self.original / (phase + '-stage') / row['relativePath']).read_bytes())
+        remote_members = []
+        @contextmanager
+        def ranges(artifact, token):
+            with zipfile.ZipFile(io.BytesIO(sdk_raw.getvalue() if artifact['id'] == 81 else original_raw.getvalue())) as archive:
+                yield archive, None
+        def copied(archive, name, destination, row):
+            if name.startswith(('sdk-inputs/', 'inputs/predecessors/')):
+                remote_members.append(name)
+            return copy_reference_member(archive, name, destination, row)
+        records, _ = adapter._completed_contract_objects(self.plan, self.state, self.state, self.environment)
+        with mock.patch.object(adapter, '_authenticate_runtime_original_reference_source', return_value=(
+                {'id': 71}, None, [{'jobs': [{'name': 'product-validation / runtime-contract-binary-common'}]}], 'a' * 40)), \
+                mock.patch.object(adapter, '_runtime_original_locator', return_value=native['locator']), \
+                mock.patch.object(qualification, '_observe_completed_sdk_inputs', return_value=({'id': 81}, None, {})), \
+                mock.patch('hydrated_evidence.copy', return_value=False), \
+                mock.patch('runtime_reference_archive.open_reference_archive', side_effect=ranges), \
+                mock.patch('runtime_reference_archive.copy_reference_member', side_effect=copied):
+            for row in records:
+                target = self.scratch / (row['phase'] + '-restored.zip')
+                cap.capture_object(row, target, plan=self.plan, producer=self.producer,
+                    trusted_workflow_sha='a' * 40, token='fixture')
+                self.assertEqual((self.state / row['objectPath']).read_bytes(), target.read_bytes())
+            self.assertEqual(3, len(remote_members))
+            cached = next((self.scratch / 'body-cache').iterdir())
+            cached.write_bytes(b'corrupt')
+            with self.assertRaises(ValueError):
+                cap.capture_object(next(row for row in records if row['phase'] == 'binary'),
+                    self.scratch / 'corrupt-result.zip', plan=self.plan, producer=self.producer,
+                    trusted_workflow_sha='a' * 40, token='fixture')
+            self.assertFalse((self.scratch / 'corrupt-result.zip').exists())
+
+    def test_native_contract_controls_replay_identical_keys_without_product_bodies(self):
+        cap, discovery = self.completed_contract_fixture()
+        controls, release = self.scratch / 'controls', self.scratch / 'release'
+        with self.control_seams():
+            adapter.prepare_contract_resume_controls(self.plan_path, discovery, self.state, controls,
+                completed_frozen=cap, repository_root=self.repository, environ=self.environment)
+            adapter.prepare_contract_release_controls(self.handoff, release)
+            with mock.patch.object(adapter, 'advance_contract', side_effect=AssertionError('unexpected legacy replay')), \
+                    mock.patch.object(adapter, 'materialize_contract', side_effect=AssertionError('routing hydrated a body')), \
+                    mock.patch('sdk_ios_binary_recovery.capture_completed_ios_binary', return_value=[]):
+                result = self.scratch / 'native-resume'
+                adapter.resume_products(controls / 'plan/impact-plan.json', controls / 'plan/product-reuse',
+                    controls / 'state', release / 'contract-input', result, self.scratch / 'native-output',
+                    completed_frozen=cap, repository_root=self.repository, environ=self.environment)
+                verified = adapter._verified_product_state(controls / 'plan/impact-plan.json', result, result,
+                    self.repository, self.environment, None, completed_frozen=cap)
+        ordinary = self.resume(destination=self.scratch / 'ordinary')
+        self.assertEqual(load_canonical_json(ordinary / 'phase-plans/runtime-jvm-binary-jvm.json'),
+                         verified.prior_ready_plans[JVM])
+        self.assertFalse(any(row['relativePath'].endswith('.zip') for row in regular_file_inventory(controls)))
+        self.assertFalse(any(row['relativePath'].endswith('.zip') for row in regular_file_inventory(result)))
+        self.assertLess(sum(row['bytes'] for row in regular_file_inventory(result)),
+                        sum(row['bytes'] for row in regular_file_inventory(ordinary)))
+
+    def test_native_contract_controls_reject_mutation_and_changed_current_trust(self):
+        cap, _ = self.completed_contract_fixture()
+        release = self.scratch / 'release'
+        adapter.prepare_contract_release_controls(self.handoff, release)
+        handoff = release / 'contract-input'
+        keyring = self.repository / 'gradle/release/product-signing-keys.json'
+        keys = keyring.parent / 'keys'
+        cap.verify_contract_handoff(handoff, keyring=keyring, keys_directory=keys)
+        for name in ('contract-manifest.json', 'codex-agent-contract-0.2.0.attestation.json',
+                     'codex-agent-contract-0.2.0.attestation.sig', 'public-key.pub',
+                     'execution-closure/receipts/binary.json', 'execution-closure/contract-execution-closure.json'):
+            path = handoff / name
+            raw = path.read_bytes()
+            path.write_bytes(raw + b' ')
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                cap.verify_contract_handoff(handoff, keyring=keyring, keys_directory=keys)
+            path.write_bytes(raw)
+        with self.assertRaises(ValueError):
+            cap.verify_contract_handoff(handoff, keyring=self.scratch / 'missing-keyring', keys_directory=keys)
+        cap._receipts = tuple((fields, raw) for fields, raw in cap._receipts if fields[0] != 'runtime')
+        with self.assertRaisesRegex(ValueError, 'native semantic projection'):
+            cap.verify_contract_handoff(handoff, keyring=keyring, keys_directory=keys)
+
     def test_prior_attempt_contract_snapshot_preserves_originals_and_current_consumer(self):
         baseline = self.resume(destination=self.scratch / "baseline")
         current = {**self.environment, "GITHUB_RUN_ATTEMPT": "3"}

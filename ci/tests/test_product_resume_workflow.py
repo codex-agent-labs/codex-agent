@@ -92,6 +92,9 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                      "--release-artifact-id", "--release-artifact-sha256", "--trusted-workflow-sha"):
             self.assertIn(flag, self.job)
         self.assertEqual(1, self.job.count("ci/product_reuse.py capture-product-resume-inputs"))
+        for flag in ("--state-control-id", "--state-control-sha256", "--release-control-id", "--release-control-sha256"):
+            self.assertIn(flag, self.job)
+        self.assertIn('test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"', self.job)
         self.assertIn("--trusted-contract-workflow-path .github/workflows/contract-validation.yml", self.job)
         self.assertIn('--trusted-contract-continuation-job "product-validation / contract-validation / contract-continuation"', self.job)
         self.assertEqual(1, self.job.count("ci/product_reuse.py resume-products"))

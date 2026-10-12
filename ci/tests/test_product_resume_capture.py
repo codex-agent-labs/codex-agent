@@ -33,6 +33,51 @@ def archive(files: dict[str, bytes]) -> bytes:
 
 
 class ProductResumeCaptureTest(GitFixture):
+    def test_native_controls_transfer_only_two_small_archives_and_keep_source_and_digest_gates(self):
+        continuation = 'product-validation / contract-validation / contract-continuation'
+        attestation = 'product-validation / contract-validation / contract-attestation'
+        observed = copy.deepcopy(self.observed)
+        observed[0]['jobs'] = [{'name': name, 'started_at': '2026-10-12T00:00:00Z',
+                               'completed_at': '2026-10-12T00:01:00Z'} for name in (continuation, attestation)]
+        archives = {201: archive({'plan/impact-plan.json': self.plan_bytes,
+                                 'state/contract-reuse-result.json': b'{}\n'}),
+                    202: archive({'contract-input/contract-manifest.json': b'{}\n'})}
+        artifacts, controls = {}, {}
+        for identity, name, prefix in ((201, 'state', 'contract-resume-controls'), (202, 'release', 'contract-release-controls')):
+            artifacts[identity] = {**self.artifacts['state'], 'id': identity,
+                'name': f"codex-agent-{prefix}-{self.producer['tree']}", 'created_at': '2026-10-12T00:00:30Z',
+                'digest': sha256_bytes(archives[identity]), 'size_in_bytes': len(archives[identity]),
+                'archive_download_url': f'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/{identity}/zip'}
+            controls[name] = {'artifactId': identity, 'artifactSha256': artifacts[identity]['digest']}
+        for case in ('valid', 'digest', 'attempt-window'):
+            selected = copy.deepcopy(controls)
+            metadata = copy.deepcopy(artifacts)
+            if case == 'digest':
+                selected['release']['artifactSha256'] = sha256_bytes(b'changed')
+            if case == 'attempt-window':
+                metadata[202]['created_at'] = '2026-10-11T00:00:30Z'
+            destination = self.root / ('controls-' + case)
+            with mock.patch.object(product_reuse, '_observe_contract_producer_runs', return_value=observed), \
+                    mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observed) as signing, \
+                    mock.patch.object(product_reuse, 'api_json', side_effect=lambda url, token: metadata[int(url.rsplit('/', 1)[-1])]), \
+                    mock.patch.object(product_reuse, 'download_artifact', side_effect=lambda row, token: archives[row['id']]) as download:
+                def capture():
+                    return product_reuse.capture_product_resume_inputs(self.plan_path, destination,
+                        uploads=self.uploads, control_uploads=selected, trusted_workflow_sha='c' * 40,
+                        trusted_contract_workflow_path='.github/workflows/contract-validation.yml',
+                        trusted_contract_continuation_job=continuation, repository_root=self.root,
+                        environ=self.environment, token='fixture')
+                if case == 'valid':
+                    result = capture()
+                    self.assertEqual(self.uploads, result['originalUploads'])
+                    self.assertEqual(self.plan_bytes, (destination / 'plan/impact-plan.json').read_bytes())
+                    self.assertEqual([201, 202], [call.args[0]['id'] for call in download.call_args_list])
+                    self.assertEqual({'attestation': attestation}, signing.call_args.kwargs['jobs_by_phase'])
+                else:
+                    with self.assertRaises(ValueError):
+                        capture()
+                    self.assertFalse(destination.exists())
+
     def setUp(self) -> None:
         super().setUp()
         self.root = self.root.resolve()

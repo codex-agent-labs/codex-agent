@@ -23,6 +23,164 @@ POLICY = "sha256:" + "a" * 64
 
 
 class CompletedFrozenReuseTest(unittest.TestCase):
+    def contract_stage_fixture(self, root):
+        """Real deterministic objects inside a small synthetic qualified upload."""
+        original = self.qualified["originals"][0]
+        source = root / "original"
+        source.mkdir()
+        objects = {}
+        for row in self.spec["expectedResult"]["phases"]:
+            if row["product"] != "contract":
+                continue
+            identity = PhaseInstanceId(*(row[field] for field in FIELDS))
+            receipt = self.receipts[identity]
+            prefix = source / f"inputs/predecessors/contract-contract-{row['phase']}-common"
+            payload = prefix / "stage/payload/value.bin"
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(b"a")
+            (prefix / "phase-receipt.json").write_bytes(canonical_json_bytes(receipt))
+            (prefix / "stage/output-manifest.json").write_bytes(canonical_json_bytes({
+                "schemaVersion": 1, **{field: receipt[field] for field in (*FIELDS, "productVersion", "outputs")}}))
+            archive = root / (row["phase"] + ".zip")
+            restore._write_object(prefix / "stage", canonical_json_bytes(receipt), archive)
+            objects[row["phase"]] = archive.read_bytes()
+            row["objectSha256"] = sha256_bytes(objects[row["phase"]])
+            next(record for record in self.spec["request"]["availableObjects"]
+                 if all(record[field] == row[field] for field in FIELDS))["objectSha256"] = row["objectSha256"]
+        original["originalFiles"].extend(inventory.regular_file_inventory(source))
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, "w") as archive:
+            for member in inventory.regular_file_inventory(source):
+                archive.writestr(member["relativePath"], (source / member["relativePath"]).read_bytes())
+        cap = qualification.CompletedFrozenReuse(self.spec, self.receipts.values(),
+            qualification._COMPLETED_FROZEN, revision="d" * 40, originals=self.qualified["originals"])
+        return cap, original, objects, raw.getvalue()
+
+    def test_completed_contract_materializes_only_consumed_stage_with_exact_original_object_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, original, objects, raw = self.contract_stage_fixture(root)
+            from runtime_reference_transport import selected_reference_paths
+            body = {"relativePath": "product-resume-state/contract.zip", "bytes": len(objects["binary"]),
+                    "sha256": sha256_bytes(objects["binary"])}
+            marker = {"relativePath": "product-resume-state/authenticated-contract/contract-input/contract-manifest.json",
+                      "bytes": 2, "sha256": sha256_bytes(b'{}')}
+            self.assertEqual({body["relativePath"]}, selected_reference_paths(
+                {"inventory": [body], "references": [body]}, completed_frozen=cap))
+            self.assertEqual({marker["relativePath"]}, selected_reference_paths(
+                {"inventory": [body, marker], "references": [body]}, completed_frozen=cap))
+            name = "product-validation / runtime-" + "-".join(original["receipt"][f]
+                for f in ("component", "phase", "target"))
+            @contextmanager
+            def ranges(*args):
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    yield archive, None
+            from runtime_reference_archive import copy_reference_member
+            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source",
+                    return_value=({}, None, [{"jobs": [{"name": name}]}], "a" * 40)), \
+                    patch.object(product_reuse, "_runtime_original_locator", return_value=original["identity"]["locator"]), \
+                    patch("hydrated_evidence.copy", return_value=False), \
+                    patch("runtime_reference_archive.open_reference_archive", side_effect=ranges), \
+                    patch("runtime_reference_archive.copy_reference_member", wraps=copy_reference_member) as copied:
+                for row in self.spec["expectedResult"]["phases"]:
+                    if row["product"] != "contract":
+                        continue
+                    self.assertIn(row["objectSha256"], cap.deferred_objects(include_contract=True))
+                    self.assertNotIn(row["objectSha256"], cap.deferred_objects())
+                    copied.reset_mock()
+                    destination = root / ("restored-" + row["phase"] + ".zip")
+                    cap.capture_object(row, destination, plan={}, producer=self.receipts[
+                        PhaseInstanceId("contract", "contract", "binary", "common")]["producer"],
+                        trusted_workflow_sha="a" * 40, token="fixture")
+                    self.assertEqual(objects[row["phase"]], destination.read_bytes())
+                    self.assertEqual(3, copied.call_count)
+                    self.assertTrue(all(f"contract-contract-{row['phase']}-common/" in call.args[1]
+                                        for call in copied.call_args_list))
+
+    def test_completed_contract_rejects_changed_native_source_member_or_reconstructed_object(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, original, _, raw = self.contract_stage_fixture(root)
+            row = next(r for r in self.spec["expectedResult"]["phases"]
+                       if r["product"] == "contract" and r["phase"] == "binary")
+            name = "product-validation / runtime-" + "-".join(original["receipt"][f]
+                for f in ("component", "phase", "target"))
+            @contextmanager
+            def ranges(*args):
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    yield archive, None
+            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source",
+                    return_value=({}, None, [{"jobs": [{"name": name}]}], "a" * 40)), \
+                    patch.object(product_reuse, "_runtime_original_locator", return_value=original["identity"]["locator"]) as locator, \
+                    patch("hydrated_evidence.copy", return_value=False), \
+                    patch("runtime_reference_archive.open_reference_archive", side_effect=ranges):
+                def consume(label):
+                    destination = root / (label + ".zip")
+                    with self.assertRaises(ValueError):
+                        cap.capture_object(row, destination, plan={}, producer=self.receipts[
+                            PhaseInstanceId("contract", "contract", "binary", "common")]["producer"],
+                            trusted_workflow_sha="a" * 40, token="fixture")
+                    self.assertFalse(destination.exists())
+                locator.return_value = {"different": "original job"}
+                consume("wrong-source")
+                locator.return_value = original["identity"]["locator"]
+                changed = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(raw)) as before, zipfile.ZipFile(changed, "w") as after:
+                    for item in before.namelist():
+                        after.writestr(item, b"z" if item.endswith("binary-common/stage/payload/value.bin") else before.read(item))
+                saved, raw = raw, changed.getvalue()
+                consume("changed-member")
+                raw = saved
+                with patch.object(restore, "_write_object", side_effect=lambda stage, receipt, path: path.write_bytes(b"wrong object")):
+                    consume("changed-object")
+
+    def test_contract_receipt_capture_reads_only_native_bound_controls_and_rejects_changed_locator(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            _, _, _, _ = self.contract_stage_fixture(root)
+            sdk, _, _, _ = self.sdk_fixture()
+            rows = sdk["proof"]["sdkInputs"]["files"]
+            raw = io.BytesIO()
+            with zipfile.ZipFile(raw, "w") as archive:
+                for identity, receipt in self.receipts.items():
+                    if identity.product != "contract":
+                        continue
+                    path = f"sdk-inputs/inputs/contractAttestation/execution-closure/receipts/{identity.phase}.json"
+                    body = canonical_json_bytes(receipt)
+                    rows.append({"relativePath": path, "bytes": len(body), "sha256": sha256_bytes(body)})
+                    archive.writestr(path, body)
+                archive.writestr("unneeded-large-body", b"must not be read")
+            rows.sort(key=lambda row: row["relativePath"])
+            @contextmanager
+            def ranges(*args):
+                with zipfile.ZipFile(io.BytesIO(raw.getvalue())) as archive:
+                    yield archive, None
+            from runtime_reference_archive import copy_reference_member
+            with patch.object(qualification, "_observe_completed_sdk_inputs",
+                    return_value=({}, [], sdk["proof"]["sdkInputs"]["locator"])) as observe, \
+                    patch("hydrated_evidence.copy", return_value=False), \
+                    patch("runtime_reference_archive.open_reference_archive", side_effect=ranges), \
+                    patch("runtime_reference_archive.copy_reference_member", wraps=copy_reference_member) as copied:
+                receipts = qualification._capture_completed_contract_receipts(self.spec, sdk,
+                    self.qualified["originals"], root / "controls", "fixture")
+                self.assertEqual({"binary", "package", "validation", "metadata"}, {r["phase"] for r in receipts})
+                self.assertEqual(4, copied.call_count)
+                self.assertEqual(4, len(inventory.regular_file_inventory(root / "controls")))
+                self.assertTrue(all(call.args[1].endswith(".json") for call in copied.call_args_list))
+                copied.reset_mock()
+                observe.return_value = ({}, [], {"different": "input source"})
+                with self.assertRaisesRegex(ValueError, "source changed"):
+                    qualification._capture_completed_contract_receipts(self.spec, sdk,
+                        self.qualified["originals"], root / "wrong-source", "fixture")
+                copied.assert_not_called()
+                observe.return_value = ({}, [], sdk["proof"]["sdkInputs"]["locator"])
+                receipt_row = next(row for row in rows if row["relativePath"].endswith("/binary.json"))
+                receipt_row["sha256"] = POLICY
+                with self.assertRaisesRegex(ValueError, "receipt member differs"):
+                    qualification._capture_completed_contract_receipts(self.spec, sdk,
+                        self.qualified["originals"], root / "wrong-receipt", "fixture")
+                copied.assert_not_called()
+
     def sdk_fixture(self):
         """Small synthetic transport around the real receipt shape, not hosted evidence."""
         original = load_canonical_json_bytes((Path(__file__).parent / "data/sdk-ios-qualification.json").read_bytes())

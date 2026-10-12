@@ -115,10 +115,13 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
     def test_complete_external_capture_upload_is_immutable(self):
         uploads = re.findall(r"uses: actions/upload-artifact@.*?(?=^      -|\Z)",
                              self.job, re.MULTILINE | re.DOTALL)
-        self.assertEqual(1, len(uploads))
-        self.assertIn("overwrite: false", uploads[0])
-        self.assertIn("if-no-files-found: error", uploads[0])
-        self.assertNotIn("/contract-input/*", uploads[0])
+        self.assertEqual(2, len(uploads))
+        for upload in uploads:
+            self.assertIn("overwrite: false", upload)
+            self.assertIn("if-no-files-found: error", upload)
+            self.assertNotIn("/contract-input/*", upload)
+        self.assertTrue(any('name: codex-agent-contract-release-handoff-' in upload for upload in uploads))
+        self.assertTrue(any('name: codex-agent-contract-release-controls-' in upload for upload in uploads))
         outputs = self.job.split("    steps:", 1)[0]
         self.assertIn(".outputs.artifact-id", outputs)
         self.assertIn("sha256:", outputs)

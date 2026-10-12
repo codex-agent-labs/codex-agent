@@ -3,6 +3,7 @@
 from pathlib import Path, PureWindowsPath
 import subprocess
 import json
+import os
 import tempfile
 import sys
 import unittest
@@ -13,6 +14,30 @@ from ci.products import gradle_bootstrap as bootstrap
 
 
 class SdkDependencySeedTest(unittest.TestCase):
+    def test_safe_worker_python_supports_gradle_script_entrypoint_without_cwd_imports(self):
+        from ci import product_reuse as worker
+        root = Path(__file__).resolve().parents[2]
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+        with tempfile.TemporaryDirectory() as temporary:
+            private = Path(temporary).resolve()
+            (private / 'products.py').write_text('raise AssertionError("untrusted cwd was imported")\n')
+            with patch.object(worker, '_runtime_worker_checkout'), \
+                    patch('products.gradle_bootstrap.require_preprovisioned_gradle'):
+                environment, _ = worker._runtime_worker_environment(root, {'commit': commit}, private / 'worker',
+                    {**os.environ, 'GRADLE_USER_HOME': str(private / 'gradle'), 'PYTHONPATH': str(private)})
+            self.assertEqual(os.pathsep.join((str(root), str(root / 'ci'))), environment['PYTHONPATH'])
+            for key in ('PYTHONSAFEPATH', 'PYTHONNOUSERSITE', 'PYTHONDONTWRITEBYTECODE'):
+                self.assertEqual('1', environment[key])
+            command = [sys.executable, '-B', str(root / 'ci/native_wrappers.py'), '--help']
+            before = subprocess.run(command, cwd=private, env={**environment, 'PYTHONPATH': str(root)},
+                capture_output=True, text=True)
+            self.assertNotEqual(0, before.returncode)
+            self.assertIn("No module named 'products'", before.stderr)
+            after = subprocess.run(command, cwd=private, env=environment, capture_output=True, text=True)
+            self.assertEqual(0, after.returncode, after.stderr)
+            self.assertIn('usage:', after.stdout)
+            self.assertFalse((private / 'worker/python-bytecode').exists())
+
     def test_script_launch_seeds_without_repository_package_on_python_path(self):
         # Direct CI entry points put ci/, not the checkout root, on sys.path.
         script = r'''

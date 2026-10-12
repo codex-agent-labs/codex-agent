@@ -653,6 +653,71 @@ def _completed_frozen_controls(spec, proof, qualification):
     return phases
 
 
+def _completed_contract_source(spec, receipts, originals):
+    """Find native-qualified stage members for the exact four completed receipts."""
+    expected = {row["phase"]: row for row in spec["expectedResult"]["phases"]
+                if row["product"] == "contract"}
+    selected = {row["phase"]: row for row in receipts if row["product"] == "contract"}
+    if not selected:
+        return None
+    if set(selected) != set(expected) or set(expected) != {"binary", "package", "validation", "metadata"}:
+        raise ValueError("Completed Contract requires exactly four original receipts")
+    members = {}
+    for phase, receipt in selected.items():
+        validate_phase_receipt(receipt)
+        raw = canonical_json_bytes(receipt)
+        if (sha256_bytes(raw) != expected[phase]["receiptSha256"]
+                or any(receipt[field] != expected[phase][field] for field in (*_PHASE_FIELDS, "buildKey"))):
+            raise ValueError("Completed Contract receipt differs from its native semantic proof")
+        prefix = f"inputs/predecessors/contract-contract-{phase}-common/"
+        manifest = canonical_json_bytes({"schemaVersion": 1, **{field: receipt[field]
+            for field in (*_PHASE_FIELDS, "productVersion", "outputs")}})
+        members[phase] = [
+            {"relativePath": prefix + "phase-receipt.json", "bytes": len(raw), "sha256": sha256_bytes(raw)},
+            {"relativePath": prefix + "stage/output-manifest.json", "bytes": len(manifest),
+             "sha256": sha256_bytes(manifest)},
+            *({"relativePath": prefix + "stage/" + row["relativePath"],
+               "bytes": row["bytes"], "sha256": row["sha256"]} for row in receipt["outputs"]),
+        ]
+    for original in originals:
+        files = {row["relativePath"]: row for row in original["originalFiles"]}
+        if all(files.get(row["relativePath"]) == row for rows in members.values() for row in rows):
+            return {"locator": original["identity"]["locator"], "receipt": original["receipt"],
+                    "members": members}
+    return None  # Ordinary body verification remains required without complete native member coverage.
+
+
+def _capture_completed_contract_receipts(spec, sdk, originals, destination, token):
+    """Read only receipt controls, bound by both independent native proofs."""
+    import hydrated_evidence
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    phases = {row["phase"]: row for row in spec["expectedResult"]["phases"] if row["product"] == "contract"}
+    if set(phases) != {"binary", "package", "validation", "metadata"}:
+        raise ValueError("Completed Contract receipt capture requires all four native phases")
+    qualified = {row["relativePath"]: row for row in _sdk_input_members(sdk["proof"]["sdkInputs"])}
+    rows = []
+    for phase, expected in sorted(phases.items()):
+        path = f"sdk-inputs/inputs/contractAttestation/execution-closure/receipts/{phase}.json"
+        row = qualified.get(path)
+        if row is None or row["sha256"] != expected["receiptSha256"] or not 0 < row["bytes"] <= LIMIT:
+            raise ValueError("Native SDK receipt member differs from completed Contract evidence")
+        rows.append(row)
+    artifact, _, locator = _observe_completed_sdk_inputs(sdk["spec"], token)
+    if locator != sdk["proof"]["sdkInputs"]["locator"]:
+        raise ValueError("Completed Contract receipt source changed after native qualification")
+    destination = Path(destination)
+    missing = [row for row in rows if not hydrated_evidence.copy(row, destination / row["relativePath"])]
+    if missing:
+        with open_reference_archive(artifact, token) as (archive, _stream):
+            for row in missing:
+                copy_reference_member(archive, row["relativePath"], destination / row["relativePath"], row)
+    receipts = [validate_phase_receipt(load_canonical_json_bytes(read_regular_file_bytes(
+        destination / row["relativePath"], max_bytes=LIMIT, reject_symlink_parents=True))) for row in rows]
+    if _completed_contract_source(spec, receipts, originals) is None:
+        raise QualificationIncompatible("Completed Contract lacks exact native-qualified original stage coverage")
+    return receipts
+
+
 class CompletedFrozenReuse:
     """Exact native semantic completion, separate from body qualification.
 
@@ -660,9 +725,9 @@ class CompletedFrozenReuse:
     private product state. Bodies remain digest-checked when actually consumed.
     Only fetch_completed_frozen can create it after fresh native authentication.
     """
-    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_bodies", "_sdk")
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_bodies", "_sdk", "_contract", "_body_cache")
 
-    def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None):
+    def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None):
         if verified is not _COMPLETED_FROZEN:
             raise TypeError("Completed reuse requires native semantic authentication")
         self._spec = canonical_json_bytes(spec)
@@ -671,6 +736,7 @@ class CompletedFrozenReuse:
         self._verified = verified
         self._revision = revision
         self._sdk = None if sdk is None else canonical_json_bytes(sdk)
+        self._body_cache = None if body_cache is None else str(Path(body_cache))
         self._originals = frozenset((canonical_json_bytes(record["identity"]["locator"]),
             sha256_bytes(canonical_json_bytes(record["receipt"]))) for record in originals)
         from products.restore import object_relative_path
@@ -683,6 +749,9 @@ class CompletedFrozenReuse:
             bodies.append((record["receiptSha256"], canonical_json_bytes({
                 "locator": record["identity"]["locator"], "member": rows[0]})))
         self._bodies = tuple(bodies)
+        contract = _completed_contract_source(spec,
+            [load_canonical_json_bytes(raw) for _, raw in self._receipts], originals)
+        self._contract = None if contract is None else canonical_json_bytes(contract)
 
     def _values(self):
         if self._verified is not _COMPLETED_FROZEN:
@@ -721,15 +790,123 @@ class CompletedFrozenReuse:
                 or producer.get("pullRequest") != 31 or producer.get("event") != "pull_request"):
             raise QualificationIncompatible("Completed frozen carrier requires its original PR scope")
 
-    def deferred_objects(self):
+    def deferred_objects(self, *, include_contract=False):
         """Body identities that routing may leave at their immutable original sources."""
         _, phases = self._values()
         return frozenset(row["objectSha256"] for instance, row in phases.items()
-                         if instance.product in {"runtime", "sdk"})
+                         if instance.product in {"runtime", "sdk"}
+                         or instance.product == "contract" and include_contract and self._contract is not None)
 
     def sdk_original(self):
         self._values()
         return None if self._sdk is None else load_canonical_json_bytes(self._sdk)
+
+    def contract_members(self):
+        """Exact handoff members already consumed by the independent native SDK issuer."""
+        sdk = self.sdk_original()
+        if sdk is None or self._contract is None:
+            return None
+        result = {}
+        for row in _sdk_input_members(sdk["proof"]["sdkInputs"]):
+            for prefix in ("contractAttestation", "contractAttestationSignature", "contractPublicKey", "contractPayload"):
+                source = f"sdk-inputs/inputs/{prefix}/"
+                if row["relativePath"].startswith(source):
+                    name = row["relativePath"].removeprefix(source)
+                    if name in result:
+                        raise ValueError("Completed Contract member is ambiguous")
+                    result[name] = {**row, "relativePath": name}
+        return result
+
+    def verify_contract_handoff(self, handoff, *, keyring, keys_directory):
+        """Reauthenticate small release controls; native proof binds the deferred bodies.
+
+        The frozen native semantic proof checked Contract content. The separate
+        native SDK member proof binds its original signed handoff controls.
+        Neither an unqualified ZIP index nor body qualification alone grants
+        semantic projection authority.
+        """
+        from products.contract_attestation import validate_contract_attestation
+        from products.contract_model import validate_contract_manifest
+        from products.inventory import regular_file_inventory
+        from products.signatures import load_keyring, public_key_for_metadata, validate_signing_metadata, verify_manifest_signature
+        rows = self.contract_members()
+        if rows is None:
+            raise ValueError("Contract controls lack independent native semantic authority")
+        handoff = Path(handoff)
+        controls = {name: row for name, row in rows.items() if not name.endswith(".zip")}
+        expected = set(controls) | {"contract-manifest.json"}
+        before = regular_file_inventory(handoff)
+        if {row["relativePath"] for row in before} != expected:
+            raise ValueError("Completed Contract control handoff inventory is not exact")
+        for name, row in controls.items():
+            raw = read_regular_file_bytes(handoff / name, max_bytes=LIMIT, reject_symlink_parents=True)
+            if len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
+                raise ValueError("Completed Contract control differs from its native-qualified original")
+        names = [name for name in controls if name.endswith(".attestation.json")]
+        if len(names) != 1:
+            raise ValueError("Completed Contract requires one original attestation")
+        attestation = handoff / names[0]
+        value = validate_contract_attestation(load_canonical_json_bytes(read_regular_file_bytes(attestation)))
+        raw = read_regular_file_bytes(handoff / "contract-manifest.json", max_bytes=LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(raw) != value["manifestSha256"]:
+            raise ValueError("Completed Contract manifest differs from its authenticated original")
+        manifest = validate_contract_manifest(load_canonical_json_bytes(raw))
+        payload = rows.get(value["payload"]["fileName"])
+        if (payload is None or any(payload[field] != value["payload"][field] for field in ("bytes", "sha256"))
+                or manifest["contractVersion"] != value["contractVersion"]
+                or controls["execution-closure/contract-execution-closure.json"]["sha256"] != value["executionClosureSha256"]):
+            raise ValueError("Completed Contract release differs from its native payload and closure")
+        # A signature and a qualified SDK upload alone do not prove Contract
+        # semantics. Bind the manifest to projections actually admitted by the
+        # original frozen native planner for this exact immutable bundle.
+        projections = [upstream["contractProjection"]
+            for fields, receipt_raw in self._receipts if fields[0] == "runtime"
+            for upstream in load_canonical_json_bytes(receipt_raw)["inputs"]["upstreamArtifacts"]
+            if "contractProjection" in upstream and
+               upstream["contractProjection"]["bundleSha256"] == payload["sha256"]]
+        if not projections or any(projection["manifestSha256"] != sha256_bytes(raw)
+                or projection["contractVersion"] != manifest["contractVersion"]
+                or projection["contractDigest"] != manifest["contractDigest"]
+                or any(manifest["components"][row["component"]]["sha256"] != row["sha256"]
+                       for row in projection["componentDigests"]) for projection in projections):
+            raise ValueError("Completed Contract manifest lacks the exact native semantic projection")
+        _, phases = self._values()
+        from products.registry import PhaseInstanceId
+        for phase in ("binary", "package", "validation", "metadata"):
+            record = phases[PhaseInstanceId("contract", "contract", phase, "common")]
+            self.envelope(record, read_regular_file_bytes(handoff / f"execution-closure/receipts/{phase}.json"))
+        if value["metadataReceiptSha256"] != controls["execution-closure/receipts/metadata.json"]["sha256"]:
+            raise ValueError("Completed Contract release receipt differs from native completion")
+        signing = validate_signing_metadata(value["signing"], trust_domain="release")
+        trusted = public_key_for_metadata(signing, load_keyring(keyring, keys_directory), keys_directory, allow_retired=True)
+        if read_regular_file_bytes(trusted, reject_symlink_parents=True) != read_regular_file_bytes(handoff / "public-key.pub"):
+            raise ValueError("Completed Contract release public key differs from current trust")
+        verify_manifest_signature(attestation, handoff / names[0].replace(".json", ".sig"),
+                                  handoff / "public-key.pub", signing)
+        if regular_file_inventory(handoff) != before:
+            raise ValueError("Completed Contract controls changed during verification")
+        return manifest
+
+    def contract_projection(self, evidence, *, version, components, receipt_bytes):
+        """Reuse only the exact native-verified payload's authenticated manifest projection."""
+        from products.contract_projection import VerifiedContractProjection, _VERIFIED
+        if evidence["expectedTrustDomain"] != "release":
+            raise ValueError("Completed Contract projection requires release trust")
+        manifest = self.verify_contract_handoff(Path(evidence["attestation"]).parent,
+            keyring=evidence["keyring"], keys_directory=evidence["keysDirectory"])
+        from products.registry import PhaseInstanceId
+        _, phases = self._values()
+        envelope = self.envelope(phases[PhaseInstanceId("contract", "contract", "metadata", "common")], receipt_bytes)
+        outputs = envelope["receipt"]["outputs"]
+        if manifest["contractVersion"] != version or len(outputs) != 1:
+            raise ValueError("Completed Contract projection version or payload changed")
+        value = {"schemaVersion": 1, "receiptSha256": envelope["receiptSha256"],
+            "bundlePath": outputs[0]["relativePath"], "bundleSha256": outputs[0]["sha256"],
+            "manifestSha256": sha256_bytes(canonical_json_bytes(manifest)),
+            "contractVersion": version, "contractDigest": manifest["contractDigest"],
+            "componentDigests": [{"component": name, "sha256": row["sha256"]}
+                                 for name, row in sorted(manifest["components"].items())]}
+        return VerifiedContractProjection(value, _VERIFIED, manifest["canonicalCoverageDigest"]).restrict(components)
 
     def observe_sdk(self, *, plan, producer, token):
         """Recheck both the admission source and original producer without their bodies."""
@@ -772,6 +949,14 @@ class CompletedFrozenReuse:
             with open_reference_archive(artifact, token) as (archive, _stream):
                 for row in missing:
                     copy_reference_member(archive, row["relativePath"], Path(destination) / row["relativePath"], row)
+        if self._body_cache is not None:
+            from runtime_reference_transport import _copy_exact
+            for row in rows:
+                if (row["relativePath"].startswith("sdk-inputs/inputs/contractPayload/")
+                        or row["relativePath"].endswith("/execution/contract-execution.zip")):
+                    cached = Path(self._body_cache) / row["sha256"][7:]
+                    if not cached.exists():
+                        _copy_exact(Path(destination) / row["relativePath"], cached, row)
         return rows, artifact, observed
 
     def require_original_locator(self, locator, receipt):
@@ -786,8 +971,12 @@ class CompletedFrozenReuse:
         from runtime_reference_archive import open_reference_archive, copy_reference_member
         self.check_consumer({"kind": "ci", "producer": producer})
         envelope = self.envelope(record)
-        if envelope is None or record.get("product") not in {"runtime", "sdk"}:
+        if envelope is None or record.get("product") not in {"contract", "runtime", "sdk"}:
             raise ValueError("Deferred object is outside completed native authority")
+        if record["product"] == "contract":
+            self._capture_contract_object(record, envelope, destination, plan=plan, producer=producer,
+                trusted_workflow_sha=trusted_workflow_sha, token=token)
+            return
         if record["product"] == "sdk":
             artifact, _, _ = self.observe_sdk(plan=plan, producer=producer, token=token)
             member = self.sdk_original()["proof"]["member"]
@@ -814,6 +1003,97 @@ class CompletedFrozenReuse:
                 copy_reference_member(archive, body["member"]["relativePath"], destination, body["member"])
         # The caller still performs ordinary object/receipt/manifest verification
         # and extraction before exposing any bytes to a product worker.
+
+    def _capture_contract_object(self, record, envelope, destination, *, plan, producer,
+                                 trusted_workflow_sha, token):
+        import product_reuse as products
+        import hydrated_evidence
+        from products.restore import _write_object, verify_object
+        from runtime_reference_archive import open_reference_archive, copy_reference_member
+        from runtime_reference_transport import _copy_exact
+        if self._contract is None:
+            raise ValueError("Deferred Contract lacks native-qualified original stage members")
+        original = load_canonical_json_bytes(self._contract)
+        source = {"kind": "phase", "receipt": original["receipt"],
+                  "artifactId": original["locator"]["artifact"]["id"],
+                  "artifactSha256": original["locator"]["artifact"]["digest"]}
+        artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        instance = products._identity(original["receipt"])
+        name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        jobs = products._matching_ci_jobs(observed[0]["jobs"], name)
+        if len(jobs) != 1:
+            raise ValueError("Deferred Contract original job is missing or ambiguous")
+        self.require_original_locator(products._runtime_original_locator(
+            artifact, workflow, instance, jobs[0]), original["receipt"])
+        with tempfile.TemporaryDirectory(prefix="completed-contract-object-") as temporary:
+            root = Path(temporary).resolve()
+            rows = original["members"][record["phase"]]
+            prefix = root / f"inputs/predecessors/contract-contract-{record['phase']}-common"
+            sdk = self.sdk_original()
+            if sdk is not None:
+                # The same qualified payload supplies hundreds of stage members.
+                # Fetch two bundle members once, not one range request per file.
+                import zipfile
+                sdk_artifact, _, locator = _observe_completed_sdk_inputs(sdk["spec"], token)
+                if locator != sdk["proof"]["sdkInputs"]["locator"]:
+                    raise ValueError("Deferred Contract SDK source changed after qualification")
+                members = [row for row in _sdk_input_members(sdk["proof"]["sdkInputs"])
+                    if row["relativePath"].startswith("sdk-inputs/inputs/contractPayload/")
+                    or record["phase"] == "binary" and row["relativePath"].endswith("/execution/contract-execution.zip")]
+                payloads = [row for row in members if "/contractPayload/" in row["relativePath"]]
+                if len(payloads) != 1:
+                    raise ValueError("Deferred Contract requires one native-qualified payload")
+                missing_members = []
+                for row in members:
+                    target = root / row["relativePath"]
+                    cached = None if self._body_cache is None else Path(self._body_cache) / row["sha256"][7:]
+                    if cached is not None and (cached.exists() or cached.is_symlink()):
+                        _copy_exact(cached, target, row)
+                    elif not hydrated_evidence.copy(row, target):
+                        missing_members.append(row)
+                if missing_members:
+                    with open_reference_archive(sdk_artifact, token) as (archive, _stream):
+                        for row in missing_members:
+                            copy_reference_member(archive, row["relativePath"], root / row["relativePath"], row)
+                for row in members:
+                    if self._body_cache is not None:
+                        cached = Path(self._body_cache) / row["sha256"][7:]
+                        if not cached.exists():
+                            _copy_exact(root / row["relativePath"], cached, row)
+                prefix.mkdir(parents=True)
+                (prefix / "stage").mkdir()
+                (prefix / "phase-receipt.json").write_bytes(envelope["receiptBytes"])
+                (prefix / "stage/output-manifest.json").write_bytes(canonical_json_bytes({"schemaVersion": 1,
+                    **{field: envelope["receipt"][field] for field in (*_PHASE_FIELDS, "productVersion", "outputs")}}))
+                with zipfile.ZipFile(root / payloads[0]["relativePath"]) as archive:
+                    for output in envelope["receipt"]["outputs"]:
+                        target = prefix / "stage" / output["relativePath"]
+                        if record["phase"] == "metadata":
+                            _copy_exact(root / payloads[0]["relativePath"], target, output)
+                        elif output["relativePath"] == "outputs/execution/contract-execution.zip":
+                            execution = [row for row in members if row["relativePath"].endswith("/execution/contract-execution.zip")]
+                            if len(execution) != 1:
+                                raise ValueError("Deferred Contract execution archive is missing")
+                            _copy_exact(root / execution[0]["relativePath"], target, output)
+                        elif output["relativePath"].removeprefix("outputs/") in archive.namelist():
+                            copy_reference_member(archive, output["relativePath"].removeprefix("outputs/"), target, output)
+            missing = [row for row in rows if not (root / row["relativePath"]).exists()
+                       and not hydrated_evidence.copy(row, root / row["relativePath"])]
+            if missing:
+                with open_reference_archive(artifact, token) as (archive, _stream):
+                    for row in missing:
+                        copy_reference_member(archive, row["relativePath"], root / row["relativePath"], row)
+            if read_regular_file_bytes(prefix / "phase-receipt.json") != envelope["receiptBytes"]:
+                raise ValueError("Deferred Contract original receipt changed during capture")
+            body = root / "object.zip"
+            _write_object(prefix / "stage", envelope["receiptBytes"], body)
+            # Reconstruction must reproduce the original archive byte for byte.
+            # It never issues a new receipt or substitutes a merely equivalent object.
+            verified = verify_object(body, build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+            _copy_exact(body, Path(destination),
+                {"bytes": verified["objectBytes"], "sha256": record["objectSha256"]})
 
     def runtime_sources(self):
         """Return copied original locators; each still needs fresh native observation."""
@@ -956,6 +1236,8 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     if sdk_completion is not None:
         sdk = _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
             root=root, revision=revision, frozen=spec, token=original["token"])
+        receipts.extend(_capture_completed_contract_receipts(spec, sdk, qualified["originals"],
+            Path(destination).parent / "contract-controls", original["token"]))
         request, phase, receipt, _ = _completed_sdk_controls(
             sdk["spec"], sdk["proof"]["controls"], spec, sdk["original"])
         instance = products._identity(receipt)
@@ -966,7 +1248,7 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         receipts.append(receipt)
     report.update(completedFrozenPhases=len(phases), completedSdkPhases=int(sdk is not None), productBodiesDownloaded=0)
     return CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
-        originals=qualified["originals"], sdk=sdk), report
+        originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies"), report
 
 
 def _native_pin_arguments(value):

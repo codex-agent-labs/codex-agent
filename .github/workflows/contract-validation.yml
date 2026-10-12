@@ -36,12 +36,20 @@ on:
         value: ${{ jobs.contract-continuation.outputs.state_id }}
       contract_state_digest:
         value: ${{ jobs.contract-continuation.outputs.state_digest }}
+      contract_controls_id:
+        value: ${{ jobs.contract-continuation.outputs.controls_id }}
+      contract_controls_digest:
+        value: ${{ jobs.contract-continuation.outputs.controls_digest }}
       contract_attestation_result:
         value: ${{ jobs.contract-status.outputs.contract_attestation_result }}
       contract_attestation_artifact_id:
         value: ${{ jobs.contract-attestation.outputs.artifact_id }}
       contract_attestation_artifact_digest:
         value: ${{ jobs.contract-attestation.outputs.artifact_digest }}
+      contract_release_controls_id:
+        value: ${{ jobs.contract-attestation.outputs.controls_id }}
+      contract_release_controls_digest:
+        value: ${{ jobs.contract-attestation.outputs.controls_digest }}
       contract_attestation_inputs_artifact_id:
         value: ${{ jobs.contract-continuation.outputs.attestation_inputs_id }}
       contract_attestation_inputs_artifact_sha256:
@@ -236,6 +244,8 @@ jobs:
       state_artifact: codex-agent-contract-phase-state-${{ fromJSON(inputs.planOutputs).validation_tree }}
       state_id: ${{ steps.upload_final_state.outputs.artifact-id }}
       state_digest: sha256:${{ steps.upload_final_state.outputs.artifact-digest }}
+      controls_id: ${{ steps.upload_resume_controls.outputs.artifact-id }}
+      controls_digest: ${{ steps.upload_resume_controls.outputs.artifact-digest && format('sha256:{0}', steps.upload_resume_controls.outputs.artifact-digest) || '' }}
       attestation_inputs_artifact: codex-agent-contract-attestation-inputs-${{ fromJSON(inputs.planOutputs).validation_tree }}
       attestation_inputs_id: ${{ steps.upload_attestation_inputs.outputs.artifact-id }}
       attestation_inputs_digest: sha256:${{ steps.upload_attestation_inputs.outputs.artifact-digest }}
@@ -248,6 +258,9 @@ jobs:
           persist-credentials: false
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           fetch-depth: 0
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: fromJSON(inputs.planOutputs).tooling_required == 'true'
         shell: bash
@@ -592,6 +605,26 @@ jobs:
           test "$next_phase:$complete" = none:true
           printf 'state=%s\nnext_phase=%s\ncontract_complete=%s\n' \
             "$state" "$next_phase" "$complete" >> "$GITHUB_OUTPUT"
+      - name: Prepare native-authenticated Contract resume controls
+        if: env.CODEX_AGENT_COMPLETED_REUSE_POLICY != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B ci/product_reuse.py prepare-contract-resume-controls \
+            --plan build/ci/impact-plan.json --discovery-root build/ci/product-reuse \
+            --state-root "${{ steps.select_final_state.outputs.state }}" \
+            --destination build/contract-resume-controls \
+            --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"
+      - id: upload_resume_controls
+        if: env.CODEX_AGENT_COMPLETED_REUSE_POLICY != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-contract-resume-controls-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: build/contract-resume-controls
+          compression-level: 0
+          retention-days: 90
       - name: Preserve the complete unsigned Contract state for separate attestation
         id: upload_final_state
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -671,6 +704,8 @@ jobs:
       artifact_name: codex-agent-contract-release-handoff-${{ fromJSON(inputs.planOutputs).validation_tree }}
       artifact_id: ${{ steps.upload_attestation.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload_attestation.outputs.artifact-digest }}
+      controls_id: ${{ steps.upload_release_controls.outputs.artifact-id }}
+      controls_digest: sha256:${{ steps.upload_release_controls.outputs.artifact-digest }}
     steps:
       - name: Check out reviewed signer code only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -721,6 +756,20 @@ jobs:
             --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
             --trusted-contract-binary-job 'product-validation / contract-validation / product-contracts' \
             --trusted-contract-continuation-job 'product-validation / contract-validation / contract-continuation'
+      - name: Prepare original signed Contract controls
+        run: |
+          python3 -B trusted-source/ci/product_reuse.py prepare-contract-release-controls \
+            --handoff-root "$RUNNER_TEMP/contract-release-evidence/contract-input" \
+            --destination "$RUNNER_TEMP/contract-release-controls"
+      - id: upload_release_controls
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-contract-release-controls-${{ fromJSON(inputs.planOutputs).validation_tree }}
+          path: ${{ runner.temp }}/contract-release-controls
+          compression-level: 0
+          retention-days: 90
       - name: Preserve the exact release handoff and all external source evidence
         id: upload_attestation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

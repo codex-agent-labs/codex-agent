@@ -1414,9 +1414,13 @@ def plan_reuse_wave(
             return envelope
 
         available = bounded_verify(verify_available, decoded_objects)
+        deferred_contract = (completed_frozen.deferred_objects(include_contract=True)
+            if completed_frozen is not None and (contract_evidence is None or
+                (contract_evidence["attestation"].parent / "contract-manifest.json").exists()) else ())
         for record, envelope in zip(decoded_objects, available, strict=True):
-            instance, _, _, _, object_path = record
-            if instance.product == "contract" and instance.phase in {"binary", "metadata"}:
+            instance, build_key, receipt_sha256, object_sha256, object_path = record
+            if (instance.product == "contract" and instance.phase in {"binary", "metadata"}
+                    and envelope["objectSha256"] not in deferred_contract):
                 session.register_contract_stage(object_path, envelope)
 
         master_projection: VerifiedContractProjection | None = None
@@ -1430,19 +1434,25 @@ def plan_reuse_wave(
             if contract_evidence is None:
                 raise ValueError("Contract-consuming reuse requires authenticated Contract evidence")
             if master_projection is None:
-                master_contract_stage = session.contract_stage(envelope)
-                master_projection = verify_contract_component_projection(
-                    master_contract_stage,
-                    envelope["receiptBytes"],
-                    contract_evidence["attestation"],
-                    contract_evidence["attestationSignature"],
-                    contract_evidence["publicKey"],
-                    expected_trust_domain=contract_evidence["expectedTrustDomain"],
-                    expected_contract_version=versions["contract"],
-                    required_components=contract_components,
-                    keyring=contract_evidence["keyring"],
-                    keys_directory=contract_evidence["keysDirectory"],
-                )
+                if (completed_frozen is not None and
+                        (contract_evidence["attestation"].parent / "contract-manifest.json").exists()):
+                    master_projection = completed_frozen.contract_projection(contract_evidence,
+                        version=versions["contract"], components=contract_components,
+                        receipt_bytes=envelope["receiptBytes"])
+                else:
+                    master_contract_stage = session.contract_stage(envelope)
+                    master_projection = verify_contract_component_projection(
+                        master_contract_stage,
+                        envelope["receiptBytes"],
+                        contract_evidence["attestation"],
+                        contract_evidence["attestationSignature"],
+                        contract_evidence["publicKey"],
+                        expected_trust_domain=contract_evidence["expectedTrustDomain"],
+                        expected_contract_version=versions["contract"],
+                        required_components=contract_components,
+                        keyring=contract_evidence["keyring"],
+                        keys_directory=contract_evidence["keysDirectory"],
+                    )
             return master_projection.restrict(required_contract_components(instance))
 
         consumed_runtime_validation_evidence: set[PhaseInstanceId] = set()

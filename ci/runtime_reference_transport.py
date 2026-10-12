@@ -218,7 +218,13 @@ def selected_reference_paths(value, *, omit_sdk_ios_binary=False, completed_froz
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Deferred Runtime objects require native completed evidence")
-        deferred = completed_frozen.deferred_objects()
+        # Legacy handoffs still use the ordinary body-backed Contract verifier.
+        # The small manifest only selects transport; native semantic admission
+        # independently authenticates all of its bytes before planning.
+        contract_controls = any(row['relativePath'] ==
+            'product-resume-state/authenticated-contract/contract-input/contract-manifest.json'
+            for row in value['inventory'])
+        deferred = completed_frozen.deferred_objects(include_contract=contract_controls)
     bodies = {(row['bytes'], row['sha256']) for row in value['inventory']
         if omit_sdk_ios_binary and row['relativePath'].startswith(
             'product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original/shard/')
