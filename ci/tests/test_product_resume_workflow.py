@@ -82,6 +82,13 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn('test "$PRODUCT_RESUME_RESULT" = success', self.gate)
         self.assertIn('test "$SDK_COMPLETE" = true || exit 1', self.gate)
 
+    def test_tooling_refresh_receives_source_inventories_not_plan_only_control(self):
+        child = (ROOT / '.github/workflows/contract-validation.yml').read_text()
+        signer = workflow_job(child, 'tooling-attestation')
+        download = signer.split('      - name: Download original plan and source inventories', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}', download)
+        self.assertNotIn('plan_control_id', download)
+
     def test_exact_original_uploads_are_authenticated_before_resuming(self):
         downloads = re.findall(r"uses: actions/download-artifact@.*?(?=^      -|\Z)",
                                self.job, re.MULTILINE | re.DOTALL)
