@@ -566,9 +566,19 @@ jobs:
           STATE_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.contract_state_digest }}
           RELEASE_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
           RELEASE_ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
+          STATE_CONTROL_ID: ${{ needs.contract-validation.outputs.contract_controls_id }}
+          STATE_CONTROL_SHA256: ${{ needs.contract-validation.outputs.contract_controls_digest }}
+          RELEASE_CONTROL_ID: ${{ needs.contract-validation.outputs.contract_release_controls_id }}
+          RELEASE_CONTROL_SHA256: ${{ needs.contract-validation.outputs.contract_release_controls_digest }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          controls=()
+          if [ -n "$STATE_CONTROL_ID" ]; then
+            test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+            controls=(--state-control-id "$STATE_CONTROL_ID" --state-control-sha256 "$STATE_CONTROL_SHA256"
+              --release-control-id "$RELEASE_CONTROL_ID" --release-control-sha256 "$RELEASE_CONTROL_SHA256")
+          fi
           python3 ci/product_reuse.py capture-product-resume-inputs \
             --plan build/product-resume-plan/impact-plan.json \
             --plan-artifact-id "$PLAN_ARTIFACT_ID" --plan-artifact-sha256 "$PLAN_ARTIFACT_SHA256" \
@@ -577,7 +587,7 @@ jobs:
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --trusted-contract-workflow-path .github/workflows/contract-validation.yml \
             --trusted-contract-continuation-job "product-validation / contract-validation / contract-continuation" \
-            --destination build/product-resume-inputs
+            --destination build/product-resume-inputs ${controls[@]+"${controls[@]}"}
       - id: apple-policy
         if: needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/prepare-sdk-apple-policy
