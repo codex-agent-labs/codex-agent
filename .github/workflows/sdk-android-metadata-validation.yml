@@ -248,6 +248,8 @@ jobs:
           set -euo pipefail
           policy=()
           if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          reuse=()
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
           python3 -B -m ci.sdk_workflow capture \
             --plan build/runtime-plan/impact-plan.json \
             --destination build/runtime-input-wave17 \
@@ -256,7 +258,7 @@ jobs:
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --family android-metadata --sdk-validation-tooling "$SDK_TOOLING" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-            ${policy[@]+"${policy[@]}"}
+            ${policy[@]+"${policy[@]}"} ${reuse[@]+"${reuse[@]}"}
       - id: validation-handoff
         name: Recover the elected original Android validation upload
         shell: bash

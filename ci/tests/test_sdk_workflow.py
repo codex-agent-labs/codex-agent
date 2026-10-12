@@ -630,6 +630,32 @@ class SdkWorkflowTest(unittest.TestCase):
                 workflow.main([*argv, *options])
             staged.assert_not_called()
 
+    def test_cli_completed_policy_is_explicit_and_rejection_prevents_worker(self):
+        import reuse_qualification
+        paths = {"plan": self.plan, "discovery-root": self.discovery, "state-root": self.state,
+                 "destination": self.destination, "keyring": self.arguments["keyring"],
+                 "keys-directory": self.arguments["keys_directory"], "repository-root": self.repository}
+        argv = ["javascript", "--phase", "validation"]
+        argv += [value for name, path in paths.items() for value in ("--" + name, str(path))]
+        argv += [value for name, item in self.upload.items() if name != "expected_metadata_receipt_sha256"
+                 for value in ("--" + name.replace("_", "-"), str(item))]
+        policy = self.root / "completed-policy.json"
+        policy.write_bytes(b"{}\n")
+        argv += ["--completed-frozen-policy", str(policy)]
+        marker = object()
+        @contextmanager
+        def selected(arguments):
+            self.assertEqual(policy, arguments.pop("completed_frozen_policy"))
+            self.assertEqual(self.plan, arguments["plan"])
+            yield {"completed_frozen": marker}
+        with patch.object(reuse_qualification, "completed_frozen_options", side_effect=selected), \
+                patch.object(workflow, "execute_javascript") as worker:
+            self.assertEqual(0, workflow.main(argv))
+            self.assertIs(marker, worker.call_args.kwargs["completed_frozen"])
+        with patch.object(workflow, "execute_javascript") as worker, self.assertRaises(SystemExit):
+            workflow.main(argv)  # Real malformed caller-policy gate.
+        worker.assert_not_called()
+
     def test_cli_forwards_paths_upload_identity_and_environment_without_source_override(self):
         paths = {"plan": self.plan, "discovery-root": self.discovery, "state-root": self.state,
                  "destination": self.destination, "keyring": self.arguments["keyring"],

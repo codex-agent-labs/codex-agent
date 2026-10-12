@@ -177,6 +177,10 @@ runs:
                            ('javaExecutable', '--java-executable'), ('keyring', '--tooling-keyring'), ('keysDirectory', '--tooling-keys-directory')):
             if policy[name] is not None:
                 fields[flag] = policy[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+        if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE'):
+            fields['--retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'javascript-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

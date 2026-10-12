@@ -146,12 +146,14 @@ runs:
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture --family "$family" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
           --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
           --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"} ${reuse[@]+"${reuse[@]}"}
     - id: identity
       name: Require exact metadata and original preparation elections before setup
       shell: bash
@@ -281,6 +283,10 @@ runs:
             if type(value) is not str or not Path(value).is_absolute():
                 raise ValueError('Caller tooling fields must be explicit absolute paths')
             fields[flag] = value
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+        if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE'):
+            fields['--retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'native-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

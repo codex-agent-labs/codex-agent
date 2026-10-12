@@ -29,7 +29,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Admit one package inside full S858/original Runtime input verification.
 
     Preparation identity comes from replaying its original control state, never
@@ -78,14 +78,16 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, **tooling,
-                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
                 raise ValueError("Native SDK package is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
                 repository_root=root, environ=environ, requested_scope=(product_reuse._identity(preparation_identity),),
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             elected = [row for row in inspected["readyPlans"]
                        if all(row.get(name) == value for name, value in preparation_identity.items())]
             if (len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS
@@ -102,7 +104,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
                 prepared / "producer.json", "Elected native package producer"))
@@ -210,6 +213,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
 
 def main(argv=None) -> int:
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
@@ -226,6 +230,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name: value for name, value in vars(args).items()
@@ -241,8 +246,8 @@ def main(argv=None) -> int:
         if apple_policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 apple_policy, "Caller Apple validation policy")
-        with metadata_admission_options(args) as admissions:
-            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+        with metadata_admission_options(args) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

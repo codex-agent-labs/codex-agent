@@ -44,7 +44,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         contract_digest, component_digests, repository_root, environ, token, trusted_workflow_sha,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
         tooling_keyring=None, tooling_keys_directory=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Finalize only after exact election, content comparison and clean reader exit."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -113,7 +113,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None})
     try:
         elected = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-            sdk_original_workflow_sha=trusted_workflow_sha, **optional)
+            sdk_original_workflow_sha=trusted_workflow_sha, **optional,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         ready = elected.prior_ready_plans.get(_INSTANCE)
         if ready is None or ready["buildKey"] != expected_build_key:
             raise ValueError("Core metadata is not ready with its exact elected build key")
@@ -125,7 +126,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         prepared = destination / "inputs"
         materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **optional)
+            sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **optional,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if (materialized != ready or _read(prepared / "phase-plan.json") != canonical_json_bytes(ready)
                 or _read(prepared / "producer.json") != canonical_json_bytes(producer)):
             raise ValueError("Core metadata materialized election differs from authenticated state")
@@ -242,6 +244,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -256,6 +259,7 @@ def main(argv=None):
     for name in ("tooling-keyring", "tooling-keys-directory", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
         require_no_signing_secret(os.environ)
@@ -265,8 +269,8 @@ def main(argv=None):
             path = arguments[field]
             if path is not None:
                 arguments[field] = product_reuse._canonical_control(path, "Caller Core metadata " + field)
-        with metadata_admission_options(arguments) as admissions:
-            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

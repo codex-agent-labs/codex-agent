@@ -170,7 +170,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             tooling_keys_directory=None, dotnet_executable=None, dart_executable=None,
             dart_package_config=None, preparation_phase="package", preparation_target="desktop",
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Admit a validation and established evidence carrier, without restaging SDKs.
 
     Original preparation election is independently replayed. Only the existing
@@ -238,7 +238,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple,
-                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             sdk_inventory = _inventory(inputs["sdk"]["directory"], allow_empty=True)
@@ -247,7 +248,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
                 requested_scope=(prep_instance,),
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling,
-                sdk_original_workflow_sha=trusted_workflow_sha, **apple)
+                sdk_original_workflow_sha=trusted_workflow_sha, **apple,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             elected = [row for row in inspected["readyPlans"] if all(row.get(name) == value for name, value in prep_identity.items())]
             if len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS or elected[0]["buildKey"] != preparation_build_key:
                 raise ValueError("Original native preparation consumer is not uniquely ready with its elected key")
@@ -261,7 +263,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple)
+                sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             prepared_inventory = _inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(prepared / "producer.json", "Native validation producer"))
             ready_bytes, producer_bytes = canonical_json_bytes(ready), canonical_json_bytes(producer)
@@ -386,6 +389,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
 
 
 def main(argv=None) -> int:
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root",
                  "tooling-evidence", "tooling-public-key", "java-executable"):
@@ -409,6 +413,7 @@ def main(argv=None) -> int:
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name: value for name, value in vars(args).items()
@@ -421,8 +426,8 @@ def main(argv=None) -> int:
         if apple_policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 apple_policy, "Caller Apple validation policy")
-        with metadata_admission_options(args) as admissions:
-            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+        with metadata_admission_options(args) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

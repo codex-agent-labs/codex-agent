@@ -166,6 +166,8 @@ runs:
             '--sdk-apple-validation-policy': os.environ['SDK_APPLE_VALIDATION_POLICY'],
             '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
         }
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

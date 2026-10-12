@@ -101,6 +101,9 @@ runs:
         policies=()
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then policies+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then policies+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+        if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then reuse+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
         python3 -B ci/sdk_csharp_binary_workflow.py \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-csharp-binary-worker" \
@@ -108,7 +111,7 @@ runs:
           --sdk-inputs-artifact-id "$SDK_INPUTS_ID" --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${policies[@]+"${policies[@]}"}
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${policies[@]+"${policies[@]}"} ${reuse[@]+"${reuse[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

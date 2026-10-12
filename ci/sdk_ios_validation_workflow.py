@@ -39,7 +39,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             java_executable, policy_revision, required_trust_domain,
             repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Finalize elected validation only after replay and immutable original retention."""
     require_no_signing_secret(environ)
     for artifact_id, digest in ((package_artifact_id, package_artifact_sha256),
@@ -71,7 +71,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
         sdk_original_workflow_sha=trusted_workflow_sha,
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
-           if sdk_apple_validation_policy is not None else {}), **admissions)
+           if sdk_apple_validation_policy is not None else {}), **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
     ready = verified.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
@@ -239,6 +240,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
 
 
 def main(argv=None) -> int:
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "repository-root", "keyring", "keys-directory",
                  "tooling-evidence", "tooling-public-key", "java-executable"):
@@ -259,6 +261,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Apple tooling keyring and keys directory must be supplied together")
@@ -266,7 +269,7 @@ def main(argv=None) -> int:
         if (arguments[f"{phase}_artifact_id"] is None) != (arguments[f"{phase}_artifact_sha256"] is None):
             parser.error("Apple original upload ID and digest must be supplied together")
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             if "retained_sdk_inputs_source" in arguments:
                 arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
                     arguments["retained_sdk_inputs_source"], "Original retained SDK input source")
@@ -275,7 +278,7 @@ def main(argv=None) -> int:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                     apple_policy, "Caller Apple validation policy")
             execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
-                    **admissions)
+                    **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

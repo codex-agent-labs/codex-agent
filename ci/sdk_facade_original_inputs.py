@@ -80,7 +80,7 @@ def _fresh_policy_sources(policy):
 @contextmanager
 def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_key,
         replay_policy, trusted_workflow_sha, repository_root, environ, token,
-        sdk_apple_validation_policy=None, sdk_android_metadata_admission=None):
+        sdk_apple_validation_policy=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Hold a fresh external descriptor bound to the current elected originals.
 
     No metadata receipt exists yet. Current state selects the key and all eleven
@@ -120,7 +120,8 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
         optional["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     unchanged()
     elected = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-        sdk_original_workflow_sha=trusted_workflow_sha, **optional)
+        sdk_original_workflow_sha=trusted_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}), **optional)
     ready = elected.prior_ready_plans.get(_FRESH_INSTANCE)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Fresh Core metadata is not ready with the exact elected build key")
@@ -136,7 +137,8 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
             repository_root=root, environ=environ, sdk_validation_tooling=tooling,
             sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_original_workflow_sha=trusted_workflow_sha,
-            sdk_android_metadata_admission=sdk_android_metadata_admission)
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if materialized != ready:
             raise ValueError("Fresh Core predecessor election changed during materialization")
         receipts = {}

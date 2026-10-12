@@ -41,6 +41,7 @@ def execute(
     sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
     retained_sdk_inputs_source=None,
+    completed_frozen=None,
 ) -> dict:
     """Build and admit one elected package; publish only after all contexts close."""
     root = Path(repository_root).resolve(strict=True)
@@ -78,6 +79,7 @@ def execute(
             **apple, **admissions,
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
                if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         ) as sdk_inputs:
             selection = sdk_inputs["selection"]
             selected = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios"}
@@ -90,6 +92,7 @@ def execute(
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling,
                 sdk_original_workflow_sha=trusted_workflow_sha,
                 **apple, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             )
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -216,6 +219,7 @@ def execute(
 
 
 def main(argv=None) -> int:
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in (
         "plan", "destination", "keyring", "keys-directory",
@@ -235,6 +239,7 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
@@ -243,13 +248,13 @@ def main(argv=None) -> int:
         if "retained_sdk_inputs_source" in arguments:
             arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
                 arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                     apple_policy, "Caller Apple validation policy")
             execute(**arguments, environ=os.environ,
-                    token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+                    token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

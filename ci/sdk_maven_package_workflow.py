@@ -46,7 +46,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             binary_capture_root=None, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
-            binary_original_workflow_path=None, binary_original_job_name=None, retained_sdk_inputs_source=None):
+            binary_original_workflow_path=None, binary_original_job_name=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Publish one shard only after full original gates and successful context exit.
 
     The binary's original Contract evidence is mandatory caller policy, even if
@@ -152,7 +152,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                     repository_root=root, environ=environ, token=token, **policies, **admissions,
                     **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
-                       if retained_sdk_inputs_source is not None else {})) as sdk_inputs, ExitStack() as binary_contexts:
+                       if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as sdk_inputs, ExitStack() as binary_contexts:
                 selection = sdk_inputs["selection"]
                 values.append((selection, canonical_json_bytes(selection)))
                 if identity not in selection["consumers"]:
@@ -160,7 +161,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 prepared = destination / "inputs"
                 ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                     expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                    sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions)
+                    sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                 retained[prepared] = _inventory(prepared, allow_empty=True)
                 producer = product_reuse.validate_producer(load_canonical_json_bytes(_read(prepared / "producer.json")))
                 values.extend((value, canonical_json_bytes(value)) for value in (ready, producer))
@@ -285,6 +287,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -307,6 +310,7 @@ def main(argv=None):
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     arguments = vars(parser.parse_args(argv))
     if (arguments["binary_artifact_id"] is None) != (arguments["binary_artifact_sha256"] is None):
@@ -321,8 +325,8 @@ def main(argv=None):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
-        with metadata_admission_options(arguments) as admissions:
-            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

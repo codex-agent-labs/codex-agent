@@ -88,6 +88,10 @@ class NativePreparedReceiverTest(unittest.TestCase):
 
     def materialized(self, *args, **kwargs):
         self.events.append("materialize")
+        self.assertEqual({PhaseInstanceId("contract", "contract", "metadata", "common"),
+            *(PhaseInstanceId("runtime", target, phase, target)
+              for target in NATIVE_TARGETS for phase in ("package", "validation"))},
+            set(kwargs["materialized_scope"]))
         path = args[4]
         path.mkdir()
         (path / "producer.json").write_bytes(canonical_json_bytes(self.producer))
@@ -160,6 +164,23 @@ class NativePreparedReceiverTest(unittest.TestCase):
         self.assertEqual(set(NATIVE_BINDINGS), {path.name for path in
             (upload / "codex-agent-sdk/build/native-wrapper-package-sources").iterdir()})
         self.assertTrue(regular_file_inventory(self.destination / "prepared-upload"))
+
+    def test_completed_inputs_use_demanded_originals_and_still_reject_mismatches(self):
+        # Composition fixture only: native authentication and ordinary restore are mocked above.
+        for instance, original in self.instances.items():
+            raw = canonical_json_bytes(original["receipt"])
+            original["raw"] = raw
+            original["receiptPath"].write_bytes(raw)
+            self.inputs["runtime"]["receiptBytes"][instance] = raw
+        del self.inputs["runtime"]["originalPhases"]
+        result, verifier, _ = self.invoke(completed_frozen=object())
+        self.assertEqual("0.8.0", result["sdkVersion"])
+        verifier.assert_called_once()
+        self.destination = self.root / "build/rejected"
+        self.predecessor_failure = True
+        with self.assertRaisesRegex(ValueError, "predecessor differs from SDK original"):
+            self.invoke(completed_frozen=object())
+        self.assertFalse(self.destination.exists())
 
     def test_unselected_anchor_and_content_failure_never_export(self):
         self.inputs["selection"]["consumers"] = []

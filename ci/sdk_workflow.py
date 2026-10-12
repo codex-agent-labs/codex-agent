@@ -152,7 +152,7 @@ gradle.projectsEvaluated {
 def verified_java_parity_inputs(plan, discovery, state, *, repository_root, environ,
                                 sdk_validation_tooling=None, sdk_original_workflow_sha=None,
                                 sdk_apple_validation_policy=None,
-                                sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+                                sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Import unchanged products after the existing full original-source replay.
 
     Paths grant no authority. Receipts, objects, keys and original producers are
@@ -166,7 +166,8 @@ def verified_java_parity_inputs(plan, discovery, state, *, repository_root, envi
         sdk_original_workflow_sha=sdk_original_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
+            sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     with _java_parity_inputs(verified, plan, plan_bytes) as inputs:
         yield inputs
 
@@ -239,7 +240,7 @@ def _java_parity_inputs(verified, plan, plan_bytes):
 def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
                            sdk_validation_tooling=None, sdk_original_workflow_sha=None,
                            sdk_apple_validation_policy=None,
-                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Borrow completed immutable evidence after one full authenticated replay."""
     root = Path(repository_root).resolve(strict=True)
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
@@ -247,7 +248,8 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
         sdk_validation_tooling, sdk_original_workflow_sha=sdk_original_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
+            sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     phases = {product_reuse._identity(row): row for row in verified.prior["phases"]}
     required = {identity for identity in PHASE_INSTANCE_IDS if identity.product == "sdk"}
     if any(identity not in verified.sources or phases.get(identity, {}).get("state") not in {"retained", "reused"}
@@ -524,7 +526,7 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
           runtime_original_producer=None, runtime_original_workflow_sha=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, routing_state=None,
-    retained_sdk_inputs_source=None, reference_sdk_inputs=False):
+    retained_sdk_inputs_source=None, reference_sdk_inputs=False, completed_frozen=None):
     """Delegate source selection and both destination policies, never grant trust."""
     if (runtime_original_producer is None) != (runtime_original_workflow_sha is None):
         raise ValueError("Retained Runtime producer and original workflow pin must be paired")
@@ -535,7 +537,8 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     if routing_state is None:
         validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
-                                             trusted_workflow_sha=trusted_workflow_sha, **tooling)
+                                             trusted_workflow_sha=trusted_workflow_sha,
+                                            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}), **tooling)
     else:
         validated, selection = _routed_selection(plan, repository_root, environ, trusted_workflow_sha, routing_state)
     if selection.get("source") == "released-default":
@@ -643,7 +646,7 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
 def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_build_key,
                                native_uploads, trusted_workflow_sha, repository_root, environ, token,
                                sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Keep elected iOS binary Contract/native originals verified through use.
 
     This is not package readiness or output admission. The caller must execute
@@ -661,7 +664,8 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
         sdk_original_workflow_sha=trusted_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
+            sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
     elected = verified.prior_ready_plans.get(instance)
     if elected is None or elected["buildKey"] != expected_build_key:
@@ -729,7 +733,7 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
 def execute_ios_binary(plan, discovery, state, destination, *, expected_build_key,
                        native_uploads, trusted_workflow_sha, repository_root, environ, token,
                        sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Execute an elected binary; receipt creation follows every input exit check."""
     from sdk_ios_binary import execute
 
@@ -742,7 +746,8 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     with verified_ios_binary_inputs(plan, discovery, state, destination / "inputs",
             expected_build_key=expected_build_key, native_uploads=native_uploads,
-            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling) as inputs:
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
         ready, producer, version = inputs["ready"], inputs["producer"], inputs["sdkVersion"]
         # External original evidence, never part of the reusable binary stage.
         retained_native = destination / "native-original"
@@ -880,7 +885,7 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
                    repository_root=repository_root, environ=environ,
-                   **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                    trusted_workflow_sha=trusted_workflow_sha, **({"ios_binary": True} if ios_binary else {}),
                    **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
                        sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -998,7 +1003,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
                    artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
                    repository_root, environ, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
                    preparation_phase="package", preparation_target="desktop",
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Prepare once from elected original inputs; this does not admit an upload.
 
     The transport caller must bind these outputs and the retained original plan
@@ -1027,14 +1032,16 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
             requested_scope=(instance,),
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-            repository_root=root, environ=environ, token=token, **tooling) as inputs:
+            repository_root=root, environ=environ, token=token, **tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
             raise ValueError("SDK native preparation consumer is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+            sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected native SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -1124,7 +1131,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
 def execute_javascript(plan, discovery, state, destination, *, phase, expected_build_key,
                        artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
                        repository_root, environ, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Execute elected SDK work; finalize only after original input contexts close."""
     from sdk_javascript_phase import execute
 
@@ -1144,14 +1151,16 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
             requested_scope=(instance,),
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-            repository_root=root, environ=environ, token=token, **tooling) as inputs:
+            repository_root=root, environ=environ, token=token, **tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
             raise ValueError("SDK JavaScript worker is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+            sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -1263,6 +1272,7 @@ def _capture_transport_main(argv):
 
 
 def _ios_binary_main(argv):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Execute only the elected SDK iOS binary phase")
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
@@ -1275,13 +1285,14 @@ def _ios_binary_main(argv):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     uploads = {f"ios-{lane}": {
         "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
         "artifactSha256": arguments.pop(lane.replace("-", "_") + "_artifact_sha256"),
     } for lane in lanes}
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             plan, discovery, state, destination = (arguments.pop(name) for name in (
                 "plan", "discovery_root", "state_root", "destination"))
             policy = arguments.pop("sdk_validation_tooling")
@@ -1290,7 +1301,7 @@ def _ios_binary_main(argv):
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-            execute_ios_binary(plan, discovery, state, destination, **arguments, **admissions,
+            execute_ios_binary(plan, discovery, state, destination, **arguments, **admissions, **semantic,
                 native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -1298,6 +1309,7 @@ def _ios_binary_main(argv):
 
 
 def _parity_main(argv, *, full=False):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Verify parity against authenticated immutable products", allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -1305,16 +1317,17 @@ def _parity_main(argv, *, full=False):
         parser.add_argument("--" + name, type=Path, required=full and name == "sdk-validation-tooling")
     parser.add_argument("--sdk-original-workflow-sha", required=True)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
                 if arguments[name] is not None:
                     arguments[name] = product_reuse._canonical_control(arguments[name], "Caller Java parity " + name)
             plan, discovery, state, destination = (arguments.pop(name) for name in
                 ("plan", "discovery_root", "state_root", "destination"))
             execute = execute_parity if full else execute_java_parity
-            execute(plan, discovery, state, destination, **arguments, **admissions, environ=os.environ)
+            execute(plan, discovery, state, destination, **arguments, **admissions, **semantic, environ=os.environ)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
     return 0
@@ -1322,6 +1335,7 @@ def _parity_main(argv, *, full=False):
 
 @verification_scoped
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "parity":
         return _parity_main(argv[1:], full=True)
@@ -1406,9 +1420,10 @@ def main(argv=None):
         parser.add_argument("--runtime-original-workflow-sha", default=argparse.SUPPRESS)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             if ("runtime_original_producer" in arguments) != ("runtime_original_workflow_sha" in arguments):
                 raise ValueError("Retained Runtime producer and original workflow pin must be paired")
             if "runtime_original_producer" in arguments:
@@ -1458,7 +1473,7 @@ def main(argv=None):
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-            action(plan, discovery, state, destination, **arguments, **admissions,
+            action(plan, discovery, state, destination, **arguments, **admissions, **semantic,
                 environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

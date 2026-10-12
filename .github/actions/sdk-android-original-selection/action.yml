@@ -73,6 +73,7 @@ runs:
         from sdk_android_firebase_original import verified_original_android_firebase_validation
         from sdk_android_original_upload_locator import locate_sdk_android_validation_upload
         from sdk_metadata_policy import metadata_admission_options
+        from reuse_qualification import completed_frozen_options
         require_no_signing_secret(os.environ)
         if host_classifier() != 'linux-x64':
             raise ValueError('Android original selection requires the exact Linux X64 host')
@@ -198,6 +199,8 @@ runs:
                    'javaExecutable': control['javaExecutable'], 'requiredTrustDomain': trust,
                    'keyring': control['toolingKeyring'], 'keysDirectory': control['toolingKeysDirectory']}
         options = {'plan': plan, 'repository_root': root}
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            options['completed_frozen_policy'] = Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY'])
         for name, field in (('CORE_METADATA_POLICY', 'sdk_facade_metadata_policy'),
                             ('ANDROID_METADATA_POLICY', 'sdk_android_metadata_policy')):
             if name in option_paths:
@@ -208,12 +211,12 @@ runs:
         prepared = root / 'build/sdk-android-original-selection'
         if prepared.exists() or prepared.is_symlink():
             raise ValueError('Android original selected predecessor destination must be fresh')
-        with metadata_admission_options(options) as admissions:
+        with metadata_admission_options(options) as admissions, completed_frozen_options(options) as semantic:
             selected = product_reuse.materialize_product_predecessors(
                 plan, Path(os.environ['DISCOVERY']), Path(os.environ['STATE']), instance, prepared,
                 expected_build_key=os.environ['BUILD_KEY'], repository_root=root, environ=os.environ,
                 sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple,
-                sdk_original_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], **admissions)
+                sdk_original_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], **admissions, **semantic)
             if selected['buildKey'] != os.environ['BUILD_KEY']:
                 raise ValueError('Android original predecessor election changed')
             package = prepared / 'sdk-sdk-android-package-android'

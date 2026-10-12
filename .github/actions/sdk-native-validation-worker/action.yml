@@ -176,12 +176,14 @@ runs:
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture --family "native-$PREPARATION_PHASE" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
           --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
           --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
+          --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"} ${reuse[@]+"${reuse[@]}"}
     - id: identity
       shell: bash
       env:
@@ -350,6 +352,10 @@ runs:
                         raise ValueError('Dart provisioning private Python bytecode namespace was modified')
                     _runtime_worker_checkout(checkout, original)
                 fields['dart-package-config'] = str(output / 'package_config.json')
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+        if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE'):
+            fields['retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'native-validation',
                    *(value for name, item in fields.items() for value in ('--' + name, item))]
         subprocess.run(command, cwd=os.environ['GITHUB_WORKSPACE'], env=os.environ, check=True)

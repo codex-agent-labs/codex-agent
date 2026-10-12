@@ -346,6 +346,8 @@ runs:
                            ('ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
             if os.environ[name]:
                 fields[flag] = os.environ[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'android-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

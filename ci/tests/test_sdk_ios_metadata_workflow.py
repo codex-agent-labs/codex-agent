@@ -34,7 +34,8 @@ class SdkIosMetadataWorkflowTest(unittest.TestCase):
                 for expected in ('always()', "needs.plan.outputs.event_authorized == 'true'",
                                  "needs.plan.outputs.remote_build_authorized == 'true'"):
                     self.assertIn(expected, self.condition(job))
-                for forbidden in ('secrets.', 'PRIVATE_KEY', 'environment: product-attestation',
+                self.assertLessEqual(set(re.findall(r'secrets\.([A-Z_]+)', job)), {'REUSE_AUTHORITY_READ_TOKEN'})
+                for forbidden in ('PRIVATE_KEY', 'environment: product-attestation',
                                   'attest-sdk-apple', 'prepare-sdk-apple-signing', 'release_cli sign',
                                   'sdk-apple-signing-prepare', 'sdk-apple-validation-attestation'):
                     self.assertNotIn(forbidden, job)
@@ -48,25 +49,18 @@ class SdkIosMetadataWorkflowTest(unittest.TestCase):
                          "needs.sdk-ios-metadata-plan.outputs.sdk_workers_required == 'true'"):
             self.assertIn(expected, self.condition(worker))
 
-    def test_election_no_tooling_paths_skip_only_provisioning_not_replay(self):
+    def test_election_routes_controls_without_restoring_inputs(self):
         job = self.job('sdk-ios-metadata-plan')
         self.assertNotIn('tooling_required', self.condition(job))
-        steps = re.split(r'\n      - ', job)[1:]
-        for marker in ('name: Select installed caller Java', 'id: tooling\n',
-                       'uses: actions/download-artifact@', 'id: apple-policy\n'):
-            selected = [step for step in steps if marker in step]
-            with self.subTest(step=marker):
-                self.assertEqual(1, len(selected))
-                self.assertEqual(["needs.plan.outputs.tooling_required == 'true'"],
-                                 re.findall(r'(?m)^        if: (.+)$', selected[0]))
-        self.assertEqual(4, job.count("if: needs.plan.outputs.tooling_required == 'true'"))
-        capture = next(step for step in steps if step.startswith('id: capture\n'))
-        self.assertNotRegex(capture, r'(?m)^        if:')
-        self.assertIn('sdk-family: ios-metadata', capture)
+        self.assertIn('uses: ./.github/actions/capture-runtime-state/route', job)
+        self.assertIn('family: ios-metadata', job)
+        self.assertIn('routing: ${{ needs.sdk-ios-validation-result.outputs.routing }}', job)
+        self.assertIn('trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}', job)
+        for unnecessary in ('capture-sdk-tooling', 'actions/download-artifact@', 'prepare-sdk-apple-policy'):
+            self.assertNotIn(unnecessary, job)
 
     def test_all_replay_routes_preserve_parent_and_construct_policy_first(self):
-        for name, action in (('sdk-ios-metadata-plan', 'capture-runtime-state'),
-                             ('sdk-ios-metadata', 'sdk-ios-metadata-worker'),
+        for name, action in (('sdk-ios-metadata', 'sdk-ios-metadata-worker'),
                              ('sdk-collect-10', 'collect-runtime-wave')):
             with self.subTest(job=name):
                 job = self.job(name)
@@ -79,7 +73,7 @@ class SdkIosMetadataWorkflowTest(unittest.TestCase):
                 for expected in ('plan-id: ${{ needs.plan.outputs.plan_id }}',
                                  'sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}',
                                  'sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}',
-                                 'trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}'):
+                                 'trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}'):
                     self.assertIn(expected, block)
                 self.assertLess(job.index('uses: ./.github/actions/capture-sdk-tooling'),
                                 job.index('uses: actions/download-artifact@'))

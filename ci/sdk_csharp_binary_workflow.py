@@ -42,7 +42,7 @@ _LIMIT = 16 * 1024 * 1024
 def lookup_only_plan(plan, discovery, state, *, repository_root, environ,
                      sdk_validation_tooling=None, sdk_apple_validation_policy=None,
                      sdk_original_workflow_sha=None, sdk_facade_metadata_admission=None,
-                     sdk_android_metadata_admission=None):
+                     sdk_android_metadata_admission=None, completed_frozen=None):
     """Derive a C# binary key from authenticated originals, without selecting a build."""
     root = Path(repository_root).resolve(strict=True)
     released_runtime = {}
@@ -61,7 +61,8 @@ def lookup_only_plan(plan, discovery, state, *, repository_root, environ,
         sdk_apple_validation_policy=sdk_apple_validation_policy,
         requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=sdk_original_workflow_sha,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-        sdk_android_metadata_admission=sdk_android_metadata_admission)
+        sdk_android_metadata_admission=sdk_android_metadata_admission,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     if _INSTANCE in verified.closure:
         raise ValueError("C# binary is already in the selected product closure")
     predecessors = phase_instance_dependencies(_INSTANCE)
@@ -109,7 +110,7 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Expose an unselected C# original only during authenticated capture."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -129,7 +130,8 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
         "sdk_facade_metadata_admission": sdk_facade_metadata_admission,
         "sdk_android_metadata_admission": sdk_android_metadata_admission}
     elected = lookup_only_plan(plan, discovery, state, repository_root=root, environ=environ,
-        sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+        sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     controls_unchanged()
     with tempfile.TemporaryDirectory(prefix="sdk-csharp-lookup-", dir=root) as temporary:
         private = Path(temporary).resolve()
@@ -141,7 +143,8 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
                 token=token, **tooling,
-                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             def capture(session):
                 if captured:
                     raise ValueError("Lookup-only C# original was captured twice")
@@ -160,7 +163,8 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
                 requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
                 sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-                sdk_android_metadata_admission=sdk_android_metadata_admission)
+                sdk_android_metadata_admission=sdk_android_metadata_admission,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             controls_unchanged()
             if len(captured) != 1:
                 raise ValueError("Lookup-only C# original was not replay-authenticated")
@@ -206,7 +210,7 @@ def verified_selected_csharp_original(plan, discovery, state, *,
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Hold the selected C# binary's exact carrier object, without rebuilding it."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -233,13 +237,15 @@ def verified_selected_csharp_original(plan, discovery, state, *,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
                 sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                 sdk_android_metadata_admission=sdk_android_metadata_admission,
-                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             verified = product_reuse._verified_product_state(
                 plan, discovery, state, root, environ, sdk_validation_tooling,
                 requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
                 sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-                sdk_android_metadata_admission=sdk_android_metadata_admission)
+                sdk_android_metadata_admission=sdk_android_metadata_admission,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             controls_unchanged()
             if _INSTANCE not in verified.closure or _INSTANCE not in verified.sources:
                 raise ValueError("Selected C# binary lacks an authenticated carrier original")
@@ -293,7 +299,8 @@ def verified_csharp_original(plan, discovery, state, **kwargs):
         requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=kwargs["trusted_workflow_sha"],
         sdk_apple_validation_policy=kwargs.get("sdk_apple_validation_policy"),
         sdk_facade_metadata_admission=kwargs.get("sdk_facade_metadata_admission"),
-        sdk_android_metadata_admission=kwargs.get("sdk_android_metadata_admission"))
+        sdk_android_metadata_admission=kwargs.get("sdk_android_metadata_admission"),
+                **({"completed_frozen": kwargs.get("completed_frozen")} if kwargs.get("completed_frozen") is not None else {}))
     route = (verified_selected_csharp_original if _INSTANCE in verified.closure
              else verified_lookup_only_same_pr_original)
     with route(plan, discovery, state, **kwargs) as original:
@@ -345,7 +352,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Admit a binary shard only after its original inputs and outputs survive recheck."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -380,14 +387,16 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
                 token=token, **tooling,
-                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if _PACKAGE not in selection["consumers"]:
                 raise ValueError("C# binary requires the selected C# package S858 inputs")
             inspected = product_reuse.inspect_products(plan, discovery, state,
                 repository_root=root, environ=environ, requested_scope=(product_reuse._identity(_PACKAGE),),
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             elected = [item for item in inspected["readyPlans"] if
                        tuple(item.get(name) for name in ("product", "component", "phase", "target")) ==
                        ("sdk", "csharp", "binary", "desktop")]
@@ -400,7 +409,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state,
                 _INSTANCE, predecessors, expected_build_key=expected_build_key,
                 repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             if ready != expected_plan:
                 raise ValueError("C# binary predecessor materialization changed its elected plan")
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -420,7 +430,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 environ, sdk_validation_tooling, requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
                 **sdk_workflow._caller_policies(None, sdk_apple_validation_policy,
                     sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-                    sdk_android_metadata_admission=sdk_android_metadata_admission))
+                    sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             if (verified_state.prior_ready_plans.get(_INSTANCE) != expected_plan
                     or verified_state.producer != producer):
                 raise ValueError("C# binary Contract election differs from original producer")
@@ -509,6 +520,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     argv = list(sys.argv[1:] if argv is None else argv)
     stage_original = bool(argv and argv[0] == "stage-original")
     if stage_original:
@@ -526,6 +538,7 @@ def main(argv=None):
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument(f"--{name}", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name: value for name, value in vars(args).items()
@@ -538,9 +551,9 @@ def main(argv=None):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
-        with metadata_admission_options(args) as admissions:
+        with metadata_admission_options(args) as admissions, completed_frozen_options(arguments) as semantic:
             worker = stage_csharp_original if stage_original else execute
-            worker(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+            worker(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

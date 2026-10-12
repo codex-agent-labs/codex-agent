@@ -290,6 +290,7 @@ runs:
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         from sdk_facade_metadata_workflow import execute
         from sdk_metadata_policy import metadata_admission_options
+        from reuse_qualification import completed_frozen_options
         require_no_signing_secret(os.environ)
         root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         policy_path = Path(os.environ['CORE_POLICY'])
@@ -312,19 +313,21 @@ runs:
         # the reuse-only Core admission out of both state capture and replay;
         # the controller joins and replays all eleven elected validations.
         options = {'plan': plan, 'repository_root': root}
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            options['completed_frozen_policy'] = Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY'])
         if os.environ['ANDROID_POLICY']:
             options['sdk_android_metadata_policy'] = Path(os.environ['ANDROID_POLICY'])
             options['expected_policy_bytes'] = {'sdk_android_metadata_policy': optional_raw['ANDROID_POLICY']}
         apple = load_canonical_json_bytes(optional_raw['APPLE_POLICY']) if os.environ['APPLE_POLICY'] else None
         if apple is not None and type(apple) is not dict:
             raise ValueError('Caller Apple validation policy must be an object')
-        with metadata_admission_options(options) as admissions:
+        with metadata_admission_options(options) as admissions, completed_frozen_options(options) as semantic:
             with held_fresh_facade_metadata_policy(plan, Path(os.environ['DISCOVERY']),
                     Path(os.environ['STATE']), expected_build_key=os.environ['BUILD_KEY'],
                     replay_policy=replay_policy, trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
                     repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],
                     sdk_apple_validation_policy=apple,
-                    sdk_android_metadata_admission=admissions.get('sdk_android_metadata_admission')) as descriptor_path:
+                    sdk_android_metadata_admission=admissions.get('sdk_android_metadata_admission'), **semantic) as descriptor_path:
                 if held_policy_digest() != os.environ['POLICY_SHA256'] or \
                         read_regular_file_bytes(policy_path, reject_symlink_parents=True) != raw or \
                         any(read_regular_file_bytes(Path(os.environ[name]), max_bytes=16 * 1024 * 1024,
@@ -349,7 +352,7 @@ runs:
                     java_executable=policy['java_executable'], policy_revision=current['validationCommit'],
                     required_trust_domain=policy['required_trust_domain'], tooling_keyring=policy['tooling_keyring'],
                     tooling_keys_directory=policy['tooling_keys_directory'], sdk_apple_validation_policy=apple,
-                    **admissions)
+                    **admissions, **semantic)
         if held_policy_digest() != os.environ['POLICY_SHA256']:
             raise ValueError('Core metadata caller policy closure changed after original reader exit')
         require_no_signing_secret(os.environ)

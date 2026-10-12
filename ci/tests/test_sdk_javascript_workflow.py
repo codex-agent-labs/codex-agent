@@ -172,6 +172,7 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
                 self.assertEqual({"synthetic": "finalizer invoked after verified contexts"}, self.invoke(phase))
                 self.assertEqual(["enter", "materialize", "worker", "exit-check", "exited", "finalize"], self.events)
                 self.mocks[0].assert_called_once_with(self.plan, self.discovery, self.state,
+                    requested_scope=(PhaseInstanceId("sdk", "javascript", phase, "node"),),
                     **{name: value for name, value in self.arguments.items() if name != "expected_build_key"})
                 self.mocks[3].assert_called_once()
 

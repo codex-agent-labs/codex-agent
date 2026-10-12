@@ -114,11 +114,13 @@ runs:
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture --family native-package --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
           --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"} ${reuse[@]+"${reuse[@]}"}
     - id: identity
       shell: bash
       env:
@@ -196,6 +198,9 @@ runs:
         tooling=()
         if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+        if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then reuse+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
         python3 -B -m ci.sdk_workflow native-package --plan "$PLAN" --discovery-root "$DISCOVERY" \
           --state-root "$STATE" --preparation-state-root "$PREPARATION_STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-worker" --repository-root "$GITHUB_WORKSPACE" \
@@ -205,7 +210,7 @@ runs:
           --sdk-inputs-artifact-id "$SDK_INPUTS_ID" --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
           --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
           --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${tooling[@]+"${tooling[@]}"}
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${tooling[@]+"${tooling[@]}"} ${reuse[@]+"${reuse[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

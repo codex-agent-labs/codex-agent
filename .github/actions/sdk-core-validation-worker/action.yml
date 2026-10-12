@@ -340,6 +340,8 @@ runs:
                            ('NATIVE_COMPILER_ARCHIVE', '--native-compiler-archive')):
             if os.environ[name]:
                 values[flag] = os.environ[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            values['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'core-validation']
         command.extend(part for flag, value in values.items() for part in (flag, value))
         subprocess.run(command, cwd=root, check=True)

@@ -203,6 +203,9 @@ runs:
             if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
               selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
             fi
+            if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+              selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+            fi
             "${command[@]}" \
               --plan "$PLAN_DIRECTORY/impact-plan.json" --destination build/runtime-input \
               --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \

@@ -105,7 +105,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
         prepared_artifact_sha256, sdk_inputs_artifact_id, sdk_inputs_artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Export five verified SDKs only after original inputs and contexts exit.
 
     The output is an external workflow handoff, not a reusable product phase or
@@ -157,7 +157,8 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root,
                 environ=environ, token=token, **tooling,
-                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             unchanged()
             identity = PhaseInstanceId("sdk", preparation_component,
                                       preparation_phase, preparation_target)
@@ -166,7 +167,8 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                 raise ValueError("Native preparation anchor is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
                 repository_root=root, environ=environ, requested_scope=(identity,),
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             elected = [row for row in inspected["readyPlans"] if
                        tuple(row.get(name) for name in ("product", "component", "phase", "target")) ==
                        (identity.product, identity.component, identity.phase, identity.target)]
@@ -186,7 +188,11 @@ def receive(plan, discovery, state, preparation_state, destination, *,
             product_reuse.materialize_product_predecessors(plan, discovery, state,
                 identity, predecessors, expected_build_key=preparation_build_key,
                 repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                materialized_scope=(PhaseInstanceId("contract", "contract", "metadata", "common"),
+                    *(PhaseInstanceId("runtime", target, phase, target)
+                      for target in NATIVE_TARGETS for phase in ("package", "validation"))),
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             predecessor_files = regular_file_inventory(predecessors, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
                 predecessors / "producer.json", "Native preparation producer"))
@@ -203,12 +209,21 @@ def receive(plan, discovery, state, preparation_state, destination, *,
             for target in NATIVE_TARGETS:
                 for phase in ("package", "validation"):
                     original_id = PhaseInstanceId("runtime", target, phase, target)
-                    original = inputs["runtime"]["originalPhases"][original_id]
                     elected_stage = predecessors / f"runtime-{target}-{phase}-{target}"
                     elected_bytes = read_regular_file_bytes(
                         elected_stage / "phase-receipt.json", reject_symlink_parents=True)
                     if elected_bytes != inputs["runtime"]["receiptBytes"][original_id]:
                         raise ValueError("Native preparation Runtime predecessor differs from SDK original")
+                    if completed_frozen is None:
+                        original = inputs["runtime"]["originalPhases"][original_id]
+                    else:
+                        # These demanded objects passed ordinary restore_object verification.
+                        # Their receipts must also match the independently signed SDK join.
+                        original = {"receiptPath": elected_stage / "phase-receipt.json",
+                            "receipt": product_reuse.validate_phase_receipt(
+                                product_reuse._canonical_control(elected_stage / "phase-receipt.json",
+                                    "Native Runtime original receipt")),
+                            "stage": elected_stage / "stage"}
                     receipt_bytes = read_regular_file_bytes(original["receiptPath"],
                         reject_symlink_parents=True)
                     receipt = original["receipt"]
@@ -275,6 +290,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "preparation-state-root",
                  "destination", "keyring", "keys-directory", "repository-root"):
@@ -290,6 +306,7 @@ def main(argv=None):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name.replace("_root", "") if name in {"discovery_root", "state_root"} else name: value
@@ -303,9 +320,9 @@ def main(argv=None):
         path = arguments.pop(name)
         if path is not None:
             arguments[name] = product_reuse._canonical_control(path, f"Caller {name} policy")
-    with metadata_admission_options(args) as admissions:
+    with metadata_admission_options(args) as admissions, completed_frozen_options(arguments) as semantic:
         receive(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
-                **admissions)
+                **admissions, **semantic)
     return 0
 
 

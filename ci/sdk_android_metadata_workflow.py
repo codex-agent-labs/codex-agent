@@ -254,7 +254,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             validation_artifact_sha256=None, expected_validation_receipt_sha256=None,
             trusted_workflow_sha=None,
             trusted_android_workflow_sha=None, expected_original_run_id=None,
-            expected_original_run_attempt=None, token=None):
+            expected_original_run_attempt=None, token=None, completed_frozen=None):
     """Finalize metadata after selected original validation and full replay agree.
 
     Retained mode requires a caller-authenticated enclosing carrier and grants
@@ -397,7 +397,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         # failures before publication must still recheck every caller-owned input.
         verified = product_reuse._verified_product_state(
             plan, discovery, state, root, environ, tooling,
-            sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions)
+            sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         ready = verified.prior_ready_plans.get(_INSTANCE)
         if ready is None or ready["buildKey"] != expected_build_key:
             raise ValueError("Android metadata is not ready with the elected build key")
@@ -412,7 +413,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         materialized = product_reuse.materialize_product_predecessors(
             plan, discovery, state, _INSTANCE, inputs, expected_build_key=expected_build_key,
             repository_root=root, environ=environ, sdk_validation_tooling=tooling,
-            sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions)
+            sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         materialized_bytes = canonical_json_bytes(materialized)
         bindings.update(materialized=materialized, materializedBytes=materialized_bytes)
         if materialized != ready or _read(inputs / "phase-plan.json") != ready_bytes:
@@ -560,6 +562,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in (
         "plan", "destination", "package-stage", "package-receipt",
@@ -584,11 +587,12 @@ def main(argv=None):
     parser.add_argument("--expected-original-run-id", type=int)
     parser.add_argument("--expected-original-run-attempt", type=int)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Android metadata tooling keyring and directory must be paired")
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             arguments["binary_contract_evidence"] = product_reuse._canonical_control(
                 arguments["binary_contract_evidence"], "Caller Android binary Contract evidence")
             policy = arguments.pop("sdk_apple_validation_policy")
@@ -596,7 +600,7 @@ def main(argv=None):
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                     policy, "Caller Apple validation policy")
             execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
-                    **admissions)
+                    **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

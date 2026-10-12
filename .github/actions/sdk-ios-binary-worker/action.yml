@@ -119,6 +119,8 @@ runs:
         tooling=()
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow ios-binary \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-ios-worker" \
@@ -129,7 +131,7 @@ runs:
           --rust-device-artifact-id "$RUST_DEVICE_ID" \
           --rust-device-artifact-sha256 "$RUST_DEVICE_SHA256" \
           --rust-simulator-artifact-id "$RUST_SIMULATOR_ID" \
-          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256" ${tooling[@]+"${tooling[@]}"}
+          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256" ${tooling[@]+"${tooling[@]}"} ${reuse[@]+"${reuse[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
