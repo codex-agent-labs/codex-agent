@@ -152,7 +152,10 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
     metadata.write_bytes(ET.tostring(merged, encoding="utf-8", xml_declaration=True))
     script = destination / "resolve-dependencies.gradle"
     script.write_text(_SDK_SEED_SCRIPT, encoding="utf-8")
-    from ci.product_reuse import _runtime_worker_command
+    if __package__ == "ci.products":
+        from ci.product_reuse import _runtime_worker_command
+    else:
+        from product_reuse import _runtime_worker_command
     product_command = _runtime_worker_command(wrapper, {}, environment,
         build_directory=".", platform_name=platform_name)
     command = [*product_command[:product_command.index("--offline")],
@@ -198,7 +201,10 @@ def seed_sdk_maven_binary_dependencies(root: Path, revision: str, wrapper: Path,
     import tomllib
     from .contract_attestation import materialize_contract_payload
     from .inventory import require_semver, require_relative_path
-    from ci.product_reuse import _runtime_worker_command
+    if __package__ == "ci.products":
+        from ci.product_reuse import _runtime_worker_command
+    else:
+        from product_reuse import _runtime_worker_command
 
     component = properties['codexAgent.component']
     if component not in {'sdk-core', 'sdk-android'}:
@@ -352,7 +358,10 @@ def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,
     handles its declared dependencies; its direct downloads are not Gradle inputs.
     """
     import tomllib
-    from ci.product_reuse import _runtime_worker_command
+    if __package__ == "ci.products":
+        from ci.product_reuse import _runtime_worker_command
+    else:
+        from product_reuse import _runtime_worker_command
     catalog = git_regular_blob_bytes(root, revision,
         'gradle/libs.versions.toml', max_bytes=4 * 1024**2)
     version = tomllib.loads(catalog.decode())['versions']['kotlin']

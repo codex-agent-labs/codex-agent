@@ -4,6 +4,7 @@ from pathlib import Path, PureWindowsPath
 import subprocess
 import json
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -12,6 +13,45 @@ from ci.products import gradle_bootstrap as bootstrap
 
 
 class SdkDependencySeedTest(unittest.TestCase):
+    def test_script_launch_seeds_without_repository_package_on_python_path(self):
+        # Direct CI entry points put ci/, not the checkout root, on sys.path.
+        script = r'''
+import sys
+from pathlib import Path
+from unittest.mock import patch
+import subprocess
+sys.path.insert(0, sys.argv[1])
+from products import gradle_bootstrap as bootstrap
+root = Path.cwd()
+wrapper = root / "gradlew"
+wrapper.write_bytes(b"synthetic wrapper")
+metadata = sys.argv[2].encode()
+with patch.object(bootstrap, "git_regular_blob_bytes", side_effect=lambda *a, **k:
+        metadata if a[2].endswith(".xml") else b"// exact Git fixture\n"), \
+        patch.object(bootstrap.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+    bootstrap.seed_sdk_gradle_dependencies(root, "a" * 40, wrapper, {}, root / "seed")
+    assert run.call_count == 1
+    assert "--dependency-verification=strict" in run.call_args.args[0]
+try:
+    bootstrap.seed_sdk_maven_binary_dependencies(root, "a" * 40, wrapper, {}, root / "maven", {})
+except KeyError as error:
+    assert error.args == ("codexAgent.component",)
+else:
+    raise AssertionError("Missing Maven component accepted")
+with patch.object(bootstrap, "git_regular_blob_bytes", side_effect=ValueError("Git boundary reached")):
+    try:
+        bootstrap.seed_sdk_ios_native_distribution(root, "a" * 40, wrapper, {}, root / "ios")
+    except ValueError as error:
+        assert str(error) == "Git boundary reached"
+    else:
+        raise AssertionError("Missing original Git bytes accepted")
+assert "ci" not in sys.modules
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            subprocess.run([sys.executable, "-I", "-B", "-c", script,
+                str(Path(__file__).resolve().parents[1]), self.metadata("same").decode()],
+                cwd=temporary, check=True, capture_output=True, text=True)
+
     def test_completed_seed_is_reused_only_in_process_with_unchanged_dependencies(self):
         from ci.products.restore import verification_session
         with tempfile.TemporaryDirectory() as temporary:
