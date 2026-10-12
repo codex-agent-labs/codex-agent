@@ -75,9 +75,11 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         finally:
             self.calls.append("verified-s858-exit")
 
-    def materialize(self, plan, discovery, state, instance, destination, **kwargs):
+    def materialize(self, state, instance, destination, expected_build_key, root):
         self.assertEqual(workflow._INSTANCE, instance)
-        self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
+        self.assertEqual(self.root, root)
+        self.assertEqual(self.ready, state.prior_ready_plans[instance])
+        self.assertEqual(self.ready["buildKey"], expected_build_key)
         destination.mkdir(parents=True)
         for phase, record in self.records.items():
             prefix = destination / f"contract-contract-{phase}-common"
@@ -125,27 +127,36 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                               {"csharp-binary": "outputs/csharp"})
         return {"stage": stage, "outputInventory": workflow._inventory(stage)}
 
-    def invoke(self):
+    def invoke(self, *, mutate_materialized_controls=False):
+        def materialize(*args):
+            result = self.materialize(*args)
+            if mutate_materialized_controls:
+                (self.state / "changed.json").write_bytes(b"changed during materialization")
+            return result
         with (patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
               patch.object(workflow.product_reuse, "inspect_products",
-                           return_value={"readyPlans": [dict(self.ready)]}),
+                           side_effect=AssertionError("Redundant state inspection")),
               patch.object(workflow.product_reuse, "materialize_product_predecessors",
-                           side_effect=self.materialize),
+                           side_effect=AssertionError("Redundant state replay")),
+              patch.object(workflow.product_reuse, "_materialize_product_predecessors",
+                           side_effect=materialize),
               patch.object(workflow.product_reuse, "_verified_product_state",
                            return_value=SimpleNamespace(prior_ready_plans={workflow._INSTANCE: dict(self.ready)},
                                producer=self.producer, rebased_request={
-                               "contractEvidence": {"expectedTrustDomain": "release"}})),
+                               "contractEvidence": {"expectedTrustDomain": "release"}})) as replay,
               patch.object(workflow.product_reuse, "_release_trust", side_effect=self.policy),
               patch.object(workflow.product_reuse, "_capture_runtime_contract",
                            side_effect=self.capture_contract),
               patch.object(workflow, "verify_contract_component_projection"),
               patch.object(workflow, "execute_binary", side_effect=self.produce)):
-            return workflow.execute(self.plan, self.discovery, self.state, self.destination,
+            result = workflow.execute(self.plan, self.discovery, self.state, self.destination,
                 expected_build_key=self.ready["buildKey"], sdk_inputs_artifact_id=10,
                 sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
                 trusted_workflow_sha="sha256:" + "d" * 64,
                 keyring=self.keyring, keys_directory=self.keys,
                 repository_root=self.root, environ={}, token="fixture-token")
+            replay.assert_called_once()
+            return result
 
     def test_binary_requires_selected_s858_and_publishes_after_exit(self):
         result = self.invoke()
@@ -158,6 +169,12 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "selected C# package"):
             self.invoke()
         self.assertEqual(["verified-s858", "verified-s858-exit"], self.calls)
+
+    def test_original_controls_changing_during_materialization_publish_nothing(self):
+        with self.assertRaisesRegex(ValueError, "original election controls changed"):
+            self.invoke(mutate_materialized_controls=True)
+        self.assertEqual(["verified-s858", "verified-s858-exit"], self.calls)
+        self.assertFalse((self.destination / "shard").exists())
 
     def test_lookup_only_plan_current_and_released_default_have_same_real_key(self):
         dependencies = workflow.phase_instance_dependencies(workflow._INSTANCE)

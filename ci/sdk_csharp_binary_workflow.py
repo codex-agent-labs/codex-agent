@@ -393,24 +393,23 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             selection = inputs["selection"]
             if _PACKAGE not in selection["consumers"]:
                 raise ValueError("C# binary requires the selected C# package S858 inputs")
-            inspected = product_reuse.inspect_products(plan, discovery, state,
-                repository_root=root, environ=environ, requested_scope=(product_reuse._identity(_PACKAGE),),
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+            verified_state = product_reuse._verified_product_state(plan, discovery, state, root,
+                environ, sdk_validation_tooling, requested_scope=(product_reuse._identity(_PACKAGE),),
+                sdk_original_workflow_sha=trusted_workflow_sha,
+                **sdk_workflow._caller_policies(None, sdk_apple_validation_policy,
+                    sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+                    sdk_android_metadata_admission=sdk_android_metadata_admission),
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
-            elected = [item for item in inspected["readyPlans"] if
-                       tuple(item.get(name) for name in ("product", "component", "phase", "target")) ==
-                       ("sdk", "csharp", "binary", "desktop")]
-            if (len(elected) != 1 or set(elected[0]) != PHASE_PLAN_KEYS
-                    or elected[0]["buildKey"] != expected_build_key):
+            expected_plan = verified_state.prior_ready_plans.get(_INSTANCE)
+            if (expected_plan is None or set(expected_plan) != PHASE_PLAN_KEYS
+                    or expected_plan["buildKey"] != expected_build_key):
                 raise ValueError("C# binary is not uniquely ready with its elected key")
-            expected_plan = elected[0]
             controls_unchanged()
             predecessors = destination / "inputs" / "predecessors"
-            ready = product_reuse.materialize_product_predecessors(plan, discovery, state,
-                _INSTANCE, predecessors, expected_build_key=expected_build_key,
-                repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
-                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+            # The binary consumes only Contract predecessors. Restore them from
+            # this complete replay while the original controls remain unchanged.
+            ready = product_reuse._materialize_product_predecessors(
+                verified_state, _INSTANCE, predecessors, expected_build_key, root)
             if ready != expected_plan:
                 raise ValueError("C# binary predecessor materialization changed its elected plan")
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
@@ -426,12 +425,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             if (manifest["outputs"] != receipt["outputs"] or len(bundles) != 1
                     or bundles[0]["sha256"] != selection["contractPayloadSha256"]):
                 raise ValueError("C# binary Contract differs from selected S858 payload")
-            verified_state = product_reuse._verified_product_state(plan, discovery, state, root,
-                environ, sdk_validation_tooling, requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
-                **sdk_workflow._caller_policies(None, sdk_apple_validation_policy,
-                    sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-                    sdk_android_metadata_admission=sdk_android_metadata_admission),
-                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+            controls_unchanged()
             if (verified_state.prior_ready_plans.get(_INSTANCE) != expected_plan
                     or verified_state.producer != producer):
                 raise ValueError("C# binary Contract election differs from original producer")
