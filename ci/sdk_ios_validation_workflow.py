@@ -39,7 +39,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
             java_executable, policy_revision, required_trust_domain,
             repository_root, environ, token, tooling_keyring=None, tooling_keys_directory=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None):
+            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Finalize elected validation only after replay and immutable original retention."""
     require_no_signing_secret(environ)
     for artifact_id, digest in ((package_artifact_id, package_artifact_sha256),
@@ -140,7 +140,9 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                     repository_root=root, environ=environ, token=token, tooling_evidence=tooling_evidence,
                     tooling_public_key=tooling_public_key, java_executable=java_executable,
                     policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as inputs, \
+                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                       if retained_sdk_inputs_source is not None else {})) as inputs, \
                     ExitStack() as binary_context:
                 binary = inputs["original"] / "inputs/sdk-sdk-ios-binary-ios"
                 binary_receipt = binary / "phase-receipt.json"
@@ -255,6 +257,7 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keyring", type=Path)
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     add_metadata_admission_arguments(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
@@ -264,6 +267,9 @@ def main(argv=None) -> int:
             parser.error("Apple original upload ID and digest must be supplied together")
     try:
         with metadata_admission_options(arguments) as admissions:
+            if "retained_sdk_inputs_source" in arguments:
+                arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                    arguments["retained_sdk_inputs_source"], "Original retained SDK input source")
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(

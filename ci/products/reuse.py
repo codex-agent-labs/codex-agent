@@ -1112,6 +1112,7 @@ def plan_reuse_wave(
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
     sdk_javascript_validation_projection_provider=None,
+    completed_frozen=None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
     if sdk_runtime_consumer is not None and not callable(sdk_runtime_consumer):
@@ -1169,6 +1170,14 @@ def plan_reuse_wave(
         apple_admission = AppleValidationAdmission(artifact_root, request["sdkAppleValidationEvidence"],
             repository=repository_root, policy_revision=revision, policy=request["sdkAppleValidationPolicy"])
     requested = _request_identities(request["requested"], "reuse-wave request.requested")
+    completed_instances = ()
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed reuse requires the concrete native semantic verifier")
+        completed_instances = tuple(PhaseInstanceId(*(getattr(instance, field)
+            for field in ("product", "component", "phase", "target")))
+            for instance in completed_frozen.check_request(request))
     external_sdk_runtime = "sdkRuntimeSource" in request
     if external_sdk_runtime and request["sdkRuntimeSource"] != "released-default":
         raise ValueError("Unsupported SDK Runtime dependency source")
@@ -1381,6 +1390,12 @@ def plan_reuse_wave(
             sdk_native_evidence = selected["handoff"]["nativeRuntimeEvidence"]
         def verify_available(record):
             instance, build_key, receipt_sha256, object_sha256, object_path = record
+            if completed_frozen is not None:
+                envelope = completed_frozen.envelope({
+                    **{field: getattr(instance, field) for field in _IDENTITY_KEYS},
+                    "buildKey": build_key, "receiptSha256": receipt_sha256, "objectSha256": object_sha256})
+                if envelope is not None:
+                    return envelope
             verified = verify_object(
                 object_path,
                 build_key=build_key,
@@ -1501,8 +1516,9 @@ def plan_reuse_wave(
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission,
             build_plan_consumer=build_plan_consumer,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         )
-        unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
+        unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence - set(completed_instances)
         if unused_evidence:
             raise ValueError(
                 "Runtime validation evidence was supplied before its metadata phase was ready: "
@@ -1613,6 +1629,7 @@ def advance_reuse(
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
     sdk_javascript_validation_projection_provider=None,
+    completed_frozen=None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave.
 
@@ -1622,6 +1639,13 @@ def advance_reuse(
     """
     if not isinstance(session, LookupSession):
         raise ValueError("Reuse resolution requires a LookupSession")
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed reuse requires the concrete native semantic verifier")
+        if (session.repository != "codex-agent-labs/codex-agent" or session.pull_request != 31
+                or any(session._remote.values()) or session._local is not None):
+            raise ValueError("Completed frozen reuse requires its exact repository and empty candidate catalogs")
     if sdk_apple_validation_admission is not None and type(sdk_apple_validation_admission) is not AppleValidationAdmission:
         raise ValueError("Apple validation admission requires the concrete full verifier")
     if sdk_apple_package_admission is not None and type(sdk_apple_package_admission) is not ApplePackageAdmission:
@@ -1749,6 +1773,16 @@ def advance_reuse(
                     for dependency in phase_instance_dependencies(instance))
         ]
         for instance in ready:
+            if completed_frozen is not None and instance in envelopes:
+                completed_plan = completed_frozen.phase_plan(instance, effective_inputs[instance],
+                    envelopes[instance], tuple(dependency_envelope(instance, dependency)
+                        for dependency in phase_instance_dependencies(instance)))
+                if completed_plan is not None:
+                    resolved[instance] = envelopes[instance]
+                    states[instance] = {"plan": completed_plan, "state": "retained", "source": None,
+                                        "transportSource": None, "misses": []}
+                    progressed = True
+                    continue
             if instance == PhaseInstanceId("contract", "contract", "package", "common"):
                 binary = resolved[PhaseInstanceId("contract", "contract", "binary", "common")]
                 effective_inputs[instance]["contract_execution_projection"] = (

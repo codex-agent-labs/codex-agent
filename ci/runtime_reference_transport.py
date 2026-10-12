@@ -27,6 +27,7 @@ from products.inventory import (
 REFERENCE_NAME = "runtime-references.json"
 ORIGINAL_REFERENCE_NAME = "runtime-original-references.json"
 SDK_REFERENCE_NAME = 'sdk-runtime-reference.json'
+SDK_INPUT_REFERENCE_NAME = 'sdk-input-reference.json'
 _ROOTS = {"product-resume-inputs", "product-resume-state", "runtime-state"}
 _MEASUREMENTS = ContextVar('throughput_measurements', default=())
 
@@ -196,40 +197,92 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     return value
 
 
-def selected_reference_paths(value, *, omit_sdk_ios_binary=False):
-    """A worker may omit the unrelated iOS object, keeping every control.
+def selected_reference_paths(value, *, omit_sdk_ios_binary=False, completed_frozen=None):
+    """Select physical bodies while retaining all authenticated controls.
 
     The full authenticated manifest still declares every preserved byte. This
-    selects materialization only; full collectors never request a partial view.
+    selects materialization only. An unrelated iOS worker scope grants no phase
+    trust; a completed native proof may separately defer its exact Runtime bodies.
     Concrete legacy members remain present. New original references make the
     large binary and its aliases selectable before downloading any body.
     """
     if type(omit_sdk_ios_binary) is not bool:
         raise ValueError("SDK reference selection must be boolean")
+    deferred = frozenset()
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Deferred Runtime objects require native completed evidence")
+        deferred = completed_frozen.deferred_objects()
     bodies = {(row['bytes'], row['sha256']) for row in value['inventory']
         if omit_sdk_ios_binary and row['relativePath'].startswith(
             'product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original/shard/')
         and '/v1/objects/sha256/' in row['relativePath'] and row['relativePath'].endswith('.zip')}
     inherited = {row['relativePath'] for row in value['references']}
     return {row['relativePath'] for row in value['inventory']
-        if row['relativePath'] not in inherited or (row['bytes'], row['sha256']) not in bodies}
+        if row['relativePath'] not in inherited or
+        ((row['bytes'], row['sha256']) not in bodies and row['sha256'] not in deferred)}
+
+
+def validate_sdk_input_source(value):
+    """Validate a locator; the caller must independently authorize its selection."""
+    from products.receipt import validate_producer
+    source = require_exact_keys(value, {'artifactId', 'artifactSha256', 'producer',
+        'workflowSha'}, 'SDK original source')
+    require_integer(source['artifactId'], 'SDK Runtime original artifact ID', 1)
+    require_sha256(source['artifactSha256'], 'SDK original artifact digest')
+    import re
+    if type(source['workflowSha']) is not str or re.fullmatch('[0-9a-f]{40}', source['workflowSha']) is None:
+        raise ValueError('SDK original workflow is not exact')
+    validate_producer(source['producer'])
+    return source
+
+
+def validate_sdk_runtime_source(value):
+    source = require_exact_keys(value, {'artifactId', 'artifactSha256', 'producer',
+        'workflowSha', 'buildKey', 'metadataReceiptSha256'}, 'SDK Runtime original source')
+    validate_sdk_input_source({key: source[key] for key in
+        ('artifactId', 'artifactSha256', 'producer', 'workflowSha')})
+    for field in ('buildKey', 'metadataReceiptSha256'):
+        require_sha256(source[field], 'SDK Runtime original ' + field)
+    return source
+
+
+def validate_sdk_input_binding(value):
+    value = require_exact_keys(value, {'schemaVersion', 'source', 'runtimeSource',
+        'planSha256'}, 'SDK input binding')
+    if type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
+        raise ValueError('Unsupported SDK input binding schema')
+    validate_sdk_input_source(value['source'])
+    validate_sdk_runtime_source(value['runtimeSource'])
+    require_sha256(value['planSha256'], 'SDK input binding plan digest')
+    return value
+
+
+def sdk_input_binding(archive, physical):
+    """Read a bounded control-only envelope after complete ZIP authentication."""
+    paths = {row['relativePath'] for row in physical}
+    if SDK_INPUT_REFERENCE_NAME not in paths:
+        return None
+    plan_name = 'runtime-capture/plan/impact-plan.json'
+    if paths != {SDK_INPUT_REFERENCE_NAME, plan_name}:
+        raise ValueError('SDK input binding must contain only reference and current plan')
+    import zipfile
+    with zipfile.ZipFile(archive) as zipped:
+        if zipped.getinfo(SDK_INPUT_REFERENCE_NAME).file_size > PRODUCT_JSON_LIMIT:
+            raise ValueError('SDK input binding exceeds its control bound')
+        value = validate_sdk_input_binding(load_canonical_json_bytes(zipped.read(SDK_INPUT_REFERENCE_NAME)))
+    if next(row['sha256'] for row in physical if row['relativePath'] == plan_name) != value['planSha256']:
+        raise ValueError('SDK input binding differs from its current plan')
+    return value
 
 
 def validate_sdk_runtime_reference(value):
     """Current-plan SDK transport may refer to its exact original Runtime upload."""
-    from products.receipt import validate_producer
     value = require_exact_keys(value, {'schemaVersion', 'source', 'inventory'}, 'SDK Runtime reference')
     if type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
         raise ValueError('Unsupported SDK Runtime reference schema')
-    source = require_exact_keys(value['source'], {'artifactId', 'artifactSha256', 'producer',
-        'workflowSha', 'buildKey', 'metadataReceiptSha256'}, 'SDK Runtime original source')
-    require_integer(source['artifactId'], 'SDK Runtime original artifact ID', 1)
-    for field in ('artifactSha256', 'buildKey', 'metadataReceiptSha256'):
-        require_sha256(source[field], 'SDK Runtime original ' + field)
-    import re
-    if type(source['workflowSha']) is not str or re.fullmatch('[0-9a-f]{40}', source['workflowSha']) is None:
-        raise ValueError('SDK Runtime original workflow is not exact')
-    validate_producer(source['producer'])
+    validate_sdk_runtime_source(value['source'])
     inventory = require_sorted_unique_records(value['inventory'], 'SDK Runtime logical inventory')
     if not inventory or len(inventory) > 16_384:
         raise ValueError('SDK Runtime reference exceeds the member bound')

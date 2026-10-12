@@ -42,7 +42,7 @@ def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destina
         target, expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
     """Preserve fully replayed originals on a non-secret runner, without signing.
 
     This unsigned preparation is not authority. A protected consumer must
@@ -93,7 +93,9 @@ def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destina
                 environ=environ, token=token, tooling_evidence=tooling_evidence,
                 tooling_public_key=tooling_public_key, java_executable=java_executable,
                 policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as verified:
+                tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                   if retained_sdk_inputs_source is not None else {})) as verified:
             unchanged()
             if verified["receiptBytes"] != raw or canonical_json_bytes(verified["receipt"]) != raw:
                 raise ValueError("Apple preparation replay returned a different original receipt")
@@ -191,20 +193,23 @@ def _worker(original, receipt, context, contract_version):
 def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
     with _verified_ios_validation(plan, validation_receipt_path, validation_capture=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, token=token,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+               if retained_sdk_inputs_source is not None else {})) as value:
         yield value
 
 
 @contextmanager
 def verified_retained_ios_validation(plan, validation_receipt_path, *, validation_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
-        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
+        retained_sdk_inputs_source=None):
     """Replay complete retained content; caller authenticates its enclosing carrier.
 
     This never turns recorded observations into transport authority or rewrites
@@ -215,7 +220,9 @@ def verified_retained_ios_validation(plan, validation_receipt_path, *, validatio
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+               if retained_sdk_inputs_source is not None else {})) as value:
         yield value
 
 
@@ -223,7 +230,8 @@ def verified_retained_ios_validation(plan, validation_receipt_path, *, validatio
 def _verified_ios_validation(plan, validation_receipt_path, *, validation_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None):
+        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None,
+        retained_sdk_inputs_source=None):
     """Yield privately restored originals only inside all authenticated input lifetimes."""
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path = Path(plan), Path(validation_receipt_path)
@@ -339,10 +347,14 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                     artifact_id=context["packageArtifact"]["artifactId"],
                     artifact_sha256=context["packageArtifact"]["artifactSha256"],
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **tooling) if validation_capture is None else
+                    repository_root=root, environ=environ, token=token, **tooling,
+                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                       if retained_sdk_inputs_source is not None else {})) if validation_capture is None else
                 verified_retained_ios_package(plan, package_path,
                     package_capture=original / "originals/package", sdk_capture=original / "originals/sdk",
-                    keyring=keyring, keys_directory=keys_directory, repository_root=root, **tooling))
+                    keyring=keyring, keys_directory=keys_directory, repository_root=root, **tooling,
+                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                       if retained_sdk_inputs_source is not None else {})))
             with package_context as package:
                 if (package["receiptBytes"] != package_bytes or canonical_json_bytes(package["receipt"]) != package_bytes
                         or package["receipt"]["productVersion"] != receipt["productVersion"]):

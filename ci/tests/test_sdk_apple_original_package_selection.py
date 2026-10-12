@@ -60,13 +60,13 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         self.events = []
         self.validated_plan = {"remoteBuildAuthorized": True, "event": "pull_request"}
 
-    def selector(self):
+    def selector(self, **options):
         return selection.OriginalApplePackageSelector(self.scratch,
             repository_root=self.repo, trusted_workflow_sha="c" * 40,
             keyring=self.repo / "keyring.json", keys_directory=self.repo / "keys",
             tooling_evidence=self.repo / "tooling", tooling_public_key=self.repo / "tooling.pub",
             java_executable=self.repo / "java", policy_revision="d" * 40,
-            required_trust_domain="development", environ={}, token="synthetic")
+            required_trust_domain="development", environ={}, token="synthetic", **options)
 
     def capture_package(self, plan, destination, **kwargs):
         self.events.append("package-capture")
@@ -122,6 +122,23 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
             self.assertEqual(["package-capture", "s858-capture"], self.events)
             admission.verify(self.envelope)
         self.assertEqual(["package-capture", "s858-capture", "full-gate-enter", "full-gate-exit"], self.events)
+
+    def test_original_reader_keeps_independent_caller_source_snapshot(self):
+        source = {'artifactId': 711, 'artifactSha256': 'sha256:'+'1'*64,
+                  'producer': dict(self.producer), 'workflowSha': '2'*40}
+        expected = canonical_json_bytes(source)
+        factory = self.selector(retained_sdk_inputs_source=source)
+        source['artifactId'] = 999
+
+        def capture(plan, destination, **kwargs):
+            self.assertEqual(expected, canonical_json_bytes(kwargs['retained_sdk_inputs_source']))
+            self.capture_sdk(plan, destination, **kwargs)
+
+        with self.patch_sources(), patch.object(selection.product_reuse, 'capture_sdk_inputs_upload', side_effect=capture), \
+                patch('ci.sdk_ios_original_package.verified_retained_ios_package', self.mocked_original_gate):
+            admission = factory(self.envelope)
+            admission.verify(self.envelope)
+        self.assertEqual(['package-capture', 's858-capture', 'full-gate-enter', 'full-gate-exit'], self.events)
 
     def test_wrong_original_plan_producer_fails_before_package_capture(self):
         self.validated_plan = {"remoteBuildAuthorized": False, "event": "pull_request"}
@@ -212,10 +229,10 @@ class CallerOriginalSelectorContextTest(unittest.TestCase):
         (keys / "release.pub").write_bytes((self.keys / "release.pub").read_bytes())
         return SimpleNamespace(keyring=keyring, keys=keys)
 
-    def caller(self):
+    def caller(self, **options):
         return selection.caller_original_apple_package_selector(self.plan, self.policy,
             repository_root=self.root, trusted_workflow_sha="c" * 40,
-            environ={}, token="synthetic")
+            environ={}, token="synthetic", **options)
 
     def mocked_current_authority(self):
         stack = ExitStack()
@@ -250,6 +267,12 @@ class CallerOriginalSelectorContextTest(unittest.TestCase):
         with self.mocked_current_authority(), self.assertRaisesRegex(ValueError, "changed during reuse"):
             with self.caller():
                 self.policy["toolingTrustDomain"] = "development"
+
+    def test_sdk_source_policy_mutation_during_reuse_fails_on_exit(self):
+        source = {'artifactId': 711}
+        with self.mocked_current_authority(), self.assertRaisesRegex(ValueError, 'changed during reuse'):
+            with self.caller(retained_sdk_inputs_source=source):
+                source['artifactId'] = 999
 
     def test_caller_keyring_must_match_current_git(self):
         self.keyring.write_bytes(b"untracked impostor keyring")

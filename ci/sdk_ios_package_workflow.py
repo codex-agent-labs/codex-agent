@@ -40,6 +40,7 @@ def execute(
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
     sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    retained_sdk_inputs_source=None,
 ) -> dict:
     """Build and admit one elected package; publish only after all contexts close."""
     root = Path(repository_root).resolve(strict=True)
@@ -75,6 +76,8 @@ def execute(
             keys_directory=keys_directory, repository_root=root,
             environ=environ, token=token, sdk_validation_tooling=tooling,
             **apple, **admissions,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+               if retained_sdk_inputs_source is not None else {}),
         ) as sdk_inputs:
             selection = sdk_inputs["selection"]
             selected = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios"}
@@ -232,10 +235,14 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Apple tooling keyring and keys directory must be supplied together")
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
         with metadata_admission_options(arguments) as admissions:
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:

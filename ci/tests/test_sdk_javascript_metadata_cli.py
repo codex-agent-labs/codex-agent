@@ -52,6 +52,25 @@ class SdkJavaScriptMetadataCliTest(unittest.TestCase):
             self.assertEqual(2, failure.exception.code)
             execute.assert_not_called()
 
+    def test_retained_source_is_explicit_canonical_caller_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / 'source.json'
+            source = {'artifactId': 701, 'artifactSha256': 'sha256:' + '1'*64,
+                      'producer': {'synthetic': 'original producer'}, 'workflowSha': '2'*40}
+            raw = canonical_json_bytes(source)
+            path.write_bytes(raw)
+            argv = [*self.argv(), '--retained-sdk-inputs-source', str(path)]
+            with patch.object(workflow, 'execute') as execute:
+                self.assertEqual(0, workflow.main(argv))
+            self.assertEqual(source, execute.call_args.kwargs['retained_sdk_inputs_source'])
+            self.assertEqual(raw, path.read_bytes())
+            for invalid in (b'[]\n', b'{"artifactId":1,"artifactId":2}\n', b'{ "artifactId": 1 }\n'):
+                path.write_bytes(invalid)
+                with self.subTest(invalid=invalid), patch.object(workflow, 'execute') as execute, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    workflow.main(argv)
+                execute.assert_not_called()
+
     def test_cli_canonical_apple_policy_adds_only_explicit_mapping_and_rejects_malformed_bytes(self):
         with tempfile.TemporaryDirectory(prefix="javascript-metadata-apple-cli-") as temporary:
             root = Path(temporary).resolve()

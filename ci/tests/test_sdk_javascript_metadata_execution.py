@@ -119,7 +119,14 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         self.assertEqual({"expected_build_key": self.ready["buildKey"], "repository_root": self.repository,
                           "environ": self.arguments["environ"],
                           "sdk_validation_tooling": self.tooling_policy,
-                          "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
+                          "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"],
+                          "materialized_scope": tuple(PhaseInstanceId(*fields) for fields in (
+                              ("contract", "contract", "binary", "common"),
+                              ("contract", "contract", "metadata", "common"),
+                              ("sdk", "javascript", "package", "node"),
+                              ("sdk", "javascript", "validation", "node"),
+                              ("runtime", "node-js", "package", "node-js"),
+                              ("runtime", "node-js", "validation", "node-js-binding")))}, kwargs)
         snapshot_regular_tree(self.originals, destination)
         write_canonical_json(destination / "producer.json", self.producer)
         write_canonical_json(destination / "phase-plan.json", self.ready)
@@ -240,6 +247,25 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
         retained = self.destination / "inputs" / self.name(SDK_VALIDATION) / "phase-receipt.json"
         self.assertEqual(self.receipts[SDK_VALIDATION], retained.read_bytes())
         self.assertEqual(self.validation_producer, load_canonical_json_bytes(retained.read_bytes())["producer"])
+        self.assertEqual(self.before, regular_file_inventory(self.originals))
+
+    def test_retained_source_reaches_capture_without_replacing_any_worker_gate(self):
+        source = {'artifactId': 701, 'artifactSha256': 'sha256:'+'1'*64,
+                  'producer': dict(self.validation_producer), 'workflowSha': '2'*40}
+        self.arguments['retained_sdk_inputs_source'] = source
+        original_gate = self.verified
+
+        @contextmanager
+        def capture(*args, **kwargs):
+            self.assertEqual(source, kwargs.pop('retained_sdk_inputs_source'))
+            with original_gate(*args, **kwargs) as verified:
+                yield verified
+
+        self.verified = capture
+        result = self.invoke()
+        self.assertEqual(['enter', 'materialize', 'capture', 'package', 'worker', 'admission',
+                          'exit-check', 'exited'], self.events)
+        self.assertEqual(self.ready['buildKey'], result['receipt']['buildKey'])
         self.assertEqual(self.before, regular_file_inventory(self.originals))
 
     def test_explicit_apple_policy_reaches_both_replays_without_replacing_existing_gates(self):

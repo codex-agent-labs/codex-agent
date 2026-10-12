@@ -29,7 +29,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None):
+            sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Admit one package inside full S858/original Runtime input verification.
 
     Preparation identity comes from replaying its original control state, never
@@ -77,7 +77,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token, **tooling) as inputs:
+                repository_root=root, environ=environ, token=token, **tooling,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
@@ -225,10 +226,14 @@ def main(argv=None) -> int:
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name: value for name, value in vars(args).items()
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
         policy = arguments.pop("sdk_validation_tooling")
         if policy is not None:
             arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")

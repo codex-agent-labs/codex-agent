@@ -182,6 +182,22 @@ jobs:
     with:
       refresh: true
 
+  completion:
+    if: >-
+      github.event.label.name == 'ci:reuse-completed-proof' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/reuse-qualification.yml
+    with:
+      completed-sdk: true
+
   warm:
     if: >-
       github.event.label.name == 'ci:reuse-qualification-proof' &&

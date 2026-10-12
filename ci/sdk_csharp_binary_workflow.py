@@ -109,7 +109,7 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Expose an unselected C# original only during authenticated capture."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -140,7 +140,8 @@ def verified_lookup_only_same_pr_original(plan, discovery, state, *,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
-                token=token, **tooling) as inputs:
+                token=token, **tooling,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
             def capture(session):
                 if captured:
                     raise ValueError("Lookup-only C# original was captured twice")
@@ -205,7 +206,7 @@ def verified_selected_csharp_original(plan, discovery, state, *,
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Hold the selected C# binary's exact carrier object, without rebuilding it."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -231,7 +232,8 @@ def verified_selected_csharp_original(plan, discovery, state, *,
                 token=token, sdk_validation_tooling=sdk_validation_tooling,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
                 sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-                sdk_android_metadata_admission=sdk_android_metadata_admission) as inputs:
+                sdk_android_metadata_admission=sdk_android_metadata_admission,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
             verified = product_reuse._verified_product_state(
                 plan, discovery, state, root, environ, sdk_validation_tooling,
                 requested_scope=(product_reuse._identity(_PACKAGE),), sdk_original_workflow_sha=trusted_workflow_sha,
@@ -343,7 +345,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Admit a binary shard only after its original inputs and outputs survive recheck."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -377,7 +379,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
-                token=token, **tooling) as inputs:
+                token=token, **tooling,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if _PACKAGE not in selection["consumers"]:
@@ -523,10 +526,14 @@ def main(argv=None):
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument(f"--{name}", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name: value for name, value in vars(args).items()
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
         for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
             path = arguments.pop(name)
             if path is not None:

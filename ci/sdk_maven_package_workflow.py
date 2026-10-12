@@ -46,7 +46,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             binary_capture_root=None, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
-            binary_original_workflow_path=None, binary_original_job_name=None):
+            binary_original_workflow_path=None, binary_original_job_name=None, retained_sdk_inputs_source=None):
     """Publish one shard only after full original gates and successful context exit.
 
     The binary's original Contract evidence is mandatory caller policy, even if
@@ -150,7 +150,9 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 requested_scope=(instance,),
                     artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **policies, **admissions) as sdk_inputs, ExitStack() as binary_contexts:
+                    repository_root=root, environ=environ, token=token, **policies, **admissions,
+                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                       if retained_sdk_inputs_source is not None else {})) as sdk_inputs, ExitStack() as binary_contexts:
                 selection = sdk_inputs["selection"]
                 values.append((selection, canonical_json_bytes(selection)))
                 if identity not in selection["consumers"]:
@@ -305,12 +307,16 @@ def main(argv=None):
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     arguments = vars(parser.parse_args(argv))
     if (arguments["binary_artifact_id"] is None) != (arguments["binary_artifact_sha256"] is None):
         parser.error("Original binary upload ID and digest must be supplied together")
     if (arguments["android_runtime_archive"] is not None) != (arguments["component"] == "sdk-android"):
         parser.error("Original Android archive is required only for Android binary replay")
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
         for name in ("binary_contract_evidence", "binary_original_context", "sdk_validation_tooling", "sdk_apple_validation_policy"):
             path = arguments.pop(name)
             if path is not None:

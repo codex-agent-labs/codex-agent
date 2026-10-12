@@ -237,8 +237,9 @@ def _require_prior(plan, consumer, prior):
     return run, attempt
 
 
-def _record(capture, artifact_root):
-    verified = verify_phase_shard(Path(capture) / "original/shard", INSTANCE)
+def _record(capture, artifact_root, *, completed_frozen=None):
+    verified = verify_phase_shard(Path(capture) / "original/shard", INSTANCE,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     return {**products._identity_record(INSTANCE),
         **{name: verified[name] for name in ("buildKey", "receiptSha256", "objectSha256")},
         "objectPath": (Path(capture) / "original/shard" / verified["objectPath"])
@@ -246,7 +247,7 @@ def _record(capture, artifact_root):
 
 
 def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repository_root,
-        plan, consumer_producer, trusted_workflow_sha, token, environ):
+        plan, consumer_producer, trusted_workflow_sha, token, environ, completed_frozen=None):
     """Reauthenticate compact custody against its fully verified original upload.
 
     Original capture/receipt bytes are not rewritten. Returned records contain
@@ -307,6 +308,21 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
         transport["artifact"]["name"], producer, prior, token)
     if any(current.get(field) != transport["artifact"].get(field) for field in artifact_fields):
         raise ValueError("Prior SDK retained upload metadata changed")
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed SDK replay requires concrete native authority")
+        if completed_frozen.sdk_original() is not None:
+            _, original_artifact, _ = completed_frozen.observe_sdk(
+                plan=plan, producer=consumer_producer, token=token)
+            record = _record(capture, Path(artifact_root), completed_frozen=completed_frozen)
+            completed_frozen.envelope(record, raw)
+            if (any(original_artifact.get(field) != current.get(field) for field in artifact_fields)
+                    or _stage_fingerprint(root) != fingerprint or regular_file_inventory(capture) != inventory
+                    or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes):
+                raise ValueError("Completed SDK controls or original identity changed during replay")
+            require_no_signing_secret(environ)
+            return [record]
     # A disk descriptor is never authority. Seal only a successful full-original
     # comparison, after all exit checks. No evidence or trust crosses processes.
     session = None if _is_windows() else _VERIFICATION_SESSION.get()
@@ -355,6 +371,31 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
             if len(originals) < 8:
                 originals[key] = inventory_digest
     return [record]
+
+
+def capture_completed_ios_binary(destination, artifact_root, *, completed_frozen, plan, producer, token):
+    """Create only ordinary shard controls after distinct native completion admission."""
+    from reuse_qualification import CompletedFrozenReuse
+    from products.restore import object_relative_path, PHASE_SHARD_NAME, PHASE_RECEIPT_NAME
+    from products.inventory import write_canonical_json
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Completed SDK capture requires concrete native authority")
+    sdk = completed_frozen.sdk_original()
+    if sdk is None:
+        return []
+    _, artifact, observed = completed_frozen.observe_sdk(plan=plan, producer=producer, token=token)
+    record = sdk["spec"]["completedPhase"]
+    envelope = completed_frozen.envelope(record)
+    capture = Path(destination) / _RELATIVE
+    shard = capture / "original/shard"
+    shard.mkdir(parents=True, exist_ok=False)
+    write_canonical_json(shard / PHASE_SHARD_NAME, {"schemaVersion": 1, **record,
+        "objectPath": object_relative_path(record["buildKey"], record["receiptSha256"])})
+    (shard / PHASE_RECEIPT_NAME).write_bytes(envelope["receiptBytes"])
+    write_canonical_json(capture / "capture-transport.json", {"artifact": artifact,
+        "captureProducer": envelope["receipt"]["producer"], "observed": observed,
+        "binaryReceiptSha256": record["receiptSha256"]})
+    return [_record(capture, Path(artifact_root), completed_frozen=completed_frozen)]
 
 
 def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, destination,

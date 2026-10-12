@@ -37,7 +37,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
             sdk_validation_tooling, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Stage exact elected predecessors, release Contract and original S858 input."""
     require_no_signing_secret(environ)
     require_sha256(expected_build_key, "Android validation elected key")
@@ -148,7 +148,8 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
-                token=token, **policies) as sdk_inputs:
+                token=token, **policies,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as sdk_inputs:
             if {"product": "sdk", "component": "sdk-android", "phase": "validation", "target": "android"} \
                     not in sdk_inputs["selection"]["consumers"]:
                 raise ValueError("Original S858 selection does not include Android validation")
@@ -188,6 +189,7 @@ def main(argv=None):
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = vars(parser.parse_args(argv))
     args["discovery"] = args.pop("discovery_root")
     args["state"] = args.pop("state_root")
@@ -196,6 +198,9 @@ def main(argv=None):
         if args[name] is not None:
             args[name] = product_reuse._canonical_control(args[name], "Android caller " + name)
     try:
+        if "retained_sdk_inputs_source" in args:
+            args["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                args["retained_sdk_inputs_source"], "Caller retained SDK input source")
         with metadata_admission_options(args) as admissions:
             result = prepare(**args, **admissions, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
         if output is None:

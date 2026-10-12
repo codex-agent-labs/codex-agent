@@ -33,21 +33,23 @@ _LIMIT = 16 * 1024 * 1024
 def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
     """Independently capture original uploads, then use the common content gate."""
     with _verified_ios_package(plan, package_receipt_path, package_capture=None, sdk_capture=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, token=token,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+               if retained_sdk_inputs_source is not None else {})) as value:
         yield value
 
 
 @contextmanager
 def verified_retained_ios_package(plan, package_receipt_path, *, package_capture, sdk_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
-        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
     """Replay caller-authenticated retained captures privately without network.
 
     The caller must authenticate the enclosing upload or catalog and selected
@@ -59,7 +61,9 @@ def verified_retained_ios_package(plan, package_receipt_path, *, package_capture
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as value:
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+               if retained_sdk_inputs_source is not None else {})) as value:
         yield value
 
 
@@ -67,7 +71,7 @@ def verified_retained_ios_package(plan, package_receipt_path, *, package_capture
 def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None):
+        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None, retained_sdk_inputs_source=None):
     """Yield temporary verified originals; consumers publish only after clean exit.
 
     This joins observed original package execution with content/input verification.
@@ -218,7 +222,8 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
             product_reuse.capture_sdk_inputs_upload(historical_plan, sdk_capture,
                 original_package_receipt_path=selected_receipt, artifact_id=locator["artifactId"],
                 artifact_sha256=locator["artifactSha256"], trusted_workflow_sha=trusted_workflow_sha,
-                expected_source=source, repository_root=root, environ=environ, token=token)
+                expected_source=source, repository_root=root, environ=environ, token=token,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}))
         sdk_before = regular_file_inventory(sdk_capture, allow_empty=True)
         records = descriptor["captureFiles"]
         binding_digest = next(record["sha256"] for record in records if record["relativePath"] == "input-binding.json")

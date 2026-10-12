@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar, copy_context
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -395,7 +395,7 @@ def verify_carrier(
     root: Path,
     expected_instances: Any,
     consumer: Any,
-    *, object_root: Path | None = None, selected_instances=None,
+    *, object_root: Path | None = None, selected_instances=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Verify a carrier, or explicitly return only a caller-selected object view.
 
@@ -403,6 +403,11 @@ def verify_carrier(
     selected_instances unset. All carrier controls and path structure still check;
     a selected view may omit only unselected object bodies, never controls.
     """
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Carrier completion requires native semantic evidence")
+        completed_frozen.check_consumer(consumer)
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("Product carrier directory is missing or unsafe")
@@ -454,12 +459,15 @@ def verify_carrier(
             record["buildKey"], record["receiptSha256"], record["transportSha256"],
         )
         source = (Path(object_root) / references[object_path]) if references else root / object_path
-        object_value = verify_object(
-            source,
-            build_key=record["buildKey"],
-            receipt_sha256=record["receiptSha256"],
-            object_sha256=record["objectSha256"],
-        )
+        object_value = (completed_frozen.envelope(record)
+                        if completed_frozen is not None and references else None)
+        if object_value is None:
+            object_value = verify_object(
+                source,
+                build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"],
+            )
         if _carrier_identity(object_value["receipt"], "Product carrier receipt") != _carrier_identity(
             record, "Product carrier object",
         ):
@@ -513,8 +521,13 @@ def write_carrier(
     expected_instances: Any,
     sources: Mapping[PhaseInstanceId, Path],
     consumer: Any,
-    *, object_root: Path | None = None,
+    *, object_root: Path | None = None, completed_frozen=None,
 ) -> dict[str, Any]:
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Carrier completion requires native semantic evidence")
+        completed_frozen.check_consumer(consumer)
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Product carrier destination must not exist")
@@ -529,12 +542,14 @@ def write_carrier(
         (root / CARRIER_RESOLUTION_NAME).write_bytes(resolution_bytes)
         records, references = [], {}
         for instance, phase in zip(expected, phases, strict=True):
-            with _verified_object_snapshot(
+            completed = (completed_frozen.envelope(phase)
+                         if completed_frozen is not None and object_root is not None else None)
+            with (nullcontext((None, completed)) if completed is not None else _verified_object_snapshot(
                 Path(sources[instance]),
                 build_key=phase["buildKey"],
                 receipt_sha256=phase["receiptSha256"],
                 object_sha256=phase["objectSha256"],
-            ) as (snapshot, verification):
+            )) as (snapshot, verification):
                 object_relative = object_relative_path(phase["buildKey"], phase["receiptSha256"])
                 if object_root is None:
                     object_target = root / object_relative
@@ -579,13 +594,24 @@ def write_carrier(
         write_canonical_json(root / CARRIER_NAME, carrier)
         if object_root is not None:
             write_canonical_json(root / CARRIER_REFERENCES_NAME, references)
-        verify_carrier(root, expected, consumer, object_root=object_root)
+        verify_carrier(root, expected, consumer, object_root=object_root,
+                       **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         snapshot_regular_tree(root, destination)
-    return verify_carrier(destination, expected, consumer, object_root=object_root)
+    return verify_carrier(destination, expected, consumer, object_root=object_root,
+                          **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
 
 
 @verification_scoped
-def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId) -> dict[str, Any]:
+def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId, *, completed_frozen=None) -> dict[str, Any]:
+    """Verify a body, or explicit native semantic completion of an absent frozen body.
+
+    The latter keeps only exact descriptor/receipt controls. It never verifies
+    present body bytes by inference; physical consumers still use restore_object.
+    """
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Deferred shard requires native semantic evidence")
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("Product phase shard directory is missing or unsafe")
@@ -614,6 +640,17 @@ def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId) -> dict[s
     receipt_bytes = _read_safe_regular(root / PHASE_RECEIPT_NAME, max_bytes=PRODUCT_JSON_LIMIT)
     if sha256_bytes(receipt_bytes) != receipt_sha256:
         raise ValueError("Product phase shard receipt digest is invalid")
+    if (completed_frozen is not None and not (root / object_path).exists()
+            and not (root / object_path).is_symlink()):
+        completed = completed_frozen.envelope(descriptor, receipt_bytes)
+        if completed is not None:
+            expected_controls = sorted([
+                {"relativePath": PHASE_SHARD_NAME, "bytes": len(descriptor_bytes), "sha256": sha256_bytes(descriptor_bytes)},
+                {"relativePath": PHASE_RECEIPT_NAME, "bytes": len(receipt_bytes), "sha256": receipt_sha256}],
+                key=lambda row: row["relativePath"])
+            if regular_file_inventory(root) != expected_controls:
+                raise ValueError("Deferred shard has unexpected controls or body content")
+            return {**descriptor, "receipt": completed["receipt"], "receiptBytes": receipt_bytes}
     verified = verify_object(
         root / object_path,
         build_key=build_key,

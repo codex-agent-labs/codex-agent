@@ -105,7 +105,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
         prepared_artifact_sha256, sdk_inputs_artifact_id, sdk_inputs_artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Export five verified SDKs only after original inputs and contexts exit.
 
     The output is an external workflow handoff, not a reusable product phase or
@@ -156,7 +156,8 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                 artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root,
-                environ=environ, token=token, **tooling) as inputs:
+                environ=environ, token=token, **tooling,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
             unchanged()
             identity = PhaseInstanceId("sdk", preparation_component,
                                       preparation_phase, preparation_target)
@@ -289,11 +290,15 @@ def main(argv=None):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name.replace("_root", "") if name in {"discovery_root", "state_root"} else name: value
                  for name, value in vars(args).items()
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     arguments["preparation_state"] = arguments.pop("preparation_state_root")
+    if "retained_sdk_inputs_source" in arguments:
+        arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+            arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
     for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
         path = arguments.pop(name)
         if path is not None:

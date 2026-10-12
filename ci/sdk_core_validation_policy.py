@@ -41,7 +41,7 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             keyring, keys_directory, repository_root, environ, token,
             native_compiler_archive=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None, expected_metadata_build_key=None):
+            sdk_android_metadata_admission=None, expected_metadata_build_key=None, retained_sdk_inputs_source=None):
     """Write an exact facade request; never read authority from a retained request."""
     require_no_signing_secret(environ)
     if target not in SDK_FACADE_TARGETS:
@@ -162,7 +162,8 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
-                token=token, **policies) as sdk_inputs:
+                token=token, **policies,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as sdk_inputs:
             if {"product": "sdk", "component": "sdk-core", "phase": "validation", "target": target} not in \
                     sdk_inputs["selection"]["consumers"]:
                 raise ValueError("Original S858 selection does not include Core validation target")
@@ -220,6 +221,7 @@ def main(argv=None):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = vars(parser.parse_args(argv))
     for name, replacement in (("discovery_root", "discovery"), ("state_root", "state")):
         args[replacement] = args.pop(name)
@@ -227,6 +229,9 @@ def main(argv=None):
         if args[name] is not None:
             args[name] = product_reuse._canonical_control(args[name], "Core caller " + name)
     try:
+        if "retained_sdk_inputs_source" in args:
+            args["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                args["retained_sdk_inputs_source"], "Caller retained SDK input source")
         with metadata_admission_options(args) as admissions:
             prepare(**args, **admissions, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
     except (OSError, ValueError) as error:

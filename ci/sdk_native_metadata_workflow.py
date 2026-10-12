@@ -30,7 +30,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             tooling_evidence, tooling_public_key, java_executable,
             required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
             preparation_phase="package", preparation_target="desktop", sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None):
     """Run the existing five-host metadata caller and publish its shard last."""
     if component not in NATIVE_BINDINGS or preparation_component not in NATIVE_BINDINGS:
         raise ValueError("Native metadata execution requires fixed native language components")
@@ -87,7 +87,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple) as inputs:
+                repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as inputs:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
@@ -231,12 +232,16 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name: value for name, value in vars(args).items()
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Native metadata tooling keyring and keys directory must be supplied together")
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
         apple_policy = arguments.pop("sdk_apple_validation_policy")
         if apple_policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(

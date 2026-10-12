@@ -466,5 +466,222 @@ class SdkInputsUploadTest(unittest.TestCase):
         self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
 
 
+
+import sdk_handoff
+from runtime_reference_transport import SDK_INPUT_REFERENCE_NAME, SDK_REFERENCE_NAME
+
+class SdkBindingTest(unittest.TestCase):
+    archive = fixture.RuntimeAggregateUploadTest.archive
+    def setUp(self):
+        fixture.RuntimeAggregateUploadTest.setUp(self)
+        self.jobs[0]['name']='product-validation / sdk-inputs'
+        self.jobs.append({**self.jobs[0],'id':82,'name':'product-validation / runtime-aggregate-attestation'})
+        self.artifact['name']=f"codex-agent-sdk-inputs-{self.producer['tree']}-attempt-2"
+        self.current_producer={**self.producer,'runId':72,'runAttempt':1,'commit':'d'*40,'tree':'e'*40}
+        self.current_plan={**self.plan,'validationCommit':'d'*40,'validationTree':'e'*40}
+        self.current_run={**deepcopy(self.run),'id':72,'run_attempt':1}
+        self.current_jobs=[{**self.jobs[0],'id':83,'run_id':72}]
+        self.current_commit={**self.commit,'sha':'d'*40,'tree':{'sha':'e'*40}}
+        self.runtime_artifact={**deepcopy(self.artifact),'id':703,'digest':'sha256:'+'e'*64,
+            'archive_download_url':self.artifact['archive_download_url'].replace('701','703'),
+            'name':f"codex-agent-runtime-aggregate-release-handoff-{self.producer['tree']}-attempt-2"}
+        self.runtime_source=dict(artifactId=703,artifactSha256=self.runtime_artifact['digest'],
+            producer=self.producer,workflowSha=self.pin,buildKey=self.key,metadataReceiptSha256=self.digest)
+        self.transport=dict(artifact=self.runtime_artifact,captureProducer=self.producer,
+            observed=[],aggregateBuildKey=self.key,aggregateReceiptSha256=self.digest)
+        self.files={'sdk-inputs/content':b'opaque SDK product bytes remain subject to full signed gates',
+            'runtime-capture/plan/impact-plan.json':canonical_json_bytes(self.plan),
+            'runtime-capture/capture-transport.json':canonical_json_bytes(self.transport),
+            'runtime-capture/original/body.bin':b'opaque original Runtime body'}
+        self.plan_path.write_bytes(canonical_json_bytes(self.current_plan))
+        self.downloads=[]
+        self.prepare()
+    def prepare(self,thin=False):
+        def archive(files):
+            out=io.BytesIO()
+            with zipfile.ZipFile(out,'w') as z:
+                for name,raw in files.items():z.writestr(name,raw)
+            return out.getvalue()
+        files=deepcopy(self.files)
+        if thin:
+            inventory=sorted([dict(relativePath=k,bytes=len(v),sha256=sha256_bytes(v)) for k,v in files.items()],key=lambda r:r['relativePath'])
+            del files['runtime-capture/original/body.bin']
+            files[SDK_REFERENCE_NAME]=canonical_json_bytes(dict(schemaVersion=1,source=self.runtime_source,inventory=inventory))
+        self.raw=archive(files)
+        self.artifact.update(digest=sha256_bytes(self.raw),size_in_bytes=len(self.raw))
+        self.source=dict(artifactId=701,artifactSha256=self.artifact['digest'],producer=self.producer,workflowSha=self.pin)
+        self.binding=dict(schemaVersion=1,source=deepcopy(self.source),runtimeSource=deepcopy(self.runtime_source),
+            planSha256=sha256_bytes(canonical_json_bytes(self.current_plan)))
+        self.wrapper(archive)
+    def wrapper(self,archive=None):
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w') as z:
+            z.writestr(SDK_INPUT_REFERENCE_NAME,canonical_json_bytes(self.binding))
+            z.writestr('runtime-capture/plan/impact-plan.json',canonical_json_bytes(self.current_plan))
+        self.current_raw=out.getvalue()
+        self.current_artifact={**deepcopy(self.artifact),'id':702,'name':f"codex-agent-sdk-inputs-{'e'*40}-attempt-1",
+            'archive_download_url':self.artifact['archive_download_url'].replace('701','702'),
+            'workflow_run':{**deepcopy(self.artifact['workflow_run']),'id':72},
+            'digest':sha256_bytes(self.current_raw),'size_in_bytes':len(self.current_raw)}
+    def api(self,url,token):
+        self.assertEqual('synthetic-token',token)
+        if '/actions/artifacts/702' in url:return json.dumps(self.current_artifact).encode()
+        if '/actions/artifacts/703' in url:return json.dumps(self.runtime_artifact).encode()
+        if '/actions/runs/72/attempts/1/jobs?' in url:return json.dumps({'jobs':self.current_jobs}).encode()
+        if url.endswith('/actions/runs/72/attempts/1'):return json.dumps(self.current_run).encode()
+        if url.endswith('/git/commits/'+'d'*40):return json.dumps(self.current_commit).encode()
+        return fixture.RuntimeAggregateUploadTest.api(self,url,token)
+    def call(self,**changes):
+        def validate(path,root,**kwargs):
+            value=json.loads(path.read_bytes())
+            expected=self.plan if 'expected_revision' in kwargs else self.current_plan
+            if value!=expected:raise ValueError('original plan mismatch')
+            return deepcopy(expected)
+        def download(artifact,token,destination,**kwargs):
+            self.downloads.append(artifact['id'])
+            Path(destination).write_bytes({701:self.raw,702:self.current_raw}[artifact['id']])
+        def runtime(plan,destination,**kwargs):
+            if changes.get('completed_frozen') is not None:
+                raise AssertionError('Completed SDK input capture rehydrated raw Runtime')
+            self.assertEqual(self.runtime_source['artifactId'],kwargs['artifact_id'])
+            self.assertEqual(self.producer,kwargs['original_producer'])
+            (destination/'original').mkdir(parents=True)
+            (destination/'original/body.bin').write_bytes(self.files['runtime-capture/original/body.bin'])
+        with patch.object(capture,'_validate_plan',side_effect=validate),patch('reuse.api_request',side_effect=self.api), \
+                patch.object(capture,'download_artifact_to_file',side_effect=download), \
+                patch.object(sdk_handoff,'_ensure_observed_sdk_commit'), \
+                patch.object(capture,'capture_runtime_aggregate_release_upload',side_effect=runtime):
+            return capture.capture_sdk_inputs_upload(self.plan_path,self.output,
+                artifact_id=702,artifact_sha256=self.current_artifact['digest'],trusted_workflow_sha=self.pin,
+                expected_source='current-runtime',repository_root=self.root,environ={'GITHUB_RUN_ID':'72','GITHUB_RUN_ATTEMPT':'1'},
+                token='synthetic-token',**{'retained_sdk_inputs_source':self.source,**changes})
+    def test_legacy_and_thin_sources_preserve_origin_and_one_worker_body_read(self):
+        for thin in (False,True):
+            with self.subTest(thin=thin):
+                self.prepare(thin);self.output=self.work/f'output-{thin}';self.downloads=[]
+                self.call()
+                self.assertEqual([702,701],self.downloads)
+                self.assertEqual(self.raw,(self.output/'plan/sdk-input-source.zip').read_bytes())
+                self.assertEqual(canonical_json_bytes(self.plan),(self.output/'plan/sdk-input-source-plan.json').read_bytes())
+                self.assertEqual(self.plan_path.read_bytes(),(self.output/'original/runtime-capture/plan/impact-plan.json').read_bytes())
+                capture._verify_retained_sdk_upload_archive(self.output,self.current_artifact)
+                (self.output/'original/sdk-inputs/content').write_bytes(b'changed')
+                with self.assertRaises(ValueError):capture._verify_retained_sdk_upload_archive(self.output,self.current_artifact)
+    def test_completed_runtime_keeps_sdk_bytes_and_native_origin_without_raw_hydration(self):
+        from ci.tests.test_completed_frozen_reuse import CompletedFrozenReuseTest
+        native = CompletedFrozenReuseTest()
+        native.setUp()
+        cap, _ = native.fetched(self.work)
+        for thin in (False, True):
+            with self.subTest(thin=thin):
+                self.prepare(thin)
+                self.output = self.work / f'deferred-{thin}'
+                self.downloads = []
+                transport = self.call(completed_frozen=cap)
+                self.assertEqual('completed-frozen-runtime', transport['readScope'])
+                self.assertEqual([702, 701], self.downloads)
+                self.assertFalse((self.output / 'original/runtime-capture/original').exists())
+                self.assertEqual(self.files['sdk-inputs/content'],
+                    (self.output / 'original/sdk-inputs/content').read_bytes())
+                self.assertEqual(self.raw, (self.output / 'plan/sdk-input-source.zip').read_bytes())
+                # A full historical reader must not accept a deferred private capture.
+                with self.assertRaises(ValueError):
+                    capture._verify_retained_sdk_upload_archive(self.output, self.current_artifact)
+
+    def test_native_sdk_members_avoid_whole_source_transfer_but_reject_changed_bytes(self):
+        from contextlib import contextmanager
+        import reuse_qualification as qualification
+        from ci.tests.test_completed_frozen_reuse import CompletedFrozenReuseTest
+        native = CompletedFrozenReuseTest()
+        native.setUp()
+        sdk, _, _, _ = native.sdk_fixture()
+        sdk['spec']['sdkInputs'] = dict(source=self.source, runtimeSource=self.runtime_source,
+            bytes=len(self.raw), jobId=self.jobs[0]['id'])
+        def download(*args, **kwargs):
+            self.assertEqual(self.source['artifactId'], args[0])
+            self.assertEqual(self.source['artifactSha256'], args[1])
+            kwargs['destination'].write_bytes(self.raw)
+            return self.artifact, kwargs['destination']
+        with patch('reuse.api_request', side_effect=self.api), \
+                patch.object(capture, '_download_contract_ci_upload', side_effect=download) as whole, \
+                patch.object(sdk_handoff, '_ensure_observed_sdk_commit'), \
+                patch.object(capture, '_validate_plan', return_value=self.plan):
+            sdk['proof']['sdkInputs'] = qualification._issue_sdk_input_members(
+                sdk['spec'], self.work, self.root, 'synthetic-token')
+        whole.assert_called_once()
+        self.assertEqual(3, len(sdk['proof']['sdkInputs']['files']))
+        cap = qualification.CompletedFrozenReuse(native.spec, native.receipts.values(),
+            qualification._COMPLETED_FROZEN, revision='d' * 40, originals=native.qualified['originals'], sdk=sdk)
+        @contextmanager
+        def ranges(*args):
+            with zipfile.ZipFile(io.BytesIO(self.raw)) as archive:
+                yield archive, None
+        with patch('runtime_reference_archive.open_reference_archive', side_effect=ranges) as opened, \
+                patch('hydrated_evidence.copy', return_value=False):
+            self.call(completed_frozen=cap)
+            self.assertEqual([702], self.downloads)
+            opened.assert_called_once()
+            self.assertFalse((self.output / 'plan/sdk-input-source.zip').exists())
+            self.assertFalse((self.output / 'original/runtime-capture/original').exists())
+            self.assertEqual(self.files['sdk-inputs/content'], (self.output / 'original/sdk-inputs/content').read_bytes())
+            self.assertEqual(canonical_json_bytes(self.plan), (self.output / 'plan/sdk-input-source-plan.json').read_bytes())
+            self.assertEqual(self.plan_path.read_bytes(), (self.output / 'original/runtime-capture/plan/impact-plan.json').read_bytes())
+            with self.assertRaises(ValueError):
+                capture._verify_retained_sdk_upload_archive(self.output, self.current_artifact)
+            original = self.raw
+            output = io.BytesIO()
+            with zipfile.ZipFile(io.BytesIO(original)) as source, zipfile.ZipFile(output, 'w') as changed:
+                for row in source.infolist():
+                    body = source.read(row)
+                    changed.writestr(row.filename, b'x' * len(body) if row.filename == 'sdk-inputs/content' else body)
+            self.raw = output.getvalue()
+            self.output = self.work / 'changed-native-member'
+            with self.assertRaisesRegex(ValueError, 'immutable digest'):
+                self.call(completed_frozen=cap)
+            self.assertFalse(self.output.exists())
+
+    def test_pin_and_native_origin_failures_never_publish(self):
+        for case in ('no-pin','wrong-pin','source-failed','source-window','runtime-failed','wrong-runtime','source-digest','old-plan'):
+            self.prepare();self.output=self.work/case
+            original=deepcopy((self.jobs,self.artifact,self.raw))
+            kwargs={}
+            if case=='no-pin':kwargs['retained_sdk_inputs_source']=None
+            elif case=='wrong-pin':kwargs['retained_sdk_inputs_source']={**self.source,'artifactId':999}
+            elif case=='source-failed':self.jobs[0]['conclusion']='failure'
+            elif case=='source-window':self.artifact['created_at']='2026-09-11T11:15:00Z'
+            elif case=='runtime-failed':self.jobs[1]['conclusion']='failure'
+            elif case=='wrong-runtime':self.binding['runtimeSource']['buildKey']='sha256:'+'0'*64;self.wrapper()
+            elif case=='source-digest':self.raw+=b'changed'
+            else:
+                self.files['runtime-capture/plan/impact-plan.json']=canonical_json_bytes(self.current_plan);self.prepare()
+            with self.subTest(case=case),self.assertRaises(ValueError):self.call(**kwargs)
+            self.assertFalse(self.output.exists())
+            self.jobs,self.artifact,self.raw=original
+            self.files['runtime-capture/plan/impact-plan.json']=canonical_json_bytes(self.plan)
+    def test_staging_is_control_only_and_performs_no_download_or_content_admission(self):
+        with patch.object(capture,'_validate_plan',return_value=self.current_plan), \
+                patch.object(capture,'_observe_ci_producer_jobs',side_effect=AssertionError('routing observes body')), \
+                patch.object(capture,'_download_contract_ci_upload',side_effect=AssertionError('routing downloads body')):
+            sdk_handoff.stage_sdk_input_binding(self.plan_path,self.output,sdk_inputs_source=self.source,
+                runtime_source=self.runtime_source,repository_root=self.root,environ={'GITHUB_RUN_ID':'72','GITHUB_RUN_ATTEMPT':'1'})
+        rows=regular_file_inventory(self.output)
+        self.assertEqual(2,len(rows));self.assertLess(sum(row['bytes'] for row in rows),4096)
+
+    def test_binding_cannot_chain_sources_or_change_current_plan(self):
+        original_files=deepcopy(self.files)
+        for case in ('nested-source', 'current-plan', 'future-sdk', 'foreign-runtime'):
+            self.files=deepcopy(original_files);self.prepare();self.output=self.work/case
+            if case=='nested-source':
+                self.files[SDK_INPUT_REFERENCE_NAME]=canonical_json_bytes(self.binding);self.prepare()
+            elif case=='current-plan':self.binding['planSha256']='sha256:'+'0'*64
+            elif case=='future-sdk':
+                self.source['producer']={**self.source['producer'],'runId':73}
+                self.binding['source']=deepcopy(self.source)
+            else:self.binding['runtimeSource']['producer']['repository']='foreign/repository'
+            self.wrapper()
+            with self.subTest(case=case),self.assertRaises(ValueError):self.call()
+            self.assertFalse(self.output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

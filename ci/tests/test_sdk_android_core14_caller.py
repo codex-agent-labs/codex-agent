@@ -509,6 +509,7 @@ class AndroidCore14CallerTest(unittest.TestCase):
 
             def package(*args, **kwargs):
                 self.assertTrue(active)
+                self.assertEqual(kwargs["retained_sdk_inputs_source"], {"artifactId": 73})
                 self.assertIsNotNone(kwargs["sdk_facade_metadata_admission"])
                 self.assertEqual(kwargs["sdk_inputs_artifact_id"], 71)
                 self.assertEqual(kwargs["binary_artifact_id"], 72)
@@ -546,7 +547,8 @@ class AndroidCore14CallerTest(unittest.TestCase):
                     binary_original_context={"original": "binary"},
                     binary_original_workflow_path=".github/workflows/sdk-android-binary-validation.yml",
                     binary_original_job_name="product-validation / sdk-android-binary-result / sdk-android-binary-android",
-                    keyring=root / "keyring", keys_directory=root / "keys")
+                    keyring=root / "keyring", keys_directory=root / "keys",
+                    retained_sdk_inputs_source={"artifactId": 73})
                 self.assertEqual(caller.with_core14(**args)["phase"], "package")
                 self.assertFalse(active)
                 self.assertEqual(caller.with_core14(**args, destination=root / "output"),

@@ -161,7 +161,8 @@ def select_native_state(needs, *, stage):
     return forward_routing({**collector["outputs"], "state_wave": "0", "sdk_state_wave": wave}, collector["outputs"])
 
 
-def emit(plan, result, ready_plans, sources, request, root, environment, workflow_sha, output, *, runtime_wave=None):
+def emit(plan, result, ready_plans, sources, request, root, environment, workflow_sha, output, *, runtime_wave=None,
+         completed_frozen=None):
     """Called inside an authenticated transition, before its successful job gate."""
     import product_reuse as products
     from runtime_workflow import continuation_from_inspection
@@ -190,7 +191,8 @@ def emit(plan, result, ready_plans, sources, request, root, environment, workflo
             products._AGGREGATE_REQUEST_KEY: request.get(products._AGGREGATE_REQUEST_KEY, [])}
         with tempfile.TemporaryDirectory(prefix='product-routing-') as temporary:
             path = Path(temporary) / 'outputs'
-            continuation_from_inspection(inspected, path, if_selected=True)
+            continuation_from_inspection(inspected, path, if_selected=True,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             continuation = dict(line.split('=', 1) for line in path.read_text().splitlines())
     if runtime_wave == 5:
         if continuation is None or continuation['aggregate_state'] != 'completed':

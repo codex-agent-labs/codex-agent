@@ -381,5 +381,163 @@ class ReleasedDefaultSdkHandoffCliTest(unittest.TestCase):
         self.assertFalse(self.paths["destination"].exists())
 
 
+from contextlib import contextmanager
+from copy import deepcopy
+import json
+from ci.tests import test_runtime_aggregate_upload as retained_fixture
+from products.inventory import sha256_bytes
+from runtime_reference_transport import SDK_REFERENCE_NAME, validate_sdk_runtime_reference
+
+
+class RetainedSdkTransportTest(unittest.TestCase):
+    archive = retained_fixture.RuntimeAggregateUploadTest.archive
+
+    def setUp(self):
+        retained_fixture.RuntimeAggregateUploadTest.setUp(self)
+        self.runtime_artifact = {**deepcopy(self.artifact), 'id':702,'digest':'sha256:'+'e'*64,
+            'size_in_bytes':123456,'archive_download_url':self.artifact['archive_download_url'].replace('701','702')}
+        self.jobs.append({**deepcopy(self.jobs[0]),'id':82})
+        self.jobs[0]['name'] = 'product-validation / sdk-inputs'
+        self.artifact['name'] = f"codex-agent-sdk-inputs-{self.producer['tree']}-attempt-2"
+        self.old_plan = deepcopy(self.plan)
+        self.current_plan = {**self.plan,'validationCommit':'d'*40,'validationTree':'e'*40}
+        self.plan_path.write_bytes(canonical_json_bytes(self.current_plan))
+        sdk = {'sdk-inputs/runtime-receipt.json':canonical_json_bytes(self.receipt),
+               'sdk-inputs/input.dat':b'original SDK bytes'}
+        inventory = dict(schemaVersion=1,kind='sdk-inputs',files=sorted([
+            dict(relativePath=k.removeprefix('sdk-inputs/'),bytes=len(v),sha256=sha256_bytes(v))
+            for k,v in sdk.items()],key=lambda r:r['relativePath']))
+        sdk['sdk-inputs/sdk-inputs-inventory.json'] = canonical_json_bytes(inventory)
+        self.transport = dict(artifact=self.runtime_artifact,captureProducer=self.producer,observed=[],
+            aggregateBuildKey=self.key,aggregateReceiptSha256=self.digest)
+        self.files = {**sdk,'runtime-capture/plan/impact-plan.json':canonical_json_bytes(self.old_plan),
+            'runtime-capture/capture-transport.json':canonical_json_bytes(self.transport),
+            'runtime-capture/original/history.bin':b'must not extract this Runtime history'}
+        self.archive()
+        _, public, signing = generate_development_key(self.work / 'retained-policy-key')
+        self.keys = self.work / 'keys'; self.keys.mkdir()
+        (self.keys / (signing['keyId'] + '.pub')).write_bytes(public.read_bytes())
+        self.keyring = self.work / 'keyring.json'
+        self.keyring.write_bytes(canonical_json_bytes(dict(schemaVersion=1, trustDomain='release',
+            algorithm=signing['algorithm'], namespace=signing['namespace'], retiredKeys=[],
+            activeKey={name: signing[name] for name in ('keyId', 'fingerprint')})))
+        self.options = dict(sdk_inputs_source=dict(artifactId=701,artifactSha256=self.artifact['digest'],
+            producer=deepcopy(self.producer),workflowSha=self.pin),artifact_id=702,
+            artifact_sha256=self.runtime_artifact['digest'],trusted_workflow_sha=self.pin,
+            expected_build_key=self.key,expected_metadata_receipt_sha256=self.digest,
+            sdk_version='0.8.0',compatible_release_range='>=0.8.0 <0.9.0',
+            compatible_runtime_compatibility_range='>=0.8.0 <0.9.0',keyring=self.keyring,
+            keys_directory=self.keys,selection_repository_root=self.root,
+            selection_revision=self.current_plan['validationCommit'],repository_root=self.root,
+            environ={'GITHUB_RUN_ID':'72','GITHUB_RUN_ATTEMPT':'1'},token='synthetic-token',
+            expected_contract_payload_sha256='sha256:'+'f'*64,original_producer=deepcopy(self.producer))
+        self.requests=[]
+
+    def api(self,url,token):
+        self.requests.append(url)
+        if url.endswith('/actions/artifacts/702'):
+            return json.dumps(self.runtime_artifact).encode()
+        return retained_fixture.RuntimeAggregateUploadTest.api(self,url,token)
+
+    @contextmanager
+    def signed(self,root,**kwargs):
+        self.assertFalse((root.parent/'runtime-capture/original').exists())
+        yield dict(directory=root,arguments={'runtime_metadata_receipt':root/'runtime-receipt.json'})
+
+    def download(self,artifact,token,destination,**kwargs):
+        if hasattr(self,'archive_path'):
+            import shutil
+            shutil.copyfile(self.archive_path,destination)
+        else:
+            Path(destination).write_bytes(self.raw)
+
+    def call(self,**changes):
+        def plan(path,root,**kwargs):
+            expected = self.old_plan if 'expected_revision' in kwargs else self.current_plan
+            if 'expected_revision' in kwargs:
+                self.assertEqual(self.producer['commit'],kwargs['expected_revision'])
+            if path.read_bytes() != canonical_json_bytes(expected):
+                raise ValueError('original plan bytes differ')
+            return deepcopy(expected)
+        with patch.object(caller.product_reuse,'_validate_plan',side_effect=plan), \
+                patch.object(caller,'_ensure_observed_sdk_commit') as ensure_commit, \
+                patch('reuse.api_request',side_effect=self.api), \
+                patch.object(caller.product_reuse,'download_artifact_to_file',
+                    side_effect=self.download), \
+                patch('runtime_reference_archive.download_archive',side_effect=self.download), \
+                patch.object(caller,'read_sdk_release_selection',return_value={'sdkVersion':'0.8.0'}), \
+                patch.object(caller,'require_sdk_runtime_compatibility_policy'), \
+                patch('products.sdk_inputs_verification.verified_sdk_inputs',side_effect=self.signed), \
+                patch.object(caller.product_reuse,'capture_runtime_aggregate_release_upload',
+                    side_effect=AssertionError('Expanded Runtime history')):
+            return caller.capture_reused_sdk_handoff(self.plan_path,self.output,**{**self.options,**changes})
+
+    def test_immutable_commit_fetch_skips_present_objects_and_keeps_credentials_out_of_command(self):
+        from types import SimpleNamespace
+        with patch('subprocess.run',return_value=SimpleNamespace(returncode=0)) as run:
+            caller._ensure_observed_sdk_commit(self.root,self.producer,'synthetic-secret')
+        self.assertEqual(1,run.call_count)
+        with patch('subprocess.run',side_effect=[SimpleNamespace(returncode=1),SimpleNamespace(returncode=0)]) as run:
+            caller._ensure_observed_sdk_commit(self.root,self.producer,'synthetic-secret')
+        command=run.call_args.args[0]
+        self.assertEqual(self.producer['commit'],command[-1])
+        self.assertIn('--no-write-fetch-head',command)
+        self.assertNotIn('synthetic-secret',' '.join(command))
+        self.assertNotIn('--depth',command)
+        self.assertNotIn('checkout',command)
+        self.assertIn('Authorization: Basic ',run.call_args.kwargs['env']['GIT_CONFIG_VALUE_0'])
+
+    def test_legacy_and_reference_bundles_retain_original_plan_with_new_consumer_binding(self):
+        for thin in (False,True):
+            with self.subTest(thin=thin):
+                if thin:
+                    inventory=sorted([dict(relativePath=k,bytes=len(v),sha256=sha256_bytes(v))
+                        for k,v in self.files.items()],key=lambda row:row['relativePath'])
+                    del self.files['runtime-capture/original/history.bin']
+                    source=dict(artifactId=702,artifactSha256=self.runtime_artifact['digest'],producer=self.producer,
+                        workflowSha=self.pin,buildKey=self.key,metadataReceiptSha256=self.digest)
+                    self.files[SDK_REFERENCE_NAME]=canonical_json_bytes(validate_sdk_runtime_reference(
+                        dict(schemaVersion=1,source=source,inventory=inventory)))
+                    self.archive();self.options['sdk_inputs_source']['artifactSha256']=self.artifact['digest']
+                    self.output=self.work/'thin-output'
+                result=self.call()
+                self.assertEqual('sdk-inputs',result['inventory']['kind'])
+                self.assertFalse((self.output/'runtime-capture/original').exists())
+                self.assertEqual(canonical_json_bytes(self.current_plan),
+                    (self.output/'runtime-capture/plan/impact-plan.json').read_bytes())
+                self.assertEqual(canonical_json_bytes(self.old_plan),
+                    (self.output/'runtime-capture/sdk-input-origin/impact-plan.json').read_bytes())
+                self.assertEqual(canonical_json_bytes(self.transport),
+                    (self.output/'runtime-capture/sdk-input-origin/runtime-capture-transport.json').read_bytes())
+                reference=json.loads((self.output/SDK_REFERENCE_NAME).read_bytes())
+                self.assertEqual([r for r in reference['inventory'] if not r['relativePath'].startswith('runtime-capture/original/')],
+                    regular_file_inventory(self.output,excluded_paths=(SDK_REFERENCE_NAME,)))
+
+    def test_failed_or_wrong_source_and_runtime_fail_closed(self):
+        baseline=deepcopy((self.jobs,self.artifact,self.runtime_artifact,self.options))
+        for case in ('sdk-job','runtime-job','sdk-window','runtime-window','source-pin','future-source','runtime-identity'):
+            self.jobs,self.artifact,self.runtime_artifact,self.options=deepcopy(baseline)
+            if case=='sdk-job':self.jobs[0]['conclusion']='failure'
+            elif case=='runtime-job':self.jobs[1]['conclusion']='failure'
+            elif case=='sdk-window':self.artifact['created_at']='2026-09-11T11:00:00Z'
+            elif case=='runtime-window':self.runtime_artifact['created_at']='2026-09-11T11:00:00Z'
+            elif case=='source-pin':self.options['sdk_inputs_source']['workflowSha']='e'*40
+            elif case=='future-source':self.options['sdk_inputs_source']['producer']['runId']=72
+            elif case=='runtime-identity':self.options['expected_build_key']='sha256:'+'0'*64
+            with self.subTest(case=case),self.assertRaises(ValueError):self.call()
+            self.assertFalse(self.output.exists())
+
+    def test_complete_archive_digest_and_original_plan_are_mandatory(self):
+        original=self.raw
+        self.raw=original+b'changed'
+        with self.assertRaises(ValueError):self.call()
+        self.assertFalse(self.output.exists())
+        self.raw=original
+        self.files['runtime-capture/plan/impact-plan.json']=canonical_json_bytes(self.current_plan)
+        self.archive();self.options['sdk_inputs_source']['artifactSha256']=self.artifact['digest']
+        with self.assertRaisesRegex(ValueError,'original plan bytes differ'):self.call()
+        self.assertFalse(self.output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

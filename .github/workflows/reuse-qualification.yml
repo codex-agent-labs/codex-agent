@@ -7,6 +7,10 @@ on:
         description: Reauthenticate unchanged frozen originals under this reviewed verifier; never build products
         type: boolean
         default: false
+      completed-sdk:
+        description: Authenticate the preserved successful SDK resume once, without replaying product phases
+        type: boolean
+        default: false
     secrets:
       authority_read_token:
         required: false
@@ -17,13 +21,13 @@ permissions:
 
 jobs:
   preserved:
-    if: inputs.refresh != true
+    if: inputs.refresh != true && inputs.completed-sdk != true
     uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority
     secrets:
       authority_read_token: ${{ secrets.authority_read_token }}
 
   qualify:
-    if: inputs.refresh && github.repository == 'codex-agent-labs/codex-agent'
+    if: inputs.refresh && inputs.completed-sdk != true && github.repository == 'codex-agent-labs/codex-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -98,3 +102,61 @@ jobs:
             ${{ env.PROOF_WORK }}/cache-save.json
           if-no-files-found: error
           overwrite: false
+
+  completed-sdk:
+    if: inputs.completed-sdk && inputs.refresh != true && github.repository == 'codex-agent-labs/codex-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Bind the native completion issuer
+        env:
+          ISSUER_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ISSUER_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          ISSUER_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$ISSUER_REPOSITORY" = codex-agent-labs/codex-agent
+          test "$ISSUER_PATH" = .github/workflows/reuse-qualification.yml
+          test "$(git rev-parse HEAD)" = "$ISSUER_SHA"
+          {
+            echo "QUALIFICATION_ISSUER_REPOSITORY=$ISSUER_REPOSITORY"
+            echo "QUALIFICATION_ISSUER_PATH=$ISSUER_PATH"
+            echo "QUALIFICATION_ISSUER_SHA=$ISSUER_SHA"
+            echo "PROOF_WORK=$RUNNER_TEMP/completed-sdk-proof"
+          } >> "$GITHUB_ENV"
+      - name: Authenticate the successful resume and exact admitted SDK object
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/reuse_qualification.py issue-completed-sdk --work "$PROOF_WORK"
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.PROOF_WORK }}/completion.json
+          create-storage-record: false
+      - name: Preserve the independent native completion bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$PROOF_WORK/bundle.jsonl"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-completed-reuse-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROOF_WORK }}/completion.json
+            ${{ env.PROOF_WORK }}/bundle.jsonl
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90

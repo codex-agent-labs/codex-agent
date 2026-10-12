@@ -40,7 +40,7 @@ _PLAN_JOB = "product-validation / plan"
 
 @contextmanager
 def caller_original_apple_package_selector(plan_path, apple_policy, *, repository_root,
-        trusted_workflow_sha, environ, token):
+        trusted_workflow_sha, environ, token, retained_sdk_inputs_source=None):
     """Hold current caller authority and external evidence through one reuse wave.
 
     The policy is already caller-owned; its release keys are independently
@@ -60,6 +60,7 @@ def caller_original_apple_package_selector(plan_path, apple_policy, *, repositor
     if not token:
         raise ValueError("Apple package selector requires an observation token")
     policy_bytes = canonical_json_bytes(apple_policy)
+    sdk_source_bytes = canonical_json_bytes(retained_sdk_inputs_source)
     files = {name: arguments[name] for name in (
         "plan", "keyring", "tooling_public_key", "java_executable", "tooling_keyring")}
     directories = {name: arguments[name] for name in (
@@ -87,6 +88,7 @@ def caller_original_apple_package_selector(plan_path, apple_policy, *, repositor
             require_no_signing_secret(os.environ)
             require_no_signing_secret(environment)
             if (canonical_json_bytes(apple_policy) != policy_bytes
+                    or canonical_json_bytes(retained_sdk_inputs_source) != sdk_source_bytes
                     or any(read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
                         reject_symlink_parents=True) != before_files[name]
                         for name, path in files.items())
@@ -107,7 +109,9 @@ def caller_original_apple_package_selector(plan_path, apple_policy, *, repositor
             java_executable=arguments["java_executable"], policy_revision=revision,
             required_trust_domain="release", environ=environment, token=token,
             tooling_keyring=arguments["tooling_keyring"],
-            tooling_keys_directory=arguments["tooling_keys_directory"])
+            tooling_keys_directory=arguments["tooling_keys_directory"],
+            **({"retained_sdk_inputs_source": load_canonical_json_bytes(sdk_source_bytes)}
+               if retained_sdk_inputs_source is not None else {}))
         try:
             unchanged()
             yield selector
@@ -126,7 +130,8 @@ class OriginalApplePackageSelector:
     def __init__(self, scratch_root, *, repository_root, trusted_workflow_sha,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
-            environ, token, tooling_keyring=None, tooling_keys_directory=None):
+            environ, token, tooling_keyring=None, tooling_keys_directory=None,
+            retained_sdk_inputs_source=None):
         self._repository = Path(repository_root).resolve(strict=True)
         self._scratch = Path(scratch_root).resolve(strict=True)
         _require_capability_output_separate(self._scratch, self._repository)
@@ -135,6 +140,8 @@ class OriginalApplePackageSelector:
         self._workflow_sha = trusted_workflow_sha
         self._environ = environ
         self._token = token
+        # Snapshot caller policy; neither the selected receipt nor its envelope elects this source.
+        self._retained_sdk_inputs_source = load_canonical_json_bytes(canonical_json_bytes(retained_sdk_inputs_source))
         self._policy = dict(repository_root=self._repository, keyring=keyring,
             keys_directory=keys_directory, tooling_evidence=tooling_evidence,
             tooling_public_key=tooling_public_key, java_executable=java_executable,
@@ -222,7 +229,9 @@ class OriginalApplePackageSelector:
             artifact_id=sdk_artifact_id, artifact_sha256=sdk_artifact_digest,
             trusted_workflow_sha=self._workflow_sha, expected_source=source,
             repository_root=self._repository, environ=self._environ, token=self._token,
-            original_package_receipt_path=selected_receipt)
+            original_package_receipt_path=selected_receipt,
+            **({"retained_sdk_inputs_source": self._retained_sdk_inputs_source}
+               if self._retained_sdk_inputs_source is not None else {}))
         selected_stage = destination / "selected-stage"
         restored = restore_object(package_capture / "original/shard" / shard["objectPath"],
             selected_stage, build_key=shard["buildKey"],

@@ -1640,7 +1640,7 @@ def _runtime_capture_identity(observation: Mapping[str, Any], instance: PhaseIns
 def _prior_failed_runtime_objects(
     capture_root: Path, artifact_root: Path, *, trusted_workflow_sha: str | None = None,
     token: str | None = None, plan: Mapping[str, Any] | None = None,
-    consumer_producer: Mapping[str, Any] | None = None,
+    consumer_producer: Mapping[str, Any] | None = None, completed_frozen=None,
 ) -> list[dict[str, Any]]:
     """Read captured originals; optionally re-admit them from their original CI."""
     if not capture_root.exists() and not capture_root.is_symlink():
@@ -1651,6 +1651,8 @@ def _prior_failed_runtime_objects(
     if plan is not None and (not token or plan["repository"] != "codex-agent-labs/codex-agent"
                              or plan["event"] != "pull_request"):
         raise ValueError("Prior Runtime recheck requires the canonical PR and token")
+    if completed_frozen is not None and (plan is None or not trusted_workflow_sha):
+        raise ValueError("Completed Runtime replay requires fresh caller-owned original observations")
     targets = sorted(capture_root.iterdir())
     if not targets:
         raise ValueError("Prior failed Runtime capture is empty")
@@ -1673,7 +1675,8 @@ def _prior_failed_runtime_objects(
                         raise ValueError("Prior failed Runtime capture has an unexpected target")
                     require_regular_directory(captured, "Prior failed Runtime target")
                     shard = captured / "phases" / phase / "original/shard"
-                    verified = verify_phase_shard(shard, instance)
+                    verified = verify_phase_shard(shard, instance,
+                        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                     receipt = verified["receipt"]
                     producer = receipt["producer"]
                     if (receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
@@ -1708,6 +1711,25 @@ def _prior_failed_runtime_objects(
                             raise ValueError("Prior failed Runtime producer lacks a reviewed workflow")
                         observation = _canonical_control(captured / "transport/original-ci-phases.json",
                                                          "Prior Runtime original observation")
+                        if completed_frozen is not None:
+                            original_artifact = observation["artifacts"][phase]
+                            source = {"kind": "phase", "receipt": receipt,
+                                      "artifactId": original_artifact["id"],
+                                      "artifactSha256": original_artifact["digest"]}
+                            artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
+                                plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token)
+                            job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+                            job = _matching_ci_jobs(observed[0]["jobs"], job_name)[0]
+                            completed_frozen.require_original_locator(
+                                _runtime_original_locator(artifact, workflow, instance, job), receipt)
+                            fresh = {**observation, "observed": observed, "artifacts": {phase: artifact}}
+                            if _runtime_capture_identity(fresh, instance) != _runtime_capture_identity(observation, instance):
+                                raise ValueError("Completed Runtime original differs from fresh native observations")
+                            descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Completed Runtime shard")
+                            records.append({**_identity_record(instance), **{field: descriptor[field]
+                                for field in ("buildKey", "receiptSha256", "objectSha256")},
+                                "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix()})
+                            continue
                         with tempfile.TemporaryDirectory(prefix="phase-", dir=temporary) as phase_temporary:
                             replay = Path(phase_temporary).resolve(strict=True) / "capture"
                             fresh_observation = capture_runtime_original_ci_phases(
@@ -1749,6 +1771,47 @@ def _elected_prior_runtime_records(
             and phases[instance]["state"] == "retained"
             and all(phases[instance][field] == record[field]
                     for field in ("buildKey", "receiptSha256", "objectSha256"))}
+
+
+@_fresh_ci_observations
+def _capture_completed_runtime_controls(plan, producer, destination, artifact_root, *,
+                                        completed_frozen, trusted_workflow_sha, token):
+    """Preserve exact receipts and fresh original observations without body recovery."""
+    from reuse_qualification import CompletedFrozenReuse
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Completed Runtime capture requires native semantic authority")
+    completed_frozen.check_consumer({"kind": "ci", "producer": producer})
+    records = []
+    for source in completed_frozen.runtime_sources():
+        receipt = source["receipt"]
+        instance = _identity(receipt)
+        artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        jobs = _matching_ci_jobs(observed[0]["jobs"], name)
+        if len(jobs) != 1:
+            raise ValueError("Completed Runtime original job is missing or ambiguous")
+        completed_frozen.require_original_locator(
+            _runtime_original_locator(artifact, workflow, instance, jobs[0]), receipt)
+        receipt_bytes = canonical_json_bytes(receipt)
+        record = {**_identity_record(instance), "buildKey": receipt["buildKey"],
+                  "receiptSha256": sha256_bytes(receipt_bytes), "objectSha256": source["objectSha256"]}
+        completed_frozen.envelope(record, receipt_bytes)
+        capture = destination / instance.component / instance.phase / instance.target
+        shard = capture / "phases" / instance.phase / "original/shard"
+        shard.mkdir(parents=True, exist_ok=False)
+        descriptor = {"schemaVersion": 1, **record,
+                      "objectPath": object_relative_path(record["buildKey"], record["receiptSha256"])}
+        write_canonical_json(shard / PHASE_SHARD_NAME, descriptor)
+        (shard / PHASE_RECEIPT_NAME).write_bytes(receipt_bytes)
+        (capture / "transport").mkdir()
+        write_canonical_json(capture / "transport/original-ci-phases.json", {
+            "target": instance.component, "observed": observed,
+            "artifacts": {instance.phase: artifact},
+            "receiptSha256s": {instance.phase: record["receiptSha256"]}})
+        records.append({**record,
+            "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix()})
+    return sorted(records, key=_identity)
 
 
 def _validate_plan(plan_path: Path, root: Path, *, expected_revision: str | None = None) -> dict[str, Any]:
@@ -3165,7 +3228,7 @@ def _apple_package_origin(plan_path, root, workflow_sha, environment):
             "token": environment.get("GITHUB_TOKEN", "")}
 
 
-def _javascript_projection_provider(request, tooling, original_context):
+def _javascript_projection_provider(request, tooling, original_context, *, completed_frozen=None):
     """Authenticate the original upload/cwd before deriving a metadata key view."""
     if (tooling is None or original_context is None or not any(
             javascript_validation_dependencies(_identity(value)) for value in request.get("requested", []))):
@@ -3209,7 +3272,14 @@ def _javascript_projection_provider(request, tooling, original_context):
                 for index, (record, original) in enumerate(zip(records, originals, strict=True)):
                     identity = _identity(original["receipt"])
                     stages[identity] = private / "stages" / str(index)
-                    restored = restore_object(artifact_root / require_relative_path(record["objectPath"], "JS original object"),
+                    source = artifact_root / require_relative_path(record["objectPath"], "JS original object")
+                    if not source.exists() and not source.is_symlink() and completed_frozen is not None:
+                        source = private / "objects" / f"{index}.zip"
+                        plan = _validate_plan(original_context["plan_path"], original_context["repository_root"])
+                        completed_frozen.capture_object(record, source, plan=plan,
+                            producer=_consumer(plan, original_context["environ"])["producer"],
+                            trusted_workflow_sha=original_context["trusted_workflow_sha"], token=original_context["token"])
+                    restored = restore_object(source,
                         stages[identity], build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
                         object_sha256=record["objectSha256"])
                     if restored["receiptBytes"] != original["receiptBytes"]:
@@ -3276,7 +3346,8 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
         context = nullcontext(None)
     with context as factory:
         if "sdk_javascript_validation_projection_provider" not in kwargs:
-            javascript_provider = _javascript_projection_provider(request, tooling, apple_package_origin)
+            javascript_provider = _javascript_projection_provider(request, tooling, apple_package_origin,
+                **({"completed_frozen": kwargs["completed_frozen"]} if kwargs.get("completed_frozen") is not None else {}))
             if javascript_provider is not None:
                 kwargs["sdk_javascript_validation_projection_provider"] = javascript_provider
         result = plan_reuse_wave(invocation,
@@ -3529,13 +3600,20 @@ def _materialize_runtime_validation_handoffs(
     sources: Mapping[PhaseInstanceId, Path],
     destination: Path,
     artifact_root: Path,
-    original_inventory: list[dict[str, Any]] | None = None,
+    original_inventory: list[dict[str, Any]] | None = None, *, completed_frozen=None,
 ) -> list[dict[str, Any]]:
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed report reuse requires native semantic evidence")
     records = []
     for metadata in closure:
         dependencies = runtime_validation_dependencies(metadata)
         if not dependencies or any(dependency not in sources for dependency in dependencies):
             continue
+        if (completed_frozen is not None and metadata in phases
+                and completed_frozen.envelope(phases[metadata]) is not None):
+            continue  # The native semantic proof already checked these exact reports/dependencies.
         handoff = destination / f"{metadata.component}-{metadata.target}"
         receipts = {}
         reports = {}
@@ -3906,6 +3984,8 @@ class _VerifiedProductState:
     sources: dict[PhaseInstanceId, Path]
     prior_carrier_phases: dict[PhaseInstanceId, dict[str, Any]]
     prior_ready_plans: dict[PhaseInstanceId, dict[str, Any]]
+    completed_frozen: Any = None
+    capture_deferred_object: Any = None
 
 
 def _same_run_state_consumer(current_consumer, original_producer):
@@ -3937,7 +4017,7 @@ def _verified_product_state(
     *, sdk_runtime_consumer=None, authenticated_lookup_consumer=None,
     sdk_apple_validation_policy=None,
     sdk_original_workflow_sha=None, requested_scope=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> _VerifiedProductState:
     # Invocation callbacks may run before retained-result equality is checked;
     # callers must keep captured bytes private until this function returns.
@@ -3958,6 +4038,11 @@ def _verified_product_state(
                               "original_run_attempt": producer["runAttempt"]}
 
     request = _relocated_wave_control(discovery_root / "reuse-wave-request.json", "Reuse-wave request", root)
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed state requires the concrete native semantic verifier")
+        completed_frozen.check_request(request)
     requested = tuple(
         _identity(value)
         for value in require_array(request["requested"], "Reuse-wave request.requested")
@@ -3994,7 +4079,8 @@ def _verified_product_state(
             raise ValueError("Prior failed Runtime replay requires caller-pinned workflow authority")
         prior_records = _prior_failed_runtime_objects(
             prior_capture, discovery_root, trusted_workflow_sha=sdk_original_workflow_sha,
-            token=environment.get("GITHUB_TOKEN"), plan=plan, consumer_producer=consumer["producer"])
+            token=environment.get("GITHUB_TOKEN"), plan=plan, consumer_producer=consumer["producer"],
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     sdk_capture = discovery_root / "prior-failed-sdk"
     if (requested_scope is None or PhaseInstanceId("sdk", "sdk-ios", "binary", "ios") in closure) and (sdk_capture.exists() or sdk_capture.is_symlink()):
         if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
@@ -4004,7 +4090,8 @@ def _verified_product_state(
             plan=plan, plan_path=plan_path, repository_root=root,
             consumer_producer=consumer["producer"],
             trusted_workflow_sha=sdk_original_workflow_sha,
-            token=environment["GITHUB_TOKEN"], environ=environment))
+            token=environment["GITHUB_TOKEN"], environ=environment,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
     javascript_capture = discovery_root / "prior-failed-sdk-javascript"
     javascript_package = PhaseInstanceId("sdk", "javascript", "package", "node")
     if (requested_scope is None or javascript_package in closure) and (javascript_capture.exists() or javascript_capture.is_symlink()):
@@ -4061,30 +4148,43 @@ def _verified_product_state(
             if requested_scope is None or _identity(record) in closure), key=_identity)
     elif prior_records:
         raise ValueError("Prior failed Runtime capture lacks its available object request")
-    with tempfile.TemporaryDirectory(prefix="codex-agent-initial-runtime-evidence-", dir=root) as temporary:
-        derived = Path(temporary).resolve() / "initial-runtime-validation-handoffs"
-        evidence = _initial_runtime_validation_handoffs(
-            closure, initial_objects, discovery_root, derived, root,
-        )
-        prefix = derived.relative_to(root).as_posix()
-        initial_evidence = [{**record, "reports": [
-            "initial-runtime-validation-handoffs/" + path.removeprefix(prefix + "/")
-            for path in record["reports"]
-        ]} for record in evidence]
-        retained = discovery_root / "initial-runtime-validation-handoffs"
-        def scoped_inventory(path):
-            if not path.exists() and not path.is_symlink():
-                return []
-            records = regular_file_inventory(path, allow_empty=True)
-            if requested_scope is None:
-                return records
-            prefixes = {f"{instance.component}-{instance.target}" for instance in closure}
-            return [record for record in records if record["relativePath"].split("/", 1)[0] in prefixes]
-        if (derived.exists() or retained.exists() or retained.is_symlink()) and (
-            (requested_scope is None and (not derived.exists() or not retained.exists()))
-            or scoped_inventory(derived) != scoped_inventory(retained)
-        ):
-            raise ValueError("Initial Runtime validation evidence differs from authenticated original objects")
+    if completed_frozen is not None:
+        # These retained report locators grant no trust. The native completed
+        # proof covers exactly their phase identities; the ordinary decoder
+        # still validates paths and rejects unrelated/duplicate evidence.
+        initial_evidence = [record for record in require_array(
+            request["runtimeValidationEvidence"], "Completed Runtime report locators")
+            if requested_scope is None or _identity(record) in closure]
+        for record in initial_evidence:
+            instance = _identity(record)
+            phase = next((row for row in initial_objects if _identity(row) == instance), None)
+            if phase is None or completed_frozen.envelope(phase) is None:
+                raise ValueError("Completed Runtime report locator has no exact native semantic proof")
+    else:
+        with tempfile.TemporaryDirectory(prefix="codex-agent-initial-runtime-evidence-", dir=root) as temporary:
+            derived = Path(temporary).resolve() / "initial-runtime-validation-handoffs"
+            evidence = _initial_runtime_validation_handoffs(
+                closure, initial_objects, discovery_root, derived, root,
+            )
+            prefix = derived.relative_to(root).as_posix()
+            initial_evidence = [{**record, "reports": [
+                "initial-runtime-validation-handoffs/" + path.removeprefix(prefix + "/")
+                for path in record["reports"]
+            ]} for record in evidence]
+            retained = discovery_root / "initial-runtime-validation-handoffs"
+            def scoped_inventory(path):
+                if not path.exists() and not path.is_symlink():
+                    return []
+                records = regular_file_inventory(path, allow_empty=True)
+                if requested_scope is None:
+                    return records
+                prefixes = {f"{instance.component}-{instance.target}" for instance in closure}
+                return [record for record in records if record["relativePath"].split("/", 1)[0] in prefixes]
+            if (derived.exists() or retained.exists() or retained.is_symlink()) and (
+                (requested_scope is None and (not derived.exists() or not retained.exists()))
+                or scoped_inventory(derived) != scoped_inventory(retained)
+            ):
+                raise ValueError("Initial Runtime validation evidence differs from authenticated original objects")
     expected_fixed = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
@@ -4134,6 +4234,7 @@ def _verified_product_state(
     replay_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
     replay = _plan_with_sdk_tooling(
         rebased_request, sdk_validation_tooling,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         apple_package_origin=_apple_package_origin(plan_path, root, sdk_original_workflow_sha, environment),
         build_plan_consumer=lambda instance, value: _retain_product_plan(replay_plans, instance, value),
         **({"sdk_runtime_consumer": sdk_runtime_consumer}
@@ -4169,6 +4270,7 @@ def _verified_product_state(
         current_consumer, _canonical_control(state_root / "producer.json", "Product state producer")))
     if prior_materialized:
         carrier = verify_carrier(carrier_root, full_materialized, state_consumer, object_root=state_root,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             **({"selected_instances": prior_materialized} if requested_scope is not None else {}))
         prior_carrier_phases = {
             _identity(phase): phase for phase in carrier["resolution"]["phases"]
@@ -4198,6 +4300,7 @@ def _verified_product_state(
             evidence = _materialize_runtime_validation_handoffs(
                 closure, phase_records, sources,
                 temporary_root / "runtime-validation-handoffs", root,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             )
             state_request = dict(rebased_request)
             state_request["availableObjects"] = _available_object_records(
@@ -4213,6 +4316,7 @@ def _verified_product_state(
             prior_ready_plans = {}
             state_replay = _plan_with_sdk_tooling(
                 state_request, sdk_validation_tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 apple_package_origin=_apple_package_origin(plan_path, root, sdk_original_workflow_sha, environment),
                 build_plan_consumer=lambda instance, value: _retain_product_plan(
                     prior_ready_plans, instance, value,
@@ -4246,6 +4350,11 @@ def _verified_product_state(
         sources=sources,
         prior_carrier_phases=prior_carrier_phases,
         prior_ready_plans=prior_ready_plans,
+        completed_frozen=completed_frozen,
+        capture_deferred_object=(None if completed_frozen is None else
+            lambda record, destination: completed_frozen.capture_object(record, destination,
+                plan=plan, producer=current_consumer["producer"],
+                trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN"))),
     )
 
 
@@ -4294,7 +4403,7 @@ def inspect_products(
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
     include_sdk_selection: bool = False, requested_scope=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Re-elect ready plans before target setup without admitting new shards."""
     if type(include_sdk_selection) is not bool:
@@ -4311,6 +4420,7 @@ def inspect_products(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"requested_scope": requested_scope} if requested_scope is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
@@ -4379,7 +4489,7 @@ def runtime_worker_matrix(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Route only authenticated ready standalone phases, never the cheap aggregate.
 
@@ -4390,6 +4500,7 @@ def runtime_worker_matrix(
         plan_path, discovery_root, state_root, repository_root=repository_root,
         environ=environ, sdk_validation_tooling=sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     return _runtime_matrix_from_plans(inspected["readyPlans"])
@@ -4441,14 +4552,39 @@ def _restore_product_objects(state, instances, destination):
         name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
         predecessor = destination / name
         predecessor.mkdir()
-        restored = restore_object(
-            state.sources[dependency], predecessor / "stage",
-            build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
-            object_sha256=record["objectSha256"],
-        )
+        source = state.sources[dependency]
+        with tempfile.TemporaryDirectory(prefix="product-object-") as temporary:
+            if not source.exists() and not source.is_symlink() and state.completed_frozen is not None:
+                source = Path(temporary).resolve() / "object.zip"
+                if state.capture_deferred_object is None:
+                    raise ValueError("Completed predecessor lacks its authenticated original materializer")
+                state.capture_deferred_object(record, source)
+            restored = restore_object(
+                source, predecessor / "stage",
+                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"],
+            )
         (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
         restored_objects[dependency] = restored
     return restored_objects
+
+
+def _stage_completed_objects(phases, sources, destination, completed_frozen):
+    """Carry small references for completed Runtime; preserve other original object bytes."""
+    from runtime_reference_transport import _copy_exact
+    from reuse_qualification import CompletedFrozenReuse
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Deferred continuation requires native semantic authority")
+    staged = {}
+    for phase in phases:
+        instance = _identity(phase)
+        target = destination / "original-objects" / object_relative_path(
+            phase["buildKey"], phase["receiptSha256"])
+        if completed_frozen.envelope(phase) is None:
+            _copy_exact(sources[instance], target,
+                {"bytes": sources[instance].stat().st_size, "sha256": phase["objectSha256"]})
+        staged[instance] = target
+    return staged
 
 
 def _capture_sdk_runtime_predecessors(selected, destination):
@@ -4475,7 +4611,7 @@ def _capture_sdk_runtime_predecessors(selected, destination):
 
 
 def _materialize_product_predecessors(state, instance, destination, expected_build_key, root, *,
-                                      sdk_runtime_originals=None, original_inventory=None):
+                                      sdk_runtime_originals=None, original_inventory=None, materialized_scope=None):
     expected_build_key = require_sha256(expected_build_key, "Expected elected build key")
     if instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Unknown product phase instance")
@@ -4491,6 +4627,15 @@ def _materialize_product_predecessors(state, instance, destination, expected_bui
         raise ValueError("Elected product phase lacks an authenticated original predecessor")
     if any(dependency not in (sdk_runtime_originals or {}) for dependency in runtime_dependencies):
         raise ValueError("Elected SDK phase lacks an authenticated original Runtime predecessor")
+    if materialized_scope is not None:
+        if (not isinstance(materialized_scope, tuple) or not materialized_scope
+                or len(set(materialized_scope)) != len(materialized_scope)
+                or not set(materialized_scope) <= set((*dependencies, *runtime_dependencies))):
+            raise ValueError("Materialized predecessors must be a unique subset of the authenticated dependency closure")
+        # All dependencies above remain authenticated and bound to the elected
+        # key. Workers explicitly declare which original stages they will read.
+        dependencies = tuple(item for item in dependencies if item in materialized_scope)
+        runtime_dependencies = tuple(item for item in runtime_dependencies if item in materialized_scope)
     destination = _prepare_destination(destination, root)
     destination.rmdir()
     with tempfile.TemporaryDirectory(prefix="codex-agent-product-inputs-", dir=root) as temporary:
@@ -4552,8 +4697,9 @@ def materialize_product_predecessors(
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    completed_frozen=None, materialized_scope=None,
 ) -> dict[str, Any]:
-    """Restore the full original closure, not new evidence or execution authority."""
+    """Authenticate the full closure and restore the caller's consumed original stages."""
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
     discovery_root, state_root, destination = _product_materialization_paths(
         root, discovery_root, state_root, destination)
@@ -4563,13 +4709,16 @@ def materialize_product_predecessors(
             plan_path, discovery_root, state_root, root,
             os.environ if environ is None else environ, sdk_validation_tooling,
             sdk_original_workflow_sha=sdk_original_workflow_sha,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             **({"requested_scope": (instance,)} if instance.product == "sdk" else {}),
             **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=lambda selected: originals.update(
                 _capture_sdk_runtime_predecessors(selected, Path(temporary) / "originals")),
             **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
         return _materialize_product_predecessors(state, instance, destination, expected_build_key, root,
-                                                sdk_runtime_originals=originals)
+                                                sdk_runtime_originals=originals,
+                                                **({"materialized_scope": materialized_scope}
+                                                   if materialized_scope is not None else {}))
 
 
 @verification_scoped
@@ -5667,6 +5816,7 @@ def collect_runtime_workers(
     sdk_family: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
     sdk_worker_workflow_path: str | None = None, sdk_worker_job_name: str | None = None,
+    completed_frozen=None,
 ) -> dict[str, Any]:
     """Collect elected Runtime or JavaScript SDK rows without erasing originals.
 
@@ -5700,6 +5850,7 @@ def collect_runtime_workers(
     environment = os.environ if environ is None else environ
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
         sdk_original_workflow_sha=trusted_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     producer = state.producer
@@ -5951,7 +6102,7 @@ def advance_products(
     sdk_family: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
     routing_output: bool = False,
-    runtime_collection_wave: int | None = None,
+    runtime_collection_wave: int | None = None, completed_frozen=None,
 ) -> dict[str, Any]:
     github_output(github_output_path, {
         "full_reuse": False,
@@ -5979,6 +6130,7 @@ def advance_products(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         sdk_apple_validation_policy=sdk_apple_validation_policy,
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     plan = state.plan
@@ -6079,6 +6231,7 @@ def advance_products(
         evidence = _materialize_runtime_validation_handoffs(
             closure, phase_records, sources,
             temporary_root / "runtime-validation-handoffs", root,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         )
         advanced_request = dict(rebased_request)
         advanced_request["availableObjects"] = _available_object_records(
@@ -6150,6 +6303,7 @@ def advance_products(
         ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         advanced = _plan_with_sdk_tooling(
             advanced_request, sdk_validation_tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             apple_policy=sdk_apple_validation_policy,
             apple_package_origin=_apple_package_origin(plan_path, root, sdk_original_workflow_sha,
                 os.environ if environ is None else environ),
@@ -6198,13 +6352,18 @@ def advance_products(
         final_carrier_name = "carrier" if advanced["fullReuse"] else "reused-carrier"
         staged_destination = temporary_root / "result"
         staged_destination.mkdir(exist_ok=True)
+        staged_sources = None
+        if completed_frozen is not None:
+            staged_sources = _stage_completed_objects(selected_phases, sources, staged_destination, completed_frozen)
         if selected:
             write_carrier(
                 staged_destination / final_carrier_name,
                 normalized,
                 selected,
-                sources,
+                sources if staged_sources is None else staged_sources,
                 consumer,
+                **({"object_root": staged_destination, "completed_frozen": completed_frozen}
+                   if completed_frozen is not None else {}),
             )
         staged_evidence = _materialize_runtime_validation_handoffs(
             closure,
@@ -6212,6 +6371,7 @@ def advance_products(
             sources,
             staged_destination / "runtime-validation-handoffs",
             staged_destination,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         )
         staged_prefix = staged_destination.relative_to(root).as_posix()
         staged_request = dict(rebased_request)
@@ -6229,12 +6389,13 @@ def advance_products(
             "buildKey": phase["buildKey"],
             "receiptSha256": phase["receiptSha256"],
             "objectSha256": phase["objectSha256"],
-            "objectPath": (
+            "objectPath": (staged_sources[instance].relative_to(root).as_posix() if staged_sources is not None else (
                 f"{staged_prefix}/{final_carrier_name}/"
                 f"{object_relative_path(phase['buildKey'], phase['receiptSha256'])}"
-            ),
+            )),
         } for instance, phase in zip(selected, selected_phases, strict=True)]
         staged_replay = _plan_with_sdk_tooling(staged_request, sdk_validation_tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             apple_policy=sdk_apple_validation_policy,
             apple_package_origin=_apple_package_origin(plan_path, root, sdk_original_workflow_sha,
                 os.environ if environ is None else environ),
@@ -6296,7 +6457,8 @@ def advance_products(
             from sdk_native_continuation import emit
             emit(plan, advanced, ready_plans.values(), sources, staged_request, root,
                  os.environ if environ is None else environ, sdk_original_workflow_sha, github_output_path,
-                 runtime_wave=runtime_collection_wave)
+                 runtime_wave=runtime_collection_wave,
+                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         publish_regular_tree(staged_destination, destination, allow_empty=True)
     github_output(github_output_path, {
         "full_reuse": advanced["fullReuse"],
@@ -6823,27 +6985,30 @@ def _register_qualified_original_projections(original, references, transports, *
 
 
 @measured
-def _publish_runtime_original_reference_handoff(inputs, state, destination):
+def _publish_runtime_original_reference_handoff(inputs, state, destination, *, completed_frozen=None):
     from runtime_reference_transport import stage_original_reference_handoff
     sources = []
     sdk = Path(state) / "prior-failed-sdk/sdk-ios/binary/ios"
     if sdk.exists() or sdk.is_symlink():
-        receipt = verify_phase_shard(sdk / "original/shard", PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))["receipt"]
+        receipt = verify_phase_shard(sdk / "original/shard", PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))["receipt"]
         captured = _canonical_control(sdk / "capture-transport.json", "Original SDK binary reference observation")
         if (captured.get("captureProducer") != receipt["producer"]
                 or captured.get("binaryReceiptSha256") != sha256_bytes(canonical_json_bytes(receipt))):
             raise ValueError("SDK original reference changes the captured receipt or producer")
         artifact = captured["artifact"]
-        sources.append({"relativePath": "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original",
-            "kind": "sdk-binary", "receipt": receipt,
-            "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
+        if completed_frozen is None or completed_frozen.sdk_original() is None:
+            sources.append({"relativePath": "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original",
+                "kind": "sdk-binary", "receipt": receipt,
+                "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
     prior = Path(state) / "prior-failed-runtime"
     if prior.exists():
         for observation_path in sorted(prior.glob("*/*/*/transport/original-ci-phases.json")):
             captured = observation_path.parent.parent
             component, phase, target = captured.relative_to(prior).parts
             receipt = verify_phase_shard(captured / f"phases/{phase}/original/shard",
-                PhaseInstanceId("runtime", component, phase, target))["receipt"]
+                PhaseInstanceId("runtime", component, phase, target),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))["receipt"]
             observation = _canonical_control(observation_path, "Original Runtime reference observation")
             if "recoveryProjection" not in observation:
                 continue
@@ -6914,7 +7079,7 @@ def capture_runtime_resume_upload(
     environ: Mapping[str, str] | None = None, token: str, state_wave: int = 0,
     sdk_state_wave: int | None = None, original_run_id: int | None = None,
     original_run_attempt: int | None = None, allow_earlier_attempt: bool = False,
-    requested_scope=None,
+    requested_scope=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Retain the exact resumed upload; full product replay grants admission."""
     require_integer(artifact_id, "Runtime resume artifact ID", 1)
@@ -6950,6 +7115,11 @@ def capture_runtime_resume_upload(
         producer = _consumer(plan, os.environ if environ is None else environ,
                              original_run_id=original_run_id,
                              original_run_attempt=original_run_attempt)["producer"]
+        if completed_frozen is not None:
+            from reuse_qualification import CompletedFrozenReuse
+            if type(completed_frozen) is not CompletedFrozenReuse:
+                raise ValueError("Deferred Runtime capture requires native completed evidence")
+            completed_frozen.check_consumer({"kind": "ci", "producer": producer})
         job_name = "product-validation / product-resume" if state_wave == 0 else f"product-validation / runtime-collect-{state_wave}"
         artifact_name = (f"codex-agent-product-resume-{producer['tree']}" if state_wave == 0 else
                          f"codex-agent-runtime-wave-{state_wave}-state-{producer['tree']}-attempt-{producer['runAttempt']}")
@@ -7008,12 +7178,14 @@ def capture_runtime_resume_upload(
                     trusted_workflow_sha=trusted_workflow_sha, token=token))
             original_references = _canonical_control(original_reference_path, "Runtime original references")
             validate_original_references(original_references)
-            if omit_ios:
-                selected_paths = selected_reference_paths(original_references, omit_sdk_ios_binary=True)
+            if omit_ios or completed_frozen is not None:
+                selected_paths = selected_reference_paths(original_references, omit_sdk_ios_binary=omit_ios,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             from hydrated_evidence import hosted
-            hosted("restore", original_references, private, **({'selected_paths': selected_paths} if omit_ios else {}))
+            hosted("restore", original_references, private,
+                   **({'selected_paths': selected_paths} if selected_paths is not None else {}))
             zipped = resolve_original_reference_handoff(original, original_references, capture_source,
-                **({'selected_paths': selected_paths} if omit_ios else {}))
+                **({'selected_paths': selected_paths} if selected_paths is not None else {}))
         if reference_path.exists() or reference_path.is_symlink():
             from runtime_reference_transport import validate_references, resolve_reference_handoff, selected_reference_paths
             references = validate_references(_canonical_control(reference_path, "Runtime references"), state_wave,
@@ -7023,8 +7195,9 @@ def capture_runtime_resume_upload(
             if base["artifactId"] == artifact_id:
                 raise ValueError("Runtime reference upload cannot refer to itself")
             _require_artifact_job_window(observed[0], job_name, artifact)
-            if omit_ios:
-                selected_paths = selected_reference_paths(references, omit_sdk_ios_binary=True)
+            if omit_ios or completed_frozen is not None:
+                selected_paths = selected_reference_paths(references, omit_sdk_ios_binary=omit_ios,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             wanted = {record["sourcePath"]: {"relativePath": record["sourcePath"],
                 "bytes": record["bytes"], "sha256": record["sha256"]} for record in references["references"]
                 if selected_paths is None or record['relativePath'] in selected_paths}
@@ -7033,7 +7206,7 @@ def capture_runtime_resume_upload(
                 token=token, wanted=wanted)
             zipped = resolve_reference_handoff(original, private / "reference-base", references,
                 state_wave=state_wave, sdk_state_wave=sdk_state_wave,
-                **({'selected_paths': selected_paths} if omit_ios else {}))
+                **({'selected_paths': selected_paths} if selected_paths is not None else {}))
         expected_roots = {"product-resume-inputs", "product-resume-state"} | (
             {"runtime-state"} if state_wave or sdk_state_wave is not None else set())
         if ({member.name for member in original.iterdir()} != expected_roots
@@ -7043,7 +7216,7 @@ def capture_runtime_resume_upload(
                 max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes:
             raise ValueError("Runtime resume upload plan differs from the validated original plan")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed}
-        if selected_paths is not None:
+        if selected_paths is not None and requested_scope is not None:
             transport['readScope'] = [_identity_record(instance) for instance in requested_scope]
         if selected_paths is not None:
             complete = original_references if original_references is not None else references
@@ -7076,9 +7249,11 @@ def capture_runtime_resume_upload(
             raise ValueError("Runtime resume capture changed before publication")
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
         if original_references is not None:
-            _register_qualified_original_projections(destination / "original", original_references,
-                original_reference_transports, trusted_workflow_sha=trusted_workflow_sha)
-            hosted("save", original_references, private, **({'selected_paths': selected_paths} if omit_ios else {}))
+            if completed_frozen is None:
+                _register_qualified_original_projections(destination / "original", original_references,
+                    original_reference_transports, trusted_workflow_sha=trusted_workflow_sha)
+            hosted("save", original_references, private,
+                   **({'selected_paths': selected_paths} if selected_paths is not None else {}))
     return transport
 
 
@@ -7174,6 +7349,42 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
     return transport
 
 
+def _sdk_binding_source_inventory(archive, binding, current_plan):
+    """Authenticate source bytes and bind the original Runtime to current routing."""
+    from runtime_reference_transport import SDK_INPUT_REFERENCE_NAME, sdk_runtime_reference_inventory
+    controls = ('runtime-capture/plan/impact-plan.json', 'runtime-capture/capture-transport.json')
+    physical, retained, identity = verified_zip_contents(archive, retained_paths=controls,
+        max_retained_bytes=16*1024*1024, allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+    if identity['sha256'] != binding['source']['artifactSha256']:
+        raise ValueError('SDK binding original archive differs from its pinned digest')
+    return _sdk_binding_controls(physical, retained, sdk_runtime_reference_inventory(archive, physical),
+                                 binding, current_plan)
+
+
+def _sdk_binding_controls(physical, retained, reference, binding, current_plan):
+    """Validate bindings after either full ZIP or independently attested member authentication."""
+    from runtime_reference_transport import SDK_INPUT_REFERENCE_NAME
+    controls = ('runtime-capture/plan/impact-plan.json', 'runtime-capture/capture-transport.json')
+    if SDK_INPUT_REFERENCE_NAME in {row['relativePath'] for row in physical} or set(retained) != set(controls):
+        raise ValueError('SDK binding must name a concrete original body, never another binding')
+    source = binding['runtimeSource']
+    transport = require_object(load_canonical_json_bytes(retained[controls[1]]), 'SDK original Runtime transport')
+    artifact = require_object(transport.get('artifact'), 'SDK original Runtime artifact')
+    if (artifact.get('id') != source['artifactId'] or artifact.get('digest') != source['artifactSha256']
+            or transport.get('captureProducer') != source['producer']
+            or transport.get('aggregateBuildKey') != source['buildKey']
+            or transport.get('aggregateReceiptSha256') != source['metadataReceiptSha256']):
+        raise ValueError('SDK binding differs from the selected original Runtime')
+    if reference is not None and reference['source'] != source:
+        raise ValueError('SDK binding differs from its original Runtime reference')
+    logical = physical if reference is None else reference['inventory']
+    if {row['relativePath'].split('/')[0] for row in logical} != {'runtime-capture', 'sdk-inputs'}:
+        raise ValueError('SDK binding original has an unsupported source layout')
+    rebound = [dict(relativePath=controls[0], bytes=len(current_plan), sha256=sha256_bytes(current_plan))
+               if row['relativePath'] == controls[0] else row for row in logical]
+    return physical, rebound, retained[controls[0]]
+
+
 def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), apple=False):
     """Check preserved upload bytes; stored transport metadata is not authority."""
     capture = Path(capture)
@@ -7181,8 +7392,6 @@ def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), ap
     if {path.name for path in capture.iterdir()} != {
             "plan", "original", "transport.zip", "capture-transport.json", *extra_roots}:
         raise ValueError("Retained SDK upload has unexpected roots")
-    if {row["relativePath"] for row in regular_file_inventory(capture / "plan")} != {"impact-plan.json"}:
-        raise ValueError("Retained SDK upload plan has unexpected files")
     artifact = require_object(artifact, "Retained SDK upload artifact")
     require_integer(artifact.get("id"), "Retained SDK upload artifact ID", 1)
     digest = require_sha256(artifact.get("digest"), "Retained SDK upload digest")
@@ -7191,11 +7400,32 @@ def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), ap
         raise ValueError("Retained SDK upload archive differs from its original digest")
     zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
         **(_APPLE_UPLOAD_ZIP_LIMITS if apple else _CATALOG_ZIP_LIMITS))
+    expected_plan_files = {'impact-plan.json'}
     if not apple:
-        from runtime_reference_transport import sdk_runtime_reference_inventory
-        reference = sdk_runtime_reference_inventory(archive, zipped)
-        if reference is not None:
-            zipped = reference['inventory']
+        from runtime_reference_transport import sdk_input_binding, sdk_runtime_reference_inventory
+        binding = sdk_input_binding(archive, zipped)
+        if binding is not None:
+            current_plan = read_regular_file_bytes(capture / 'plan/impact-plan.json', max_bytes=16*1024*1024,
+                                                  reject_symlink_parents=True)
+            if sha256_bytes(current_plan) != binding['planSha256']:
+                raise ValueError('Retained SDK binding differs from its consumer plan')
+            _, zipped, old_plan = _sdk_binding_source_inventory(
+                capture / 'plan/sdk-input-source.zip', binding, current_plan)
+            if read_regular_file_bytes(capture / 'plan/sdk-input-source-plan.json') != old_plan:
+                raise ValueError('Retained SDK binding lost its original plan')
+            origin = _canonical_control(capture / 'plan/sdk-input-source-transport.json', 'Original SDK source')
+            if (origin.get('captureProducer') != binding['source']['producer']
+                    or origin.get('artifact', {}).get('id') != binding['source']['artifactId']
+                    or origin.get('artifact', {}).get('digest') != binding['source']['artifactSha256']):
+                raise ValueError('Retained SDK binding lost its original transport')
+            expected_plan_files.update({'sdk-input-source.zip', 'sdk-input-source-plan.json',
+                                        'sdk-input-source-transport.json'})
+        else:
+            reference = sdk_runtime_reference_inventory(archive, zipped)
+            if reference is not None:
+                zipped = reference['inventory']
+    if {row['relativePath'] for row in regular_file_inventory(capture / 'plan')} != expected_plan_files:
+        raise ValueError('Retained SDK upload plan has unexpected files')
     if regular_file_inventory(capture / "original", allow_empty=True) != zipped:
         raise ValueError("Retained SDK upload content differs from its original archive")
 
@@ -7231,7 +7461,7 @@ def verify_retained_sdk_ios_upload(capture, receipt_bytes):
 
 def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, expected_source, repository_root=None, environ=None, token,
-        original_package_receipt_path=None):
+        original_package_receipt_path=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Capture exact SDK transport; caller-policy content verification remains separate.
 
     Historical recovery requires the original iOS package receipt AND its exact
@@ -7245,6 +7475,11 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         raise ValueError("SDK input capture requires an exact selected source")
     if not isinstance(token, str) or not token:
         raise ValueError("SDK input capture requires an observation token")
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if (type(completed_frozen) is not CompletedFrozenReuse or expected_source != "current-runtime"
+                or original_package_receipt_path is not None):
+            raise ValueError("Deferred SDK Runtime requires current selection and native semantic authority")
     root = (Path(__file__).resolve().parents[1] if repository_root is None else Path(repository_root)).resolve(strict=True)
     plan_path, destination = Path(plan_path).absolute(), Path(destination).absolute()
     receipt_path = (Path(original_package_receipt_path).absolute()
@@ -7277,6 +7512,8 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         producer = validate_producer(_consumer(plan, os.environ if environ is None else environ,
             **({"original_run_id": original_producer["runId"],
                 "original_run_attempt": original_producer["runAttempt"]} if original_producer else {}))["producer"])
+        if completed_frozen is not None:
+            completed_frozen.check_consumer({"kind": "ci", "producer": producer})
         if original_producer is not None and producer != original_producer:
             raise ValueError("Historical SDK input plan differs from the original package producer")
         job = "product-validation / sdk-inputs"
@@ -7292,10 +7529,78 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         _require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
         original = prepared / "original"
-        safe_extract(archive, original)
-        from runtime_reference_transport import SDK_REFERENCE_NAME, sdk_runtime_reference_inventory
-        reference = sdk_runtime_reference_inventory(archive, zipped)
-        if reference is not None:
+        from runtime_reference_transport import (SDK_REFERENCE_NAME, sdk_input_binding,
+            sdk_runtime_reference_inventory, validate_sdk_input_source)
+        binding = sdk_input_binding(archive, zipped)
+        source_archive, source_files, rebound = archive, [], None
+        qualified_members = False
+        if binding is not None:
+            if expected_source != 'current-runtime' or retained_sdk_inputs_source is None:
+                raise ValueError('SDK binding requires an independently selected original SDK source')
+            pinned = validate_sdk_input_source(load_canonical_json_bytes(canonical_json_bytes(retained_sdk_inputs_source)))
+            if binding['source'] != pinned or binding['planSha256'] != sha256_bytes(plan_bytes):
+                raise ValueError('SDK binding differs from independently selected source or current plan')
+            for source in (pinned, binding['runtimeSource']):
+                prior = source['producer']
+                if (any(prior[key] != producer[key] for key in ('repository', 'event', 'pullRequest'))
+                        or (prior['runId'], prior['runAttempt']) >= (producer['runId'], producer['runAttempt'])):
+                    raise ValueError('SDK binding requires earlier original producers for this selection')
+            prior = pinned['producer']
+            source_observed = _observe_ci_producer_jobs({'sdk-inputs': prior}, jobs_by_phase={'sdk-inputs': job},
+                trusted_workflow_sha=pinned['workflowSha'], token=token)
+            from sdk_handoff import _ensure_observed_sdk_commit
+            _ensure_observed_sdk_commit(root, prior, token)
+            qualified_members = (completed_frozen is not None
+                                 and completed_frozen.sdk_input_members(binding) is not None)
+            if qualified_members:
+                zipped, source_artifact, source_observed = completed_frozen.capture_sdk_input_members(
+                    binding, original, token)
+                retained = {path: read_regular_file_bytes(original / path,
+                    max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) for path in
+                    ('runtime-capture/plan/impact-plan.json', 'runtime-capture/capture-transport.json')}
+                zipped, rebound, prior_plan = _sdk_binding_controls(zipped, retained, None, binding, plan_bytes)
+                write_canonical_json(prepared / 'plan/sdk-input-source-inventory.json', zipped)
+                source_archive = None
+            else:
+                source_archive = prepared / 'plan/sdk-input-source.zip'
+                source_artifact, _ = _download_contract_ci_upload(pinned['artifactId'], pinned['artifactSha256'],
+                    f"codex-agent-sdk-inputs-{prior['tree']}-attempt-{prior['runAttempt']}", prior,
+                    source_observed[0]['run'], token, destination=source_archive)
+                _require_artifact_job_window(source_observed[0], job, source_artifact)
+                zipped, rebound, prior_plan = _sdk_binding_source_inventory(source_archive, binding, plan_bytes)
+            prior_plan_path = prepared / 'plan/sdk-input-source-plan.json'
+            prior_plan_path.write_bytes(prior_plan)
+            prior_value = _validate_plan(prior_plan_path, root, expected_revision=prior['commit'])
+            if (prior_value['remoteBuildAuthorized'] is not True or prior_value['event'] == 'workflow_dispatch'
+                    or _consumer(prior_value, {}, original_run_id=prior['runId'],
+                        original_run_attempt=prior['runAttempt'])['producer'] != prior):
+                raise ValueError('SDK binding original plan differs from its observed producer')
+            write_canonical_json(prepared / 'plan/sdk-input-source-transport.json', dict(
+                artifact=source_artifact, captureProducer=prior, observed=source_observed))
+            source_files = [dict(row, relativePath='plan/' + row['relativePath'])
+                for row in regular_file_inventory(prepared / 'plan') if row['relativePath'] != 'impact-plan.json']
+        reference = None if qualified_members else sdk_runtime_reference_inventory(source_archive, zipped)
+        if qualified_members:
+            pass  # Exact native-qualified members are already privately captured above.
+        elif completed_frozen is None:
+            safe_extract(source_archive, original)
+        else:
+            from runtime_reference_archive import copy_reference_member
+            zipped = [row for row in zipped if not row['relativePath'].startswith('runtime-capture/original/')
+                      and row['relativePath'] != SDK_REFERENCE_NAME]
+            with zipfile.ZipFile(source_archive) as upload:
+                for row in zipped:
+                    copy_reference_member(upload, row['relativePath'], original / row['relativePath'], row)
+        if binding is not None and reference is None or completed_frozen is not None and reference is not None:
+            source = binding['runtimeSource'] if binding is not None else reference['source']
+            runtime_job = 'product-validation / runtime-aggregate-attestation'
+            runtime_observed = _observe_ci_producer_jobs({'aggregate': source['producer']},
+                jobs_by_phase={'aggregate': runtime_job}, trusted_workflow_sha=source['workflowSha'], token=token)
+            runtime_artifact = _contract_ci_upload_metadata(source['artifactId'], source['artifactSha256'],
+                f"codex-agent-runtime-aggregate-release-handoff-{source['producer']['tree']}"
+                f"-attempt-{source['producer']['runAttempt']}", source['producer'], runtime_observed[0]['run'], token)
+            _require_artifact_job_window(runtime_observed[0], runtime_job, runtime_artifact)
+        if reference is not None and completed_frozen is None:
             if expected_source != 'current-runtime':
                 raise ValueError('SDK Runtime references cannot replace a released-default source')
             source = reference['source']
@@ -7319,6 +7624,10 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
             os.rename(resolved / 'original', target)
             (original / SDK_REFERENCE_NAME).unlink()
             zipped = reference['inventory']
+        if binding is not None:
+            (original / 'runtime-capture/plan/impact-plan.json').write_bytes(plan_bytes)
+            zipped = (rebound if completed_frozen is None else [row for row in rebound
+                if not row['relativePath'].startswith('runtime-capture/original/')])
         expected = ({"runtime-original", "current-contract", "sdk-inputs", "selection.json", "transport.json"}
                     if expected_source == "released-default" else {"runtime-capture", "sdk-inputs"})
         if {path.name for path in original.iterdir()} != expected:
@@ -7336,6 +7645,8 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
             raise ValueError("SDK input original plan differs from the selected plan")
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
                      "sdkRuntimeSource": expected_source}
+        if completed_frozen is not None:
+            transport["readScope"] = "completed-frozen-runtime"
         if receipt_bytes is not None:
             transport["packageReceiptSha256"] = sha256_bytes(receipt_bytes)
             (prepared / "original-package-receipt.json").write_bytes(receipt_bytes)
@@ -7348,6 +7659,7 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
             {"relativePath": "capture-transport.json", "bytes": len(transport_bytes),
              "sha256": sha256_bytes(transport_bytes)},
             *({**record, "relativePath": f"original/{record['relativePath']}"} for record in zipped),
+            *source_files,
         ]
         if receipt_bytes is not None:
             expected_files.append({"relativePath": "original-package-receipt.json",
@@ -7991,7 +8303,7 @@ def resume_products(
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
-    routing_output: bool = False,
+    routing_output: bool = False, completed_frozen=None,
 ) -> dict[str, Any]:
     """Resume the original discovery after Contract signing, with no new lookup."""
     github_output(github_output_path, {"full_reuse": False, "target_jobs_required": True,
@@ -8069,6 +8381,19 @@ def resume_products(
         initial_objects, original_phases = _completed_contract_objects(
             plan, prepared / "contract-state", prepared, contract_environment)
         wave["availableObjects"] = initial_objects
+        prior_records = []
+        prior_sdk_records = []
+        semantic = {} if completed_frozen is None else {"completed_frozen": completed_frozen}
+        if completed_frozen is not None:
+            prior_records = _capture_completed_runtime_controls(plan, current_producer,
+                prepared / "prior-failed-runtime", prepared, completed_frozen=completed_frozen,
+                trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN"))
+            from sdk_ios_binary_recovery import capture_completed_ios_binary
+            prior_sdk_records = capture_completed_ios_binary(prepared / "prior-failed-sdk", prepared,
+                completed_frozen=completed_frozen, plan=plan, producer=current_producer,
+                token=environment.get("GITHUB_TOKEN"))
+            wave["availableObjects"] = sorted((*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
+            completed_frozen.check_request(wave)
         ready_plans = {}
 
         def retain(instance, phase_plan):
@@ -8076,14 +8401,12 @@ def resume_products(
                 raise ValueError("Product resume elected a duplicate ready phase")
             ready_plans[instance] = phase_plan
 
-        reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+        reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy, **semantic,
             apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
             build_plan_consumer=retain,
             **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-        prior_records = []
-        prior_sdk_records = []
         if environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha:
-            if environment.get("CODEX_AGENT_HOSTED_CACHE_BACKEND"):
+            if completed_frozen is None and environment.get("CODEX_AGENT_HOSTED_CACHE_BACKEND"):
                 from hosted_reuse_proof import qualify_checkpoint
                 qualify_checkpoint(plan, private / "reference-checkpoint", environment["GITHUB_TOKEN"],
                                    trusted_workflow_sha=sdk_original_workflow_sha)
@@ -8125,7 +8448,7 @@ def resume_products(
                 ], key=_identity)
                 ready_plans.clear()
                 reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
-                    apple_policy=sdk_apple_validation_policy,
+                    apple_policy=sdk_apple_validation_policy, **semantic,
                     apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
                     build_plan_consumer=retain,
                     **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
@@ -8145,7 +8468,7 @@ def resume_products(
                         (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
                     ready_plans.clear()
                     reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
-                        apple_policy=sdk_apple_validation_policy,
+                        apple_policy=sdk_apple_validation_policy, **semantic,
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
@@ -8166,7 +8489,7 @@ def resume_products(
                         (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
                     ready_plans.clear()
                     reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
-                        apple_policy=sdk_apple_validation_policy,
+                        apple_policy=sdk_apple_validation_policy, **semantic,
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
@@ -8187,7 +8510,7 @@ def resume_products(
                         (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
                     ready_plans.clear()
                     reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
-                        apple_policy=sdk_apple_validation_policy,
+                        apple_policy=sdk_apple_validation_policy, **semantic,
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
@@ -8208,6 +8531,7 @@ def resume_products(
                 sources[instance] = remote_sources[(phase["source"], phase["transportSource"]["indexSha256"], phase["buildKey"])]
         aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
         if (aggregate in elected_prior and not wave.get(_AGGREGATE_REQUEST_KEY)
+                and (completed_frozen is None or completed_frozen.envelope(by_id[aggregate]) is None)
                 and environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha):
             records = _recover_prior_runtime_aggregate_release(captured_plan, plan, by_id[aggregate],
                 sources[aggregate], prepared, repository_root=root, environ=environment,
@@ -8215,7 +8539,7 @@ def resume_products(
             if records:
                 _merge_native_comparison_records(wave, records, key=_AGGREGATE_REQUEST_KEY)
                 ready_plans.clear()
-                reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+                reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy, **semantic,
                     apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
                     build_plan_consumer=retain,
                     **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
@@ -8239,7 +8563,7 @@ def resume_products(
                          prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /
                          "phases" / instance.phase / "original/shard")
                 descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
-                receipt = verify_phase_shard(shard, instance)["receipt"]
+                receipt = verify_phase_shard(shard, instance, **semantic)["receipt"]
                 carrier_phases.append({**by_id[instance], "state": "reused", "source": "phase-shard",
                     "transportSource": {"kind": "phase-shard",
                         "descriptorSha256": sha256_bytes(canonical_json_bytes(descriptor)),
@@ -8250,7 +8574,7 @@ def resume_products(
                       "phases": carrier_phases,
                       "matrices": {"contract": [], "runtime": [], "sdk": []}}
         write_carrier(prepared / ("carrier" if reuse["fullReuse"] else "reused-carrier"),
-                      normalized, selected, sources, _consumer(plan, environment), object_root=prepared)
+                      normalized, selected, sources, _consumer(plan, environment), object_root=prepared, **semantic)
         _write_ready_plans(prepared, ready_plans)
         # This fixed logical root is the existing relocatable discovery protocol;
         # consumers rebase only relative transport paths to their private capture.
@@ -8265,7 +8589,7 @@ def resume_products(
         if routing_output:
             from sdk_native_continuation import emit
             emit(plan, reuse, ready_plans.values(), sources, wave, root, environment,
-                 sdk_original_workflow_sha, github_output_path)
+                 sdk_original_workflow_sha, github_output_path, **semantic)
         publish_regular_tree(prepared, destination, allow_empty=True,
                              expected_inventory=regular_file_inventory(prepared, allow_empty=True))
         _retarget_runtime_original_captures(prepared, destination)
@@ -8735,6 +9059,11 @@ def parser() -> argparse.ArgumentParser:
                  "execute-runtime-aggregate", "materialize-product-predecessors",
                  "prepare-runtime-phase", "execute-runtime-phase"):
         add_metadata_admission_arguments(commands.choices[name])
+    from reuse_qualification import add_completed_frozen_argument
+    for name in ("resume-products", "advance-products", "collect-runtime-workers",
+                 "capture-runtime-resume-upload", "runtime-worker-matrix",
+                 "materialize-product-predecessors"):
+        add_completed_frozen_argument(commands.choices[name])
     return result
 
 
@@ -8742,7 +9071,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
-        with metadata_admission_options(arguments) as admissions:
+        from reuse_qualification import completed_frozen_options
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             tooling = None
             if getattr(arguments, "sdk_validation_tooling", None) is not None:
                 tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
@@ -8798,7 +9128,7 @@ def main(argv: list[str] | None = None) -> int:
                     sdk_evidence_roots=tuple(arguments.sdk_validation_evidence), sdk_validation_tooling=tooling,
                     **({"sdk_original_workflow_sha": arguments.sdk_original_workflow_sha}
                        if arguments.sdk_original_workflow_sha is not None else {}),
-                    **apple_options,
+                    **apple_options, **semantic,
                     **({"sdk_maven_evidence_roots": tuple(arguments.sdk_maven_evidence)}
                        if arguments.sdk_maven_evidence else {}),
                     **({"sdk_metadata_evidence_roots": tuple(arguments.sdk_metadata_evidence)}
@@ -8812,13 +9142,13 @@ def main(argv: list[str] | None = None) -> int:
                 collect_runtime_workers(
                     arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
                     trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
-                    sdk_validation_tooling=tooling, **apple_options)
+                    sdk_validation_tooling=tooling, **apple_options, **semantic)
             elif arguments.command == "runtime-worker-matrix":
                 github_output(arguments.github_output, {"runtime_matrix": '{"include":[]}', "runtime_workers_required": False})
                 matrix = runtime_worker_matrix(
                     arguments.plan, arguments.discovery_root, arguments.state_root,
                     sdk_validation_tooling=tooling,
-                    sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options)
+                    sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options, **semantic)
                 github_output(arguments.github_output, {"runtime_matrix": canonical_json_bytes(matrix).decode("utf-8").strip(),
                                                        "runtime_workers_required": bool(matrix["include"])})
             elif arguments.command == "capture-contract-ci":
@@ -8840,7 +9170,7 @@ def main(argv: list[str] | None = None) -> int:
                     trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
             elif arguments.command == "capture-runtime-resume-upload":
                 capture_runtime_resume_upload(
-                    arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,
+                    arguments.plan, arguments.destination, artifact_id=arguments.artifact_id, **semantic,
                     artifact_sha256=arguments.artifact_sha256,
                     trusted_workflow_sha=arguments.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""),
                     **({"state_wave": arguments.state_wave} if arguments.state_wave else {}))
@@ -8859,10 +9189,10 @@ def main(argv: list[str] | None = None) -> int:
                     arguments.contract_handoff, arguments.destination, arguments.github_output,
                     sdk_validation_tooling=tooling,
                     sdk_original_workflow_sha=arguments.sdk_original_workflow_sha,
-                    routing_output=arguments.runtime_matrix, **apple_options)
+                    routing_output=arguments.runtime_matrix, **apple_options, **semantic)
                 if arguments.handoff is not None:
                     _publish_runtime_original_reference_handoff(arguments.plan.parent.parent,
-                        arguments.destination, arguments.handoff)
+                        arguments.destination, arguments.handoff, **semantic)
             elif arguments.command == "execute-sdk-metadata":
                 execute_sdk_metadata(
                     arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
@@ -8895,7 +9225,7 @@ def main(argv: list[str] | None = None) -> int:
                     arguments.plan, arguments.discovery_root, arguments.state_root,
                     PhaseInstanceId(arguments.product, arguments.component, arguments.phase, arguments.target),
                     arguments.destination, expected_build_key=arguments.expected_build_key,
-                    sdk_validation_tooling=tooling, **apple_options, **additional,
+                    sdk_validation_tooling=tooling, **apple_options, **additional, **semantic,
                     sdk_original_workflow_sha=arguments.sdk_original_workflow_sha)
             elif arguments.command == "capture-contract-original-ci":
                 capture_contract_original_ci_phases(

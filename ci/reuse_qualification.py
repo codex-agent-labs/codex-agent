@@ -4,6 +4,7 @@ The caller owns immutable issuer/source pins. A signed record delegates only
 completed original authentication; all product admission gates still run.
 """
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import subprocess
@@ -243,11 +244,26 @@ def _authenticate_bytes(raw, signature, *, signer_commit, source_commit, policy_
     Unsupported CLI options, invalid bundles and incompatible policies fail
     closed. Nothing here elects phases or admits products.
     """
+    require_sha256(policy_sha256, "Current qualification policy")
+    _authenticate_native_subject(raw, signature, "qualification.json",
+        signer_commit=signer_commit, source_commit=source_commit)
+    value = validate(load_canonical_json_bytes(raw))
+    # A reusable issuer executes its own source; native source-digest separately
+    # binds the caller repository revision recorded in SLSA provenance.
+    if value["sourceCommit"] != signer_commit or (value["verifierPolicySha256"] != policy_sha256
+            and (not compatible or not _compatible_verifier(signer_commit))):
+        raise QualificationIncompatible("Qualification has incompatible source or verifier policy")
+    return value
+
+
+def _authenticate_native_subject(raw, signature, name, *, signer_commit, source_commit):
+    """Only native signature authentication; the distinct caller validates its claim."""
     _commit(signer_commit)
     _commit(source_commit)
-    require_sha256(policy_sha256, "Current qualification policy")
+    if name not in {"qualification.json", "completion.json"}:
+        raise ValueError("Unsupported native reuse subject")
     with tempfile.TemporaryDirectory(prefix="reuse-qualification-") as temporary:
-        subject, signed = Path(temporary) / "qualification.json", Path(temporary) / "bundle.jsonl"
+        subject, signed = Path(temporary) / name, Path(temporary) / "bundle.jsonl"
         subject.write_bytes(raw)
         signed.write_bytes(signature)
         result = subprocess.run([
@@ -263,13 +279,6 @@ def _authenticate_bytes(raw, signature, *, signer_commit, source_commit, policy_
             raise ValueError("Native qualification authority returned no verified attestation")
         if subject.read_bytes() != raw or signed.read_bytes() != signature:
             raise ValueError("Qualification changed during native authority verification")
-    value = validate(load_canonical_json_bytes(raw))
-    # A reusable issuer executes its own source; native source-digest separately
-    # binds the caller repository revision recorded in SLSA provenance.
-    if value["sourceCommit"] != signer_commit or (value["verifierPolicySha256"] != policy_sha256
-            and (not compatible or not _compatible_verifier(signer_commit))):
-        raise QualificationIncompatible("Qualification has incompatible source or verifier policy")
-    return value
 
 
 def projection(locator, path, bundle, *, signer_commit, source_commit):
@@ -355,14 +364,31 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
     Caller pins are explicit inputs. The cache and qualification payload choose
     neither the issuer workflow nor the original source revision.
     """
+    from products.verified_evidence import _source_identity
+    from products.inventory import write_canonical_json
+
+    started = time.perf_counter()
+    report, _ = _fetch_qualification_archive(destination, artifact_id=artifact_id,
+        artifact_sha256=artifact_sha256, run_id=run_id, run_attempt=run_attempt,
+        signer_commit=signer_commit, source_commit=source_commit, token=token)
+    destination = Path(destination).resolve()
+    value = authenticate(destination / "qualification.json", destination / "bundle.jsonl",
+        signer_commit=signer_commit, source_commit=source_commit,
+        policy_sha256=_source_identity(), compatible=True)
+    report.update(qualificationSha256=sha256_bytes(canonical_json_bytes(value)),
+                  seconds=str(time.perf_counter() - started))
+    write_canonical_json(destination / "qualification-restore.json", report)
+    return report
+
+
+def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, run_id, run_attempt,
+                                 signer_commit, source_commit, token, _completed_sdk=False):
+    """Fresh native origin and whole ZIP authentication shared by distinct consumers."""
     import io
     import stat
     import zipfile
     import product_reuse as products
     from products.inventory import require_integer
-    from products.verified_evidence import _source_identity
-
-    started = time.perf_counter()
     _commit(signer_commit)
     _commit(source_commit)
     require_integer(run_id, "Qualification run", 1)
@@ -374,7 +400,7 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
     producer = {"commit": source_commit, "tree": tree, "runId": run_id, "runAttempt": run_attempt,
                 "event": "pull_request", "repository": REPOSITORY, "pullRequest": 31,
                 "workflowPath": ".github/workflows/portable-reuse-proof.yml"}
-    job = "cold / qualify"
+    job = "completion / completed-sdk" if _completed_sdk else "cold / qualify"
     # Product producers remain restricted to ci.yml. This separate fixed
     # authority observer elects no product and accepts only this proof issuer.
     url = f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}"
@@ -403,14 +429,15 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
             or original_job.get("status") != "completed" or original_job.get("conclusion") != "success"):
         raise ValueError("Qualification issuer job did not succeed for its exact source")
     observed = [{"run": run, "testedCommit": tested, "jobs": jobs}]
-    name = f"reuse-qualification-{run_id}-{run_attempt}"
+    name = f"{'sdk-completed-reuse' if _completed_sdk else 'reuse-qualification'}-{run_id}-{run_attempt}"
     artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256, name,
         producer, observed[0]["run"], token)
     products._require_artifact_job_window(observed[0], job, artifact)
     _, raw = products._download_contract_ci_upload(artifact_id, artifact_sha256, name,
         producer, observed[0]["run"], token, max_bytes=32 * 1024 * 1024)
-    expected = {"qualification.json", "bundle.jsonl", "qualification-issue.json", "proof.json",
-                "prepare.json", "cache-save.json"}
+    expected = ({"completion.json", "bundle.jsonl"} if _completed_sdk else
+                {"qualification.json", "bundle.jsonl", "qualification-issue.json", "proof.json",
+                 "prepare.json", "cache-save.json"})
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         members = archive.infolist()
         if (len(members) != len(expected) or {row.filename for row in members} != expected
@@ -422,18 +449,635 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
                 raise ValueError("Qualification artifact is not bounded regular evidence")
         destination = Path(destination).resolve()
         destination.mkdir(exist_ok=False)
+        captured = {}
         for row in members:
+            captured[row.filename] = archive.read(row)  # Native CRC checked before any consumer sees bytes.
             with (destination / row.filename).open("xb") as output:
-                output.write(archive.read(row))  # Native ZIP CRC checked; no product ZIP policy change.
-    value = authenticate(destination / "qualification.json", destination / "bundle.jsonl",
-        signer_commit=signer_commit, source_commit=source_commit,
-        policy_sha256=_source_identity(),
-        compatible=True)
-    report = {"artifact": artifact, "qualificationSha256": sha256_bytes(canonical_json_bytes(value)),
-              "downloadedQualificationBytes": len(raw), "seconds": str(time.perf_counter() - started)}
-    from products.inventory import write_canonical_json
-    write_canonical_json(destination / "qualification-restore.json", report)
-    return report
+                output.write(captured[row.filename])
+    return {"artifact": artifact, "downloadedQualificationBytes": len(raw)}, captured
+
+
+_COMPLETED_FROZEN = object()
+_SDK_COMPLETED_SPEC = "ci/tests/data/sdk-completed-resume.json"
+_PHASE_FIELDS = ("product", "component", "phase", "target")
+_OBJECT_FIELDS = ("buildKey", "receiptSha256", "objectSha256")
+
+
+def _phase_records(records, label):
+    from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
+    result = {}
+    for record in require_array(records, label):
+        instance = PhaseInstanceId(*(record.get(field) for field in _PHASE_FIELDS))
+        if instance not in PHASE_INSTANCE_IDS or instance in result:
+            raise ValueError(f"{label} has an unknown or duplicate phase")
+        result[instance] = record
+    return result
+
+
+def _completed_sdk_controls(spec, controls, frozen, original):
+    """Check exact preserved controls; native authentication is required separately."""
+    if set(controls) != {row["relativePath"] for row in spec["controls"]}:
+        raise ValueError("Completed SDK proof changes its fixed control members")
+    for row in spec["controls"]:
+        validate_file_record(row, "Completed SDK control", with_kind=False)
+        raw = canonical_json_bytes(controls[row["relativePath"]])
+        if len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
+            raise ValueError("Completed SDK control differs from its approved original")
+    prefix = "product-resume-state/"
+    request, result = (controls[prefix + name] for name in ("reuse-wave-request.json", "reuse-wave-result.json"))
+    phases = _phase_records(result["phases"], "Completed SDK result")
+    available = _phase_records(request["availableObjects"], "Completed SDK originals")
+    retained = [row for row in phases.values() if row["state"] == "retained"]
+    if (len(retained) != 52 or len(available) != 52 or result["matrices"]["contract"]
+            or result["matrices"]["runtime"] or request["catalogs"] != frozen["request"]["catalogs"]
+            or request["repositoryRevision"] != spec["producer"]["commit"]
+            or request["repository"] != REPOSITORY or request["pullRequest"] != 31
+            or request["versions"] != frozen["request"]["versions"]):
+        raise ValueError("Completed SDK proof changes the successful original resume scope")
+    for instance, row in _phase_records(frozen["expectedResult"]["phases"], "Frozen phases").items():
+        if (phases.get(instance, {}).get("state") != "retained" or any(
+                phases[instance][field] != row[field] or available.get(instance, {}).get(field) != row[field]
+                for field in _OBJECT_FIELDS)):
+            raise ValueError("Completed SDK proof changes a frozen predecessor")
+    from products.registry import PhaseInstanceId
+    instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+    phase = phases[instance]
+    receipt = validate_phase_receipt(controls[
+        prefix + "prior-failed-sdk/sdk-ios/binary/ios/original/shard/phase-receipt.json"])
+    if (phase["state"] != "retained" or spec["completedPhase"] != {
+            field: phase[field] for field in (*_PHASE_FIELDS, *_OBJECT_FIELDS)}
+            or any(available[instance][field] != phase[field] for field in _OBJECT_FIELDS)
+            or receipt != original["receipt"]
+            or sha256_bytes(canonical_json_bytes(receipt)) != phase["receiptSha256"]
+            or original["objectSha256"] != phase["objectSha256"]):
+        raise ValueError("Completed SDK proof changes the approved iOS receipt or object")
+    from products.restore import object_relative_path
+    member = prefix + available[instance]["objectPath"]
+    if member != (prefix + "prior-failed-sdk/sdk-ios/binary/ios/original/shard/"
+                  + object_relative_path(phase["buildKey"], phase["receiptSha256"])):
+        raise ValueError("Completed SDK proof changes the exact preserved object member")
+    return request, phase, receipt, member
+
+
+def _observe_completed_sdk_resume(spec, token):
+    import product_reuse as products
+    from products.registry import PhaseInstanceId
+    job = "product-validation / product-resume"
+    observed = products._observe_ci_producer_jobs({"resume": spec["producer"]},
+        jobs_by_phase={"resume": job}, trusted_workflow_sha=spec["workflowSha"], token=token)
+    selected = products._matching_ci_jobs(observed[0]["jobs"], job)
+    if len(selected) != 1 or selected[0]["id"] != spec["jobId"]:
+        raise ValueError("Completed SDK resume differs from its approved successful job")
+    name = f"codex-agent-product-resume-{spec['producer']['tree']}"
+    artifact = products._contract_ci_upload_metadata(spec["artifactId"], spec["artifactSha256"],
+        name, spec["producer"], observed[0]["run"], token)
+    if artifact["size_in_bytes"] != spec["artifactBytes"]:
+        raise ValueError("Completed SDK resume changes its exact transport size")
+    products._require_artifact_job_window(observed[0], job, artifact)
+    locator = products._runtime_original_locator(artifact, spec["workflowSha"],
+        PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"), selected[0])
+    return artifact, observed, locator
+
+
+def _observe_completed_sdk_original(original, plan, producer, token):
+    import product_reuse as products
+    source = {"kind": "sdk-binary", "receipt": original["receipt"],
+              "artifactId": original["artifactId"], "artifactSha256": original["artifactSha256"]}
+    artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
+        plan, producer, source, trusted_workflow_sha=original["workflowSha"], token=token)
+    instance = products._identity(original["receipt"])
+    selected = products._matching_ci_jobs(observed[0]["jobs"],
+        "product-validation / sdk-sdk-ios-binary-ios", expected_build_key=original["receipt"]["buildKey"])
+    if len(selected) != 1:
+        raise ValueError("Completed SDK original job is missing or ambiguous")
+    return artifact, observed, products._runtime_original_locator(artifact, workflow, instance, selected[0])
+
+
+def _observe_completed_sdk_inputs(spec, token):
+    import product_reuse as products
+    from runtime_reference_transport import validate_sdk_input_source
+    value = spec["sdkInputs"]
+    source = validate_sdk_input_source(value["source"])
+    producer, job = source["producer"], "product-validation / sdk-inputs"
+    observed = products._observe_ci_producer_jobs({"inputs": producer}, jobs_by_phase={"inputs": job},
+        trusted_workflow_sha=source["workflowSha"], token=token)
+    selected = products._matching_ci_jobs(observed[0]["jobs"], job)
+    if len(selected) != 1 or selected[0]["id"] != value["jobId"]:
+        raise ValueError("Completed SDK inputs differ from their approved staging job")
+    artifact = products._contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"],
+        f"codex-agent-sdk-inputs-{producer['tree']}-attempt-{producer['runAttempt']}",
+        producer, observed[0]["run"], token)
+    if artifact["size_in_bytes"] != value["bytes"]:
+        raise ValueError("Completed SDK input transport size changed")
+    products._require_artifact_job_window(observed[0], job, artifact)
+    # This locator identifies a transport job, never a new SDK product phase.
+    locator = {"artifact": {field: artifact.get(field) for field in
+        ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
+        "job": {field: selected[0].get(field) for field in
+        ("id", "name", "run_id", "head_sha", "status", "conclusion", "started_at", "completed_at")}}
+    return artifact, observed, locator
+
+
+def _sdk_input_members(value):
+    require_exact_keys(value, {"locator", "files"}, "Native SDK input member proof")
+    rows = require_sorted_unique_records(value["files"], "Native SDK input members")
+    controls = {"runtime-capture/plan/impact-plan.json", "runtime-capture/capture-transport.json"}
+    if not 3 <= len(rows) <= 1024:
+        raise ValueError("Native SDK input member count exceeds its bound")
+    for row in rows:
+        validate_file_record(row, "Native SDK input member", with_kind=False, allow_empty=True)
+        if row["relativePath"] not in controls and not row["relativePath"].startswith("sdk-inputs/"):
+            raise ValueError("Native SDK input proof includes unrelated Runtime history")
+    if (not controls <= {row["relativePath"] for row in rows}
+            or sum(row["bytes"] for row in rows) > 1024**3):
+        raise ValueError("Native SDK input proof is missing controls or exceeds its byte bound")
+    return rows
+
+
+def _issue_sdk_input_members(spec, work, root, token):
+    import product_reuse as products
+    from sdk_handoff import _ensure_observed_sdk_commit
+    source = spec["sdkInputs"]["source"]
+    artifact, observed, locator = _observe_completed_sdk_inputs(spec, token)
+    _ensure_observed_sdk_commit(root, source["producer"], token)
+    with tempfile.TemporaryDirectory(prefix="completed-sdk-inputs-", dir=work) as temporary:
+        archive = Path(temporary) / "original.zip"
+        products._download_contract_ci_upload(source["artifactId"], source["artifactSha256"], artifact["name"],
+            source["producer"], observed[0]["run"], token, destination=archive, max_bytes=spec["sdkInputs"]["bytes"])
+        physical, _, plan_bytes = products._sdk_binding_source_inventory(archive,
+            {"source": source, "runtimeSource": spec["sdkInputs"]["runtimeSource"]}, b"")
+        plan_path = Path(temporary) / "original-plan.json"
+        plan_path.write_bytes(plan_bytes)
+        plan = products._validate_plan(plan_path, root, expected_revision=source["producer"]["commit"])
+        if (plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch"
+                or products._consumer(plan, {}, original_run_id=source["producer"]["runId"],
+                    original_run_attempt=source["producer"]["runAttempt"])["producer"] != source["producer"]):
+            raise ValueError("Completed SDK input plan differs from its approved native producer")
+        value = {"locator": locator, "files": [row for row in physical
+            if row["relativePath"].startswith("sdk-inputs/") or row["relativePath"] in {
+                "runtime-capture/plan/impact-plan.json", "runtime-capture/capture-transport.json"}]}
+        _sdk_input_members(value)
+        return value
+
+
+def _completed_frozen_controls(spec, proof, qualification):
+    """Check semantic proof contents; this pure check grants no authority."""
+    phases = _phase_records(spec["expectedResult"]["phases"], "Frozen result")
+    if (len(phases) != 50 or spec["expectedResult"]["fullReuse"] is not True
+            or any(spec["expectedResult"]["matrices"].values())
+            or proof.get("resultSha256") != sha256_bytes(canonical_json_bytes(spec["expectedResult"]))
+            or proof.get("verificationPolicySha256") != qualification["verifierPolicySha256"]
+            or type(proof.get("frozenPhases")) is not int or proof["frozenPhases"] != 50
+            or type(proof.get("selectedProductPhases")) is not int or proof["selectedProductPhases"] != 0
+            or type(proof.get("changedFrozenInventories")) is not int or proof["changedFrozenInventories"] != 0
+            or proof.get("checkpoint") != spec["signedCheckpoint"]):
+        raise ValueError("Native semantic proof differs from the fixed completed fifty-phase result")
+    original_phases = _phase_records(proof.get("freshOriginalPhases"), "Semantic original phases")
+    runtime = {instance: row for instance, row in phases.items() if instance.product == "runtime"}
+    originals = _phase_records([row["receipt"] for row in qualification["originals"]], "Qualified receipts")
+    if len(runtime) != 46 or set(original_phases) != set(runtime):
+        raise ValueError("Native semantic proof lacks the exact forty-six original Runtime phases")
+    for instance, row in phases.items():
+        if row["state"] != "retained" or any(row.get(field) is None for field in _OBJECT_FIELDS):
+            raise ValueError("Native semantic proof contains an incomplete phase")
+        if instance in runtime and (instance not in originals
+                or sha256_bytes(canonical_json_bytes(originals[instance])) != row["receiptSha256"]
+                or original_phases[instance].get("receiptSha256") != row["receiptSha256"]):
+            raise ValueError("Semantic proof differs from its independently authenticated original receipt")
+    for row in qualification["originals"]:
+        instance = next((key for key in runtime if all(row["receipt"][field] == value
+                         for field, value in ((field, getattr(key, field)) for field in _PHASE_FIELDS))), None)
+        if instance is not None and any(row[field] != runtime[instance][field]
+                                       for field in ("receiptSha256", "objectSha256")):
+            raise ValueError("Semantic proof differs from its authenticated original object")
+    return phases
+
+
+class CompletedFrozenReuse:
+    """Exact native semantic completion, separate from body qualification.
+
+    This capability contains immutable controls, never stages or deserialized
+    private product state. Bodies remain digest-checked when actually consumed.
+    Only fetch_completed_frozen can create it after fresh native authentication.
+    """
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_bodies", "_sdk")
+
+    def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None):
+        if verified is not _COMPLETED_FROZEN:
+            raise TypeError("Completed reuse requires native semantic authentication")
+        self._spec = canonical_json_bytes(spec)
+        self._receipts = tuple((tuple(row[field] for field in _PHASE_FIELDS), canonical_json_bytes(row))
+                               for row in receipts)
+        self._verified = verified
+        self._revision = revision
+        self._sdk = None if sdk is None else canonical_json_bytes(sdk)
+        self._originals = frozenset((canonical_json_bytes(record["identity"]["locator"]),
+            sha256_bytes(canonical_json_bytes(record["receipt"]))) for record in originals)
+        from products.restore import object_relative_path
+        bodies = []
+        for record in originals:
+            member = "shard/" + object_relative_path(record["receipt"]["buildKey"], record["receiptSha256"])
+            rows = [row for row in record.get("originalFiles", []) if row["relativePath"] == member]
+            if len(rows) != 1 or rows[0]["sha256"] != record["objectSha256"]:
+                raise ValueError("Completed original lacks its exact native-qualified object member")
+            bodies.append((record["receiptSha256"], canonical_json_bytes({
+                "locator": record["identity"]["locator"], "member": rows[0]})))
+        self._bodies = tuple(bodies)
+
+    def _values(self):
+        if self._verified is not _COMPLETED_FROZEN:
+            raise TypeError("Completed reuse has no semantic authority")
+        spec = load_canonical_json_bytes(self._spec)
+        return spec, _phase_records(spec["expectedResult"]["phases"], "Frozen phases")
+
+    def check_request(self, request):
+        """Require exact current candidates; additions never disappear into a hit."""
+        spec, phases = self._values()
+        if request.get("repositoryRevision") != self._revision:
+            raise QualificationIncompatible("Completed reuse request differs from the checked Git revision")
+        for field in ("repository", "pullRequest", "versions", "catalogs"):
+            if request.get(field) != spec["request"][field]:
+                raise QualificationIncompatible(f"Completed reuse requires unchanged {field}")
+        if request.get("sdkRuntimeSource") is not None:
+            raise QualificationIncompatible("Frozen reuse cannot elect an external SDK Runtime")
+        from products.reuse import _dependency_closure
+        requested = _phase_records(request["requested"], "Current requested phases")
+        closure = set(_dependency_closure(tuple(requested)))
+        phases = {instance: row for instance, row in phases.items() if instance in closure}
+        current = _phase_records(request["availableObjects"], "Current available objects")
+        authorities = _phase_records(request["phaseAuthorities"], "Current phase authorities")
+        expected = _phase_records(spec["request"]["phaseAuthorities"], "Frozen phase authorities")
+        for instance, row in phases.items():
+            if (instance not in current or any(current[instance].get(field) != row[field]
+                                               for field in _OBJECT_FIELDS)
+                    or authorities.get(instance) != expected[instance]):
+                raise QualificationIncompatible("Completed reuse requires exact frozen candidates and authorities")
+        return tuple(sorted(phases))
+
+    def check_consumer(self, consumer):
+        self._values()
+        producer = consumer.get("producer", {})
+        if (consumer.get("kind") != "ci" or producer.get("repository") != REPOSITORY
+                or producer.get("pullRequest") != 31 or producer.get("event") != "pull_request"):
+            raise QualificationIncompatible("Completed frozen carrier requires its original PR scope")
+
+    def deferred_objects(self):
+        """Body identities that routing may leave at their immutable original sources."""
+        _, phases = self._values()
+        return frozenset(row["objectSha256"] for instance, row in phases.items()
+                         if instance.product in {"runtime", "sdk"})
+
+    def sdk_original(self):
+        self._values()
+        return None if self._sdk is None else load_canonical_json_bytes(self._sdk)
+
+    def observe_sdk(self, *, plan, producer, token):
+        """Recheck both the admission source and original producer without their bodies."""
+        self.check_consumer({"kind": "ci", "producer": producer})
+        sdk = self.sdk_original()
+        if sdk is None:
+            raise ValueError("Completed SDK reuse lacks its distinct native proof")
+        source = sdk["spec"]["producer"]
+        if (source["runId"], source["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
+            raise ValueError("Completed SDK admission must precede its consumer")
+        artifact, _, locator = _observe_completed_sdk_resume(sdk["spec"], token)
+        original_artifact, observed, original_locator = _observe_completed_sdk_original(
+            sdk["original"], plan, producer, token)
+        if locator != sdk["proof"]["source"] or original_locator != sdk["proof"]["original"]:
+            raise ValueError("Completed SDK fresh native identity changed")
+        return artifact, original_artifact, observed
+
+    def sdk_input_members(self, binding):
+        """Only the independently selected input source may use the native member claim."""
+        sdk = self.sdk_original()
+        if sdk is None:
+            return None
+        expected = sdk["spec"]["sdkInputs"]
+        if binding["source"] != expected["source"] or binding["runtimeSource"] != expected["runtimeSource"]:
+            raise QualificationIncompatible("SDK binding differs from its approved native member source")
+        return _sdk_input_members(sdk["proof"]["sdkInputs"])
+
+    def capture_sdk_input_members(self, binding, destination, token):
+        from runtime_reference_archive import open_reference_archive, copy_reference_member
+        import hydrated_evidence
+        rows = self.sdk_input_members(binding)
+        if rows is None:
+            raise ValueError("SDK member capture lacks native transport qualification")
+        sdk = self.sdk_original()
+        artifact, observed, locator = _observe_completed_sdk_inputs(sdk["spec"], token)
+        if locator != sdk["proof"]["sdkInputs"]["locator"]:
+            raise ValueError("SDK input source changed after native qualification")
+        missing = [row for row in rows if not hydrated_evidence.copy(row, Path(destination) / row["relativePath"])]
+        if missing:
+            with open_reference_archive(artifact, token) as (archive, _stream):
+                for row in missing:
+                    copy_reference_member(archive, row["relativePath"], Path(destination) / row["relativePath"], row)
+        return rows, artifact, observed
+
+    def require_original_locator(self, locator, receipt):
+        """Match fresh native observations to the original that the semantic issuer checked."""
+        self._values()
+        if (canonical_json_bytes(locator), sha256_bytes(canonical_json_bytes(receipt))) not in self._originals:
+            raise ValueError("Fresh original locator differs from completed native evidence")
+
+    def capture_object(self, record, destination, *, plan, producer, trusted_workflow_sha, token):
+        """Fetch one consumed object; never hydrate unrelated original-upload members."""
+        import product_reuse as products
+        from runtime_reference_archive import open_reference_archive, copy_reference_member
+        self.check_consumer({"kind": "ci", "producer": producer})
+        envelope = self.envelope(record)
+        if envelope is None or record.get("product") not in {"runtime", "sdk"}:
+            raise ValueError("Deferred object is outside completed native authority")
+        if record["product"] == "sdk":
+            artifact, _, _ = self.observe_sdk(plan=plan, producer=producer, token=token)
+            member = self.sdk_original()["proof"]["member"]
+            with open_reference_archive(artifact, token) as (archive, _stream):
+                copy_reference_member(archive, member["relativePath"], destination, member)
+            return
+        body = load_canonical_json_bytes(next(raw for receipt, raw in self._bodies
+                                              if receipt == record["receiptSha256"]))
+        source = {"kind": "phase", "receipt": envelope["receipt"],
+                  "artifactId": body["locator"]["artifact"]["id"],
+                  "artifactSha256": body["locator"]["artifact"]["digest"]}
+        artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        instance = products._identity(envelope["receipt"])
+        name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        matches = products._matching_ci_jobs(observed[0]["jobs"], name)
+        if len(matches) != 1:
+            raise ValueError("Deferred original job is missing or ambiguous")
+        self.require_original_locator(products._runtime_original_locator(
+            artifact, workflow, instance, matches[0]), envelope["receipt"])
+        import hydrated_evidence
+        if not hydrated_evidence.copy(body["member"], destination):
+            with open_reference_archive(artifact, token) as (archive, _stream):
+                copy_reference_member(archive, body["member"]["relativePath"], destination, body["member"])
+        # The caller still performs ordinary object/receipt/manifest verification
+        # and extraction before exposing any bytes to a product worker.
+
+    def runtime_sources(self):
+        """Return copied original locators; each still needs fresh native observation."""
+        _, phases = self._values()
+        result = []
+        for instance, phase in phases.items():
+            if instance.product != "runtime":
+                continue
+            envelope = self.envelope(phase)
+            body = load_canonical_json_bytes(next(raw for receipt, raw in self._bodies
+                                                  if receipt == phase["receiptSha256"]))
+            result.append({"kind": "phase", "receipt": envelope["receipt"],
+                "artifactId": body["locator"]["artifact"]["id"],
+                "artifactSha256": body["locator"]["artifact"]["digest"],
+                "objectSha256": envelope["objectSha256"]})
+        return result
+
+    def sdk_receipts(self, arguments):
+        """Join fully signature-verified SDK inputs to this exact completed Runtime."""
+        from products.registry import PhaseInstanceId
+        spec, phases = self._values()
+        result = {PhaseInstanceId(*fields): raw for fields, raw in self._receipts if fields[0] == "runtime"}
+        for product, component, target in (("contract", "contract", "common"),
+                                           ("runtime", "runtime-aggregate", "aggregate")):
+            identity = PhaseInstanceId(product, component, "metadata", target)
+            raw = read_regular_file_bytes(arguments[f"{product}_metadata_receipt"],
+                max_bytes=LIMIT, reject_symlink_parents=True)
+            self.envelope(phases[identity], raw)
+            result[identity] = raw
+        checkpoint = {Path(row["relativePath"]).name: row for row in spec["signedCheckpoint"]}
+        for argument in ("runtime_manifest", "runtime_attestation", "runtime_attestation_signature"):
+            path = Path(arguments[argument])
+            row = checkpoint.get(path.name)
+            raw = read_regular_file_bytes(path, max_bytes=LIMIT, reject_symlink_parents=True)
+            if row is None or len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
+                raise ValueError("SDK signed Runtime differs from the completed semantic checkpoint")
+        return result
+
+    def envelope(self, record, receipt_bytes=None):
+        """Authenticate small receipt controls by the completed proof's exact digest."""
+        from products.registry import PhaseInstanceId
+        spec, phases = self._values()
+        instance = PhaseInstanceId(*(record.get(field) for field in _PHASE_FIELDS))
+        if instance not in phases:
+            return None  # Later SDK originals require their ordinary full gates.
+        expected = phases[instance]
+        if any(record.get(field) != expected[field] for field in _OBJECT_FIELDS):
+            raise ValueError("Completed original differs from its exact proved identity")
+        if receipt_bytes is None:
+            identity = tuple(record[field] for field in _PHASE_FIELDS)
+            receipt_bytes = next((raw for fields, raw in self._receipts if fields == identity), None)
+            if receipt_bytes is None:
+                return None  # Contract receipts must be supplied from retained controls.
+        if type(receipt_bytes) is not bytes or sha256_bytes(receipt_bytes) != expected["receiptSha256"]:
+            raise ValueError("Completed original receipt bytes differ from their proved digest")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+        if any(receipt[field] != expected[field] for field in (*_PHASE_FIELDS, "buildKey")):
+            raise ValueError("Completed original receipt changes phase identity")
+        return {"receipt": receipt, "receiptBytes": receipt_bytes,
+                "receiptSha256": expected["receiptSha256"], "objectSha256": expected["objectSha256"]}
+
+    def phase_plan(self, instance, values, envelope, upstream):
+        """Reuse the proved key only for identical current direct and upstream inputs."""
+        from products.restore import PHASE_PLAN_KEYS
+        from products.registry import PhaseInstanceId
+        from products.plan import _phase_version_identity
+        instance = PhaseInstanceId(*(getattr(instance, field) for field in _PHASE_FIELDS))
+        spec, phases = self._values()
+        if instance not in phases:
+            return None
+        selected = self.envelope({**{field: getattr(instance, field) for field in _PHASE_FIELDS}, **{
+            field: envelope[field] if field != "buildKey" else envelope["receipt"][field]
+            for field in _OBJECT_FIELDS}}, envelope["receiptBytes"])
+        receipt = selected["receipt"]
+        authority = _phase_records(spec["request"]["phaseAuthorities"], "Frozen authorities")[instance]
+        if (set(values) != {"inventory", "versions", "toolchain_profile_digest", "flags_digest", "output_schema_version"}
+                or values.get("versions") != spec["request"]["versions"]
+                or values.get("inventory") != receipt["inputs"]["inventory"]
+                or receipt["inputs"]["versionIdentity"] != _phase_version_identity(instance, values["versions"])
+                or any(values.get(argument) != authority[field] for argument, field in (
+                    ("flags_digest", "flagsDigest"), ("toolchain_profile_digest", "toolchainProfileDigest"),
+                    ("output_schema_version", "outputSchemaVersion")))):
+            raise QualificationIncompatible("Completed phase has changed current inputs")
+        from products.registry import phase_instance_dependencies
+        actual = _phase_records([value["receipt"] for value in upstream], "Current upstream receipts")
+        if set(actual) != set(phase_instance_dependencies(instance)) or any(
+                dependency not in phases or sha256_bytes(canonical_json_bytes(original)) !=
+                phases[dependency]["receiptSha256"] for dependency, original in actual.items()):
+            raise QualificationIncompatible("Completed phase has changed original dependencies")
+        return {field: receipt[field] for field in PHASE_PLAN_KEYS}
+
+
+def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha256,
+                           repository_root, revision, sdk_completion=None, **original):
+    """Use an independently approved frozen semantic issuer for an approved consumer.
+
+    All pins are caller policy. In particular the old verifier policy cannot be
+    read from an untrusted envelope, and the current consumer is independently
+    pinned rather than silently declared compatible with an earlier verifier.
+    The six-file native artifact includes proof.json from the actual full planner;
+    qualification.json alone is deliberately insufficient.
+    """
+    import product_reuse as products
+    from products.inventory import git_regular_blob_bytes, tree_entries
+    from products.selection import phase_inventory_paths
+
+    _commit(consumer_commit)
+    _commit(revision)
+    require_sha256(verifier_policy_sha256, "Approved frozen semantic verifier policy")
+    if not _compatible_verifier(consumer_commit):
+        raise QualificationIncompatible("Completed reuse consumer differs from its independent approval")
+    root = Path(repository_root).resolve(strict=True)
+    report, captured = _fetch_qualification_archive(destination, **original)
+    qualified = _authenticate_bytes(captured["qualification.json"], captured["bundle.jsonl"],
+        signer_commit=original["signer_commit"], source_commit=original["source_commit"],
+        policy_sha256=verifier_policy_sha256)  # Exact approved old policy, no compatibility fallback.
+    spec = load_canonical_json_bytes(git_regular_blob_bytes(root, original["signer_commit"],
+        "ci/tests/data/hosted-frozen-reuse.json", max_bytes=LIMIT))
+    proof = load_canonical_json_bytes(captured["proof.json"])
+    phases = _completed_frozen_controls(spec, proof, qualified)
+    baseline, current = (dict(tree_entries(root, commit)) for commit in (spec["inventoryBaseline"], revision))
+    for instance in phases:
+        before = phase_inventory_paths(baseline, instance)
+        after = phase_inventory_paths(current, instance)
+        if before != after or any(baseline[path] != current[path] for path in after):
+            raise QualificationIncompatible(f"Completed phase owning inputs changed: {instance}")
+    # Revoked/rotated public trust must not inherit an older completion decision.
+    authority = dict(tree_entries(root, original["signer_commit"]))
+    def public_policy(entries):
+        return {path: value for path, value in entries.items() if path ==
+                "gradle/release/product-signing-keys.json" or path.startswith("gradle/release/keys/")}
+    if public_policy(authority) != public_policy(current):
+        raise QualificationIncompatible("Completed reuse public trust changed")
+    authorities, unavailable = products._authorities(root, revision, tuple(sorted(phases)))
+    if (unavailable or authorities != spec["request"]["phaseAuthorities"]
+            or products._versions(root, revision) != spec["request"]["versions"]):
+        raise QualificationIncompatible("Completed reuse current Git authority or versions changed")
+    receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
+    sdk = None
+    if sdk_completion is not None:
+        sdk = _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
+            root=root, revision=revision, frozen=spec, token=original["token"])
+        request, phase, receipt, _ = _completed_sdk_controls(
+            sdk["spec"], sdk["proof"]["controls"], spec, sdk["original"])
+        instance = products._identity(receipt)
+        for field in ("availableObjects", "phaseAuthorities"):
+            spec["request"][field] = sorted([*spec["request"][field],
+                _phase_records(request[field], field)[instance]], key=products._identity)
+        spec["expectedResult"]["phases"] = sorted([*spec["expectedResult"]["phases"], phase], key=products._identity)
+        receipts.append(receipt)
+    report.update(completedFrozenPhases=len(phases), completedSdkPhases=int(sdk is not None), productBodiesDownloaded=0)
+    return CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
+        originals=qualified["originals"], sdk=sdk), report
+
+
+def _native_pin_arguments(value):
+    require_exact_keys(value, {"artifactId", "artifactSha256", "runId", "runAttempt",
+                              "signerCommit", "sourceCommit"}, "Completed SDK native pins")
+    return {argument: value[field] for argument, field in (
+        ("artifact_id", "artifactId"), ("artifact_sha256", "artifactSha256"), ("run_id", "runId"),
+        ("run_attempt", "runAttempt"), ("signer_commit", "signerCommit"), ("source_commit", "sourceCommit"))}
+
+
+def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token):
+    import product_reuse as products
+    from products.inventory import git_regular_blob_bytes, tree_entries
+    from products.selection import phase_inventory_paths
+    arguments = _native_pin_arguments(pins)
+    _, captured = _fetch_qualification_archive(destination, **arguments, token=token, _completed_sdk=True)
+    _authenticate_native_subject(captured["completion.json"], captured["bundle.jsonl"], "completion.json",
+        signer_commit=arguments["signer_commit"], source_commit=arguments["source_commit"])
+    proof = require_exact_keys(load_canonical_json_bytes(captured["completion.json"]), {
+        "schemaVersion", "kind", "issuerCommit", "specSha256", "source", "original", "controls", "member", "sdkInputs"},
+        "Native completed SDK proof")
+    raw = git_regular_blob_bytes(root, arguments["signer_commit"], _SDK_COMPLETED_SPEC, max_bytes=LIMIT)
+    spec = load_canonical_json_bytes(raw)
+    original = load_canonical_json_bytes(git_regular_blob_bytes(root, arguments["signer_commit"],
+        "ci/tests/data/sdk-ios-qualification.json", max_bytes=LIMIT))
+    if (type(proof["schemaVersion"]) is not int or proof["schemaVersion"] != 1
+            or proof["kind"] != "completed-sdk-reuse" or proof["issuerCommit"] != arguments["signer_commit"]
+            or proof["specSha256"] != sha256_bytes(raw)):
+        raise ValueError("Native completed SDK proof differs from its approved issuer")
+    request, phase, receipt, member = _completed_sdk_controls(spec, proof["controls"], frozen, original)
+    validate_file_record(proof["member"], "Completed SDK object member", with_kind=False)
+    if (proof["member"]["relativePath"] != member or proof["member"]["sha256"] != phase["objectSha256"]
+            or proof["member"]["bytes"] > 8 * 1024**3):
+        raise ValueError("Native completed SDK proof changes its consumed object")
+    instance = products._identity(receipt)
+    before, after = (dict(tree_entries(root, commit)) for commit in (spec["producer"]["commit"], revision))
+    paths = phase_inventory_paths(before, instance)
+    if paths != phase_inventory_paths(after, instance) or any(before[path] != after[path] for path in paths):
+        raise QualificationIncompatible("Completed SDK owning inputs changed")
+    expected = _phase_records(request["phaseAuthorities"], "Completed SDK authority")[instance]
+    authorities, unavailable = products._authorities(root, revision, (instance,))
+    if unavailable or authorities != [expected]:
+        raise QualificationIncompatible("Completed SDK current authority changed")
+    _, _, source_locator = _observe_completed_sdk_resume(spec, token)
+    _, _, original_locator = _observe_completed_sdk_original(original,
+        {"repository": REPOSITORY, "event": "pull_request"}, spec["producer"], token)
+    if proof["source"] != source_locator or proof["original"] != original_locator:
+        raise ValueError("Completed SDK native original or admission source changed")
+    _sdk_input_members(proof["sdkInputs"])
+    _, _, inputs_locator = _observe_completed_sdk_inputs(spec, token)
+    if inputs_locator != proof["sdkInputs"]["locator"]:
+        raise ValueError("Completed SDK input native source changed")
+    return {"spec": spec, "original": original, "proof": proof}
+
+
+def add_completed_frozen_argument(parser):
+    parser.add_argument("--completed-frozen-policy", type=Path,
+        help="Independent caller-owned native semantic issuer/consumer pins; never retained product state")
+
+
+@contextmanager
+def completed_frozen_options(arguments):
+    """Authenticate explicit CLI policy once for this invocation, without ambient fallback."""
+    import os
+    values = vars(arguments) if not isinstance(arguments, dict) else arguments
+    path = values.get("completed_frozen_policy")
+    if isinstance(arguments, dict):
+        arguments.pop("completed_frozen_policy", None)
+    if path is None:
+        yield {}
+        return
+    import product_reuse as products
+    root = Path(values.get("repository_root") or Path(__file__).resolve().parents[1]).resolve(strict=True)
+    plan = values.get("plan")
+    if plan is None and values.get("input_root") is not None:
+        plan = Path(values["input_root"]) / "product-resume-inputs/plan/impact-plan.json"
+    if plan is None:
+        raise ValueError("Completed reuse policy requires the current invocation plan")
+    plan_path = Path(plan).absolute()
+    path = Path(path).absolute()
+    if path.resolve(strict=True) != path:
+        raise ValueError("Completed policy path must be normalized and non-symbolic")
+    original_plan = read_regular_file_bytes(plan_path, max_bytes=LIMIT, reject_symlink_parents=True)
+    original_policy = read_regular_file_bytes(path, max_bytes=4096, reject_symlink_parents=True)
+    policy = load_canonical_json_bytes(original_policy)
+    extra = {"sdkCompletion"} if type(policy) is dict and "sdkCompletion" in policy else set()
+    require_exact_keys(policy, {
+        "schemaVersion", "kind", "consumerCommit", "verifierPolicySha256", "artifactId", "artifactSha256",
+        "runId", "runAttempt", "signerCommit", "sourceCommit"} | extra, "Caller completed reuse policy")
+    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
+            or policy["kind"] != "completed-frozen-reuse"):
+        raise ValueError("Unsupported completed reuse policy")
+    plan = products._validate_plan(plan_path, root)
+    def unchanged():
+        if (read_regular_file_bytes(path, max_bytes=4096, reject_symlink_parents=True) != original_policy
+                or read_regular_file_bytes(plan_path, max_bytes=LIMIT, reject_symlink_parents=True) != original_plan):
+            raise ValueError("Completed reuse caller policy or current plan changed during use")
+    with tempfile.TemporaryDirectory(prefix="completed-reuse-authority-") as temporary:
+        cap, _ = fetch_completed_frozen(Path(temporary).resolve() / "native", repository_root=root,
+            revision=plan["validationCommit"], token=os.environ.get("GITHUB_TOKEN", ""),
+            **({"sdk_completion": policy["sdkCompletion"]} if extra else {}),
+            **{argument: policy[field] for argument, field in (
+                ("consumer_commit", "consumerCommit"), ("verifier_policy_sha256", "verifierPolicySha256"),
+                ("artifact_id", "artifactId"), ("artifact_sha256", "artifactSha256"), ("run_id", "runId"),
+                ("run_attempt", "runAttempt"), ("signer_commit", "signerCommit"), ("source_commit", "sourceCommit"))})
+        cap.check_consumer(products._consumer(plan, os.environ))
+        unchanged()
+        try:
+            yield {"completed_frozen": cap}
+        finally:
+            unchanged()
 
 
 def _original_receipt_bytes(source, references):
@@ -502,6 +1146,81 @@ def _qualify_frozen_sdk_ios(work, root, commit, token):
     write_canonical_json(manifest, [*existing, *({"bytes": row["bytes"], "sha256": row["sha256"]} for row in files)])
     return {"kind": "sdk-binary", "receipt": receipt, "artifactId": spec["artifactId"],
             "artifactSha256": spec["artifactSha256"]}
+
+
+def issue_completed_sdk(work, token):
+    """Authenticate one successful completed resume once; never replay or rebuild it."""
+    import hashlib
+    import os
+    import stat
+    import zipfile
+    import product_reuse as products
+    from products.inventory import git_regular_blob_bytes, write_canonical_json
+    commit = _commit(os.environ["QUALIFICATION_ISSUER_SHA"])
+    root = Path(__file__).resolve().parents[1]
+    if (os.environ["QUALIFICATION_ISSUER_REPOSITORY"] != REPOSITORY
+            or os.environ["QUALIFICATION_ISSUER_PATH"] != ISSUER_WORKFLOW
+            or subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip() != commit
+            or not _compatible_verifier(commit)):
+        raise ValueError("Completed SDK issuer differs from its native source")
+    def source(path):
+        raw = git_regular_blob_bytes(root, commit, path, max_bytes=LIMIT)
+        if read_regular_file_bytes(root / path, max_bytes=LIMIT, reject_symlink_parents=True) != raw:
+            raise ValueError("Completed SDK fixed policy differs from its native issuer source")
+        return load_canonical_json_bytes(raw)
+    spec, original, frozen = (source(path) for path in (
+        _SDK_COMPLETED_SPEC, "ci/tests/data/sdk-ios-qualification.json", "ci/tests/data/hosted-frozen-reuse.json"))
+    work = Path(work).resolve()
+    work.mkdir(exist_ok=False)
+    artifact, observed, locator = _observe_completed_sdk_resume(spec, token)
+    _, _, original_locator = _observe_completed_sdk_original(original,
+        {"repository": REPOSITORY, "event": "pull_request"}, spec["producer"], token)
+    started = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix="completed-sdk-original-", dir=work) as temporary:
+        zipped = Path(temporary) / "original.zip"
+        products._download_contract_ci_upload(spec["artifactId"], spec["artifactSha256"], artifact["name"],
+            spec["producer"], observed[0]["run"], token, destination=zipped, max_bytes=spec["artifactBytes"])
+        with zipfile.ZipFile(zipped) as archive:
+            entries = archive.infolist()
+            if len(entries) > 16384 or len({row.filename for row in entries}) != len(entries):
+                raise ValueError("Completed SDK original has duplicate or oversized ZIP directory")
+            def member(name, size):
+                entry = archive.getinfo(name)
+                if (entry.is_dir() or entry.file_size != size or entry.flag_bits & 1
+                        or stat.S_IFMT(entry.external_attr >> 16) not in (0, stat.S_IFREG)
+                        or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+                    raise ValueError("Completed SDK selected member is not exact regular evidence")
+                return entry
+            controls = {}
+            for row in spec["controls"]:
+                if row["bytes"] > LIMIT:
+                    raise ValueError("Completed SDK control exceeds its bound")
+                raw = archive.read(member(row["relativePath"], row["bytes"]))
+                if sha256_bytes(raw) != row["sha256"]:
+                    raise ValueError("Completed SDK original control digest changed")
+                controls[row["relativePath"]] = load_canonical_json_bytes(raw)
+            _, phase, _, path = _completed_sdk_controls(spec, controls, frozen, original)
+            size = archive.getinfo(path).file_size
+            if not 0 < size <= 8 * 1024**3:
+                raise ValueError("Completed SDK object exceeds its fixed bound")
+            digest = hashlib.sha256()
+            with archive.open(member(path, size)) as incoming:
+                while chunk := incoming.read(16 * 1024 * 1024):
+                    digest.update(chunk)
+            if "sha256:" + digest.hexdigest() != phase["objectSha256"]:
+                raise ValueError("Completed SDK admitted object differs from its original bytes")
+    sdk_inputs = _issue_sdk_input_members(spec, work, root, token)
+    value = {"schemaVersion": 1, "kind": "completed-sdk-reuse", "issuerCommit": commit,
+        "specSha256": sha256_bytes(canonical_json_bytes(spec)), "source": locator, "original": original_locator,
+        "controls": controls, "member": {"relativePath": path, "bytes": size, "sha256": phase["objectSha256"]},
+        "sdkInputs": sdk_inputs}
+    write_canonical_json(work / "completion.json", value)
+    report = {"downloadedOriginalBytes": spec["artifactBytes"] + spec["sdkInputs"]["bytes"], "verifiedObjectBytes": size,
+              "sdkConsumerBytes": sum(row["bytes"] for row in sdk_inputs["files"]),
+              "controlBytes": sum(row["bytes"] for row in spec["controls"]),
+              "seconds": str(time.perf_counter() - started), "productPhasesExecuted": 0}
+    print(json.dumps(report), flush=True)
+    return report
 
 
 def issue_frozen(work, token):
@@ -586,7 +1305,7 @@ if __name__ == "__main__":
     import argparse
     import os
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("issue-frozen", "fetch"))
+    parser.add_argument("mode", choices=("issue-frozen", "issue-completed-sdk", "fetch"))
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--artifact-id", type=int)
     parser.add_argument("--artifact-sha256")
@@ -598,6 +1317,8 @@ if __name__ == "__main__":
     import reuse_qualification
     if args.mode == "issue-frozen":
         reuse_qualification.issue_frozen(args.work, os.environ["GITHUB_TOKEN"])
+    elif args.mode == "issue-completed-sdk":
+        reuse_qualification.issue_completed_sdk(args.work, os.environ["GITHUB_TOKEN"])
     else:
         reuse_qualification.fetch_qualification(args.work, artifact_id=args.artifact_id,
             artifact_sha256=args.artifact_sha256, run_id=args.run_id, run_attempt=args.run_attempt,

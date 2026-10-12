@@ -13,6 +13,21 @@ from ci import sdk_workflow as dispatcher
 
 
 class SdkIosValidationCliTest(unittest.TestCase):
+    def test_retained_sdk_source_is_explicit_canonical_caller_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary).resolve() / "original-source.json"
+            source.write_bytes(b'{"artifactId":71}\n')
+            argv = self.arguments() + ["--retained-sdk-inputs-source", str(source)]
+            with patch.object(command, "execute") as controller:
+                self.assertEqual(0, command.main(argv))
+            self.assertEqual({"artifactId": 71}, controller.call_args.kwargs["retained_sdk_inputs_source"])
+            for malformed in (b'[]\n', b'{"artifactId":71,"artifactId":72}\n', b'{"artifactId": 71}'):
+                source.write_bytes(malformed)
+                with patch.object(command, "execute") as controller, redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    command.main(argv)
+                controller.assert_not_called()
+
     def test_optional_apple_policy_is_canonical_caller_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             policy = Path(temporary).resolve() / "caller policy.json"

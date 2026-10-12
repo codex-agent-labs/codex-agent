@@ -428,6 +428,41 @@ class SdkWorkflowTest(unittest.TestCase):
     def stage(self, **changes):
         return workflow.stage(self.plan, self.discovery, self.state, self.destination, **{**self.arguments, **changes})
 
+    def test_retained_sdk_route_keeps_current_selection_and_independent_runtime_pins(self):
+        source = {"artifactId": 701, "artifactSha256": "sha256:" + "0" * 64,
+                  "producer": {"runId": 3}, "workflowSha": "1" * 40}
+        with patch.object(workflow.sdk_handoff, "capture_reused_sdk_handoff", return_value={"retained": True}) as reuse:
+            self.assertEqual({"retained": True}, self.stage(**self.upload, retained_sdk_inputs_source=source))
+        self.fresh.assert_not_called()
+        self.assertEqual(source, reuse.call_args.kwargs["sdk_inputs_source"])
+        self.assertEqual(self.revision, reuse.call_args.kwargs["selection_revision"])
+        self.assertEqual(self.upload["artifact_id"], reuse.call_args.kwargs["artifact_id"])
+        self.assertEqual(self.selection["contractPayloadSha256"],
+                         reuse.call_args.kwargs["expected_contract_payload_sha256"])
+
+    def test_control_only_route_keeps_both_independent_sources(self):
+        source, runtime = {'artifactId': 701}, {'runId': 3}
+        with patch.object(workflow.sdk_handoff, 'stage_sdk_input_binding', return_value={'routing': True}) as route:
+            result = self.stage(**self.upload, retained_sdk_inputs_source=source,
+                runtime_original_producer=runtime, runtime_original_workflow_sha='1'*40, reference_sdk_inputs=True)
+        self.assertEqual({'routing': True}, result)
+        self.fresh.assert_not_called()
+        self.assertEqual(source, route.call_args.kwargs['sdk_inputs_source'])
+        self.assertEqual(dict(artifactId=self.upload['artifact_id'], artifactSha256=self.upload['artifact_sha256'],
+            producer=runtime, workflowSha='1'*40, buildKey=self.upload['expected_build_key'],
+            metadataReceiptSha256=self.upload['expected_metadata_receipt_sha256']), route.call_args.kwargs['runtime_source'])
+        with self.assertRaisesRegex(ValueError, 'independently selected'):
+            self.stage(**self.upload, reference_sdk_inputs=True)
+
+    def test_retained_current_sdk_bundle_cannot_override_released_default_selection(self):
+        self.selection["source"] = "released-default"
+        with patch.object(workflow.sdk_handoff, "capture_reused_sdk_handoff") as reuse:
+            with self.assertRaisesRegex(ValueError, "cannot replace a released-default"):
+                self.stage(**self.upload, retained_sdk_inputs_source={})
+        reuse.assert_not_called()
+        self.fresh.assert_not_called()
+        self.released.assert_not_called()
+
     def test_current_job_routing_skips_replay_but_keeps_signed_bridge_and_context_checks(self):
         from ci.tests.test_product_routing import ProductRoutingTest
         from ci import sdk_native_continuation as routing
