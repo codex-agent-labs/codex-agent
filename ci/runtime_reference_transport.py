@@ -197,7 +197,8 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     return value
 
 
-def selected_reference_paths(value, *, omit_sdk_ios_binary=False, completed_frozen=None):
+def selected_reference_paths(value, *, omit_sdk_ios_binary=False, completed_frozen=None,
+                             omit_resume_input_aliases=False):
     """Select physical bodies while retaining all authenticated controls.
 
     The full authenticated manifest still declares every preserved byte. This
@@ -205,8 +206,12 @@ def selected_reference_paths(value, *, omit_sdk_ios_binary=False, completed_froz
     trust; a completed native proof may separately defer its exact Runtime bodies.
     Concrete legacy members remain present. New original references make the
     large binary and its aliases selectable before downloading any body.
+
+    Scoped SDK workers read the current plan and product-resume-state, never
+    the earlier input snapshots. Omit only their redundant reference targets;
+    physical source members and the complete authenticated state remain intact.
     """
-    if type(omit_sdk_ios_binary) is not bool:
+    if type(omit_sdk_ios_binary) is not bool or type(omit_resume_input_aliases) is not bool:
         raise ValueError("SDK reference selection must be boolean")
     deferred = frozenset()
     if completed_frozen is not None:
@@ -221,7 +226,10 @@ def selected_reference_paths(value, *, omit_sdk_ios_binary=False, completed_froz
     inherited = {row['relativePath'] for row in value['references']}
     return {row['relativePath'] for row in value['inventory']
         if row['relativePath'] not in inherited or
-        ((row['bytes'], row['sha256']) not in bodies and row['sha256'] not in deferred)}
+        ((row['bytes'], row['sha256']) not in bodies and row['sha256'] not in deferred
+         and not (omit_resume_input_aliases
+                  and row['relativePath'].startswith('product-resume-inputs/')
+                  and row['relativePath'] != 'product-resume-inputs/plan/impact-plan.json'))}
 
 
 def validate_sdk_input_source(value):

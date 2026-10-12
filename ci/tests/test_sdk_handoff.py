@@ -474,10 +474,14 @@ class RetainedSdkTransportTest(unittest.TestCase):
 
     def test_immutable_commit_fetch_skips_present_objects_and_keeps_credentials_out_of_command(self):
         from types import SimpleNamespace
-        with patch('subprocess.run',return_value=SimpleNamespace(returncode=0)) as run:
+        identities = [b'caller-head', self.producer['commit'].encode(),
+                      self.producer['tree'].encode(), b'caller-head']
+        with patch('subprocess.check_output', side_effect=identities), \
+                patch('subprocess.run',return_value=SimpleNamespace(returncode=0)) as run:
             caller._ensure_observed_sdk_commit(self.root,self.producer,'synthetic-secret')
         self.assertEqual(1,run.call_count)
-        with patch('subprocess.run',side_effect=[SimpleNamespace(returncode=1),SimpleNamespace(returncode=0)]) as run:
+        with patch('subprocess.check_output', side_effect=identities), \
+                patch('subprocess.run',side_effect=[SimpleNamespace(returncode=1),SimpleNamespace(returncode=0)]) as run:
             caller._ensure_observed_sdk_commit(self.root,self.producer,'synthetic-secret')
         command=run.call_args.args[0]
         self.assertEqual(self.producer['commit'],command[-1])
@@ -486,6 +490,21 @@ class RetainedSdkTransportTest(unittest.TestCase):
         self.assertNotIn('--depth',command)
         self.assertNotIn('checkout',command)
         self.assertIn('Authorization: Basic ',run.call_args.kwargs['env']['GIT_CONFIG_VALUE_0'])
+
+    def test_original_git_requires_exact_tree_and_unchanged_head_even_when_present(self):
+        from types import SimpleNamespace
+        for tree, head in ((b'wrong-tree', b'caller-head'),
+                           (self.producer['tree'].encode(), b'changed-head')):
+            with self.subTest(tree=tree, head=head), \
+                    patch('subprocess.run', return_value=SimpleNamespace(returncode=0)), \
+                    patch('subprocess.check_output', side_effect=[b'caller-head',
+                        self.producer['commit'].encode(), tree, head]), \
+                    self.assertRaisesRegex(ValueError, 'identity or caller HEAD changed'):
+                caller._ensure_observed_sdk_commit(self.root, self.producer, 'synthetic-secret')
+        with patch('subprocess.run') as run, self.assertRaisesRegex(ValueError, 'repository/workflow'):
+            caller._ensure_observed_sdk_commit(self.root, {**self.producer,
+                'repository': 'untrusted/fork'}, 'synthetic-secret')
+        run.assert_not_called()
 
     def test_legacy_and_reference_bundles_retain_original_plan_with_new_consumer_binding(self):
         for thin in (False,True):

@@ -3,6 +3,8 @@
 from dataclasses import replace
 from pathlib import Path
 import shutil
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -20,6 +22,33 @@ CONTRACT_PHASES = tuple(sorted(
     PhaseInstanceId("contract", "contract", phase, "common")
     for phase in ("binary", "package", "validation", "metadata")
 ))
+
+
+class OriginalSdkSourceProvisioningTest(unittest.TestCase):
+    def test_only_a_verified_consumed_sdk_receipt_can_provision_original_git(self):
+        sdk = PhaseInstanceId('sdk', 'javascript', 'package', 'node')
+        original = {'commit': 'original-merge', 'tree': 'original-tree'}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            body = root / 'original.zip'
+            body.write_bytes(b'fixture-object')
+            state = SimpleNamespace(prior_carrier_phases={sdk: {
+                'buildKey': 'key', 'receiptSha256': 'receipt', 'objectSha256': 'object'}},
+                sources={sdk: body}, ensure_original_source=mock.Mock())
+            destination = root / 'inputs'
+            destination.mkdir()
+            verified = {'receiptBytes': b'original-receipt', 'receipt': {'producer': original}}
+            with mock.patch.object(adapter, 'restore_object', return_value=verified) as restore:
+                adapter._restore_product_objects(state, (sdk,), destination)
+            restore.assert_called_once()
+            state.ensure_original_source.assert_called_once_with(original)
+            state.ensure_original_source.reset_mock()
+            rejected = root / 'rejected'
+            rejected.mkdir()
+            with mock.patch.object(adapter, 'restore_object', side_effect=ValueError('invalid object')), \
+                    self.assertRaisesRegex(ValueError, 'invalid object'):
+                adapter._restore_product_objects(state, (sdk,), rejected)
+            state.ensure_original_source.assert_not_called()
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
@@ -141,14 +170,12 @@ class ProductPredecessorMaterializationTest(unittest.TestCase):
         resumed = self.resume()
         changed = self.scratch / "changed-state"
         shutil.copytree(resumed, changed)
-        carrier = load_canonical_json(changed / "reused-carrier/carrier.json")
+        request = load_canonical_json(changed / "reuse-wave-request.json")
         record = next(
-            value for value in carrier["objects"]
+            value for value in request["availableObjects"]
             if adapter._identity(value) == CONTRACT_METADATA
         )
-        archive = changed / "reused-carrier" / adapter.object_relative_path(
-            record["buildKey"], record["receiptSha256"],
-        )
+        archive = changed / record["objectPath"]
         archive.write_bytes(archive.read_bytes() + b"changed")
         changed_inventory = regular_file_inventory(changed)
         destination = self.scratch / "rejected-carrier"

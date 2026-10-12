@@ -4042,6 +4042,7 @@ class _VerifiedProductState:
     prior_ready_plans: dict[PhaseInstanceId, dict[str, Any]]
     completed_frozen: Any = None
     capture_deferred_object: Any = None
+    ensure_original_source: Any = None
 
 
 def _same_run_state_consumer(current_consumer, original_producer):
@@ -4393,6 +4394,7 @@ def _verified_product_state(
         if state_replay != prior:
             raise ValueError("Product reuse state is not reproducible from its verified carrier")
 
+    from sdk_handoff import _ensure_observed_sdk_commit
     return _VerifiedProductState(
         plan=plan,
         producer=current_consumer["producer"],
@@ -4411,6 +4413,8 @@ def _verified_product_state(
             lambda record, destination: completed_frozen.capture_object(record, destination,
                 plan=plan, producer=current_consumer["producer"],
                 trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN"))),
+        ensure_original_source=(None if not environment.get("GITHUB_TOKEN") else
+            lambda original: _ensure_observed_sdk_commit(root, original, environment["GITHUB_TOKEN"])),
     )
 
 
@@ -4621,6 +4625,10 @@ def _restore_product_objects(state, instances, destination):
                 object_sha256=record["objectSha256"],
             )
         (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+        if dependency.product == "sdk" and state.ensure_original_source is not None:
+            # Hosted checkouts lack historical merge commits. Provision only
+            # after the original object/receipt and complete state were verified.
+            state.ensure_original_source(restored["receipt"]["producer"])
         restored_objects[dependency] = restored
     return restored_objects
 
@@ -7236,6 +7244,7 @@ def capture_runtime_resume_upload(
             validate_original_references(original_references)
             if omit_ios or completed_frozen is not None:
                 selected_paths = selected_reference_paths(original_references, omit_sdk_ios_binary=omit_ios,
+                    omit_resume_input_aliases=requested_scope is not None,
                     **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             from hydrated_evidence import hosted
             hosted("restore", original_references, private,
@@ -7253,6 +7262,7 @@ def capture_runtime_resume_upload(
             _require_artifact_job_window(observed[0], job_name, artifact)
             if omit_ios or completed_frozen is not None:
                 selected_paths = selected_reference_paths(references, omit_sdk_ios_binary=omit_ios,
+                    omit_resume_input_aliases=requested_scope is not None,
                     **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             wanted = {record["sourcePath"]: {"relativePath": record["sourcePath"],
                 "bytes": record["bytes"], "sha256": record["sha256"]} for record in references["references"]

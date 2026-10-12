@@ -73,21 +73,31 @@ def _ensure_observed_sdk_commit(repository, producer, token):
     """Fetch only a freshly authenticated immutable producer; leave refs/HEAD alone."""
     import base64
     import subprocess
+    producer = product_reuse.validate_producer(producer)
+    if (producer['repository'] != 'codex-agent-labs/codex-agent'
+            or producer['workflowPath'] != '.github/workflows/ci.yml'):
+        raise ValueError('Original SDK source repository/workflow is unsupported')
     command = ['git', '--no-replace-objects', '-C', str(repository)]
     commit = producer['commit']
+    def oid(value):
+        return subprocess.check_output([*command, 'rev-parse', value], stderr=subprocess.PIPE).decode().strip()
+    head = oid('HEAD')
     present = subprocess.run([*command, 'cat-file', '-e', commit + '^{commit}'],
                              capture_output=True, timeout=30)
-    if present.returncode == 0:
-        return
     # Credentials live in this child environment, never command text or config.
     environment = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_COUNT': '1',
         'GIT_CONFIG_KEY_0': 'http.https://github.com/.extraheader',
         'GIT_CONFIG_VALUE_0': 'Authorization: Basic ' + base64.b64encode(
             ('x-access-token:' + token).encode()).decode()}
     try:
-        subprocess.run([*command, 'fetch', '--no-tags', '--no-write-fetch-head',
-            'https://github.com/' + producer['repository'] + '.git', commit],
-            env=environment, check=True, capture_output=True, timeout=120)
+        if present.returncode != 0:
+            subprocess.run([*command, 'fetch', '--no-tags', '--no-write-fetch-head',
+                '--no-recurse-submodules', '--no-auto-maintenance',
+                'https://github.com/' + producer['repository'] + '.git', commit],
+                env=environment, check=True, capture_output=True, timeout=120)
+        if (oid(commit + '^{commit}') != commit or oid(commit + '^{tree}') != producer['tree']
+                or oid('HEAD') != head):
+            raise ValueError('Original SDK source identity or caller HEAD changed')
     except subprocess.CalledProcessError:
         raise ValueError('Cannot fetch the authenticated original SDK commit') from None
 

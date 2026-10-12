@@ -34,6 +34,41 @@ class RangeOpener:
 
 
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_scoped_sdk_alias_selection_preserves_full_state_plan_and_physical_sources(self):
+        from runtime_reference_transport import (stage_original_reference_handoff,
+            selected_reference_paths, resolve_original_reference_handoff)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            inputs, state, output = (root / name for name in ('inputs', 'state', 'output'))
+            for relative, raw in {'plan/impact-plan.json': b'current-plan',
+                                  'plan/history.bin': b'original-bytes',
+                                  'state/alias.bin': b'original-bytes',
+                                  'release/alias.bin': b'original-bytes'}.items():
+                path = inputs / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            state.mkdir()
+            (state / 'object.bin').write_bytes(b'original-bytes')
+            (state / 'producer.json').write_bytes(b'current-plan')
+            value = stage_original_reference_handoff(
+                {'product-resume-inputs': inputs, 'product-resume-state': state}, [], output)
+            selected = selected_reference_paths(value, omit_resume_input_aliases=True)
+            self.assertEqual({
+                'product-resume-inputs/plan/impact-plan.json',
+                'product-resume-inputs/plan/history.bin',
+                'product-resume-state/object.bin', 'product-resume-state/producer.json'}, selected)
+            self.assertEqual({r['relativePath'] for r in value['inventory']},
+                             selected_reference_paths(value))
+            before = copy.deepcopy(value)
+            result = resolve_original_reference_handoff(output, value,
+                lambda *args: self.fail('Local aliases need no original downloads'), selected_paths=selected)
+            self.assertEqual(before, value)
+            self.assertEqual(selected, {r['relativePath'] for r in result})
+            self.assertEqual(regular_file_inventory(state),
+                             regular_file_inventory(output / 'product-resume-state'))
+            self.assertEqual(b'current-plan',
+                (output / 'product-resume-inputs/plan/impact-plan.json').read_bytes())
+
     def test_metrics_count_nested_work_without_recording_credentials_and_keep_failure(self):
         import os
         import json
