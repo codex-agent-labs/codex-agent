@@ -812,6 +812,16 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                 environ=fixture.environment)
             artifacts.return_value = [{"name": name.replace("-validation-", "-package-")}]
             preflight()
+            csharp = name.replace('javascript-validation-node-', 'sdk-csharp-binary-desktop-')
+            artifacts.return_value = [{'name': csharp}]
+            products.preflight_worker_uploads(fixture.plan_path, product='sdk', wave=19,
+                family='csharp-binary', trusted_workflow_sha=fixture.pin, token='fixture',
+                repository_root=fixture.root, environ=fixture.environment)
+            artifacts.return_value = [{'name': csharp.replace('-worker-sdk-csharp-', '-worker-csharp-')}]
+            with self.assertRaisesRegex(ValueError, 'parent recovery was not started'):
+                products.preflight_worker_uploads(fixture.plan_path, product='sdk', wave=19,
+                    family='csharp-binary', trusted_workflow_sha=fixture.pin, token='fixture',
+                    repository_root=fixture.root, environ=fixture.environment)
             observe.assert_not_called()  # Presence grants no admission.
 
 

@@ -46,7 +46,7 @@ def fresh_sdk_worker_route(instance, receipt):
     stem = f"{instance.component}-{instance.phase}-{instance.target}"
     producer = receipt["producer"]
     return (f"product-validation / sdk-{stem}",
-            f"codex-agent-sdk-worker-{stem}-{receipt['buildKey'].removeprefix('sha256:')}-"
+            products._worker_artifact_prefix("sdk", instance) + f"{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
 
 

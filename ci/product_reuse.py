@@ -5950,6 +5950,13 @@ def _worker_job_name(product: str, instance: PhaseInstanceId) -> str:
     return f"product-validation / {component}-{instance.phase}-{instance.target}"
 
 
+def _worker_artifact_prefix(product: str, instance: PhaseInstanceId) -> str:
+    # Preserve the existing C# binary producer's immutable upload spelling.
+    component = ("sdk-csharp" if product == "sdk" and instance ==
+        PhaseInstanceId("sdk", "csharp", "binary", "desktop") else instance.component)
+    return f"codex-agent-{product}-worker-{component}-{instance.phase}-{instance.target}-"
+
+
 def preflight_worker_uploads(plan_path, *, product, wave, family=None,
         trusted_workflow_sha, token, repository_root=None, environ=None):
     """Fail cheaply on absent uploads; presence is only a hint for full collection."""
@@ -5976,7 +5983,7 @@ def preflight_worker_uploads(plan_path, *, product, wave, family=None,
         # Reuse can make validation the first JS wave; upload presence grants no admission.
         return _sdk_javascript_worker_instance(instance)
     kind = "runtime" if product == "runtime" else "sdk"
-    prefixes = tuple(f"codex-agent-{kind}-worker-{i.component}-{i.phase}-{i.target}-"
+    prefixes = tuple(_worker_artifact_prefix(kind, i)
                      for i in PHASE_INSTANCE_IDS if selected(i))
     suffixes = tuple(f"-{producer['tree']}-attempt-{attempt}" for attempt in
         (range(1, producer["runAttempt"] + 1) if product.startswith("sdk") else (producer["runAttempt"],)))
@@ -6111,7 +6118,7 @@ def collect_runtime_workers(
             name = f"{instance.component}-{instance.phase}-{instance.target}"
             job_name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
                         and sdk_worker_job_name is not None else sdk_worker_job_name or _worker_job_name(product, instance))
-            artifact_name = (f"codex-agent-{product}-worker-{name}-{ready['buildKey'].removeprefix('sha256:')}-"
+            artifact_name = (_worker_artifact_prefix(product, instance) + f"{ready['buildKey'].removeprefix('sha256:')}-"
                              f"{producer['tree']}-attempt-{producer['runAttempt']}")
             row = {**_identity_record(instance), "buildKey": ready["buildKey"],
                    "jobName": job_name, "artifactName": artifact_name, "result": "failure", "reason": None,

@@ -45,6 +45,8 @@ class SdkWorkerCollectionTest(unittest.TestCase):
 
     def names(self, instance, key):
         identity = f"{instance.component}-{instance.phase}-{instance.target}"
+        if instance == PhaseInstanceId("sdk", "csharp", "binary", "desktop"):
+            identity = "sdk-csharp-binary-desktop"
         component = instance.component if instance.component in {"sdk-core", "sdk-android"} else f"sdk-{instance.component}"
         return (f"product-validation / {component}-{instance.phase}-{instance.target}",
             f"codex-agent-sdk-worker-{identity}-{key.removeprefix('sha256:')}-"
@@ -126,6 +128,17 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                     self.assertIn("elected plan and producer", row["reason"])
                 elif case != "valid":
                     self.assertIn("missing or ambiguous", row["reason"])
+
+    def test_csharp_binary_collects_the_existing_producer_upload_spelling(self):
+        instance, ready, _, _, files = self.shard('binary', component='csharp', target='desktop')
+        result = self.collect({instance: ready}, {instance: archive(files)},
+                              self.repository / 'collected-csharp', family='csharp-binary')
+        self.assertEqual('success', result['rows'][0]['result'], result['rows'][0]['reason'])
+        self.assertTrue(result['rows'][0]['artifactName'].startswith(
+            'codex-agent-sdk-worker-sdk-csharp-binary-desktop-'))
+        from sdk_campaign_original_locator import fresh_sdk_worker_route
+        _, name = fresh_sdk_worker_route(instance, {'producer': self.producer, 'buildKey': ready['buildKey']})
+        self.assertEqual(result['rows'][0]['artifactName'], name)
 
     def test_retry_reuses_original_sibling_only_with_private_completed_collection(self):
         from products.inventory import write_canonical_json
