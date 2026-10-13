@@ -291,7 +291,12 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
                 raise ValueError("Original Apple predecessor stage differs from its receipt")
             return directory / "stage", path, value
 
-        binary_stage, binary_receipt, _ = predecessor("sdk", "sdk-ios", "binary", "ios")
+        binary_stage, binary_receipt, binary = predecessor("sdk", "sdk-ios", "binary", "ios")
+        if not retained:
+            # The whole authenticated P upload binds this predecessor. Its PR
+            # merge commit may be absent even when P's original Git is present.
+            from sdk_handoff import _ensure_observed_sdk_commit
+            _ensure_observed_sdk_commit(root, binary["producer"], token)
         _, contract_binary_receipt, _ = predecessor("contract", "contract", "binary", "common")
         contract_stage, contract_receipt, contract = predecessor("contract", "contract", "metadata", "common")
         payloads = [record["sha256"] for record in contract["outputs"] if record["kind"] == "contract-bundle"]

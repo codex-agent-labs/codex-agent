@@ -314,6 +314,8 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
         stack.enter_context(patch.object(workflow, "git_product_versions",
                                          return_value={"runtime-release": "0.2.0", "sdk": "0.8.0"}))
         stack.enter_context(patch.object(workflow, "sdk_runtime_source", return_value=None))
+        self.ensure_original_source = stack.enter_context(patch(
+            "sdk_handoff._ensure_observed_sdk_commit"))
         stack.enter_context(patch.object(workflow.product_reuse, "capture_sdk_inputs_upload",
                                          side_effect=self.capture_sdk))
         stack.enter_context(patch.object(workflow, "verified_apple_original_inputs",
@@ -388,6 +390,8 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
             for name in ("capture_sdk_ios_package_upload", "capture_sdk_inputs_upload", "api_json", "download_artifact"):
                 network.append(stack.enter_context(patch.object(workflow.product_reuse, name,
                     side_effect=AssertionError("retained content replay must not access network"))))
+            network.append(stack.enter_context(patch("sdk_handoff._ensure_observed_sdk_commit",
+                side_effect=AssertionError("retained content replay must not fetch Git"))))
             stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", side_effect=validate))
             stack.enter_context(patch.object(workflow.product_reuse, "_consumer",
                 side_effect=lambda *_: {"producer": self.consumer_producer}))
@@ -435,6 +439,26 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
             with self.original_context():
                 self.fail("rejected original package yielded")
         self.assertIn("signed-closed", self.events)
+        self.assertTrue(all(not path.exists() for path in self.private_paths))
+
+    def test_original_binary_git_is_acquired_before_sdk_bytes_and_full_gate(self):
+        context = self.original_context()
+        def acquire(repository, producer, token):
+            self.assertEqual(self.root, repository)
+            self.assertEqual(self.predecessors[("sdk", "binary")][2]["producer"], producer)
+            self.assertEqual("token", token)
+            self.assertEqual(["package-capture"], self.events)
+        self.ensure_original_source.side_effect = acquire
+        with context:
+            self.ensure_original_source.assert_called_once()
+            self.assertIn("full-gate", self.events)
+
+    def test_original_binary_git_failure_stops_before_sdk_bytes_or_full_gate(self):
+        context = self.original_context()
+        self.ensure_original_source.side_effect = ValueError("original binary Git unavailable")
+        with self.assertRaisesRegex(ValueError, "original binary Git unavailable"), context:
+            self.fail("missing original source yielded admission")
+        self.assertEqual(["package-capture"], self.events)
         self.assertTrue(all(not path.exists() for path in self.private_paths))
 
     def test_ephemeral_admission_keeps_same_complete_gate_and_context_exit_checks(self):
