@@ -46,8 +46,10 @@ def recover_unverified_package(plan, ready, producer, version, destination, *, t
     started = time.monotonic_ns()
     prefix = product_reuse._worker_artifact_prefix("sdk", _INSTANCE) + ready["buildKey"][7:] + "-"
     found = []
+    artifacts = product_reuse.paginated_items(
+        f"https://api.github.com/repos/{plan['repository']}/actions/artifacts", "artifacts", token)
     for prior in product_reuse._iter_prior_failed_pr_attempts(
-            plan, producer, token, required_artifact_prefixes=(prefix,)):
+            plan, producer, token, required_artifact_prefixes=(prefix,), artifact_inventory=artifacts):
         run, attempt = _require_prior(plan, producer, prior)
         url = f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}"
         uploads = product_reuse.paginated_items(url + "/artifacts", "artifacts", token)

@@ -529,7 +529,12 @@ class UnverifiedIosProductionInputTest(unittest.TestCase):
         def ranges(*args):
             with zipfile.ZipFile(io.BytesIO(self.raw)) as archive:
                 yield archive, SimpleNamespace(transferred=len(self.raw))
-        with patch.object(workflow.product_reuse, "_iter_prior_failed_pr_attempts", return_value=(self.run,)), \
+        def candidates(*args, **kwargs):
+            self.assertEqual([self.artifact], kwargs["artifact_inventory"])
+            self.assertEqual(("codex-agent-sdk-worker-sdk-ios-package-ios-" +
+                self.ready["buildKey"][7:] + "-",), kwargs["required_artifact_prefixes"])
+            return (self.run,)
+        with patch.object(workflow.product_reuse, "_iter_prior_failed_pr_attempts", side_effect=candidates), \
                 patch.object(workflow.product_reuse, "paginated_items",
                     side_effect=lambda url, key, token: [self.artifact] if key == "artifacts" else self.jobs), \
                 patch.object(workflow.product_reuse, "_contract_ci_upload_metadata", return_value=self.artifact), \
