@@ -50,6 +50,7 @@ class ToolingMetadataRotationTest(unittest.TestCase):
             commit('.reuse/workflow-publication.json', '{"syntheticPublication":true}\n')
             current = commit('.reuse/completed-reuse.json', '{"syntheticConsumerPolicy":true}\n')
             changed_parent = commit('.github/workflows/product-validation.yml', 'name: changed orchestration fixture\n')
+            changed_loader = commit('.reuse/consumer.py', '# changed consumer loader\n')
             changed_child = commit('.github/workflows/contract-validation.yml', 'name: changed tooling attestation fixture\n')
             changed_code = commit('gradle/build-logic/src/main/kotlin/Tooling.kt', '// changed compiler input\n')
 
@@ -73,6 +74,7 @@ class ToolingMetadataRotationTest(unittest.TestCase):
                 self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
                     producer, changed_parent, TOKEN, repository_root=repository))
             rejected = [('code-change', observed(original), changed_code),
+                        ('unreviewed-loader-change', observed(original), changed_loader),
                         ('tooling-child-change', observed(original), changed_child),
                         ('non-ancestor', observed(current), original)]
             child_sha = observed(original)
@@ -139,7 +141,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
                       '822578a948aa83e972b572121958343eefe5c1d0',
                       'd7b4f066d75b00b29dfdc10c768641e3e6d9c93b',
                       '91b7a372429014f791c731aabb2adcb017a41f16',
-                      '00feb2e6ffc0e633042ac4cebfb6495718fb82f7'):
+                      '00feb2e6ffc0e633042ac4cebfb6495718fb82f7',
+                      'cc4f623bf4d1e244a8469eea92c4baf9c00a5434'):
             with self.subTest(prior=prior):
                 run = copy.deepcopy(self.fixture.run)
                 run['referenced_workflows'] = [
