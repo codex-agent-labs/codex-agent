@@ -297,7 +297,7 @@ def completed_sdk_spec(root, document, value):
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
         document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
     count = 1
-    if spec.get("schemaVersion") == 2:
+    if spec.get("schemaVersion") in (2, 3):
         from completed_sdk_reuse import _spec
         _spec(spec)
         if any(spec["parent"][field] not in value["approvedVerifiers"] for field in ("signerCommit", "sourceCommit")):
