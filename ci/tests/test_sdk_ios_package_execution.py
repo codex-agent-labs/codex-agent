@@ -10,8 +10,10 @@ from unittest.mock import patch
 
 from ci import sdk_ios_package_workflow as workflow
 from ci.tests.product_chain_support import write_receipt
-from products.inventory import canonical_json_bytes, regular_file_inventory, write_canonical_json
+from products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, write_canonical_json
 from products.receipt import write_output_manifest
+from products.restore import PHASE_PLAN_KEYS
+from ci.tests import test_sdk_ios_package_upload as upload_fixture
 
 
 class SdkIosPackageExecutionTest(unittest.TestCase):
@@ -89,6 +91,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.finalized = None
         self.reject_published_verify = False
         self.shard_verifications = []
+        self.recover_production = False
 
     @contextmanager
     def verified_inputs(self, *args, **kwargs):
@@ -205,6 +208,8 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         candidate = arguments["destination"]
         candidate.mkdir()
         receipt = {"synthetic": "candidate receipt"}
+        if self.recover_production:
+            receipt["outputs"] = [{"synthetic": "unchanged preserved outputs"}]
         (candidate / "phase-receipt.json").write_bytes(canonical_json_bytes(receipt))
         (candidate / "phase-object.json").write_bytes(b"synthetic object\n")
         self.finalized = {"receipt": receipt, "synthetic": "verified shard"}
@@ -293,6 +298,21 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             return self.finalized
 
         with ExitStack() as stack:
+            stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", return_value={}))
+            def recover(*args, **kwargs):
+                if not self.recover_production:
+                    return None
+                self.worker(self.ready, producer=self.producer,
+                    environ={"SAFE": "environment", "DEVELOPER_DIR": str(self.developer)},
+                    compatibility_request=self.sdk_directory / "sdk-compatibility-request.json")
+                self.events[-1] = "recover-untrusted-input"
+                origin = self.destination / "recovered-production/production-origin"
+                origin.mkdir(parents=True)
+                (origin / "original-receipt.json").write_bytes(b"immutable failed candidate receipt\n")
+                self.result.update(outputs=[{"synthetic": "unchanged preserved outputs"}],
+                                   originInventory=regular_file_inventory(origin))
+                return self.result
+            stack.enter_context(patch.object(workflow, "recover_unverified_package", side_effect=recover))
             stack.enter_context(patch.object(
                 workflow.product_reuse,
                 "_product_materialization_paths",
@@ -345,6 +365,23 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         self.assertEqual(1, len(self.shard_verifications))
         self.assertNotEqual(self.destination / "shard", self.shard_verifications[0])
         self.assertTrue((self.destination / "shard").is_dir())
+
+    def test_untrusted_production_input_requires_fresh_full_gate_and_completion(self):
+        self.recover_production = True
+        self.invoke()
+        self.assertNotIn("worker", self.events)
+        self.assertEqual(["sdk-enter", "materialize", "recover-untrusted-input", "finalize",
+                          "gate", "capture-context", "sdk-exit", "sdk-closed"], self.events)
+        self.assertEqual(b"immutable failed candidate receipt\n", (self.destination /
+            "recovered-production/production-origin/original-receipt.json").read_bytes())
+        self.assertTrue((self.destination / "shard").is_dir())
+
+    def test_untrusted_production_input_is_never_admitted_when_fresh_gate_fails(self):
+        self.recover_production = self.gate_failure = True
+        with self.assertRaisesRegex(ValueError, "full package rejection"):
+            self.invoke()
+        self.assertNotIn("worker", self.events)
+        self.assertFalse((self.destination / "shard").exists())
 
     def test_optional_apple_policy_reaches_both_state_replay_seams_only(self):
         policy = {"caller": "external Apple policy"}
@@ -464,6 +501,80 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.invoke(developer_directory=value)
             self.assertNotIn("worker", self.events)
+
+
+class UnverifiedIosProductionInputTest(unittest.TestCase):
+    """Tiny untrusted byte inputs; these checks grant no hosted admission."""
+    phase, target = "package", "ios"
+    archive = upload_fixture.SdkIosPackageUploadTest.archive
+    api = upload_fixture.SdkIosPackageUploadTest.api
+
+    def setUp(self):
+        upload_fixture.SdkIosPackageUploadTest.setUp(self)
+        self.run["conclusion"] = self.jobs[0]["conclusion"] = "failure"
+        self.jobs[0]["name"] += f" ({load_canonical_json_bytes(self.receipt_bytes)['buildKey']}, ..."
+        self.files = {name.replace("shard/", "unverified-package/", 1): raw
+                      for name, raw in self.files.items()}
+        self.receipt = load_canonical_json_bytes(self.receipt_bytes)
+        self.ready = {name: self.receipt[name] for name in PHASE_PLAN_KEYS}
+        self.production = {"producer": self.producer, "buildKey": self.receipt["buildKey"],
+                           "returnCode": 0, "launchError": None}
+        self.files["worker/execution.json"] = canonical_json_bytes(self.production)
+        self.archive()
+
+    def call(self):
+        import zipfile
+        @contextmanager
+        def ranges(*args):
+            with zipfile.ZipFile(io.BytesIO(self.raw)) as archive:
+                yield archive, SimpleNamespace(transferred=len(self.raw))
+        with patch.object(workflow.product_reuse, "_iter_prior_failed_pr_attempts", return_value=(self.run,)), \
+                patch.object(workflow.product_reuse, "paginated_items",
+                    side_effect=lambda url, key, token: [self.artifact] if key == "artifacts" else self.jobs), \
+                patch.object(workflow.product_reuse, "_contract_ci_upload_metadata", return_value=self.artifact), \
+                patch("reuse.api_request", side_effect=self.api), \
+                patch("runtime_reference_archive.open_reference_archive", side_effect=ranges):
+            return workflow.recover_unverified_package(self.plan, self.ready,
+                {**self.producer, "runId": 72}, "0.3.0", self.output, token="synthetic-token",
+                work_directory=self.work / "recovery-private")
+
+    def test_preserves_receipt_and_failed_origin_but_returns_only_untrusted_stage(self):
+        result = self.call()
+        self.assertEqual(self.receipt_bytes, (self.output /
+            "production-origin/unverified-package/phase-receipt.json").read_bytes())
+        transport = load_canonical_json_bytes((self.output / "production-origin/transport.json").read_bytes())
+        self.assertEqual("failure", transport["job"]["conclusion"])
+        self.assertFalse(transport["wholeOuterArchiveVerified"])
+        self.assertEqual("untrusted-package-production-input", transport["kind"])
+        self.assertEqual(self.receipt["outputs"], result["outputs"])
+        self.assertFalse((self.output / "shard").exists())
+        self.assertFalse(any(path.suffix == ".zip" for path in self.output.rglob("*")))
+
+    def test_wrong_current_inputs_reject_before_body_download(self):
+        self.ready["inputs"] = {**self.ready["inputs"], "flagsDigest": "sha256:" + "9" * 64}
+        with self.assertRaisesRegex(ValueError, "current inputs"):
+            self.call()
+        self.assertFalse(self.output.exists())
+
+    def test_successful_original_requires_existing_success_admission_not_this_path(self):
+        self.jobs[0]["conclusion"] = "success"
+        with self.assertRaisesRegex(ValueError, "Successful Apple package exists"):
+            self.call()
+        self.assertFalse(self.output.exists())
+
+    def test_failed_production_observation_and_tampered_object_reject(self):
+        self.production["returnCode"] = 1
+        self.files["worker/execution.json"] = canonical_json_bytes(self.production)
+        self.archive()
+        with self.assertRaisesRegex(ValueError, "production observation"):
+            self.call()
+        self.production["returnCode"] = 0
+        self.files["worker/execution.json"] = canonical_json_bytes(self.production)
+        name = next(name for name in self.files if name.endswith(".zip"))
+        self.files[name] += b"tamper"
+        self.archive()
+        with self.assertRaisesRegex(ValueError, "immutable digest"):
+            self.call()
 
 
 if __name__ == "__main__":

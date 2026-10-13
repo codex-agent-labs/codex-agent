@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -15,17 +16,148 @@ import product_reuse
 import sdk_workflow
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
-    canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, sha256_bytes,
 )
 from products.sdk_apple_package_execution import build_apple_package_execution_context
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_RECEIPT_NAME, verify_phase_shard
+from products.restore import (
+    PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, PHASE_SHARD_KEYS, object_relative_path,
+    restore_object, verify_phase_shard,
+)
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import verify_sdk_package_inputs
 from sdk_ios_package import execute as execute_package
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+
+
+def recover_unverified_package(plan, ready, producer, version, destination, *, token, work_directory):
+    """Recover byte inputs, NOT a successful phase or an admission capability.
+
+    Range transport does not authenticate the whole outer ZIP. The old receipt
+    remains an untrusted production claim. Only the caller's fresh full package
+    gate and successful job can establish a new completion under its own producer.
+    """
+    from sdk_ios_binary_recovery import _require_prior
+    from runtime_reference_archive import copy_reference_member, open_reference_archive
+
+    started = time.monotonic_ns()
+    prefix = product_reuse._worker_artifact_prefix("sdk", _INSTANCE) + ready["buildKey"][7:] + "-"
+    found = []
+    for prior in product_reuse._iter_prior_failed_pr_attempts(
+            plan, producer, token, required_artifact_prefixes=(prefix,)):
+        run, attempt = _require_prior(plan, producer, prior)
+        url = f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}"
+        uploads = product_reuse.paginated_items(url + "/artifacts", "artifacts", token)
+        matching = [row for row in uploads if row.get("expired") is False
+                    and row.get("name", "").startswith(prefix)
+                    and row["name"].endswith(f"-attempt-{attempt}")]
+        if len(matching) != 1:
+            raise ValueError("Unverified Apple package upload is missing or ambiguous")
+        listed = matching[0]
+        artifact = product_reuse._contract_ci_upload_metadata(
+            listed["id"], listed["digest"], listed["name"], {"runId": run}, prior, token)
+        jobs = product_reuse.paginated_items(url + f"/attempts/{attempt}/jobs", "jobs", token)
+        jobs = product_reuse._matching_ci_jobs(jobs,
+            "product-validation / sdk-sdk-ios-package-ios", expected_build_key=ready["buildKey"])
+        if len(jobs) != 1 or jobs[0].get("status") != "completed":
+            raise ValueError("Unverified Apple package job is missing or ambiguous")
+        job = jobs[0]
+        if job.get("conclusion") == "success":
+            raise ValueError("Successful Apple package exists; recover it through original admission first")
+        if (job.get("conclusion") not in {"failure", "cancelled"}
+                or job.get("run_id") != run or job.get("head_sha") != prior["head_sha"]):
+            raise ValueError("Unverified Apple package job differs from its official failed attempt")
+        product_reuse._require_artifact_job_window({"jobs": jobs}, job["name"], artifact)
+        with open_reference_archive(artifact, token) as (archive, _):
+            names = set(archive.namelist())
+            if ("unverified-package/phase-object.json" not in names
+                    or "worker/execution.json" not in names):
+                continue  # Older failure did not preserve produced package bytes.
+            controls = {}
+            control_names = ["unverified-package/phase-object.json",
+                             "unverified-package/phase-receipt.json", "worker/execution.json",
+                             "worker/gradle.log"]
+            control_names.extend(name for name in sorted(names) if name.startswith((
+                "package-execution/events/00-toolchain-before-xcode/",
+                "package-execution/events/01-toolchain-before-swift/")) and not name.endswith("/"))
+            if len(control_names) > 16:
+                raise ValueError("Unverified Apple package diagnostics exceed their member bound")
+            for name in control_names:
+                if archive.getinfo(name).file_size > 16 * 1024**2:
+                    raise ValueError("Unverified Apple package control exceeds its bound")
+                controls[name] = archive.read(name)
+            receipt = product_reuse.validate_phase_receipt(load_canonical_json_bytes(
+                controls["unverified-package/phase-receipt.json"]))
+            origin = receipt["producer"]
+            if ({name: receipt[name] for name in PHASE_PLAN_KEYS} != ready
+                    or receipt["productVersion"] != version
+                    or origin["runId"] != run
+                    or origin["runAttempt"] != attempt or origin["pullRequest"] != plan["pullRequest"]
+                    or origin["repository"] != plan["repository"] or origin["event"] != "pull_request"
+                    or artifact["name"] != prefix + origin["tree"] + f"-attempt-{attempt}"):
+                raise ValueError("Unverified Apple package differs from current inputs or original producer")
+            tested = product_reuse._observe_tested_commit(
+                prior, api="https://api.github.com", repository=plan["repository"], token=token,
+                expected_commit=origin["commit"], expected_tree=origin["tree"],
+                pull_request=origin["pullRequest"])
+            execution = load_canonical_json_bytes(controls["worker/execution.json"])
+            if (execution.get("producer") != origin or execution.get("buildKey") != ready["buildKey"]
+                    or execution.get("returnCode") != 0 or execution.get("launchError") is not None):
+                raise ValueError("Unverified Apple package has no successful production observation")
+            descriptor = require_exact_keys(load_canonical_json_bytes(
+                controls["unverified-package/phase-object.json"]), PHASE_SHARD_KEYS,
+                "Unverified Apple package object")
+            digest = sha256_bytes(controls["unverified-package/phase-receipt.json"])
+            object_path = object_relative_path(ready["buildKey"], digest)
+            if (descriptor["objectPath"] != object_path or descriptor["receiptSha256"] != digest
+                    or descriptor["buildKey"] != ready["buildKey"]):
+                raise ValueError("Unverified Apple package object differs from its original receipt")
+            found.append((artifact, job, prior, controls, receipt, descriptor, object_path, tested))
+    if not found:
+        return None
+    if any(row[4]["outputs"] != found[0][4]["outputs"] for row in found[1:]):
+        raise ValueError("Unverified Apple packages conflict for the same build key")
+    artifact, job, prior, controls, receipt, descriptor, object_path, tested = found[0]
+    destination.mkdir(parents=True, exist_ok=False)
+    original = destination / "production-origin"
+    original.mkdir()
+    for name, raw in controls.items():
+        target = original / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as output:
+            output.write(raw)
+    # Body/stage are private working inputs, not extra multi-GB upload copies.
+    body = work_directory / "unverified-package"
+    body.mkdir(parents=True, exist_ok=False)
+    for name in ("phase-object.json", "phase-receipt.json"):
+        with (body / name).open("xb") as output:
+            output.write(controls["unverified-package/" + name])
+    with open_reference_archive(artifact, token) as (archive, stream):
+        member = "unverified-package/" + object_path
+        copy_reference_member(archive, member, body / object_path,
+            {"bytes": archive.getinfo(member).file_size, "sha256": descriptor["objectSha256"]})
+        transferred = stream.transferred
+    verified = verify_phase_shard(body, _INSTANCE)
+    stage = work_directory / "stage"
+    restore_object(body / object_path, stage,
+        build_key=ready["buildKey"], receipt_sha256=descriptor["receiptSha256"],
+        object_sha256=descriptor["objectSha256"])
+    product_reuse.write_canonical_json(original / "transport.json", {
+        "kind": "untrusted-package-production-input", "artifact": artifact,
+        "run": prior, "job": job, "testedCommit": tested, "wholeOuterArchiveVerified": False,
+        "originalReceiptSha256": descriptor["receiptSha256"],
+        "objectSha256": descriptor["objectSha256"], "rangeBytes": transferred,
+        "elapsedNs": time.monotonic_ns() - started,
+    })
+    print(f"Recovered untrusted Apple package input from artifact {artifact['id']}; "
+          f"{transferred} range bytes, {(time.monotonic_ns() - started) // 1_000_000}ms; "
+          "production skipped, full fresh package gate still required", flush=True)
+    return {"stage": stage, "outputInventory": regular_file_inventory(stage),
+            "outputs": verified["receipt"]["outputs"],
+            "originInventory": regular_file_inventory(original, allow_empty=True)}
 
 
 def execute(
@@ -140,7 +272,12 @@ def execute(
             }
             if regular_file_inventory(prepared, allow_empty=True) != prepared_inventory:
                 raise ValueError("SDK iOS package predecessors changed during Contract verification")
-            result = execute_package(
+            recovered = recover_unverified_package(
+                product_reuse._validate_plan(Path(plan), root), ready, producer,
+                selection["sdkVersion"], destination / "recovered-production", token=token,
+                work_directory=Path(temporary) / "recovered-production",
+            )
+            result = recovered if recovered is not None else execute_package(
                 ready, producer=producer, sdk_version=selection["sdkVersion"],
                 current_contract=contract_binary, sdk_binary=sdk_binary,
                 compatibility_request=sdk_inputs["sdk"]["directory"] / REQUEST_NAME,
@@ -155,6 +292,8 @@ def execute(
                 product_version=selection["sdkVersion"], trust_domain=trust,
                 destination=candidate,
             )
+            if recovered is not None and finalized["receipt"]["outputs"] != recovered["outputs"]:
+                raise ValueError("Apple package completion changed the preserved output inventory")
             apple_verification = {
                 "developer_directory": Path(developer_directory),
                 "repository": root,
@@ -216,6 +355,9 @@ def execute(
                 or regular_file_inventory(candidate) != candidate_inventory
                 or verify_phase_shard(candidate, _INSTANCE) != finalized):
             raise ValueError("SDK iOS package candidate changed after admission")
+        if recovered is not None and regular_file_inventory(
+                destination / "recovered-production/production-origin", allow_empty=True) != recovered["originInventory"]:
+            raise ValueError("Apple package original production evidence changed during completion")
         if (regular_file_inventory(destination / "package-execution", allow_empty=True) != execution_context["captureFiles"]
                 or read_regular_file_bytes(context_path, reject_symlink_parents=True) != context_bytes):
             raise ValueError("SDK iOS package original execution capture changed before publication")
