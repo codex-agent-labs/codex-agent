@@ -8002,7 +8002,7 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
 
 def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token,
-        compact_recovery=False):
+        compact_recovery=False, expected_plan_revision=None):
     """Retain the observed original package upload, not package semantic admission.
 
     Source/S858 authentication and full original execution replay are still required.
@@ -8010,7 +8010,8 @@ def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_pa
     """
     return _capture_sdk_ios_upload(plan_path, destination, phase="package", receipt_path=package_receipt_path,
         artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-        repository_root=repository_root, environ=environ, token=token, compact_recovery=compact_recovery)
+        repository_root=repository_root, environ=environ, token=token, compact_recovery=compact_recovery,
+        expected_plan_revision=expected_plan_revision)
 
 
 def capture_sdk_ios_binary_upload(plan_path, destination, *, binary_receipt_path,
@@ -8047,7 +8048,8 @@ def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target,
 @measured
 def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token,
-        elected_target=None, elected_build_key=None, compact_recovery=False, qualify_original=False):
+        elected_target=None, elected_build_key=None, compact_recovery=False, qualify_original=False,
+        expected_plan_revision=None):
     from products.sdk_package import _require_capability_output_separate
     from products.signing_isolation import require_no_signing_secret
     bootstrap = receipt_path is None
@@ -8089,15 +8091,22 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     if target not in targets or (not bootstrap and _identity(receipt) != instance):
         raise ValueError(f"Apple {phase} capture requires the selected original {phase} receipt")
     producer = receipt["producer"] if receipt is not None else None
+    if expected_plan_revision is not None and (phase != "package" or bootstrap or compact_recovery
+            or qualify_original or expected_plan_revision != producer["commit"]):
+        raise ValueError("Historical Apple capture requires its exact selected package revision")
     with tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
         captured_plan = (prepared.parent if compact_recovery else prepared) / "plan/impact-plan.json"
         captured_plan.parent.mkdir(parents=True)
         captured_plan.write_bytes(plan_bytes)
         plan = _validate_plan(captured_plan, root,
-            **({"expected_revision": producer["commit"]} if qualify_original else {}))
+            **({"expected_revision": producer["commit"]}
+               if qualify_original or expected_plan_revision is not None else {}))
         if plan["remoteBuildAuthorized"] is not True or plan["event"] == "workflow_dispatch":
             raise ValueError(f"Apple {phase} capture requires an authorized PR or merge-group plan")
+        if expected_plan_revision is not None and _consumer(plan, environment,
+                original_run_id=producer["runId"], original_run_attempt=producer["runAttempt"])["producer"] != producer:
+            raise ValueError("Historical Apple plan differs from its selected package producer")
         if bootstrap:
             if plan["event"] not in {"pull_request", "merge_group"}:
                 raise ValueError("Apple receipt bootstrap requires an authorized PR or merge-group plan")

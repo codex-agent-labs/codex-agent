@@ -130,6 +130,7 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
             self.selector()(self.envelope)
         self.assertEqual(original, observe.call_args.kwargs["trusted_workflow_sha"])
         self.assertEqual(original, package.call_args.kwargs["trusted_workflow_sha"])
+        self.assertEqual(self.producer["commit"], package.call_args.kwargs["expected_plan_revision"])
         self.assertEqual(original, sdk.call_args.kwargs["trusted_workflow_sha"])
 
     def test_unreviewed_original_workflow_fails_before_source_capture(self):

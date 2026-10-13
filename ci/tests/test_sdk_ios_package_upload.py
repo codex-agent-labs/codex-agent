@@ -136,6 +136,60 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             capture.verify_retained_sdk_ios_upload(self.output, self.receipt_bytes)
         self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
 
+    def test_historical_package_plan_uses_exact_original_git_without_changing_checkout(self):
+        if self.phase != 'package':
+            self.skipTest('historical selection is package-only')
+        import shutil
+        import subprocess
+        from ci.tests.test_product_reuse_adapter import impact_plan
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(self.root), *args], stderr=subprocess.PIPE).decode().strip()
+        git('init', '-q')
+        git('config', 'user.name', 'Fixture')
+        git('config', 'user.email', 'fixture@example.invalid')
+        shutil.copytree(Path(__file__).resolve().parents[1] / 'lanes', self.root / 'ci/lanes')
+        git('add', 'ci/lanes')
+        git('commit', '-qm', 'original source')
+        original, tree = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')
+        git('commit', '-qm', 'later orchestration', '--allow-empty')
+        current = git('rev-parse', 'HEAD')
+        producer = {**self.producer, 'commit': original, 'tree': tree}
+        receipt = {**json.loads(self.receipt_bytes), 'producer': producer}
+        self.receipt_path.write_bytes(canonical_json_bytes(receipt))
+        plan = {**impact_plan(changed=[]), 'validationCommit': original, 'validationTree': tree}
+        from impact import _legacy_lane_states
+        lanes, full, unknown = _legacy_lane_states(self.root, [], force_full=False,
+            remote_authorized=True, remote_reason='pull-request-final')
+        plan.update(lanes=lanes, full=full, unknownPaths=unknown)
+        self.plan_path.write_bytes(canonical_json_bytes(plan))
+        arguments = dict(package_receipt_path=self.receipt_path, artifact_id=701,
+            artifact_sha256=self.artifact['digest'], trusted_workflow_sha=self.pin,
+            repository_root=self.root, environ={}, token='synthetic-token')
+        class PlanValidated(Exception): pass
+        with patch.object(capture, 'paginated_items', side_effect=PlanValidated) as observe, \
+                patch.object(capture, '_reuse_contract_ci_upload', side_effect=AssertionError('body')):
+            with self.assertRaisesRegex(ValueError, 'Checkout commit'):
+                capture.capture_sdk_ios_package_upload(self.plan_path, self.output, **arguments)
+            observe.assert_not_called()
+            with self.assertRaises(PlanValidated):
+                capture.capture_sdk_ios_package_upload(self.plan_path, self.output,
+                    expected_plan_revision=original, **arguments)
+            self.assertEqual(1, observe.call_count)
+            observe.reset_mock()
+            with self.assertRaisesRegex(ValueError, 'exact selected package revision'):
+                capture.capture_sdk_ios_package_upload(self.plan_path, self.output,
+                    expected_plan_revision=current, **arguments)
+            for field, value, message in (('validationTree', 'b' * 40, 'Checkout tree'),
+                    ('pullRequest', 32, 'selected package producer')):
+                with self.subTest(field=field):
+                    self.plan_path.write_bytes(canonical_json_bytes({**plan, field: value}))
+                    with self.assertRaisesRegex(ValueError, message):
+                        capture.capture_sdk_ios_package_upload(self.plan_path, self.output,
+                            expected_plan_revision=original, **arguments)
+            observe.assert_not_called()
+        self.assertEqual(current, git('rev-parse', 'HEAD'))
+        self.assertFalse(self.output.exists())
+
     def test_package_original_is_downloaded_once_per_private_verification_session(self):
         if self.phase != 'package':
             self.skipTest('package-only immutable original archive reuse')

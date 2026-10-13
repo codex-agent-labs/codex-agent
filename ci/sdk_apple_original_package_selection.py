@@ -210,7 +210,7 @@ class OriginalApplePackageSelector:
             package_receipt_path=selected_receipt,
             artifact_id=locator["artifact_id"], artifact_sha256=locator["artifact_sha256"],
             trusted_workflow_sha=original_workflow, repository_root=self._repository,
-            environ=self._environ, token=self._token)
+            environ=self._environ, token=self._token, expected_plan_revision=producer["commit"])
         shard = verify_phase_shard(package_capture / "original/shard", _INSTANCE)
         if (shard["receiptBytes"] != raw or shard["receiptSha256"] != selected["receiptSha256"]
                 or shard["objectSha256"] != selected["objectSha256"]):
