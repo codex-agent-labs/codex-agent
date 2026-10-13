@@ -426,6 +426,9 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "full package rejection"):
             self.invoke()
         self.assertFalse((self.destination / "shard").exists())
+        self.assertEqual(b"synthetic object\n", (self.destination / "unverified-package/phase-object.json").read_bytes())
+        self.assertEqual(canonical_json_bytes(self.finalized["receipt"]),
+                         (self.destination / "unverified-package/phase-receipt.json").read_bytes())
 
     def test_stage_or_predecessor_mutation_after_sdk_exit_rejects_publication(self):
         for mutation, message in (

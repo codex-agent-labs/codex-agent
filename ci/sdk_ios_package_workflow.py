@@ -166,15 +166,23 @@ def execute(
                 "tooling_keyring": tooling_keyring,
                 "tooling_keys_directory": tooling_keys_directory,
             }
-            verified, raw = verify_sdk_package_inputs(
-                root, result["stage"], candidate / PHASE_RECEIPT_NAME,
-                sdk_inputs["sdk"]["directory"] / REQUEST_NAME,
-                binary_stage_root=sdk_binary["stage"],
-                binary_receipt_path=sdk_binary["receiptPath"],
-                binary_contract_evidence=contract_evidence,
-                apple_binary_verification=apple_verification,
-                apple_execution_capture_directory=destination / "package-execution",
-            )
+            try:
+                verified, raw = verify_sdk_package_inputs(
+                    root, result["stage"], candidate / PHASE_RECEIPT_NAME,
+                    sdk_inputs["sdk"]["directory"] / REQUEST_NAME,
+                    binary_stage_root=sdk_binary["stage"],
+                    binary_receipt_path=sdk_binary["receiptPath"],
+                    binary_contract_evidence=contract_evidence,
+                    apple_binary_verification=apple_verification,
+                    apple_execution_capture_directory=destination / "package-execution",
+                )
+            except Exception as failure:
+                # Preserve produced bytes for diagnosis, never publish an admitted shard.
+                try:
+                    publish_regular_tree(candidate, destination / "unverified-package")
+                except Exception as custody_failure:
+                    failure.add_note(f"Unverified package preservation failed: {custody_failure}")
+                raise
             if (verified != finalized["receipt"] or raw != read_regular_file_bytes(
                     candidate / PHASE_RECEIPT_NAME)):
                 raise ValueError("SDK iOS package gate returned a different candidate receipt")

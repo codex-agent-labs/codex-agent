@@ -21,6 +21,8 @@ class LocalToolingTest(GitFixture):
         self.root = self.root.resolve()
         self.commit("gradle/wrapper/gradle-wrapper.properties", "distributionUrl=https\\://example.invalid/gradle-9.4.1-bin.zip\n")
         self.commit("gradle/build-logic/build.gradle.kts", "// synthetic build source\n")
+        self.commit(".github/actions/run-ci-lane/release_tooling.init.gradle", "// synthetic tooling-only assembly hook\n")
+        self.commit(".github/actions/run-ci-lane/release_tooling_classes.json", '["ApplePackageExecutionContext"]\n')
         self.java_home = self.root / "java"
         self.java = self.java_home / "bin" / ("java.exe" if os.name == "nt" else "java")
         self.java.parent.mkdir(parents=True)
@@ -54,6 +56,7 @@ class LocalToolingTest(GitFixture):
         if command[-1] == "releaseToolingJar":
             self.assertIn("--offline", command)
             self.assertEqual(["-Dkotlin.daemon.jvm.options=-Xmx2g", "releaseToolingJar"], command[-2:])
+            self.assertEqual(["--init-script", str(source / ".github/actions/run-ci-lane/release_tooling.init.gradle")], command[11:13])
             self.assertNotIn("JAVA_TOOL_OPTIONS", kwargs["env"])
             jar = source / JAR.removeprefix("payload/")
             jar.parent.mkdir(parents=True)
@@ -175,6 +178,7 @@ class LocalToolingTest(GitFixture):
                 source = Path(kwargs["cwd"])
                 with zipfile.ZipFile(source / JAR.removeprefix("payload/"), "w") as archive:
                     archive.writestr("META-INF/", b"")
+                    archive.writestr("ApplePackageExecutionContext.class", b"synthetic class, never executed")
                     archive.writestr("python/ci/products/sdk_package.py",
                                      (source / "ci/products/sdk_package.py").read_bytes())
             return result
@@ -197,3 +201,23 @@ class LocalToolingTest(GitFixture):
         with self.assertRaisesRegex(ValueError, "compiler/build inputs"), \
                 self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip()):
             self.fail("old compiled matcher was treated as current")
+
+    def test_signed_jar_with_missing_declared_class_is_rejected(self):
+        from ci.products.inventory import run_git
+        self.commit("ci/products/sdk_package.py", "# synthetic verifier\n")
+        original_execute = self.execute
+
+        def execute(command, **kwargs):
+            result = original_execute(command, **kwargs)
+            if command[-1] == "releaseToolingJar":
+                source = Path(kwargs["cwd"])
+                with zipfile.ZipFile(source / JAR.removeprefix("payload/"), "w") as archive:
+                    archive.writestr("python/ci/products/sdk_package.py",
+                                     (source / "ci/products/sdk_package.py").read_bytes())
+            return result
+
+        with mock.patch.object(self, "execute", side_effect=execute):
+            self.produce()
+        with self.assertRaisesRegex(ValueError, "required Apple execution classes"), \
+                self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip()):
+            self.fail("an incomplete signed JAR was admitted")

@@ -3,6 +3,8 @@
 from contextlib import contextmanager
 from pathlib import Path
 import subprocess
+import io
+from contextlib import redirect_stderr
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -316,9 +318,11 @@ class SdkAppleContentTest(unittest.TestCase):
             raise subprocess.CalledProcessError(1, "fixed verifier", output=b"raw stdout", stderr=b"raw stderr")
         self.mutate = fail
         before = regular_file_inventory(self.root, allow_empty=True)
-        with self.assertRaises(subprocess.CalledProcessError) as caught:
+        diagnostics = io.StringIO()
+        with redirect_stderr(diagnostics), self.assertRaises(subprocess.CalledProcessError) as caught:
             self.verify()
         self.assertEqual(b"raw stderr", caught.exception.stderr)
+        self.assertEqual("raw stderr", diagnostics.getvalue())
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
 
     def test_original_or_private_mutation_prevents_inventory_return(self):

@@ -8,6 +8,7 @@ host, receipt, or reuse authority. No Maven output exception is defined here.
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
@@ -84,8 +85,14 @@ def _verify_sdk_apple_with_tooling(
             environment = {key: value for key, value in os.environ.items() if key in {
                 "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
             }}
-            subprocess.run(command, cwd=root, env=environment, check=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                subprocess.run(command, cwd=root, env=environment, check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as failure:
+                if failure.stderr:
+                    message = failure.stderr.decode('utf-8', errors='replace') if isinstance(failure.stderr, bytes) else failure.stderr
+                    print(message, file=sys.stderr, end='')
+                raise
         for name, (source, allow_empty) in normalized_sources.items():
             if any(_input_inventory(path, allow_empty=allow_empty) != before[name]
                    for path in (source, private_sources[name])):

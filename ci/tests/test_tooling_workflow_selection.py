@@ -156,7 +156,7 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
             gradle.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "' + str(log) + '"\n')
             gradle.chmod(0o755)
             subprocess.run(["bash", "-e", "-c", script], cwd=temporary, check=True)
-            self.assertEqual(":build-logic:releaseToolingJar --stacktrace\n", log.read_text())
+            self.assertEqual(f"--init-script {Path(temporary).resolve()}/.github/actions/run-ci-lane/release_tooling.init.gradle :build-logic:releaseToolingJar --stacktrace\n", log.read_text())
         for step, end in (("contract-product", "contract-product-shard"), ("execution", "runtime-validation-handoff")):
             self.assertIn("inputs.contract-tooling-only != 'true'", action.split("    - id: " + step + "\n", 1)[1].split("    - id: " + end + "\n", 1)[0])
         self.assertIn('forced=(--production-only)', action)

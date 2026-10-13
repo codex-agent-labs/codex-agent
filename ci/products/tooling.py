@@ -16,7 +16,7 @@ else:
     from ..impact import effective_pathspecs
     from ..receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 from .inventory import (
-    git_inventory, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
+    git_inventory, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
     require_relative_path, require_sha256, run_git, sha256_bytes, snapshot_regular_tree, tree_entries, write_canonical_json,
 )
@@ -35,7 +35,9 @@ _LIMIT = 16 * 1024 * 1024
 _COMPILER_INPUTS = ("gradle/build-logic/src/main/**", "gradle/build-logic/build.gradle.kts",
                     "gradle/build-logic/settings.gradle.kts", "gradle/build-logic/gradle.properties",
                     "gradle/build-logic/gradle.lockfile", "gradle/libs.versions.toml",
-                    "gradle/wrapper/gradle-wrapper.properties")
+                    "gradle/wrapper/gradle-wrapper.properties",
+                    ".github/actions/run-ci-lane/release_tooling.init.gradle",
+                    ".github/actions/run-ci-lane/release_tooling_classes.json")
 
 
 def _json(path):
@@ -180,6 +182,14 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
                 resources[name.removeprefix("python/")] = archive.read(entry)
     if not resources or "ci/products/sdk_package.py" not in resources:
         raise ValueError("Authenticated tooling lacks its packaged native verifier")
+    required_classes = load_canonical_json_bytes(git_regular_blob_bytes(
+        repository, revision, ".github/actions/run-ci-lane/release_tooling_classes.json", max_bytes=16 * 1024))
+    if (type(required_classes) is not list or not required_classes
+            or any(type(name) is not str or not name.isascii() or not name.isalnum() for name in required_classes)
+            or required_classes != sorted(set(required_classes))):
+        raise ValueError("Tooling class policy is invalid")
+    if any(name + '.class' not in names for name in required_classes):
+        raise ValueError("Authenticated tooling lacks required Apple execution classes")
     # The authenticated build recipe and all Kotlin source above define this
     # resource allow-list. Verify every actual embedded resource against Git;
     # do not maintain a second parser/list of Kotlin's packaging declarations.

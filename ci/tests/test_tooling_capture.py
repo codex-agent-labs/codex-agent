@@ -43,6 +43,8 @@ class ToolingCaptureTest(unittest.TestCase):
             def make_plan(self, *args, **kwargs):
                 if not (self.root / "ci/products/sdk_package.py").exists():
                     self.commit("ci/products/sdk_package.py", "# synthetic packaged verifier resource\n")
+                    self.commit(".github/actions/run-ci-lane/release_tooling.init.gradle", "// synthetic tooling assembly\n")
+                    self.commit(".github/actions/run-ci-lane/release_tooling_classes.json", '["ApplePackageExecutionContext"]\n')
                 return super().make_plan(*args, **kwargs)
 
         with mock.patch.object(release_fixture.tooling_fixture, "ToolingAttestationTest", SeededToolingFixture):
@@ -54,6 +56,7 @@ class ToolingCaptureTest(unittest.TestCase):
 
         jar = source.lane / JAR
         with zipfile.ZipFile(jar, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("ApplePackageExecutionContext.class", b"synthetic class, never executed")
             archive.writestr(
                 "python/ci/products/sdk_package.py",
                 git_regular_blob_bytes(source.repository, source.producer["commit"],

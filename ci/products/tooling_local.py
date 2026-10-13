@@ -29,7 +29,9 @@ PATHS = ("gradle/build-logic/**", "gradle/libs.versions.toml", "ci/**",
          "gradle/wrapper/gradle-wrapper.properties",
          "codex-agent-runtime-desktop/native/c-api/abi-contract.json",
          "codex-agent-runtime-desktop/native/c-api/exports/*",
-         "codex-agent-bindings/cpp/tools/verify_imported_package.py")
+         "codex-agent-bindings/cpp/tools/verify_imported_package.py",
+         ".github/actions/run-ci-lane/release_tooling.init.gradle",
+         ".github/actions/run-ci-lane/release_tooling_classes.json")
 
 
 def _source_inventory(repository, commit):
@@ -122,11 +124,14 @@ def verify_local_original(root, repository):
             values[1]["command"] != prefix + ["--version"]:
         raise ValueError("Local tooling observer command mismatch")
     command = values[2]["command"]
-    if command[:4] != prefix or len(command) != 13 or command[4:6] != ["--offline", "--no-daemon"] or \
+    if command[:4] != prefix or len(command) not in (13, 15) or command[4:6] != ["--offline", "--no-daemon"] or \
             command[6:8] != ["--no-configuration-cache", "--project-dir"] or \
             not command[8].replace("\\", "/").endswith("/gradle/build-logic") or \
-            command[9:11] != ["--gradle-user-home", gradle["userHome"]] or command[11:] != [KOTLIN_HEAP, "releaseToolingJar"]:
+            command[9:11] != ["--gradle-user-home", gradle["userHome"]] or command[-2:] != [KOTLIN_HEAP, "releaseToolingJar"]:
         raise ValueError("Local tooling build command is not the fixed offline task")
+    if len(command) == 15 and command[11:13] != [
+            "--init-script", str(Path(command[8]).parents[1] / '.github/actions/run-ci-lane/release_tooling.init.gradle')]:
+        raise ValueError("Local tooling assembly recipe differs from its source snapshot")
     if receipt["executions"] != execution_records:
         raise ValueError("Local tooling execution inventory mismatch")
     jar = read_regular_file_bytes(root / JAR, reject_symlink_parents=True)
@@ -212,6 +217,7 @@ def produce_local_tooling_attestation(repository, java_home, gradle_installation
         commands = ([str(java), "-XshowSettings:properties", "-version"], prefix + ["--version"],
                     prefix + ["--offline", "--no-daemon", "--no-configuration-cache", "--project-dir",
                               str(source / "gradle/build-logic"), "--gradle-user-home", str(private_cache),
+                              "--init-script", str(source / '.github/actions/run-ci-lane/release_tooling.init.gradle'),
                               KOTLIN_HEAP, "releaseToolingJar"])
         for name, command in zip(EXECUTIONS, commands):
             result = subprocess.run(command, cwd=source, env=environment, check=False,
