@@ -143,6 +143,30 @@ class ContractProducerRunTest(unittest.TestCase):
         contract = (CI_ROOT.parent / ".github/workflows/contract-validation.yml").read_text()
         self.assertIn("  contract-continuation:\n    name: contract-continuation\n", contract)
 
+    def test_keyed_jobs_share_one_fresh_list_and_keep_each_key_required(self):
+        name = 'product-validation / sdk-sdk-ios-package-ios'
+        keys = {'binary': 'sha256:' + 'a' * 64, 'package': 'sha256:' + 'b' * 64}
+        jobs = [{**job, 'name': f"{name} ({key}, ..."} for job, key in zip(self.jobs, keys.values())]
+        arguments = dict(producers={phase: self.producer for phase in keys},
+            jobs_by_phase={phase: name for phase in keys}, build_keys_by_phase=keys,
+            trusted_workflow_sha=self.pin, token='unused')
+        for selected in (jobs, jobs[:1], [*jobs, {**jobs[0], 'id': 19}],
+                         [jobs[0], {**jobs[1], 'conclusion': 'failure'}]):
+            with self.subTest(jobs=selected), \
+                    mock.patch.object(product_reuse, 'api_json', side_effect=[self.run, self.commit]), \
+                    mock.patch.object(product_reuse, 'paginated_items', return_value=selected) as listing:
+                if selected == jobs:
+                    self.assertEqual(jobs, product_reuse._observe_ci_producer_jobs(**arguments)[0]['jobs'])
+                else:
+                    with self.assertRaises(ValueError):
+                        product_reuse._observe_ci_producer_jobs(**arguments)
+                listing.assert_called_once()
+        with mock.patch.object(product_reuse, 'api_json') as query:
+            for invalid in ({}, {**keys, 'extra': keys['binary']}, {**keys, 'binary': 'wrong'}):
+                with self.subTest(keys=invalid), self.assertRaises(ValueError):
+                    product_reuse._observe_ci_producer_jobs(**{**arguments, 'build_keys_by_phase': invalid})
+            query.assert_not_called()
+
     def test_mixed_original_runs_commits_and_attempts_remain_distinct(self):
         other = {**self.producer, "runId": 9, "runAttempt": 1, "commit": "d" * 40,
                  "tree": "e" * 40, "event": "merge_group", "pullRequest": None}
@@ -1984,7 +2008,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
-        product_inventory.write_canonical_json(source / "result.json", {"fullReuse": False})
+        product_inventory.write_canonical_json(source / "result.json",
+            {"fullReuse": False, "reason": "product-build-required"})
         before = product_inventory.regular_file_inventory(source, allow_empty=True)
         handoff = self.root.resolve() / "partial-handoff"
         product_reuse._publish_discovery_handoff(source, handoff)
@@ -2443,7 +2468,8 @@ class ProductReuseAdapterTest(unittest.TestCase):
             "--handoff", "handoff", "--github-output", "output",
         ]
         with mock.patch.object(product_reuse, "discover") as discover, \
-                mock.patch.object(product_reuse, "_canonical_control", return_value={"fullReuse": False}), \
+                mock.patch.object(product_reuse, "_canonical_control",
+                                  return_value={"fullReuse": False, "reason": "product-build-required"}), \
                 mock.patch.object(product_reuse, "publish_regular_tree") as publish:
             self.assertEqual(0, product_reuse.main(arguments))
         discover.assert_called_once_with(Path("plan.json"), Path("discovery"), Path("output"),

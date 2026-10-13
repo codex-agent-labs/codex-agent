@@ -649,7 +649,7 @@ def _fresh_ci_observations(operation):
 
 def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
-    trusted_workflows_by_phase=None, allow_protected_dispatch=False,
+    trusted_workflows_by_phase=None, build_keys_by_phase=None, allow_protected_dispatch=False,
     dispatch_authorization_job="product-validation / dispatch-authorization",
 ) -> list[dict[str, Any]]:
     # Callers choose fixed jobs and workflow references; transported data selects neither.
@@ -657,6 +657,10 @@ def _observe_ci_producer_jobs(
     for phase, job in jobs_by_phase.items():
         if type(job) is not str or not job:
             raise ValueError(f"Contract {phase} producer job must be caller-pinned text")
+    keys = {} if build_keys_by_phase is None else require_exact_keys(
+        build_keys_by_phase, set(jobs_by_phase), "Original producer job keys")
+    for key in keys.values():
+        require_sha256(key, "Caller-pinned original job key")
     if (trusted_workflow_sha is None) == (trusted_workflows_by_phase is None):
         raise ValueError("Contract producer admission requires exactly one caller-owned workflow policy")
     if dispatch_authorization_job is None:
@@ -728,11 +732,11 @@ def _observe_ci_producer_jobs(
         jobs = copy.deepcopy(cached["jobs"]) if cached is not None else paginated_items(f"{url}/jobs", "jobs", token)
         if any(not isinstance(job, dict) for job in jobs):
             raise ValueError("Contract original CI jobs are malformed")
-        names = {jobs_by_phase[phase] for phase in original["phases"]}
+        names = {(jobs_by_phase[phase], keys.get(phase)) for phase in original["phases"]}
         if producer["event"] == "workflow_dispatch" and dispatch_authorization_job is not None:
-            names.add(dispatch_authorization_job)
-        for name in sorted(names):
-            selected_jobs = _matching_ci_jobs(jobs, name)
+            names.add((dispatch_authorization_job, None))
+        for name, key in sorted(names, key=lambda item: (item[0], item[1] or "")):
+            selected_jobs = _matching_ci_jobs(jobs, name, expected_build_key=key)
             if len(selected_jobs) != 1:
                 raise ValueError("Contract original producer job is missing or ambiguous")
             job = selected_jobs[0]
@@ -7140,16 +7144,15 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
         if _identity(receipt) != PhaseInstanceId("sdk", "sdk-ios", sdk_phase, "ios"):
             raise ValueError("Unsupported SDK original qualification identity")
         base_job = f"product-validation / sdk-sdk-ios-{sdk_phase}-ios"
-        jobs = paginated_items(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
-            f"{original['runId']}/attempts/{original['runAttempt']}/jobs", "jobs", token)
-        matches = _matching_ci_jobs(jobs, base_job, expected_build_key=receipt["buildKey"])
-        if len(matches) != 1:
-            raise ValueError("SDK original qualification job is missing or ambiguous")
-        job = matches[0]["name"]
+        job = base_job
         name = (f"codex-agent-sdk-worker-sdk-ios-{sdk_phase}-ios-{receipt['buildKey'][7:]}-"
                 f"{original['tree']}-attempt-{original['runAttempt']}")
+    keyed = source["kind"] in {"sdk-binary", "sdk-package"}
     observed = _observe_ci_producer_jobs({"source": original}, jobs_by_phase={"source": job},
-        trusted_workflow_sha=workflow, token=token)
+        trusted_workflow_sha=workflow, token=token,
+        **({"build_keys_by_phase": {"source": receipt["buildKey"]}} if keyed else {}))
+    if keyed:
+        job = _matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=receipt["buildKey"])[0]["name"]
     artifact = _contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"], name,
         original, observed[0]["run"], token,
         **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package" else {}))
@@ -8114,15 +8117,11 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             bootstrap_plan = canonical_json_bytes(plan)
         build_key = elected_build_key if bootstrap else receipt["buildKey"]
         job = f"product-validation / sdk-sdk-ios-{phase}-{target}"
-        original_jobs = paginated_items(
-            f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}/jobs",
-            "jobs", token)
-        matching = _matching_ci_jobs(original_jobs, job, expected_build_key=build_key)
-        if len(matching) != 1:
-            raise ValueError("Apple original worker job is missing or ambiguous")
-        job = matching[0]["name"]
         observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
-            jobs_by_phase={f"ios-{phase}": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            jobs_by_phase={f"ios-{phase}": job}, build_keys_by_phase={f"ios-{phase}": build_key},
+            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        matching = _matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=build_key)
+        job = matching[0]["name"]
         name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{build_key.removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         archive = (prepared.parent if compact_recovery else prepared) / "transport.zip"

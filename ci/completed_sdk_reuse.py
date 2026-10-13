@@ -131,13 +131,12 @@ def observe_original(original, receipt, token):
     if instance.product != "sdk" or instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Incremental original must be a registered SDK phase")
     base_job = f"product-validation / sdk-{instance.component}-{instance.phase}-{instance.target}"
-    jobs = products.paginated_items(f"https://api.github.com/repos/{producer['repository']}/actions/runs/"
-        f"{producer['runId']}/attempts/{producer['runAttempt']}/jobs", "jobs", token)
-    matches = products._matching_ci_jobs(jobs, base_job, expected_build_key=receipt["buildKey"])
+    observed = products._observe_ci_producer_jobs({"original": producer},
+        jobs_by_phase={"original": base_job}, build_keys_by_phase={"original": receipt["buildKey"]},
+        trusted_workflow_sha=original["workflowSha"], token=token)
+    matches = products._matching_ci_jobs(observed[0]["jobs"], base_job, expected_build_key=receipt["buildKey"])
     if len(matches) != 1 or matches[0].get("id") != original["jobId"]:
         raise ValueError("Incremental SDK original job is missing or ambiguous")
-    observed = products._observe_ci_producer_jobs({"original": producer},
-        jobs_by_phase={"original": matches[0]["name"]}, trusted_workflow_sha=original["workflowSha"], token=token)
     name = (products._worker_artifact_prefix("sdk", instance) +
             f"{receipt['buildKey'][7:]}-{producer['tree']}-attempt-{producer['runAttempt']}")
     artifact = products._contract_ci_upload_metadata(original["artifactId"], original["artifactSha256"],

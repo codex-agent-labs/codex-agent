@@ -128,6 +128,27 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 self.plan_path, self.output, **arguments,
             )
 
+    def test_native_original_uses_one_fresh_job_listing_and_keeps_exact_job_identity(self):
+        import completed_sdk_reuse as completed
+        receipt = json.loads(self.receipt_bytes)
+        base = self.jobs[0]['name']
+        rendered = f"{base} ({receipt['buildKey']}, ..."
+        self.jobs[0]['name'] = rendered[:118] + '...' if len(rendered) > 121 else rendered
+        original = {'artifactId': self.artifact['id'], 'artifactSha256': self.artifact['digest'],
+                    'jobId': self.jobs[0]['id'], 'workflowSha': self.pin}
+        with patch('reuse.api_request', side_effect=self.api) as http, \
+                patch.object(capture, '_download_contract_ci_upload', side_effect=AssertionError('body')):
+            artifact, observed, locator = completed.observe_original(original, receipt, 'synthetic-token')
+            self.assertEqual(self.artifact, artifact)
+            self.assertEqual(self.jobs, observed[0]['jobs'])
+            queries = [call.args[0] for call in http.call_args_list if '/jobs?' in call.args[0]]
+            self.assertEqual(1, len(queries))
+            with self.assertRaisesRegex(ValueError, 'missing or ambiguous'):
+                completed.observe_original({**original, 'jobId': original['jobId'] + 1}, receipt, 'synthetic-token')
+            self.jobs.append({**self.jobs[0], 'id': self.jobs[0]['id'] + 1})
+            with self.assertRaisesRegex(ValueError, 'missing or ambiguous'):
+                completed.observe_original(original, receipt, 'synthetic-token')
+
     def test_retained_upload_consistency_preserves_bytes_without_observation(self):
         self.call()
         before = regular_file_inventory(self.output, allow_empty=True)
@@ -166,7 +187,7 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             artifact_sha256=self.artifact['digest'], trusted_workflow_sha=self.pin,
             repository_root=self.root, environ={}, token='synthetic-token')
         class PlanValidated(Exception): pass
-        with patch.object(capture, 'paginated_items', side_effect=PlanValidated) as observe, \
+        with patch.object(capture, 'api_json', side_effect=PlanValidated) as observe, \
                 patch.object(capture, '_reuse_contract_ci_upload', side_effect=AssertionError('body')):
             with self.assertRaisesRegex(ValueError, 'Checkout commit'):
                 capture.capture_sdk_ios_package_upload(self.plan_path, self.output, **arguments)
