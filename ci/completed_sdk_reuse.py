@@ -1,8 +1,8 @@
 """Validate incremental SDK completion controls after independent native admission.
 
 These checks do not create semantic authority. The native issuer authenticates
-the complete original upload, and the consumer authenticates its attestation
-before passing these controls to the sealed completed-reuse capability.
+the successful admission upload and each consumed original object. The consumer
+authenticates its attestation before creating the sealed completed-reuse capability.
 """
 
 from pathlib import Path
@@ -25,9 +25,9 @@ def _identity(record):
     return PhaseInstanceId(*(record.get(field) for field in IDENTITY))
 
 
-def original_package_member(spec, phase):
-    """Only v3 iOS P consumes its already-admitted original worker member."""
-    return spec["schemaVersion"] == 3 and _identity(phase) == IOS_PACKAGE
+def original_worker_member(spec):
+    """V3 compact states omit bodies; consumption uses exact original workers."""
+    return spec["schemaVersion"] == 3
 
 
 def _records(rows, label):
@@ -276,12 +276,19 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     request, phases, receipts = validate_controls(spec, proof["controls"], _base(frozen, sdk))
     validate_current(request, phases, receipts, root=root, revision=revision,
                      original_revision=_inventory_revision(spec, root))
-    if observe_source(spec["source"], token)[2] != proof["source"]:
-        raise ValueError("Incremental completed source changed")
-    if observe_source(spec["contractControls"], token, contract=True)[2] != proof["contractSource"]:
-        raise ValueError("Incremental Contract source changed")
+    import product_reuse as products
+    from products.restore import bounded_verify
     _contract_files(spec, proof["contractFiles"], sdk)
-    expected_locators = [observe_original(originals[_identity(receipt)], receipt, token)[2] for receipt in receipts]
+    with products._ci_observation_batch():
+        source, contract, *expected_locators = bounded_verify(lambda observe: observe()[2], (
+            lambda: observe_source(spec["source"], token),
+            lambda: observe_source(spec["contractControls"], token, contract=True),
+            *(lambda receipt=receipt: observe_original(originals[_identity(receipt)], receipt, token)
+              for receipt in receipts)))
+    if source != proof["source"]:
+        raise ValueError("Incremental completed source changed")
+    if contract != proof["contractSource"]:
+        raise ValueError("Incremental Contract source changed")
     if expected_locators != proof["originals"]:
         raise ValueError("Incremental SDK original native observations changed")
     available = _records(request["availableObjects"], "Incremental original objects")
@@ -291,10 +298,11 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
         validate_file_record(member, "Incremental SDK object", with_kind=False)
         expected = spec["stateRoot"] + "/" + available[_identity(phase)]["objectPath"]
         limit = LIMIT
-        if original_package_member(spec, phase):
+        if original_worker_member(spec):
             from products.restore import object_relative_path
             expected = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
-            limit = 8 * 1024**3
+            if _identity(phase) == IOS_PACKAGE:
+                limit = 8 * 1024**3
         if (member["relativePath"] != expected or member["sha256"] != phase["objectSha256"]
                 or not 0 < member["bytes"] <= limit):
             raise ValueError("Incremental SDK consumed object changed")
@@ -346,10 +354,25 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         references = validate_original_references(load_canonical_json_bytes(read(archive, "runtime-original-references.json")))
         inventory = {row["relativePath"]: row for row in references["inventory"]}
         aliases = {row["relativePath"]: row for row in references["references"]}
+        sources = {row["relativePath"]: row for row in references["sources"]}
 
         def retained(name):
             row = inventory[name]
-            raw = read(archive, aliases.get(name, {}).get("sourcePath", name))
+            alias = aliases.get(name, {})
+            if alias.get("source") is not None:
+                source = sources[alias["source"]]
+                receipt = source["receipt"]
+                original = originals.get(_identity(receipt))
+                if (not original_worker_member(spec) or _identity(receipt) != IOS_PACKAGE
+                        or source["kind"] != "sdk-package"
+                        or alias["sourcePath"] != "shard/phase-receipt.json" or original is None
+                        or any(source[field] != original[field] for field in ("artifactId", "artifactSha256"))):
+                    raise ValueError("Incremental external control is outside its approved package receipt")
+                # This exact receipt is inside the whole-authenticated successful
+                # resume. Its native Git pin and fresh original provenance remain mandatory.
+                raw = canonical_json_bytes(receipt)
+            else:
+                raw = read(archive, alias.get("sourcePath", name))
             if len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
                 raise ValueError("Incremental retained control differs from its exact archive member")
             return raw
@@ -365,13 +388,15 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             artifact, _, locator = observe_original(originals[_identity(phase)], receipts[number], token)
             locators.append(locator)
             obj = work / f"object-{number}.zip"
-            if original_package_member(spec, phase):
+            if original_worker_member(spec):
                 name = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
-                with open_reference_archive(artifact, token, max_bytes=products._IOS_PACKAGE_UPLOAD_LIMIT) as (original, stream):
+                package = _identity(phase) == IOS_PACKAGE
+                bounds = {"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT} if package else {}
+                with open_reference_archive(artifact, token, **bounds) as (original, stream):
                     member = {"relativePath": name, "bytes": original.getinfo(name).file_size,
                               "sha256": phase["objectSha256"]}
-                    if not 0 < member["bytes"] <= 8 * 1024**3:
-                        raise ValueError("Incremental package member exceeds its fixed bound")
+                    if not 0 < member["bytes"] <= (8 * 1024**3 if package else LIMIT):
+                        raise ValueError("Incremental original member exceeds its fixed bound")
                     copy_reference_member(original, name, obj, member)
                     transferred += stream.transferred
             else:

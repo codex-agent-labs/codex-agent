@@ -294,8 +294,9 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
     Original capture/receipt bytes are not rewritten. Returned records contain
     content identity only; current retrieval observation is not product identity.
     Package selection still owns the independent native/source/toolchain gates.
-    Only a completed whole-upload comparison in this private process session can
-    avoid downloading it again; live provenance and compact bytes are rechecked.
+    Concrete native completion can route its exact qualified controls without a
+    body. Otherwise only a completed whole-upload comparison in this private
+    process avoids another download; live provenance and compact bytes are rechecked.
     """
     require_no_signing_secret(environ)
     instance = _ios_instance(phase)
@@ -458,8 +459,7 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
     extension = completed_frozen.sdk_extension()
     if extension is None:
         return []
-    records = []
-    for selected in extension["spec"]["completedPhases"]:
+    def capture_one(selected):
         ios_package = products._identity(selected) == _ios_instance("package")
         instance = (_ios_instance("package") if ios_package else
                     _javascript_instance(selected["phase"], selected["component"]))
@@ -481,10 +481,12 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
         products.write_canonical_json(capture / "capture-transport.json", {"artifact": artifact,
             "captureProducer": envelope["receipt"]["producer"], "observed": observed,
             f"{instance.phase}ReceiptSha256": record["receiptSha256"]})
-        records.append(_record(capture, Path(artifact_root), phase="package", completed_frozen=completed_frozen)
+        return (_record(capture, Path(artifact_root), phase="package", completed_frozen=completed_frozen)
             if ios_package else _javascript_package_record(capture, Path(artifact_root), instance.phase,
                 component=instance.component, completed_frozen=completed_frozen))
-    return records
+    from products.restore import bounded_verify
+    with products._ci_observation_batch():
+        return bounded_verify(capture_one, extension["spec"]["completedPhases"])
 
 
 def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, destination,

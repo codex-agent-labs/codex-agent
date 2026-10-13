@@ -154,6 +154,16 @@ class CompletedSdkControlsTest(unittest.TestCase):
                             plan_path=plan_path, repository_root=root, **options)
                     return recovery.replay_prior_javascript_package(root / folder, root, component=component, **options)
                 self.assertEqual(records, replay(cap))
+                if component == 'sdk-ios':
+                    inputs = root / 'inputs'
+                    inputs.mkdir()
+                    (inputs / 'same-plan.json').write_bytes(plan_path.read_bytes())
+                    published = root / 'published'
+                    report = recovery.products._publish_runtime_original_reference_handoff(
+                        inputs, root, published, completed_frozen=cap)
+                    self.assertEqual([], report['sources'])
+                    self.assertTrue((published / 'runtime-original-references.json').exists())
+                    self.assertFalse((published / 'product-resume-state' / records[0]['objectPath']).exists())
                 with self.assertRaisesRegex(AssertionError, 'body'):
                     replay(None)
                 with self.assertRaisesRegex(ValueError, 'concrete native authority'):
@@ -162,6 +172,45 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 (shard / 'phase-receipt.json').write_bytes(canonical_json_bytes({**receipt, 'productVersion': 'changed'}))
                 with self.assertRaises(ValueError):
                     replay(cap)
+
+    def test_independent_native_captures_overlap_but_any_observation_failure_aborts(self):
+        import threading
+        import reuse_qualification as native
+        import sdk_ios_binary_recovery as recovery
+        receipts, records = [], []
+        for phase in ('package', 'validation', 'metadata'):
+            receipt = deepcopy(self.receipt)
+            receipt.update(component='javascript', phase=phase, target='node')
+            receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
+            receipts.append(receipt)
+            records.append({**{field: receipt[field] for field in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
+                'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': sha256_bytes(b'object')})
+        cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': records}},
+            receipts, native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
+            sdk={'extension': {'spec': {'schemaVersion': 3, 'completedPhases': records}, 'proof': {}}})
+        barrier = threading.Barrier(3)
+        seen = recovery.products._CI_OBSERVATIONS.get()
+        def observe(record, **kwargs):
+            self.assertIsNotNone(recovery.products._CI_OBSERVATIONS.get())
+            barrier.wait(timeout=5)  # A serial implementation cannot reach all three participants.
+            return {}, {'id': 71}, []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', side_effect=observe):
+                result = recovery.capture_completed_javascript(root / 'success', root,
+                    completed_frozen=cap, producer={}, token='synthetic')
+            self.assertEqual([row['phase'] for row in records], [row['phase'] for row in result])
+            self.assertTrue(all(not (root / row['objectPath']).exists() for row in result))
+            self.assertIs(seen, recovery.products._CI_OBSERVATIONS.get())
+            def failed(record, **kwargs):
+                if record['phase'] == 'validation':
+                    raise ValueError('original provenance changed')
+                return {}, {'id': 71}, []
+            with patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', side_effect=failed), \
+                    self.assertRaisesRegex(ValueError, 'original provenance changed'):
+                recovery.capture_completed_javascript(root / 'failure', root,
+                    completed_frozen=cap, producer={}, token='synthetic')
+            self.assertIs(seen, recovery.products._CI_OBSERVATIONS.get())
 
     def test_large_native_package_member_is_bound_to_its_original_only_in_v3(self):
         import json
@@ -207,13 +256,19 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 validate({**proof, 'schemaVersion': 2, 'specSha256': sha256_bytes(canonical_json_bytes(spec))})
 
     def test_consumption_fetches_only_native_package_member_from_its_original_upload(self):
+        for component, phase, target in (('sdk-ios', 'package', 'ios'),
+                ('javascript', 'package', 'node'), ('csharp', 'binary', 'desktop')):
+            with self.subTest(component=component):
+                self.check_consumption_from_original(component, phase, target)
+
+    def check_consumption_from_original(self, component, phase_name, target_name):
         import io
         import zipfile
         import reuse_qualification as native
         from contextlib import contextmanager
         from products.restore import object_relative_path
         receipt = deepcopy(self.receipt)
-        receipt.update(component='sdk-ios', phase='package', target='ios')
+        receipt.update(component=component, phase=phase_name, target=target_name)
         receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
         body = b'only the requested package object'
         phase = {**{field: receipt[field] for field in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
@@ -231,7 +286,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         @contextmanager
         def opened(artifact, token, **bounds):
             self.assertEqual(original, artifact)
-            self.assertEqual({'max_bytes': 32 * 1024**3}, bounds)
+            self.assertEqual({'max_bytes': 32 * 1024**3} if component == 'sdk-ios' else {}, bounds)
             with zipfile.ZipFile(raw) as archive:
                 yield archive, None
         with tempfile.TemporaryDirectory() as temporary, \
@@ -242,6 +297,110 @@ class CompletedSdkControlsTest(unittest.TestCase):
             cap.capture_object(phase, target, plan={}, producer={}, trusted_workflow_sha='a' * 40, token='synthetic')
             self.assertEqual(body, target.read_bytes())
             self.assertEqual([target], list(target.parent.iterdir()))
+
+    def test_v3_issuer_verifies_original_package_member_without_embedding_or_downloading_outer_upload(self):
+        for component, phase, target in (('sdk-ios', 'package', 'ios'),
+                ('javascript', 'package', 'node'), ('csharp', 'binary', 'desktop')):
+            with self.subTest(component=component):
+                self.setUp()
+                self.check_v3_issuer_original_member(component, phase, target)
+
+    def check_v3_issuer_original_member(self, component, phase_name, target):
+        import io, json, zipfile
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        import reuse_qualification as native
+        import product_reuse as products
+        from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest
+        fixture = SdkWorkerCollectionTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        _, _, shard, verified, _ = fixture.shard(phase_name, component=component, target=target)
+        receipt = verified['receipt']
+        del self.controls[self.receipt_path]
+        folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk'
+        self.receipt_path = (f'product-resume-state/{folder}/{component}/{phase_name}/{target}/'
+                            'original/shard/phase-receipt.json')
+        phase = {**{key: receipt[key] for key in completed.IDENTITY},
+            **{key: verified[key] for key in completed.OBJECT}, 'receiptPath': self.receipt_path}
+        prefix = 'product-resume-state/'
+        request = self.controls[prefix + 'reuse-wave-request.json']
+        request['availableObjects'][-1] = {**phase, 'objectPath': 'deferred-package.zip'}
+        request['phaseAuthorities'][-1] = {**{key: phase[key] for key in completed.IDENTITY},
+            **{key: receipt['inputs'][key] for key in ('toolchainProfileDigest', 'flagsDigest', 'outputSchemaVersion')}}
+        self.controls[prefix + 'reuse-wave-result.json']['phases'][-1] = {**phase, 'state': 'retained'}
+        self.controls[self.receipt_path] = receipt
+        self.spec['completedPhases'] = [phase]
+        self.bind_controls()
+        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        spec.update(schemaVersion=3, completedPhases=[phase], controls=self.spec['controls'])
+        spec['source']['producer'] = self.controls[prefix + 'producer.json']
+        spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
+        parent = {'schemaVersion': 1}
+        spec['parentProofSha256'] = sha256_bytes(canonical_json_bytes(parent))
+        def zipped(files):
+            raw = io.BytesIO()
+            with zipfile.ZipFile(raw, 'w') as archive:
+                for name, value in files.items(): archive.writestr(name, value)
+            return raw.getvalue()
+        source_files = {name: canonical_json_bytes(value) for name, value in self.controls.items()}
+        package = component == 'sdk-ios'
+        if package:
+            del source_files[self.receipt_path]  # Ordinary P exports retain this only by reference.
+        producer_row = next(row for row in spec['controls'] if row['relativePath'] == prefix + 'producer.json')
+        alias = {**producer_row, 'relativePath': prefix + 'retained-producer.json'}
+        source_prefix = self.receipt_path.removesuffix('/shard/phase-receipt.json')
+        receipt_row = next(row for row in spec['controls'] if row['relativePath'] == self.receipt_path)
+        source_files['runtime-original-references.json'] = canonical_json_bytes({
+            'schemaVersion': 3, 'inventory': sorted([*spec['controls'], alias], key=lambda row: row['relativePath']),
+            'sources': ([{'relativePath': source_prefix, 'kind': 'sdk-package', 'receipt': receipt,
+                **{key: spec['originals'][0][key] for key in ('artifactId', 'artifactSha256')}}] if package else []),
+            'references': sorted([{**alias, 'source': None, 'sourcePath': producer_row['relativePath']}] +
+                ([{**receipt_row, 'source': source_prefix, 'sourcePath': 'shard/phase-receipt.json'}] if package else []),
+                key=lambda row: row['relativePath'])})
+        source = zipped(source_files)
+        contract = zipped({row['relativePath']: b'{}' for row in spec['contractFiles']})
+        for item, raw in ((spec['source'], source), (spec['contractControls'], contract)):
+            item.update(artifactBytes=len(raw), artifactSha256=sha256_bytes(raw))
+        name = 'shard/' + verified['objectPath']
+        body = (shard / verified['objectPath']).read_bytes()
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            stack.enter_context(patch.object(native, '_fetch_completed_sdk', return_value={'proof': parent}))
+            stack.enter_context(patch.object(completed, '_base', return_value=self.base))
+            stack.enter_context(patch.object(completed, 'validate_current'))
+            stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
+            stack.enter_context(patch.object(completed, '_contract_files'))
+            stack.enter_context(patch.object(completed, 'observe_source', side_effect=lambda item, token, **kw:
+                ({'name': 'controls'}, [{'run': {}}], {'source': item['artifactId']})))
+            stack.enter_context(patch.object(completed, 'observe_original', return_value=({'id': 71}, [], {'original': 71})))
+            def download(identifier, digest, artifact_name, producer, run, token, *, destination, max_bytes):
+                raw = source if identifier == spec['source']['artifactId'] else contract
+                self.assertEqual((sha256_bytes(raw), len(raw)), (digest, max_bytes))
+                destination.write_bytes(raw)
+            downloads = stack.enter_context(patch.object(products, '_download_contract_ci_upload', side_effect=download))
+            for tampered in (False, True):
+                @contextmanager
+                def opened(artifact, token, **bounds):
+                    self.assertEqual({'id': 71}, artifact)
+                    self.assertEqual({'max_bytes': 32 * 1024**3} if package else {}, bounds)
+                    with zipfile.ZipFile(io.BytesIO(zipped({name: b'x' * len(body) if tampered else body}))) as archive:
+                        yield archive, SimpleNamespace(transferred=len(body))
+                work = Path(temporary).resolve() / str(tampered)
+                work.mkdir()
+                with patch('runtime_reference_archive.open_reference_archive', opened):
+                    if tampered:
+                        with self.assertRaisesRegex(ValueError, 'immutable digest'):
+                            completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
+                        self.assertFalse((work / 'completion.json').exists())
+                    else:
+                        report = completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
+                        result = json.loads((work / 'completion.json').read_bytes())
+                        self.assertEqual(3, result['schemaVersion'])
+                        self.assertEqual([{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}], result['members'])
+                        self.assertEqual(len(source) + len(contract), report['downloadedOriginalBytes'])
+                        self.assertEqual(len(body), report['originalMemberRangeBytes'])
+                        self.assertEqual(0, report['productPhasesExecuted'])
+                        self.assertEqual(2, downloads.call_count)
 
     def test_native_parent_commit_is_fetched_only_when_missing_and_exactly_pinned(self):
         import reuse_qualification as native

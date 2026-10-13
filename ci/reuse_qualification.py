@@ -21,6 +21,7 @@ from products.inventory import (
     require_sorted_unique_records, sha256_bytes, validate_file_record,
 )
 from products.receipt import validate_phase_receipt
+from runtime_reference_transport import measured
 
 
 REPOSITORY = "codex-agent-labs/codex-agent"
@@ -256,6 +257,7 @@ def _authenticate_bytes(raw, signature, *, signer_commit, source_commit, policy_
     return value
 
 
+@measured
 def _authenticate_native_subject(raw, signature, name, *, signer_commit, source_commit):
     """Only native signature authentication; the distinct caller validates its claim."""
     _commit(signer_commit)
@@ -381,6 +383,7 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
     return report
 
 
+@measured
 def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, run_id, run_attempt,
                                  signer_commit, source_commit, token, _completed_sdk=False):
     """Fresh native origin and whole ZIP authentication shared by distinct consumers."""
@@ -1022,11 +1025,12 @@ class CompletedFrozenReuse:
             extension = self.sdk_extension()
             if extension is not None and products._identity(record) in _phase_records(
                     extension["spec"]["completedPhases"], "Incremental SDK phases"):
-                from completed_sdk_reuse import original_package_member
+                from completed_sdk_reuse import IOS_PACKAGE, original_worker_member
                 artifact, original, _ = self.observe_extended_sdk(record, producer=producer, token=token)
-                if original_package_member(extension["spec"], record):
+                if original_worker_member(extension["spec"]):
                     artifact = original
-                    limits = {"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT}
+                    if products._identity(record) == IOS_PACKAGE:
+                        limits = {"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT}
                 members = [row for row in extension["proof"]["members"] if row["sha256"] == record["objectSha256"]]
                 if len(members) != 1:
                     raise ValueError("Incremental SDK object member is missing or ambiguous")
@@ -1240,6 +1244,7 @@ class CompletedFrozenReuse:
         return {field: receipt[field] for field in PHASE_PLAN_KEYS}
 
 
+@measured
 def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha256,
                            repository_root, revision, sdk_completion=None, **original):
     """Use an independently approved frozen semantic issuer for an approved consumer.
@@ -1371,13 +1376,18 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     authorities, unavailable = products._authorities(root, revision, (instance,))
     if unavailable or authorities != [expected]:
         raise QualificationIncompatible("Completed SDK current authority changed")
-    _, _, source_locator = _observe_completed_sdk_resume(spec, token)
-    _, _, original_locator = _observe_completed_sdk_original(original,
-        {"repository": REPOSITORY, "event": "pull_request"}, spec["producer"], token)
+    from products.restore import bounded_verify
+    _sdk_input_members(proof["sdkInputs"])
+    # These are independent read-only observations. All must finish before the
+    # native capability exists; their private batch cannot outlive this admission.
+    with products._ci_observation_batch():
+        source_locator, original_locator, inputs_locator = bounded_verify(lambda observe: observe()[2], (
+            lambda: _observe_completed_sdk_resume(spec, token),
+            lambda: _observe_completed_sdk_original(original,
+                {"repository": REPOSITORY, "event": "pull_request"}, spec["producer"], token),
+            lambda: _observe_completed_sdk_inputs(spec, token)))
     if proof["source"] != source_locator or proof["original"] != original_locator:
         raise ValueError("Completed SDK native original or admission source changed")
-    _sdk_input_members(proof["sdkInputs"])
-    _, _, inputs_locator = _observe_completed_sdk_inputs(spec, token)
     if inputs_locator != proof["sdkInputs"]["locator"]:
         raise ValueError("Completed SDK input native source changed")
     return {"spec": spec, "original": original, "proof": proof}

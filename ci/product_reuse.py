@@ -587,6 +587,7 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "dc9de1534ec42237c33a2c1506e046907df8e54a",
                              "400b40cf06815101abd4a3f743b5d47cf19b190e",
                              "5d5792eddc1c995a9d9998c4b2086307c86af19e",
+                             "e30970c14fcdc51119b3b215bdfd70dea6ccae44",
                              "1c0376fba5c1dc7947dffb1de3b0001ef25ee89c")):
         try:
             _require_ci_workflow_reference(run,
@@ -7306,16 +7307,19 @@ def _publish_runtime_original_reference_handoff(inputs, state, destination, *, c
                 "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
     package = Path(state) / "prior-failed-sdk-ios-package/sdk-ios/package/ios"
     if package.exists() or package.is_symlink():
-        receipt = verify_phase_shard(package / "original/shard",
-            PhaseInstanceId("sdk", "sdk-ios", "package", "ios"))["receipt"]
+        verified = verify_phase_shard(package / "original/shard",
+            PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+        receipt = verified["receipt"]
         captured = _canonical_control(package / "capture-transport.json", "Original iOS package reference")
         if (captured.get("captureProducer") != receipt["producer"]
                 or captured.get("packageReceiptSha256") != sha256_bytes(canonical_json_bytes(receipt))):
             raise ValueError("SDK package reference changes its original producer or receipt")
         artifact = captured["artifact"]
-        sources.append({"relativePath": "product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original",
-            "kind": "sdk-package", "receipt": receipt,
-            "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
+        if completed_frozen is None or completed_frozen.envelope(verified) is None:
+            sources.append({"relativePath": "product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original",
+                "kind": "sdk-package", "receipt": receipt,
+                "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
     prior = Path(state) / "prior-failed-runtime"
     if prior.exists():
         for observation_path in sorted(prior.glob("*/*/*/transport/original-ci-phases.json")):
@@ -8833,16 +8837,20 @@ def resume_products(
         prior_sdk_records = []
         semantic = {} if completed_frozen is None else {"completed_frozen": completed_frozen}
         if completed_frozen is not None:
-            prior_records = _capture_completed_runtime_controls(plan, current_producer,
-                prepared / "prior-failed-runtime", prepared, completed_frozen=completed_frozen,
-                trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN"))
-            from sdk_ios_binary_recovery import capture_completed_ios_binary
-            prior_sdk_records = capture_completed_ios_binary(prepared / "prior-failed-sdk", prepared,
-                completed_frozen=completed_frozen, plan=plan, producer=current_producer,
-                token=environment.get("GITHUB_TOKEN"))
-            from sdk_ios_binary_recovery import capture_completed_javascript
-            prior_sdk_records.extend(capture_completed_javascript(prepared, prepared,
-                completed_frozen=completed_frozen, producer=current_producer, token=environment.get("GITHUB_TOKEN")))
+            from sdk_ios_binary_recovery import capture_completed_ios_binary, capture_completed_javascript
+            from products.restore import bounded_verify
+            # Independent originals write disjoint private capture directories.
+            # Every observation must succeed before any records enter the planner.
+            prior_records, binary_records, extended_records = bounded_verify(lambda capture: capture(), (
+                lambda: _capture_completed_runtime_controls(plan, current_producer,
+                    prepared / "prior-failed-runtime", prepared, completed_frozen=completed_frozen,
+                    trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN")),
+                lambda: capture_completed_ios_binary(prepared / "prior-failed-sdk", prepared,
+                    completed_frozen=completed_frozen, plan=plan, producer=current_producer,
+                    token=environment.get("GITHUB_TOKEN")),
+                lambda: capture_completed_javascript(prepared, prepared,
+                    completed_frozen=completed_frozen, producer=current_producer, token=environment.get("GITHUB_TOKEN"))))
+            prior_sdk_records = [*binary_records, *extended_records]
             wave["availableObjects"] = sorted((*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
             completed_frozen.check_request(wave)
         ready_plans = {}
