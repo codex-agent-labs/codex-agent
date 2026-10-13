@@ -60,6 +60,19 @@ class AppleToolchainEvidenceTest(unittest.TestCase):
         self.assertEqual(result["toolchain"], regular_file_inventory(self.root / "toolchain"))
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
 
+    def test_exact_hosted_driver_banner_preserves_strict_version_checks(self):
+        xcode = "Xcode 26.6\nBuild version 17F113\n"
+        swift = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 " \
+                "(swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0\n"
+        expected = {"xcodeVersion": "26.6", "xcodeBuild": "17F113", "swiftVersion": "6.3.3"}
+        toolchain._versions(xcode, swift, expected)
+        for changed in (swift.replace("6.3.3 ", "6.3.30 "),
+                        swift + "Apple Swift version 6.3.3\n",
+                        swift.replace("1.148.6", "untrusted"),
+                        "arbitrary prefix Apple Swift version 6.3.3\n"):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                toolchain._versions(xcode, changed, expected)
+
     def test_self_declared_report_and_raw_versions_cannot_replace_pins(self):
         self.report["toolchain"]["xcodeVersion"] = "27.0"
         self.write_json("reports/compiler-evidence.json", self.report)

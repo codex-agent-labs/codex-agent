@@ -42,8 +42,8 @@ def _versions(xcode: str, swift: str, expected: dict[str, str]) -> None:
             or [line for line in lines if line.startswith("Build version ")] !=
             ["Build version " + expected["xcodeBuild"]]):
         raise ValueError("Apple toolchain Xcode version/build differs from caller pins")
-    banners = [line for line in re.split(r"\r\n|\n|\r", swift) if line.startswith("Apple Swift version ")]
-    match = re.fullmatch(r"Apple Swift version ([0-9]+(?:\.[0-9]+)*)(?:\s+.*)?", banners[0]) \
+    banners = [line for line in re.split(r"\r\n|\n|\r", swift) if "Apple Swift version " in line]
+    match = re.fullmatch(r"(?:swift-driver version: [0-9]+(?:\.[0-9]+)* )?Apple Swift version ([0-9]+(?:\.[0-9]+)*)(?:\s+.*)?", banners[0]) \
         if len(banners) == 1 else None
     if match is None or match.group(1) != expected["swiftVersion"]:
         raise ValueError("Apple toolchain Swift version differs from caller pins")

@@ -50,6 +50,19 @@ class AppleReleaseCheckTasksTest {
     }
 
     @Test
+    fun `pinned hosted Swift banner accepts numeric driver prefix only`() {
+        val observed = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 " +
+            "(swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0\n"
+        verifyAppleToolchainOutput("Xcode 26.6\nBuild version 17F113\n", observed, "26.6", "17F113", "6.3.3")
+        listOf(observed.replace("6.3.3 ", "6.3.30 "), observed + "Apple Swift version 6.3.3\n",
+            observed.replace("1.148.6", "untrusted"), "arbitrary prefix Apple Swift version 6.3.3\n").forEach {
+            assertFailsWith<IllegalStateException> {
+                verifyAppleToolchainOutput("Xcode 26.6\nBuild version 17F113\n", it, "26.6", "17F113", "6.3.3")
+            }
+        }
+    }
+
+    @Test
     fun `otool deployment records retain Rust sysroot exception`() {
         val records = parseDeploymentTargets(
             """
