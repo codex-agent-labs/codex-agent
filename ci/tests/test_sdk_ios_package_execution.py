@@ -300,6 +300,7 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", return_value={}))
             def recover(*args, **kwargs):
+                self.assertEqual(kwargs["work_directory"].resolve(), kwargs["work_directory"])
                 if not self.recover_production:
                     return None
                 self.worker(self.ready, producer=self.producer,

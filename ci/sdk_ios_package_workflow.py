@@ -275,7 +275,7 @@ def execute(
             recovered = recover_unverified_package(
                 product_reuse._validate_plan(Path(plan), root), ready, producer,
                 selection["sdkVersion"], destination / "recovered-production", token=token,
-                work_directory=Path(temporary) / "recovered-production",
+                work_directory=candidate.parent / "recovered-production",
             )
             result = recovered if recovered is not None else execute_package(
                 ready, producer=producer, sdk_version=selection["sdkVersion"],
