@@ -208,6 +208,23 @@ _APPLE_UPLOAD_ZIP_LIMITS = {
     "max_entry_bytes": _APPLE_UPLOAD_LIMIT,
     "max_total_bytes": _APPLE_UPLOAD_LIMIT,
 }
+_IOS_PACKAGE_UPLOAD_LIMIT = 32 * 1024**3
+_IOS_PACKAGE_UPLOAD_ZIP_LIMITS = {
+    **_CATALOG_ZIP_LIMITS,
+    "max_archive_bytes": _IOS_PACKAGE_UPLOAD_LIMIT,
+    "max_total_bytes": _IOS_PACKAGE_UPLOAD_LIMIT,
+}
+
+
+def _worker_upload_zip_limits(instance):
+    # Complete original Apple execution evidence accompanies the package object.
+    return (_IOS_PACKAGE_UPLOAD_ZIP_LIMITS if instance ==
+            PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else _CATALOG_ZIP_LIMITS)
+
+
+def _ios_upload_zip_limits(phase):
+    return (_IOS_PACKAGE_UPLOAD_ZIP_LIMITS if phase == "package" else
+            _CATALOG_ZIP_LIMITS if phase == "binary" else _APPLE_UPLOAD_ZIP_LIMITS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -746,11 +763,13 @@ def _download_contract_ci_upload(
     artifact_id: int, artifact_sha256: str, expected_name: str,
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
     *, destination: Path | None = None, max_bytes: int | None = None, transport_archive: Path | None = None,
+    upload_limit: int = _CATALOG_LIMIT,
 ) -> tuple[dict[str, Any], bytes | Path]:
     artifact = _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name,
-        producer, observed_run, token)
+        producer, observed_run, token,
+        **({"upload_limit": upload_limit} if upload_limit != _CATALOG_LIMIT else {}))
     size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
-    limit = _CATALOG_LIMIT if destination is not None else _INLINE_UPLOAD_LIMIT
+    limit = upload_limit if destination is not None else min(upload_limit, _INLINE_UPLOAD_LIMIT)
     if max_bytes is not None:
         if type(max_bytes) is not int or max_bytes < 1:
             raise ValueError("Contract upload transport limit must be positive")
@@ -768,10 +787,13 @@ def _download_contract_ci_upload(
         destination=destination, limit=limit, artifact_sha256=artifact_sha256, size=size)
 
 
-def _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name, producer, observed_run, token):
+def _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name, producer, observed_run, token,
+                                 *, upload_limit=_CATALOG_LIMIT):
     """Fresh source authentication, distinct from verifying selected body bytes."""
     require_integer(artifact_id, "Contract upload artifact ID", 1)
     require_sha256(artifact_sha256, "Contract upload artifact digest")
+    if type(upload_limit) is not int or upload_limit not in (_CATALOG_LIMIT, _IOS_PACKAGE_UPLOAD_LIMIT):
+        raise ValueError("Unsupported caller-owned upload transport bound")
     repository = "codex-agent-labs/codex-agent"
     url = f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}"
     artifact = api_json(url, token)
@@ -787,7 +809,7 @@ def _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name, pr
             or transport.get("head_sha") != observed_run["head_sha"]):
         raise ValueError("Contract uploaded artifact differs from the caller-bound transport identity")
     size = require_integer(artifact.get("size_in_bytes"), "Contract upload transport bytes", 1)
-    if size > _CATALOG_LIMIT:
+    if size > upload_limit:
         raise ValueError("Contract uploaded artifact exceeds the transport limit")
     return artifact
 
@@ -6177,14 +6199,17 @@ def collect_runtime_workers(
                 archive = retained / "transport.zip"
                 artifact, _ = _download_contract_ci_upload(
                     candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
-                    original_observed[0]["run"], token, destination=archive)
+                    original_observed[0]["run"], token, destination=archive,
+                    **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance ==
+                       PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
                 timestamps = [datetime.fromisoformat(require_string(value, "Runtime worker timestamp").replace("Z", "+00:00"))
                               for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
                 if (any(value.utcoffset() != timedelta(0) for value in timestamps)
                         or not timestamps[0] <= timestamps[1] <= timestamps[2]):
                     raise ValueError("Runtime upload is outside its original job-attempt window")
                 row["artifact"] = artifact
-                verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+                verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+                                      **_worker_upload_zip_limits(instance))
                 original = retained / "original"
                 safe_extract(archive, original)
                 row["originalDirectory"] = original.relative_to(prepared).as_posix()
@@ -7612,7 +7637,7 @@ def _sdk_binding_controls(physical, retained, reference, binding, current_plan):
     return physical, rebound, retained[controls[0]]
 
 
-def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), apple=False):
+def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), apple=False, apple_phase=None):
     """Check preserved upload bytes; stored transport metadata is not authority."""
     capture = Path(capture)
     regular_file_inventory(capture, allow_empty=True)
@@ -7626,7 +7651,8 @@ def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), ap
     if sha256_file(archive) != digest:
         raise ValueError("Retained SDK upload archive differs from its original digest")
     zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-        **(_APPLE_UPLOAD_ZIP_LIMITS if apple else _CATALOG_ZIP_LIMITS))
+        **(_ios_upload_zip_limits(apple_phase) if apple_phase is not None else
+           _APPLE_UPLOAD_ZIP_LIMITS if apple else _CATALOG_ZIP_LIMITS))
     expected_plan_files = {'impact-plan.json'}
     if not apple:
         from runtime_reference_transport import sdk_input_binding, sdk_runtime_reference_inventory
@@ -7676,7 +7702,7 @@ def verify_retained_sdk_ios_upload(capture, receipt_bytes):
     if (transport["captureProducer"] != producer
             or transport[f"{phase}ReceiptSha256"] != sha256_bytes(receipt_bytes)):
         raise ValueError("Retained Apple transport differs from the exact original receipt")
-    _verify_retained_sdk_upload_archive(capture, transport["artifact"], apple=phase != "binary")
+    _verify_retained_sdk_upload_archive(capture, transport["artifact"], apple=phase != "binary", apple_phase=phase)
     name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
     if transport["artifact"].get("name") != name:
@@ -8022,7 +8048,8 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         archive = (prepared.parent if compact_recovery else prepared) / "transport.zip"
         artifact = _contract_ci_upload_metadata(artifact_id, artifact_sha256, name, producer,
-            observed[0]["run"], token)
+            observed[0]["run"], token,
+            **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {}))
         _require_artifact_job_window(observed[0], job, artifact)
         locator = _runtime_original_locator(artifact, trusted_workflow_sha, instance, matching[0])
         qualified = _qualified_original_projection(locator) if compact_recovery and not qualify_original else None
@@ -8036,10 +8063,10 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
                 _copy_exact(source / row["relativePath"], original / row["relativePath"], row)
         else:
             _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
-                destination=archive, limit=_CATALOG_LIMIT, artifact_sha256=artifact_sha256,
+                destination=archive, limit=_ios_upload_zip_limits(phase)["max_archive_bytes"], artifact_sha256=artifact_sha256,
                 size=artifact["size_in_bytes"])
             zipped, _, identity = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-                **(_CATALOG_ZIP_LIMITS if phase == "binary" else _APPLE_UPLOAD_ZIP_LIMITS))
+                **_ios_upload_zip_limits(phase))
             if identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact_sha256}:
                 raise ValueError("SDK original archive changed during full authentication")
             retained = ([row for row in zipped if row["relativePath"].startswith("shard/")]

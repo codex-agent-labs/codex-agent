@@ -27,9 +27,11 @@ _DOWNLOAD_BLOCK_BYTES = 32 * 1024 * 1024
 
 
 class _Archive(io.RawIOBase):
-    def __init__(self, artifact, token):
+    def __init__(self, artifact, token, *, max_bytes=16 * 1024**3):
+        if type(max_bytes) is not int or not 0 < max_bytes <= 32 * 1024**3:
+            raise ValueError('Reference archive caller bound is unsupported')
         self.size = require_integer(artifact['size_in_bytes'], 'Reference archive size', 1)
-        if self.size > 16 * 1024**3:
+        if self.size > max_bytes:
             raise ValueError('Reference archive exceeds the transport bound')
         identifier = require_integer(artifact['id'], 'Reference artifact ID', 1)
         require_sha256(artifact['digest'], 'Reference artifact digest')
@@ -141,7 +143,9 @@ class _Archive(io.RawIOBase):
 
 def download_archive(artifact, token, destination, *, max_bytes):
     """Resume bounded ranges under one ETag, then hash the complete original."""
-    stream = _Archive(artifact, token)
+    if type(max_bytes) is not int or not 0 < max_bytes <= 32 * 1024**3:
+        raise ValueError('Original archive exceeds its fixed transport bound')
+    stream = _Archive(artifact, token, max_bytes=max(16 * 1024**3, max_bytes))
     if type(max_bytes) is not int or not 0 < stream.size <= max_bytes:
         raise ValueError('Original archive exceeds its fixed transport bound')
     # Exclusive creation preserves every pre-existing caller artifact.
@@ -171,8 +175,8 @@ def download_archive(artifact, token, destination, *, max_bytes):
 
 
 @contextmanager
-def open_reference_archive(artifact, token):
-    stream = _Archive(artifact, token)
+def open_reference_archive(artifact, token, *, max_bytes=16 * 1024**3):
+    stream = _Archive(artifact, token, max_bytes=max_bytes)
     try:
         tail_size = min(stream.size, 22 + 65535)
         stream.seek(stream.size - tail_size)
@@ -206,7 +210,7 @@ def open_reference_archive(artifact, token):
                 names.add(path)
                 folded.add(path.casefold())
                 total += entry.file_size
-            if total > 16 * 1024**3 or len(archive.infolist()) != count:
+            if total > max_bytes or len(archive.infolist()) != count:
                 raise ValueError('Reference ZIP expanded inventory exceeds its fixed bound')
             yield archive, stream
     finally:

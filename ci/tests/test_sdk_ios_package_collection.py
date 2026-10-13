@@ -23,6 +23,20 @@ IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 
 
 class SdkIosPackageCollectionTest(unittest.TestCase):
+    def test_only_complete_ios_package_gets_the_larger_outer_evidence_bound(self):
+        selected = adapter._worker_upload_zip_limits(IOS_PACKAGE)
+        self.assertEqual(32*1024**3, selected['max_archive_bytes'])
+        self.assertEqual(32*1024**3, selected['max_total_bytes'])
+        for field in ('max_entry_bytes', 'max_central_directory_bytes', 'max_members', 'max_compression_ratio'):
+            self.assertEqual(adapter._CATALOG_ZIP_LIMITS[field], selected[field])
+        for instance in (
+            PhaseInstanceId('sdk','sdk-ios','binary','ios'),
+            PhaseInstanceId('sdk','sdk-ios','validation','ios-arm64'),
+            PhaseInstanceId('sdk','python','package','desktop'),
+            PhaseInstanceId('runtime','runtime-macos-arm64','package','macos-arm64'),
+        ):
+            self.assertEqual(adapter._CATALOG_ZIP_LIMITS, adapter._worker_upload_zip_limits(instance))
+
     # Delegate only setup and official API mechanics, never collected test methods.
     setUp = fixture.SdkWorkerCollectionTest.setUp
     names = fixture.SdkWorkerCollectionTest.names

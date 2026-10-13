@@ -13,6 +13,19 @@ import runtime_reference_archive as transport
 
 
 class ReferenceDownloadTest(unittest.TestCase):
+    def test_observed_apple_package_envelope_needs_explicit_bounded_caller_policy(self):
+        artifact = dict(id=1, size_in_bytes=22117834439, digest='sha256:'+'a'*64,
+            archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+        with self.assertRaisesRegex(ValueError, 'transport bound'):
+            transport._Archive(artifact, 'fixture')
+        with mock.patch.object(transport.urllib.request, 'build_opener'):
+            stream = transport._Archive(artifact, 'fixture', max_bytes=32*1024**3)
+            self.assertEqual(22117834439, stream.size)
+            stream.close()
+        for bound in (True, 0, 32*1024**3+1):
+            with self.subTest(bound=bound), self.assertRaisesRegex(ValueError, 'caller bound'):
+                transport._Archive(artifact, 'fixture', max_bytes=bound)
+
     def test_full_original_retries_only_interrupted_range_and_checks_entire_digest(self):
         from ci.tests.test_runtime_reference_transport import RangeOpener
         from products.inventory import sha256_bytes
