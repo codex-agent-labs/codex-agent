@@ -136,6 +136,31 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             capture.verify_retained_sdk_ios_upload(self.output, self.receipt_bytes)
         self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
 
+    def test_package_original_is_downloaded_once_per_private_verification_session(self):
+        if self.phase != 'package':
+            self.skipTest('package-only immutable original archive reuse')
+        from products.restore import verification_session
+        with verification_session(), patch.object(capture, '_download_contract_ci_upload_bytes',
+                wraps=capture._download_contract_ci_upload_bytes) as download:
+            self.call()
+            first = self.output
+            self.output = self.work / 'second-original-package-capture'
+            self.call()
+            self.assertEqual(1, download.call_count)
+            self.assertEqual((first/'transport.zip').read_bytes(), (self.output/'transport.zip').read_bytes())
+
+    def test_private_package_archive_mutation_is_not_reused(self):
+        if self.phase != 'package':
+            self.skipTest('package-only immutable original archive reuse')
+        from products.restore import verification_session
+        with verification_session() as session:
+            self.call()
+            retained = next(iter(session['iosPackageUploads'].values()))[0]
+            retained.write_bytes(retained.read_bytes()+b'tamper')
+            self.output = self.work/'tampered-original-package-capture'
+            with self.assertRaisesRegex(ValueError,'Private original iOS package archive changed'):
+                self.call()
+
     def test_fresh_and_retained_outer_bounds_are_phase_specific(self):
         # Only outer transport differs: native-input copies make the binary
         # worker upload larger than its independently bounded phase object.

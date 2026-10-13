@@ -36,7 +36,7 @@ class IosBinaryRecoveryTest(unittest.TestCase):
                 return json.dumps({"artifacts": [self.artifact]}).encode()
             return original_api(url, token)
         @contextmanager
-        def ranges(artifact, token):
+        def ranges(artifact, token, **_policy):
             with zipfile.ZipFile(io.BytesIO(self.raw)) as archive:
                 yield archive, None
         with patch.object(recovery.products, "_validate_plan", return_value=self.plan), \
@@ -618,6 +618,68 @@ class JavascriptMetadataRecoveryTest(JavascriptPackageRecoveryTest):
         with super().gates():
             self.jobs[0]["name"] = self.jobs[0]["name"][:118] + "..."
             yield
+
+
+class IosSuccessfulPackageRecoveryTest(unittest.TestCase):
+    """Tiny successful-original transports; no Apple semantic acceptance claim."""
+    phase, target = "package", "ios"
+    api = fixture.SdkIosPackageUploadTest.api
+    archive = fixture.SdkIosPackageUploadTest.archive
+    setUp = fixture.SdkIosPackageUploadTest.setUp
+    gates = IosBinaryRecoveryTest.gates
+
+    def capture(self):
+        receipt = load_canonical_json_bytes(self.receipt_bytes)
+        return recovery.capture_prior_ios_binary(self.plan_path, self.plan,
+            {**self.producer, "runId": 72}, receipt['buildKey'], self.output, self.work,
+            repository_root=self.root, environ={}, trusted_workflow_sha=self.pin,
+            token='synthetic-token', attempts=(self.run,), phase='package')
+
+    def test_successful_original_package_reuses_exact_receipt_and_compact_shard(self):
+        with self.gates():
+            result = self.capture()
+            record = result[0]
+            self.assertEqual(('sdk','sdk-ios','package','ios'),
+                tuple(record[key] for key in ('product','component','phase','target')))
+            saved = self.output / 'sdk-ios/package/ios'
+            self.assertEqual(self.receipt_bytes, (saved/'original/shard/phase-receipt.json').read_bytes())
+            self.assertEqual({'original','capture-transport.json'}, {p.name for p in saved.iterdir()})
+            replay = recovery.replay_prior_ios_binary(self.output, self.work,
+                plan=self.plan, plan_path=self.plan_path, repository_root=self.root,
+                consumer_producer={**self.producer, 'runId':72}, trusted_workflow_sha=self.pin,
+                token='synthetic-token', environ={}, phase='package')
+            self.assertEqual(result, replay)
+
+    def test_failed_package_job_is_not_admitted(self):
+        with self.gates():
+            self.jobs[0]['conclusion']='failure'
+            self.assertEqual([], self.capture())
+        self.assertFalse(self.output.exists())
+
+    def test_unreviewed_original_is_not_selected(self):
+        with self.gates(), patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value=None):
+            self.assertEqual([], self.capture())
+
+    def test_package_shard_is_referenced_without_forwarding_the_original_envelope(self):
+        from runtime_reference_transport import stage_original_reference_handoff, validate_original_references
+        from products.inventory import snapshot_regular_tree
+        receipt = load_canonical_json_bytes(self.receipt_bytes)
+        prefix = 'product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original'
+        roots = {'product-resume-inputs': self.work/'reference-inputs',
+                 'product-resume-state': self.work/'reference-state'}
+        roots['product-resume-inputs'].mkdir()
+        (roots['product-resume-inputs']/'control').write_bytes(b'current plan')
+        snapshot_regular_tree(self.root/'original-shard', roots['product-resume-state'] /
+                              'prior-failed-sdk-ios-package/sdk-ios/package/ios/original/shard')
+        source = dict(relativePath=prefix, kind='sdk-package', receipt=receipt,
+                      artifactId=self.artifact['id'], artifactSha256=self.artifact['digest'])
+        target=self.work/'reference-export'
+        manifest=stage_original_reference_handoff(roots,[source],target)
+        self.assertEqual(3,manifest['schemaVersion'])
+        self.assertFalse((target/prefix).exists())
+        self.assertTrue(all(row['sourcePath'].startswith('shard/') for row in manifest['references']))
+        changed={**manifest,'schemaVersion':2}
+        with self.assertRaises(ValueError):validate_original_references(changed)
 
 
 if __name__ == "__main__":

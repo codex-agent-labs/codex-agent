@@ -32,6 +32,20 @@ _JAVASCRIPT_PACKAGE = PhaseInstanceId("sdk", "javascript", "package", "node")
 _JAVASCRIPT_RELATIVE = "javascript/package/node"
 
 
+def _ios_instance(phase):
+    if phase not in {"binary", "package"}:
+        raise ValueError("Unsupported successful original iOS recovery phase")
+    return PhaseInstanceId("sdk", "sdk-ios", phase, "ios")
+
+
+def _capture_ios_original(phase, plan_path, capture, selected, **options):
+    if phase == "binary":
+        return products.capture_sdk_ios_binary_upload(plan_path, capture,
+            binary_receipt_path=selected, compact_recovery=True, **options)
+    return products.capture_sdk_ios_package_upload(plan_path, capture,
+        package_receipt_path=selected, compact_recovery=True, **options)
+
+
 def _javascript_instance(phase, component="javascript"):
     if component == "csharp" and phase == "binary":
         return PhaseInstanceId("sdk", "csharp", "binary", "desktop")
@@ -263,17 +277,18 @@ def _require_prior(plan, consumer, prior):
     return run, attempt
 
 
-def _record(capture, artifact_root, *, completed_frozen=None):
-    verified = verify_phase_shard(Path(capture) / "original/shard", INSTANCE,
+def _record(capture, artifact_root, *, completed_frozen=None, phase="binary"):
+    instance = _ios_instance(phase)
+    verified = verify_phase_shard(Path(capture) / "original/shard", instance,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
-    return {**products._identity_record(INSTANCE),
+    return {**products._identity_record(instance),
         **{name: verified[name] for name in ("buildKey", "receiptSha256", "objectSha256")},
         "objectPath": (Path(capture) / "original/shard" / verified["objectPath"])
             .relative_to(artifact_root).as_posix()}
 
 
 def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repository_root,
-        plan, consumer_producer, trusted_workflow_sha, token, environ, completed_frozen=None):
+        plan, consumer_producer, trusted_workflow_sha, token, environ, completed_frozen=None, phase="binary"):
     """Reauthenticate compact custody against its fully verified original upload.
 
     Original capture/receipt bytes are not rewritten. Returned records contain
@@ -283,14 +298,16 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
     avoid downloading it again; live provenance and compact bytes are rechecked.
     """
     require_no_signing_secret(environ)
+    instance = _ios_instance(phase)
+    relative = f"sdk-ios/{phase}/ios"
     root = Path(capture_root)
     if not root.exists() and not root.is_symlink():
         return []
     require_regular_directory(root, "Prior SDK captures")
-    capture = root / _RELATIVE
+    capture = root / relative
     # This deliberately supports one demonstrated capability, not arbitrary SDK uploads.
     parent = root
-    for name in _RELATIVE.split("/"):
+    for name in relative.split("/"):
         if sorted(path.name for path in parent.iterdir()) != [name]:
             raise ValueError("Prior SDK recovery has an unexpected capture family")
         parent /= name
@@ -320,21 +337,22 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
         token=token, environ=environ)
     transport = require_exact_keys(products._canonical_control(
         capture / "capture-transport.json", "Prior SDK transport"),
-        {"artifact", "captureProducer", "observed", "binaryReceiptSha256"}, "Prior SDK transport")
+        {"artifact", "captureProducer", "observed", f"{phase}ReceiptSha256"}, "Prior SDK transport")
     if (locator["artifact_id"] != transport["artifact"].get("id")
             or locator["artifact_sha256"] != transport["artifact"].get("digest")
             or transport["captureProducer"] != producer
-            or transport["binaryReceiptSha256"] != sha256_bytes(raw)
+            or transport[f"{phase}ReceiptSha256"] != sha256_bytes(raw)
             or receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
             or producer["pullRequest"] != plan["pullRequest"]):
         raise ValueError("Prior SDK retained upload differs from freshly observed original")
     artifact_fields = ("id", "name", "digest", "size_in_bytes", "created_at",
                        "archive_download_url", "workflow_run")
     current = products._contract_ci_upload_metadata(locator["artifact_id"], locator["artifact_sha256"],
-        transport["artifact"]["name"], producer, prior, token)
+        transport["artifact"]["name"], producer, prior, token,
+        **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {}))
     if any(current.get(field) != transport["artifact"].get(field) for field in artifact_fields):
         raise ValueError("Prior SDK retained upload metadata changed")
-    if completed_frozen is not None:
+    if completed_frozen is not None and phase == "binary":
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Completed SDK replay requires concrete native authority")
@@ -370,17 +388,17 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
             selected = private / "selected-receipt.json"
             selected.write_bytes(raw)
             fresh = private / "capture"
-            fresh_transport = products.capture_sdk_ios_binary_upload(plan_path, fresh,
-                binary_receipt_path=selected, **locator, trusted_workflow_sha=workflow,
-                repository_root=repository_root, environ=environ, token=token, compact_recovery=True)
+            fresh_transport = _capture_ios_original(phase, plan_path, fresh, selected,
+                **locator, trusted_workflow_sha=workflow,
+                repository_root=repository_root, environ=environ, token=token)
             if (fresh_transport["captureProducer"] != transport["captureProducer"]
-                    or fresh_transport["binaryReceiptSha256"] != transport["binaryReceiptSha256"]
+                    or fresh_transport[f"{phase}ReceiptSha256"] != transport[f"{phase}ReceiptSha256"]
                     or any(fresh_transport["artifact"].get(field) != transport["artifact"].get(field)
                            for field in artifact_fields)
                     or regular_file_inventory(fresh / "original/shard") !=
                        regular_file_inventory(capture / "original/shard")):
                 raise ValueError("Prior SDK compact shard differs from its authenticated original upload")
-    record = _record(capture, Path(artifact_root))
+    record = _record(capture, Path(artifact_root), **({"phase": phase} if phase != "binary" else {}))
     if (_stage_fingerprint(root) != fingerprint
             or regular_file_inventory(capture) != inventory
             or read_regular_file_bytes(receipt_path, reject_symlink_parents=True) != raw
@@ -459,9 +477,11 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
 
 def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, destination,
         artifact_root, *, repository_root, environ, trusted_workflow_sha, token, attempts=None,
-        artifacts_by_run=None, jobs_by_attempt=None):
+        artifacts_by_run=None, jobs_by_attempt=None, phase="binary"):
     """Search all permitted attempts, authenticate originals, reject key conflicts."""
     require_no_signing_secret(environ)
+    instance = _ios_instance(phase)
+    relative = f"sdk-ios/{phase}/ios"
     require_sha256(build_key, "Current elected iOS binary key")
     session = None if _is_windows() else _VERIFICATION_SESSION.get()
     policy = _source_identity() if session is not None else None
@@ -476,7 +496,7 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
         raise ValueError("Prior SDK capture destination must not exist")
     attempts = (products._prior_failed_pr_attempts(plan, consumer_producer, token)
                 if attempts is None else attempts)
-    prefix = f"codex-agent-sdk-worker-sdk-ios-binary-ios-{build_key.removeprefix('sha256:')}-"
+    prefix = f"codex-agent-sdk-worker-sdk-ios-{phase}-ios-{build_key.removeprefix('sha256:')}-"
     artifacts_by_run = {} if artifacts_by_run is None else artifacts_by_run
     jobs_by_attempt = {} if jobs_by_attempt is None else jobs_by_attempt
     found = []
@@ -510,7 +530,7 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
                     f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run}/attempts/{attempt}/jobs",
                     "jobs", token)
             jobs = jobs_by_attempt[run, attempt]
-            jobs = products._matching_ci_jobs(jobs, "product-validation / sdk-sdk-ios-binary-ios",
+            jobs = products._matching_ci_jobs(jobs, f"product-validation / sdk-sdk-ios-{phase}-ios",
                                               expected_build_key=build_key)
             if len(jobs) != 1:
                 raise ValueError("Prior SDK exact-key job is missing or ambiguous")
@@ -523,18 +543,20 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             if job.get("conclusion") != "success":
                 raise ValueError("Prior SDK binary job has an invalid conclusion")
             artifact = products._contract_ci_upload_metadata(listed.get("id"), listed.get("digest"),
-                listed["name"], {"runId": run}, prior, token)
+                listed["name"], {"runId": run}, prior, token,
+                **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {}))
             products._require_artifact_job_window({"jobs": [job]}, job["name"], artifact)
             # Discovery is untrusted until the existing full capture independently re-observes
             # and verifies the complete upload against the official outer digest.
-            with open_reference_archive(artifact, token) as (archive, _stream):
+            with open_reference_archive(artifact, token,
+                    **({"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {})) as (archive, _stream):
                 entry = archive.getinfo("shard/phase-receipt.json")
                 if entry.is_dir() or entry.file_size > 16 * 1024**2:
                     raise ValueError("Prior SDK discovery receipt exceeds its bound")
                 raw = archive.read(entry)
             receipt = products.validate_phase_receipt(load_canonical_json_bytes(raw))
             original = receipt["producer"]
-            if (products._identity(receipt) != INSTANCE or receipt["buildKey"] != build_key
+            if (products._identity(receipt) != instance or receipt["buildKey"] != build_key
                     or original["tree"] != match[1] or original["runId"] != run
                     or original["runAttempt"] != attempt or original["pullRequest"] != plan["pullRequest"]
                     or receipt["trustDomain"] != "development"):
@@ -542,11 +564,11 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
             selected = scratch / f"{run}-{attempt}.json"
             selected.write_bytes(raw)
             capture = scratch / f"{run}-{attempt}"
-            products.capture_sdk_ios_binary_upload(plan_path, capture, binary_receipt_path=selected,
+            _capture_ios_original(phase, plan_path, capture, selected,
                 artifact_id=artifact["id"], artifact_sha256=artifact["digest"],
                 trusted_workflow_sha=workflow, repository_root=repository_root, environ=environ,
-                token=token, compact_recovery=True)
-            verified = verify_phase_shard(capture / "original/shard", INSTANCE)
+                token=token)
+            verified = verify_phase_shard(capture / "original/shard", instance)
             if verified["receiptBytes"] != raw:
                 raise ValueError("Prior SDK captured original differs from discovery")
             found.append((capture, verified["receipt"], workflow))
@@ -555,14 +577,14 @@ def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, dest
         if any(receipt["outputs"] != found[0][1]["outputs"] for _, receipt, _ in found[1:]):
             raise ValueError("Prior SDK exact build key has conflicting output inventories")
         source = found[0][0]  # Original producer stays unchanged, even across equivalent attempts.
-        target = destination / _RELATIVE
+        target = destination / relative
         fingerprint = _stage_fingerprint(source)
         inventory = regular_file_inventory(source)
         if _stage_fingerprint(source) != fingerprint:
             raise ValueError("Prior SDK original changed during compact publication")
         publish_regular_tree(source, target, expected_inventory=inventory)
         published = _stage_fingerprint(target)
-        record = _record(target, Path(artifact_root))
+        record = _record(target, Path(artifact_root), **({"phase": phase} if phase != "binary" else {}))
         require_no_signing_secret(environ)
         if session is not None:
             transport = products._canonical_control(target / "capture-transport.json", "Prior SDK transport")

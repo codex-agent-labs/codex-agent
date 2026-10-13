@@ -96,6 +96,8 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
 
     def patch_sources(self):
         stack = ExitStack()
+        stack.enter_context(patch.object(selection.product_reuse, "api_json", return_value={"synthetic": "original run"}))
+        stack.enter_context(patch.object(selection.product_reuse, "_runtime_prior_workflow_sha", return_value="c" * 40))
         stack.enter_context(patch.object(selection.product_reuse, "_observe_ci_producer_jobs",
             return_value=[{"run": {"head_sha": self.producer["commit"]}, "jobs": []}]))
         stack.enter_context(patch.object(selection.product_reuse, "paginated_items", return_value=[]))
@@ -113,6 +115,29 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         stack.enter_context(patch.object(selection.product_reuse, "capture_sdk_inputs_upload",
             side_effect=self.capture_sdk))
         return stack
+
+    def test_retired_reviewed_original_workflow_is_preserved_through_all_captures(self):
+        original = "e" * 40
+        with self.patch_sources(), patch.object(selection.product_reuse,
+                "_runtime_prior_workflow_sha", return_value=original), \
+                patch.object(selection.product_reuse, "_observe_ci_producer_jobs",
+                    return_value=[{"run": {"head_sha": self.producer["commit"]}, "jobs": []}]) as observe, \
+                patch.object(selection.product_reuse, "capture_sdk_ios_package_upload",
+                    side_effect=self.capture_package) as package, \
+                patch.object(selection.product_reuse, "capture_sdk_inputs_upload",
+                    side_effect=self.capture_sdk) as sdk:
+            self.selector()(self.envelope)
+        self.assertEqual(original, observe.call_args.kwargs["trusted_workflow_sha"])
+        self.assertEqual(original, package.call_args.kwargs["trusted_workflow_sha"])
+        self.assertEqual(original, sdk.call_args.kwargs["trusted_workflow_sha"])
+
+    def test_unreviewed_original_workflow_fails_before_source_capture(self):
+        with self.patch_sources(), patch.object(selection.product_reuse,
+                "_runtime_prior_workflow_sha", return_value=None), \
+                patch.object(selection.product_reuse, "_observe_ci_producer_jobs") as observe, \
+                self.assertRaisesRegex(ValueError, "reviewed producer workflow"):
+            self.selector()(self.envelope)
+        observe.assert_not_called()
 
     def test_official_original_plan_package_and_s858_are_captured_before_full_gate(self):
         with self.patch_sources(), patch(

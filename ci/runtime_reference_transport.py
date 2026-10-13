@@ -353,7 +353,7 @@ def validate_original_references(value):
     from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
     value = require_exact_keys(value, {"schemaVersion", "inventory", "sources", "references"},
                                "Runtime original references")
-    if value["schemaVersion"] not in (1, 2) or type(value["schemaVersion"]) is not int:
+    if value["schemaVersion"] not in (1, 2, 3) or type(value["schemaVersion"]) is not int:
         raise ValueError("Unsupported Runtime original references schema")
     inventory = require_sorted_unique_records(value["inventory"], "Original reference inventory")
     if not inventory or len(inventory) > 16_384:
@@ -368,7 +368,7 @@ def validate_original_references(value):
             or any(row["bytes"] > 8 * 1024**3 for row in inventory)):
         raise ValueError("Original reference inventory exceeds the transport byte bounds")
     sources = require_sorted_unique_records(value["sources"], "Original reference sources")
-    if len(sources) > (47 if value["schemaVersion"] == 1 else 48):
+    if len(sources) > {1: 47, 2: 48, 3: 49}[value["schemaVersion"]]:
         raise ValueError("Original references exceed the registered Runtime source bound")
     by_source = {}
     for source in sources:
@@ -376,12 +376,16 @@ def validate_original_references(value):
                            "Original reference source")
         receipt = validate_phase_receipt(source["receipt"])
         instance = PhaseInstanceId(*(receipt[key] for key in ("product", "component", "phase", "target")))
-        sdk_binary = (value["schemaVersion"] == 2 and source["kind"] == "sdk-binary"
+        sdk_binary = (value["schemaVersion"] in (2, 3) and source["kind"] == "sdk-binary"
                       and instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
-        if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" and not sdk_binary:
+        sdk_package = (value["schemaVersion"] == 3 and source["kind"] == "sdk-package"
+                       and instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"))
+        if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" and not (sdk_binary or sdk_package):
             raise ValueError("Original reference is not a registered Runtime phase")
         if sdk_binary:
             prefix = "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original"
+        elif sdk_package:
+            prefix = "product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original"
         elif source["kind"] == "phase":
             prefix = (f"product-resume-state/prior-failed-runtime/{instance.component}/{instance.phase}/"
                       f"{instance.target}/phases/{instance.phase}/original")
@@ -427,7 +431,7 @@ def validate_original_references(value):
                 raise ValueError("Original member reference changes its registered source path")
             if by_source[prefix]["kind"] == "phase" and source_path.startswith("inputs/"):
                 raise ValueError("Original phase reference includes unretained predecessor inputs")
-            if by_source[prefix]["kind"] == "sdk-binary" and not source_path.startswith("shard/"):
+            if by_source[prefix]["kind"] in {"sdk-binary", "sdk-package"} and not source_path.startswith("shard/"):
                 raise ValueError("SDK original references are limited to their authenticated binary shard")
             used.add(prefix)
     if used != set(by_source):
@@ -473,7 +477,9 @@ def stage_original_reference_handoff(roots, sources, destination):
         else:
             concrete.append(row)
             contents[identity] = row["relativePath"]
-    value = validate_original_references({"schemaVersion": 2 if any(source["kind"] == "sdk-binary" for source in sources) else 1,
+    schema = (3 if any(source["kind"] == "sdk-package" for source in sources) else
+              2 if any(source["kind"] == "sdk-binary" for source in sources) else 1)
+    value = validate_original_references({"schemaVersion": schema,
         "inventory": inventory,
         "sources": sorted((source for source in sources if source["relativePath"] in used),
                           key=lambda row: row["relativePath"]), "references": references})

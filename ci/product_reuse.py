@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import wraps
+import errno
 import os
 import ntpath
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -585,7 +586,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "496c58d0dd91a8d5170d048792e252182ebf5968",
                              "dc9de1534ec42237c33a2c1506e046907df8e54a",
                              "400b40cf06815101abd4a3f743b5d47cf19b190e",
-                             "5d5792eddc1c995a9d9998c4b2086307c86af19e")):
+                             "5d5792eddc1c995a9d9998c4b2086307c86af19e",
+                             "1c0376fba5c1dc7947dffb1de3b0001ef25ee89c")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -829,6 +831,26 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
             "artifact": {name: artifact.get(name) for name in
                          ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
         })
+        package_files = session.setdefault("iosPackageUploads", {})
+        package_transport = (destination is not None and
+            artifact["name"].startswith("codex-agent-sdk-worker-sdk-ios-package-ios-"))
+        def retain_link(source, target):
+            try:
+                os.link(source, target)
+            except OSError as error:
+                if error.errno != errno.EXDEV:
+                    raise
+                from runtime_reference_transport import _copy_exact
+                _copy_exact(source, target, {"bytes": size, "sha256": artifact_sha256})
+        if package_transport and provenance in package_files:
+            from products.inventory import _stat_identity
+            original, identity = package_files[provenance]
+            # Hardlink creation/removal changes ctime, not authenticated bytes.
+            if (_stat_identity(original.lstat())[:4] != identity
+                    or sha256_file(original, reject_symlink_parents=True) != artifact_sha256):
+                raise ValueError("Private original iOS package archive changed")
+            retain_link(original, destination)
+            return artifact, destination
         cached = session["uploads"].get(provenance)
         if cached is not None:
             raw = cached
@@ -841,6 +863,12 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
                 return artifact, destination
             return artifact, raw
         result = _download_contract_ci_upload_bytes(artifact, token, destination, limit, artifact_sha256, size)
+        if package_transport and len(package_files) < 2:
+            from products.inventory import _stat_identity
+            # Only this invocation's fully hashed original bytes are retained.
+            original = session["root"] / ("ios-package-" + sha256_bytes(provenance)[7:])
+            retain_link(destination, original)
+            package_files[provenance] = original, _stat_identity(original.lstat())[:4]
         # ponytail: small immutable uploads only; larger transport stays streamed.
         if destination is None and type(result[1]) is bytes and size <= 64 * 1024 * 1024:
             with session["lock"]:
@@ -3440,11 +3468,14 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
         if read_regular_file_bytes(policy_plan, max_bytes=16 * 1024 * 1024,
                 reject_symlink_parents=True) != current_plan_bytes:
             raise ValueError("Apple package caller policy differs from the current product plan")
+        retained_source = apple_package_origin["environ"].get("CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")
         context = caller_original_apple_package_selector(
             policy_plan, apple_policy,
             repository_root=apple_package_origin["repository_root"],
             trusted_workflow_sha=apple_package_origin["trusted_workflow_sha"],
-            environ=apple_package_origin["environ"], token=apple_package_origin["token"])
+            environ=apple_package_origin["environ"], token=apple_package_origin["token"],
+            **({"retained_sdk_inputs_source": _canonical_control(Path(retained_source),
+                "Caller-pinned original SDK inputs source")} if retained_source else {}))
     else:
         context = nullcontext(None)
     with context as factory:
@@ -4307,6 +4338,16 @@ def _verified_product_state(
             trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
+    package_capture = discovery_root / "prior-failed-sdk-ios-package"
+    if (requested_scope is None or PhaseInstanceId("sdk", "sdk-ios", "package", "ios") in closure) and (
+            package_capture.exists() or package_capture.is_symlink()):
+        if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
+            raise ValueError("Prior iOS package replay requires original workflow authority and token")
+        from sdk_ios_binary_recovery import replay_prior_ios_binary
+        prior_records.extend(replay_prior_ios_binary(package_capture, discovery_root,
+            plan=plan, plan_path=plan_path, repository_root=root,
+            consumer_producer=consumer["producer"], trusted_workflow_sha=sdk_original_workflow_sha,
+            token=environment["GITHUB_TOKEN"], environ=environment, phase="package"))
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                      ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
         instance = PhaseInstanceId("sdk", component, phase, target)
@@ -7084,22 +7125,24 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
     else:
         job = "product-validation / runtime-aggregate-attestation"
         name = f"codex-agent-runtime-aggregate-release-handoff-{original['tree']}-attempt-{original['runAttempt']}"
-    if source["kind"] == "sdk-binary":
-        if _identity(receipt) != PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"):
+    if source["kind"] in {"sdk-binary", "sdk-package"}:
+        sdk_phase = "binary" if source["kind"] == "sdk-binary" else "package"
+        if _identity(receipt) != PhaseInstanceId("sdk", "sdk-ios", sdk_phase, "ios"):
             raise ValueError("Unsupported SDK original qualification identity")
-        base_job = "product-validation / sdk-sdk-ios-binary-ios"
+        base_job = f"product-validation / sdk-sdk-ios-{sdk_phase}-ios"
         jobs = paginated_items(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
             f"{original['runId']}/attempts/{original['runAttempt']}/jobs", "jobs", token)
         matches = _matching_ci_jobs(jobs, base_job, expected_build_key=receipt["buildKey"])
         if len(matches) != 1:
             raise ValueError("SDK original qualification job is missing or ambiguous")
         job = matches[0]["name"]
-        name = (f"codex-agent-sdk-worker-sdk-ios-binary-ios-{receipt['buildKey'][7:]}-"
+        name = (f"codex-agent-sdk-worker-sdk-ios-{sdk_phase}-ios-{receipt['buildKey'][7:]}-"
                 f"{original['tree']}-attempt-{original['runAttempt']}")
     observed = _observe_ci_producer_jobs({"source": original}, jobs_by_phase={"source": job},
         trusted_workflow_sha=workflow, token=token)
     artifact = _contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"], name,
-        original, observed[0]["run"], token)
+        original, observed[0]["run"], token,
+        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package" else {}))
     _require_artifact_job_window(observed[0], job, artifact)
     return artifact, original, observed, workflow
 
@@ -7141,7 +7184,8 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
     if not missing:
         return {"artifact": artifact, "captureProducer": original, "observed": observed,
                 "verification": "qualified-reference-members", "rangeBytes": 0, "memberETag": None}
-    with open_reference_archive(artifact, token) as (archive, stream):
+    with open_reference_archive(artifact, token,
+            **({"max_bytes": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package" else {})) as (archive, stream):
         resolved = {}
         for row in missing:
             source_path = row["sourcePath"]
@@ -7251,6 +7295,18 @@ def _publish_runtime_original_reference_handoff(inputs, state, destination, *, c
             sources.append({"relativePath": "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original",
                 "kind": "sdk-binary", "receipt": receipt,
                 "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
+    package = Path(state) / "prior-failed-sdk-ios-package/sdk-ios/package/ios"
+    if package.exists() or package.is_symlink():
+        receipt = verify_phase_shard(package / "original/shard",
+            PhaseInstanceId("sdk", "sdk-ios", "package", "ios"))["receipt"]
+        captured = _canonical_control(package / "capture-transport.json", "Original iOS package reference")
+        if (captured.get("captureProducer") != receipt["producer"]
+                or captured.get("packageReceiptSha256") != sha256_bytes(canonical_json_bytes(receipt))):
+            raise ValueError("SDK package reference changes its original producer or receipt")
+        artifact = captured["artifact"]
+        sources.append({"relativePath": "product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original",
+            "kind": "sdk-package", "receipt": receipt,
+            "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
     prior = Path(state) / "prior-failed-runtime"
     if prior.exists():
         for observation_path in sorted(prior.glob("*/*/*/transport/original-ci-phases.json")):
@@ -7932,7 +7988,8 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
 
 
 def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_path,
-        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token,
+        compact_recovery=False):
     """Retain the observed original package upload, not package semantic admission.
 
     Source/S858 authentication and full original execution replay are still required.
@@ -7940,7 +7997,7 @@ def capture_sdk_ios_package_upload(plan_path, destination, *, package_receipt_pa
     """
     return _capture_sdk_ios_upload(plan_path, destination, phase="package", receipt_path=package_receipt_path,
         artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-        repository_root=repository_root, environ=environ, token=token)
+        repository_root=repository_root, environ=environ, token=token, compact_recovery=compact_recovery)
 
 
 def capture_sdk_ios_binary_upload(plan_path, destination, *, binary_receipt_path,
@@ -7981,9 +8038,9 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     from products.sdk_package import _require_capability_output_separate
     from products.signing_isolation import require_no_signing_secret
     bootstrap = receipt_path is None
-    if type(compact_recovery) is not bool or compact_recovery and (phase != "binary" or bootstrap):
-        raise ValueError("Compact Apple capture requires an exact original binary receipt")
-    if type(qualify_original) is not bool or qualify_original and not compact_recovery:
+    if type(compact_recovery) is not bool or compact_recovery and (phase not in {"binary", "package"} or bootstrap):
+        raise ValueError("Compact Apple capture requires an exact original binary or package receipt")
+    if type(qualify_original) is not bool or qualify_original and (not compact_recovery or phase != "binary"):
         raise ValueError("SDK qualification requires full cold authentication of an original binary")
     environment = os.environ if environ is None else environ
     if bootstrap:
@@ -8798,6 +8855,7 @@ def resume_products(
             recoverable = any(phase["state"] == "build" and (
                 phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
                 or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
+                    PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
                     PhaseInstanceId("sdk", "javascript", "package", "node"),
                     PhaseInstanceId("sdk", "javascript", "validation", "node"),
                     PhaseInstanceId("sdk", "javascript", "metadata", "node"),
@@ -8814,7 +8872,8 @@ def resume_products(
                     "codex-agent-sdk-worker-javascript-package-node-",
                     "codex-agent-sdk-worker-javascript-validation-node-",
                     "codex-agent-sdk-worker-javascript-metadata-node-",
-                    "codex-agent-sdk-worker-sdk-csharp-binary-desktop-"),
+                    "codex-agent-sdk-worker-sdk-csharp-binary-desktop-",
+                    "codex-agent-sdk-worker-sdk-ios-package-ios-"),
                     "artifact_inventory": paginated_items(
                         f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
                         "artifacts", environment["GITHUB_TOKEN"])}
@@ -8867,6 +8926,27 @@ def resume_products(
                     token=environment["GITHUB_TOKEN"], attempts=attempts,
                     artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
                 if prior_sdk_records:
+                    wave["availableObjects"] = sorted(
+                        (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
+                    ready_plans.clear()
+                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
+                        apple_policy=sdk_apple_validation_policy, **semantic,
+                        apple_package_origin=_apple_package_origin(captured_plan, root,
+                            sdk_original_workflow_sha, environment), build_plan_consumer=retain,
+                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+            ios_package = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+            package_misses = [row for row in reuse["phases"]
+                              if _identity(row) == ios_package and row["state"] == "build"]
+            if package_misses:
+                from sdk_ios_binary_recovery import capture_prior_ios_binary
+                records = capture_prior_ios_binary(captured_plan, plan,
+                    _consumer(plan, environment)["producer"], package_misses[0]["buildKey"],
+                    prepared / "prior-failed-sdk-ios-package", prepared,
+                    repository_root=root, environ=environment, phase="package",
+                    trusted_workflow_sha=sdk_original_workflow_sha, token=environment["GITHUB_TOKEN"],
+                    attempts=attempts, artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
+                prior_sdk_records.extend(records)
+                if records:
                     wave["availableObjects"] = sorted(
                         (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
                     ready_plans.clear()
@@ -8944,7 +9024,9 @@ def resume_products(
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
                 sdk_capture_root = (("prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)) if instance.component == "javascript"
-                                    else "prior-failed-sdk-csharp" if instance.component == "csharp" else "prior-failed-sdk")
+                                    else "prior-failed-sdk-csharp" if instance.component == "csharp"
+                                    else "prior-failed-sdk-ios-package" if instance.phase == "package"
+                                    else "prior-failed-sdk")
                 shard = (prepared / sdk_capture_root / instance.component / instance.phase /
                          instance.target / "original/shard" if instance.product == "sdk" else
                          prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /

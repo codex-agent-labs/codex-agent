@@ -165,9 +165,15 @@ class OriginalApplePackageSelector:
         selected_receipt = destination / "selected-receipt.json"
         selected_receipt.write_bytes(raw)
 
+        original_run = product_reuse.api_json(
+            f"https://api.github.com/repos/{producer['repository']}/actions/runs/"
+            f"{producer['runId']}/attempts/{producer['runAttempt']}", self._token)
+        original_workflow = product_reuse._runtime_prior_workflow_sha(original_run, self._workflow_sha)
+        if original_workflow is None:
+            raise ValueError("Original Apple package lacks a reviewed producer workflow")
         observations = product_reuse._observe_ci_producer_jobs(
             {"plan": producer}, jobs_by_phase={"plan": _PLAN_JOB},
-            trusted_workflow_sha=self._workflow_sha, token=self._token)
+            trusted_workflow_sha=original_workflow, token=self._token)
         artifacts = product_reuse.paginated_items(
             f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
             "artifacts", self._token)
@@ -194,13 +200,13 @@ class OriginalApplePackageSelector:
         })
 
         locator = locate_original_apple_upload(selected_receipt,
-            trusted_workflow_sha=self._workflow_sha, token=self._token,
+            trusted_workflow_sha=original_workflow, token=self._token,
             environ=self._environ)
         package_capture = destination / "package-capture"
         product_reuse.capture_sdk_ios_package_upload(plan, package_capture,
             package_receipt_path=selected_receipt,
             artifact_id=locator["artifact_id"], artifact_sha256=locator["artifact_sha256"],
-            trusted_workflow_sha=self._workflow_sha, repository_root=self._repository,
+            trusted_workflow_sha=original_workflow, repository_root=self._repository,
             environ=self._environ, token=self._token)
         shard = verify_phase_shard(package_capture / "original/shard", _INSTANCE)
         if (shard["receiptBytes"] != raw or shard["receiptSha256"] != selected["receiptSha256"]
@@ -227,7 +233,7 @@ class OriginalApplePackageSelector:
         sdk_capture = destination / "sdk-capture"
         product_reuse.capture_sdk_inputs_upload(plan, sdk_capture,
             artifact_id=sdk_artifact_id, artifact_sha256=sdk_artifact_digest,
-            trusted_workflow_sha=self._workflow_sha, expected_source=source,
+            trusted_workflow_sha=original_workflow, expected_source=source,
             repository_root=self._repository, environ=self._environ, token=self._token,
             original_package_receipt_path=selected_receipt,
             **({"retained_sdk_inputs_source": self._retained_sdk_inputs_source}
