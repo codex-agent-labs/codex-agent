@@ -22,17 +22,15 @@ def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
             trusted_workflows_by_phase=None, expected_build_key=None):
     """Shared fixed-callsite observation/list/detail/window checks, no downloads."""
     producer_bytes = canonical_json_bytes(producer)
+    observation = products._observe_ci_producer_jobs({phase: producer},
+        jobs_by_phase={phase: job}, trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflows_by_phase=trusted_workflows_by_phase, token=token,
+        **({"build_keys_by_phase": {phase: expected_build_key}} if expected_build_key is not None else {}))[0]
     if expected_build_key is not None:
-        jobs = products.paginated_items(
-            f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}/jobs",
-            "jobs", token)
-        matching = products._matching_ci_jobs(jobs, job, expected_build_key=expected_build_key)
+        matching = products._matching_ci_jobs(observation["jobs"], job, expected_build_key=expected_build_key)
         if len(matching) != 1:
             raise ValueError("Apple original worker job is missing or ambiguous")
         job = matching[0]["name"]
-    observation = products._observe_ci_producer_jobs({phase: producer},
-        jobs_by_phase={phase: job}, trusted_workflow_sha=trusted_workflow_sha,
-        trusted_workflows_by_phase=trusted_workflows_by_phase, token=token)[0]
     api = f"https://api.github.com/repos/{producer['repository']}/actions"
     artifacts = products.paginated_items(f"{api}/runs/{producer['runId']}/artifacts", "artifacts", token)
     selected = [value for value in artifacts if type(value) is dict

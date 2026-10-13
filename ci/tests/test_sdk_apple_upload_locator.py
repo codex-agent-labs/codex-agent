@@ -65,6 +65,7 @@ class AppleUploadLocatorTest(unittest.TestCase):
                 with self.subTest(mode=mode, target=target):
                     self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
                     self.assertEqual(1, sum("/actions/runs/71/artifacts?" in url for url in self.requests))
+                    self.assertEqual(1, sum("/attempts/2/jobs?" in url for url in self.requests))
                     self.assertEqual(1, sum(url.endswith("/actions/artifacts/701") for url in self.requests))
                     self.assertEqual(plan_bytes, self.f.plan_path.read_bytes())
                     self.assertFalse(self.f.output.exists())
