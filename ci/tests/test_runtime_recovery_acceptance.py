@@ -232,13 +232,19 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.event["pull_request"]["head"]["sha"] = self.activation
         self.environment["GITHUB_SHA"] = self.merge
 
-    def sdk_mode(self, *, product_change=False, sdk_change=False):
+    def sdk_mode(self, *, product_change=False, sdk_change=False, executable_mode=None):
         # Real Git trees exercise the shared inventory policy; API identities
         # remain explicit fixtures, never genuine hosted acceptance evidence.
         self.git(self.trusted, "checkout", "--quiet", "--detach", self.reviewed)
         self.write(self.trusted, recovery.SDK_REGISTRY,
             (HELPER.parents[3] / recovery.SDK_REGISTRY).read_text())
+        if executable_mode is not None:
+            self.write(self.trusted, "ci/run-lane.sh", "#!/bin/sh\n# original tooling producer\n")
+            (self.trusted / "ci/run-lane.sh").chmod(0o755)
         frozen = self.commit(self.trusted, "frozen SDK registry and product inputs")
+        if executable_mode is not None:
+            self.write(self.trusted, "ci/run-lane.sh", "#!/bin/sh\n# reviewed tooling producer\n")
+            (self.trusted / "ci/run-lane.sh").chmod(executable_mode)
         self.write(self.trusted, recovery.CI, self.ci
             + "      runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true\n")
         self.write(self.trusted, ".github/actions/run-ci-lane/sdk-current-control.py", "reviewed control-only continuation\n")
@@ -272,6 +278,15 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
     def test_sdk_reviewed_product_input_change_is_rejected(self):
         self.sdk_mode(product_change=True)
         with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_sdk_tooling_producer_preserves_existing_executable_mode(self):
+        self.sdk_mode(executable_mode=0o755)
+        self.assertTrue(self.verify()["recovery_control_admitted"])
+
+    def test_sdk_tooling_producer_mode_change_is_rejected(self):
+        self.sdk_mode(executable_mode=0o644)
+        with self.assertRaisesRegex(ValueError, "modes, symlinks or deletions"):
             self.verify()
 
     def test_reviewed_sdk_input_change_does_not_claim_current_sdk_acceptance(self):

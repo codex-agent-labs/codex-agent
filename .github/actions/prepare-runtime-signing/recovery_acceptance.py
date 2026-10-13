@@ -228,8 +228,10 @@ def _sdk_reviewed_scope(trusted, candidate, sha):
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys()
                if baseline.get(path) != reviewed.get(path)}
-    if any(reviewed.get(path, ())[:2] != ("100644", "blob")
-           or path in baseline and baseline[path][:2] != ("100644", "blob")
+    if any(not (path == "ci/run-lane.sh"
+                and baseline.get(path, ())[:2] == reviewed.get(path, ())[:2] == ("100755", "blob"))
+           and (reviewed.get(path, ())[:2] != ("100644", "blob")
+                or path in baseline and baseline[path][:2] != ("100644", "blob"))
            for path in changed):
         raise ValueError("SDK recovery reviewed delta contains modes, symlinks or deletions")
     if (len(PHASE_INSTANCE_IDS) != 112 or reviewed.get(SDK_REGISTRY) != baseline.get(SDK_REGISTRY)
