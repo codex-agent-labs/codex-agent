@@ -13,7 +13,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import sdk_apple_original_package_selection as selection
-from products.inventory import canonical_json_bytes, snapshot_regular_tree, write_canonical_json
+from products.inventory import canonical_json_bytes, write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import finalize_phase_object
 from tests.product_chain_support import write_receipt
@@ -68,29 +68,17 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
             java_executable=self.repo / "java", policy_revision="d" * 40,
             required_trust_domain="development", environ={}, token="synthetic", **options)
 
-    def capture_package(self, plan, destination, **kwargs):
-        self.events.append("package-capture")
-        self.assertEqual(self.raw, Path(kwargs["package_receipt_path"]).read_bytes())
+    @contextmanager
+    def mocked_original_gate(self, plan, receipt, **options):
+        self.assertEqual(self.raw, Path(receipt).read_bytes())
         self.assertEqual(self.validated_plan, selection.product_reuse._validate_plan(plan, self.repo,
             expected_revision=self.producer["commit"]))
-        snapshot_regular_tree(self.package_upload, destination, allow_empty=True)
-
-    def capture_sdk(self, plan, destination, **kwargs):
-        self.events.append("s858-capture")
-        self.assertEqual(self.raw, Path(kwargs["original_package_receipt_path"]).read_bytes())
-        self.assertEqual("current-runtime", kwargs["expected_source"])
-        self.assertEqual(811, kwargs["artifact_id"])
-        self.assertEqual("sha256:" + "8" * 64, kwargs["artifact_sha256"])
-        destination.mkdir()
-        (destination / "placeholder.txt").write_bytes(b"synthetic S858; no original gate claimed")
-
-    @contextmanager
-    def mocked_original_gate(self, _plan, _receipt, **_options):
+        self.assertTrue(options["ephemeral_capture"])
+        self.assertEqual(self.producer["commit"], options["expected_plan_revision"])
+        self.last_options = options
         self.events.append("full-gate-enter")
-        selected_stage = self.scratch / self.envelope["receiptSha256"].removeprefix("sha256:") / "selected-stage"
         try:
-            yield {"stage": selected_stage, "receipt": self.envelope["receipt"],
-                   "receiptBytes": self.raw, "original": self.package_upload / "original"}
+            yield {"original": self.package_upload / "original"}
         finally:
             self.events.append("full-gate-exit")
 
@@ -104,65 +92,51 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         stack.enter_context(patch.object(selection.product_reuse, "paginated_items", return_value=[]))
         stack.enter_context(patch.object(selection, "_original_upload", return_value=({"id": 701}, self.plan_zip)))
         stack.enter_context(patch.object(selection.product_reuse, "_validate_plan", return_value=self.validated_plan))
-        stack.enter_context(patch.object(selection.product_reuse, "_consumer",
-            return_value={"producer": self.producer}))
+        stack.enter_context(patch.object(selection.product_reuse, "_consumer", return_value={"producer": self.producer}))
         stack.enter_context(patch.object(selection, "locate_original_apple_upload",
             return_value={"artifact_id": 801, "artifact_sha256": "sha256:" + "7" * 64}))
-        stack.enter_context(patch.object(selection.product_reuse, "capture_sdk_ios_package_upload",
-            side_effect=self.capture_package))
-        stack.enter_context(patch.object(selection, "git_product_versions",
-            return_value={"sdk": "0.8.0", "runtime-release": "0.8.0"}))
-        stack.enter_context(patch.object(selection, "sdk_runtime_source", return_value=None))
-        stack.enter_context(patch.object(selection.product_reuse, "capture_sdk_inputs_upload",
-            side_effect=self.capture_sdk))
+        for name in ("capture_sdk_ios_package_upload", "capture_sdk_inputs_upload"):
+            stack.enter_context(patch.object(selection.product_reuse, name,
+                side_effect=AssertionError("selector must not duplicate the full gate's body capture")))
         return stack
 
-    def test_retired_reviewed_original_workflow_is_preserved_through_all_captures(self):
+    def test_original_selection_defers_bodies_to_one_complete_gate(self):
+        with self.patch_sources(), patch("ci.sdk_ios_original_package.verified_original_ios_package",
+                self.mocked_original_gate):
+            admission = self.selector()(self.envelope)
+            self.assertIs(type(admission), selection.ApplePackageAdmission)
+            self.assertEqual([], self.events)
+            admission.verify(self.envelope)
+        self.assertEqual(["full-gate-enter", "full-gate-exit"], self.events)
+
+    def test_retired_reviewed_workflow_and_original_revision_reach_full_gate(self):
         original = "e" * 40
         with self.patch_sources(), patch.object(selection.product_reuse,
-                "_runtime_prior_workflow_sha", return_value=original), \
-                patch.object(selection.product_reuse, "_observe_ci_producer_jobs",
-                    return_value=[{"run": {"head_sha": self.producer["commit"]}, "jobs": []}]) as observe, \
-                patch.object(selection.product_reuse, "capture_sdk_ios_package_upload",
-                    side_effect=self.capture_package) as package, \
-                patch.object(selection.product_reuse, "capture_sdk_inputs_upload",
-                    side_effect=self.capture_sdk) as sdk:
-            self.selector()(self.envelope)
-        self.assertEqual(original, observe.call_args.kwargs["trusted_workflow_sha"])
-        self.assertEqual(original, package.call_args.kwargs["trusted_workflow_sha"])
-        self.assertEqual(self.producer["commit"], package.call_args.kwargs["expected_plan_revision"])
-        self.assertEqual(original, sdk.call_args.kwargs["trusted_workflow_sha"])
+                "_runtime_prior_workflow_sha", return_value=original), patch(
+                "ci.sdk_ios_original_package.verified_original_ios_package", self.mocked_original_gate):
+            self.selector()(self.envelope).verify(self.envelope)
+        self.assertEqual(original, self.last_options["trusted_workflow_sha"])
 
     def test_unreviewed_original_workflow_fails_before_source_capture(self):
         with self.patch_sources(), patch.object(selection.product_reuse,
-                "_runtime_prior_workflow_sha", return_value=None), \
-                patch.object(selection.product_reuse, "_observe_ci_producer_jobs") as observe, \
-                self.assertRaisesRegex(ValueError, "reviewed producer workflow"):
+                "_runtime_prior_workflow_sha", return_value=None), patch.object(selection.product_reuse,
+                "_observe_ci_producer_jobs") as observe, self.assertRaisesRegex(ValueError, "reviewed producer workflow"):
             self.selector()(self.envelope)
         observe.assert_not_called()
 
     def test_authenticated_original_source_is_provisioned_before_historical_plan_validation(self):
         events=[]
         def provision(root, producer, token):
-            self.assertEqual(self.repo,root)
-            self.assertEqual(self.producer,producer)
-            self.assertEqual('synthetic',token)
+            self.assertEqual(self.repo, root)
+            self.assertEqual(self.producer, producer)
+            self.assertEqual('synthetic', token)
             events.append('source')
-        def validate(*args,**kwargs):
-            self.assertEqual(['source'],events)
+        def validate(*args, **kwargs):
+            self.assertEqual(['source'], events)
             return self.validated_plan
-        with self.patch_sources(), patch('sdk_handoff._ensure_observed_sdk_commit',side_effect=provision), \
-                patch.object(selection.product_reuse,'_validate_plan',side_effect=validate):
+        with self.patch_sources(), patch('sdk_handoff._ensure_observed_sdk_commit', side_effect=provision), \
+                patch.object(selection.product_reuse, '_validate_plan', side_effect=validate):
             self.selector()(self.envelope)
-
-    def test_official_original_plan_package_and_s858_are_captured_before_full_gate(self):
-        with self.patch_sources(), patch(
-                "ci.sdk_ios_original_package.verified_retained_ios_package", self.mocked_original_gate):
-            admission = self.selector()(self.envelope)
-            self.assertIs(type(admission), selection.ApplePackageAdmission)
-            self.assertEqual(["package-capture", "s858-capture"], self.events)
-            admission.verify(self.envelope)
-        self.assertEqual(["package-capture", "s858-capture", "full-gate-enter", "full-gate-exit"], self.events)
 
     def test_original_reader_keeps_independent_caller_source_snapshot(self):
         source = {'artifactId': 711, 'artifactSha256': 'sha256:'+'1'*64,
@@ -170,60 +144,36 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         expected = canonical_json_bytes(source)
         factory = self.selector(retained_sdk_inputs_source=source)
         source['artifactId'] = 999
+        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package', self.mocked_original_gate):
+            factory(self.envelope).verify(self.envelope)
+        self.assertEqual(expected, canonical_json_bytes(self.last_options['retained_sdk_inputs_source']))
 
-        def capture(plan, destination, **kwargs):
-            self.assertEqual(expected, canonical_json_bytes(kwargs['retained_sdk_inputs_source']))
-            self.capture_sdk(plan, destination, **kwargs)
-
-        with self.patch_sources(), patch.object(selection.product_reuse, 'capture_sdk_inputs_upload', side_effect=capture), \
-                patch('ci.sdk_ios_original_package.verified_retained_ios_package', self.mocked_original_gate):
-            admission = factory(self.envelope)
-            admission.verify(self.envelope)
-        self.assertEqual(['package-capture', 's858-capture', 'full-gate-enter', 'full-gate-exit'], self.events)
-
-    def test_wrong_original_plan_producer_fails_before_package_capture(self):
+    def test_wrong_original_plan_producer_fails_before_package_gate(self):
         self.validated_plan = {"remoteBuildAuthorized": False, "event": "pull_request"}
-        with self.patch_sources(), patch.object(selection.product_reuse,
-                "capture_sdk_ios_package_upload") as package, self.assertRaisesRegex(ValueError, "original plan|Original Apple plan"):
+        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package') as gate, \
+                self.assertRaisesRegex(ValueError, "original plan|Original Apple plan"):
             self.selector()(self.envelope)
-        package.assert_not_called()
+        gate.assert_not_called()
 
-    def test_wrong_official_package_object_blocks_s858_selection(self):
-        wrong = dict(self.envelope)
-        wrong["objectSha256"] = "sha256:" + "f" * 64
-        with self.patch_sources(), patch.object(selection.product_reuse,
-                "capture_sdk_inputs_upload") as sdk, self.assertRaisesRegex(ValueError, "official|Official"):
-            self.selector()(wrong)
-        sdk.assert_not_called()
+    def test_wrong_original_object_cannot_pass_full_gate_binding(self):
+        wrong = {**self.envelope, 'objectSha256': 'sha256:' + 'f' * 64}
+        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package', self.mocked_original_gate), \
+                self.assertRaisesRegex(ValueError, 'shard differs'):
+            self.selector()(wrong).verify(wrong)
+        self.assertIn('full-gate-exit', self.events)
 
-    def test_descriptor_locator_is_only_a_claim_and_must_be_exact(self):
-        write_canonical_json(self.package_upload / "original/apple-package-execution.json",
-                             {"sdkInputsArtifact": {"artifactId": 811}})
-        with self.patch_sources(), patch.object(selection.product_reuse,
-                "capture_sdk_inputs_upload") as sdk, self.assertRaises(ValueError):
-            self.selector()(self.envelope)
-        sdk.assert_not_called()
-
-    def test_selected_receipt_sdk_version_must_match_original_git(self):
-        with self.patch_sources(), patch.object(selection, "git_product_versions",
-                return_value={"sdk": "0.8.1", "runtime-release": "0.8.0"}), \
-                patch.object(selection.product_reuse, "capture_sdk_inputs_upload") as sdk, \
-                self.assertRaisesRegex(ValueError, "Git SDK version"):
-            self.selector()(self.envelope)
-        sdk.assert_not_called()
-
-    def test_original_s858_capture_failure_does_not_create_admission(self):
-        with self.patch_sources(), patch.object(selection.product_reuse,
-                "capture_sdk_inputs_upload", side_effect=ValueError("official S858 mismatch")), \
-                patch.object(selection, "ApplePackageAdmission") as admission, \
-                self.assertRaisesRegex(ValueError, "official S858 mismatch"):
-            self.selector()(self.envelope)
-        admission.assert_not_called()
+    def test_failure_when_full_gate_exits_cannot_become_admission(self):
+        @contextmanager
+        def failed_exit(*args, **kwargs):
+            yield {'original': self.package_upload / 'original'}
+            raise ValueError('full original gate rejected')
+        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package', failed_exit), \
+                self.assertRaisesRegex(ValueError, 'full original gate rejected'):
+            self.selector()(self.envelope).verify(self.envelope)
 
     def test_non_package_envelope_rejected_before_observation(self):
         wrong = {**self.envelope, "receipt": {**self.envelope["receipt"], "phase": "binary"}}
-        with patch.object(selection.product_reuse, "_observe_ci_producer_jobs") as observe, \
-                self.assertRaises(ValueError):
+        with patch.object(selection.product_reuse, "_observe_ci_producer_jobs") as observe, self.assertRaises(ValueError):
             self.selector()(wrong)
         observe.assert_not_called()
 

@@ -8051,7 +8051,39 @@ def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target,
 
 
 @measured
-def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
+def _capture_sdk_ios_upload(plan_path, destination, **arguments):
+    with _captured_sdk_ios_upload(plan_path, destination, **arguments) as (prepared, transport, expected):
+        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected)
+    return transport
+
+
+@contextmanager
+def captured_sdk_ios_package_for_admission(plan_path, destination, *, package_receipt_path, **arguments):
+    """Hold one fully authenticated private capture through the complete cold gate.
+
+    This temporary capture cannot be retained for later replay: only the extracted,
+    authenticated bytes survive until context exit. No persisted verdict is issued.
+    """
+    with _captured_sdk_ios_upload(plan_path, destination, phase="package",
+            receipt_path=package_receipt_path, **arguments) as (prepared, _, expected):
+        archive = prepared / "transport.zip"
+        with verification_session() as session:
+            cached = session.get("iosPackageUploads", {})
+            for provenance, (path, _) in list(cached.items()):
+                if path.samefile(archive):
+                    path.unlink()
+                    del cached[provenance]
+        archive.unlink()
+        expected = [row for row in expected if row["relativePath"] != "transport.zip"]
+        try:
+            yield prepared
+        finally:
+            if regular_file_inventory(prepared, allow_empty=True) != expected:
+                raise ValueError("Original Apple admission capture changed during use")
+
+
+@contextmanager
+def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token,
         elected_target=None, elected_build_key=None, compact_recovery=False, qualify_original=False,
         expected_plan_revision=None):
@@ -8200,8 +8232,7 @@ def _capture_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             if (canonical_json_bytes(plan) != bootstrap_plan
                     or validate_producer(_consumer(plan, environment)["producer"]) != producer):
                 raise ValueError("Apple bootstrap plan or current producer changed during capture")
-        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
-    return transport
+        yield prepared, transport, expected_files
 
 
 def _observe_sdk_javascript_validation(producer, trusted_workflow_sha, token):
@@ -8961,27 +8992,6 @@ def resume_products(
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-            ios_package = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
-            package_misses = [row for row in reuse["phases"]
-                              if _identity(row) == ios_package and row["state"] == "build"]
-            if package_misses:
-                from sdk_ios_binary_recovery import capture_prior_ios_binary
-                records = capture_prior_ios_binary(captured_plan, plan,
-                    _consumer(plan, environment)["producer"], package_misses[0]["buildKey"],
-                    prepared / "prior-failed-sdk-ios-package", prepared,
-                    repository_root=root, environ=environment, phase="package",
-                    trusted_workflow_sha=sdk_original_workflow_sha, token=environment["GITHUB_TOKEN"],
-                    attempts=attempts, artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
-                prior_sdk_records.extend(records)
-                if records:
-                    wave["availableObjects"] = sorted(
-                        (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
-                    ready_plans.clear()
-                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
-                        apple_policy=sdk_apple_validation_policy, **semantic,
-                        apple_package_origin=_apple_package_origin(captured_plan, root,
-                            sdk_original_workflow_sha, environment), build_plan_consumer=retain,
-                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
             for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                              ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
                 instance = PhaseInstanceId("sdk", component, phase, target)
@@ -8999,6 +9009,28 @@ def resume_products(
                     environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
                     token=environment["GITHUB_TOKEN"], attempts=attempts,
                     artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
+                prior_sdk_records.extend(records)
+                if records:
+                    wave["availableObjects"] = sorted(
+                        (*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
+                    ready_plans.clear()
+                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling,
+                        apple_policy=sdk_apple_validation_policy, **semantic,
+                        apple_package_origin=_apple_package_origin(captured_plan, root,
+                            sdk_original_workflow_sha, environment), build_plan_consumer=retain,
+                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+            # Admit the large original package last, so independent recovery does not replay its full gate.
+            ios_package = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+            package_misses = [row for row in reuse["phases"]
+                              if _identity(row) == ios_package and row["state"] == "build"]
+            if package_misses:
+                from sdk_ios_binary_recovery import capture_prior_ios_binary
+                records = capture_prior_ios_binary(captured_plan, plan,
+                    _consumer(plan, environment)["producer"], package_misses[0]["buildKey"],
+                    prepared / "prior-failed-sdk-ios-package", prepared,
+                    repository_root=root, environ=environment, phase="package",
+                    trusted_workflow_sha=sdk_original_workflow_sha, token=environment["GITHUB_TOKEN"],
+                    attempts=attempts, artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
                 prior_sdk_records.extend(records)
                 if records:
                     wave["availableObjects"] = sorted(

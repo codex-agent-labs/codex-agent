@@ -6,6 +6,7 @@ not treat retained execution or descriptor bytes as package-content admission.
 """
 
 from copy import deepcopy
+from contextlib import contextmanager
 import json
 import io
 from pathlib import Path
@@ -235,6 +236,40 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             self.output = self.work/'tampered-original-package-capture'
             with self.assertRaisesRegex(ValueError,'Private original iOS package archive changed'):
                 self.call()
+
+    @contextmanager
+    def held_package(self):
+        with patch.object(capture, "_validate_plan", return_value=self.plan), \
+                patch("reuse.api_request", side_effect=self.api), \
+                patch.object(capture, "download_artifact_to_file",
+                    side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(self.raw)), \
+                capture.captured_sdk_ios_package_for_admission(self.plan_path, self.output,
+                    package_receipt_path=self.receipt_path, artifact_id=701,
+                    artifact_sha256=self.artifact["digest"], trusted_workflow_sha=self.pin,
+                    repository_root=self.root, environ={}, token="synthetic-token") as held:
+            yield held
+
+    def test_held_admission_uses_exact_capture_without_publication_or_retained_archive(self):
+        if self.phase != "package":
+            self.skipTest("cold admission is package-only")
+        from products.restore import verification_session
+        with verification_session() as session, patch.object(capture, "publish_regular_tree",
+                side_effect=AssertionError("duplicate publication")):
+            with self.held_package() as held:
+                self.assertFalse(self.output.exists())
+                self.assertFalse((held / "transport.zip").exists())
+                self.assertEqual({}, session["iosPackageUploads"])
+                for relative, raw in self.files.items():
+                    self.assertEqual(raw, (held / "original" / relative).read_bytes())
+            self.assertFalse(held.exists())
+
+    def test_held_admission_rejects_changed_consumed_original_on_exit(self):
+        if self.phase != "package":
+            self.skipTest("cold admission is package-only")
+        with self.assertRaisesRegex(ValueError, "capture changed during use"):
+            with self.held_package() as held:
+                (held / "original/worker/stderr.bin").write_bytes(b"tampered")
+        self.assertFalse(held.exists())
 
     def test_fresh_and_retained_outer_bounds_are_phase_specific(self):
         # Only outer transport differs: native-input copies make the binary

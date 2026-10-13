@@ -1,6 +1,6 @@
 """Recover one original iOS package through the existing complete content gates."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 import sys
 import tempfile
@@ -154,7 +154,8 @@ def verified_completed_ios_package(plan, package_receipt_path, *, completed_froz
 def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None,
+        ephemeral_capture=False, expected_plan_revision=None):
     """Independently capture original uploads, then use the common content gate."""
     with _verified_ios_package(plan, package_receipt_path, package_capture=None, sdk_capture=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
@@ -162,6 +163,7 @@ def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, ar
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
             tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            ephemeral_capture=ephemeral_capture, expected_plan_revision=expected_plan_revision,
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
                if retained_sdk_inputs_source is not None else {})) as value:
         yield value
@@ -192,7 +194,8 @@ def verified_retained_ios_package(plan, package_receipt_path, *, package_capture
 def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None, retained_sdk_inputs_source=None):
+        artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None, retained_sdk_inputs_source=None,
+        ephemeral_capture=False, expected_plan_revision=None):
     """Yield temporary verified originals; consumers publish only after clean exit.
 
     This joins observed original package execution with content/input verification.
@@ -202,6 +205,8 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
     root = Path(repository_root).resolve(strict=True)
     if (package_capture is None) != (sdk_capture is None):
         raise ValueError("Retained Apple package and SDK captures must be supplied together")
+    if type(ephemeral_capture) is not bool or ephemeral_capture and package_capture is not None:
+        raise ValueError("Ephemeral Apple admission requires fresh original capture")
     retained = {} if package_capture is None else {"package": Path(package_capture), "sdk": Path(sdk_capture)}
     if retained:
         _require_capability_output_separate(retained["package"], retained["sdk"])
@@ -221,7 +226,7 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
             "sdk", "sdk-ios", "package", "ios"):
         raise ValueError("Original Apple package requires an exact selected package receipt")
     producer = receipt["producer"]
-    with tempfile.TemporaryDirectory(prefix="original-ios-package-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="original-ios-package-") as temporary, ExitStack() as captures:
         private = Path(temporary).resolve()
         _require_capability_output_separate(private, [root, plan, package_receipt_path, Path(keyring),
             Path(keys_directory), Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
@@ -238,9 +243,15 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
                 raise ValueError("Retained Apple package changed during archive verification")
             retained_unchanged()
         else:
-            product_reuse.capture_sdk_ios_package_upload(plan, capture, package_receipt_path=package_receipt_path,
+            arguments = dict(package_receipt_path=package_receipt_path,
                 artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                repository_root=root, environ=environ, token=token)
+                repository_root=root, environ=environ, token=token,
+                **({"expected_plan_revision": expected_plan_revision} if expected_plan_revision is not None else {}))
+            if ephemeral_capture:
+                capture = captures.enter_context(product_reuse.captured_sdk_ios_package_for_admission(
+                    plan, capture, **arguments))
+            else:
+                product_reuse.capture_sdk_ios_package_upload(plan, capture, **arguments)
         capture_before = regular_file_inventory(capture, allow_empty=True)
         original = capture / "original"
         shard = verify_phase_shard(original / "shard", _INSTANCE)
@@ -300,6 +311,8 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
             sdk_compatibility=stage / "outputs/evidence/sdk-compatibility.json",
             sdk_inputs_artifact_id=locator["artifactId"], sdk_inputs_artifact_sha256=locator["artifactSha256"])
         versions = git_product_versions(root, producer["commit"])
+        if versions["sdk"] != receipt["productVersion"]:
+            raise ValueError("Original Apple package differs from its Git SDK version")
         source = sdk_runtime_source(root, producer["commit"],
             instances=product_reuse._dependency_closure((_INSTANCE,)),
             runtime_version=versions["runtime-release"], sdk_version=versions["sdk"]) or "current-runtime"

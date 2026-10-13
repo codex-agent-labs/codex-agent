@@ -437,6 +437,28 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
         self.assertIn("signed-closed", self.events)
         self.assertTrue(all(not path.exists() for path in self.private_paths))
 
+    def test_ephemeral_admission_keeps_same_complete_gate_and_context_exit_checks(self):
+        @contextmanager
+        def held(plan, destination, **arguments):
+            self.capture_package(plan, destination, **arguments)
+            try:
+                yield destination
+            finally:
+                self.events.append("capture-closed")
+        with patch.object(workflow.product_reuse, "captured_sdk_ios_package_for_admission", held):
+            with self.original_context(ephemeral_capture=True):
+                self.assertEqual(["package-capture", "sdk-capture", "signed-enter", "full-gate"], self.events)
+        self.assertEqual(["signed-exit", "signed-closed", "capture-closed"], self.events[-3:])
+        self.assertTrue(all(not path.exists() for path in self.private_paths))
+
+    def test_original_git_sdk_version_mismatch_rejects_before_s858_gate(self):
+        context = self.original_context()
+        with patch.object(workflow, "git_product_versions", return_value={"sdk": "0.8.1", "runtime-release": "0.2.0"}), \
+                self.assertRaisesRegex(ValueError, "Git SDK version"):
+            with context:
+                self.fail("mismatched SDK admitted")
+        self.assertNotIn("sdk-capture", self.events)
+
     def test_authenticated_sdk_metadata_mismatch_rejects_before_full_gate(self):
         self.metadata_mismatch = True
         with self.assertRaisesRegex(ValueError, "Contract predecessor differs"):

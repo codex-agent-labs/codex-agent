@@ -694,6 +694,39 @@ class ContractProductResumeTest(unittest.TestCase):
                          (original / "phase-receipt.json").read_bytes())
         self.assertTrue(result["targetJobsRequired"])
 
+    def test_independent_csharp_recovery_precedes_expensive_ios_admission(self):
+        # Real Contract setup; synthetic SDK selection stops before publication.
+        import sdk_ios_binary_recovery as recovery
+        package = adapter.PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+        csharp = adapter.PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+        key = "sha256:" + "a" * 64
+        events = []
+        original_wave = adapter._plan_with_sdk_tooling
+        class Recovered(Exception):
+            pass
+        def elect(wave, *args, **kwargs):
+            if all(row["product"] == "contract" for row in wave["requested"]):
+                return original_wave(wave, *args, **kwargs)
+            available = {adapter._identity(row) for row in wave["availableObjects"]}
+            if package in available:
+                events.append("package-gate")
+                self.assertIn(csharp, available)
+                raise Recovered
+            return {"phases": [{**adapter._identity_record(instance), "buildKey": key,
+                "state": "retained" if instance in available else "build"} for instance in (package, csharp)]}
+        def captured(instance):
+            events.append(instance.component)
+            return [{**adapter._identity_record(instance), "buildKey": key}]
+        with self.control_seams(), mock.patch.object(adapter, "_plan_with_sdk_tooling", side_effect=elect), \
+                mock.patch.object(adapter, "_prior_failed_pr_attempts", return_value=[]), \
+                mock.patch.object(recovery, "capture_prior_javascript_package", side_effect=lambda *_a, **_k: captured(csharp)), \
+                mock.patch.object(recovery, "capture_prior_ios_binary", side_effect=lambda *_a, **_k: captured(package)), \
+                self.assertRaises(Recovered):
+            adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff,
+                self.scratch / "cold-order", self.scratch / "cold-order-output", repository_root=self.repository,
+                environ={**self.environment, "GITHUB_TOKEN": "synthetic"}, sdk_original_workflow_sha="a" * 40)
+        self.assertEqual(["csharp", "sdk-ios", "package-gate"], events)
+
     def test_future_attempt_and_different_run_contract_snapshots_reject(self):
         for field, value in (("GITHUB_RUN_ATTEMPT", "1"), ("GITHUB_RUN_ID", "8")):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Contract.*consumer"):
