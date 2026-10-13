@@ -270,6 +270,48 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             return workflow.execute(self.plan, self.root, self.root, self.destination,
                                     **{**self.arguments, **changes})
 
+    def test_native_package_skips_legacy_history_and_finalizes_after_context_exit(self):
+        cap = SimpleNamespace(envelope=lambda record: {"receipt": self.receipt, "receiptBytes": b"original receipt"})
+        compact = self.root / "compact"
+        compact.mkdir()
+        (compact / "completed-package.json").write_bytes(b"synthetic native-bound controls")
+        (compact / "package-receipt.json").write_bytes(b"original receipt")
+        self.capture_inventories = {"completed": workflow.regular_file_inventory(compact)}
+        @contextmanager
+        def native_inputs(plan, receipt, **arguments):
+            self.assertIs(cap, arguments["completed_frozen"])
+            self.events.append("native-enter")
+            yield {"original": self.root / "original", "stage": self.root / "package",
+                "receiptPath": receipt, "receipt": self.receipt, "receiptBytes": b"original receipt",
+                "completedCapture": compact,
+                "packageArtifact": {"artifactId": 17, "artifactSha256": "sha256:" + "2" * 64},
+                "binaryArtifact": {"artifactId": 18, "artifactSha256": "sha256:" + "5" * 64},
+                "sdk": {"directory": self.root / "sdk", "compatibility": {"contract": {"digest": "sha256:" + "3" * 64}}}}
+            self.events.append("native-exit")
+            if self.mutation == "native-exit":
+                raise ValueError("native inputs changed")
+        def checkout(*_):
+            self.assertEqual(["native-enter", "worker", "replay", "native-exit"], self.events)
+            self.events.append("checkout")
+        with patch.object(workflow, "verified_completed_ios_package", side_effect=native_inputs), \
+                patch.object(self, "originals", side_effect=AssertionError("No old package capture")), \
+                patch.object(self, "original_binary", side_effect=AssertionError("No old binary capture")), \
+                patch.object(self, "checkout", side_effect=checkout):
+            result = self.execute(completed_frozen=cap)
+            self.assertEqual({"fixture": "finalized"}, result["shard"])
+            self.assertEqual({"completed"}, {p.name for p in (self.destination / "originals").iterdir()})
+            self.reset_outputs()
+            self.mutation = "native-exit"
+            with self.assertRaisesRegex(ValueError, "native inputs changed"):
+                self.execute(completed_frozen=cap)
+            self.assertFalse((self.destination / "shard").exists())
+
+    def test_native_authority_without_package_retains_the_legacy_full_gates(self):
+        cap = SimpleNamespace(envelope=lambda record: None)
+        self.execute(completed_frozen=cap)
+        self.assertEqual(["original-enter", "binary-enter", "worker", "replay",
+                          "binary-exit", "original-exit", "checkout", "finalize"], self.events)
+
     def test_selected_original_lifetime_and_validation_sources(self):
         result = self.execute()
         self.assertEqual(self.destination / "execution/apple-validation-evidence.zip", result["evidenceArchive"])

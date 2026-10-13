@@ -62,7 +62,7 @@ class AppleValidationAdmission:
     Successful return occurs only after the complete handoff context exits.
     """
 
-    def __init__(self, root, records, *, repository, policy_revision, policy):
+    def __init__(self, root, records, *, repository, policy_revision, policy, completed_frozen=None):
         if type(policy_revision) is not str or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", policy_revision) is None:
             raise ValueError("Apple admission requires an exact caller policy revision")
         arguments = apple_validation_policy_arguments(policy)
@@ -71,6 +71,7 @@ class AppleValidationAdmission:
                          rebase_sdk_apple_validation_records(records, self._root, self._root)}
         self._arguments = {**arguments, "repository_root": Path(repository), "policy_revision": policy_revision}
         self._policy = {**policy}
+        self._completed_frozen = completed_frozen
 
     def verify_metadata(self, envelope, validation_envelopes):
         """Verify exact joined bytes after lookup has authenticated the phase object."""
@@ -108,7 +109,8 @@ class AppleValidationAdmission:
                 repository=self._arguments["repository_root"], metadata_receipt_bytes=raw,
                 validation_receipts=paths, evidence_root=self._root,
                 evidence_records=list(self._records.values()),
-                policy_revision=self._arguments["policy_revision"], policy=self._policy)
+                policy_revision=self._arguments["policy_revision"], policy=self._policy,
+                **({"completed_frozen": self._completed_frozen} if self._completed_frozen is not None else {}))
             if verified_bytes != raw or canonical_json_bytes(verified) != raw:
                 raise ValueError("Apple metadata full gate returned a different original receipt")
         require_no_signing_secret(os.environ)
@@ -130,7 +132,8 @@ class AppleValidationAdmission:
         if record is None or record["target"] != instance.target:
             raise ValueError("Apple validation admission lacks the exact original receipt/target evidence")
         with verified_apple_validation_handoff(self._root / record["evidenceRoot"],
-                expected_receipt_sha256=digest, target=instance.target, **self._arguments) as verified:
+                expected_receipt_sha256=digest, target=instance.target, **self._arguments,
+                **({"completed_frozen": self._completed_frozen} if self._completed_frozen is not None else {})) as verified:
             if verified["receiptBytes"] != raw or canonical_json_bytes(verified["receipt"]) != raw:
                 raise ValueError("Apple validation handoff differs from the selected envelope")
         require_no_signing_secret(os.environ)
@@ -141,7 +144,7 @@ class AppleValidationAdmission:
 
 
 def stage_collected_apple_validation(shard_root, carrier_root, destination, *,
-        target, repository, policy_revision, policy):
+        target, repository, policy_revision, policy, completed_frozen=None):
     """Admit one selected shard's separately captured carrier, then retain it.
 
     The collector authenticates/elects the worker shard and carrier upload first.
@@ -190,7 +193,8 @@ def stage_collected_apple_validation(shard_root, carrier_root, destination, *,
                 or records[0]["target"] != target):
             raise ValueError("Collected Apple carrier differs from its selected original shard")
         AppleValidationAdmission(captured, records, repository=repository,
-            policy_revision=policy_revision, policy=policy).verify({
+            policy_revision=policy_revision, policy=policy,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})).verify({
                 name: selected[name] for name in ("receipt", "receiptBytes", "receiptSha256", "objectSha256")})
         unchanged()
         output_safe()

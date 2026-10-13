@@ -332,7 +332,7 @@ def held_sdk_campaign_original_uploads(observations, current_transport_bytes, pi
 
 @contextmanager
 def held_sdk_campaign_semantic_replay(observations, current_transport_bytes, pins,
-        artifact_paths, semantic_controls, *, trusted_workflow_sha, token, environ):
+        artifact_paths, semantic_controls, *, trusted_workflow_sha, token, environ, completed_frozen=None):
     """Run all 62 existing family gates while exact original uploads remain held.
 
     This non-secret boundary grants neither release admission nor a signed index.
@@ -358,7 +358,8 @@ def held_sdk_campaign_semantic_replay(observations, current_transport_bytes, pin
         with held_sdk_campaign_selection(sources, envelopes, archives, stages) as (
                 held_sources, held_envelopes, held_stages, held_receipts):
             verified = verify_sdk_campaign_semantics(sources=held_sources,
-                envelopes=held_envelopes, stages=held_stages, **semantic_controls)
+                envelopes=held_envelopes, stages=held_stages, **semantic_controls,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             if verified != {instance: sources[instance].receipt_bytes for instance in SDK_CAMPAIGN_INSTANCES}:
                 raise ValueError("SDK semantic replay changed an original receipt")
             require_no_signing_secret(environ)
@@ -368,7 +369,7 @@ def held_sdk_campaign_semantic_replay(observations, current_transport_bytes, pin
 @contextmanager
 def held_completed_sdk_campaign_replay(observations, current_transport_bytes, pins,
         artifact_paths, semantic_controls, *, completed_catalog_pin,
-        trusted_workflow_sha, token, environ):
+        trusted_workflow_sha, token, environ, completed_frozen=None):
     """Join the current signed catalog to all original-worker and family gates.
 
     The caller must select the catalog and every worker pin independently. This
@@ -382,7 +383,8 @@ def held_completed_sdk_campaign_replay(observations, current_transport_bytes, pi
         with held_sdk_campaign_semantic_replay(observations, current_transport_bytes,
                 pins, artifact_paths, semantic_controls,
                 trusted_workflow_sha=trusted_workflow_sha,
-                token=token, environ=environ) as verified:
+                token=token, environ=environ,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as verified:
             yield verified
 
 
@@ -394,7 +396,7 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
         original_run_id=None, original_run_attempt=None,
         custody_catalogs=None,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Replay caller-selected current state and 62 originals without release trust."""
     require_no_signing_secret(environ)
     require_no_signing_secret(os.environ)
@@ -418,7 +420,8 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
             sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission,
-            trusted_workflow_sha=trusted_workflow_sha) as (transport, observations):
+            trusted_workflow_sha=trusted_workflow_sha,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as (transport, observations):
         current = load_canonical_json_bytes(transport)
         if (not isinstance(current, dict) or "captureProducer" not in current
                 or validate_producer(current["captureProducer"]) != selected_producer):
@@ -430,7 +433,8 @@ def held_sdk_campaign_candidate(plan_path, *, state_artifact_id,
                 artifact_paths, semantic_controls,
                 completed_catalog_pin=selected_catalog,
                 trusted_workflow_sha=trusted_workflow_sha,
-                token=token, environ=environ) as verified:
+                token=token, environ=environ,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as verified:
             yield verified
 
 

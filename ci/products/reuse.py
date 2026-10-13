@@ -1168,7 +1168,8 @@ def plan_reuse_wave(
     apple_admission = None
     if "sdkAppleValidationEvidence" in request:
         apple_admission = AppleValidationAdmission(artifact_root, request["sdkAppleValidationEvidence"],
-            repository=repository_root, policy_revision=revision, policy=request["sdkAppleValidationPolicy"])
+            repository=repository_root, policy_revision=revision, policy=request["sdkAppleValidationPolicy"],
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     requested = _request_identities(request["requested"], "reuse-wave request.requested")
     completed_instances = ()
     if completed_frozen is not None:

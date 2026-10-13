@@ -33,6 +33,7 @@ def _artifact_id(value):
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     modes = parser.add_subparsers(dest="mode", required=True)
     for mode in ("prepare", "sign"):
@@ -45,6 +46,7 @@ def main(argv=None):
         command.add_argument("--artifact-id", type=_artifact_id, required=True)
         command.add_argument("--trusted-workflow-sha", type=_revision, required=True)
         if mode == "prepare":
+            add_completed_frozen_argument(command)
             for name in ("keyring", "keys-directory", "tooling-evidence", "tooling-public-key",
                          "java-executable", "tooling-keyring", "tooling-keys-directory"):
                 command.add_argument(f"--{name}", type=Path, required=True)
@@ -64,13 +66,14 @@ def main(argv=None):
             # Import replay code only after confirming this process has no signing secret.
             require_no_signing_secret(os.environ)
             from sdk_ios_original_validation import prepare_ios_validation_signing_inputs
-            prepare_ios_validation_signing_inputs(args.plan, args.validation_receipt, args.destination,
-                **common, repository_root=args.repository_root, environ=os.environ,
-                keyring=args.keyring, keys_directory=args.keys_directory,
-                tooling_evidence=args.tooling_evidence, tooling_public_key=args.tooling_public_key,
-                java_executable=args.java_executable, policy_revision=args.policy_revision,
-                tooling_keyring=args.tooling_keyring, tooling_keys_directory=args.tooling_keys_directory,
-                required_trust_domain="release")
+            with completed_frozen_options(args) as semantic:
+                prepare_ios_validation_signing_inputs(args.plan, args.validation_receipt, args.destination,
+                    **common, repository_root=args.repository_root, environ=os.environ,
+                    keyring=args.keyring, keys_directory=args.keys_directory,
+                    tooling_evidence=args.tooling_evidence, tooling_public_key=args.tooling_public_key,
+                    java_executable=args.java_executable, policy_revision=args.policy_revision,
+                    tooling_keyring=args.tooling_keyring, tooling_keys_directory=args.tooling_keys_directory,
+                    required_trust_domain="release", **semantic)
         else:
             event_payload = load_json_bytes(read_regular_file_bytes(Path(os.environ["GITHUB_EVENT_PATH"]),
                 max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))

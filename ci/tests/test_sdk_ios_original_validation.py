@@ -7,6 +7,7 @@ native execution, or hosted phase admission.
 from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 import io
+import shutil
 from pathlib import Path
 import unittest
 import zipfile
@@ -209,7 +210,7 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
         return {"ordinary": "content"}
 
     @contextmanager
-    def context(self, *, retained=False):
+    def context(self, *, retained=False, **overrides):
         with ExitStack() as stack:
             for owner, name, options in (
                 (workflow.product_reuse, "capture_sdk_ios_validation_upload", {"side_effect": AssertionError("network") if retained else self.capture}),
@@ -226,6 +227,7 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
                 stack.enter_context(patch.object(owner, name, **options))
             arguments = self.arguments if not retained else {key: value for key, value in self.arguments.items()
                 if key not in {"artifact_id", "artifact_sha256", "trusted_workflow_sha", "environ", "token"}}
+            arguments = {**arguments, **overrides}
             if retained:
                 for name in ("verified_original_ios_package", "verified_original_ios_binary"):
                     stack.enter_context(patch.object(workflow, name, side_effect=AssertionError("network")))
@@ -237,7 +239,7 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
 
     def retained_template(self):
         original = self.template / "original"
-        for name in ("package", "binary"):
+        for name in (("package", "binary") if (original / "originals/package").exists() else ()):
             locator = self.execution_context[f"{name}Artifact"]
             write_canonical_json(original / "originals" / name / "capture-transport.json",
                 {"artifact": {"id": locator["artifactId"], "digest": locator["artifactSha256"]}})
@@ -276,6 +278,39 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
                 with self.context(retained=True):
                     if mutation == "source-exit":
                         (self.template / "extra").write_bytes(b"changed")
+
+    def test_compact_original_and_retained_validation_require_native_authority(self):
+        originals = self.template / "original/originals"
+        shutil.rmtree(originals)
+        compact = originals / "completed"
+        compact.mkdir(parents=True)
+        (compact / "package-receipt.json").write_bytes(canonical_json_bytes(self.package_receipt))
+        (compact / "completed-package.json").write_bytes(b"synthetic native-bound controls")
+        cap = object()  # Authority seam only; concrete native reader has separate byte tests.
+        @contextmanager
+        def native_inputs(plan, receipt_path, **arguments):
+            self.assertIs(cap, arguments["completed_frozen"])
+            self.captured = arguments["retained"].parent.parent.parent
+            self.assertEqual(canonical_json_bytes(self.package_receipt), receipt_path.read_bytes())
+            self.events.append("native-enter")
+            yield {"stage": self.root / "package-stage", "receipt": self.package_receipt,
+                "receiptBytes": canonical_json_bytes(self.package_receipt), "original": self.fixture.upload / "original",
+                "sdk": {"directory": self.root / "sdk-inputs", "compatibility": {"contract": {"digest": "sha256:" + "4" * 64}}},
+                **{name: self.execution_context[name] for name in ("packageArtifact", "binaryArtifact")}}
+            self.events.append("native-exit")
+        with patch.object(workflow, "verified_completed_ios_package", side_effect=native_inputs):
+            for retained in (False, True):
+                if retained:
+                    self.retained_template()
+                self.events.clear()
+                with self.assertRaisesRegex(ValueError, "independently authenticated"), self.context(retained=retained):
+                    pass
+                self.events.clear()
+                with self.context(retained=retained, completed_frozen=cap) as value:
+                    self.assertEqual(self.raw, value["receiptBytes"])
+                    self.assertNotIn("binary-enter", self.events)
+                    self.assertIn("replay", self.events)
+                self.assertEqual("native-exit", self.events[-1])
 
     def test_real_restore_context_original_pairing_and_mixed_producer_lifetimes(self):
         before = self.receipt_path.read_bytes()

@@ -6328,7 +6328,8 @@ def collect_runtime_workers(
                         stage_collected_apple_validation(original / "shard",
                             signed_capture / "original/sdk-apple-validation-evidence", staged,
                             target=instance.target, repository=root, policy_revision=state.plan["validationCommit"],
-                            policy=sdk_apple_validation_policy)
+                            policy=sdk_apple_validation_policy,
+                            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                         staged_inventory = regular_file_inventory(staged, allow_empty=True)
                         snapshot_regular_tree(staged, authenticated, allow_empty=True)
                         if (regular_file_inventory(staged, allow_empty=True) != staged_inventory
@@ -6360,7 +6361,8 @@ def collect_runtime_workers(
                             "receiptBytes": predecessor["receiptBytes"],
                             "receiptSha256": record["receiptSha256"], "objectSha256": record["objectSha256"]})
                     AppleValidationAdmission(root, records["sdkAppleValidationEvidence"], repository=root,
-                        policy_revision=state.plan["validationCommit"], policy=sdk_apple_validation_policy).verify_metadata(
+                        policy_revision=state.plan["validationCommit"], policy=sdk_apple_validation_policy,
+                        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})).verify_metadata(
                             {name: verified[name] for name in
                                 ("receipt", "receiptBytes", "receiptSha256", "objectSha256")}, tuple(predecessors))
                     if (verify_phase_shard(original / "shard", instance) != verified

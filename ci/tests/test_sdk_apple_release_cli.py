@@ -1,7 +1,7 @@
 """Invocation boundary only: controllers are mocked; no signing or replay runs."""
 
 import builtins
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, contextmanager
 import io
 import os
 from pathlib import Path
@@ -62,6 +62,23 @@ class AppleReleaseCliTest(unittest.TestCase):
                 self.assertIs(os.environ, prepare.call_args.kwargs["environ"])
                 read.assert_not_called()
                 sign.assert_not_called()
+
+    def test_prepare_keeps_explicit_native_authority_alive_through_replay(self):
+        cap, events = object(), []
+        @contextmanager
+        def native_options(arguments):
+            self.assertEqual(Path("/work/native-policy.json"), arguments.completed_frozen_policy)
+            events.append("native-enter")
+            yield {"completed_frozen": cap}
+            events.append("native-exit")
+        def prepare(*args, **kwargs):
+            self.assertIs(cap, kwargs["completed_frozen"])
+            events.append("prepare")
+        fields = {**self.fields("prepare"), "completed-frozen-policy": "/work/native-policy.json"}
+        with self.modules(prepare, Mock()), patch.dict(os.environ, {}, clear=True), \
+                patch("reuse_qualification.completed_frozen_options", side_effect=native_options):
+            self.assertEqual(0, command.main(self.arguments("prepare", fields)))
+        self.assertEqual(["native-enter", "prepare", "native-exit"], events)
 
     def test_sign_exact_producer_event_routing_and_no_replay_import(self):
         actual_import = builtins.__import__

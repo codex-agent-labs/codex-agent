@@ -56,7 +56,7 @@ def _stage(stage, receipt, kind, path):
 
 @contextmanager
 def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evidence_root,
-                                       evidence_records, policy_revision, policy):
+                                       evidence_records, policy_revision, policy, completed_frozen=None):
     """Hold both full gates and the common original package through caller use.
 
     Returned paths are private handoff paths valid only inside this context.
@@ -112,7 +112,8 @@ def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evide
                     raise ValueError("Apple metadata lacks an exact original validation evidence record")
                 verified = stack.enter_context(verified_apple_validation_handoff(
                     root / record["evidenceRoot"], target=target, expected_receipt_sha256=digest,
-                    repository_root=Path(repository), policy_revision=policy_revision, **arguments))
+                    repository_root=Path(repository), policy_revision=policy_revision, **arguments,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
                 verified_rows[target] = verified
                 unchanged()
                 current_package = verified["package"]
@@ -158,7 +159,7 @@ def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evide
 
 
 def verify_sdk_apple_metadata_receipt_admission(*, repository, metadata_receipt_bytes,
-        validation_receipts, evidence_root, evidence_records, policy_revision, policy):
+        validation_receipts, evidence_root, evidence_records, policy_revision, policy, completed_frozen=None):
     """Bind original receipt outputs to full replay; caller verifies object bytes.
 
     This is not an observed metadata-worker or publication attestation. No
@@ -171,7 +172,8 @@ def verify_sdk_apple_metadata_receipt_admission(*, repository, metadata_receipt_
     try:
         with verified_sdk_apple_metadata_inputs(repository=repository, validation_receipts=validation_receipts,
                 evidence_root=evidence_root, evidence_records=evidence_records,
-                policy_revision=policy_revision, policy=policy) as inputs:
+                policy_revision=policy_revision, policy=policy,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             commit, tree = receipt["producer"]["commit"], receipt["producer"]["tree"]
             try:
                 if (run_git(Path(repository), "rev-parse", f"{commit}^{{commit}}").strip() != commit
@@ -200,7 +202,7 @@ def verify_sdk_apple_metadata_receipt_admission(*, repository, metadata_receipt_
 
 
 def verify_sdk_apple_metadata_admission(*, repository, metadata_stage, metadata_receipt,
-        validation_receipts, evidence_root, evidence_records, policy_revision, policy):
+        validation_receipts, evidence_root, evidence_records, policy_revision, policy, completed_frozen=None):
     """Verify stage bytes plus the same receipt-only original admission gate."""
     stage, receipt_path = Path(metadata_stage), Path(metadata_receipt)
     before, raw = _input_inventory(stage, allow_empty=False), _read(receipt_path)
@@ -208,7 +210,8 @@ def verify_sdk_apple_metadata_admission(*, repository, metadata_stage, metadata_
         receipt, returned = verify_sdk_apple_metadata_receipt_admission(repository=repository,
             metadata_receipt_bytes=raw, validation_receipts=validation_receipts,
             evidence_root=evidence_root, evidence_records=evidence_records,
-            policy_revision=policy_revision, policy=policy)
+            policy_revision=policy_revision, policy=policy,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if returned != raw or canonical_json_bytes(receipt) != raw:
             raise ValueError("Apple metadata admission returned a different original receipt")
         _stage(stage, receipt, OUTPUT_KIND, OUTPUT_PATH)

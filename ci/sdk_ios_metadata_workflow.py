@@ -254,7 +254,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         with verified_sdk_apple_metadata_inputs(repository=root,
                 validation_receipts=validation_receipts, evidence_root=root,
                 evidence_records=selected_records, policy_revision=producer["commit"],
-                policy=sdk_apple_validation_policy) as original:
+                policy=sdk_apple_validation_policy,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as original:
             inputs_unchanged()
             result = _execute_metadata(ready, producer=producer, sdk_version=version,
                 package_stage=original["package_stage"], validation_contents=original["validation_contents"],
@@ -282,7 +283,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             metadata_stage=result["stage"], metadata_receipt=candidate / PHASE_RECEIPT_NAME,
             validation_receipts=validation_receipts, evidence_root=root,
             evidence_records=selected_records, policy_revision=producer["commit"],
-            policy=sdk_apple_validation_policy)
+            policy=sdk_apple_validation_policy,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if admitted != finalized["receipt"] or raw != read_regular_file_bytes(candidate / PHASE_RECEIPT_NAME):
             raise ValueError("iOS metadata admission returned a different candidate receipt")
         inputs_unchanged()

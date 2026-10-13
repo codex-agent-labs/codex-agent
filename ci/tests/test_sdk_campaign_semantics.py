@@ -18,7 +18,7 @@ class SdkCampaignSemanticsTest(TestCase):
         self.stages = {instance: object() for instance in self.originals}
         self.calls = []
 
-    def run_campaign(self, *, native_result=None):
+    def run_campaign(self, *, native_result=None, completed_frozen=None):
         def maven(envelope, stage, **_):
             self.calls.append(("maven", envelope["instance"]))
             return envelope["bytes"]
@@ -32,7 +32,8 @@ class SdkCampaignSemanticsTest(TestCase):
             return {phase: value["bytes"] for phase, value in envelopes.items()}
 
         def apple(binary, binary_stage, package, package_stage, validations,
-                  validation_stages, metadata, metadata_stage, **_):
+                  validation_stages, metadata, metadata_stage, **options):
+            self.assertIs(completed_frozen, options.get("completed_frozen"))
             self.calls.append(("apple", set(validations)))
             return {"binary": binary["bytes"], "package": package["bytes"],
                     "validation": {target: value["bytes"] for target, value in validations.items()},
@@ -65,13 +66,18 @@ class SdkCampaignSemanticsTest(TestCase):
                                 and instance.phase in ("binary", "package")},
                 core_validation_controls={target: {} for target in SDK_FACADE_TARGETS},
                 core_validation_policy={}, core_metadata_control={}, android_control={},
-                apple_control={}, javascript_control={}, native_control={})
+                apple_control={}, javascript_control={}, native_control={},
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
 
     def test_all_62_originals_require_every_family(self):
         self.assertEqual(self.run_campaign(), self.originals)
         self.assertEqual([name for name, _ in self.calls].count("maven"), 4)
         self.assertEqual({name for name, _ in self.calls},
                          {"maven", "core", "metadata", "android", "apple", "javascript", "native"})
+
+    def test_native_completion_reaches_apple_without_skipping_other_families(self):
+        self.assertEqual(self.run_campaign(completed_frozen=object()), self.originals)
+        self.assertEqual(7, len({name for name, _ in self.calls}))
 
     def test_native_family_cannot_substitute_or_omit_an_original(self):
         native = {instance: ({}, source.receipt_bytes)

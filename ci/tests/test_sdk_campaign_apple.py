@@ -98,17 +98,37 @@ class AppleCampaignBinaryTest(unittest.TestCase):
                 "receiptSha256": selected["receiptSha256"],
                 "objectSha256": self.bad_shard or "sha256:" + "1" * 64}
 
-    def verify(self):
+    def verify(self, **options):
         with patch("ci.products.sdk_campaign_apple.verified_apple_validation_handoff", self.full_handoff), \
                 patch("ci.products.sdk_campaign_apple.verify_phase_shard", self.shard):
             return verify_campaign_apple_binary(self.binary, self.binary_stage, self.package,
                 self.validations, self.handoffs, repository=self.root,
-                policy_revision="a" * 40, policy=self.policy)
+                policy_revision="a" * 40, policy=self.policy, **options)
 
     def test_both_full_handoffs_bind_one_selected_binary_and_package(self):
         self.assertEqual(self.binary["receiptBytes"], self.verify())
         self.assertEqual(["enter-ios-arm64", "enter-ios-simulator-arm64",
                           "exit-ios-simulator-arm64", "exit-ios-arm64"], self.events)
+
+    def test_compact_handoffs_bind_native_binary_and_package_without_embedded_history(self):
+        import reuse_qualification as native
+        rows = [{**{field: value["receipt"][field] for field in
+                    ("product", "component", "phase", "target", "buildKey")},
+                 **{field: value[field] for field in ("receiptSha256", "objectSha256")}}
+                for value in (self.binary, self.package)]
+        cap = native.CompletedFrozenReuse({"expectedResult": {"phases": rows}},
+            [self.binary["receipt"], self.package["receipt"]], native._COMPLETED_FROZEN,
+            revision="a" * 40)
+        for original in self.originals.values():
+            original["package"]["completedCapture"] = self.root / "synthetic-compact-controls"
+            shutil.rmtree(original["original"] / "originals")
+            shutil.rmtree(original["package"]["original"] / "inputs")
+        self.assertEqual(self.binary["receiptBytes"], self.verify(completed_frozen=cap))
+        with self.assertRaisesRegex(ValueError, "concrete native"):
+            self.verify(completed_frozen=object())
+        self.package["objectSha256"] = "sha256:" + "3" * 64
+        with self.assertRaisesRegex(ValueError, "exact proved identity"):
+            self.verify(completed_frozen=cap)
 
     def test_missing_target_or_wrong_binary_object_fails(self):
         with self.assertRaises(ValueError):

@@ -5,9 +5,10 @@ admission. Original receipts and externally authenticated execution bytes are
 never rewritten.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 import sys
+import os
 import tempfile
 import subprocess
 
@@ -32,7 +33,9 @@ from products.sdk_package import _require_capability_output_separate
 from products.signing_isolation import require_no_signing_secret
 from products.selection import phase_git_inventory
 from sdk_ios_original_binary import verified_original_ios_binary, verified_retained_ios_binary
-from sdk_ios_original_package import verified_original_ios_package, verified_retained_ios_package
+from sdk_ios_original_package import (
+    verified_original_ios_package, verified_retained_ios_package, verified_completed_ios_package,
+)
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -42,7 +45,7 @@ def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destina
         target, expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Preserve fully replayed originals on a non-secret runner, without signing.
 
     This unsigned preparation is not authority. A protected consumer must
@@ -95,7 +98,8 @@ def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destina
                 policy_revision=policy_revision, required_trust_domain=required_trust_domain,
                 tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
                 **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
-                   if retained_sdk_inputs_source is not None else {})) as verified:
+                   if retained_sdk_inputs_source is not None else {}),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as verified:
             unchanged()
             if verified["receiptBytes"] != raw or canonical_json_bytes(verified["receipt"]) != raw:
                 raise ValueError("Apple preparation replay returned a different original receipt")
@@ -193,7 +197,7 @@ def _worker(original, receipt, context, contract_version):
 def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None, completed_frozen=None):
     with _verified_ios_validation(plan, validation_receipt_path, validation_capture=None,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, token=token,
@@ -201,7 +205,8 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
             tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
-               if retained_sdk_inputs_source is not None else {})) as value:
+               if retained_sdk_inputs_source is not None else {}),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as value:
         yield value
 
 
@@ -209,12 +214,13 @@ def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_
 def verified_retained_ios_validation(plan, validation_receipt_path, *, validation_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
-        retained_sdk_inputs_source=None):
+        retained_sdk_inputs_source=None, completed_frozen=None):
     """Replay complete retained content; caller authenticates its enclosing carrier.
 
     This never turns recorded observations into transport authority or rewrites
-    producer evidence. The original key, package, native and validation gates
-    are shared with fresh original recovery and must all pass before yielding.
+    producer evidence. Legacy captures replay their package/native history.
+    Compact captures require independent native completion and exact consumed
+    objects. Both paths retain the same complete new validation gate.
     """
     with _verified_ios_validation(plan, validation_receipt_path, validation_capture=Path(validation_capture),
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
@@ -222,7 +228,8 @@ def verified_retained_ios_validation(plan, validation_receipt_path, *, validatio
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
             tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
-               if retained_sdk_inputs_source is not None else {})) as value:
+               if retained_sdk_inputs_source is not None else {}),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as value:
         yield value
 
 
@@ -231,7 +238,7 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
         artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None,
-        retained_sdk_inputs_source=None):
+        retained_sdk_inputs_source=None, completed_frozen=None):
     """Yield privately restored originals only inside all authenticated input lifetimes."""
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path = Path(plan), Path(validation_receipt_path)
@@ -285,10 +292,13 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                     raise ValueError("Retained Apple validation changed during archive verification")
             captured[capture] = _input_inventory(capture, allow_empty=True)
             original = capture / "original"
+            compact = (original / "originals/completed").exists()
+            if compact and completed_frozen is None:
+                raise ValueError("Compact Apple validation requires independently authenticated native completion")
             layouts = {
                 original: {"selection", "originals", "worker", "execution", "context", "shard"},
                 original / "selection": {"impact-plan.json", "phase-plan.json", "producer.json"},
-                original / "originals": {"package", "sdk", "binary", "native"},
+                original / "originals": {"completed"} if compact else {"package", "sdk", "binary", "native"},
                 original / "worker": {"execution.json", "gradle.log"},
                 original / "execution": {"apple-validation-evidence.zip"},
                 original / "context": {"execution-context.json"},
@@ -335,43 +345,55 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                            _input_inventory(Path(recovered) / "original", allow_empty=True)):
                     raise ValueError(f"Recovered Apple {name} originals differ from the validation capture")
 
-            package_path = original / "originals/package/original/shard/phase-receipt.json"
-            package_bytes = read_regular_file_bytes(package_path, max_bytes=_LIMIT, reject_symlink_parents=True)
-            if validation_capture is not None:
-                for name in ("package", "binary"):
-                    artifact = _json(original / "originals" / name / "capture-transport.json")["artifact"]
-                    locator = context[f"{name}Artifact"]
-                    if (artifact.get("id"), artifact.get("digest")) != (locator["artifactId"], locator["artifactSha256"]):
-                        raise ValueError("Retained Apple predecessor differs from its original validation locator")
-            package_context = (verified_original_ios_package(plan, package_path,
-                    artifact_id=context["packageArtifact"]["artifactId"],
-                    artifact_sha256=context["packageArtifact"]["artifactSha256"],
-                    trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **tooling,
-                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
-                       if retained_sdk_inputs_source is not None else {})) if validation_capture is None else
-                verified_retained_ios_package(plan, package_path,
-                    package_capture=original / "originals/package", sdk_capture=original / "originals/sdk",
-                    keyring=keyring, keys_directory=keys_directory, repository_root=root, **tooling,
-                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
-                       if retained_sdk_inputs_source is not None else {})))
-            with package_context as package:
-                if (package["receiptBytes"] != package_bytes or canonical_json_bytes(package["receipt"]) != package_bytes
-                        or package["receipt"]["productVersion"] != receipt["productVersion"]):
-                    raise ValueError("Original Apple validation differs from its exact package predecessor")
-                compare_capture("package", package["packageCapture"])
-                compare_capture("sdk", package["sdkCapture"])
-                binary = package["original"] / "inputs/sdk-sdk-ios-binary-ios"
-                binary_receipt = binary / "phase-receipt.json"
-                binary_bytes = read_regular_file_bytes(binary_receipt, max_bytes=_LIMIT, reject_symlink_parents=True)
-                binary_context = (verified_original_ios_binary(plan, binary_receipt,
-                        artifact_id=context["binaryArtifact"]["artifactId"],
-                        artifact_sha256=context["binaryArtifact"]["artifactSha256"],
-                        trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
-                        rust_host=context["rustHost"], **tooling) if validation_capture is None else
-                    verified_retained_ios_binary(plan, binary_receipt, binary_capture=original / "originals/binary",
-                        repository_root=root, rust_host=context["rustHost"], **tooling))
-                with binary_context as binary_inputs:
+            with ExitStack() as stack:
+                if compact:
+                    package_path = original / "originals/completed/package-receipt.json"
+                    package_bytes = read_regular_file_bytes(package_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+                    package = stack.enter_context(verified_completed_ios_package(plan, package_path,
+                        completed_frozen=completed_frozen, repository_root=root,
+                        environ=os.environ if environ is None else environ,
+                        token=os.environ.get("GITHUB_TOKEN", "") if token is None else token,
+                        trusted_workflow_sha=trusted_workflow_sha, retained=original / "originals/completed"))
+                    if any(package[name] != context[name] for name in ("packageArtifact", "binaryArtifact")):
+                        raise ValueError("Compact Apple validation changes its native predecessor locators")
+                else:
+                    package_path = original / "originals/package/original/shard/phase-receipt.json"
+                    package_bytes = read_regular_file_bytes(package_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+                    if validation_capture is not None:
+                        for name in ("package", "binary"):
+                            artifact = _json(original / "originals" / name / "capture-transport.json")["artifact"]
+                            locator = context[f"{name}Artifact"]
+                            if (artifact.get("id"), artifact.get("digest")) != (locator["artifactId"], locator["artifactSha256"]):
+                                raise ValueError("Retained Apple predecessor differs from its original validation locator")
+                    package_context = (verified_original_ios_package(plan, package_path,
+                            artifact_id=context["packageArtifact"]["artifactId"],
+                            artifact_sha256=context["packageArtifact"]["artifactSha256"],
+                            trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
+                            repository_root=root, environ=environ, token=token, **tooling,
+                            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                               if retained_sdk_inputs_source is not None else {})) if validation_capture is None else
+                        verified_retained_ios_package(plan, package_path,
+                            package_capture=original / "originals/package", sdk_capture=original / "originals/sdk",
+                            keyring=keyring, keys_directory=keys_directory, repository_root=root, **tooling,
+                            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                               if retained_sdk_inputs_source is not None else {})))
+                    package = stack.enter_context(package_context)
+                    if (package["receiptBytes"] != package_bytes or canonical_json_bytes(package["receipt"]) != package_bytes
+                            or package["receipt"]["productVersion"] != receipt["productVersion"]):
+                        raise ValueError("Original Apple validation differs from its exact package predecessor")
+                    compare_capture("package", package["packageCapture"])
+                    compare_capture("sdk", package["sdkCapture"])
+                    binary = package["original"] / "inputs/sdk-sdk-ios-binary-ios"
+                    binary_receipt = binary / "phase-receipt.json"
+                    binary_bytes = read_regular_file_bytes(binary_receipt, max_bytes=_LIMIT, reject_symlink_parents=True)
+                    binary_context = (verified_original_ios_binary(plan, binary_receipt,
+                            artifact_id=context["binaryArtifact"]["artifactId"],
+                            artifact_sha256=context["binaryArtifact"]["artifactSha256"],
+                            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
+                            rust_host=context["rustHost"], **tooling) if validation_capture is None else
+                        verified_retained_ios_binary(plan, binary_receipt, binary_capture=original / "originals/binary",
+                            repository_root=root, rust_host=context["rustHost"], **tooling))
+                    binary_inputs = stack.enter_context(binary_context)
                     if (binary_inputs["receiptBytes"] != binary_bytes
                             or regular_file_inventory(binary_inputs["stage"]) != regular_file_inventory(binary / "stage")):
                         raise ValueError("Original Apple binary differs from the package predecessor")
@@ -383,24 +405,27 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                             raise ValueError("Recovered native originals differ from the validation capture")
                     if _json(retained_native / "native-transport.json")["receiptSha256s"] != binary_inputs["native"]["transport"]["receiptSha256s"]:
                         raise ValueError("Recovered native receipts differ from the validation capture")
-                    contract = package["original"] / "inputs/contract-contract-binary-common"
-                    contract_receipt = validate_phase_receipt(_json(contract / "phase-receipt.json"))
-                    _worker(original, receipt, context, contract_receipt["productVersion"])
-                    _replan(root, instance, receipt, package["receipt"])
-                    unchanged()
-                    verify_apple_validation_stage(validation_stage=stage, target=target,
-                        sdk_version=receipt["productVersion"], package_stage=package["stage"],
-                        package_receipt=package["receipt"], sdk_compatibility=package["sdk"]["directory"] / "sdk-compatibility.json",
-                        contract_digest=package["sdk"]["compatibility"]["contract"]["digest"],
-                        canonical_api=contract / "stage/outputs/evidence/canonical-api.json",
-                        canonical_coverage=contract / "stage/outputs/evidence/canonical-coverage.json",
-                        evidence_archive=archive, context=context, repository=root, source_revision=producer["commit"], **tooling)
-                    unchanged()
-                    if canonical_json_bytes(context) != context_bytes:
-                        raise ValueError("Original Apple validation context changed during replay")
-                    yield {"stage": stage, "receiptPath": selected_receipt, "receiptBytes": raw,
-                           "receipt": receipt, "original": original, "capture": capture,
-                           "package": package}
+                if (package["receiptBytes"] != package_bytes or canonical_json_bytes(package["receipt"]) != package_bytes
+                        or package["receipt"]["productVersion"] != receipt["productVersion"]):
+                    raise ValueError("Original Apple validation differs from its exact package predecessor")
+                contract = package["original"] / "inputs/contract-contract-binary-common"
+                contract_receipt = validate_phase_receipt(_json(contract / "phase-receipt.json"))
+                _worker(original, receipt, context, contract_receipt["productVersion"])
+                _replan(root, instance, receipt, package["receipt"])
+                unchanged()
+                verify_apple_validation_stage(validation_stage=stage, target=target,
+                    sdk_version=receipt["productVersion"], package_stage=package["stage"],
+                    package_receipt=package["receipt"], sdk_compatibility=package["sdk"]["directory"] / "sdk-compatibility.json",
+                    contract_digest=package["sdk"]["compatibility"]["contract"]["digest"],
+                    canonical_api=contract / "stage/outputs/evidence/canonical-api.json",
+                    canonical_coverage=contract / "stage/outputs/evidence/canonical-coverage.json",
+                    evidence_archive=archive, context=context, repository=root, source_revision=producer["commit"], **tooling)
+                unchanged()
+                if canonical_json_bytes(context) != context_bytes:
+                    raise ValueError("Original Apple validation context changed during replay")
+                yield {"stage": stage, "receiptPath": selected_receipt, "receiptBytes": raw,
+                       "receipt": receipt, "original": original, "capture": capture,
+                       "package": package}
         finally:
             unchanged()
             if read_regular_file_bytes(selected_receipt) != raw:

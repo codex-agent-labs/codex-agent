@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 import tempfile
+import shutil
 
 from ci import sdk_campaign_observation as observed
 from products.inventory import canonical_json_bytes, load_canonical_json_bytes, sha256_bytes, write_canonical_json
@@ -98,6 +99,26 @@ class SdkCampaignObservationTest(TestCase):
             self.assertEqual(load_canonical_json_bytes(originals[first].receipt_bytes)["producer"]["runId"], 3)
             self.assertEqual((originals[first].stage_path / "outputs/fixture/content.bin").read_bytes(),
                              str(first).encode())
+
+    def test_native_deferred_original_is_materialized_only_at_campaign_consumption(self):
+        first = min(SDK_CAMPAIGN_INSTANCES)
+        cap, calls = object(), []
+        sources = {**self.sources, first: self.root / "deferred-source-is-absent.zip"}
+        def materialize(record, path):
+            self.assertEqual(self.records[first], record)
+            calls.append(path)
+            shutil.copyfile(self.sources[first], path)
+        state = SimpleNamespace(prior_by_instance=self.records, prior_carrier_phases=self.records,
+            sources=sources, completed_frozen=cap, capture_deferred_object=materialize)
+        capture, replay = self.observe(state)
+        with capture as capture_call, replay as replay_call, observed.held_sdk_campaign_observation(
+                self.root / "plan.json", **self.kwargs(), completed_frozen=cap) as (_, originals):
+            self.assertEqual(1, len(calls))
+            self.assertEqual(calls[0], originals[first].object_path)
+            self.assertTrue(calls[0].is_file())
+            self.assertIs(cap, capture_call.call_args.kwargs["completed_frozen"])
+            self.assertIs(cap, replay_call.call_args.kwargs["completed_frozen"])
+        self.assertFalse(calls[0].exists())
 
     def test_explicit_original_run_pair_reaches_shared_capture(self):
         state = SimpleNamespace(prior_by_instance=self.records,

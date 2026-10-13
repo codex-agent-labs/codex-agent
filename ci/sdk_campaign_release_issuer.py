@@ -48,7 +48,7 @@ _CANDIDATE_OPTIONS = frozenset({
     "state_artifact_id", "state_artifact_sha256", "state_wave", "sdk_state_wave",
     "original_run_id", "original_run_attempt",
     "custody_catalogs", "sdk_validation_tooling", "sdk_apple_validation_policy",
-    "sdk_facade_metadata_admission", "sdk_android_metadata_admission",
+    "sdk_facade_metadata_admission", "sdk_android_metadata_admission", "completed_frozen",
 })
 _REQUIRED_CANDIDATE_OPTIONS = frozenset({
     "state_artifact_id", "state_artifact_sha256", "state_wave", "sdk_state_wave",
@@ -390,6 +390,7 @@ def held_sdk_release_replay_options(args):
         raise ValueError("SDK public-key inventory differs from protected approval")
     from ci.sdk_campaign_pinned_election import held_pinned_sdk_campaign_authority
     from sdk_metadata_policy import metadata_admission_options
+    from reuse_qualification import completed_frozen_options
     authority_producer_bytes = read_regular_file_bytes(args.authority_producer,
         max_bytes=64 * 1024, reject_symlink_parents=True)
     authority_producer_pin = require_sha256(
@@ -428,7 +429,7 @@ def held_sdk_release_replay_options(args):
         context = {"kind": "pull-request", "pullRequest": producer["pullRequest"],
                    **{name: producer[name] for name in (
                        "commit", "tree", "runId", "runAttempt")}}
-        with metadata_admission_options(metadata) as admissions:
+        with metadata_admission_options(metadata) as admissions, completed_frozen_options(args) as semantic:
             options = dict(
                 authority_file=args.authority_file,
                 authority_producer=load_canonical_json_bytes(authority_producer_bytes),
@@ -459,7 +460,7 @@ def held_sdk_release_replay_options(args):
                     else load_canonical_json_bytes(controlled["sdk_validation_tooling"])),
                 sdk_apple_validation_policy=(None if controlled["sdk_apple_validation_policy"] is None
                     else load_canonical_json_bytes(controlled["sdk_apple_validation_policy"])),
-                **admissions)
+                **admissions, **semantic)
             try:
                 yield options
             finally:
@@ -540,6 +541,8 @@ def _sign_cli(args):
 
 def add_sdk_release_replay_arguments(command, *, require_keys_inventory=False):
     """Register the one shared protected SDK replay surface for no-secret CLIs."""
+    from reuse_qualification import add_completed_frozen_argument
+    add_completed_frozen_argument(command)
     for name in ("plan", "repository-root", "authority-file", "keyring-path",
                  "keys-directory", "authority-producer"):
         command.add_argument("--" + name, type=Path, required=True)

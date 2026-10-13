@@ -210,7 +210,7 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
 def verified_apple_validation_handoff(evidence_root, *, plan, expected_receipt_sha256, target,
         attestation_public_key, attestation_trust_domain, keyring, keys_directory,
         repository_root, tooling_evidence, tooling_public_key, java_executable,
-        policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+        policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None, completed_frozen=None):
     """Authenticate the complete original capture AND replay its full content gate.
 
     The selected receipt/target and all key policies come from the caller, never
@@ -243,7 +243,8 @@ def verified_apple_validation_handoff(evidence_root, *, plan, expected_receipt_s
                     repository_root=repository_root, tooling_evidence=tooling_evidence,
                     tooling_public_key=tooling_public_key, java_executable=java_executable,
                     policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as verified:
+                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as verified:
                 if (verified["receiptBytes"] != authenticated["receiptBytes"]
                         or verified["receipt"]["target"] != target):
                     raise ValueError("Apple replay returned a different original validation receipt")

@@ -116,6 +116,8 @@ runs:
             '--java-executable': policy['javaExecutable'], '--policy-revision': os.environ['POLICY_REVISION'],
             '--tooling-keyring': policy['keyring'], '--tooling-keys-directory': policy['keysDirectory'],
         }
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         subprocess.run([sys.executable, '-B', '-m', 'ci.sdk_apple_release_cli', 'prepare',
             *(part for flag, value in fields.items() for part in (flag, value))],
             cwd=repository, env=os.environ, check=True)

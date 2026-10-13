@@ -30,6 +30,127 @@ _LIMIT = 16 * 1024 * 1024
 
 
 @contextmanager
+def verified_completed_ios_package(plan, package_receipt_path, *, completed_frozen,
+        repository_root, environ, token, trusted_workflow_sha, retained=None):
+    """Consume proved P/Contract bytes without replaying or retaining their history.
+
+    The small retained controls select no authority: every reader must supply a
+    newly authenticated concrete completion. New validation still runs its full
+    source, tooling, device, simulator and content gates over these exact bytes.
+    """
+    from reuse_qualification import CompletedFrozenReuse
+    from products.receipt import output_inventory_digest
+    from products.signing_isolation import require_no_signing_secret
+    require_no_signing_secret(environ)
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Completed Apple inputs require concrete native authority")
+    root = Path(repository_root).resolve(strict=True)
+    plan_path, receipt_path = Path(plan), Path(package_receipt_path)
+    plan_bytes = read_regular_file_bytes(plan_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+    raw = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+    current = product_reuse._validate_plan(plan_path, root)
+    if (current["validationCommit"] != completed_frozen._revision
+            or current["remoteBuildAuthorized"] is not True):
+        raise ValueError("Completed Apple inputs differ from the authenticated current revision")
+    consumer = product_reuse._consumer(current, environ)
+    completed_frozen.check_consumer(consumer)
+    _, phases = completed_frozen._values()
+    binary = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+    contract = PhaseInstanceId("contract", "contract", "binary", "common")
+    metadata = PhaseInstanceId("contract", "contract", "metadata", "common")
+    contract_package = PhaseInstanceId("contract", "contract", "package", "common")
+    contract_validation = PhaseInstanceId("contract", "contract", "validation", "common")
+    identities = (_INSTANCE, binary, contract, contract_package, contract_validation, metadata)
+    if any(identity not in phases for identity in identities):
+        raise ValueError("Completed Apple inputs lack their exact predecessor closure")
+    envelopes = {identity: completed_frozen.envelope(phases[identity]) for identity in identities}
+    if any(value is None for value in envelopes.values()) or envelopes[_INSTANCE]["receiptBytes"] != raw:
+        raise ValueError("Completed Apple inputs differ from the selected original receipts")
+    package = envelopes[_INSTANCE]["receipt"]
+    for parent, child in ((_INSTANCE, binary), (_INSTANCE, metadata),
+                          (metadata, contract_validation), (contract_validation, contract_package),
+                          (contract_package, contract)):
+        rows = [row for row in envelopes[parent]["receipt"]["inputs"]["upstreamArtifacts"]
+                if product_reuse._identity(row) == child]
+        receipt = envelopes[child]["receipt"]
+        if (len(rows) != 1 or rows[0]["buildKey"] != receipt["buildKey"]
+                or rows[0]["outputsDigest"] != output_inventory_digest(receipt["outputs"])):
+            raise ValueError("Completed Apple predecessor differs from its proved dependency")
+    sdk = completed_frozen.sdk_original()
+    extension = completed_frozen.sdk_extension()
+    originals = [] if extension is None else [row for row in extension["spec"]["originals"]
+                                              if product_reuse._identity(row) == _INSTANCE]
+    if sdk is None or len(originals) != 1:
+        raise ValueError("Completed Apple inputs lack their native original locators")
+    locators = {name: {key: original[key] for key in ("artifactId", "artifactSha256")}
+                for name, original in (("packageArtifact", originals[0]), ("binaryArtifact", sdk["original"]))}
+    controls = {"schemaVersion": 1, **locators, "phases": [
+        {key: phases[identity][key] for key in (*product_reuse._IDENTITY_KEYS,
+            "buildKey", "receiptSha256", "objectSha256")} for identity in identities]}
+    if trusted_workflow_sha is None:
+        trusted_workflow_sha = originals[0]["workflowSha"]
+    controls_bytes = canonical_json_bytes(controls)
+    retained = None if retained is None else Path(retained)
+
+    def controls_unchanged():
+        require_no_signing_secret(environ)
+        if (canonical_json_bytes(package) != raw or canonical_json_bytes(controls) != controls_bytes
+                or read_regular_file_bytes(plan_path, max_bytes=_LIMIT, reject_symlink_parents=True) != plan_bytes
+                or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != raw):
+            raise ValueError("Completed Apple selected controls changed during consumption")
+        if retained is not None and ({p.name for p in retained.iterdir()} !=
+                {"completed-package.json", "package-receipt.json"}
+                or read_regular_file_bytes(retained / "completed-package.json", max_bytes=_LIMIT,
+                    reject_symlink_parents=True) != controls_bytes
+                or read_regular_file_bytes(retained / "package-receipt.json", max_bytes=_LIMIT,
+                    reject_symlink_parents=True) != raw):
+            raise ValueError("Retained completed Apple controls differ from native authority")
+
+    controls_unchanged()  # Reject forged routing controls before requesting bodies.
+    with tempfile.TemporaryDirectory(prefix="completed-ios-inputs-") as temporary:
+        private = Path(temporary).resolve()
+        _require_capability_output_separate(private, [root, plan_path, receipt_path,
+                                                      *([] if retained is None else [retained])])
+        original = private / "original"
+        restored = {}
+        for identity in (_INSTANCE, contract):
+            record = phases[identity]
+            body = private / "object.zip"
+            completed_frozen.capture_object(record, body, plan=current, producer=consumer["producer"],
+                trusted_workflow_sha=trusted_workflow_sha, token=token)
+            directory = original / "inputs" / "-".join(getattr(identity, key) for key in product_reuse._IDENTITY_KEYS)
+            value = restore_object(body, directory / "stage", build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+            body.unlink()
+            if value["receiptBytes"] != envelopes[identity]["receiptBytes"]:
+                raise ValueError("Consumed Apple object differs from its native receipt")
+            path = directory / "phase-receipt.json"
+            path.write_bytes(value["receiptBytes"])
+            restored[identity] = {**value, "stage": directory / "stage", "receiptPath": path}
+        binary_path = original / "inputs/sdk-sdk-ios-binary-ios/phase-receipt.json"
+        binary_path.parent.mkdir()
+        binary_path.write_bytes(envelopes[binary]["receiptBytes"])
+        capture = private / "controls"
+        capture.mkdir()
+        (capture / "package-receipt.json").write_bytes(raw)
+        (capture / "completed-package.json").write_bytes(controls_bytes)
+        stage = restored[_INSTANCE]["stage"]
+        compatibility_bytes = read_regular_file_bytes(stage / "outputs/evidence/sdk-compatibility.json",
+                                                       max_bytes=_LIMIT, reject_symlink_parents=True)
+        compatibility = load_canonical_json_bytes(compatibility_bytes)
+        before = {path: regular_file_inventory(path) for path in (original, capture)}
+        try:
+            yield {**restored[_INSTANCE], "receipt": package, "original": original,
+                   "sdk": {"directory": stage / "outputs/evidence", "compatibility": compatibility},
+                   "completedCapture": capture, **locators}
+        finally:
+            controls_unchanged()
+            if (canonical_json_bytes(compatibility) != compatibility_bytes
+                    or any(regular_file_inventory(path) != inventory for path, inventory in before.items())):
+                raise ValueError("Completed Apple consumed inputs changed during validation")
+
+
+@contextmanager
 def verified_original_ios_package(plan, package_receipt_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
