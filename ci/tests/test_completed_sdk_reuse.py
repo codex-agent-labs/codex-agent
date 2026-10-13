@@ -112,6 +112,137 @@ class CompletedSdkControlsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'bounded original upload'):
             completed._spec(altered)
 
+    def test_native_csharp_and_ios_package_controls_route_without_body_or_gate_replay(self):
+        import reuse_qualification as native
+        import sdk_ios_binary_recovery as recovery
+        for component, phase, target in (('csharp', 'binary', 'desktop'), ('sdk-ios', 'package', 'ios')):
+            receipt = deepcopy(self.receipt)
+            receipt.update(component=component, phase=phase, target=target)
+            receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
+            record = {**{field: receipt[field] for field in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
+                'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': sha256_bytes(b'object')}
+            cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': [record]}},
+                [receipt], native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
+                sdk={'extension': {'spec': {'schemaVersion': 3, 'completedPhases': [record]}, 'proof': {}}})
+            consumer = {**receipt['producer'], 'runId': receipt['producer']['runId'] + 1}
+            artifact = {'id': 71, 'name': 'synthetic-original', 'digest': sha256_bytes(b'original')}
+            plan = {'repository': receipt['producer']['repository'], 'remoteBuildAuthorized': True,
+                    'pullRequest': receipt['producer']['pullRequest']}
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                root = Path(temporary).resolve()
+                plan_path = root / 'plan.json'
+                plan_path.write_bytes(canonical_json_bytes(plan))
+                stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({}, artifact, [])))
+                stack.enter_context(patch.object(recovery.products, 'api_json', return_value={}))
+                stack.enter_context(patch.object(recovery, '_require_prior', return_value=(7, 1)))
+                stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
+                stack.enter_context(patch.object(recovery.products, '_validate_plan', return_value=plan))
+                stack.enter_context(patch.object(recovery.products, '_contract_ci_upload_metadata', return_value=artifact))
+                stack.enter_context(patch.object(recovery, 'locate_original_apple_upload', return_value={
+                    'artifact_id': 71, 'artifact_sha256': artifact['digest']}))
+                stack.enter_context(patch.object(recovery, '_capture_ios_original', side_effect=AssertionError('body/gate replay')))
+                stack.enter_context(patch.object(recovery, '_capture_javascript_package', side_effect=AssertionError('body replay')))
+                records = recovery.capture_completed_javascript(root, root, completed_frozen=cap, producer=consumer, token='synthetic')
+                self.assertEqual(1, len(records))
+                self.assertFalse((root / records[0]['objectPath']).exists())
+                folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk-csharp'
+                def replay(authority):
+                    options = dict(plan=plan, consumer_producer=consumer, trusted_workflow_sha='a' * 40,
+                                   token='synthetic', environ={}, completed_frozen=authority, phase=phase)
+                    if component == 'sdk-ios':
+                        return recovery.replay_prior_ios_binary(root / folder, root,
+                            plan_path=plan_path, repository_root=root, **options)
+                    return recovery.replay_prior_javascript_package(root / folder, root, component=component, **options)
+                self.assertEqual(records, replay(cap))
+                with self.assertRaisesRegex(AssertionError, 'body'):
+                    replay(None)
+                with self.assertRaisesRegex(ValueError, 'concrete native authority'):
+                    replay(object())
+                shard = root / folder / f'{component}/{phase}/{target}/original/shard'
+                (shard / 'phase-receipt.json').write_bytes(canonical_json_bytes({**receipt, 'productVersion': 'changed'}))
+                with self.assertRaises(ValueError):
+                    replay(cap)
+
+    def test_large_native_package_member_is_bound_to_its_original_only_in_v3(self):
+        import json
+        import reuse_qualification as native
+        from products.restore import object_relative_path
+        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        phase = {**spec['completedPhases'][0], 'component': 'sdk-ios', 'phase': 'package', 'target': 'ios'}
+        spec['completedPhases'] = [phase]
+        spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
+        spec['schemaVersion'] = 3
+        parent = {'schemaVersion': 1}
+        spec['parentProofSha256'] = sha256_bytes(canonical_json_bytes(parent))
+        member = {'relativePath': 'shard/' + object_relative_path(phase['buildKey'], phase['receiptSha256']),
+                  'bytes': 3_631_000_000, 'sha256': phase['objectSha256']}
+        proof = {'schemaVersion': 3, 'kind': 'completed-sdk-reuse', 'issuerCommit': 'a' * 40,
+            'specSha256': sha256_bytes(canonical_json_bytes(spec)), 'parentProof': parent,
+            'controls': {}, 'source': {'source': 1}, 'originals': [{'original': 1}],
+            'members': [member], 'contractSource': {'source': 1}, 'contractFiles': {}}
+        available = {**phase, 'objectPath': 'unused-for-original-package.zip'}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(native, '_validate_completed_sdk', return_value={}))
+            stack.enter_context(patch.object(completed, '_base', return_value={}))
+            stack.enter_context(patch.object(completed, 'validate_controls', return_value=(
+                {'availableObjects': [available]}, [phase], [phase])))
+            stack.enter_context(patch.object(completed, 'validate_current'))
+            stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
+            stack.enter_context(patch.object(completed, 'observe_source', return_value=({}, [], {'source': 1})))
+            stack.enter_context(patch.object(completed, 'observe_original', return_value=({}, [], {'original': 1})))
+            stack.enter_context(patch.object(completed, '_contract_files'))
+            def validate(value):
+                return completed.validate_extension(spec, value, {'signer_commit': 'a' * 40},
+                    root=Path.cwd(), revision='a' * 40, frozen={}, token='synthetic')
+            self.assertEqual(spec, validate(proof)['extension']['spec'])
+            for altered in ({**member, 'bytes': 0}, {**member, 'bytes': 8 * 1024**3 + 1},
+                            {**member, 'relativePath': 'another/' + member['relativePath']},
+                            {**member, 'sha256': sha256_bytes(b'wrong')}):
+                with self.subTest(altered=altered), self.assertRaises(ValueError):
+                    validate({**proof, 'members': [altered]})
+            with self.assertRaises(ValueError):
+                validate({**proof, 'originals': [{'original': 2}]})
+            spec['schemaVersion'] = 2
+            with self.assertRaisesRegex(ValueError, 'consumed object'):
+                validate({**proof, 'schemaVersion': 2, 'specSha256': sha256_bytes(canonical_json_bytes(spec))})
+
+    def test_consumption_fetches_only_native_package_member_from_its_original_upload(self):
+        import io
+        import zipfile
+        import reuse_qualification as native
+        from contextlib import contextmanager
+        from products.restore import object_relative_path
+        receipt = deepcopy(self.receipt)
+        receipt.update(component='sdk-ios', phase='package', target='ios')
+        receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
+        body = b'only the requested package object'
+        phase = {**{field: receipt[field] for field in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
+            'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': sha256_bytes(body)}
+        name = 'shard/' + object_relative_path(phase['buildKey'], phase['receiptSha256'])
+        member = {'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}
+        cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': [phase]}},
+            [receipt], native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
+            sdk={'extension': {'spec': {'schemaVersion': 3, 'completedPhases': [phase]}, 'proof': {'members': [member]}}})
+        original = {'id': 71}
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, 'w') as archive:
+            archive.writestr(name, body)
+            archive.writestr('unrelated-evidence', b'never copied')
+        @contextmanager
+        def opened(artifact, token, **bounds):
+            self.assertEqual(original, artifact)
+            self.assertEqual({'max_bytes': 32 * 1024**3}, bounds)
+            with zipfile.ZipFile(raw) as archive:
+                yield archive, None
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(native.CompletedFrozenReuse, 'check_consumer'), \
+                patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({'id': 999}, original, [])), \
+                patch('runtime_reference_archive.open_reference_archive', opened):
+            target = Path(temporary) / 'object.zip'
+            cap.capture_object(phase, target, plan={}, producer={}, trusted_workflow_sha='a' * 40, token='synthetic')
+            self.assertEqual(body, target.read_bytes())
+            self.assertEqual([target], list(target.parent.iterdir()))
+
     def test_native_parent_commit_is_fetched_only_when_missing_and_exactly_pinned(self):
         import reuse_qualification as native
         from types import SimpleNamespace

@@ -18,10 +18,16 @@ from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
 IDENTITY = ("product", "component", "phase", "target")
 OBJECT = ("buildKey", "receiptSha256", "objectSha256")
 LIMIT = 16 * 1024 * 1024
+IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 
 
 def _identity(record):
     return PhaseInstanceId(*(record.get(field) for field in IDENTITY))
+
+
+def original_package_member(spec, phase):
+    """Only v3 iOS P consumes its already-admitted original worker member."""
+    return spec["schemaVersion"] == 3 and _identity(phase) == IOS_PACKAGE
 
 
 def _records(rows, label):
@@ -135,7 +141,8 @@ def observe_original(original, receipt, token):
     name = (products._worker_artifact_prefix("sdk", instance) +
             f"{receipt['buildKey'][7:]}-{producer['tree']}-attempt-{producer['runAttempt']}")
     artifact = products._contract_ci_upload_metadata(original["artifactId"], original["artifactSha256"],
-        name, producer, observed[0]["run"], token)
+        name, producer, observed[0]["run"], token,
+        **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if instance == IOS_PACKAGE else {}))
     products._require_artifact_job_window(observed[0], matches[0]["name"], artifact)
     return artifact, observed, products._runtime_original_locator(
         artifact, original["workflowSha"], instance, matches[0])
@@ -183,7 +190,7 @@ def _spec(spec):
     import reuse_qualification as native
     require_exact_keys(spec, {"schemaVersion", "parent", "parentProofSha256", "source", "stateRoot",
         "controls", "completedPhases", "originals", "contractControls", "contractFiles"}, "Incremental SDK spec")
-    if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] != 2:
+    if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3):
         raise ValueError("Unsupported incremental SDK spec")
     native._native_pin_arguments(spec["parent"])
     native.require_sha256(spec["parentProofSha256"], "Approved native parent subject")
@@ -256,7 +263,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     require_exact_keys(proof, {"schemaVersion", "kind", "issuerCommit", "specSha256", "parentProof",
         "controls", "source", "originals", "members", "contractSource", "contractFiles"},
         "Incremental native completion")
-    if (type(proof["schemaVersion"]) is not int or proof["schemaVersion"] != 2
+    if (type(proof["schemaVersion"]) is not int or proof["schemaVersion"] != spec["schemaVersion"]
             or proof["kind"] != "completed-sdk-reuse" or proof["issuerCommit"] != arguments["signer_commit"]
             or proof["specSha256"] != sha256_bytes(canonical_json_bytes(spec))
             or sha256_bytes(canonical_json_bytes(proof["parentProof"])) != spec["parentProofSha256"]
@@ -283,22 +290,28 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     for phase, member in zip(phases, proof["members"]):
         validate_file_record(member, "Incremental SDK object", with_kind=False)
         expected = spec["stateRoot"] + "/" + available[_identity(phase)]["objectPath"]
+        limit = LIMIT
+        if original_package_member(spec, phase):
+            from products.restore import object_relative_path
+            expected = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
+            limit = 8 * 1024**3
         if (member["relativePath"] != expected or member["sha256"] != phase["objectSha256"]
-                or not 0 < member["bytes"] <= LIMIT):
+                or not 0 < member["bytes"] <= limit):
             raise ValueError("Incremental SDK consumed object changed")
     sdk["extension"] = {"spec": spec, "proof": proof}
     return sdk
 
 
 def issue_extension(spec, work, *, root, revision, frozen, token):
-    """One bounded whole-upload admission; inherit the old native body proof."""
+    """Authenticate resumed admission, then hash only each consumed object."""
     import stat
     import time
     import zipfile
     import product_reuse as products
     import reuse_qualification as native
     from products.inventory import write_canonical_json
-    from products.restore import verify_object
+    from products.restore import verify_object, object_relative_path
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
     started = time.perf_counter()
     originals = _spec(spec)
     sdk = native._fetch_completed_sdk(work / "parent", spec["parent"],
@@ -347,19 +360,30 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         validate_current(request, phases, receipts, root=root, revision=revision,
                          original_revision=_inventory_revision(spec, root))
         available = _records(request["availableObjects"], "Incremental original objects")
-        members = []
+        members, locators, transferred = [], [], 0
         for number, phase in enumerate(phases):
-            name = spec["stateRoot"] + "/" + available[_identity(phase)]["objectPath"]
-            raw = read(archive, name)
-            member = {"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+            artifact, _, locator = observe_original(originals[_identity(phase)], receipts[number], token)
+            locators.append(locator)
             obj = work / f"object-{number}.zip"
-            obj.write_bytes(raw)
+            if original_package_member(spec, phase):
+                name = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
+                with open_reference_archive(artifact, token, max_bytes=products._IOS_PACKAGE_UPLOAD_LIMIT) as (original, stream):
+                    member = {"relativePath": name, "bytes": original.getinfo(name).file_size,
+                              "sha256": phase["objectSha256"]}
+                    if not 0 < member["bytes"] <= 8 * 1024**3:
+                        raise ValueError("Incremental package member exceeds its fixed bound")
+                    copy_reference_member(original, name, obj, member)
+                    transferred += stream.transferred
+            else:
+                name = spec["stateRoot"] + "/" + available[_identity(phase)]["objectPath"]
+                raw = read(archive, name)
+                member = {"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+                obj.write_bytes(raw)
             verified = verify_object(obj, build_key=phase["buildKey"], receipt_sha256=phase["receiptSha256"],
                                      object_sha256=phase["objectSha256"])
             if verified["receiptBytes"] != canonical_json_bytes(receipts[number]):
                 raise ValueError("Incremental SDK object changes its admitted receipt")
             members.append(member)
-    locators = [observe_original(originals[_identity(receipt)], receipt, token)[2] for receipt in receipts]
     contract_path = work / "contract-controls.zip"
     contract_source = download(spec["contractControls"], contract_path, contract=True)
     with zipfile.ZipFile(contract_path) as archive:
@@ -368,12 +392,13 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             raise ValueError("Incremental signed Contract upload changes its exact control inventory")
         files = {name: read(archive, name).decode("utf-8") for name in archive.namelist()}
     _contract_files(spec, files, sdk)
-    proof = {"schemaVersion": 2, "kind": "completed-sdk-reuse", "issuerCommit": revision,
+    proof = {"schemaVersion": spec["schemaVersion"], "kind": "completed-sdk-reuse", "issuerCommit": revision,
         "specSha256": sha256_bytes(canonical_json_bytes(spec)), "parentProof": sdk["proof"],
         "source": source, "controls": controls, "originals": locators, "members": members,
         "contractSource": contract_source, "contractFiles": files}
     write_canonical_json(work / "completion.json", proof)
     report = {"downloadedOriginalBytes": spec["source"]["artifactBytes"] + spec["contractControls"]["artifactBytes"],
+        "originalMemberRangeBytes": transferred,
         "verifiedObjectBytes": sum(row["bytes"] for row in members), "completedSdkPhases": len(phases) + 1,
         "seconds": str(time.perf_counter() - started), "productPhasesExecuted": 0}
     import json

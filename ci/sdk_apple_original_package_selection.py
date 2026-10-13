@@ -174,6 +174,9 @@ class OriginalApplePackageSelector:
         observations = product_reuse._observe_ci_producer_jobs(
             {"plan": producer}, jobs_by_phase={"plan": _PLAN_JOB},
             trusted_workflow_sha=original_workflow, token=self._token)
+        # Historical PR merge objects need not remain in a fresh runner's refs.
+        from sdk_handoff import _ensure_observed_sdk_commit
+        _ensure_observed_sdk_commit(self._repository, producer, self._token)
         artifacts = product_reuse.paginated_items(
             f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
             "artifacts", self._token)

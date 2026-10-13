@@ -1018,10 +1018,15 @@ class CompletedFrozenReuse:
                 trusted_workflow_sha=trusted_workflow_sha, token=token)
             return
         if record["product"] == "sdk":
+            limits = {}
             extension = self.sdk_extension()
             if extension is not None and products._identity(record) in _phase_records(
                     extension["spec"]["completedPhases"], "Incremental SDK phases"):
-                artifact, _, _ = self.observe_extended_sdk(record, producer=producer, token=token)
+                from completed_sdk_reuse import original_package_member
+                artifact, original, _ = self.observe_extended_sdk(record, producer=producer, token=token)
+                if original_package_member(extension["spec"], record):
+                    artifact = original
+                    limits = {"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT}
                 members = [row for row in extension["proof"]["members"] if row["sha256"] == record["objectSha256"]]
                 if len(members) != 1:
                     raise ValueError("Incremental SDK object member is missing or ambiguous")
@@ -1029,7 +1034,7 @@ class CompletedFrozenReuse:
             else:
                 artifact, _, _ = self.observe_sdk(plan=plan, producer=producer, token=token)
                 member = self.sdk_original()["proof"]["member"]
-            with open_reference_archive(artifact, token) as (archive, _stream):
+            with open_reference_archive(artifact, token, **limits) as (archive, _stream):
                 copy_reference_member(archive, member["relativePath"], destination, member)
             return
         body = load_canonical_json_bytes(next(raw for receipt, raw in self._bodies
@@ -1339,7 +1344,7 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     _ensure_native_issuer_commit(root, arguments["signer_commit"], token)
     raw = git_regular_blob_bytes(root, arguments["signer_commit"], _SDK_COMPLETED_SPEC, max_bytes=LIMIT)
     spec = load_canonical_json_bytes(raw)
-    if spec.get("schemaVersion") == 2:
+    if spec.get("schemaVersion") in (2, 3):
         from completed_sdk_reuse import validate_extension
         return validate_extension(spec, proof, arguments, root=root, revision=revision, frozen=frozen, token=token)
     proof = require_exact_keys(proof, {
@@ -1543,7 +1548,7 @@ def issue_completed_sdk(work, token):
         _SDK_COMPLETED_SPEC, "ci/tests/data/sdk-ios-qualification.json", "ci/tests/data/hosted-frozen-reuse.json"))
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
-    if spec.get("schemaVersion") == 2:
+    if spec.get("schemaVersion") in (2, 3):
         from completed_sdk_reuse import issue_extension
         return issue_extension(spec, work, root=root, revision=commit, frozen=frozen, token=token)
     artifact, observed, locator = _observe_completed_sdk_resume(spec, token)

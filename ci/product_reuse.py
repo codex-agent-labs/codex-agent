@@ -6238,24 +6238,33 @@ def collect_runtime_workers(
                 retained = prepared / "rows" / name
                 retained.mkdir(parents=True)
                 archive = retained / "transport.zip"
-                artifact, _ = _download_contract_ci_upload(
-                    candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
-                    original_observed[0]["run"], token, destination=archive,
-                    **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance ==
-                       PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
+                if job.get("conclusion") == "success":
+                    artifact, _ = _download_contract_ci_upload(
+                        candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
+                        original_observed[0]["run"], token, destination=archive,
+                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance ==
+                           PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
+                else:
+                    artifact = _contract_ci_upload_metadata(
+                        candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
+                        original_observed[0]["run"], token,
+                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance ==
+                           PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
                 timestamps = [datetime.fromisoformat(require_string(value, "Runtime worker timestamp").replace("Z", "+00:00"))
                               for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
                 if (any(value.utcoffset() != timedelta(0) for value in timestamps)
                         or not timestamps[0] <= timestamps[1] <= timestamps[2]):
                     raise ValueError("Runtime upload is outside its original job-attempt window")
                 row["artifact"] = artifact
+                if job.get("conclusion") != "success":
+                    # The exact remote original is retained in this failed row;
+                    # a failed job grants no authority to admit its body bytes.
+                    raise ValueError("Runtime worker job did not succeed; original diagnostics retained in source upload")
                 verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                       **_worker_upload_zip_limits(instance))
                 original = retained / "original"
                 safe_extract(archive, original)
                 row["originalDirectory"] = original.relative_to(prepared).as_posix()
-                if job.get("conclusion") != "success":
-                    raise ValueError("Runtime worker job did not succeed; original diagnostics retained")
                 verified = verify_phase_shard(original / "shard", instance)
                 receipt = verified["receipt"]
                 if (receipt["producer"] != original_producer or receipt["buildKey"] != ready["buildKey"]

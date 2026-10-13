@@ -99,6 +99,74 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
                 token="synthetic-token", sdk_javascript_only=family is None, sdk_family=family)
 
+    def test_failed_original_is_retained_by_reference_without_body_and_keeps_successful_sibling(self):
+        failed, failed_plan, _, _, failed_files = self.shard('package')
+        good, good_plan, _, expected, good_files = self.shard('validation')
+        failed_raw = archive(failed_files)
+        failed_name = self.names(failed, failed_plan['buildKey'])[0]
+        for case in ('failed', 'digest', 'expired', 'window', 'url', 'size', 'wrong-upload-run',
+                     'wrong-job-run', 'wrong-job-head', 'ambiguous-job', 'ambiguous-artifact', 'running'):
+            ready, uploads = {failed: failed_plan}, {failed: failed_raw}
+            if case == 'failed':
+                ready[good], uploads[good] = good_plan, archive(good_files)
+            destination = self.repository / ('collected-failure-' + case)
+            with self.subTest(case=case), \
+                    patch.object(adapter, '_verified_product_state', return_value=self.state(ready)), \
+                    self.official_api(ready, uploads) as (query, listing, downloaded):
+                original_query, original_listing = query.side_effect, listing.side_effect
+                def list_originals(url, field, token):
+                    rows = [dict(row) for row in original_listing(url, field, token)]
+                    if field == 'jobs':
+                        for row in rows:
+                            if row['name'] != failed_name:
+                                continue
+                            row['conclusion'] = 'failure'
+                            if case == 'running': row['status'] = 'in_progress'
+                            if case == 'wrong-job-run': row['run_id'] += 1
+                            if case == 'wrong-job-head': row['head_sha'] = 'f' * 40
+                        if case == 'ambiguous-job':
+                            rows.extend(dict(row) for row in list(rows) if row['name'] == failed_name)
+                    elif case == 'ambiguous-artifact': rows.append(dict(rows[0]))
+                    return rows
+                def observe_original(url, token):
+                    value = dict(original_query(url, token))
+                    if '/actions/artifacts/' in url:
+                        value.update({'digest': {'digest': 'sha256:' + 'f' * 64},
+                            'expired': {'expired': True}, 'window': {'created_at': '2026-09-08T09:00:00Z'},
+                            'url': {'archive_download_url': 'https://untrusted.invalid/zip'},
+                            'size': {'size_in_bytes': 0}}.get(case, {}))
+                        if case == 'wrong-upload-run': value['workflow_run'] = {**value['workflow_run'], 'id': 999}
+                    return value
+                listing.side_effect, query.side_effect = list_originals, observe_original
+                def collect():
+                    return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                        destination, trusted_workflow_sha=PIN, repository_root=self.repository,
+                        environ=self.environment, token='synthetic-token', sdk_javascript_only=True)
+                if case == 'running':
+                    with self.assertRaisesRegex(ValueError, 'still running'): collect()
+                    downloaded.assert_not_called()
+                    self.assertFalse(destination.exists())
+                    continue
+                result = collect()
+                row = next(row for row in result['rows'] if row['phase'] == 'package')
+                self.assertEqual('failure', row['result'])
+                self.assertIsNone(row['shardDirectory'])
+                self.assertIsNone(row['originalDirectory'])
+                if case != 'failed':
+                    downloaded.assert_not_called()
+                    self.assertIsNone(row['artifact'])
+                    continue
+                self.assertEqual(1, downloaded.call_count)
+                self.assertEqual(sha256_bytes(failed_raw), row['artifact']['digest'])
+                self.assertEqual(result, load_canonical_json(destination / 'collection.json'))
+                self.assertTrue(any(job['name'] == failed_name and job['conclusion'] == 'failure'
+                                    for job in result['observed'][0]['jobs']))
+                sibling = next(row for row in result['rows'] if row['phase'] == 'validation')
+                self.assertEqual('success', sibling['result'])
+                actual = adapter.verify_phase_shard(destination / sibling['shardDirectory'], good)
+                self.assertEqual(expected['receiptSha256'], actual['receiptSha256'])
+                self.assertEqual(expected['objectSha256'], actual['objectSha256'])
+
     def test_truncated_matrix_display_preserves_full_key_and_ambiguity_gates(self):
         for case in ("valid", "wrong-receipt-key", "wrong-display-key", "ambiguous"):
             with self.subTest(case=case):
@@ -241,7 +309,8 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 sdk_family="core-binary", sdk_worker_workflow_path=self.child_path,
                 sdk_worker_job_name=self.child_job)["rows"][0]
             self.assertEqual("failure", failed["result"])
-            self.assertIsNotNone(failed["originalDirectory"])
+            self.assertIsNone(failed["originalDirectory"])
+            self.assertIsNotNone(failed["artifact"])
             self.assertIsNone(failed["shardDirectory"])
 
     def test_child_path_and_job_are_inseparable_before_state_replay(self):

@@ -13,6 +13,61 @@ from products.restore import verification_scoped
 from reuse import github_output
 
 
+def failed_ios_package(plan_path, selected, destination, *, trusted_workflow_sha, token,
+                       repository_root=None, environ=None):
+    """Record only a terminal failure; never authenticate or advance product state.
+
+    The sole iOS package election cannot hide a successful sibling. Retries use
+    ordinary collection so an earlier successful attempt is still recovered.
+    """
+    root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
+    plan = products._validate_plan(plan_path, root)
+    producer = products._consumer(plan, os.environ if environ is None else environ)["producer"]
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] != "pull_request":
+        raise ValueError("Early package failure requires an authorized PR plan")
+    instance = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+    rows = selected.get("include") if type(selected) is dict else None
+    if (type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict
+            or products._identity(rows[0]) != instance):
+        raise ValueError("Early package failure requires its sole original election")
+    key = require_sha256(rows[0].get("buildKey"), "Original package election")
+    if producer["runAttempt"] != 1:
+        return False
+    observed = products._observe_ci_producer_jobs({"resume": producer},
+        jobs_by_phase={"resume": "product-validation / product-resume"},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    jobs = products._matching_ci_jobs(observed[0]["jobs"], products._worker_job_name("sdk", instance),
+                                      expected_build_key=key)
+    if len(jobs) != 1:
+        raise ValueError("Original package worker is missing or ambiguous")
+    job = jobs[0]
+    products.require_integer(job.get("id"), "Original package job", 1)
+    if (job.get("run_id") != producer["runId"] or job.get("head_sha") != observed[0]["run"]["head_sha"]
+            or job.get("status") != "completed"):
+        raise ValueError("Original package worker is not terminal for its exact producer")
+    if job.get("conclusion") not in {"failure", "cancelled", "timed_out"}:
+        return False
+    name = (products._worker_artifact_prefix("sdk", instance)
+            + f"{key[7:]}-{producer['tree']}-attempt-{producer['runAttempt']}")
+    uploads = products.paginated_items(
+        f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
+        "artifacts", token)
+    candidates = [item for item in uploads if isinstance(item, dict) and item.get("name") == name]
+    if len(candidates) > 1:
+        raise ValueError("Failed original package upload is ambiguous")
+    artifact = None
+    if candidates:
+        candidate = candidates[0]
+        artifact = products._contract_ci_upload_metadata(candidate.get("id"), candidate.get("digest"),
+            name, producer, observed[0]["run"], token, upload_limit=products._IOS_PACKAGE_UPLOAD_LIMIT)
+        products._require_artifact_job_window(observed[0], job["name"], artifact)
+    report = {"schemaVersion": 1, "kind": "failed-worker-observation", "producer": producer,
+        "result": "failure", "observed": observed, "worker": job, "artifact": artifact,
+        "selected": rows[0], "admittedPhases": [], "productBodiesDownloaded": 0}
+    products.write_canonical_json(destination, report)
+    return True
+
+
 def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,
            sdk_validation_tooling=None, sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):

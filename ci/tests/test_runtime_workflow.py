@@ -778,6 +778,60 @@ class RuntimeWorkflowTest(unittest.TestCase):
 
 
 class WorkerUploadPreflightTest(unittest.TestCase):
+    def test_failed_package_decision_skips_bodies_and_preserves_success_retry_and_provenance_gates(self):
+        from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest, PIN as original_pin
+        fixture = SdkWorkerCollectionTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.producer['runAttempt'] = 1
+        instance, ready, _, _, _ = fixture.shard('package', component='sdk-ios', target='ios')
+        selected = {'include': [ready]}
+        plan = {'event': 'pull_request', 'remoteBuildAuthorized': True}
+        products = workflow.products
+        for case in ('failure', 'cancelled', 'timed_out', 'success', 'retry', 'missing-upload',
+                     'running', 'foreign-job', 'duplicate-job', 'bad-digest', 'expired', 'window', 'extra-row'):
+            destination = fixture.repository / (case + '.json')
+            producer = {**fixture.producer, 'runAttempt': 2} if case == 'retry' else fixture.producer
+            with self.subTest(case=case), fixture.official_api({instance: ready}, {instance: b'body must stay remote'}) as (query, listing, downloaded), \
+                    mock.patch.object(products, '_validate_plan', return_value=plan), \
+                    mock.patch.object(products, '_consumer', return_value={'producer': producer}), \
+                    mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('state replay')):
+                original_query, original_listing = query.side_effect, listing.side_effect
+                def observe(url, token):
+                    value = deepcopy(original_query(url, token))
+                    if '/actions/artifacts/' in url:
+                        value.update({'bad-digest': {'digest': 'sha256:' + 'f' * 64},
+                            'expired': {'expired': True}, 'window': {'created_at': '2026-09-08T09:00:00Z'}}.get(case, {}))
+                    return value
+                def list_originals(url, field, token):
+                    values = deepcopy(original_listing(url, field, token))
+                    if field == 'jobs':
+                        job = values[-1]
+                        job['conclusion'] = case if case in {'success', 'cancelled', 'timed_out'} else 'failure'
+                        if case == 'running': job['status'] = 'in_progress'
+                        if case == 'foreign-job': job['head_sha'] = 'f' * 40
+                        if case == 'duplicate-job': values.append(deepcopy(job))
+                    elif case == 'missing-upload': values = []
+                    return values
+                query.side_effect, listing.side_effect = observe, list_originals
+                def decide():
+                    return workflow.failed_ios_package(fixture.plan_path,
+                        {'include': [ready, ready]} if case == 'extra-row' else selected, destination,
+                        trusted_workflow_sha=original_pin, token='synthetic-token', repository_root=fixture.repository)
+                if case in {'running', 'foreign-job', 'duplicate-job', 'bad-digest', 'expired', 'window', 'extra-row'}:
+                    with self.assertRaises(ValueError): decide()
+                    self.assertFalse(destination.exists())
+                elif case in {'success', 'retry'}:
+                    self.assertFalse(decide())
+                    self.assertFalse(destination.exists())
+                else:
+                    self.assertTrue(decide())
+                    report = json.loads(destination.read_bytes())
+                    self.assertEqual([], report['admittedPhases'])
+                    self.assertEqual(0, report['productBodiesDownloaded'])
+                    self.assertEqual(case != 'missing-upload', report['artifact'] is not None)
+                downloaded.assert_not_called()
+
     def test_absence_stops_before_replay_while_any_current_sibling_is_preserved(self):
         from ci.tests import test_runtime_resume_capture as fixtures
         fixture = fixtures.RuntimeResumeCaptureTest()

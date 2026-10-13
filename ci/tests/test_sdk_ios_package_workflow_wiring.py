@@ -80,6 +80,23 @@ class SdkIosPackageWorkflowWiringTest(unittest.TestCase):
             select.assert_called_once_with(needs, stage="ios-package")
             return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
+    def test_terminal_failure_decision_precedes_expensive_preparation_and_publishes_no_state(self):
+        collector = self.job('sdk-collect-5')
+        start = collector.index('      - id: failed\n')
+        self.assertLess(start, collector.index('restore-reuse-qualification@'))
+        self.assertIn("needs.sdk-ios-package.result != 'success'", collector[:start])
+        for marker in ('restore-reuse-qualification@reuse-authority',
+                       'name: Select installed caller Java', 'id: tooling', 'id: collect'):
+            step = collector[collector.index(marker):].split('\n      - ', 1)[0]
+            self.assertIn("if: steps.failed.outputs.wave_failed != 'true'", step)
+        decision = collector[start:].split('\n      - if:', 1)[0]
+        self.assertIn('failed_ios_package(', decision)
+        self.assertIn('json.loads(os.environ[\'SDK_MATRIX\'])', decision)
+        self.assertIn("'wave_failed': failed", decision)
+        self.assertIn('path: build/failed-package.json', collector)
+        self.assertIn("steps.failed.outputs.wave_failed == 'true' && 'true'", collector)
+        self.assertNotIn('continue-on-error:', collector)
+
     def test_plan_and_worker_use_the_authenticated_parent_inputs_and_fixed_apple_route(self):
         planned = self.job("sdk-ios-package-plan")
         condition = planned.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0]

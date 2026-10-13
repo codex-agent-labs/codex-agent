@@ -98,6 +98,7 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         stack = ExitStack()
         stack.enter_context(patch.object(selection.product_reuse, "api_json", return_value={"synthetic": "original run"}))
         stack.enter_context(patch.object(selection.product_reuse, "_runtime_prior_workflow_sha", return_value="c" * 40))
+        stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
         stack.enter_context(patch.object(selection.product_reuse, "_observe_ci_producer_jobs",
             return_value=[{"run": {"head_sha": self.producer["commit"]}, "jobs": []}]))
         stack.enter_context(patch.object(selection.product_reuse, "paginated_items", return_value=[]))
@@ -138,6 +139,20 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "reviewed producer workflow"):
             self.selector()(self.envelope)
         observe.assert_not_called()
+
+    def test_authenticated_original_source_is_provisioned_before_historical_plan_validation(self):
+        events=[]
+        def provision(root, producer, token):
+            self.assertEqual(self.repo,root)
+            self.assertEqual(self.producer,producer)
+            self.assertEqual('synthetic',token)
+            events.append('source')
+        def validate(*args,**kwargs):
+            self.assertEqual(['source'],events)
+            return self.validated_plan
+        with self.patch_sources(), patch('sdk_handoff._ensure_observed_sdk_commit',side_effect=provision), \
+                patch.object(selection.product_reuse,'_validate_plan',side_effect=validate):
+            self.selector()(self.envelope)
 
     def test_official_original_plan_package_and_s858_are_captured_before_full_gate(self):
         with self.patch_sources(), patch(

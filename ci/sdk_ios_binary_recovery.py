@@ -352,16 +352,23 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
         **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {}))
     if any(current.get(field) != transport["artifact"].get(field) for field in artifact_fields):
         raise ValueError("Prior SDK retained upload metadata changed")
-    if completed_frozen is not None and phase == "binary":
+    if completed_frozen is not None:
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Completed SDK replay requires concrete native authority")
-        if completed_frozen.sdk_original() is not None:
-            _, original_artifact, _ = completed_frozen.observe_sdk(
-                plan=plan, producer=consumer_producer, token=token)
-            record = _record(capture, Path(artifact_root), completed_frozen=completed_frozen)
+        extension = completed_frozen.sdk_extension()
+        admitted = (completed_frozen.sdk_original() is not None if phase == "binary" else
+                    extension is not None and instance in {
+                        products._identity(row) for row in extension["spec"]["completedPhases"]})
+        if admitted:
+            record = _record(capture, Path(artifact_root), completed_frozen=completed_frozen, phase=phase)
             completed_frozen.envelope(record, raw)
+            _, original_artifact, _ = (completed_frozen.observe_sdk(
+                plan=plan, producer=consumer_producer, token=token) if phase == "binary" else
+                completed_frozen.observe_extended_sdk(record, producer=consumer_producer, token=token))
             if (any(original_artifact.get(field) != current.get(field) for field in artifact_fields)
+                    or {row["relativePath"] for row in inventory} != {
+                        "capture-transport.json", "original/shard/phase-receipt.json", "original/shard/" + PHASE_SHARD_NAME}
                     or _stage_fingerprint(root) != fingerprint or regular_file_inventory(capture) != inventory
                     or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes):
                 raise ValueError("Completed SDK controls or original identity changed during replay")
@@ -443,7 +450,7 @@ def capture_completed_ios_binary(destination, artifact_root, *, completed_frozen
 
 
 def capture_completed_javascript(destination, artifact_root, *, completed_frozen, producer, token):
-    """Publish receipt controls for the exact incrementally admitted JS originals."""
+    """Publish only controls for supported, independently completed SDK originals."""
     from reuse_qualification import CompletedFrozenReuse
     from products.restore import object_relative_path, PHASE_RECEIPT_NAME
     if type(completed_frozen) is not CompletedFrozenReuse:
@@ -453,15 +460,19 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
         return []
     records = []
     for selected in extension["spec"]["completedPhases"]:
-        instance = _javascript_instance(selected["phase"], selected["component"])
-        if instance.component != "javascript":
-            raise ValueError("Completed JavaScript capture changes its supported scope")
+        ios_package = products._identity(selected) == _ios_instance("package")
+        instance = (_ios_instance("package") if ios_package else
+                    _javascript_instance(selected["phase"], selected["component"]))
+        if products._identity(selected) != instance:
+            raise ValueError("Completed SDK capture changes its supported scope")
         record = {field: selected[field] for field in (
             "product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256")}
         envelope = completed_frozen.envelope(record)
         _, artifact, observed = completed_frozen.observe_extended_sdk(record, producer=producer, token=token)
-        folder = "prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)
-        capture = Path(destination) / folder / f"javascript/{instance.phase}/node"
+        folder = ("prior-failed-sdk-ios-package" if ios_package else "prior-failed-sdk-csharp"
+                  if instance.component == "csharp" else "prior-failed-sdk-javascript"
+                  + ("" if instance.phase == "package" else "-" + instance.phase))
+        capture = Path(destination) / folder / f"{instance.component}/{instance.phase}/{instance.target}"
         shard = capture / "original/shard"
         shard.mkdir(parents=True, exist_ok=False)
         products.write_canonical_json(shard / PHASE_SHARD_NAME, {"schemaVersion": 1, **record,
@@ -470,8 +481,9 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
         products.write_canonical_json(capture / "capture-transport.json", {"artifact": artifact,
             "captureProducer": envelope["receipt"]["producer"], "observed": observed,
             f"{instance.phase}ReceiptSha256": record["receiptSha256"]})
-        records.append(_javascript_package_record(capture, Path(artifact_root), instance.phase,
-                                                  completed_frozen=completed_frozen))
+        records.append(_record(capture, Path(artifact_root), phase="package", completed_frozen=completed_frozen)
+            if ios_package else _javascript_package_record(capture, Path(artifact_root), instance.phase,
+                component=instance.component, completed_frozen=completed_frozen))
     return records
 
 
