@@ -4,6 +4,9 @@ from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
+import sys
+import textwrap
 from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
@@ -13,6 +16,43 @@ from ci.tests.product_chain_support import write_receipt
 
 
 class ApplePackageAdmissionTest(unittest.TestCase):
+    def test_original_admission_reaches_full_gate_in_isolated_script_namespace(self):
+        # Match python3 ci/product_reuse.py: ci/ is importable, its parent is not.
+        script = textwrap.dedent('''
+            import importlib.util, sys
+            from contextlib import contextmanager
+            from pathlib import Path
+            from unittest.mock import patch
+            sys.path.insert(0, sys.argv[1])
+            assert importlib.util.find_spec("ci") is None
+            import products.sdk_apple_package_admission as admission
+            import products.reuse as reuse
+            import sdk_ios_original_package as original
+            class FullGateReached(Exception):
+                pass
+            @contextmanager
+            def gate(*args, **kwargs):
+                raise FullGateReached
+                yield
+            raw = b"{}\\n"
+            selected = {"receiptBytes": raw, "receipt": {},
+                        "receiptSha256": "sha256:" + "1" * 64, "objectSha256": "sha256:" + "2" * 64}
+            value = object.__new__(admission.ApplePackageAdmission)
+            value._original = (Path("plan"), Path("receipt"), selected["receiptSha256"], {})
+            value._policy = {}
+            with patch.object(reuse, "_validate_envelope", return_value=(admission._INSTANCE, selected)), \\
+                    patch.object(original, "verified_original_ios_package", gate):
+                try:
+                    value.verify(selected)
+                except FullGateReached:
+                    pass
+                else:
+                    raise AssertionError("original full gate was bypassed")
+        ''')
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script,
+            str(Path(__file__).resolve().parents[1])], capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="apple-package-admission-")
         self.addCleanup(temporary.cleanup)

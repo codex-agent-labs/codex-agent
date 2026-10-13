@@ -35,7 +35,10 @@ def verified_selected_ios_package(selected_stage, selected_receipt, *, plan,
     execution events and package semantics; this wrapper never substitutes a
     receipt or content-inventory check for that gate.
     """
-    from ci.sdk_ios_original_package import verified_retained_ios_package
+    if __package__ == "ci.products":
+        from ..sdk_ios_original_package import verified_retained_ios_package
+    else:
+        from sdk_ios_original_package import verified_retained_ios_package
 
     stage = Path(selected_stage)
     receipt_path = Path(selected_receipt)
@@ -141,7 +144,10 @@ class ApplePackageAdmission:
         binding = (selected["receiptBytes"], selected["receiptSha256"],
                    selected["objectSha256"], canonical_json_bytes(selected["receipt"]))
         if self._original is not None:
-            from ci.sdk_ios_original_package import verified_original_ios_package
+            if __package__ == "ci.products":
+                from ..sdk_ios_original_package import verified_original_ios_package
+            else:
+                from sdk_ios_original_package import verified_original_ios_package
             plan, receipt, digest, options = self._original
             if digest != binding[1]:
                 raise ValueError("Apple package admission changes its selected original")

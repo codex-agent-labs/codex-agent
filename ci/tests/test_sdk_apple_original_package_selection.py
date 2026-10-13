@@ -101,7 +101,7 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         return stack
 
     def test_original_selection_defers_bodies_to_one_complete_gate(self):
-        with self.patch_sources(), patch("ci.sdk_ios_original_package.verified_original_ios_package",
+        with self.patch_sources(), patch("sdk_ios_original_package.verified_original_ios_package",
                 self.mocked_original_gate):
             admission = self.selector()(self.envelope)
             self.assertIs(type(admission), selection.ApplePackageAdmission)
@@ -113,7 +113,7 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         original = "e" * 40
         with self.patch_sources(), patch.object(selection.product_reuse,
                 "_runtime_prior_workflow_sha", return_value=original), patch(
-                "ci.sdk_ios_original_package.verified_original_ios_package", self.mocked_original_gate):
+                "sdk_ios_original_package.verified_original_ios_package", self.mocked_original_gate):
             self.selector()(self.envelope).verify(self.envelope)
         self.assertEqual(original, self.last_options["trusted_workflow_sha"])
 
@@ -144,20 +144,20 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         expected = canonical_json_bytes(source)
         factory = self.selector(retained_sdk_inputs_source=source)
         source['artifactId'] = 999
-        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package', self.mocked_original_gate):
+        with self.patch_sources(), patch('sdk_ios_original_package.verified_original_ios_package', self.mocked_original_gate):
             factory(self.envelope).verify(self.envelope)
         self.assertEqual(expected, canonical_json_bytes(self.last_options['retained_sdk_inputs_source']))
 
     def test_wrong_original_plan_producer_fails_before_package_gate(self):
         self.validated_plan = {"remoteBuildAuthorized": False, "event": "pull_request"}
-        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package') as gate, \
+        with self.patch_sources(), patch('sdk_ios_original_package.verified_original_ios_package') as gate, \
                 self.assertRaisesRegex(ValueError, "original plan|Original Apple plan"):
             self.selector()(self.envelope)
         gate.assert_not_called()
 
     def test_wrong_original_object_cannot_pass_full_gate_binding(self):
         wrong = {**self.envelope, 'objectSha256': 'sha256:' + 'f' * 64}
-        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package', self.mocked_original_gate), \
+        with self.patch_sources(), patch('sdk_ios_original_package.verified_original_ios_package', self.mocked_original_gate), \
                 self.assertRaisesRegex(ValueError, 'shard differs'):
             self.selector()(wrong).verify(wrong)
         self.assertIn('full-gate-exit', self.events)
@@ -167,7 +167,7 @@ class OriginalApplePackageSelectionTest(unittest.TestCase):
         def failed_exit(*args, **kwargs):
             yield {'original': self.package_upload / 'original'}
             raise ValueError('full original gate rejected')
-        with self.patch_sources(), patch('ci.sdk_ios_original_package.verified_original_ios_package', failed_exit), \
+        with self.patch_sources(), patch('sdk_ios_original_package.verified_original_ios_package', failed_exit), \
                 self.assertRaisesRegex(ValueError, 'full original gate rejected'):
             self.selector()(self.envelope).verify(self.envelope)
 
