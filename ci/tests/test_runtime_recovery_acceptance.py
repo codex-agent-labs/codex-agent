@@ -55,6 +55,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                 recovery._activated_ci(invalid, "b" * 40)
 
     def test_scoped_recovery_cannot_pass_the_final_merge_gate(self):
+        for repository in (self.trusted, self.candidate):
+            self.assertEqual("false", self.git(repository, "config", "--get", "maintenance.auto").strip())
+            self.assertEqual("0", self.git(repository, "config", "--get", "gc.auto").strip())
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.github/workflows/product-validation.yml').read_text()
         self.assertIn("!inputs.runtimeRecoveryOnly", workflow_job(workflow, "consumers"))
@@ -176,7 +179,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def git(self, root, *arguments):
-        result = subprocess.run(["git", *arguments], cwd=root, check=True,
+        # Keep fixture writes synchronous, including the separately cloned repo.
+        result = subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", *arguments], cwd=root, check=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return result.stdout.decode()
 
