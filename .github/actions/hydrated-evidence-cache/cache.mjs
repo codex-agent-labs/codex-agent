@@ -2,7 +2,6 @@
 // the Actions cache service and upload protocol; no portable trust is stored.
 import {internalCacheTwirpClient} from './node_modules/@actions/cache/lib/internal/shared/cacheTwirpClient.js';
 import {saveCache} from './node_modules/@actions/cache/lib/internal/cacheHttpClient.js';
-import {BlockBlobClient} from '@azure/storage-blob';
 import {createReadStream, createWriteStream} from 'node:fs';
 import {lstat, mkdir, readFile, link, rm, writeFile} from 'node:fs/promises';
 import {createHash, randomUUID} from 'node:crypto';
@@ -43,22 +42,6 @@ export async function cacheResponse(url, fetchBody = fetch) {
   return null;
 }
 
-export async function* azureCacheChunks(client, properties, maximumBytes) {
-  const {contentLength, etag} = properties;
-  if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > maximumBytes ||
-      typeof etag !== 'string' || !/^"[^"\r\n]{1,256}"$/.test(etag))
-    throw Error('Invalid bounded cache transport properties');
-  // Use the pinned toolkit's Azure primitive without staging another multi-GB file.
-  // Each fixed segment contains at most eight concurrent 8 MiB requests.
-  for (let offset = 0; offset < contentLength; offset += 128 * 1024 ** 2) {
-    const size = Math.min(128 * 1024 ** 2, contentLength - offset);
-    const body = await client.downloadToBuffer(offset, size, {concurrency: 8, blockSize: 8 * 1024 ** 2,
-      conditions: {ifMatch: etag}, abortSignal: AbortSignal.timeout(120000)});
-    if (!Buffer.isBuffer(body) || body.length !== size) throw Error('Cache segment length mismatch');
-    yield body;
-  }
-}
-
 function serviceUnavailable(error) {
   const codes = ['ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'EAI_AGAIN'];
   if (codes.includes(error?.code)) return true;
@@ -84,7 +67,7 @@ for (const row of records) {
   unique.set(row.sha256, row);
 }
 const version = createHash('sha256').update('codex-hydrated-evidence-raw-gzip-v1').digest('hex');
-const stats = {mode, entries: unique.size, hits: 0, misses: 0, saved: 0, skipped: 0, unavailable: 0, compressedBytes: 0, hydratedBytes: 0, parallelEntries: 0};
+const stats = {mode, entries: unique.size, hits: 0, misses: 0, saved: 0, skipped: 0, unavailable: 0, compressedBytes: 0, hydratedBytes: 0};
 const started = performance.now();
 let unavailable = false;
 
@@ -133,29 +116,15 @@ async function entry(row) {
     if (found?.ok && found.matchedKey !== key) throw Error('Cache returned a different content identity');
     if (mode === 'restore') {
       if (!found?.ok) { stats.misses++; return; }
-      const url = new URL(found.signedDownloadUrl);
-      if (url.protocol !== 'https:') throw Error('Unsafe cache download URL');
-      const maximumBytes = row.bytes + Math.ceil(row.bytes / 1000) + 65536;
-      let body;
-      if (row.bytes >= 256 * 1024 ** 2 && url.hostname.endsWith('.blob.core.windows.net')) {
-        const blob = new BlockBlobClient(found.signedDownloadUrl, undefined,
-          {retryOptions: {tryTimeoutInMs: 30000}});
-        const properties = await service(() => blob.getProperties());
-        if (properties === null) { stats.misses++; return; }
-        body = Readable.from(azureCacheChunks(blob, properties, maximumBytes),
-          {objectMode: false, highWaterMark: 1});
-        stats.parallelEntries++;
-      } else {
-        const response = await cacheResponse(found.signedDownloadUrl);
-        if (response === null) { stats.misses++; return; }
-        body = Readable.fromWeb(response.body);
-      }
+      if (new URL(found.signedDownloadUrl).protocol !== 'https:') throw Error('Unsafe cache download URL');
+      const response = await cacheResponse(found.signedDownloadUrl);
+      if (response === null) { stats.misses++; return; }
       let compressed = 0;
       const count = new Transform({transform(chunk, _, done) {
         compressed += chunk.length;
-        done(compressed > maximumBytes ? Error('Oversized cache transport') : null, chunk);
+        done(compressed > row.bytes + Math.ceil(row.bytes / 1000) + 65536 ? Error('Oversized cache transport') : null, chunk);
       }});
-      await pipeline(body, count, createGunzip(), verify(row), createWriteStream(temporary, {flags: 'wx', mode: 0o600}));
+      await pipeline(Readable.fromWeb(response.body), count, createGunzip(), verify(row), createWriteStream(temporary, {flags: 'wx', mode: 0o600}));
       // Never replace an occupied CAS entry, including a symlink or partial file.
       try { await lstat(file); throw Error('Occupied cache destination'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
