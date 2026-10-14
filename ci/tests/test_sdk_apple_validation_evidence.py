@@ -1,6 +1,7 @@
 """Raw ZIP inventory fixtures only; no compiler or run authentication is asserted."""
 
 from pathlib import Path
+from contextlib import nullcontext
 import os
 import stat
 import subprocess
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
 from ci.products import sdk_apple_validation_evidence as evidence
+from ci.products import sdk_apple_content as content
 from ci.products.restore import verification_session
 
 
@@ -114,6 +116,22 @@ class SdkAppleValidationEvidenceTest(unittest.TestCase):
             self.assertFalse((extracted / evidence.REFERENCE_NAME).exists())
         self.assertEqual(1, scan.call_count)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Exercises actual APFS duplicate clones")
+    def test_duplicate_rehydration_avoids_byte_copy_and_keeps_distinct_inodes(self):
+        self.write_references()
+        copy = content.shutil.copyfileobj
+        def reject_duplicate_copy(source, destination, *args, **kwargs):
+            name = getattr(source, "name", None)
+            if isinstance(name, int) or (isinstance(name, str) and Path(name).is_absolute()
+                                         and name.endswith("/compiler/source.bin")):
+                self.fail("Duplicate payload must use the existing native clone primitive")
+            return copy(source, destination, *args, **kwargs)
+        with mock.patch.object(content.shutil, "copyfileobj", side_effect=reject_duplicate_copy), \
+                verification_session(), self.context() as extracted:
+            source, duplicate = extracted / "compiler/source.bin", extracted / "xctest/duplicate.bin"
+            self.assertEqual(source.read_bytes(), duplicate.read_bytes())
+            self.assertNotEqual(source.stat().st_ino, duplicate.stat().st_ino)
+
     def test_reference_identity_schema_cycles_paths_and_bounds_are_rejected(self):
         cases = [self.references(**change) for change in (
             {"sourcePath": "../outside"}, {"sourcePath": "xctest/duplicate.bin"},
@@ -141,14 +159,19 @@ class SdkAppleValidationEvidenceTest(unittest.TestCase):
             self.verify()
 
     def test_reference_copies_remain_independent_and_mutations_fail_with_hash_memoization(self):
-        self.write_references()
-        with verification_session(), self.assertRaises(ValueError):
-            with self.context() as extracted:
-                alias = extracted / "xctest/duplicate.bin"
-                before = alias.stat()
-                alias.write_bytes(b"drft")
-                os.utime(alias, ns=(before.st_atime_ns, before.st_mtime_ns))
-                self.assertEqual(b"body", (extracted / "compiler/source.bin").read_bytes())
+        for fallback in (False, True):
+            self.write_references()
+            operation = (mock.patch.object(content, "_apple_clone_operation", return_value=None)
+                         if fallback else nullcontext())
+            with self.subTest(fallback=fallback), operation, verification_session(), self.assertRaises(ValueError):
+                with self.context() as extracted:
+                    alias = extracted / "xctest/duplicate.bin"
+                    source = extracted / "compiler/source.bin"
+                    self.assertNotEqual(source.stat().st_ino, alias.stat().st_ino)
+                    before = alias.stat()
+                    alias.write_bytes(b"drft")
+                    os.utime(alias, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    self.assertEqual(b"body", source.read_bytes())
 
     def test_context_rechecks_original_private_archive_and_extracted_tree_through_exit(self):
         def change_same_size(path):

@@ -5,7 +5,6 @@ from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
-import shutil
 import tempfile
 
 if __package__ == "products":  # Script entry points in ci/ use this namespace.
@@ -18,6 +17,7 @@ from .inventory import (
     validate_file_record, verified_zip_contents,
 )
 from .restore import OBJECT_ZIP_LIMITS, _snapshot_archive, memoized_file_inventory as regular_file_inventory
+from .sdk_apple_content import copy_apple_file
 
 
 REFERENCE_NAME = "apple-validation-references.json"
@@ -144,8 +144,7 @@ def verified_apple_validation_archive(
                 for reference in references:
                     target = extracted / reference["relativePath"]
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    with (extracted / reference["sourcePath"]).open("rb") as source, target.open("xb") as output:
-                        shutil.copyfileobj(source, output, length=1024**2)
+                    copy_apple_file(extracted / reference["sourcePath"], target)
             inventory = regular_file_inventory(extracted, allow_empty=True)
             if inventory != records:
                 raise ValueError("Extracted Apple validation evidence inventory differs from the archive")

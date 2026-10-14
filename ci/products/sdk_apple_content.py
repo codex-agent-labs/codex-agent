@@ -17,7 +17,7 @@ import tempfile
 from typing import Any
 
 from .inventory import (
-    _is_reparse_point, _open_created_directory, _open_directory, _stat_identity,
+    _is_reparse_point, _open_created_directory, _open_directory, _open_regular_file, _stat_identity,
     _validate_snapshot_source,
     read_regular_file_bytes, require_regular_directory, require_semver,
     snapshot_regular_tree,
@@ -25,6 +25,72 @@ from .inventory import (
 from .restore import memoized_file_inventory as regular_file_inventory
 from .tooling import verified_tooling_capture
 from .sdk_apple_package_source import capture_apple_package_sources
+
+
+def _apple_clone_operation():
+    clone = (getattr(ctypes.CDLL(None, use_errno=True), "fclonefileat", None)
+             if sys.platform == "darwin" else None)
+    if clone is not None:
+        clone.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        clone.restype = ctypes.c_int
+    return clone
+
+
+def _clone_apple_file(source: int, destination: int, name: str, clone) -> None:
+    metadata = os.fstat(source)
+    if not stat.S_ISREG(metadata.st_mode) or _is_reparse_point(metadata):
+        raise ValueError("Apple snapshot source is not a regular file")
+    # Keep the byte-copy behavior for immutable/other special file flags.
+    if metadata.st_flags:
+        raise OSError(errno.ENOTSUP, "Flagged Apple input requires byte copy")
+    # fclonefileat: held regular source, held private parent, exclusive leaf.
+    # CLONE_NOOWNERCOPY; no directory cloning, hardlinks or trust from xattrs.
+    if clone(source, destination, os.fsencode(name), 0x2) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), name)
+    target = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=destination)
+    try:
+        copied = os.fstat(target)
+        if (not stat.S_ISREG(copied.st_mode) or copied.st_nlink != 1
+                or copied.st_size != metadata.st_size
+                or (copied.st_dev, copied.st_ino) == (metadata.st_dev, metadata.st_ino)):
+            raise ValueError("Apple snapshot clone is not an independent regular file")
+        os.fchmod(target, stat.S_IMODE(metadata.st_mode))
+    finally:
+        os.close(target)
+    if _stat_identity(os.fstat(source)) != _stat_identity(metadata):
+        raise ValueError("Apple snapshot source changed during capture")
+
+
+def copy_apple_file(source: Path, destination: Path) -> None:
+    """Create an independent private file; the caller still verifies all bytes."""
+    clone = _apple_clone_operation()
+    if clone is None:
+        # Existing portable rehydration path; the private tree is verified by the caller.
+        with Path(source).open("rb") as original, Path(destination).open("xb") as output:
+            shutil.copyfileobj(original, output, length=1024**2)
+        return
+    source_descriptor, before = _open_regular_file(source, "Apple input", reject_symlink_parents=True)
+    parent = None
+    try:
+        parent = _open_directory(Path(destination).parent, "Apple private file parent")
+        try:
+            _clone_apple_file(source_descriptor, parent, Path(destination).name, clone)
+        except OSError as error:
+            if error.errno not in {errno.ENOTSUP, errno.EXDEV}:
+                raise
+            output = os.open(Path(destination).name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             stat.S_IMODE(before.st_mode), dir_fd=parent)
+            with os.fdopen(output, "wb") as target, os.fdopen(source_descriptor, "rb", closefd=False) as original:
+                shutil.copyfileobj(original, target, length=1024**2)
+                if original.tell() != before.st_size:
+                    raise ValueError("Apple input changed size during copy")
+        if _stat_identity(os.fstat(source_descriptor)) != _stat_identity(before):
+            raise ValueError("Apple input changed during copy")
+    finally:
+        os.close(source_descriptor)
+        if parent is not None:
+            os.close(parent)
 
 
 def _clone_apple_directory(source: int, destination: int, clone, *, allow_empty: bool) -> None:
@@ -50,24 +116,7 @@ def _clone_apple_directory(source: int, destination: int, clone, *, allow_empty:
                 finally:
                     os.close(target)
             else:
-                # Keep the byte-copy behavior for immutable/other special file flags.
-                if metadata.st_flags:
-                    raise OSError(errno.ENOTSUP, "Flagged Apple input requires byte copy")
-                # fclonefileat: held regular source, held private parent, exclusive leaf.
-                # CLONE_NOOWNERCOPY; no directory cloning, hardlinks or trust from xattrs.
-                if clone(descriptor, destination, os.fsencode(name), 0x2) != 0:
-                    code = ctypes.get_errno()
-                    raise OSError(code, os.strerror(code), name)
-                target = os.open(name, flags, dir_fd=destination)
-                try:
-                    copied = os.fstat(target)
-                    if (not stat.S_ISREG(copied.st_mode) or copied.st_nlink != 1
-                            or copied.st_size != metadata.st_size
-                            or (copied.st_dev, copied.st_ino) == (metadata.st_dev, metadata.st_ino)):
-                        raise ValueError("Apple snapshot clone is not an independent regular file")
-                    os.fchmod(target, stat.S_IMODE(metadata.st_mode))
-                finally:
-                    os.close(target)
+                _clone_apple_file(descriptor, destination, name, clone)
             if _stat_identity(os.fstat(descriptor)) != _stat_identity(metadata):
                 raise ValueError("Apple snapshot source changed during capture")
         finally:
@@ -82,13 +131,10 @@ def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool =
     APFS clones avoid rewriting large payloads while preserving independent files.
     Other hosts/filesystems retain the frozen descriptor-based byte-copy path.
     """
-    clone = (getattr(ctypes.CDLL(None, use_errno=True), "fclonefileat", None)
-             if sys.platform == "darwin" else None)
+    clone = _apple_clone_operation()
     if clone is None:
         snapshot_regular_tree(source, destination, allow_empty=allow_empty)
         return
-    clone.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
-    clone.restype = ctypes.c_int
     source, destination = (Path(os.path.abspath(path)) for path in (source, destination))
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError("Apple snapshot source and destination must not overlap")

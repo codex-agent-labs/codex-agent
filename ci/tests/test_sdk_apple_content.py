@@ -564,6 +564,53 @@ class ApplePrivateSnapshotTest(unittest.TestCase):
         self.assertEqual(regular_file_inventory(self.source), regular_file_inventory(self.destination))
         self.assertEqual(0, (self.destination / "directory/body").stat().st_flags)
 
+    def test_single_file_clone_and_fallback_preserve_original_and_exclusive_destination(self):
+        original = self.body.read_bytes()
+        def fail(source, destination, name, flags):
+            ctypes.set_errno(errno.EXDEV)
+            return -1
+        for index, operation in enumerate((self.native(), fail, None)):
+            destination = self.root / str(index)
+            with self.subTest(operation=index), self.replacement(operation):
+                content.copy_apple_file(self.body, destination)
+                self.assertEqual(original, destination.read_bytes())
+                self.assertNotEqual(self.body.stat().st_ino, destination.stat().st_ino)
+                destination.write_bytes(b"private")
+                self.assertEqual(original, self.body.read_bytes())
+                with self.assertRaises(OSError):
+                    content.copy_apple_file(self.body, destination)
+                self.assertEqual(b"private", destination.read_bytes())
+
+    def test_single_file_native_errors_and_unsafe_paths_do_not_fall_back(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.body)
+        with self.assertRaises(ValueError):
+            content.copy_apple_file(alias, self.root / "rejected")
+        self.assertFalse((self.root / "rejected").exists())
+        def fail(source, destination, name, flags):
+            ctypes.set_errno(errno.EIO)
+            return -1
+        with self.replacement(fail), patch.object(content.shutil, "copyfileobj") as copy, \
+                self.assertRaises(OSError) as failure:
+            content.copy_apple_file(self.body, self.root / "rejected")
+        self.assertEqual(errno.EIO, failure.exception.errno)
+        copy.assert_not_called()
+        self.assertFalse((self.root / "rejected").exists())
+
+    def test_single_file_fallback_detects_restored_mtime_mutation(self):
+        copy = content.shutil.copyfileobj
+        def fail(source, destination, name, flags):
+            ctypes.set_errno(errno.ENOTSUP)
+            return -1
+        def mutate(source, destination, **options):
+            copy(source, destination, **options)
+            before = self.body.stat()
+            self.body.write_bytes(b"!" * before.st_size)
+            os.utime(self.body, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with self.replacement(fail), patch.object(content.shutil, "copyfileobj", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "changed during copy"):
+            content.copy_apple_file(self.body, self.root / "rejected")
+
     def test_unsafe_paths_overlap_and_occupied_destinations_are_rejected(self):
         alias = self.root / "alias"
         alias.symlink_to(self.source, target_is_directory=True)
