@@ -340,6 +340,58 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                 self.execute(completed_frozen=cap)
             self.assertFalse((self.destination / "shard").exists())
 
+    def test_recovered_worker_skips_production_and_finalizes_only_after_native_exit(self):
+        cap = SimpleNamespace(envelope=lambda record: {"receipt": self.receipt, "receiptBytes": b"original receipt"})
+        compact = self.root / "compact"
+        compact.mkdir()
+        (compact / "completed-package.json").write_bytes(b"synthetic native closure")
+        (compact / "package-receipt.json").write_bytes(b"original receipt")
+        @contextmanager
+        def native_inputs(plan, receipt, **kwargs):
+            self.assertIs(cap, kwargs["completed_frozen"])
+            self.events.append("native-enter")
+            yield {"original": self.root / "original", "completedCapture": compact,
+                "packageArtifact": {"artifactId": 17, "artifactSha256": "sha256:" + "2" * 64},
+                "binaryArtifact": {"artifactId": 18, "artifactSha256": "sha256:" + "5" * 64}}
+            self.events.append("native-exit")
+            if self.mutation == "native-exit":
+                raise ValueError("native exit rejected")
+        def recover(plan, phase, producer, inputs, destination, **kwargs):
+            self.assertEqual(self.expected_producer, producer)
+            self.assertEqual(self.ready, phase)
+            self.events.append("recovered-full-replay")
+            archive = destination / "recovery/production-worker.zip"
+            archive.parent.mkdir()
+            archive.write_bytes(b"one retained production upload")
+            stage = self.root / "stage"
+            workflow.write_canonical_json(stage / "outputs/validation/apple-validation.json", {"synthetic": "content"})
+            return {"stage": stage, "content": {"synthetic": "content"}, "evidenceArchive": archive,
+                "evidenceSha256": workflow.sha256_file(archive), "outputInventory": workflow.regular_file_inventory(stage)}
+        def checkout(*_):
+            self.assertEqual(["native-enter", "recovered-full-replay", "native-exit"], self.events)
+            self.events.append("checkout")
+        def finalize(**kwargs):
+            self.assertEqual("checkout", self.events[-1])
+            self.assertEqual(self.expected_producer, kwargs["producer"])
+            self.assertEqual({"selection", "originals", "recovery"}, {p.name for p in self.destination.iterdir()})
+            self.events.append("finalize")
+            return {"fixture": "new recovery receipt"}
+        with patch.object(workflow, "verified_completed_ios_package", side_effect=native_inputs), \
+                patch.object(workflow, "validation_recovery_origin", return_value={"fixture": "candidate"}), \
+                patch.object(workflow.product_reuse, "_validate_plan", return_value={"fixture": "current plan"}), \
+                patch.object(workflow, "_recover_validation", side_effect=recover), \
+                patch.object(self, "worker", side_effect=AssertionError("Must not repeat production")), \
+                patch.object(self, "replay", side_effect=AssertionError("Must not repeat recovery replay")), \
+                patch.object(self, "checkout", side_effect=checkout), patch.object(self, "finalize", side_effect=finalize):
+            result = self.execute(completed_frozen=cap)
+            self.assertEqual(self.destination / "recovery/production-worker.zip", result["evidenceArchive"])
+            self.assertEqual("finalize", self.events[-1])
+            self.reset_outputs()
+            self.mutation = "native-exit"
+            with self.assertRaisesRegex(ValueError, "native exit rejected"):
+                self.execute(completed_frozen=cap)
+            self.assertNotIn("finalize", self.events)
+
     def test_native_authority_without_package_retains_the_legacy_full_gates(self):
         cap = SimpleNamespace(envelope=lambda record: None)
         self.execute(completed_frozen=cap)

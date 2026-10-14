@@ -26,12 +26,46 @@ from products.restore import memoized_file_inventory as regular_file_inventory
 from products.signing_isolation import require_no_signing_secret
 from products.sdk_apple_content import _snapshot_apple_tree as snapshot_regular_tree
 from products.sdk_apple_validation_source import capture_apple_validation_sources
-from products.sdk_apple_validation_execution import verify_apple_validation_stage
+from products.sdk_apple_validation_execution import verify_apple_validation_stage, replay_apple_validation_content
 from products.sdk_apple_validation_context import verify_apple_validation_context
 from products.sdk_apple_device_evidence import _original_directory
 from sdk_ios_original_package import verified_original_ios_package, verified_completed_ios_package
 from sdk_ios_original_binary import verified_original_ios_binary
 from sdk_ios_validation import execute as execute_validation
+from sdk_ios_original_validation import validation_recovery_origin, verified_validation_recovery
+
+
+def _recover_validation(plan, phase, producer, inputs, destination, *, repository_root, token, tooling):
+    """Create new canonical output only after complete historical execution replay."""
+    origin = validation_recovery_origin(phase)
+    if origin is None:
+        return None
+    from products.receipt import write_output_manifest
+    recovery = destination / "recovery"
+    recovery.mkdir()
+    archive = recovery / "production-worker.zip"
+    write_canonical_json(recovery / "origin.json", origin)
+    with verified_validation_recovery(plan, producer, phase, origin, archive, package=inputs,
+            repository_root=repository_root, token=token, download=True) as recovered:
+        canonical = inputs["original"] / "inputs/contract-contract-binary-common/stage/outputs/evidence"
+        content = replay_apple_validation_content(target=phase["target"], sdk_version=inputs["receipt"]["productVersion"],
+            package_stage=inputs["stage"], package_receipt=inputs["receipt"],
+            sdk_compatibility=inputs["sdk"]["directory"] / "sdk-compatibility.json",
+            contract_digest=inputs["sdk"]["compatibility"]["contract"]["digest"],
+            canonical_api=canonical / "canonical-api.json", canonical_coverage=canonical / "canonical-coverage.json",
+            evidence_archive=recovered["evidenceArchive"], context=recovered["context"],
+            repository=repository_root, source_revision=origin["producer"]["commit"], **tooling)
+    # The original failed job remains failed. This stage belongs to the actual
+    # current recovery; there is no invented prior stage or Gradle execution.
+    stage = repository_root / "build/recovered-sdk-validation" / producer["tree"] / phase["target"]
+    stage.mkdir(parents=True, exist_ok=False)
+    write_canonical_json(stage / "outputs/validation/apple-validation.json", content)
+    write_output_manifest(stage, "sdk", "sdk-ios", "validation", phase["target"],
+        inputs["receipt"]["productVersion"], {"apple-validation-content": "outputs/validation"})
+    write_canonical_json(recovery / "replay.json", {"schemaVersion": 1, "producer": producer,
+        "buildKey": phase["buildKey"], "originSha256": product_reuse.sha256_bytes(canonical_json_bytes(origin))})
+    return {"stage": stage, "evidenceArchive": archive, "evidenceSha256": origin["artifactSha256"],
+            "outputInventory": regular_file_inventory(stage), "content": content}
 
 
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
@@ -193,50 +227,63 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
                 contract_value = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
                     contract_receipt, "Original signed Contract binary receipt"))
                 unchanged()
-                result = execute_validation(ready, producer=verified.producer, sdk_version=version,
-                    package_stage={"stage": inputs["stage"], "receiptPath": inputs["receiptPath"],
-                                   "receipt": inputs["receipt"]},
-                    contract_binary_stage={"stage": contract / "stage", "receiptPath": contract_receipt,
-                                           "receipt": contract_value},
-                    sdk_compatibility=inputs["sdk"]["directory"] / "sdk-compatibility.json",
-                    test_application=sources / "codex-agent-runtime-ios/apple/TestApp",
-                    compiler_consumers=sources / "codex-agent-runtime-ios/apple/CompilerEvidence",
-                    repository_root=root, destination=destination / "worker", environ=environ)
-                retained[destination / "worker"] = regular_file_inventory(destination / "worker", allow_empty=True)
-                canonical = contract / "stage/outputs/evidence"
-                api, coverage = canonical / "canonical-api.json", canonical / "canonical-coverage.json"
-                compatibility = inputs["sdk"]["directory"] / "sdk-compatibility.json"
-                module = root / "codex-agent-runtime-ios"
-                execution = module / "build/imported-sdk-validation" / verified.producer["tree"] / target
-                retain(result["evidenceArchive"].parent, destination / "execution")
-                # This is external execution identity, never a reusable output.
-                context = destination / "context"
-                context.mkdir()
-                write_canonical_json(context / "execution-context.json", {
-                    "schemaVersion": 1, "producer": verified.producer, "target": target,
-                    "packageArtifact": {"artifactId": package_artifact_id, "artifactSha256": package_artifact_sha256},
-                    "binaryArtifact": {"artifactId": binary_artifact_id, "artifactSha256": binary_artifact_sha256},
-                    "rustHost": rust_host, "developerDirectory": developer,
-                    "originalWorkingDirectory": str(module),
-                    "originalDeviceWorkDirectory": str(execution / "device-execution"),
-                    "originalTestApplicationDirectory": str(execution / "device-consumer/CodexAgentTestApp"),
-                    "evidenceSha256": result["evidenceSha256"],
-                })
-                execution_context = verify_apple_validation_context(context / "execution-context.json",
-                    producer=verified.producer, target=target,
-                    evidence_archive=destination / "execution" / result["evidenceArchive"].name,
-                    original_working_directory=str(module))
-                retained[context] = regular_file_inventory(context)
-                content = verify_apple_validation_stage(validation_stage=result["stage"], target=target,
-                    sdk_version=version, package_stage=inputs["stage"], package_receipt=inputs["receipt"],
-                    sdk_compatibility=compatibility, contract_digest=inputs["sdk"]["compatibility"]["contract"]["digest"],
-                    canonical_api=api, canonical_coverage=coverage,
-                    evidence_archive=destination / "execution" / result["evidenceArchive"].name,
-                    context=execution_context, repository=root, source_revision=verified.producer["commit"],
-                    tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
-                    java_executable=java_executable, policy_revision=policy_revision,
-                    required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
-                    tooling_keys_directory=tooling_keys_directory)
+                result = None
+                if native_package and validation_recovery_origin(ready) is not None:
+                    result = _recover_validation(product_reuse._validate_plan(Path(plan), root), ready,
+                        verified.producer, inputs, destination, repository_root=root, token=token,
+                        tooling=dict(tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+                            java_executable=java_executable, policy_revision=policy_revision,
+                            required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+                            tooling_keys_directory=tooling_keys_directory))
+                recovered_production = result is not None
+                if recovered_production:
+                    content = result["content"]
+                    retained[destination / "recovery"] = regular_file_inventory(destination / "recovery")
+                else:
+                    result = execute_validation(ready, producer=verified.producer, sdk_version=version,
+                        package_stage={"stage": inputs["stage"], "receiptPath": inputs["receiptPath"],
+                                       "receipt": inputs["receipt"]},
+                        contract_binary_stage={"stage": contract / "stage", "receiptPath": contract_receipt,
+                                               "receipt": contract_value},
+                        sdk_compatibility=inputs["sdk"]["directory"] / "sdk-compatibility.json",
+                        test_application=sources / "codex-agent-runtime-ios/apple/TestApp",
+                        compiler_consumers=sources / "codex-agent-runtime-ios/apple/CompilerEvidence",
+                        repository_root=root, destination=destination / "worker", environ=environ)
+                    retained[destination / "worker"] = regular_file_inventory(destination / "worker", allow_empty=True)
+                    canonical = contract / "stage/outputs/evidence"
+                    api, coverage = canonical / "canonical-api.json", canonical / "canonical-coverage.json"
+                    compatibility = inputs["sdk"]["directory"] / "sdk-compatibility.json"
+                    module = root / "codex-agent-runtime-ios"
+                    execution = module / "build/imported-sdk-validation" / verified.producer["tree"] / target
+                    retain(result["evidenceArchive"].parent, destination / "execution")
+                    # This is external execution identity, never a reusable output.
+                    context = destination / "context"
+                    context.mkdir()
+                    write_canonical_json(context / "execution-context.json", {
+                        "schemaVersion": 1, "producer": verified.producer, "target": target,
+                        "packageArtifact": {"artifactId": package_artifact_id, "artifactSha256": package_artifact_sha256},
+                        "binaryArtifact": {"artifactId": binary_artifact_id, "artifactSha256": binary_artifact_sha256},
+                        "rustHost": rust_host, "developerDirectory": developer,
+                        "originalWorkingDirectory": str(module),
+                        "originalDeviceWorkDirectory": str(execution / "device-execution"),
+                        "originalTestApplicationDirectory": str(execution / "device-consumer/CodexAgentTestApp"),
+                        "evidenceSha256": result["evidenceSha256"],
+                    })
+                    execution_context = verify_apple_validation_context(context / "execution-context.json",
+                        producer=verified.producer, target=target,
+                        evidence_archive=destination / "execution" / result["evidenceArchive"].name,
+                        original_working_directory=str(module))
+                    retained[context] = regular_file_inventory(context)
+                    content = verify_apple_validation_stage(validation_stage=result["stage"], target=target,
+                        sdk_version=version, package_stage=inputs["stage"], package_receipt=inputs["receipt"],
+                        sdk_compatibility=compatibility, contract_digest=inputs["sdk"]["compatibility"]["contract"]["digest"],
+                        canonical_api=api, canonical_coverage=coverage,
+                        evidence_archive=destination / "execution" / result["evidenceArchive"].name,
+                        context=execution_context, repository=root, source_revision=verified.producer["commit"],
+                        tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+                        java_executable=java_executable, policy_revision=policy_revision,
+                        required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+                        tooling_keys_directory=tooling_keys_directory)
                 retained_unchanged()
         finally:
             unchanged()
@@ -254,7 +301,8 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
     shard = product_reuse.finalize_phase_object(stage_root=result["stage"], phase_plan=ready,
         producer=verified.producer, product_version=version, trust_domain=trust,
         destination=destination / "shard")
-    return {**result, "evidenceArchive": destination / "execution" / result["evidenceArchive"].name,
+    return {**result, "evidenceArchive": (result["evidenceArchive"] if recovered_production else
+            destination / "execution" / result["evidenceArchive"].name),
             "content": content, "shard": shard}
 
 

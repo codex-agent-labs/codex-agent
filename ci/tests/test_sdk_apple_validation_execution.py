@@ -206,6 +206,29 @@ class AppleValidationStageTest(unittest.TestCase):
         self.assertFalse(extracted[0].exists())
         self.assertEqual(before, regular_file_inventory(self.root))
 
+    def test_recovery_content_requires_full_replay_and_exit_guards_without_creating_a_stage(self):
+        import shutil
+        shutil.rmtree(self.validation)
+        arguments = {name: value for name, value in self.arguments.items() if name != "validation_stage"}
+        before = regular_file_inventory(self.root)
+        with patch.object(gate, "verify_apple_validation_execution") as execute:
+            self.assertEqual(self.content, gate.replay_apple_validation_content(**arguments))
+        execute.assert_called_once()
+        self.assertFalse(self.validation.exists())
+        self.assertEqual(before, regular_file_inventory(self.root))
+        with patch.object(gate, "verify_apple_validation_execution", side_effect=ValueError("full gate rejected")), \
+                patch.object(gate, "apple_validation_content") as projection, \
+                self.assertRaisesRegex(ValueError, "full gate rejected"):
+            gate.replay_apple_validation_content(**arguments)
+        projection.assert_not_called()
+        with patch.object(gate, "verify_apple_validation_execution",
+                side_effect=lambda **_: self.arguments["canonical_api"].write_bytes(b"changed")), \
+                self.assertRaises(ValueError):
+            gate.replay_apple_validation_content(**arguments)
+        self.assertFalse(self.validation.exists())
+        with self.assertRaises(TypeError):
+            gate.verify_apple_validation_stage(validation_stage=None, **arguments)
+
     def test_second_target_and_exact_stage_content_comparison(self):
         target = "ios-simulator-arm64"
         content = {**self.content, "target": target}

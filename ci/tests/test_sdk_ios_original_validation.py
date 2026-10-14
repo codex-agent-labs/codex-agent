@@ -312,6 +312,71 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
                     self.assertIn("replay", self.events)
                 self.assertEqual("native-exit", self.events[-1])
 
+    def test_recovered_original_and_retained_readers_preserve_both_producers_and_replay(self):
+        original = self.template / "original"
+        shutil.rmtree(original / "originals")
+        compact = original / "originals/completed"
+        compact.mkdir(parents=True)
+        (compact / "package-receipt.json").write_bytes(canonical_json_bytes(self.package_receipt))
+        (compact / "completed-package.json").write_bytes(b"fixture native controls")
+        for name in ("execution", "context", "worker"):
+            shutil.rmtree(original / name)
+        origin = {"fixture": "historical origin, never authority", "producer": self.fixture.producer}
+        write_canonical_json(original / "recovery/origin.json", origin)
+        (original / "recovery/production-worker.zip").write_bytes(b"retained whole original")
+        write_canonical_json(original / "recovery/replay.json", {"schemaVersion": 1, "producer": self.producer,
+            "buildKey": self.receipt["buildKey"], "originSha256": sha256_bytes(canonical_json_bytes(origin))})
+        cap = object()
+        @contextmanager
+        def native_inputs(plan, path, **kwargs):
+            self.assertIs(cap, kwargs["completed_frozen"])
+            yield {"stage": self.root / "package-stage", "receipt": self.package_receipt,
+                "receiptBytes": canonical_json_bytes(self.package_receipt), "original": self.fixture.upload / "original",
+                "completedCapture": kwargs["retained"],
+                "sdk": {"directory": self.root / "sdk-inputs", "compatibility": {"contract": {"digest": "sha256:" + "4" * 64}}}}
+        @contextmanager
+        def recovery(plan, consumer, phase, selected_origin, archive, **kwargs):
+            self.assertEqual(self.producer, consumer)
+            self.assertEqual(self.phase, phase)
+            self.assertEqual(origin, selected_origin)
+            self.assertEqual(b"retained whole original", archive.read_bytes())
+            self.assertNotIn("download", kwargs)
+            self.events.append("origin-enter")
+            yield {"producer": self.fixture.producer, "context": self.execution_context,
+                "evidenceArchive": self.root / "private-historical-evidence.zip"}
+            self.events.append("origin-exit")
+            if self.mutation == "origin-exit":
+                raise ValueError("historical origin exit rejected")
+        def replay(**kwargs):
+            self.assertEqual(self.fixture.producer["commit"], kwargs["source_revision"])
+            self.assertEqual(self.root / "private-historical-evidence.zip", kwargs["evidence_archive"])
+            self.assertEqual(self.execution_context, kwargs["context"])
+            self.events.append("full-replay")
+            if self.mutation == "replay":
+                raise ValueError("full recovered replay rejected")
+        self.replay = replay
+        with patch.object(workflow, "verified_completed_ios_package", side_effect=native_inputs), \
+                patch.object(workflow, "verified_validation_recovery", side_effect=recovery):
+            for retained in (False, True):
+                if retained:
+                    self.retained_template()
+                self.events.clear()
+                with self.context(retained=retained, completed_frozen=cap) as value:
+                    self.assertEqual(self.producer, value["receipt"]["producer"])
+                self.assertEqual(["origin-enter", "plan", "full-replay", "origin-exit"],
+                    [event for event in self.events if event != "capture"])
+                for mutation in ("replay", "origin-exit"):
+                    self.mutation = mutation
+                    with self.assertRaisesRegex(ValueError, "rejected"), self.context(retained=retained, completed_frozen=cap):
+                        pass
+                self.mutation = None
+        write_canonical_json(original / "recovery/replay.json", {"producer": self.fixture.producer})
+        with patch.object(workflow, "verified_completed_ios_package", side_effect=native_inputs), \
+                patch.object(workflow, "verified_validation_recovery") as gate, \
+                self.assertRaisesRegex(ValueError, "actual verification producer"), self.context(completed_frozen=cap):
+            pass
+        gate.assert_not_called()
+
     def test_real_restore_context_original_pairing_and_mixed_producer_lifetimes(self):
         before = self.receipt_path.read_bytes()
         with self.context() as value:

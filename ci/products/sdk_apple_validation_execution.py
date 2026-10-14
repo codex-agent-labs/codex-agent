@@ -27,8 +27,22 @@ APPLE_VALIDATION_EVIDENCE_ROOTS = (
 )
 
 
-def verify_apple_validation_stage(
-    *, validation_stage: Path, target: str, sdk_version: str, package_stage: Path,
+def verify_apple_validation_stage(*, validation_stage: Path, **arguments) -> dict:
+    """Compare an existing canonical stage with complete independently bound replay."""
+    return _replay_validation_content(validation_stage=Path(validation_stage), **arguments)
+
+
+def replay_apple_validation_content(**arguments) -> dict:
+    """Derive ordinary content from full replay when no old stage was retained.
+
+    This creates no files, receipt or admission capability. Original provenance
+    and a new successful recovery producer remain the caller's responsibility.
+    """
+    return _replay_validation_content(validation_stage=None, **arguments)
+
+
+def _replay_validation_content(
+    *, validation_stage: Path | None, target: str, sdk_version: str, package_stage: Path,
     package_receipt: dict, sdk_compatibility: Path, contract_digest: str,
     canonical_api: Path, canonical_coverage: Path, evidence_archive: Path, context: dict,
     repository: Path, source_revision: str, tooling_evidence: Path, tooling_public_key: Path,
@@ -53,8 +67,9 @@ def verify_apple_validation_stage(
     if tuple(receipt[name] for name in ("product", "component", "phase", "target", "productVersion")) != (
             "sdk", "sdk-ios", "package", "ios", sdk_version):
         raise ValueError("Apple validation requires the exact original iOS package receipt")
-    validation_stage, package_stage, evidence_archive = map(Path, (validation_stage, package_stage, evidence_archive))
-    directories = {path: regular_file_inventory(path) for path in (validation_stage, package_stage)}
+    package_stage, evidence_archive = map(Path, (package_stage, evidence_archive))
+    stages = (package_stage,) if validation_stage is None else (validation_stage, package_stage)
+    directories = {path: regular_file_inventory(path) for path in stages}
     files = {Path(path): read_regular_file_bytes(Path(path), max_bytes=16 * 1024 * 1024,
                                                 reject_symlink_parents=True)
              for path in (sdk_compatibility, canonical_api, canonical_coverage)}
@@ -72,11 +87,12 @@ def verify_apple_validation_stage(
         package = verify_output_manifest_identity(package_stage, "sdk", "sdk-ios", "package", "ios", sdk_version)
         if package["outputs"] != receipt["outputs"]:
             raise ValueError("Apple validation package manifest differs from its original receipt")
-        manifest = verify_output_manifest_identity(validation_stage, "sdk", "sdk-ios", "validation", target, sdk_version)
         content_path = "outputs/validation/apple-validation.json"
-        if (len(manifest["outputs"]) != 1 or manifest["outputs"][0]["kind"] != "apple-validation-content"
-                or manifest["outputs"][0]["relativePath"] != content_path):
-            raise ValueError("Apple validation stage must contain only its canonical content output")
+        if validation_stage is not None:
+            manifest = verify_output_manifest_identity(validation_stage, "sdk", "sdk-ios", "validation", target, sdk_version)
+            if (len(manifest["outputs"]) != 1 or manifest["outputs"][0]["kind"] != "apple-validation-content"
+                    or manifest["outputs"][0]["relativePath"] != content_path):
+                raise ValueError("Apple validation stage must contain only its canonical content output")
         with verified_apple_validation_archive(evidence_archive,
                 expected_sha256=original_context["evidenceSha256"],
                 expected_roots=APPLE_VALIDATION_EVIDENCE_ROOTS) as evidence:
@@ -99,8 +115,9 @@ def verify_apple_validation_stage(
                 binding_receipts={language: load_json_bytes(read_regular_file_bytes(
                     evidence / f"reports/{language}-parity.json", max_bytes=16 * 1024 * 1024,
                     reject_symlink_parents=True)) for language in ("swift", "objective-c")})
-            if read_regular_file_bytes(validation_stage / content_path, max_bytes=16 * 1024 * 1024,
-                                       reject_symlink_parents=True) != canonical_json_bytes(content):
+            if validation_stage is not None and read_regular_file_bytes(
+                    validation_stage / content_path, max_bytes=16 * 1024 * 1024,
+                    reject_symlink_parents=True) != canonical_json_bytes(content):
                 raise ValueError("Apple validation staged content differs from complete evidence replay")
     finally:
         unchanged()
