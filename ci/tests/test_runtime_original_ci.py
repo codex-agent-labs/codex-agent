@@ -227,6 +227,33 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                     trusted_workflow_sha=self.pin, token='not-a-real-token')
                 self.assertGreater(http.call_count, before)
 
+    def test_original_source_and_jobs_overlap_and_either_failure_rejects(self):
+        from threading import Barrier
+        for failure in (None, 'run', 'commit', 'jobs'):
+            entered = Barrier(2, timeout=5)
+            original = self.api()
+            def http(url, token):
+                kind = ('jobs' if '/jobs?' in url else
+                        'commit' if '/git/commits/' in url else 'run')
+                if kind in ('run', 'jobs'):
+                    entered.wait()
+                if kind == failure:
+                    raise ValueError(f'{kind} observation failed')
+                return original(url, token)
+            with self.subTest(failure=failure), mock.patch('reuse.api_request', side_effect=http):
+                def observe():
+                    return adapter._observe_ci_producer_jobs({'binary': self.producer},
+                        jobs_by_phase={'binary': self.jobs[0]['name']},
+                        trusted_workflow_sha=self.pin, token='not-a-real-token')
+                if failure is None:
+                    result = observe()[0]
+                    self.assertEqual(self.run, result['run'])
+                    self.assertEqual(self.jobs, result['jobs'])
+                    self.assertEqual(self.producer['commit'], result['testedCommit']['sha'])
+                else:
+                    with self.assertRaisesRegex(ValueError, f'{failure} observation failed'):
+                        observe()
+
     def test_independent_originals_still_overlap_and_failed_reads_release_their_guard(self):
         from threading import Barrier
         from products.restore import bounded_verify
@@ -260,7 +287,10 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             def result(self, timeout=None):
                 waiting.wait()
                 return super().result(timeout)
-        def failed_read(*_):
+        original = self.api()
+        def failed_read(url, token):
+            if '/jobs?' in url:
+                return original(url, token)
             waiting.wait()  # All three siblings have joined this one read.
             raise OSError('slow original read failed')
         def observe(_):
@@ -275,7 +305,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             with mock.patch.object(adapter, 'Future', ObservedFuture), \
                     mock.patch('reuse.api_request', side_effect=failed_read) as reads:
                 self.assertEqual(['slow original read failed'] * 4, bounded_verify(observe, range(4)))
-                self.assertEqual(1, reads.call_count)
+                self.assertEqual(2, reads.call_count)
+                self.assertEqual(1, sum('/jobs?' in call.args[0] for call in reads.call_args_list))
             with mock.patch('reuse.api_request', side_effect=self.api()):
                 value = adapter._observe_ci_producer_jobs({'binary': self.producer},
                     jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,

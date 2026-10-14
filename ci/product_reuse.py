@@ -759,13 +759,19 @@ def _observe_ci_producer_jobs(
         url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"
         observation_key = (token, canonical_json_bytes(producer))
         def fetch():
+            from products.restore import bounded_verify
             count('provenanceObservationsFetched')
-            run = _original_ci_run(producer, token)
-            commit = _observe_tested_commit(
-                run, api="https://api.github.com", repository=repository, token=token,
-                expected_commit=producer["commit"], expected_tree=producer["tree"],
-                pull_request=producer["pullRequest"], allow_dispatch=allow_protected_dispatch)
-            jobs = paginated_items(f"{url}/jobs", "jobs", token)
+            def source():
+                run = _original_ci_run(producer, token)
+                commit = _observe_tested_commit(
+                    run, api="https://api.github.com", repository=repository, token=token,
+                    expected_commit=producer["commit"], expected_tree=producer["tree"],
+                    pull_request=producer["pullRequest"], allow_dispatch=allow_protected_dispatch)
+                return run, commit
+            # Both endpoints are fixed by the validated producer. Join every
+            # fresh read before checking the caller's exact workflow/job pins.
+            (run, commit), jobs = bounded_verify(lambda read: read(), (
+                source, lambda: paginated_items(f"{url}/jobs", "jobs", token)))
             return {"run": run, "testedCommit": commit, "jobs": jobs}
         observation = _historical_ci_observation(observations, observation_key,
             (str(run_id), str(attempt)), fetch)
