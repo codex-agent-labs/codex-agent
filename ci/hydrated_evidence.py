@@ -77,14 +77,15 @@ def hosted(mode, references, directory, *, selected_paths=None):
     hosted_records(mode, records, directory)
 
 
-def hosted_records(mode, records, directory):
+def hosted_records(mode, records, directory, *, already_compressed=False):
     """Cache exact body identities already selected by the authenticated caller."""
     backend = os.environ.get("CODEX_AGENT_HOSTED_CACHE_BACKEND")
     if backend is None:
         return
     from products.inventory import write_canonical_json
     manifest = Path(directory) / ("cache-" + mode + "-manifest.json")
-    write_canonical_json(manifest, [{"sha256": row["sha256"], "bytes": row["bytes"]} for row in records])
+    write_canonical_json(manifest, [{"sha256": row["sha256"], "bytes": row["bytes"],
+        **({"gzipLevel": 0} if already_compressed else {})} for row in records])
     subprocess.run([os.environ["CODEX_AGENT_CACHE_NODE"], backend], check=True,
         env={**os.environ, "INPUT_MODE": mode, "INPUT_ROOT": str(root()),
              "INPUT_MANIFEST": str(manifest), "INPUT_REPORT": str(Path(directory) / ("cache-" + mode + ".json"))})

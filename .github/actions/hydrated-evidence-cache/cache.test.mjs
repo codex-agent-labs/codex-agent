@@ -3,7 +3,7 @@ import {test, mock} from 'node:test';
 import {createHash} from 'node:crypto';
 import {Readable, Writable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
-import {createGzip, createGunzip, gzipSync} from 'node:zlib';
+import {createGzip, createGunzip, gzipSync, gunzipSync} from 'node:zlib';
 import {verify, main, cacheResponse} from './cache.mjs';
 import {mkdtemp, mkdir, writeFile, readFile, rm, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -91,6 +91,72 @@ test('save hits verify every byte without a gzip file or upload; corrupt hits fa
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('compressed-body hint skips compression without changing keys, decoding or full-byte verification', async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'hydrated-compression-')));
+  const previous = {...process.env};
+  try {
+    const body = Buffer.alloc(128 * 1024, 'a');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const row = {sha256: `sha256:${digest}`, bytes: body.length};
+    const file = join(directory, 'blobs', digest.slice(0, 2), digest);
+    const manifest = join(directory, 'manifest.json'), report = join(directory, 'report.json');
+    await mkdir(join(directory, 'blobs', digest.slice(0, 2)), {recursive: true});
+    Object.assign(process.env, {INPUT_ROOT: directory, INPUT_MANIFEST: manifest, INPUT_REPORT: report});
+    const identity = {key: `codex-hydrated-raw-v1-${digest}`, version: createHash('sha256')
+      .update('codex-hydrated-evidence-raw-gzip-v1').digest('hex')};
+    for (const hint of [{}, {gzipLevel: 0}]) {
+      await writeFile(file, body);
+      await writeFile(manifest, JSON.stringify([{...row, ...hint}]));
+      process.env.INPUT_MODE = 'save';
+      let uploaded;
+      const client = {
+        GetCacheEntryDownloadURL: async (request) => {
+          assert.deepEqual(request, {...identity, restoreKeys: []});
+          return {ok: false};
+        },
+        CreateCacheEntry: async (request) => {
+          assert.deepEqual(request, identity);
+          return {ok: true, signedUploadUrl: 'https://example.invalid/upload'};
+        },
+        FinalizeCacheEntryUpload: async (request) => {
+          assert.deepEqual(request, {...identity, sizeBytes: String(uploaded.length)});
+          return {ok: true};
+        }
+      };
+      await main(client, async (_id, path) => { uploaded = await readFile(path); });
+      assert.deepEqual(gunzipSync(uploaded), body);
+      assert.ok(hint.gzipLevel === 0 ? uploaded.length > body.length : uploaded.length < 1000);
+      assert.equal(JSON.parse(await readFile(report)).saved, 1);
+      await rm(report);
+      await writeFile(file, Buffer.alloc(body.length));
+      await assert.rejects(main(client), /identity mismatch/);
+      await rm(file);
+      // Legacy callers decode either transport without needing the hint.
+      await writeFile(manifest, JSON.stringify([row]));
+      process.env.INPUT_MODE = 'restore';
+      mock.method(globalThis, 'fetch', async () => new Response(uploaded));
+      await main({GetCacheEntryDownloadURL: async (request) => {
+        assert.deepEqual(request, {...identity, restoreKeys: []});
+        return {ok: true, matchedKey: identity.key, signedDownloadUrl: 'https://example.invalid/body'};
+      }});
+      assert.deepEqual(await readFile(file), body);
+      assert.equal(JSON.parse(await readFile(report)).hits, 1);
+      await rm(report);
+      mock.restoreAll();
+    }
+    for (const invalid of [-1, 1, null, false, '0', {}]) {
+      await writeFile(manifest, JSON.stringify([{...row, gzipLevel: invalid}]));
+      await assert.rejects(main({GetCacheEntryDownloadURL: async () => assert.fail('Invalid hint reached service')}),
+        /Invalid cache compression hint/);
+    }
+  } finally {
+    mock.restoreAll();
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
     Object.assign(process.env, previous);
     await rm(directory, {recursive: true, force: true});

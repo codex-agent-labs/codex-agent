@@ -1022,11 +1022,11 @@ class CompletedFrozenReuse:
                 trusted_workflow_sha=trusted_workflow_sha, token=token)
             return
         if record["product"] == "sdk":
+            from completed_sdk_reuse import IOS_PACKAGE, original_worker_member
             limits = {}
             extension = self.sdk_extension()
             if extension is not None and products._identity(record) in _phase_records(
                     extension["spec"]["completedPhases"], "Incremental SDK phases"):
-                from completed_sdk_reuse import IOS_PACKAGE, original_worker_member
                 artifact, original, _ = self.observe_extended_sdk(record, producer=producer, token=token)
                 if original_worker_member(extension["spec"]):
                     artifact = original
@@ -1051,7 +1051,8 @@ class CompletedFrozenReuse:
                         if stream is not None:
                             count("sdkObjectOriginalRangeBytes", stream.transferred)
                     hydrated_evidence.retain(member, destination)
-                    hydrated_evidence.hosted_records("save", [member], cache_controls)
+                    hydrated_evidence.hosted_records("save", [member], cache_controls,
+                        already_compressed=products._identity(record) == IOS_PACKAGE)
             return
         body = load_canonical_json_bytes(next(raw for receipt, raw in self._bodies
                                               if receipt == record["receiptSha256"]))

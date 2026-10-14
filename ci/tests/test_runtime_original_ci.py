@@ -103,6 +103,34 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                     if call.args[0].endswith('/actions/runs/71/attempts/2')]
                 self.assertEqual(4 if current or status != 'completed' else 1, len(original_reads))
 
+    def test_reference_sources_reuse_completed_run_lookup_but_refresh_each_artifact(self):
+        plan = {'repository': self.producer['repository'], 'event': self.producer['event']}
+        consumer = {**self.producer, 'runId': 100}
+        for current, status in ((None, 'completed'), (('71', '2'), 'completed'), (None, 'in_progress')):
+            with self.subTest(current=current, status=status), \
+                    mock.patch('reuse.api_request', side_effect=self.api(run={**self.run, 'status': status})) as http:
+                with adapter._ci_observation_batch(current):
+                    for phase in fixture.PHASES:
+                        source = {'kind': 'phase', 'receipt': fixture.load_canonical_json_bytes(self.receipts[phase].read_bytes()),
+                                  'artifactId': self.artifacts[phase]['id'], 'artifactSha256': self.artifacts[phase]['digest']}
+                        result = adapter._authenticate_runtime_original_reference_source(plan, consumer, source,
+                            trusted_workflow_sha=self.pin, token='not-a-real-token')
+                        self.assertEqual('.github/workflows/ci.yml', result[2][0]['run']['path'])
+                        result[2][0]['run']['path'] = 'caller mutation must remain private'
+                    run_reads = [call for call in http.call_args_list
+                                 if call.args[0].endswith('/actions/runs/71/attempts/2')]
+                    self.assertEqual(8 if current or status != 'completed' else 2, len(run_reads))
+                    artifact_reads = [call for call in http.call_args_list if '/actions/artifacts/' in call.args[0]]
+                    self.assertEqual(4, len(artifact_reads))
+                    with self.assertRaisesRegex(ValueError, 'caller-bound transport identity'):
+                        adapter._authenticate_runtime_original_reference_source(plan, consumer,
+                            {**source, 'artifactSha256': 'sha256:' + '0' * 64},
+                            trusted_workflow_sha=self.pin, token='not-a-real-token')
+                before = http.call_count
+                adapter._authenticate_runtime_original_reference_source(plan, consumer, source,
+                    trusted_workflow_sha=self.pin, token='not-a-real-token')
+                self.assertGreater(http.call_count, before)
+
     def test_independent_originals_still_overlap_and_failed_reads_release_their_guard(self):
         from threading import Barrier
         from products.restore import bounded_verify

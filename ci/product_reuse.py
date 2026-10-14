@@ -677,6 +677,8 @@ def _historical_ci_observation(observations, key, attempt, fetch):
                 pending.pop(key)
                 future.set_result(None)
             else:
+                # Reference-source workflow selection uses this same completed observation.
+                observations[key] = observation
                 future.set_result(observation)
         return copy.deepcopy(observation)
     observation = future.result()

@@ -62,6 +62,7 @@ const unique = new Map();
 for (const row of records) {
   if (!/^sha256:[0-9a-f]{64}$/.test(row.sha256) || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > 8 * 1024 ** 3)
     throw Error('Invalid cache content identity');
+  if (row.gzipLevel !== undefined && row.gzipLevel !== 0) throw Error('Invalid cache compression hint');
   if (unique.has(row.sha256) && unique.get(row.sha256).bytes !== row.bytes) throw Error('Ambiguous cache identity');
   unique.set(row.sha256, row);
 }
@@ -140,7 +141,8 @@ async function entry(row) {
         else stats.hits++;
         return;
       }
-      await pipeline(createReadStream(file), verify(row), createGzip(), createWriteStream(temporary, {flags: 'wx', mode: 0o600}));
+      // Already compressed package bodies retain the same gzip format and content key.
+      await pipeline(createReadStream(file), verify(row), createGzip({level: row.gzipLevel ?? 6}), createWriteStream(temporary, {flags: 'wx', mode: 0o600}));
       const reservation = await service(() => client.CreateCacheEntry({key, version}));
       if (reservation !== null && typeof reservation?.ok !== 'boolean') throw Error('Malformed cache reservation response');
       if (!reservation?.ok) { stats.skipped++; return; }

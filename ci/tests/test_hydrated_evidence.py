@@ -88,7 +88,8 @@ class HydratedEvidenceTest(unittest.TestCase):
 
     def test_hosted_body_manifest_carries_only_authenticated_hash_and_size(self):
         import json
-        row = {'relativePath': 'shard/object.zip', 'sha256': sha256_bytes(b'object'), 'bytes': 6}
+        row = {'relativePath': 'shard/object.zip', 'sha256': sha256_bytes(b'object'), 'bytes': 6,
+               'gzipLevel': 0}  # A record cannot opt itself into a transport hint.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             with patch.dict(os.environ, {'CODEX_AGENT_HOSTED_CACHE_BACKEND': 'fixture',
@@ -98,6 +99,9 @@ class HydratedEvidenceTest(unittest.TestCase):
                 self.assertEqual([{'sha256': row['sha256'], 'bytes': 6}],
                                  json.loads((root / 'cache-restore-manifest.json').read_text()))
                 self.assertTrue(execute.call_args.kwargs['check'])
+                cache.hosted_records('save', [row], root, already_compressed=True)
+                self.assertEqual([{'sha256': row['sha256'], 'bytes': 6, 'gzipLevel': 0}],
+                                 json.loads((root / 'cache-save-manifest.json').read_text()))
 
     def test_expired_private_projection_rehydrates_but_changed_custody_rejects(self):
         # Local fixture and mocked native envelope authentication, not hosted evidence.

@@ -331,9 +331,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
             self.assertEqual(body, target.read_bytes())
             self.assertEqual([target], list(target.parent.iterdir()))
             import hydrated_evidence
-            with patch.dict(os.environ, {'CODEX_AGENT_HYDRATED_EVIDENCE': str(target.parent / 'cache')}):
+            with patch.dict(os.environ, {'CODEX_AGENT_HYDRATED_EVIDENCE': str(target.parent / 'cache')}), \
+                    patch.object(hydrated_evidence, 'hosted_records', wraps=hydrated_evidence.hosted_records) as hosted:
                 options = dict(plan={}, producer={}, trusted_workflow_sha='a' * 40, token='synthetic')
                 cap.capture_object(phase, target.parent / 'cache-miss.zip', **options)
+                self.assertEqual('save', hosted.call_args.args[0])
+                self.assertEqual({'already_compressed': component == 'sdk-ios'}, hosted.call_args.kwargs)
                 self.assertEqual(2, fetch.call_count)
                 cap.capture_object(phase, target.parent / 'cache-hit.zip', **options)
                 self.assertEqual(body, (target.parent / 'cache-hit.zip').read_bytes())
