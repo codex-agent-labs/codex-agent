@@ -17,6 +17,51 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductResumeWorkflowTest(unittest.TestCase):
+    def test_sdk_reference_routing_carries_only_the_planned_locator_without_provisioning_again(self):
+        from ci.tests.test_product_routing import ProductRoutingTest
+        from products.inventory import canonical_json_bytes
+        fixture = ProductRoutingTest()
+        fixture.setUp()
+        source = dict(artifactId=701, artifactSha256='sha256:' + 'a' * 64,
+                      workflowSha='b' * 40, producer=fixture.producer)
+        plan = workflow_job(self.workflow, 'plan')
+        export = plan.split('      - id: retained-sdk-inputs\n', 1)[1].split('      - id:', 1)[0]
+        self.assertIn("if: steps.product-reuse.outputs.native_contract_complete == 'true'", export)
+        export_script = textwrap.dedent(export.split("python3 -B - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
+        job = workflow_job(self.workflow, 'sdk-inputs')
+        self.assertIn("SDK_REFERENCE_SOURCE: ${{ inputs.sdkRecoveryOnly && fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'current-runtime' && needs.plan.outputs.retained_sdk_inputs_source || '' }}", job)
+        self.assertIn("restore-reuse-qualification@reuse-authority\n        if: env.SDK_REFERENCE_SOURCE == ''", job)
+        carry = job.split('      - name: Carry the planned original locator', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("if: env.SDK_REFERENCE_SOURCE != ''", carry)
+        carry_script = textwrap.dedent(carry.split("python3 -B - <<'PYTHON'\n", 1)[1].split('\n          PYTHON', 1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original, outputs, envfile = (root / name for name in ('original.json', 'outputs', 'env'))
+            original.write_bytes(canonical_json_bytes(source))
+            environment = dict(CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=str(original),
+                               GITHUB_OUTPUT=str(outputs), GITHUB_ENV=str(envfile), RUNNER_TEMP=str(root))
+            with mock.patch.dict(os.environ, environment):
+                exec(compile(export_script, '<planned-sdk-source>', 'exec'), {})
+                encoded = outputs.read_text().strip().removeprefix('source=')
+                self.assertEqual(source, json.loads(encoded))
+                with mock.patch.dict(os.environ, SDK_REFERENCE_SOURCE=encoded):
+                    exec(compile(carry_script, '<sdk-reference-source>', 'exec'), {})
+                    retained = Path(envfile.read_text().strip().split('=', 1)[1])
+                    self.assertEqual(original.read_bytes(), retained.read_bytes())
+                    with self.assertRaises(FileExistsError):
+                        exec(compile(carry_script, '<sdk-reference-source>', 'exec'), {})
+                outputs.unlink()
+                with mock.patch.dict(os.environ, CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=''):
+                    exec(compile(export_script, '<missing-source>', 'exec'), {})
+                self.assertFalse(outputs.exists())
+                original.write_bytes(canonical_json_bytes({**source, 'artifactId': 0}))
+                with self.assertRaises(ValueError):
+                    exec(compile(export_script, '<invalid-source>', 'exec'), {})
+                self.assertFalse(outputs.exists())
+                with mock.patch.dict(os.environ, SDK_REFERENCE_SOURCE='{}'):
+                    with self.assertRaises(ValueError):
+                        exec(compile(carry_script, '<invalid-carried-source>', 'exec'), {})
+
     def test_completed_prefix_skips_jobs_but_keeps_the_original_worker_and_terminal_gate(self):
         from ci import sdk_native_continuation as routing
         from ci.tests.test_product_routing import ProductRoutingTest
