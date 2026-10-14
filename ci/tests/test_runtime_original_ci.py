@@ -79,6 +79,102 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 token='not-a-real-token')
             self.assertEqual(2 * first, http.call_count)
 
+    def test_parallel_original_reads_share_completed_attempt_but_refresh_current_attempt(self):
+        from threading import Barrier
+        import time
+        from products.restore import bounded_verify
+        for current, status in ((None, 'completed'), (('71', '2'), 'completed'), (None, 'in_progress')):
+            entered = Barrier(4, timeout=5)
+            original = self.api(run={**self.run, 'status': status})
+            def http(url, token):
+                if url.endswith('/actions/runs/71/attempts/2'):
+                    time.sleep(0.05)  # Keep a real in-flight read while its siblings arrive.
+                return original(url, token)
+            def observe(_):
+                entered.wait()
+                return adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token')
+            with self.subTest(current=current, status=status), mock.patch('reuse.api_request', side_effect=http) as reads:
+                with adapter._ci_observation_batch(current):
+                    results = bounded_verify(observe, range(4))
+                self.assertTrue(all(result == results[0] for result in results))
+                original_reads = [call for call in reads.call_args_list
+                    if call.args[0].endswith('/actions/runs/71/attempts/2')]
+                self.assertEqual(4 if current or status != 'completed' else 1, len(original_reads))
+
+    def test_independent_originals_still_overlap_and_failed_reads_release_their_guard(self):
+        from threading import Barrier
+        from products.restore import bounded_verify
+        _, artifact, raw, job = self.second_attempt_phase('binary')
+        original = self.two_attempt_api({'binary': artifact}, [job], {'binary': raw})
+        entered = Barrier(2, timeout=5)
+        def http(url, token):
+            if url.endswith(('/actions/runs/71/attempts/2', '/actions/runs/72/attempts/3')):
+                entered.wait()
+            return original(url, token)
+        producers = [self.producer, {**self.producer, 'runId': 72, 'runAttempt': 3}]
+        def observe(producer):
+            return adapter._observe_ci_producer_jobs({'binary': producer},
+                jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                token='not-a-real-token')
+        with mock.patch('reuse.api_request', side_effect=http), adapter._ci_observation_batch():
+            self.assertEqual(2, len(bounded_verify(observe, producers)))
+        with adapter._ci_observation_batch():
+            with mock.patch('reuse.api_request', side_effect=ValueError('original read failed')):
+                with self.assertRaisesRegex(ValueError, 'original read failed'):
+                    bounded_verify(observe, [self.producer] * 4)
+            with mock.patch('reuse.api_request', side_effect=self.api()):
+                self.assertEqual(self.run, observe(self.producer)[0]['run'])
+
+    def test_concurrent_read_failure_is_fanned_out_and_next_call_retries(self):
+        from concurrent.futures import Future
+        from threading import Barrier
+        from products.restore import bounded_verify
+        waiting = Barrier(4, timeout=5)
+        class ObservedFuture(Future):
+            def result(self, timeout=None):
+                waiting.wait()
+                return super().result(timeout)
+        def failed_read(*_):
+            waiting.wait()  # All three siblings have joined this one read.
+            raise OSError('slow original read failed')
+        def observe(_):
+            try:
+                adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token')
+            except OSError as error:
+                return str(error)
+            self.fail('Failed metadata must not yield an observation')
+        with adapter._ci_observation_batch():
+            with mock.patch.object(adapter, 'Future', ObservedFuture), \
+                    mock.patch('reuse.api_request', side_effect=failed_read) as reads:
+                self.assertEqual(['slow original read failed'] * 4, bounded_verify(observe, range(4)))
+                self.assertEqual(1, reads.call_count)
+            with mock.patch('reuse.api_request', side_effect=self.api()):
+                value = adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token')
+                self.assertEqual(self.run, value[0]['run'])
+
+    def test_shared_metadata_does_not_share_a_callers_workflow_verdict(self):
+        from threading import Barrier
+        from products.restore import bounded_verify
+        entered = Barrier(2, timeout=5)
+        def observe(pin):
+            entered.wait()
+            try:
+                return adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=pin,
+                    token='not-a-real-token')
+            except ValueError:
+                return None
+        with mock.patch('reuse.api_request', side_effect=self.api()), adapter._ci_observation_batch():
+            wrong, correct = bounded_verify(observe, ['0' * 40, self.pin])
+            self.assertIsNone(wrong)
+            self.assertEqual(self.run, correct[0]['run'])
+
     def capture(self, **changes):
         with mock.patch("reuse.api_request", side_effect=self.api(**changes)):
             return adapter.capture_runtime_original_ci_phases(self.receipts, self.output,

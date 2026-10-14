@@ -12,12 +12,13 @@ if __package__:
 import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys, sha256_bytes, snapshot_regular_tree,
+    read_regular_file_bytes, require_exact_keys, sha256_bytes, snapshot_regular_tree,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.registry import PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
+from products.restore import memoized_file_inventory as regular_file_inventory
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_apple_content import _input_inventory
 from products.sdk_apple_package_execution import verify_apple_package_execution_context

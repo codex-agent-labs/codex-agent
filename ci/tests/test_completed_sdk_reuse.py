@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from contextlib import ExitStack
 import tempfile
+import os
 import unittest
 from unittest.mock import patch
 
@@ -323,12 +324,30 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 yield archive, None
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(native.CompletedFrozenReuse, 'check_consumer'), \
-                patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({'id': 999}, original, [])), \
-                patch('runtime_reference_archive.open_reference_archive', opened):
-            target = Path(temporary) / 'object.zip'
+                patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({'id': 999}, original, [])) as provenance, \
+                patch('runtime_reference_archive.open_reference_archive', side_effect=opened) as fetch:
+            target = Path(temporary).resolve() / 'object.zip'
             cap.capture_object(phase, target, plan={}, producer={}, trusted_workflow_sha='a' * 40, token='synthetic')
             self.assertEqual(body, target.read_bytes())
             self.assertEqual([target], list(target.parent.iterdir()))
+            import hydrated_evidence
+            with patch.dict(os.environ, {'CODEX_AGENT_HYDRATED_EVIDENCE': str(target.parent / 'cache')}):
+                options = dict(plan={}, producer={}, trusted_workflow_sha='a' * 40, token='synthetic')
+                cap.capture_object(phase, target.parent / 'cache-miss.zip', **options)
+                self.assertEqual(2, fetch.call_count)
+                cap.capture_object(phase, target.parent / 'cache-hit.zip', **options)
+                self.assertEqual(body, (target.parent / 'cache-hit.zip').read_bytes())
+                self.assertEqual(2, fetch.call_count)
+                self.assertEqual(3, provenance.call_count)
+                provenance.side_effect = ValueError('original source changed')
+                with self.assertRaisesRegex(ValueError, 'original source changed'):
+                    cap.capture_object(phase, target.parent / 'wrong-source.zip', **options)
+                self.assertFalse((target.parent / 'wrong-source.zip').exists())
+                provenance.side_effect = None
+                hydrated_evidence.blob(member).write_bytes(b'x' * len(body))
+                with self.assertRaises(ValueError):
+                    cap.capture_object(phase, target.parent / 'corrupt.zip', **options)
+                self.assertEqual(2, fetch.call_count)  # Corruption cannot fall back and hide a failure.
 
     def test_v3_issuer_verifies_original_package_member_without_embedding_or_downloading_outer_upload(self):
         for component, phase, target in (('sdk-ios', 'package', 'ios'),

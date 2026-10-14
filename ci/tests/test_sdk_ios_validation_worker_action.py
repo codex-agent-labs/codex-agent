@@ -28,7 +28,10 @@ class IosValidationWorkerActionTest(unittest.TestCase):
         return match[0]
 
     def source(self, name):
-        return textwrap.dedent(self.block(name).split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        block = textwrap.dedent(self.block(name))
+        match = re.search(r"(?ms)^ +python3 -B - <<'PY'\n(.*?)^ +PY$", block)
+        self.assertIsNotNone(match, name)
+        return textwrap.dedent(match[1])
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="ios-validation-action-")
@@ -69,6 +72,9 @@ class IosValidationWorkerActionTest(unittest.TestCase):
         positions = [self.action.index(value) for value in ("- id: policy", "- id: captured", "- id: identity",
                     "uses: ./.github/actions/setup-kmp", "- id: execute")]
         self.assertEqual(sorted(positions), positions)
+        execute = self.block("execute")
+        self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", execute)
+        self.assertIn("mode: execute", execute)
         captured = self.block("captured")
         for value in ("product: sdk", "sdk-family: ios-validation",
                       "sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}",

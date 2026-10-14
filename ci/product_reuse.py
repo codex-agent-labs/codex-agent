@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext, contextmanager
+from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from threading import Lock
 from typing import Any, Mapping
 import urllib.error
 import zipfile
@@ -627,7 +629,7 @@ _CI_OBSERVATIONS = ContextVar("original_ci_observation_batch", default=None)
 @contextmanager
 def _ci_observation_batch(current_attempt=None):
     """One explicit multi-source acquisition; never the wider byte-cache lifetime."""
-    token = _CI_OBSERVATIONS.set({"currentAttempt": current_attempt})
+    token = _CI_OBSERVATIONS.set({"currentAttempt": current_attempt, "observationGuards": (Lock(), {})})
     try:
         yield
     finally:
@@ -645,6 +647,43 @@ def _fresh_ci_observations(operation):
         with _ci_observation_batch(tuple(str(value) for value in current)):
             return operation(*args, **kwargs)
     return observed
+
+
+def _historical_ci_observation(observations, key, attempt, fetch):
+    """Share one in-flight metadata read, never a caller's admission verdict."""
+    import copy
+    guards = observations.get("observationGuards")
+    if guards is None or attempt == observations.get("currentAttempt"):
+        return fetch()
+    mutex, pending = guards
+    with mutex:
+        future = pending.get(key)
+        leader = future is None
+        if leader and len(pending) < 64:
+            future = pending[key] = Future()
+    if future is None:
+        return fetch()
+    if leader:
+        try:
+            observation = fetch()
+        except BaseException as error:
+            with mutex:
+                pending.pop(key)
+                future.set_exception(error)
+            raise
+        # Live historical attempts must still be freshly observed by each caller.
+        with mutex:
+            if observation["run"].get("status") != "completed":
+                pending.pop(key)
+                future.set_result(None)
+            else:
+                future.set_result(observation)
+        return copy.deepcopy(observation)
+    observation = future.result()
+    if observation is None:
+        return fetch()
+    count('provenanceObservationsReused')
+    return copy.deepcopy(observation)
 
 
 def _observe_ci_producer_jobs(
@@ -698,7 +737,6 @@ def _observe_ci_producer_jobs(
     # One fresh observation per completed historical attempt in this private
     # operation. Current runs remain live; every caller rechecks its own pins,
     # producer, exact successful jobs and (separately) fresh upload metadata.
-    import copy
     observations = _CI_OBSERVATIONS.get()
     if observations is None:
         observations = {}
@@ -707,9 +745,18 @@ def _observe_ci_producer_jobs(
         producer = original["producer"]
         url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"
         observation_key = (token, canonical_json_bytes(producer))
-        cached = observations.get(observation_key)
-        count('provenanceObservationsReused' if cached is not None else 'provenanceObservationsFetched')
-        run = copy.deepcopy(cached["run"]) if cached is not None else api_json(url, token)
+        def fetch():
+            count('provenanceObservationsFetched')
+            run = api_json(url, token)
+            commit = _observe_tested_commit(
+                run, api="https://api.github.com", repository=repository, token=token,
+                expected_commit=producer["commit"], expected_tree=producer["tree"],
+                pull_request=producer["pullRequest"], allow_dispatch=allow_protected_dispatch)
+            jobs = paginated_items(f"{url}/jobs", "jobs", token)
+            return {"run": run, "testedCommit": commit, "jobs": jobs}
+        observation = _historical_ci_observation(observations, observation_key,
+            (str(run_id), str(attempt)), fetch)
+        run, commit, jobs = (observation[field] for field in ("run", "testedCommit", "jobs"))
         # A completed original uploader, checked below, is authoritative; the
         # enclosing run status can briefly regress while new jobs are queued.
         if (require_integer(run.get("id"), "Contract original CI run ID", 1) != run_id
@@ -725,11 +772,6 @@ def _observe_ci_producer_jobs(
         for phase in original["phases"]:
             workflow, sha = workflows[phase]
             _require_ci_workflow_reference(run, workflow, sha)
-        commit = copy.deepcopy(cached["testedCommit"]) if cached is not None else _observe_tested_commit(
-            run, api="https://api.github.com", repository=repository, token=token,
-            expected_commit=producer["commit"], expected_tree=producer["tree"],
-            pull_request=producer["pullRequest"], allow_dispatch=allow_protected_dispatch)
-        jobs = copy.deepcopy(cached["jobs"]) if cached is not None else paginated_items(f"{url}/jobs", "jobs", token)
         if any(not isinstance(job, dict) for job in jobs):
             raise ValueError("Contract original CI jobs are malformed")
         names = {(jobs_by_phase[phase], keys.get(phase)) for phase in original["phases"]}
@@ -745,11 +787,7 @@ def _observe_ci_producer_jobs(
                     or job.get("head_sha") != run["head_sha"]
                     or job.get("status") != "completed" or job.get("conclusion") != "success"):
                 raise ValueError("Contract original producer job did not succeed for its exact commit")
-        observation = {"run": run, "testedCommit": commit, "jobs": jobs}
-        if (run.get("status") == "completed" and len(observations) < 64
-                and (str(run_id), str(attempt)) != observations.get("currentAttempt")):
-            observations[observation_key] = copy.deepcopy(observation)
-        evidence.append(observation)
+        evidence.append({"run": run, "testedCommit": commit, "jobs": jobs})
     return evidence
 
 

@@ -21,7 +21,7 @@ from products.inventory import (
     require_sorted_unique_records, sha256_bytes, validate_file_record,
 )
 from products.receipt import validate_phase_receipt
-from runtime_reference_transport import measured
+from runtime_reference_transport import measured, count
 
 
 REPOSITORY = "codex-agent-labs/codex-agent"
@@ -1008,6 +1008,7 @@ class CompletedFrozenReuse:
         if (canonical_json_bytes(locator), sha256_bytes(canonical_json_bytes(receipt))) not in self._originals:
             raise ValueError("Fresh original locator differs from completed native evidence")
 
+    @measured
     def capture_object(self, record, destination, *, plan, producer, trusted_workflow_sha, token):
         """Fetch one consumed object; never hydrate unrelated original-upload members."""
         import product_reuse as products
@@ -1038,8 +1039,19 @@ class CompletedFrozenReuse:
             else:
                 artifact, _, _ = self.observe_sdk(plan=plan, producer=producer, token=token)
                 member = self.sdk_original()["proof"]["member"]
-            with open_reference_archive(artifact, token, **limits) as (archive, _stream):
-                copy_reference_member(archive, member["relativePath"], destination, member)
+            import hydrated_evidence
+            with tempfile.TemporaryDirectory(prefix="completed-sdk-body-cache-") as temporary:
+                cache_controls = Path(temporary).resolve()
+                hydrated_evidence.hosted_records("restore", [member], cache_controls)
+                if hydrated_evidence.copy(member, destination):
+                    count("sdkObjectCacheHitBytes", member["bytes"])
+                else:
+                    with open_reference_archive(artifact, token, **limits) as (archive, stream):
+                        copy_reference_member(archive, member["relativePath"], destination, member)
+                        if stream is not None:
+                            count("sdkObjectOriginalRangeBytes", stream.transferred)
+                    hydrated_evidence.retain(member, destination)
+                    hydrated_evidence.hosted_records("save", [member], cache_controls)
             return
         body = load_canonical_json_bytes(next(raw for receipt, raw in self._bodies
                                               if receipt == record["receiptSha256"]))

@@ -86,6 +86,19 @@ class HydratedEvidenceTest(unittest.TestCase):
                 self.assertEqual(["phase"], [source["kind"] for source in register.call_args.args[1]["sources"]])
                 self.assertEqual(1, len(register.call_args.args[2]))
 
+    def test_hosted_body_manifest_carries_only_authenticated_hash_and_size(self):
+        import json
+        row = {'relativePath': 'shard/object.zip', 'sha256': sha256_bytes(b'object'), 'bytes': 6}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.dict(os.environ, {'CODEX_AGENT_HOSTED_CACHE_BACKEND': 'fixture',
+                    'CODEX_AGENT_CACHE_NODE': 'node', 'CODEX_AGENT_HYDRATED_EVIDENCE': str(root)}), \
+                    patch.object(cache.subprocess, 'run') as execute:
+                cache.hosted_records('restore', [row], root)
+                self.assertEqual([{'sha256': row['sha256'], 'bytes': 6}],
+                                 json.loads((root / 'cache-restore-manifest.json').read_text()))
+                self.assertTrue(execute.call_args.kwargs['check'])
+
     def test_expired_private_projection_rehydrates_but_changed_custody_rejects(self):
         # Local fixture and mocked native envelope authentication, not hosted evidence.
         from ci.tests.test_runtime_original_ci import RuntimeOriginalCiTest, TARGET

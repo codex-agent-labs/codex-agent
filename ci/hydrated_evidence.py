@@ -68,13 +68,21 @@ def hosted(mode, references, directory, *, selected_paths=None):
     backend = os.environ.get("CODEX_AGENT_HOSTED_CACHE_BACKEND")
     if backend is None:
         return
-    from products.inventory import write_canonical_json
     from runtime_reference_transport import validate_original_references
     references = validate_original_references(references)
     sources = {source["relativePath"] for source in references["sources"]}
     records = [row for row in references["references"] if row["source"] in sources
                and row["relativePath"].startswith(row["source"] + "/")
                and (selected_paths is None or row['relativePath'] in selected_paths)]
+    hosted_records(mode, records, directory)
+
+
+def hosted_records(mode, records, directory):
+    """Cache exact body identities already selected by the authenticated caller."""
+    backend = os.environ.get("CODEX_AGENT_HOSTED_CACHE_BACKEND")
+    if backend is None:
+        return
+    from products.inventory import write_canonical_json
     manifest = Path(directory) / ("cache-" + mode + "-manifest.json")
     write_canonical_json(manifest, [{"sha256": row["sha256"], "bytes": row["bytes"]} for row in records])
     subprocess.run([os.environ["CODEX_AGENT_CACHE_NODE"], backend], check=True,

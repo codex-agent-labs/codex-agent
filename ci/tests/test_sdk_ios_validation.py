@@ -13,6 +13,7 @@ import product_reuse
 import sdk_ios_validation
 from products.inventory import load_canonical_json_bytes, regular_file_inventory, sha256_bytes
 from products.receipt import write_output_manifest
+from products.restore import verification_session
 from ci.tests.product_chain_support import write_receipt
 
 validation_properties = sdk_ios_validation.validation_properties
@@ -285,7 +286,7 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
             "environ": {},
         }
         arguments.update(changes)
-        with patch("native_wrappers.host_classifier", return_value="macos-arm64"), \
+        with verification_session(), patch("native_wrappers.host_classifier", return_value="macos-arm64"), \
                 patch.object(product_reuse, "_runtime_worker_environment",
                              return_value=({"SAFE": "fixed environment"}, self.root / "gradlew")), \
                 patch.object(product_reuse, "_runtime_worker_checkout") as checkout, \
@@ -371,6 +372,14 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
                 self.execute()
             self.assertEqual(1, len(self.process_calls))
             self.process_calls.clear()
+
+    def test_unchanged_package_is_hashed_once_inside_worker_invocation(self):
+        from products import restore
+        with patch.object(restore, "_uncached_file_inventory",
+                          wraps=restore._uncached_file_inventory) as scan:
+            self.execute()
+        self.assertEqual(1, sum(Path(call.args[0]) == self.package
+                                for call in scan.call_args_list))
 
     def test_originals_election_and_private_bytecode_are_rechecked_after_execution(self):
         cases = {
