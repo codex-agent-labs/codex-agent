@@ -250,6 +250,7 @@ jobs:
       contract_reconciliation_required: ${{ steps.product-reuse.outputs.contract_reconciliation_required }}
       contract_next_phase: ${{ steps.product-reuse.outputs.contract_next_phase }}
       native_contract_complete: ${{ steps.product-reuse.outputs.native_contract_complete }}
+      retained_sdk_inputs_source: ${{ steps.retained-sdk-inputs.outputs.source }}
       tooling_required: ${{ steps.product-reuse.outputs.tooling_required }}
       tooling_miss: ${{ steps.product-reuse.outputs.tooling_miss }}
       tooling_artifact_id: ${{ steps.product-reuse.outputs.tooling_artifact_id }}
@@ -350,6 +351,22 @@ jobs:
             --tooling-java-executable "$java_executable" \
             --tooling-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --github-output "$GITHUB_OUTPUT" ${completion[@]+"${completion[@]}"}
+      - id: retained-sdk-inputs
+        if: steps.product-reuse.outputs.native_contract_complete == 'true'
+        run: |
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          from ci import sdk_workflow
+          from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes
+          from runtime_reference_transport import validate_sdk_input_source
+          source = os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE')
+          if source:
+              value = validate_sdk_input_source(load_canonical_json_bytes(read_regular_file_bytes(
+                  Path(source), max_bytes=16384, reject_symlink_parents=True)))
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('source=' + canonical_json_bytes(value).decode().strip() + '\n')
+          PY
       - id: product-selection
         env:
           ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}
@@ -2221,6 +2238,7 @@ jobs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
     env:
+      SDK_REFERENCE_SOURCE: ${{ inputs.sdkRecoveryOnly && fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'current-runtime' && needs.plan.outputs.retained_sdk_inputs_source || '' }}
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2229,8 +2247,25 @@ jobs:
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        if: env.SDK_REFERENCE_SOURCE == ''
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Carry the planned original locator for reference-only SDK routing
+        if: env.SDK_REFERENCE_SOURCE != ''
+        run: |
+          python3 -B - <<'PYTHON'
+          import os
+          from pathlib import Path
+          from ci import sdk_workflow
+          from products.inventory import canonical_json_bytes, load_canonical_json_bytes
+          from runtime_reference_transport import validate_sdk_input_source
+          value = validate_sdk_input_source(load_canonical_json_bytes(os.environ['SDK_REFERENCE_SOURCE'].encode() + b'\n'))
+          destination = Path(os.environ['RUNNER_TEMP'], 'planned-sdk-inputs-source.json')
+          with destination.open('xb') as output:
+              output.write(canonical_json_bytes(value))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=' + str(destination) + '\n')
+          PYTHON
       - name: Select installed caller Java for SDK tooling
         if: fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
         run: |
