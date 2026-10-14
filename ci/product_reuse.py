@@ -6425,10 +6425,17 @@ def collect_runtime_workers(
                 if len(candidates) != 1:
                     raise ValueError("Runtime worker upload is missing or ambiguous")
                 candidate = candidates[0]
+                signer_failed = False
+                if sdk_family == "ios-validation":
+                    signer_job = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
+                    signer_jobs = [item for item in original_jobs if item.get("name") == signer_job]
+                    signer_failed = (len(signer_jobs) != 1 or signer_jobs[0].get("conclusion") != "success"
+                        or signer_jobs[0].get("run_id") != original_producer["runId"]
+                        or signer_jobs[0].get("head_sha") != original_observed[0]["run"]["head_sha"])
                 retained = prepared / "rows" / name
                 retained.mkdir(parents=True)
                 archive = retained / "transport.zip"
-                if job.get("conclusion") == "success":
+                if job.get("conclusion") == "success" and not signer_failed:
                     artifact, _ = _download_contract_ci_upload(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token, destination=archive,
@@ -6450,6 +6457,8 @@ def collect_runtime_workers(
                     # The exact remote original is retained in this failed row;
                     # a failed job grants no authority to admit its body bytes.
                     raise ValueError("Runtime worker job did not succeed; original diagnostics retained in source upload")
+                if signer_failed:
+                    raise ValueError("Apple signer job is missing, ambiguous or unsuccessful; original worker retained in source upload")
                 verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                       **_worker_upload_zip_limits(instance))
                 original = retained / "original"
@@ -6482,12 +6491,6 @@ def collect_runtime_workers(
 
                     if sdk_apple_validation_policy is None:
                         raise ValueError("Apple collection requires independent caller admission policy")
-                    signer_job = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
-                    signer_jobs = [item for item in original_jobs if item.get("name") == signer_job]
-                    if (len(signer_jobs) != 1 or signer_jobs[0].get("conclusion") != "success"
-                            or signer_jobs[0].get("run_id") != original_producer["runId"]
-                            or signer_jobs[0].get("head_sha") != original_observed[0]["run"]["head_sha"]):
-                        raise ValueError("Apple signer job is missing, ambiguous or unsuccessful")
                     signer_name = (f"codex-agent-sdk-apple-validation-evidence-{instance.target}-"
                         f"{verified['receiptSha256'].removeprefix('sha256:')}-{original_producer['tree']}-"
                         f"attempt-{original_producer['runAttempt']}")

@@ -62,13 +62,12 @@ def capture_apple_validation_attestation(plan_path, destination, *, target,
         name = (f"codex-agent-sdk-apple-validation-evidence-{target}-"
                 f"{expected_receipt_sha256.removeprefix('sha256:')}-{producer['tree']}-"
                 f"attempt-{producer['runAttempt']}")
-        artifact, raw = products._download_contract_ci_upload(
-            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        products._require_artifact_job_window(observed[0], job, artifact)
         prepared = private / "captured"
         prepared.mkdir()
         archive = prepared / "original-upload.zip"
-        archive.write_bytes(raw)
+        artifact, _ = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token, destination=archive)
+        products._require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                              **products._CATALOG_ZIP_LIMITS)
         original = prepared / "original"

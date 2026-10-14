@@ -52,7 +52,7 @@ runs:
         import os, re, subprocess, sys, tempfile
         from pathlib import Path
         from ci.products.inventory import (
-            load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
+            load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory,
             require_exact_keys, require_integer, require_regular_directory, require_sha256, sha256_bytes,
         )
         from ci.products.signing_isolation import require_no_signing_secret
@@ -72,7 +72,7 @@ runs:
             raise ValueError('Apple preparation requires an exact validation target and tree')
         require_sha256(os.environ['BUILD_KEY'], 'Elected Apple validation build key')
         plan_raw = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
-        if load_canonical_json_bytes(plan_raw)['validationTree'] != tree:
+        if load_json_bytes(plan_raw)['validationTree'] != tree:
             raise ValueError('Preparation upload tree differs from the original plan')
         policy_raw = read_regular_file_bytes(policy_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
         policy = require_exact_keys(load_canonical_json_bytes(policy_raw),

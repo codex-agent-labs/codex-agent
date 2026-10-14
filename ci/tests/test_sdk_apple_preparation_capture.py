@@ -18,6 +18,10 @@ class ApplePreparationCaptureTest(unittest.TestCase):
         self.fixture = fixtures.RuntimeAggregateUploadTest(methodName="runTest")
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
+        opener = self.enterContext(patch("reuse.urllib.request.build_opener"))
+        opener.return_value.open.side_effect = lambda request, timeout: io.BytesIO(self.fixture.raw)
+        self.enterContext(patch.object(capture.products, "download_artifact",
+            side_effect=AssertionError("Apple preparation must stream the archive to disk")))
         self.configure("ios-arm64")
 
     def configure(self, target):

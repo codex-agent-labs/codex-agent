@@ -135,6 +135,27 @@ class AppleSigningPrepareActionTest(unittest.TestCase):
             allocate.assert_not_called()
             process.assert_not_called()
 
+    def test_original_plan_format_is_preserved_but_ambiguous_json_is_rejected(self):
+        raw = ('{\n  "validationTree": "' + TREE + '"\n}\n').encode()
+        self.plan.write_bytes(raw)
+        with patch("subprocess.run", side_effect=self.child):
+            self.execute()
+        self.assertEqual(raw, self.plan.read_bytes())
+        self.output.unlink()
+        for invalid in (
+            ('{"validationTree":"' + TREE + '","validationTree":"' + TREE + '"}').encode(),
+            ('{"validationTree":"' + TREE + '","extra":1.5}').encode(),
+            b'{"validationTree":',
+            b'\xff',
+        ):
+            self.plan.write_bytes(invalid)
+            with self.subTest(raw=invalid), patch("tempfile.mkdtemp") as allocate, \
+                    patch("subprocess.run") as process, self.assertRaises(ValueError):
+                self.execute()
+            allocate.assert_not_called()
+            process.assert_not_called()
+            self.assertFalse(self.output.exists())
+
     def test_capture_or_prepare_failure_never_publishes_preparation_output(self):
         for failure in ("capture", "prepare"):
             self.calls = []

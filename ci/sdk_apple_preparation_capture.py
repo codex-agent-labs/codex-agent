@@ -55,13 +55,12 @@ def capture_apple_signing_preparation(plan_path, destination, *, target, artifac
             jobs_by_phase={"preparation": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = (f"codex-agent-sdk-apple-signing-preparation-{target}-{producer['tree']}-"
                 f"attempt-{producer['runAttempt']}")
-        artifact, raw = products._download_contract_ci_upload(
-            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        products._require_artifact_job_window(observed[0], job, artifact)
         prepared = private / "captured"
         prepared.mkdir()
         archive = prepared / "original-upload.zip"
-        archive.write_bytes(raw)
+        artifact, _ = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token, destination=archive)
+        products._require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                              **products._CATALOG_ZIP_LIMITS)
         original = prepared / "original"

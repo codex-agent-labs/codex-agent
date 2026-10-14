@@ -193,11 +193,41 @@ class AppleWorkerCollectionTest(unittest.TestCase):
             self.assertEqual("failure", collected[TARGETS[0]]["result"])
             self.assertIsNone(collected[TARGETS[0]]["shardDirectory"])
             self.assertNotIn("sdkAppleValidationEvidenceDirectory", collected[TARGETS[0]])
-            original = destination / collected[TARGETS[0]]["originalDirectory"]
-            self.assertEqual(b"", (original / "worker/gradle.log").read_bytes())
+            if case == "failed-job":
+                self.assertIsNone(collected[TARGETS[0]]["originalDirectory"])
+                self.assertIsNotNone(collected[TARGETS[0]]["artifact"])
+            else:
+                original = destination / collected[TARGETS[0]]["originalDirectory"]
+                self.assertEqual(b"", (original / "worker/gradle.log").read_bytes())
             if case == "admission":
                 self.assertTrue((original.parent / "apple-attestation-upload/original/caller.json").is_file())
             self.assertEqual("success", collected[TARGETS[1]]["result"])
+
+    def test_unsuccessful_signer_retains_locator_without_downloading_successful_worker(self):
+        rows = [self.shard(target) for target in TARGETS]
+        ready, uploads = {row[0]: row[1] for row in rows}, {row[0]: row[2] for row in rows}
+        for case in ("missing", "ambiguous", "failed", "cancelled", "wrong-run", "wrong-head"):
+            def mutate(jobs, artifacts):
+                if case == "missing": jobs.pop(0)
+                elif case == "ambiguous": jobs.append(deepcopy(jobs[0]))
+                elif case == "wrong-run": jobs[0]["run_id"] += 1
+                elif case == "wrong-head": jobs[0]["head_sha"] = "0" * 40
+                else: jobs[0]["conclusion"] = "failure" if case == "failed" else "cancelled"
+            destination = self.repository / f"build/no-transfer-{case}"
+            with self.subTest(case=case), self.controls(ready, uploads, mutate=mutate), \
+                    patch.object(adapter, "_download_contract_ci_upload",
+                                 wraps=adapter._download_contract_ci_upload) as download:
+                result = self.collect(destination)
+            collected = {row["target"]: row for row in result["rows"]}
+            failed = collected[TARGETS[0]]
+            self.assertEqual("failure", failed["result"])
+            self.assertIn("Apple signer job", failed["reason"])
+            self.assertIsNotNone(failed["artifact"])
+            self.assertIsNone(failed["originalDirectory"])
+            self.assertIsNone(failed["shardDirectory"])
+            self.assertEqual("success", collected[TARGETS[1]]["result"])
+            self.assertEqual(1, download.call_count)
+            self.assertEqual(collected[TARGETS[1]]["artifact"]["id"], download.call_args.args[0])
 
     def test_wrong_worker_producer_never_reaches_apple_capture_or_admission(self):
         instance, ready, raw = self.shard(TARGETS[0], wrong_producer=True)

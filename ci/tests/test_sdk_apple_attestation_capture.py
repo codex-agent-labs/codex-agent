@@ -24,6 +24,10 @@ EVIDENCE = "sdk-apple-validation-evidence"
 
 class AppleAttestationCaptureTest(unittest.TestCase):
     def setUp(self):
+        opener = self.enterContext(patch("reuse.urllib.request.build_opener"))
+        opener.return_value.open.side_effect = lambda request, timeout: io.BytesIO(self.fixture.raw)
+        self.enterContext(patch.object(capture.products, "download_artifact",
+            side_effect=AssertionError("Apple attestation must stream the archive to disk")))
         self.fixture = transport_fixtures.RuntimeAggregateUploadTest(methodName="runTest")
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
