@@ -325,6 +325,108 @@ class ContractProductResumeTest(unittest.TestCase):
                 self.repository, self.environment, cap, trust)
         self.assertFalse((rejected / 'native-contract-state').exists())
 
+    def test_native_discovery_composes_resume_under_the_same_capability(self):
+        from products.inventory import load_canonical_json_bytes
+        from runtime_reference_transport import validate_original_references
+        cap, _ = self.completed_contract_fixture(incremental=True)
+        discovery = self.scratch / 'composed-discovery'
+        handoff = self.scratch / 'composed-handoff'
+        output = self.scratch / 'composed-output'
+        wave_request = adapter._wave_request
+        def original_location(*args, **kwargs):
+            request = wave_request(*args, **kwargs)
+            if all(instance.product == 'contract' for instance in args[3]):
+                request['artifactRoot'] = str(self.repository / 'build/product-reuse')
+            return request
+        with self.control_seams(), \
+                mock.patch.object(adapter, '_discover_catalogs', return_value=[]), \
+                mock.patch.object(adapter, '_wave_request', side_effect=original_location), \
+                mock.patch.object(adapter, 'verify_object', side_effect=AssertionError('Contract body opened')), \
+                mock.patch.object(adapter, 'capture_product_resume_inputs', side_effect=AssertionError('Plan recaptured')), \
+                mock.patch.object(adapter, 'resume_products', wraps=adapter.resume_products) as resume, \
+                mock.patch('sdk_ios_binary_recovery.capture_completed_ios_binary', return_value=[]):
+            result = adapter.discover(self.plan_path, discovery, output,
+                repository_root=self.repository, environ=self.environment, completed_frozen=cap,
+                native_resume_handoff=handoff, tooling_workflow_sha='c' * 40,
+                tooling_java_executable=Path('/unused-java'))
+            self.assertEqual('native-contract-complete', result['reason'])
+            resume.assert_called_once()
+            self.assertIs(cap, resume.call_args.kwargs['completed_frozen'])
+            self.assertTrue(resume.call_args.kwargs['routing_output'])
+        values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+        self.assertEqual('true', values['native_resume_ready'])
+        self.assertEqual('true', values['native_resume_runtime_workers_required'])
+        self.assertIn('native_resume_routing_decisions', values)
+        self.assertEqual('native-contract-complete', values['product_reuse_reason'])
+        # A native Contract hit cannot bypass missing current SDK tooling.
+        missing_output = self.scratch / 'missing-tooling-output'
+        missing_handoff = self.scratch / 'missing-tooling-handoff'
+        with self.control_seams(), \
+                mock.patch.object(adapter, '_requested', return_value=(adapter.PhaseInstanceId('sdk', 'sdk-ios', 'package', 'ios'),)), \
+                mock.patch.object(adapter, '_discover_catalogs', return_value=[]), \
+                mock.patch.object(adapter, '_wave_request', side_effect=original_location), \
+                mock.patch.object(adapter, '_resume_native_discovery', side_effect=AssertionError('Missing tooling admitted')):
+            missed = adapter.discover(self.plan_path, self.scratch / 'missing-tooling', missing_output,
+                repository_root=self.repository, environ=self.environment, completed_frozen=cap,
+                native_resume_handoff=missing_handoff, tooling_workflow_sha='c' * 40,
+                tooling_java_executable=Path('/unused-java'))
+        self.assertEqual('native-contract-complete', missed['reason'])
+        missing_values = dict(line.split('=', 1) for line in missing_output.read_text().splitlines())
+        self.assertEqual('true', missing_values['tooling_miss'])
+        self.assertEqual('false', missing_values['native_resume_ready'])
+        self.assertFalse(missing_handoff.exists())
+        references = validate_original_references(load_canonical_json_bytes(
+            (handoff / 'runtime-original-references.json').read_bytes()))
+        paths = {row['relativePath'] for row in references['inventory']}
+        self.assertIn('product-resume-inputs/plan/impact-plan.json', paths)
+        self.assertIn('product-resume-state/phase-plans/runtime-jvm-binary-jvm.json', paths)
+        self.assertFalse(any(path.endswith('.zip') for path in paths))
+        ordinary = self.resume(destination=self.scratch / 'ordinary-composed-comparison')
+        self.assertEqual(load_canonical_json(ordinary / 'phase-plans/runtime-jvm-binary-jvm.json'),
+                         load_canonical_json(handoff / 'product-resume-state/phase-plans/runtime-jvm-binary-jvm.json'))
+        # The lightweight forwarding job still authenticates its exact original
+        # upload. This is transport custody, not a saved phase-admission verdict.
+        from ci.tests.test_product_resume_capture import archive
+        from products.inventory import sha256_bytes
+        files = {row['relativePath']: (handoff / row['relativePath']).read_bytes()
+                 for row in regular_file_inventory(handoff)}
+        observed = [{'run': {'head_sha': self.commit}, 'jobs': [{
+            'name': 'product-validation / plan', 'started_at': '2026-10-14T00:00:00Z',
+            'completed_at': '2026-10-14T00:01:00Z'}]}]
+        for case in ('valid', 'bytes', 'plan', 'window', 'origin'):
+            with self.subTest(case=case):
+                members = dict(files)
+                if case == 'plan':
+                    members['product-resume-inputs/plan/impact-plan.json'] = b'{}\n'
+                body = archive(members)
+                artifact = {'id': 772, 'digest': sha256_bytes(body), 'size_in_bytes': len(body),
+                    'name': 'codex-agent-planned-product-resume-' + self.producer['tree'],
+                    'expired': False, 'created_at': '2026-10-14T00:00:30Z',
+                    'archive_download_url': 'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/772/zip',
+                    'workflow_run': {'id': self.producer['runId'], 'head_sha': self.commit}}
+                if case == 'window':
+                    artifact['created_at'] = '2026-10-13T00:00:30Z'
+                if case == 'origin':
+                    artifact['workflow_run']['id'] += 1
+                forwarded = self.scratch / ('forwarded-' + case)
+                with self.control_seams(), \
+                        mock.patch.object(adapter, '_observe_ci_producer_jobs', return_value=observed) as observe, \
+                        mock.patch.object(adapter, 'api_json', return_value=artifact), \
+                        mock.patch.object(adapter, 'download_artifact', return_value=body + (b'x' if case == 'bytes' else b'')), \
+                        mock.patch.object(adapter, 'resume_products', side_effect=AssertionError('Resume repeated')):
+                    def capture():
+                        adapter.capture_planned_native_resume(self.plan_path, forwarded,
+                            artifact_id=772, artifact_sha256=artifact['digest'], trusted_workflow_sha='c' * 40,
+                            token='fixture', repository_root=self.repository, environ=self.environment)
+                    if case == 'valid':
+                        capture()
+                        self.assertEqual(regular_file_inventory(handoff), regular_file_inventory(forwarded))
+                    else:
+                        with self.assertRaises(ValueError):
+                            capture()
+                        self.assertFalse(forwarded.exists())
+                    self.assertEqual({'plan': 'product-validation / plan'}, observe.call_args.kwargs['jobs_by_phase'])
+
     def test_native_contract_consumption_uses_bundle_once_and_reproduces_all_original_objects(self):
         from contextlib import contextmanager
         import io

@@ -9291,6 +9291,88 @@ def _seed_completed_contract_discovery(plan, request, destination, root, environ
     return result
 
 
+def capture_planned_native_resume(plan_path, destination, *, artifact_id, artifact_sha256,
+                                  trusted_workflow_sha, token, repository_root=None, environ=None):
+    """Forward the successful current planner's exact upload; grant no phase authority."""
+    from runtime_reference_transport import validate_original_references
+    root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve(strict=True)
+    destination = _prepare_destination(Path(destination), root)
+    destination.rmdir()
+    original_plan = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True)
+    plan = _validate_plan(plan_path, root)
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] != "pull_request":
+        raise ValueError("Planned native resume requires an authorized PR plan")
+    producer = _consumer(plan, os.environ if environ is None else environ)["producer"]
+    job = "product-validation / plan"
+    observed = _observe_ci_producer_jobs({"plan": producer}, jobs_by_phase={"plan": job},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256,
+        f"codex-agent-planned-product-resume-{producer['tree']}", producer, observed[0]["run"], token,
+        max_bytes=16 * 1024 * 1024)
+    _require_artifact_job_window(observed[0], job, artifact)
+    with tempfile.TemporaryDirectory(prefix="planned-native-resume-") as temporary:
+        private = Path(temporary).resolve()
+        archive = private / "transport.zip"
+        archive.write_bytes(raw)
+        verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+            **{**_CATALOG_ZIP_LIMITS, "max_archive_bytes": 16 * 1024 * 1024,
+               "max_entry_bytes": 16 * 1024 * 1024, "max_total_bytes": 64 * 1024 * 1024})
+        source = private / "source"
+        safe_extract(archive, source)
+        validate_original_references(_canonical_control(source / "runtime-original-references.json",
+                                                        "Planned native resume references"))
+        if (read_regular_file_bytes(source / "product-resume-inputs/plan/impact-plan.json",
+                                    reject_symlink_parents=True) != original_plan
+                or read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                           reject_symlink_parents=True) != original_plan):
+            raise ValueError("Planned native resume changes the exact current plan")
+        publish_regular_tree(source, destination, allow_empty=True)
+
+
+def _resume_native_discovery(plan_path, discovery, handoff, output, *, root, environment,
+                             completed_frozen, tooling, apple_policy, workflow_sha,
+                             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    """Compose existing resume while the independently authenticated inputs remain live."""
+    from reuse_qualification import CompletedFrozenReuse
+    if type(completed_frozen) is not CompletedFrozenReuse or completed_frozen.sdk_extension() is None:
+        raise ValueError("Composed native resume requires concrete incremental completion")
+    if not isinstance(workflow_sha, str) or _OID.fullmatch(workflow_sha) is None:
+        raise ValueError("Composed native resume requires the current publisher")
+    handoff = Path(handoff).absolute()
+    for source in (Path(plan_path).resolve(strict=True), Path(discovery).resolve(strict=True)):
+        if handoff == source or source in handoff.parents or handoff in source.parents:
+            raise ValueError("Composed native resume output overlaps original discovery")
+    handoff = _prepare_destination(handoff, root)
+    handoff.rmdir()
+    original_plan = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True)
+    with tempfile.TemporaryDirectory(prefix="native-discovery-resume-", dir=root) as temporary:
+        private = Path(temporary).resolve()
+        inputs, state = private / "inputs", private / "state"
+        captured_plan = inputs / "plan/impact-plan.json"
+        captured_plan.parent.mkdir(parents=True)
+        captured_plan.write_bytes(original_plan)
+        _publish_discovery_handoff(discovery, inputs / "plan/product-reuse")
+        snapshot_regular_tree(discovery / "native-contract-state", inputs / "state")
+        snapshot_regular_tree(discovery / "native-contract-release", inputs / "release")
+        resume_output = private / "resume-output"
+        resume_products(captured_plan, inputs / "plan/product-reuse", inputs / "state",
+            inputs / "release/contract-input", state, resume_output, repository_root=root, environ=environment,
+            sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple_policy,
+            sdk_original_workflow_sha=workflow_sha, routing_output=True, completed_frozen=completed_frozen,
+            **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+        if read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                   reject_symlink_parents=True) != original_plan:
+            raise ValueError("Current plan changed during composed native resume")
+        _publish_runtime_original_reference_handoff(inputs, state, handoff, completed_frozen=completed_frozen)
+        values = dict(line.split('=', 1) for line in resume_output.read_text().splitlines())
+        forwarded = {'native_resume_' + name: values[name] for name in (
+            'full_reuse', 'target_jobs_required', 'runtime_matrix', 'runtime_workers_required',
+            'supervisor_key', 'routing_decisions')}
+    github_output(output, {**forwarded, "native_resume_ready": True})
+
+
 def discover(
     plan_path: Path, destination: Path, github_output_path: Path, *,
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
@@ -9306,6 +9388,7 @@ def discover(
     tooling_java_executable: Path | None = None,
     tooling_workflow_sha: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
+    native_resume_handoff: Path | None = None,
 ) -> dict[str, Any]:
     automatic_tooling = tooling_java_executable is not None or tooling_workflow_sha is not None
     if automatic_tooling and (tooling_java_executable is None or tooling_workflow_sha is None
@@ -9319,6 +9402,7 @@ def discover(
         "contract_next_phase": "none",
         "contract_reconciliation_required": False,
         "native_contract_complete": False,
+        "native_resume_ready": False,
         "tooling_artifact_id": "",
         "tooling_artifact_sha256": "",
         "tooling_transport_producer": "",
@@ -9475,9 +9559,16 @@ def discover(
                 # versions or evidence; no candidate disappears into a native hit.
                 complete = _seed_completed_contract_discovery(plan, contract_request, destination, root,
                     environment, completed_frozen, trust)
-                return _finish(destination, request, _result(requested, complete=False,
+                result = _finish(destination, request, _result(requested, complete=False,
                     reason="native-contract-complete", reuse=complete), github_output_path,
                     native_contract_complete=True)
+                if native_resume_handoff is not None and (not needs_tooling or sdk_validation_tooling is not None):
+                    _resume_native_discovery(plan_path, destination, native_resume_handoff, github_output_path,
+                        root=root, environment=environment, completed_frozen=completed_frozen,
+                        tooling=sdk_validation_tooling, apple_policy=sdk_apple_validation_policy,
+                        workflow_sha=tooling_workflow_sha,
+                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+                return result
         write_canonical_json(destination / "contract-reuse-request.json", contract_request)
         contract_ready_plans: dict[PhaseInstanceId, dict[str, Any]] = {}
         contract_result = _plan_with_sdk_tooling(
@@ -9616,6 +9707,8 @@ def parser() -> argparse.ArgumentParser:
     discover_command.add_argument("--plan", type=Path, required=True)
     discover_command.add_argument("--destination", type=Path, required=True)
     discover_command.add_argument("--handoff", type=Path)
+    discover_command.add_argument("--native-resume-handoff", type=Path,
+                                  help="Compose native resume with current invocation authority when tooling is ready")
     discover_command.add_argument("--native-runtime-evidence", type=Path, action="append", default=[])
     discover_command.add_argument("--adapter-runtime-evidence", type=Path, action="append", default=[])
     discover_command.add_argument("--github-output", type=Path, required=True)
@@ -9826,6 +9919,8 @@ def main(argv: list[str] | None = None) -> int:
                     keyring=arguments.keyring, keys_directory=arguments.keys_directory)
             elif arguments.command == "discover":
                 discover(arguments.plan, arguments.destination, arguments.github_output,
+                         **({"native_resume_handoff": arguments.native_resume_handoff}
+                            if arguments.native_resume_handoff is not None else {}),
                          native_evidence_roots=tuple(arguments.native_runtime_evidence),
                          aggregate_evidence_roots=tuple(arguments.runtime_aggregate_release_evidence),
                          adapter_evidence_roots=tuple(arguments.adapter_runtime_evidence),

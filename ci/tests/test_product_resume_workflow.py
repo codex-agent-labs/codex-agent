@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ProductResumeWorkflowTest(unittest.TestCase):
     def test_parallel_recovery_checks_run_every_module_and_propagate_any_failure(self):
-        job = workflow_job(self.workflow, 'workflow-lint')
+        job = workflow_job(self.workflow, 'recovery-controls')
         step = job.split('      - name: Verify reviewed recovery controls only\n', 1)[1].split('\n      - ', 1)[0]
         script = textwrap.dedent(step.split('        run: |\n', 1)[1])
         modules = re.findall(r'ci\.tests\.[a-z_]+', script)
@@ -50,6 +50,44 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                 for module in modules:
                     self.assertEqual(['-B', '-m', 'unittest', '-v', module],
                                      (records / module).read_text().splitlines())
+
+    def test_recovery_checks_start_independently_and_gate_the_exact_same_publication(self):
+        checks = workflow_job(self.workflow, 'recovery-controls')
+        self.assertNotRegex(checks, r'(?m)^    needs:')
+        self.assertNotIn('needs.plan.', checks)
+        self.assertIn('resolve-product-publication@reuse-authority', checks)
+        self.assertIn('native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}', checks)
+        self.assertIn('ref: ${{ steps.publication.outputs.source-sha }}', checks)
+        lint = workflow_job(self.workflow, 'workflow-lint')
+        self.assertIn('needs: [plan, recovery-controls]', lint)
+        gate = lint.split('      - name: Require the same protected publication', 1)[1].split('\n      - ', 1)[0]
+        script = textwrap.dedent(gate.split('        run: |\n', 1)[1])
+        good = dict(PLAN_RESULT='success', CHECKS_RESULT='success', PLAN_SOURCE='a' * 40,
+                    CHECKS_SOURCE='a' * 40, PLAN_PUBLISHER='b' * 40, CHECKS_PUBLISHER='b' * 40)
+        cases = ({}, {'PLAN_RESULT': 'failure'}, {'CHECKS_RESULT': 'skipped'},
+                 {'CHECKS_SOURCE': 'c' * 40}, {'CHECKS_PUBLISHER': 'c' * 40},
+                 {'PLAN_SOURCE': '', 'CHECKS_SOURCE': ''})
+        for changes in cases:
+            with self.subTest(changes=changes):
+                result = subprocess.run(['bash', '-c', script], env={**os.environ, **good, **changes},
+                                        capture_output=True, text=True)
+                self.assertEqual(not changes, result.returncode == 0, result.stderr)
+        for step in lint.split('      - ')[1:]:
+            if 'name: Require the same protected publication' in step or 'id: acceptance-kind' in step:
+                continue
+            self.assertIn('!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly', step)
+        plan = workflow_job(self.workflow, 'plan')
+        self.assertIn('--native-resume-handoff build/native-product-resume-transport', plan)
+        self.assertIn("if: steps.product-reuse.outputs.native_resume_ready == 'true'", plan)
+        self.assertIn('name: codex-agent-planned-product-resume-', plan)
+        resume = workflow_job(self.workflow, 'product-resume')
+        for label in ('id: tooling', 'id: apple-policy', 'id: resume'):
+            step = next(part for part in resume.split('      - ') if label in part)
+            self.assertIn("needs.plan.outputs.native_resume_ready != 'true'", step)
+        self.assertIn('capture_planned_native_resume', resume)
+        self.assertIn('name: codex-agent-product-resume-', resume)
+        self.assertIn("test \"$RUNTIME_WORKERS_REQUIRED\" = false", resume)
+        self.assertIn('mode: bind', resume)
 
     def test_sdk_reference_routing_carries_only_the_planned_locator_without_provisioning_again(self):
         from ci.tests.test_product_routing import ProductRoutingTest
@@ -302,7 +340,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
 
     def test_apple_policy_comes_from_original_plan_before_authenticated_resume(self):
         policy = self.job.split("      - id: apple-policy\n", 1)[1].split("\n      - ", 1)[0]
-        self.assertIn("if: needs.plan.outputs.tooling_required == 'true'", policy)
+        self.assertIn("if: needs.plan.outputs.native_resume_ready != 'true' && needs.plan.outputs.tooling_required == 'true'", policy)
         self.assertIn("plan-path: ${{ github.workspace }}/build/product-resume-plan/impact-plan.json", policy)
         self.assertIn("tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}", policy)
         self.assertLess(self.job.index("capture-product-resume-inputs"), self.job.index("      - id: apple-policy"))
