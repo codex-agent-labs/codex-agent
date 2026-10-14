@@ -632,6 +632,8 @@ jobs:
         id: resume
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Used only before a cold Apple package capture; native warm reuse skips it.
+          CODEX_AGENT_COLD_APPLE_WORKSPACE: 'true'
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
           NATIVE_CONTRACT_COMPLETE: ${{ needs.plan.outputs.native_contract_complete }}
