@@ -241,6 +241,57 @@ class AppleWorkerCollectionTest(unittest.TestCase):
         self.assertIn("elected plan and producer", row["reason"])
         self.assertTrue((destination / row["originalDirectory"] / "worker/gradle.log").is_file())
 
+    def test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(self):
+        instance, ready, raw = self.shard(TARGETS[0])
+        original = deepcopy(self.producer)
+        self.producer = {**original, "runId": 8, "runAttempt": 1, "commit": "c" * 40, "tree": "d" * 40}
+        self.plan["validationCommit"] = self.producer["commit"]
+        self.environment.update(GITHUB_RUN_ID="8", GITHUB_RUN_ATTEMPT="1")
+        origin = {"producer": original, "artifact_id": 901, "artifact_sha256": sha256_bytes(raw),
+                  "job_id": 901, "workflow_sha": PIN}
+        worker_name = f"product-validation / sdk-sdk-ios-validation-{instance.target}"
+        old_artifact_name = (f"codex-agent-sdk-worker-sdk-ios-validation-{instance.target}-{ready['buildKey'][7:]}-"
+                             f"{original['tree']}-attempt-{original['runAttempt']}")
+        old_job = {"id": 901, "name": worker_name, "run_id": original["runId"], "head_sha": original["commit"],
+            "status": "completed", "conclusion": "success", "started_at": "2026-09-08T10:00:00Z",
+            "completed_at": "2026-09-08T10:10:00Z"}
+        observe = adapter._observe_ci_producer_jobs
+        def observe_original(producers, **kwargs):
+            if "worker" in producers:
+                self.assertEqual(original, producers["worker"])
+                self.assertEqual(PIN, kwargs["trusted_workflow_sha"])
+                return [{"run": {"head_sha": original["commit"]}, "jobs": [old_job]}]
+            return observe(producers, **kwargs)
+        destination = self.repository / "build/retained-original"
+        with adapter.verification_session():
+            with self.controls({instance: ready}, {instance: raw}) as controls, \
+                    patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
+                    patch.object(adapter, "_observe_ci_producer_jobs", side_effect=observe_original), \
+                    patch.object(adapter, "api_json", wraps=adapter.api_json) as query:
+                current_query = query._mock_wraps
+                def metadata(url, token):
+                    value = current_query(url, token)
+                    if url.endswith("/artifacts/901"):
+                        return {**value, "name": old_artifact_name,
+                                "workflow_run": {"id": original["runId"], "head_sha": original["commit"]}}
+                    return value
+                query.side_effect = metadata
+                result = self.collect(destination)
+                row, = result["rows"]
+                self.assertEqual("success", row["result"], row["reason"])
+                self.assertNotIn("original_run_attempt", controls[2].call_args.kwargs)
+                shard = destination / row["shardDirectory"]
+                verified = verify_phase_shard(shard, instance)
+                self.assertEqual(original, verified["receipt"]["producer"])
+                self.assertEqual(original, adapter._require_collected_sdk_original(
+                    shard, verified, {"producer": self.producer}, PIN))
+            with patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
+                    self.assertRaisesRegex(ValueError, "fresh authenticated original collection"):
+                adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, "f" * 40)
+        with patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
+                self.assertRaisesRegex(ValueError, "fresh authenticated original collection"):
+            adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, PIN)
+
     def test_missing_caller_policy_fails_after_worker_diagnostics_before_capture(self):
         instance, ready, raw = self.shard(TARGETS[0])
         self.policy = None

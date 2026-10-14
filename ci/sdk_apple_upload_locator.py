@@ -18,8 +18,35 @@ from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
 
 
+def retained_validation_origin(target, build_key, consumer):
+    """Select two reviewed successful uploads; selection grants no admission.
+
+    Each consumer still observes the original job/upload and authenticates its
+    complete bytes. Keep the original producer and receipt when signing later.
+    """
+    rows = {
+        "ios-arm64": (
+            "sha256:1bbea1cdeb61cbd908f49480fb89fffa58c3da28de34cc42a7d0e58559ecad16",
+            11934933559, "sha256:4f1ce4fc26eeb622978509d5e1a937d1f6729041694393dc8667befb6ccf14d0", 116144183690),
+        "ios-simulator-arm64": (
+            "sha256:e7958fc10f983e5ddc41714a80587eacf8cd9ccd715b1829873113fd606917b7",
+            11935475988, "sha256:1b4e95d83b250735dd0892127b89769cff1800d54993394bc89f2ffe03d67de8", 116144183702),
+    }
+    row = rows.get(target)
+    producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+        "commit": "1f8c236eca5e2651bbfc18afb8b8232526445537", "tree": "6ba89c3ff4c8cb9b30f7216641ac3461c0d94206",
+        "event": "pull_request", "runId": 38649218072, "runAttempt": 1, "pullRequest": 31}
+    if (row is None or row[0] != build_key
+            or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+            or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+            or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+        return None
+    return {"producer": producer, "artifact_id": row[1], "artifact_sha256": row[2], "job_id": row[3],
+            "workflow_sha": "950d5d73b96d95d99c38156297f3bcd6031e19f1"}
+
+
 def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
-            trusted_workflows_by_phase=None, expected_build_key=None):
+            trusted_workflows_by_phase=None, expected_build_key=None, expected_job_id=None):
     """Shared fixed-callsite observation/list/detail/window checks, no downloads."""
     producer_bytes = canonical_json_bytes(producer)
     observation = products._observe_ci_producer_jobs({phase: producer},
@@ -30,6 +57,8 @@ def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
         matching = products._matching_ci_jobs(observation["jobs"], job, expected_build_key=expected_build_key)
         if len(matching) != 1:
             raise ValueError("Apple original worker job is missing or ambiguous")
+        if expected_job_id is not None and matching[0].get("id") != expected_job_id:
+            raise ValueError("Apple original worker differs from its reviewed successful job")
         job = matching[0]["name"]
     api = f"https://api.github.com/repos/{producer['repository']}/actions"
     artifacts = products.paginated_items(f"{api}/runs/{producer['runId']}/artifacts", "artifacts", token)
@@ -91,8 +120,9 @@ def locate_apple_upload(plan_path, candidate_root, *, mode, target,
         trusted_workflow_sha, expected_build_key=None, environ=None, token):
     """Return only an official locator; consumption must independently recapture.
 
-    The producer is the current authorized plan/environment, not an uploaded
-    receipt, a matrix output, a newest run, or a caller-supplied artifact name.
+    The producer is the current authorized plan/environment or its exact
+    reviewed retained success. Uploaded receipts, matrix outputs and newest-run
+    heuristics cannot select a producer or replace the original upload pins.
     """
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -116,7 +146,12 @@ def locate_apple_upload(plan_path, candidate_root, *, mode, target,
             raise ValueError("Apple upload locator requires an authorized PR or merge-group plan")
         plan_value = canonical_json_bytes(plan)
         producer = products.validate_producer(products._consumer(plan, environment)["producer"])
+        current_producer = dict(producer)
+        origin = None
         if mode == "validation":
+            origin = retained_validation_origin(target, expected_build_key, producer)
+            if origin is not None:
+                producer = origin["producer"]
             job = f"product-validation / sdk-sdk-ios-validation-{target}"
             name = (f"codex-agent-sdk-worker-sdk-ios-validation-{target}-"
                     f"{expected_build_key.removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
@@ -125,13 +160,16 @@ def locate_apple_upload(plan_path, candidate_root, *, mode, target,
             name = (f"codex-agent-sdk-apple-signing-preparation-{target}-"
                     f"{producer['tree']}-attempt-{producer['runAttempt']}")
         result = _locate(producer, phase=mode, job=job, name=name,
-                         trusted_workflow_sha=trusted_workflow_sha, token=token,
-                         expected_build_key=expected_build_key)
+                         trusted_workflow_sha=origin["workflow_sha"] if origin else trusted_workflow_sha, token=token,
+                         expected_build_key=expected_build_key,
+                         **({"expected_job_id": origin["job_id"]} if origin else {}))
+        if origin is not None and result != {name: origin[name] for name in ("artifact_id", "artifact_sha256")}:
+            raise ValueError("Apple original upload differs from its reviewed successful artifact")
         require_no_signing_secret(environment)
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes
                 or read_regular_file_bytes(captured_plan) != plan_bytes
                 or canonical_json_bytes(plan) != plan_value
-                or products.validate_producer(products._consumer(plan, environment)["producer"]) != producer):
+                or products.validate_producer(products._consumer(plan, environment)["producer"]) != current_producer):
             raise ValueError("Apple locator plan or current producer changed during observation")
     return result
 

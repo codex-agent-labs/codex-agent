@@ -123,11 +123,24 @@ def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_pa
             unchanged()
         # Nothing reaches the caller until the immutable binding context exits.
         unchanged()
-        for source, name in ((prepared, "preparation-transport"), (original, "validation-transport"),
-                             (root / "policy", "caller-policy")):
-            snapshot_regular_tree(source, result / name, allow_empty=True)
-            if regular_file_inventory(result / name, allow_empty=True) != baselines[source]:
-                raise ValueError("Apple signing provenance changed during forwarding")
+        # The signed carrier already contains the complete original capture.
+        # Preserve exact transport observations/inventories and immutable upload
+        # locators without copying those same multi-GB bodies into it again.
+        for source, name in ((prepared, "preparation-transport"), (original, "validation-transport")):
+            retained = result / name
+            retained.mkdir()
+            transport = read_regular_file_bytes(source / "capture-transport.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+            (retained / "capture-transport.json").write_bytes(transport)
+            write_canonical_json(retained / "inventory.json", {"schemaVersion": 1, "files": baselines[source]})
+            if source == prepared:
+                (retained / "preparation.json").write_bytes(read_regular_file_bytes(
+                    prepared / "original/preparation.json", max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+            baselines[retained] = regular_file_inventory(retained, allow_empty=True)
+        snapshot_regular_tree(root / "policy", result / "caller-policy")
+        if regular_file_inventory(result / "caller-policy") != baselines[root / "policy"]:
+            raise ValueError("Apple signing policy changed during forwarding")
+        baselines[result / "caller-policy"] = baselines[root / "policy"]
         caller = {"schemaVersion": 1, "target": target, "trustedSourceCommit": trusted_source_sha,
             "trustedSourceTree": source_tree, "trustedWorkflowSha": trusted_workflow_sha,
             "transportProducer": producer, "authorizationReason": reason,

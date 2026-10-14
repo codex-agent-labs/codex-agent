@@ -81,8 +81,8 @@ class IosValidationWorkerActionTest(unittest.TestCase):
                       "sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}"):
             self.assertIn(value, captured)
         for value in ("cache-read-only: 'true'", "product-worker: 'true'", "xcode-fingerprint: auto",
-                      "if: always() && steps.identity.outcome == 'success'",
-                      "name: codex-agent-sdk-worker-sdk-ios-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}",
+                      "if: always() && (steps.identity.outcome == 'success' || steps.policy.outputs.retained_original == 'true')",
+                      "name: codex-agent-sdk-worker-sdk-ios-validation-${{ inputs.target }}-${{ steps.policy.outputs.retained_key_hex || steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}",
                       "path: build/sdk-ios-validation-worker", "include-hidden-files: true", "overwrite: false",
                       "compression-level: 0", "if-no-files-found: warn"):
             self.assertIn(value, self.action)
@@ -199,6 +199,41 @@ class IosValidationWorkerActionTest(unittest.TestCase):
             with self.subTest(step=step), patch("subprocess.run") as process, self.assertRaises(ValueError):
                 self.run_snippet(step)
             process.assert_not_called()
+
+    def test_retained_success_routes_only_a_locator_and_skips_all_worker_preparation(self):
+        from ci import sdk_apple_upload_locator as locator
+        key = "sha256:1bbea1cdeb61cbd908f49480fb89fffa58c3da28de34cc42a7d0e58559ecad16"
+        self.plan = self.root / "impact-plan.json"
+        self.plan.write_text(json.dumps({"repository": "codex-agent-labs/codex-agent",
+            "event": "pull_request", "pullRequest": 31, "validationCommit": "c" * 40,
+            "validationTree": TREE}, indent=2) + "\n")
+        apple = {name: "/caller/" + name for name in (
+            "attestationPublicKey", "keyring", "keysDirectory", "toolingEvidence",
+            "toolingPublicKey", "javaExecutable", "toolingKeyring", "toolingKeysDirectory")}
+        apple.update(plan=str(self.plan), attestationTrustDomain="release", toolingTrustDomain="release")
+        path = self.root / "apple.json"
+        path.write_bytes(canonical_json_bytes(apple))
+        self.environment.update(SDK_APPLE_VALIDATION_POLICY=str(path), BUILD_KEY=key,
+            GITHUB_WORKSPACE=str(self.root), GITHUB_RUN_ID="38649218073", GITHUB_RUN_ATTEMPT="1")
+        origin = locator.retained_validation_origin("ios-arm64", key,
+            locator.products._consumer(json.loads(self.plan.read_text()), self.environment)["producer"])
+        selected = {name: origin[name] for name in ("artifact_id", "artifact_sha256")}
+        with patch.object(locator, "locate_apple_upload", return_value=selected) as observe, \
+                patch("subprocess.run", side_effect=AssertionError("No producer or replay process")):
+            self.run_snippet("policy")
+        observe.assert_called_once()
+        outputs = dict(line.split("=", 1) for line in self.output.read_text().splitlines())
+        self.assertEqual("true", outputs["retained_original"])
+        self.assertEqual(str(self.root), outputs["plan_directory"])
+        directory = self.root / "build/sdk-ios-validation-worker"
+        self.assertEqual({"original-validation-worker.json"}, {p.name for p in directory.iterdir()})
+        marker = json.loads((directory / "original-validation-worker.json").read_text())
+        self.assertEqual(origin["producer"], marker["producer"])
+        self.assertLess((directory / "original-validation-worker.json").stat().st_size, 1024)
+        for step in ("prewarm", "captured", "identity", "execute"):
+            self.assertIn("if: steps.policy.outputs.retained_original != 'true'", self.block(step))
+        self.assertIn("uses: ./.github/actions/setup-kmp\n      if: steps.policy.outputs.retained_original != 'true'", self.action)
+
 
     def test_absent_locator_pairs_are_omitted_independently_for_original_receipt_lookup(self):
         original = dict(self.environment)

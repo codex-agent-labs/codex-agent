@@ -88,6 +88,21 @@ class SdkAppleValidationBootstrapTest(unittest.TestCase):
         )
         self.assertEqual(source_before, regular_file_inventory(self.source.root, allow_empty=True))
 
+    def test_retained_success_keeps_original_receipt_under_later_consumer(self):
+        self.environment.update(GITHUB_RUN_ID="72", GITHUB_RUN_ATTEMPT="1")
+        origin = {"producer": self.source.producer, "artifact_id": 701,
+            "artifact_sha256": self.source.artifact["digest"], "job_id": self.source.jobs[0]["id"],
+            "workflow_sha": self.source.pin}
+        with patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
+                patch("sdk_handoff._ensure_observed_sdk_commit") as source:
+            result = self.call()
+        source.assert_called_once_with(self.source.root, self.source.producer, "synthetic-token")
+        self.assertEqual(self.source.producer, result["captureProducer"])
+        self.assertEqual(self.original_receipt,
+            (self.source.output / "original/shard/phase-receipt.json").read_bytes())
+        self.assertEqual("72", self.environment["GITHUB_RUN_ID"])
+
+
     def test_target_key_and_authorization_reject_before_observation(self):
         cases = (
             {"target": "ios"},

@@ -70,6 +70,35 @@ class AppleUploadLocatorTest(unittest.TestCase):
                     self.assertEqual(plan_bytes, self.f.plan_path.read_bytes())
                     self.assertFalse(self.f.output.exists())
 
+    def test_retained_selection_is_exact_and_strictly_prior_in_the_same_pr(self):
+        consumer = {**self.f.producer, "runId": 38649218073, "runAttempt": 1}
+        keys = {"ios-arm64": "sha256:1bbea1cdeb61cbd908f49480fb89fffa58c3da28de34cc42a7d0e58559ecad16",
+                "ios-simulator-arm64": "sha256:e7958fc10f983e5ddc41714a80587eacf8cd9ccd715b1829873113fd606917b7"}
+        for target, key in keys.items():
+            origin = locator.retained_validation_origin(target, key, consumer)
+            self.assertEqual(38649218072, origin["producer"]["runId"])
+            self.assertIsNone(locator.retained_validation_origin(target, self.key, consumer))
+            for changes in ({"runId": 38649218072}, {"runId": 1}, {"runId": True},
+                            {"runAttempt": True}, {"runAttempt": 0}, {"pullRequest": 32},
+                            {"event": "workflow_dispatch"}, {"repository": "other/repository"},
+                            {"workflowPath": ".github/workflows/other.yml"}):
+                with self.subTest(target=target, changes=changes):
+                    self.assertIsNone(locator.retained_validation_origin(target, key, {**consumer, **changes}))
+            self.assertIsNotNone(locator.retained_validation_origin(target, key,
+                {**consumer, "runId": 38649218072, "runAttempt": 2}))
+
+    def test_retained_locator_reobserves_original_job_upload_and_never_downloads(self):
+        origin = {"producer": self.f.producer, "artifact_id": 701,
+            "artifact_sha256": self.f.artifact["digest"], "job_id": 81, "workflow_sha": self.f.pin}
+        self.environment.update(GITHUB_RUN_ID="72", GITHUB_RUN_ATTEMPT="1")
+        with patch.object(locator, "retained_validation_origin", return_value=origin):
+            self.assertEqual({"artifact_id": 701, "artifact_sha256": origin["artifact_sha256"]}, self.call())
+            for changes in ({"job_id": 82}, {"artifact_id": 702}, {"artifact_sha256": "sha256:" + "0" * 64}):
+                with self.subTest(changes=changes), patch.object(locator, "retained_validation_origin",
+                        return_value={**origin, **changes}), self.assertRaisesRegex(ValueError, "reviewed successful"):
+                    self.call()
+        self.assertEqual("72", self.environment["GITHUB_RUN_ID"])
+
     def test_validation_matrix_name_is_bound_to_exact_elected_key(self):
         for target in ("ios-arm64", "ios-simulator-arm64"):
             self.configure("validation", target)

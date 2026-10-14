@@ -6272,7 +6272,13 @@ def _collected_sdk_identity(shard, verified, producer, workflow_sha):
 
 
 def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
-    original = _same_run_state_consumer(consumer, verified["receipt"]["producer"])["producer"]
+    from sdk_apple_upload_locator import retained_validation_origin
+    receipt = verified["receipt"]
+    origin = (retained_validation_origin(receipt["target"], receipt["buildKey"], consumer["producer"])
+              if (receipt["product"], receipt["component"], receipt["phase"]) ==
+                 ("sdk", "sdk-ios", "validation") else None)
+    original = (origin["producer"] if origin is not None and receipt["producer"] == origin["producer"] else
+                _same_run_state_consumer(consumer, receipt["producer"])["producer"])
     if verified["receipt"]["product"] != "sdk":
         raise ValueError("Earlier worker replay is SDK-only")
     with verification_session() as session:
@@ -6393,6 +6399,20 @@ def collect_runtime_workers(
             try:
                 original_producer, original_observed, original_jobs = producer, observed, jobs
                 candidates = [item for item in artifacts if isinstance(item, dict) and item.get("name") == artifact_name]
+                retained_validation = None
+                if sdk_family == "ios-validation":
+                    from sdk_apple_upload_locator import retained_validation_origin
+                    retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
+                    if retained_validation is not None:
+                        original_producer = retained_validation["producer"]
+                        artifact_name = (_worker_artifact_prefix(product, instance) + ready["buildKey"][7:] + "-"
+                            + original_producer["tree"] + f"-attempt-{original_producer['runAttempt']}")
+                        candidates = [api_json(f"https://api.github.com/repos/{original_producer['repository']}/actions/artifacts/"
+                            + str(retained_validation["artifact_id"]), token)]
+                        if (candidates[0].get("id"), candidates[0].get("digest")) != (
+                                retained_validation["artifact_id"], retained_validation["artifact_sha256"]):
+                            raise ValueError("Retained Apple worker differs from its reviewed successful upload")
+                        row["artifactName"] = artifact_name
                 if not candidates and product == "sdk":
                     prefix = artifact_name.rsplit("-attempt-", 1)[0]
                     for attempt in range(producer["runAttempt"] - 1, 0, -1):
@@ -6406,9 +6426,12 @@ def collect_runtime_workers(
                 if product == "sdk" and (original_producer != producer or resume_producer != producer):
                     workflow_policy = ({"trusted_workflows_by_phase": {"worker": {
                         "path": sdk_worker_workflow_path, "sha": trusted_workflow_sha}}}
-                        if sdk_worker_workflow_path is not None else {"trusted_workflow_sha": trusted_workflow_sha})
+                        if sdk_worker_workflow_path is not None else {"trusted_workflow_sha":
+                            retained_validation["workflow_sha"] if retained_validation else trusted_workflow_sha})
                     original_observed = _observe_ci_producer_jobs({"worker": original_producer},
-                        jobs_by_phase={"worker": job_name}, token=token, **workflow_policy)
+                        jobs_by_phase={"worker": job_name}, token=token, **workflow_policy,
+                        **({"build_keys_by_phase": {"worker": ready["buildKey"]}}
+                           if sdk_worker_job_name is None else {}))
                     original_jobs = original_observed[0]["jobs"]
                     row["originalObservation"] = original_observed
                 matrix_key = ready["buildKey"] if product == "sdk" and sdk_worker_job_name is None else None
@@ -6416,6 +6439,8 @@ def collect_runtime_workers(
                 if len(matching_jobs) != 1:
                     raise ValueError("Runtime worker job is missing or ambiguous")
                 job = matching_jobs[0]
+                if retained_validation is not None and job.get("id") != retained_validation["job_id"]:
+                    raise ValueError("Retained Apple worker differs from its reviewed successful job")
                 job_name = job["name"]
                 row["jobName"] = job_name
                 require_integer(job.get("id"), "Runtime worker job ID", 1)
@@ -6427,11 +6452,14 @@ def collect_runtime_workers(
                 candidate = candidates[0]
                 signer_failed = False
                 if sdk_family == "ios-validation":
+                    signer_producer = producer if retained_validation else original_producer
+                    signer_observation = observed if retained_validation else original_observed
                     signer_job = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
-                    signer_jobs = [item for item in original_jobs if item.get("name") == signer_job]
+                    signer_jobs = [item for item in (current_jobs if retained_validation else original_jobs)
+                                   if item.get("name") == signer_job]
                     signer_failed = (len(signer_jobs) != 1 or signer_jobs[0].get("conclusion") != "success"
-                        or signer_jobs[0].get("run_id") != original_producer["runId"]
-                        or signer_jobs[0].get("head_sha") != original_observed[0]["run"]["head_sha"])
+                        or signer_jobs[0].get("run_id") != signer_producer["runId"]
+                        or signer_jobs[0].get("head_sha") != signer_observation[0]["run"]["head_sha"])
                 retained = prepared / "rows" / name
                 retained.mkdir(parents=True)
                 archive = retained / "transport.zip"
@@ -6492,8 +6520,8 @@ def collect_runtime_workers(
                     if sdk_apple_validation_policy is None:
                         raise ValueError("Apple collection requires independent caller admission policy")
                     signer_name = (f"codex-agent-sdk-apple-validation-evidence-{instance.target}-"
-                        f"{verified['receiptSha256'].removeprefix('sha256:')}-{original_producer['tree']}-"
-                        f"attempt-{original_producer['runAttempt']}")
+                        f"{verified['receiptSha256'].removeprefix('sha256:')}-{signer_producer['tree']}-"
+                        f"attempt-{signer_producer['runAttempt']}")
                     signer_artifacts = [item for item in artifacts if isinstance(item, dict)
                                         and item.get("name") == signer_name]
                     if len(signer_artifacts) != 1:
@@ -6505,8 +6533,8 @@ def collect_runtime_workers(
                         artifact_id=signed.get("id"), artifact_sha256=signed.get("digest"),
                         trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
                         environ=environment, token=token,
-                        **({"original_run_attempt": original_producer["runAttempt"]}
-                           if original_producer != producer else {}))
+                        **({"original_run_attempt": signer_producer["runAttempt"]}
+                           if signer_producer != producer else {}))
                     signed_inventory = regular_file_inventory(signed_capture, allow_empty=True)
                     authenticated = retained / "sdk-apple-validation-evidence"
                     # Admission cannot publish inside its source repository.
@@ -8255,10 +8283,11 @@ def capture_sdk_ios_validation_upload(plan_path, destination, *, validation_rece
 
 def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target, expected_build_key,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
-    """Bootstrap a current worker receipt; this is transport, not semantic admission.
+    """Bootstrap the selected worker receipt; transport is not semantic admission.
 
     Subsequent preparation/signing independently recaptures the selected original
-    receipt and applies all existing gates. No historical receipt is inferred.
+    receipt and applies all existing gates. Reviewed retained successes preserve
+    their exact original receipt; no historical receipt is reconstructed.
     """
     return _capture_sdk_ios_upload(plan_path, destination, phase="validation", receipt_path=None,
         artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
@@ -8390,13 +8419,28 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             if plan["event"] not in {"pull_request", "merge_group"}:
                 raise ValueError("Apple receipt bootstrap requires an authorized PR or merge-group plan")
             producer = validate_producer(_consumer(plan, environment)["producer"])
+            bootstrap_producer = dict(producer)
             bootstrap_plan = canonical_json_bytes(plan)
         build_key = elected_build_key if bootstrap else receipt["buildKey"]
+        retained_validation = None
+        if phase == "validation":
+            from sdk_apple_upload_locator import retained_validation_origin
+            origin = retained_validation_origin(target, build_key, _consumer(plan, environment)["producer"])
+            if origin is not None and (bootstrap or producer == origin["producer"]):
+                if (artifact_id, artifact_sha256) != (origin["artifact_id"], origin["artifact_sha256"]):
+                    raise ValueError("Apple retained validation differs from its reviewed successful upload")
+                retained_validation = origin
+                producer, trusted_workflow_sha = origin["producer"], origin["workflow_sha"]
         job = f"product-validation / sdk-sdk-ios-{phase}-{target}"
         observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
             jobs_by_phase={f"ios-{phase}": job}, build_keys_by_phase={f"ios-{phase}": build_key},
             trusted_workflow_sha=trusted_workflow_sha, token=token)
         matching = _matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=build_key)
+        if retained_validation is not None and matching[0].get("id") != retained_validation["job_id"]:
+            raise ValueError("Apple retained validation differs from its reviewed successful job")
+        if retained_validation is not None:
+            from sdk_handoff import _ensure_observed_sdk_commit
+            _ensure_observed_sdk_commit(root, producer, token)
         job = matching[0]["name"]
         name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-{target}-{build_key.removeprefix('sha256:')}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
@@ -8471,10 +8515,13 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
                 raise ValueError("SDK qualification requires private original verification custody")
             persistent.record_verified(locator, original, retained, verified["receipt"], verified["objectSha256"])
         output_safe()
+        if retained_validation is not None and retained_validation != retained_validation_origin(
+                target, build_key, _consumer(plan, environment)["producer"]):
+            raise ValueError("Retained Apple original selection changed during capture")
         if bootstrap:
             require_no_signing_secret(environment)
             if (canonical_json_bytes(plan) != bootstrap_plan
-                    or validate_producer(_consumer(plan, environment)["producer"]) != producer):
+                    or validate_producer(_consumer(plan, environment)["producer"]) != bootstrap_producer):
                 raise ValueError("Apple bootstrap plan or current producer changed during capture")
         yield prepared, transport, expected_files
 

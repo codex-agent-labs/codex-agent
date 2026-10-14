@@ -1,5 +1,5 @@
-name: Execute elected iOS SDK validation
-description: Overlap simulator startup with authenticated input capture, run fixed full validation, and retain the complete unsigned worker result.
+name: Execute or forward elected iOS SDK validation
+description: Forward a reviewed successful original by reference, or run fixed full validation and retain its complete unsigned result.
 inputs:
   plan-id:
     required: true
@@ -65,11 +65,16 @@ runs:
         PACKAGE_ARTIFACT_SHA256: ${{ inputs.package-artifact-sha256 }}
         BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         python3 -B - <<'PY'
         import os
         from pathlib import Path
-        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        from ci.products.inventory import load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes, write_canonical_json
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
         for prefix in ('PACKAGE', 'BINARY'):
@@ -95,18 +100,44 @@ runs:
                 raise ValueError('Caller tooling fields must be explicit absolute paths')
         apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
         apple_digest = ''
+        plan_directory, retained_key = '', ''
         if apple_path:
             if not Path(apple_path).is_absolute():
                 raise ValueError('Caller Apple policy must be an explicit absolute path')
             apple_raw = read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True)
             from ci.products.sdk_apple_validation_admission import apple_validation_policy_arguments
-            apple_validation_policy_arguments(load_canonical_json_bytes(apple_raw))
+            apple = load_canonical_json_bytes(apple_raw)
+            apple_validation_policy_arguments(apple)
             apple_digest = sha256_bytes(apple_raw)
+            plan = Path(apple['plan'])
+            if plan.name == 'impact-plan.json':
+                plan_directory = str(plan.parent)
+                from ci.sdk_apple_upload_locator import products, retained_validation_origin, locate_apple_upload
+                planned = load_json_bytes(read_regular_file_bytes(plan, reject_symlink_parents=True))
+                if planned['validationTree'] != os.environ['TREE']:
+                    raise ValueError('Retained Apple validation tree differs from its caller plan')
+                current = products._consumer(planned, os.environ)['producer']
+                origin = retained_validation_origin(os.environ['TARGET'], os.environ['BUILD_KEY'], current)
+                if origin is not None:
+                    selected = locate_apple_upload(plan, Path(os.environ['GITHUB_WORKSPACE']),
+                        mode='validation', target=os.environ['TARGET'], expected_build_key=os.environ['BUILD_KEY'],
+                        trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
+                    destination = Path(os.environ['GITHUB_WORKSPACE']) / 'build/sdk-ios-validation-worker'
+                    destination.mkdir(parents=True, exist_ok=False)
+                    write_canonical_json(destination / 'original-validation-worker.json',
+                        {'schemaVersion': 1, 'target': os.environ['TARGET'], 'buildKey': os.environ['BUILD_KEY'],
+                         'producer': origin['producer'], **selected})
+                    retained_key = os.environ['BUILD_KEY'].removeprefix('sha256:')
+                    print('Retained successful original validation; production and worker replay skipped.', flush=True)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(raw) + '\n')
             output.write('apple_policy_sha256=' + apple_digest + '\n')
+            output.write('plan_directory=' + plan_directory + '\n')
+            output.write('retained_original=' + str(bool(retained_key)).lower() + '\n')
+            output.write('retained_key_hex=' + retained_key + '\n')
         PY
     - id: prewarm
+      if: steps.policy.outputs.retained_original != 'true'
       name: Start the selected simulator while authenticated inputs are prepared
       shell: bash
       env:
@@ -137,6 +168,7 @@ runs:
             raise ValueError('Selected simulator cannot be started from its current state')
         PY
     - id: captured
+      if: steps.policy.outputs.retained_original != 'true'
       uses: ./.github/actions/capture-runtime-state
       with:
         product: sdk
@@ -144,12 +176,14 @@ runs:
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
+        plan-directory: ${{ steps.policy.outputs.plan_directory }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
         state-wave: ${{ inputs.state-wave }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
     - id: identity
+      if: steps.policy.outputs.retained_original != 'true'
       name: Require the exact iOS validation election before Apple setup
       shell: bash
       env:
@@ -202,11 +236,13 @@ runs:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
     - uses: ./.github/actions/setup-kmp
+      if: steps.policy.outputs.retained_original != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
         xcode-fingerprint: auto
     - id: execute
+      if: steps.policy.outputs.retained_original != 'true'
       name: Execute exact iOS validation inside all authenticated input lifetimes
       uses: ./.github/actions/hydrated-evidence-cache
       env:
@@ -294,10 +330,10 @@ runs:
           command += [part for flag, value in fields.items() for part in (flag, value)]
           subprocess.run(command, cwd=root, check=True)
           PY
-    - if: always() && steps.identity.outcome == 'success'
+    - if: always() && (steps.identity.outcome == 'success' || steps.policy.outputs.retained_original == 'true')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: codex-agent-sdk-worker-sdk-ios-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        name: codex-agent-sdk-worker-sdk-ios-validation-${{ inputs.target }}-${{ steps.policy.outputs.retained_key_hex || steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
         path: build/sdk-ios-validation-worker
         if-no-files-found: warn
         overwrite: false

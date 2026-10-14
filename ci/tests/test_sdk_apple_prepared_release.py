@@ -48,6 +48,7 @@ class ApplePreparedReleaseTest(unittest.TestCase):
             trusted_source_sha="e" * 40, trusted_workflow_sha="f" * 40, transport_producer=self.producer,
             event_payload={"number": 31}, environment=self.environment, token="fixture-token")
         self.captures = {}
+        self.capture_records = {}
         self.context = self.mock("verify_product_release_context", return_value=(
             self.trusted, self.producer, "9" * 40, {"GITHUB_RUN_ID": "92", "GITHUB_RUN_ATTEMPT": "2"},
             "synthetic source authorization"))
@@ -97,6 +98,8 @@ class ApplePreparedReleaseTest(unittest.TestCase):
                      "target": "ios-arm64", "observed": []}
         write_canonical_json(destination / "capture-transport.json", transport)
         self.captures["preparation"] = destination
+        self.capture_records["preparation"] = (regular_file_inventory(destination, allow_empty=True),
+                                              (destination / "capture-transport.json").read_bytes())
         return transport
 
     def capture_original(self, plan, destination, **kwargs):
@@ -107,6 +110,8 @@ class ApplePreparedReleaseTest(unittest.TestCase):
             token="fixture-token"), kwargs)
         snapshot_regular_tree(self.fixture.original, destination, allow_empty=True)
         self.captures["validation"] = destination
+        self.capture_records["validation"] = (regular_file_inventory(destination, allow_empty=True),
+                                             (destination / "capture-transport.json").read_bytes())
         return {"captureProducer": self.fixture.fixture.producer}
 
     def invoke(self, **changes):
@@ -131,10 +136,18 @@ class ApplePreparedReleaseTest(unittest.TestCase):
         self.assertEqual("9" * 40, result["trustedSourceTree"])
         self.assertEqual("f" * 40, result["trustedWorkflowSha"])
         self.assertEqual({"number": 31}, result["event"])
-        self.assertEqual(regular_file_inventory(self.fixture.prepared, allow_empty=True),
-            regular_file_inventory(self.destination / "preparation-transport/original", allow_empty=True))
-        self.assertEqual(regular_file_inventory(self.fixture.original, allow_empty=True),
-            regular_file_inventory(self.destination / "validation-transport", allow_empty=True))
+        for name, capture_name in (("preparation-transport", "preparation"), ("validation-transport", "validation")):
+            retained = self.destination / name
+            inventory, transport = self.capture_records[capture_name]
+            self.assertEqual({"schemaVersion": 1, "files": inventory},
+                json.loads((retained / "inventory.json").read_bytes()))
+            self.assertEqual(transport,
+                             (retained / "capture-transport.json").read_bytes())
+            self.assertFalse((retained / "original-upload.zip").exists())
+            self.assertFalse((retained / "transport.zip").exists())
+            self.assertFalse((retained / "original").exists())
+        self.assertEqual((self.fixture.prepared / "preparation.json").read_bytes(),
+                         (self.destination / "preparation-transport/preparation.json").read_bytes())
         carrier = self.destination / "sdk-apple-validation-evidence"
         records = load_sdk_apple_validation_evidence(carrier)
         self.assertEqual(1, len(records))
@@ -255,7 +268,7 @@ class ApplePreparedReleaseTest(unittest.TestCase):
 
         def changed_forwarding(source, destination, **arguments):
             copy(source, destination, **arguments)
-            if Path(destination).name == "validation-transport" and Path(destination).parent.name == "result":
+            if Path(destination).name == "caller-policy" and Path(destination).parent.name == "result":
                 carrier = Path(destination).parent / "sdk-apple-validation-evidence"
                 record = load_sdk_apple_validation_evidence(carrier)[0]
                 (carrier / record["evidenceRoot"] / "apple-validation-attestation.sig").write_bytes(b"late changed signature")
