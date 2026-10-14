@@ -12,6 +12,21 @@ JAR = ROOT / 'gradle/build-logic/build/libs/codex-agent-release-tooling.jar'
 
 
 class AppleToolingClasspathTest(unittest.TestCase):
+    @unittest.skipUnless(JAR.is_file() and shutil.which('jdeps'), 'requires the emitted tooling JAR and JDK')
+    def test_packaged_first_party_class_dependencies_are_complete(self):
+        result = subprocess.run([shutil.which('jdeps'), '--ignore-missing-deps',
+            '-verbose:class', '-filter:none', str(JAR)], capture_output=True, text=True, timeout=30,
+            check=True)
+        # Project classes are in the default package. Optional third-party
+        # compression formats are outside the release CLI's packaged contract.
+        missing = []
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if (len(fields) == 5 and fields[1] == '->' and fields[3:] == ['not', 'found']
+                    and '.' not in fields[2]):
+                missing.append(line.strip())
+        self.assertEqual([], missing, '\n'.join(missing))
+
     @unittest.skipUnless(JAR.is_file() and shutil.which('java'), 'requires the emitted tooling JAR and Java')
     def test_validation_binding_cli_reaches_input_validation_without_gradle(self):
         with tempfile.TemporaryDirectory(prefix='apple-validation-classpath-') as temporary:

@@ -12,6 +12,15 @@ import kotlinx.serialization.json.JsonPrimitive
 /** Synthetic retained observations only, not XCTest result, source, receipt or hosted admission. */
 class AppleOriginalSimulatorExecutionTest {
     @Test
+    fun `packaged simulator CLI replays both a first attempt and a retry without Gradle`() {
+        for (failure in listOf(null, "ready-status")) SimulatorReplayFixture(failure = failure).use { fixture ->
+            val before = fixture.inventory()
+            fixture.verifyUsingPackagedTool()
+            assertEquals(before, fixture.inventory())
+        }
+    }
+
+    @Test
     fun `first attempt replays optional boot and preserves all original bytes`() {
         for (booted in listOf(false, true)) SimulatorReplayFixture(booted = booted).use { fixture ->
             val before = fixture.inventory()
@@ -153,6 +162,18 @@ private class SimulatorReplayFixture(booted: Boolean = false, failure: String? =
     private val deviceType = "com.apple.CoreSimulator.SimDeviceType.iPhone-17"
     private val listDevices = listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available")
     private val tripletEnvironment = mapOf("LC_ALL" to "C", "LANG" to "C")
+
+    fun verifyUsingPackagedTool() {
+        val java = File(System.getProperty("java.home"),
+            "bin/${if (System.getProperty("os.name").startsWith("Windows")) "java.exe" else "java"}")
+        val jar = File(checkNotNull(System.getProperty("codexAgent.releaseToolingJar")))
+        val process = ProcessBuilder(java.path, "-jar", jar.path, "verify-original-apple-simulator-execution",
+            "--evidence-directory", root.path, "--expected-runtime-name", runtimeName,
+            "--expected-device-type-identifier", deviceType, "--original-working-directory", originalCwd,
+        ).directory(root).redirectErrorStream(true).start()
+        val log = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals(0, process.waitFor(), log)
+    }
 
     init {
         if (failure != null) attempt(0, booted = false, failure = failure)
