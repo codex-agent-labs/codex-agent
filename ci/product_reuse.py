@@ -321,6 +321,16 @@ def _observe_tested_commit(
            for value in (expected_commit, expected_tree)):
         raise ValueError("Tested Git commit/tree identity is malformed")
     commit = api_json(f"{api}/repos/{repository}/git/commits/{expected_commit}", token)
+    return _validate_tested_commit(run, commit, expected_commit=expected_commit,
+        expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch)
+
+
+def _validate_tested_commit(run, commit, *, expected_commit, expected_tree, pull_request,
+                           allow_dispatch=False):
+    """Check a freshly fetched Git observation against the caller's exact run pins."""
+    if any(not isinstance(value, str) or _OID.fullmatch(value) is None
+           for value in (expected_commit, expected_tree)):
+        raise ValueError("Tested Git commit/tree identity is malformed")
     tree = commit.get("tree")
     if (commit.get("sha") != expected_commit or not isinstance(tree, dict)
             or tree.get("sha") != expected_tree):

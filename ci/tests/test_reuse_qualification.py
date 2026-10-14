@@ -361,6 +361,42 @@ class PortablePolicyTest(unittest.TestCase):
 
 
 class QualificationTransportTest(unittest.TestCase):
+    def test_issuer_read_failure_joins_pending_reads_before_returning(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        import product_reuse as products
+        failed, jobs_started, release_jobs, jobs_finished = (Event() for _ in range(4))
+        def read(url, _token):
+            if "/git/commits/" in url:
+                failed.set()
+                raise ValueError("issuer read failed")
+            return {}
+        def jobs(*_args):
+            jobs_started.set()
+            self.assertTrue(release_jobs.wait(5))
+            jobs_finished.set()
+            return []
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(products, "api_json", side_effect=read), \
+                patch.object(products, "paginated_items", side_effect=jobs), \
+                patch.object(products, "_reuse_contract_ci_upload") as body, \
+                ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(qualification._fetch_qualification_archive,
+                Path(temporary) / "output", artifact_id=1, artifact_sha256="sha256:" + "a" * 64,
+                run_id=2, run_attempt=1, signer_commit="b" * 40, source_commit="c" * 40, token="test")
+            try:
+                self.assertTrue(failed.wait(5))
+                self.assertTrue(jobs_started.wait(5))
+                self.assertFalse(future.done())
+                self.assertFalse(jobs_finished.is_set())
+            finally:
+                release_jobs.set()
+            with self.assertRaisesRegex(ValueError, "issuer read failed"):
+                future.result(timeout=5)
+            self.assertTrue(jobs_finished.is_set())
+            body.assert_not_called()
+            self.assertFalse((Path(temporary) / "output").exists())
+
     def test_carrier_reference_receipt_copy_is_exact(self):
         source = {"relativePath": "original", "receipt": {"original": "receipt bytes"}}
         raw = canonical_json_bytes(source["receipt"])
@@ -377,13 +413,16 @@ class QualificationTransportTest(unittest.TestCase):
     def test_fixed_issuer_metadata_and_bounded_artifact(self):
         import io
         import zipfile
+        from threading import Barrier
         import product_reuse as products
         commit, issuer = "a" * 40, "b" * 40
+        source = {"sha": commit, "tree": {"sha": "c" * 40},
+                  "parents": [{"sha": "d" * 40}, {"sha": "e" * 40}]}
         run = {"id": 123, "run_attempt": 1, "path": ".github/workflows/portable-reuse-proof.yml",
                "event": "pull_request", "head_sha": commit,
                "repository": {"full_name": qualification.REPOSITORY, "fork": False},
                "head_repository": {"full_name": qualification.REPOSITORY, "fork": False},
-               "pull_requests": [{"number": 31}],
+               "pull_requests": [{"number": 31, "base": {"sha": "d" * 40}, "head": {"sha": "e" * 40}}],
                "referenced_workflows": [{"path": f"{qualification.REPOSITORY}/{qualification.ISSUER_WORKFLOW}@{issuer}",
                                          "sha": issuer}]}
         job = {"id": 456, "run_id": 123, "head_sha": commit, "name": "cold / qualify",
@@ -403,23 +442,45 @@ class QualificationTransportTest(unittest.TestCase):
                     "name": "reuse-qualification-123-1", "created_at": "2026-10-05T01:01:00Z",
                     "archive_download_url": f"https://api.github.com/repos/{qualification.REPOSITORY}/actions/artifacts/789/zip",
                     "workflow_run": {"id": 123, "head_sha": commit}, "size_in_bytes": len(raw)}
+        # All three independent issuer reads must overlap, including failures.
+        reads = Barrier(3, timeout=5)
         def api(url, token):
+            if "/actions/artifacts/" in url:
+                return artifact
+            reads.wait()
             if "/git/commits/" in url:
-                return {"sha": commit, "tree": {"sha": "c" * 40}}
-            return run if "/attempts/" in url else artifact
+                return source
+            return run
+        jobs = [job]
+        def list_jobs(*args):
+            reads.wait()
+            return jobs
         with tempfile.TemporaryDirectory(prefix="qualification-transport-test-") as temporary, \
-                patch.object(products, "api_json", side_effect=api), \
-                patch.object(products, "paginated_items", return_value=[job]), \
-                patch.object(products, "_observe_tested_commit", return_value={"sha": commit}) as tested, \
+                patch.object(products, "api_json", side_effect=api) as observed, \
+                patch.object(products, "paginated_items", side_effect=list_jobs), \
                 patch.object(products, "download_artifact", return_value=raw) as download, \
                 patch.object(qualification, "authenticate", return_value={"localTransportTest": True}) as native:
             options = dict(artifact_id=789, artifact_sha256=artifact["digest"], run_id=123, run_attempt=1,
                            signer_commit=issuer, source_commit=commit, token="synthetic")
             result = qualification.fetch_qualification(Path(temporary) / "valid", **options)
             self.assertEqual(result["downloadedQualificationBytes"], len(raw))
-            self.assertEqual(tested.call_args.kwargs["expected_commit"], commit)
+            self.assertCountEqual([call.args[0] for call in observed.call_args_list], [
+                f"https://api.github.com/repos/{qualification.REPOSITORY}/git/commits/{commit}",
+                f"https://api.github.com/repos/{qualification.REPOSITORY}/actions/runs/123/attempts/1",
+                artifact["archive_download_url"].removesuffix("/zip")])
             self.assertEqual(native.call_args.kwargs["signer_commit"], issuer)
             self.assertEqual(native.call_args.kwargs["source_commit"], commit)
+            for field, changed in (("sha", "f" * 40), ("parents", source["parents"][::-1])):
+                original = source[field]
+                source[field] = changed
+                with self.subTest(source=field), self.assertRaises(ValueError):
+                    qualification.fetch_qualification(Path(temporary) / ("source-" + field), **options)
+                source[field] = original
+            for bad_jobs in ([job, dict(job)], [None]):
+                jobs = bad_jobs
+                with self.subTest(jobs=bad_jobs), self.assertRaises(ValueError):
+                    qualification.fetch_qualification(Path(temporary) / "bad-jobs", **options)
+            jobs = [job]
             for field, changed in (("event", "workflow_dispatch"), ("run_attempt", 2),
                                    ("path", ".github/workflows/ci.yml")):
                 original = run[field]
@@ -435,6 +496,10 @@ class QualificationTransportTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside"):
                 qualification.fetch_qualification(Path(temporary) / "wrong-window", **options)
             artifact["created_at"] = "2026-10-05T01:01:00Z"
+            artifact["size_in_bytes"] = 32 * 1024 * 1024 + 1
+            with self.assertRaisesRegex(ValueError, "transport limit"):
+                qualification.fetch_qualification(Path(temporary) / "oversized", **options)
+            artifact["size_in_bytes"] = len(raw)
             self.assertEqual(native.call_count, 1)
             self.assertEqual(download.call_count, 1)
             bad = archive(extra=True)

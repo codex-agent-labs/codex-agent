@@ -399,11 +399,18 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     import zipfile
     import product_reuse as products
     from products.inventory import require_integer
+    from products.restore import bounded_verify
     _commit(signer_commit)
     _commit(source_commit)
     require_integer(run_id, "Qualification run", 1)
     require_integer(run_attempt, "Qualification attempt", 1)
-    source = products.api_json(f"https://api.github.com/repos/{REPOSITORY}/git/commits/{source_commit}", token)
+    url = f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}"
+    # Independent fresh reads from caller-pinned endpoints; join every result
+    # before validating the issuer or reading any artifact body.
+    source, run, jobs = bounded_verify(lambda read: read(), (
+        lambda: products.api_json(f"https://api.github.com/repos/{REPOSITORY}/git/commits/{source_commit}", token),
+        lambda: products.api_json(url, token),
+        lambda: products.paginated_items(f"{url}/jobs", "jobs", token)))
     if source.get("sha") != source_commit:
         raise ValueError("Qualification source metadata differs from caller pin")
     tree = _commit(source["tree"]["sha"])
@@ -413,8 +420,6 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     job = "completion / completed-sdk" if _completed_sdk else "cold / qualify"
     # Product producers remain restricted to ci.yml. This separate fixed
     # authority observer elects no product and accepts only this proof issuer.
-    url = f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}"
-    run = products.api_json(url, token)
     if (require_integer(run.get("id"), "Issuer run", 1) != run_id
             or require_integer(run.get("run_attempt"), "Issuer attempt", 1) != run_attempt
             or run.get("path") != producer["workflowPath"] or run.get("event") != "pull_request"
@@ -424,9 +429,8 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
                    for field in ("repository", "head_repository"))):
         raise ValueError("Qualification issuer attempt differs from its fixed original producer")
     products._require_ci_workflow_reference(run, f"{REPOSITORY}/{ISSUER_WORKFLOW}@{signer_commit}", signer_commit)
-    tested = products._observe_tested_commit(run, api="https://api.github.com", repository=REPOSITORY,
-        token=token, expected_commit=source_commit, expected_tree=tree, pull_request=31)
-    jobs = products.paginated_items(f"{url}/jobs", "jobs", token)
+    tested = products._validate_tested_commit(run, source,
+        expected_commit=source_commit, expected_tree=tree, pull_request=31)
     if any(not isinstance(row, dict) for row in jobs):
         raise ValueError("Qualification issuer jobs are malformed")
     selected = products._matching_ci_jobs(jobs, job)
@@ -443,8 +447,11 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256, name,
         producer, observed[0]["run"], token)
     products._require_artifact_job_window(observed[0], job, artifact)
-    _, raw = products._download_contract_ci_upload(artifact_id, artifact_sha256, name,
-        producer, observed[0]["run"], token, max_bytes=32 * 1024 * 1024)
+    size, limit = artifact["size_in_bytes"], 32 * 1024 * 1024
+    if size > limit:
+        raise ValueError("Contract uploaded artifact exceeds the transport limit")
+    _, raw = products._reuse_contract_ci_upload(artifact, producer, run, token,
+        destination=None, limit=limit, artifact_sha256=artifact_sha256, size=size)
     expected = ({"completion.json", "bundle.jsonl"} if _completed_sdk else
                 {"qualification.json", "bundle.jsonl", "qualification-issue.json", "proof.json",
                  "prepare.json", "cache-save.json"})
