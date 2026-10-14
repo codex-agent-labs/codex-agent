@@ -554,8 +554,8 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual("contract", row["product"], "Completed Runtime body was opened")
                 identity = PhaseInstanceId(*(row[field] for field in FIELDS))
                 return cap.envelope(row, canonical_json_bytes(self.receipts[identity]))
-            with patch.object(reuse, "phase_git_inventory", side_effect=lambda _root, _revision, instance:
-                    self.receipts[instance]["inputs"]["inventory"]), \
+            with patch.object(reuse, "_phase_git_inventories", side_effect=lambda _root, _revision, instances:
+                    {instance: self.receipts[instance]["inputs"]["inventory"] for instance in instances}), \
                     patch.object(reuse, "verify_object", side_effect=ordinary_contract) as body, \
                     patch.object(reuse.LookupSession, "register_contract_stage"), \
                     patch.object(reuse, "_plan", side_effect=AssertionError("Repeated completed phase planning")):

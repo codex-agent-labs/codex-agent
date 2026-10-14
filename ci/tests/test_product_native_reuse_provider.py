@@ -106,7 +106,7 @@ class NativeReuseProviderTest(unittest.TestCase):
             return {"providerOnly": True}, ()
         # Only inventory/discovery and the outer delegate are substituted. The
         # actual Contract and native K/R authentication/semantic gates run intact.
-        with patch.object(reuse, "phase_git_inventory", return_value=[]), \
+        with patch.object(reuse, "_phase_git_inventories", side_effect=lambda _root, _revision, instances: {i: [] for i in instances}), \
                 patch.object(reuse.LookupSession, "contract_stage", return_value=chain["contract"]["payload"].parent.parent), \
                 patch.object(reuse, "advance_reuse", side_effect=advance) as delegated:
             self.assertEqual({"providerOnly": True}, reuse.plan_reuse_wave(request))

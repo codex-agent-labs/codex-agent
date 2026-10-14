@@ -5,6 +5,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
 import tempfile
 from typing import Any
 
@@ -12,6 +13,7 @@ from .aggregate import verified_index_content, verify_immutable_product_indexes
 from .contract_projection import VerifiedContractProjection, VerifiedContractExecutionProjection, verify_contract_component_projection
 from .inventory import (
     canonical_json_bytes,
+    git_file_inventory,
     load_canonical_json_bytes,
     read_regular_file_bytes,
     require_array,
@@ -22,6 +24,7 @@ from .inventory import (
     require_sha256,
     require_string,
     sha256_bytes,
+    tree_entries,
 )
 from .index import (
     _verify_index_receipt,
@@ -83,7 +86,7 @@ from .restore import (
     store_local_object,
     verify_object,
 )
-from .selection import phase_git_inventory
+from .selection import _inventory_owners, _normalized_paths
 
 
 SOURCES = ("stable", "promoted-main", "same-pr", "local")
@@ -1100,6 +1103,27 @@ def _native_comparison_provider(root, value, *, keyring=None, keys_directory=Non
     return verify if records else None
 
 
+def _phase_git_inventories(root, revision, instances):
+    """Read exact shared Git inputs once; return independent per-phase records."""
+    if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
+        raise ValueError("Repository revision must be an exact lowercase Git object ID")
+    instances = tuple(instances)
+    if any(instance not in PHASE_INSTANCE_IDS for instance in instances):
+        raise ValueError("Unknown product phase instance")
+    owned = {instance: [] for instance in instances}
+    try:
+        for path in _normalized_paths(path for path, _ in tree_entries(Path(root), revision)):
+            selected = _inventory_owners(path)
+            for instance in (owned if selected is None else owned.keys() & selected):
+                owned[instance].append(path)
+        records = git_file_inventory(root, revision,
+            sorted({path for paths in owned.values() for path in paths}))
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Repository revision cannot be inventoried") from error
+    by_path = {record["relativePath"]: record for record in records}
+    return {instance: [dict(by_path[path]) for path in paths] for instance, paths in owned.items()}
+
+
 @verification_scoped
 def plan_reuse_wave(
     value: Any,
@@ -1259,10 +1283,11 @@ def plan_reuse_wave(
     if external_sdk_runtime and native_evidence:
         raise ValueError("Released SDK Runtime evidence must come from its selected original carrier")
     phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
+    inventories = _phase_git_inventories(repository_root, revision, closure)
     for instance in closure:
         authority = authorities[instance]
         values = {
-            "inventory": phase_git_inventory(repository_root, revision, instance),
+            "inventory": inventories[instance],
             "versions": versions,
             "toolchain_profile_digest": require_sha256(
                 authority["toolchainProfileDigest"],

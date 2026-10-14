@@ -427,6 +427,57 @@ def retained_product_closure(
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+class PhaseGitInventoryBatchTest(unittest.TestCase):
+    def test_all_real_phase_inventories_match_the_existing_single_phase_reader(self):
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=CHECKOUT, text=True).strip()
+        instances = product_reuse.PHASE_INSTANCE_IDS
+        with mock.patch.object(product_reuse, "git_file_inventory", wraps=product_reuse.git_file_inventory) as blobs, \
+                mock.patch.object(product_reuse, "_normalized_paths", wraps=product_reuse._normalized_paths) as paths:
+            actual = product_reuse._phase_git_inventories(CHECKOUT, revision, instances)
+        blobs.assert_called_once()
+        paths.assert_called_once()
+        self.assertEqual({instance: phase_git_inventory(CHECKOUT, revision, instance)
+                          for instance in instances}, actual)
+
+    def test_sparse_unknown_inputs_and_mutation_isolation_preserve_exact_inventories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q")
+            (root / "future-unrecognized-input.bin").write_bytes(b"unknown inputs belong to every phase")
+            (root / "docs").mkdir()
+            (root / "docs/ignored.md").write_text("documentation")
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "inputs")
+            revision = git("rev-parse", "HEAD")
+            instances = product_reuse.PHASE_INSTANCE_IDS[:2]
+            expected = {instance: phase_git_inventory(root, revision, instance) for instance in instances}
+            actual = product_reuse._phase_git_inventories(root, revision, instances)
+            self.assertEqual(expected, actual)
+            self.assertEqual(["future-unrecognized-input.bin"], [r["relativePath"] for r in actual[instances[0]]])
+            actual[instances[0]][0]["bytes"] = -1
+            self.assertEqual(expected[instances[1]], actual[instances[1]])
+            self.assertEqual(expected, product_reuse._phase_git_inventories(root, revision, instances))
+            (root / "unrecognized-link").symlink_to("future-unrecognized-input.bin")
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "symlink")
+            with self.assertRaises(ValueError):
+                product_reuse._phase_git_inventories(root, git("rev-parse", "HEAD"), instances)
+
+    def test_invalid_paths_are_checked_before_ownership_filtering_or_blob_reads(self):
+        for path in ("docs/../escape", "docs//duplicate-separator", "docs/control\x01.md", "/absolute"):
+            with self.subTest(path=path), \
+                    mock.patch.object(product_reuse, "tree_entries", return_value=((path, "unused"),)), \
+                    mock.patch.object(product_reuse, "git_file_inventory") as blobs, self.assertRaises(ValueError):
+                product_reuse._phase_git_inventories(CHECKOUT, "a" * 40, product_reuse.PHASE_INSTANCE_IDS[:1])
+            blobs.assert_not_called()
+        with self.assertRaises(ValueError):
+            product_reuse._phase_git_inventories(CHECKOUT, "HEAD", product_reuse.PHASE_INSTANCE_IDS[:1])
+        with self.assertRaises(ValueError):
+            product_reuse._phase_git_inventories(CHECKOUT, "a" * 40, (PhaseInstanceId("other", "other", "binary", "common"),))
+
+
 class ProductReuseTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -976,7 +1027,7 @@ class ProductReuseTest(unittest.TestCase):
 
         with (
             mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
-            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse._phase_git_inventories", side_effect=lambda _root, _revision, instances: {i: [] for i in instances}),
             mock.patch("ci.products.reuse.advance_reuse", side_effect=delegated_advance) as delegated,
             mock.patch(
                 "ci.products.reuse.verify_runtime_validation_projection", return_value=object(),
@@ -996,7 +1047,7 @@ class ProductReuseTest(unittest.TestCase):
         early = copy.deepcopy(request)
         with (
             mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
-            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse._phase_git_inventories", side_effect=lambda _root, _revision, instances: {i: [] for i in instances}),
             mock.patch("ci.products.reuse.advance_reuse", return_value=({"ok": True}, ())),
         ):
             with self.assertRaisesRegex(ValueError, "before its metadata phase was ready"):
@@ -1007,14 +1058,14 @@ class ProductReuseTest(unittest.TestCase):
         continuation = {"continuationRequirements": [{"kind": "runtime-validation-evidence"}]}
         with (
             mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
-            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse._phase_git_inventories", side_effect=lambda _root, _revision, instances: {i: [] for i in instances}),
             mock.patch("ci.products.reuse.advance_reuse", return_value=(continuation, ())),
         ):
             self.assertIs(continuation, plan_reuse_wave(future))
 
         with (
             mock.patch("ci.products.reuse._dependency_closure", return_value=(metadata,)),
-            mock.patch("ci.products.reuse.phase_git_inventory", return_value=[]),
+            mock.patch("ci.products.reuse._phase_git_inventories", side_effect=lambda _root, _revision, instances: {i: [] for i in instances}),
             mock.patch("ci.products.reuse.advance_reuse", side_effect=delegated_advance),
             mock.patch(
                 "ci.products.reuse.verify_runtime_validation_projection",
