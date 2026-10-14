@@ -1,6 +1,7 @@
 """Acquisition plumbing around the unchanged owner-approved production verifier."""
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -42,9 +43,40 @@ def regular(path, maximum=16 * 1024 * 1024):
     return raw
 
 
-def git(root, *args):
+def git(root, *args, data=None):
     return subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args],
-                          check=True, capture_output=True, timeout=120).stdout
+                          input=data, check=True, capture_output=True, timeout=120).stdout
+
+
+def blobs(root, objects):
+    objects = tuple(dict.fromkeys(objects))
+    request = b"".join((authority.commit(oid) + "\n").encode() for oid in objects)
+    headers = git(root, "cat-file", "--batch-check", data=request).splitlines()
+    if len(headers) != len(objects):
+        raise ValueError("Approved Git blob metadata is incomplete")
+    sizes = []
+    for oid, header in zip(objects, headers):
+        fields = header.split()
+        if len(fields) != 3 or fields[:2] != [oid.encode(), b"blob"]:
+            raise ValueError("Approved Git blob metadata differs")
+        size = int(fields[2])
+        if not 0 <= size <= 16 * 1024 * 1024:
+            raise ValueError("Approved execution source exceeds bound")
+        sizes.append(size)
+    if sum(sizes) > 64 * 1024 * 1024:
+        raise ValueError("Approved execution source exceeds total bound")
+    stream = io.BytesIO(git(root, "cat-file", "--batch", data=request))
+    result = {}
+    for oid, header, size in zip(objects, headers, sizes):
+        if stream.readline() != header + b"\n":
+            raise ValueError("Approved Git blob response differs")
+        raw = stream.read(size)
+        if len(raw) != size or stream.read(1) != b"\n":
+            raise ValueError("Approved Git blob response is incomplete")
+        result[oid] = raw
+    if stream.read(1):
+        raise ValueError("Approved Git blob response has trailing bytes")
+    return result
 
 
 def history(root, producer):
@@ -93,10 +125,9 @@ def snapshot(root, value, work):
         mode, kind, oid = header.decode().split()
         if mode not in {"100644", "100755"} or kind != "blob":
             raise ValueError("Approved execution source is not a regular Git blob")
-        raw = git(root, "cat-file", "blob", oid)
-        if len(raw) > 16 * 1024 * 1024:
-            raise ValueError("Approved execution source exceeds bound")
-        expected[path.as_posix()] = (raw, mode)
+        expected[path.as_posix()] = (oid, mode)
+    originals = blobs(root, (oid for oid, _ in expected.values()))
+    expected = {name: (originals[oid], mode) for name, (oid, mode) in expected.items()}
     observed = {p.relative_to(root).as_posix() for directory in (root / "ci", root / ".github")
                 for p in directory.rglob("*") if p.is_file() and p.suffix in SUFFIXES
                 and not IGNORED.intersection(p.relative_to(root).parts)}
@@ -360,7 +391,7 @@ def verify_completed(root, work, value, token):
 def main():
     started = time.perf_counter()
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("operation", choices=("setup", "restore", "verify"))
+    parser.add_argument("operation", choices=("setup", "provision", "restore", "verify"))
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--expected-authority-commit")
@@ -368,10 +399,22 @@ def main():
     args = parser.parse_args()
     root, work = args.repository_root.resolve(strict=True), args.work.absolute()
     work.mkdir(parents=True, exist_ok=True)
+    if args.operation == "provision" and (args.artifact_id is not None or any(os.environ.get(name)
+            for name in ("REQUESTED_ARTIFACT_SHA", "REQUESTED_RUN", "REQUESTED_ATTEMPT",
+                         "REQUESTED_ISSUER", "REQUESTED_SOURCE"))):
+        raise ValueError("Combined provisioning only accepts native completion pins")
     value = approved(args.expected_authority_commit)
     os.chdir(root)  # Existing production commands use the consumer checkout as cwd.
-    if args.operation == "setup":
+    environment = None
+    if args.operation in {"setup", "provision"}:
         result = snapshot(root, value, work)
+        if args.operation == "provision":
+            snapshot_result = result
+            result, environment = completed_environment(root, work, value)
+            authority.protection(authority.api(f"branches/{authority.BRANCH}/protection"))
+            if authority.api(f"branches/{authority.BRANCH}")["commit"]["sha"] != value["authorityCommit"]:
+                raise ValueError("Approval reference changed during provisioning")
+            result["executionSnapshot"] = snapshot_result
     else:
         sys.path.insert(0, str(root / "ci"))
         import reuse_qualification
@@ -386,11 +429,6 @@ def main():
             else:
                 result = restore(root, work, value, args.artifact_id, token)
                 environment = qualification_environment(work, result, work / "hydrated-evidence")
-            with Path(os.environ["GITHUB_ENV"]).open("a") as output:
-                for name, item in environment.items():
-                    if "\n" in item or "\r" in item:
-                        raise ValueError("Invalid runner environment value")
-                    output.write(name + "=" + item + "\n")
         elif args.artifact_id is None:
             result = verify_completed(root, work, value, token)
         else:
@@ -407,6 +445,12 @@ def main():
             result = {"approvedVerifierCommit": value["activeVerifier"],
                       "consumerCommit": git(root, "rev-parse", "HEAD").decode().strip(),
                       "freshQualificationAuthority": fresh}
+    if environment is not None:
+        if any("\n" in item or "\r" in item for item in environment.values()):
+            raise ValueError("Invalid runner environment value")
+        with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+            for name, item in environment.items():
+                output.write(name + "=" + item + "\n")
     result["operationSeconds"] = str(time.perf_counter() - started)
     (work / (args.operation + ".json")).write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
     print(json.dumps(result, sort_keys=True))

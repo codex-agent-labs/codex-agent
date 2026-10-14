@@ -31,6 +31,12 @@ runs:
       env:
         REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
         GITHUB_TOKEN: ${{ github.token }}
+        APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        REQUESTED_RUN: ${{ inputs.run-id }}
+        REQUESTED_ATTEMPT: ${{ inputs.run-attempt }}
+        REQUESTED_ISSUER: ${{ inputs.issuer-sha }}
+        REQUESTED_SOURCE: ${{ inputs.source-sha }}
       run: |
         set -euo pipefail
         test -n "$REUSE_AUTHORITY_READ_TOKEN"
@@ -39,10 +45,12 @@ runs:
           *) echo 'supported=false' >> "$GITHUB_OUTPUT"; exit 0 ;;
         esac
         source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
-        python3 -B "$source_root/.reuse/consumer.py" setup --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse"
+        operation=provision
+        if [ -n "$APPROVED_ARTIFACT_ID" ]; then operation=setup; fi
+        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse"
         bash "$GITHUB_WORKSPACE/.github/actions/restore-reuse-qualification/install-gh.sh"
     - name: Provision independent completion pins or authenticate an explicitly selected body qualification
-      if: steps.native.outputs.supported == 'true'
+      if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''
       shell: bash
       env:
         REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}

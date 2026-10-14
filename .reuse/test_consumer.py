@@ -1,4 +1,6 @@
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -16,6 +18,95 @@ RECORD = APPROVAL["qualifications"][0]
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_batched_blobs_keep_exact_bytes_and_reject_protocol_corruption(self):
+        oid = "b" * 40
+        header = (oid + " blob 3\n").encode()
+        with patch.object(consumer, "git", side_effect=[header, header + b"abc\n"]) as command:
+            self.assertEqual(consumer.blobs(Path("unused"), [oid, oid]), {oid: b"abc"})
+            self.assertEqual(command.call_count, 2)
+            self.assertEqual(command.call_args.kwargs["data"], (oid + "\n").encode())
+        for metadata, response in ((b"", b""), (header * 2, b""),
+                (header.replace(b"blob", b"tree"), b""),
+                (header.replace(b"3\n", b"-1\n"), b""),
+                (header.replace(b"3\n", b"16777217\n"), b""),
+                (header, header.replace(b"blob", b"tree") + b"abc\n"),
+                (header, header + b"ab\n"), (header, header + b"abc!"),
+                (header, header + b"abc\nextra")):
+            with self.subTest(metadata=metadata, response=response), \
+                    patch.object(consumer, "git", side_effect=[metadata, response]), self.assertRaises(ValueError):
+                consumer.blobs(Path("unused"), [oid])
+        objects = [f"{i:040x}" for i in range(5)]
+        metadata = b"".join((x + " blob 16777216\n").encode() for x in objects)
+        with patch.object(consumer, "git", return_value=metadata) as command, self.assertRaisesRegex(ValueError, "total bound"):
+            consumer.blobs(Path("unused"), objects)
+        command.assert_called_once()
+
+    def test_native_provision_resolves_once_and_checks_fresh_governance_before_export(self):
+        protection = {"restrictions": {"users": [{"login": "ciurlaro", "id": 19213191}], "teams": [], "apps": []},
+            **{name: {"enabled": enabled} for name, enabled in (("enforce_admins", True),
+                ("block_creations", True), ("allow_force_pushes", False), ("allow_deletions", False))}}
+        original = Path.cwd()
+        for fault in (None, "branch", "protection", "environment", "snapshot", "pins"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve();work = root / "private";export = root / "env"
+                selected = copy.deepcopy(protection)
+                if fault == "protection": selected["allow_force_pushes"]["enabled"] = True
+                revision = "f" * 40 if fault == "branch" else APPROVAL["authorityCommit"]
+                try:
+                    with patch.dict(os.environ, {"GITHUB_ENV": str(export)}, clear=True), \
+                            patch.object(consumer.sys, "argv", ["consumer.py", "provision", "--repository-root", str(root), "--work", str(work)]), \
+                            patch.object(consumer, "approved", return_value=APPROVAL) as approved, \
+                            patch.object(consumer, "snapshot", return_value={"portableProfile": "retained"},
+                                side_effect=ValueError("snapshot") if fault == "snapshot" else None) as snapshot, \
+                            patch.object(consumer, "completed_environment", return_value=({"productArtifactDownloads": 0},
+                                {"POLICY": "exact\nforged=value" if fault == "environment" else "exact"}),
+                                side_effect=ValueError("pins") if fault == "pins" else None) as pins, \
+                            patch.object(consumer.authority, "api", side_effect=[selected, {"commit": {"sha": revision}}]) as api, \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        if fault:
+                            with self.assertRaises(ValueError): consumer.main()
+                            self.assertFalse(export.exists())
+                            self.assertFalse((work / "provision.json").exists())
+                        else:
+                            consumer.main()
+                            self.assertEqual(export.read_text(), "POLICY=exact\n")
+                            approved.assert_called_once_with(None)
+                            snapshot.assert_called_once_with(root, APPROVAL, work)
+                            pins.assert_called_once_with(root, work, APPROVAL)
+                            self.assertEqual([c.args[0] for c in api.call_args_list],
+                                ["branches/reuse-authority/protection", "branches/reuse-authority"])
+                            result = json.loads((work / "provision.json").read_bytes())
+                            self.assertEqual(result["executionSnapshot"]["portableProfile"], "retained")
+                finally:
+                    os.chdir(original)
+
+    def test_native_provision_rejects_body_selectors_and_unpaired_assertions(self):
+        fields = ("REQUESTED_ARTIFACT_SHA", "REQUESTED_RUN", "REQUESTED_ATTEMPT", "REQUESTED_ISSUER", "REQUESTED_SOURCE")
+        for field in (None, *fields):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary, \
+                    patch.dict(os.environ, {field: "unpaired"} if field else {}, clear=True), \
+                    patch.object(consumer.sys, "argv", ["consumer.py", "provision", "--repository-root", temporary,
+                        "--work", temporary + "/work", *([] if field else ["--artifact-id", "77"])]), \
+                    patch.object(consumer, "approved") as approved, self.assertRaisesRegex(ValueError, "only accepts native"):
+                consumer.main()
+            approved.assert_not_called()
+
+    def test_action_dispatches_native_once_and_retains_explicit_body_restore(self):
+        root = Path(__file__).resolve().parents[1]
+        action = (root / ".github/actions/restore-reuse-qualification/action.yml").read_text()
+        self.assertIn("if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''", action)
+        block = action.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
+        script = "\n".join(line[8:] for line in block.splitlines())
+        for selector, expected in (("", "provision"), ("77", "setup")):
+            with self.subTest(selector=selector):
+                env = {**os.environ, "REUSE_AUTHORITY_READ_TOKEN": "test-only", "APPROVED_ARTIFACT_ID": selector,
+                    "GITHUB_ACTION_PATH": str(root / ".github/actions/restore-reuse-qualification"),
+                    "GITHUB_WORKSPACE": "/consumer with spaces", "RUNNER_TEMP": "/runner temp"}
+                result = subprocess.run(["bash", "-euc", 'uname() { if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi; }; '
+                    'python3() { printf "%s\\n" "$@"; }; bash() { :; };\n' + script],
+                    env=env, capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout.splitlines()[2], expected)
+
     def test_warm_proof_protects_frozen_scope_and_retains_legacy_zero_change_check(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/approved-reuse.yml").read_text()
         block = workflow.split("          q = proof['portableQualification']\n", 1)[1].split("          PY", 1)[0]

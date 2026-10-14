@@ -16,7 +16,14 @@ and a stable ref before returning an approved identity. Hosted execution needs
 the repository-scoped, fine-grained `REUSE_AUTHORITY_READ_TOKEN` with
 Administration: read and Contents: read. Never give it a writer token or cache it.
 
-`consumer.py` freshly resolves that approval for each operation. The reusable
+`consumer.py` freshly resolves that approval for each operation. Default native
+completion provisioning performs source setup and pin distribution in one
+invocation, then rechecks owner protection and the exact protected revision
+before exporting any environment values. It never restores a saved approval
+verdict. Explicit body qualification and later verification remain independent
+fresh operations. Source setup batches immutable Git blob reads while retaining
+full byte comparisons, bounds, inventory, symlink and loaded-source checks.
+The reusable
 job binds GitHub's native `job.workflow_sha`; a composite action checks its
 executing files against the independently protected source. Current receipt,
 object, provenance, dependency and semantic checks run unchanged from approved
