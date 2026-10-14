@@ -1,6 +1,7 @@
 """Workflow matrix selection for a missing authenticated tooling release."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -155,8 +156,17 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
             gradle = Path(temporary) / "gradlew"
             gradle.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "' + str(log) + '"\n')
             gradle.chmod(0o755)
-            subprocess.run(["bash", "-e", "-c", script], cwd=temporary, check=True)
+            checker = Path(temporary) / "python3"
+            checks = Path(temporary) / "checks"
+            checker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "' + str(checks) + '"\n')
+            checker.chmod(0o755)
+            environment = {**os.environ, "PATH": temporary + os.pathsep + os.environ["PATH"]}
+            subprocess.run(["bash", "-e", "-c", script], cwd=temporary, env=environment, check=True)
             self.assertEqual(f"--init-script {Path(temporary).resolve()}/.github/actions/run-ci-lane/release_tooling.init.gradle :build-logic:releaseToolingJar --stacktrace\n", log.read_text())
+            self.assertEqual("-B -m unittest ci.tests.test_tooling_apple_classpath\n", checks.read_text())
+            checker.write_text("#!/bin/sh\nexit 7\n")
+            failed = subprocess.run(["bash", "-e", "-c", script], cwd=temporary, env=environment)
+            self.assertEqual(7, failed.returncode)
         for step, end in (("contract-product", "contract-product-shard"), ("execution", "runtime-validation-handoff")):
             self.assertIn("inputs.contract-tooling-only != 'true'", action.split("    - id: " + step + "\n", 1)[1].split("    - id: " + end + "\n", 1)[0])
         self.assertIn('forced=(--production-only)', action)
