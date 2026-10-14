@@ -1,5 +1,5 @@
 name: Execute elected iOS SDK validation
-description: Capture exact original state before Apple setup, run fixed full validation, and retain the complete unsigned worker result.
+description: Overlap simulator startup with authenticated input capture, run fixed full validation, and retain the complete unsigned worker result.
 inputs:
   plan-id:
     required: true
