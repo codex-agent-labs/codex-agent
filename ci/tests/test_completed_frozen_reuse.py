@@ -699,6 +699,60 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     completed_frozen=cap)
                 self.assertEqual(row["receiptSha256"], result["receiptSha256"])
 
+    def test_native_replay_overlaps_fresh_observations_and_rejects_changed_job(self):
+        import threading
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            producer = dict(repository=qualification.REPOSITORY, pullRequest=31,
+                            event="pull_request", runId=8, runAttempt=1)
+            official = dict(id=7, run_attempt=1, event="pull_request", path=".github/workflows/ci.yml",
+                status="completed", conclusion="failure", pull_requests=[{"number": 31}],
+                repository={"full_name": qualification.REPOSITORY, "fork": False},
+                head_repository={"full_name": qualification.REPOSITORY, "fork": False})
+            barrier, lock, started = threading.Barrier(4, timeout=5), threading.Lock(), []
+            changed = False
+
+            def observe(_plan, _producer, source, **_):
+                with lock:
+                    started.append(threading.get_ident())
+                    first = len(started) <= 4
+                if first:
+                    barrier.wait()
+                receipt = source["receipt"]
+                name = "product-validation / runtime-" + "-".join(
+                    receipt[field] for field in ("component", "phase", "target"))
+                return {"id": 71, "digest": POLICY}, {}, [{"run": official,
+                    "testedCommit": receipt["producer"]["commit"],
+                    "jobs": [{"id": 72 if changed else 71, "name": name}]}], "a" * 40
+
+            def locator(_artifact, _workflow, instance, _job):
+                return {**{name: getattr(instance, name) for name in FIELDS},
+                        "artifact": {"id": 71, "digest": POLICY}}
+
+            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source", side_effect=observe), \
+                    patch.object(product_reuse, "_runtime_original_locator", side_effect=locator), \
+                    patch.object(product_reuse, "api_json", return_value=official), \
+                    patch.object(product_reuse, "_runtime_prior_workflow_sha", return_value="a" * 40), \
+                    patch.object(product_reuse, "_download_contract_ci_upload", side_effect=AssertionError("body download")), \
+                    patch.object(product_reuse, "safe_extract", side_effect=AssertionError("body extraction")):
+                expected = product_reuse._capture_completed_runtime_controls({}, producer, root / "prior", root,
+                    completed_frozen=cap, trusted_workflow_sha="a" * 40, token="fixture")
+                before = inventory.regular_file_inventory(root / "prior")
+                options = dict(plan=producer, consumer_producer=producer, completed_frozen=cap,
+                               trusted_workflow_sha="a" * 40, token="fixture")
+                started.clear()
+                actual = product_reuse._prior_failed_runtime_objects(root / "prior", root, **options)
+                self.assertEqual(expected, sorted(actual, key=product_reuse._identity))
+                self.assertEqual(46, len(started))
+                self.assertEqual(4, len(set(started)))
+                started.clear()
+                changed = True
+                with self.assertRaisesRegex(ValueError, "differs from fresh native observations"):
+                    product_reuse._prior_failed_runtime_objects(root / "prior", root, **options)
+                self.assertEqual(46, len(started))  # Join every observation before returning a failure.
+                self.assertEqual(before, inventory.regular_file_inventory(root / "prior"))
+
     def test_cli_policy_is_explicit_pinned_and_unchanged_through_use(self):
         with patch.object(qualification, "fetch_completed_frozen", side_effect=AssertionError("ambient authority")):
             with qualification.completed_frozen_options({}) as options:

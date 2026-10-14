@@ -1744,6 +1744,7 @@ def _runtime_capture_identity(observation: Mapping[str, Any], instance: PhaseIns
                 for phase, artifact in observation["artifacts"].items()}}
 
 
+@measured
 @_fresh_ci_observations
 def _prior_failed_runtime_objects(
     capture_root: Path, artifact_root: Path, *, trusted_workflow_sha: str | None = None,
@@ -1764,8 +1765,29 @@ def _prior_failed_runtime_objects(
     targets = sorted(capture_root.iterdir())
     if not targets:
         raise ValueError("Prior failed Runtime capture is empty")
-    records = []
+    records, pending = [], []
     prior_runs = {}  # Fresh for this readmission only; every receipt still checks its exact original job/upload.
+
+    def authenticate_completed(value):
+        instance, phase, shard, receipt, observation, original_workflow_sha = value
+        original_artifact = observation["artifacts"][phase]
+        source = {"kind": "phase", "receipt": receipt,
+                  "artifactId": original_artifact["id"],
+                  "artifactSha256": original_artifact["digest"]}
+        artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
+            plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token)
+        job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
+        job = _matching_ci_jobs(observed[0]["jobs"], job_name)[0]
+        completed_frozen.require_original_locator(
+            _runtime_original_locator(artifact, workflow, instance, job), receipt)
+        fresh = {**observation, "observed": observed, "artifacts": {phase: artifact}}
+        if _runtime_capture_identity(fresh, instance) != _runtime_capture_identity(observation, instance):
+            raise ValueError("Completed Runtime original differs from fresh native observations")
+        descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Completed Runtime shard")
+        return {**_identity_record(instance), **{field: descriptor[field]
+            for field in ("buildKey", "receiptSha256", "objectSha256")},
+            "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix()}
+
     with tempfile.TemporaryDirectory(prefix="runtime-pr-recheck-") as temporary:
         for member in targets:
             if member.name not in _RECOVERABLE_RUNTIME_COMPONENTS:
@@ -1823,23 +1845,7 @@ def _prior_failed_runtime_objects(
                         observation = _canonical_control(captured / "transport/original-ci-phases.json",
                                                          "Prior Runtime original observation")
                         if completed_frozen is not None:
-                            original_artifact = observation["artifacts"][phase]
-                            source = {"kind": "phase", "receipt": receipt,
-                                      "artifactId": original_artifact["id"],
-                                      "artifactSha256": original_artifact["digest"]}
-                            artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
-                                plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token)
-                            job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
-                            job = _matching_ci_jobs(observed[0]["jobs"], job_name)[0]
-                            completed_frozen.require_original_locator(
-                                _runtime_original_locator(artifact, workflow, instance, job), receipt)
-                            fresh = {**observation, "observed": observed, "artifacts": {phase: artifact}}
-                            if _runtime_capture_identity(fresh, instance) != _runtime_capture_identity(observation, instance):
-                                raise ValueError("Completed Runtime original differs from fresh native observations")
-                            descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Completed Runtime shard")
-                            records.append({**_identity_record(instance), **{field: descriptor[field]
-                                for field in ("buildKey", "receiptSha256", "objectSha256")},
-                                "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix()})
+                            pending.append((instance, phase, shard, receipt, observation, original_workflow_sha))
                             continue
                         with tempfile.TemporaryDirectory(prefix="phase-", dir=temporary) as phase_temporary:
                             replay = Path(phase_temporary).resolve(strict=True) / "capture"
@@ -1869,6 +1875,11 @@ def _prior_failed_runtime_objects(
                         "objectSha256": descriptor["objectSha256"],
                         "objectPath": (shard / descriptor["objectPath"]).relative_to(artifact_root).as_posix(),
                     })
+    if pending:
+        from products.restore import bounded_verify
+        # Native replay only observes independent originals; preserve order and
+        # finish every check before returning. Legacy body replay stays serial.
+        records.extend(bounded_verify(authenticate_completed, pending))
     return records
 
 
