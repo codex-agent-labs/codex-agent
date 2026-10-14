@@ -226,7 +226,7 @@ def copy_reference_member(archive, name, destination, record):
     total = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
     with archive.open(entry) as incoming, destination.open('xb') as outgoing:
-        while chunk := incoming.read(16 * 1024 * 1024):
+        while chunk := incoming.read(_DOWNLOAD_BLOCK_BYTES):
             total += len(chunk)
             if total > record['bytes']:
                 raise ValueError('Original reference member exceeds its immutable size')

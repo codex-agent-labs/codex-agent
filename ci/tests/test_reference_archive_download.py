@@ -13,6 +13,38 @@ import runtime_reference_archive as transport
 
 
 class ReferenceDownloadTest(unittest.TestCase):
+    def test_large_stored_member_uses_two_bounded_ranges_and_keeps_exact_digest(self):
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        from products.inventory import sha256_bytes
+        body = b'p' * (33 * 1024**2)
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w', compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr('object.zip', body)
+        raw = data.getvalue()
+        artifact = dict(id=1, size_in_bytes=len(raw), digest=sha256_bytes(raw),
+            archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+        for corrupt in (False, True):
+            opener = RangeOpener({1: raw})
+            sizes = []
+            def open_range(request, timeout):
+                first, last = map(int, request.get_header('Range')[6:].split('-'))
+                sizes.append(last - first + 1)
+                return opener.open(request, timeout)
+            with tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(transport.urllib.request, 'build_opener') as factory:
+                factory.return_value.open.side_effect = open_range
+                destination = Path(temporary) / 'object.zip'
+                row = dict(bytes=len(body), sha256='sha256:' + '0' * 64 if corrupt else sha256_bytes(body))
+                with transport.open_reference_archive(artifact, 'fixture') as (archive, stream):
+                    if corrupt:
+                        with self.assertRaisesRegex(ValueError, 'immutable digest'):
+                            transport.copy_reference_member(archive, 'object.zip', destination, row)
+                    else:
+                        transport.copy_reference_member(archive, 'object.zip', destination, row)
+                        self.assertEqual(body, destination.read_bytes())
+                    self.assertEqual(2, len([size for size in sizes if size >= 1024**2]))
+                    self.assertLessEqual(max(sizes), 32 * 1024**2)
+
     def test_observed_apple_package_envelope_needs_explicit_bounded_caller_policy(self):
         artifact = dict(id=1, size_in_bytes=22117834439, digest='sha256:'+'a'*64,
             archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
