@@ -688,6 +688,17 @@ def _historical_ci_observation(observations, key, attempt, fetch):
     return copy.deepcopy(observation)
 
 
+def _original_ci_run(producer, token):
+    """Share a raw historical run read; every caller still authenticates its source."""
+    url = (f"https://api.github.com/repos/{producer['repository']}/actions/runs/"
+           f"{producer['runId']}/attempts/{producer['runAttempt']}")
+    observations = _CI_OBSERVATIONS.get() or {}
+    return _historical_ci_observation(observations,
+        ("run", token, canonical_json_bytes(producer)),
+        tuple(str(producer[name]) for name in ("runId", "runAttempt")),
+        lambda: {"run": api_json(url, token)})["run"]
+
+
 def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
     trusted_workflows_by_phase=None, build_keys_by_phase=None, allow_protected_dispatch=False,
@@ -749,7 +760,7 @@ def _observe_ci_producer_jobs(
         observation_key = (token, canonical_json_bytes(producer))
         def fetch():
             count('provenanceObservationsFetched')
-            run = api_json(url, token)
+            run = _original_ci_run(producer, token)
             commit = _observe_tested_commit(
                 run, api="https://api.github.com", repository=repository, token=token,
                 expected_commit=producer["commit"], expected_tree=producer["tree"],
@@ -843,7 +854,18 @@ def _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name, pr
         raise ValueError("Unsupported caller-owned upload transport bound")
     repository = "codex-agent-labs/codex-agent"
     url = f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}"
-    artifact = api_json(url, token)
+    batch = _CI_OBSERVATIONS.get()
+    attempt = tuple(str(producer.get(name)) for name in ("runId", "runAttempt"))
+    listed = (batch.get("artifactMetadata", {}).get((token, artifact_id))
+              if batch is not None and observed_run.get("status") == "completed"
+              and attempt != batch.get("currentAttempt") else None)
+    if listed is None:
+        artifact = api_json(url, token)
+        count('artifactMetadataRequests')
+    else:
+        from copy import deepcopy
+        artifact = deepcopy(listed)
+        count('artifactMetadataBatchHits')
     count('artifactMetadataReads')
     transport = artifact.get("workflow_run")
     if (require_integer(artifact.get("id"), "Contract uploaded artifact ID", 1) != artifact_id
@@ -1860,9 +1882,7 @@ def _prior_failed_runtime_objects(
                                 run_id == consumer_producer["runId"] and attempt >= consumer_producer["runAttempt"]):
                             raise ValueError("Prior failed Runtime producer is not earlier than its consumer")
                         if (run_id, attempt) not in prior_runs:
-                            prior_runs[run_id, attempt] = api_json(
-                                f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}/attempts/{attempt}",
-                                token)
+                            prior_runs[run_id, attempt] = _original_ci_run(producer, token)
                         official = prior_runs[run_id, attempt]
                         if (official.get("id") != run_id or official.get("run_attempt") != attempt
                                 or official.get("event") != "pull_request"
@@ -1919,6 +1939,9 @@ def _prior_failed_runtime_objects(
         from products.restore import bounded_verify
         # Native replay only observes independent originals; preserve order and
         # finish every check before returning. Legacy body replay stays serial.
+        _prime_runtime_artifact_metadata(({
+            "receipt": receipt, "artifactId": observation["artifacts"][phase]["id"]}
+            for _, phase, _, receipt, observation, _ in pending), token)
         records.extend(bounded_verify(authenticate_completed, pending))
     return records
 
@@ -1933,6 +1956,43 @@ def _elected_prior_runtime_records(
             and phases[instance]["state"] == "retained"
             and all(phases[instance][field] == record[field]
                     for field in ("buildKey", "receiptSha256", "objectSha256"))}
+
+
+def _prime_runtime_artifact_metadata(sources, token):
+    """Fresh pinned metadata from bounded run pages, scoped to this acquisition."""
+    from products.restore import bounded_verify
+    batch = _CI_OBSERVATIONS.get()
+    if batch is None:
+        raise ValueError("Runtime artifact metadata requires a fresh observation batch")
+    groups, owners = {}, {}
+    for source in sources:
+        run = require_integer(source["receipt"]["producer"]["runId"], "Original artifact run", 1)
+        identity = require_integer(source["artifactId"], "Original artifact ID", 1)
+        if identity in owners and owners[identity] != run:
+            raise ValueError("Original artifact ID has conflicting runs")
+        owners[identity] = run
+        groups.setdefault(run, set()).add(identity)
+
+    def first_page(group):
+        run, wanted = group
+        count('artifactMetadataPageReads')
+        response = require_object(api_json(
+            f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run}/artifacts"
+            "?per_page=100&page=1", token), "Original run artifact listing")
+        total = require_integer(response.get("total_count"), "Original run artifact total", 0)
+        rows = require_array(response.get("artifacts"), "Original run artifact page")
+        if len(rows) > min(total, 100):
+            raise ValueError("Original run artifact page exceeds its bound")
+        ids = [require_integer(require_object(row, "Original artifact metadata").get("id"),
+                               "Original artifact ID", 1) for row in rows]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Original run artifact page contains duplicate IDs")
+        return {(token, identity): row for identity, row in zip(ids, rows) if identity in wanted}
+
+    # Only known positive IDs are used; absent entries keep their individual GET.
+    # Full metadata/job/window/native-locator validation still follows for each.
+    pages = bounded_verify(first_page, (group for group in groups.items() if len(group[1]) > 1))
+    batch["artifactMetadata"] = {key: row for page in pages for key, row in page.items()}
 
 
 @measured
@@ -1961,11 +2021,14 @@ def _capture_completed_runtime_controls(plan, producer, destination, artifact_ro
         record = {**_identity_record(instance), "buildKey": receipt["buildKey"],
                   "receiptSha256": sha256_bytes(receipt_bytes), "objectSha256": source["objectSha256"]}
         completed_frozen.envelope(record, receipt_bytes)
+        observed = [{**observed[0], "jobs": jobs}, *observed[1:]]
         return instance, record, receipt_bytes, artifact, observed
 
     # Independent read-only observations overlap; publish controls only after
     # every exact original has passed its existing locator and receipt gates.
-    authenticated = bounded_verify(authenticate, completed_frozen.runtime_sources())
+    sources = completed_frozen.runtime_sources()
+    _prime_runtime_artifact_metadata(sources, token)
+    authenticated = bounded_verify(authenticate, sources)
     records = []
     for instance, record, receipt_bytes, artifact, observed in authenticated:
         capture = destination / instance.component / instance.phase / instance.target
@@ -7230,8 +7293,7 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
     batch = _CI_OBSERVATIONS.get()
     completed = batch.get((token, canonical_json_bytes(original))) if batch is not None else None
     run = (completed["run"] if completed is not None else
-           api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
-                    f"{original['runId']}/attempts/{original['runAttempt']}", token))
+           _original_ci_run(original, token))
     workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
     if workflow is None:
         raise ValueError("Original member source lacks a reviewed original workflow")

@@ -59,6 +59,83 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 "run_id": 71, "head_sha": self.run["head_sha"], "status": "completed", "conclusion": "success",
                 "started_at": "2026-09-06T10:00:00Z", "completed_at": "2026-09-06T10:30:00Z"})
 
+    def test_native_artifact_batch_keeps_full_metadata_checks_and_fresh_scope(self):
+        sources = [{"receipt": json.loads(self.receipts[phase].read_bytes()),
+                    "artifactId": self.artifacts[phase]["id"]} for phase in fixture.PHASES]
+        rows = list(self.artifacts.values())
+        def read(url, token):
+            if "/runs/" in url:
+                return {"total_count": len(rows), "artifacts": copy.deepcopy(rows)}
+            return copy.deepcopy(next(row for row in self.artifacts.values()
+                                      if url.endswith('/' + str(row['id']))))
+        def metadata(phase, *, token='fixture', run=None):
+            original = self.artifacts[phase]
+            return adapter._contract_ci_upload_metadata(original['id'], original['digest'],
+                original['name'], self.producer, self.run if run is None else run, token)
+
+        with mock.patch.object(adapter, 'api_json', side_effect=read) as api:
+            with adapter._ci_observation_batch():
+                adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+                for phase in fixture.PHASES:
+                    self.assertEqual(self.artifacts[phase], metadata(phase))
+                self.assertEqual(1, api.call_count)
+                metadata('binary')['expired'] = True
+                self.assertFalse(metadata('binary')['expired'])
+                metadata('binary', token='different-token')
+                metadata('binary', run={**self.run, 'status': 'in_progress'})
+                self.assertEqual(3, api.call_count)
+            metadata('binary')
+            self.assertEqual(4, api.call_count)
+            with adapter._ci_observation_batch(tuple(str(self.producer[k]) for k in ('runId', 'runAttempt'))):
+                adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+                metadata('binary')
+                self.assertEqual(6, api.call_count)
+            with adapter._ci_observation_batch():
+                rows = [{**self.artifacts['binary'], 'expired': True}]
+                adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+                with self.assertRaisesRegex(ValueError, 'caller-bound transport identity'):
+                    metadata('binary')
+
+    def test_native_artifact_batch_falls_back_for_absence_and_rejects_malformed_or_changed_metadata(self):
+        sources = [{"receipt": json.loads(self.receipts[phase].read_bytes()),
+                    "artifactId": self.artifacts[phase]['id']} for phase in fixture.PHASES]
+        first = self.artifacts['binary']
+        def metadata():
+            return adapter._contract_ci_upload_metadata(first['id'], first['digest'], first['name'],
+                self.producer, self.run, 'fixture')
+        with adapter._ci_observation_batch(), mock.patch.object(adapter, 'api_json',
+                side_effect=[{'total_count': 101, 'artifacts': []}, first]) as api:
+            adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+            self.assertEqual(first, metadata())
+            self.assertEqual(2, api.call_count)
+        with adapter._ci_observation_batch(), mock.patch.object(adapter, 'api_json', return_value=first) as api:
+            adapter._prime_runtime_artifact_metadata(sources[:1], 'fixture')
+            api.assert_not_called()
+            metadata()
+            api.assert_called_once()
+        malformed = ({'total_count': 2, 'artifacts': [first, first]},
+                     {'total_count': 0, 'artifacts': [first]},
+                     {'total_count': '1', 'artifacts': [first]},
+                     {'total_count': 1, 'artifacts': [{'id': True}]})
+        for response in malformed:
+            with self.subTest(response=response), adapter._ci_observation_batch(), \
+                    mock.patch.object(adapter, 'api_json', return_value=response), self.assertRaises(ValueError):
+                adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+        for field, value in (('digest', 'sha256:' + '0' * 64), ('name', 'wrong'), ('expired', True),
+                ('size_in_bytes', 0), ('archive_download_url', 'https://wrong.invalid/zip'),
+                ('workflow_run', {**first['workflow_run'], 'id': 999})):
+            with self.subTest(field=field), adapter._ci_observation_batch(), \
+                    mock.patch.object(adapter, 'api_json', return_value={
+                        'total_count': 1, 'artifacts': [{**first, field: value}]}):
+                adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+                with self.assertRaises(ValueError):
+                    metadata()
+        with adapter._ci_observation_batch(), mock.patch.object(adapter, 'api_json') as api, \
+                self.assertRaisesRegex(ValueError, 'conflicting runs'):
+            adapter._prime_runtime_artifact_metadata([sources[0], {**sources[0], 'receipt': {
+                **sources[0]['receipt'], 'producer': {**self.producer, 'runId': 999}}}], 'fixture')
+        api.assert_not_called()
+
     def test_completed_attempt_observations_are_shared_only_inside_one_operation(self):
         from products.restore import verification_session
         with mock.patch('reuse.api_request', side_effect=self.api()) as http:
@@ -78,6 +155,25 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
                 token='not-a-real-token')
             self.assertEqual(2 * first, http.call_count)
+
+    def test_raw_run_selection_and_full_observation_share_only_completed_historical_reads(self):
+        for current, status, expected_reads in ((None, 'completed', 1),
+                (('71', '2'), 'completed', 2), (None, 'in_progress', 2)):
+            with self.subTest(current=current, status=status), adapter._ci_observation_batch(current), \
+                    mock.patch('reuse.api_request', side_effect=self.api(run={**self.run, 'status': status})) as http:
+                run = adapter._original_ci_run(self.producer, 'not-a-real-token')
+                run['status'] = 'mutated caller copy'
+                observed = adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token')
+                self.assertEqual(status, observed[0]['run']['status'])
+                calls = [call for call in http.call_args_list
+                         if call.args[0].endswith('/actions/runs/71/attempts/2')]
+                self.assertEqual(expected_reads, len(calls))
+                with self.assertRaises(ValueError):
+                    adapter._observe_ci_producer_jobs({'binary': self.producer},
+                        jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha='0' * 40,
+                        token='not-a-real-token')
 
     def test_parallel_original_reads_share_completed_attempt_but_refresh_current_attempt(self):
         from threading import Barrier
@@ -119,7 +215,7 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                         result[2][0]['run']['path'] = 'caller mutation must remain private'
                     run_reads = [call for call in http.call_args_list
                                  if call.args[0].endswith('/actions/runs/71/attempts/2')]
-                    self.assertEqual(8 if current or status != 'completed' else 2, len(run_reads))
+                    self.assertEqual(8 if current or status != 'completed' else 1, len(run_reads))
                     artifact_reads = [call for call in http.call_args_list if '/actions/artifacts/' in call.args[0]]
                     self.assertEqual(4, len(artifact_reads))
                     with self.assertRaisesRegex(ValueError, 'caller-bound transport identity'):

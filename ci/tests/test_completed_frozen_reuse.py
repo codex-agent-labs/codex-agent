@@ -799,7 +799,8 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     receipt[field] for field in ("component", "phase", "target"))
                 return {"id": 71, "digest": POLICY}, {}, [{"run": official,
                     "testedCommit": receipt["producer"]["commit"],
-                    "jobs": [{"id": 72 if changed else 71, "name": name}]}], "a" * 40
+                    "jobs": [{"id": 72 if changed else 71, "name": name},
+                             {"id": 999, "name": "unrelated job"}]}], "a" * 40
 
             def locator(_artifact, _workflow, instance, _job):
                 return {**{name: getattr(instance, name) for name in FIELDS},
@@ -813,6 +814,10 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     patch.object(product_reuse, "safe_extract", side_effect=AssertionError("body extraction")):
                 expected = product_reuse._capture_completed_runtime_controls({}, producer, root / "prior", root,
                     completed_frozen=cap, trusted_workflow_sha="a" * 40, token="fixture")
+                for path in (root / "prior").rglob("original-ci-phases.json"):
+                    observed = load_canonical_json_bytes(path.read_bytes())["observed"]
+                    self.assertEqual(1, len(observed[0]["jobs"]))
+                    self.assertEqual(71, observed[0]["jobs"][0]["id"])
                 before = inventory.regular_file_inventory(root / "prior")
                 options = dict(plan=producer, consumer_producer=producer, completed_frozen=cap,
                                trusted_workflow_sha="a" * 40, token="fixture")
