@@ -1265,36 +1265,48 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     if not _compatible_verifier(consumer_commit):
         raise QualificationIncompatible("Completed reuse consumer differs from its independent approval")
     root = Path(repository_root).resolve(strict=True)
-    report, captured = _fetch_qualification_archive(destination, **original)
-    qualified = _authenticate_bytes(captured["qualification.json"], captured["bundle.jsonl"],
-        signer_commit=original["signer_commit"], source_commit=original["source_commit"],
-        policy_sha256=verifier_policy_sha256)  # Exact approved old policy, no compatibility fallback.
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root, original["signer_commit"],
         "ci/tests/data/hosted-frozen-reuse.json", max_bytes=LIMIT))
-    proof = load_canonical_json_bytes(captured["proof.json"])
-    phases = _completed_frozen_controls(spec, proof, qualified)
-    baseline, current = (dict(tree_entries(root, commit)) for commit in (spec["inventoryBaseline"], revision))
-    for instance in phases:
-        before = phase_inventory_paths(baseline, instance)
-        after = phase_inventory_paths(current, instance)
-        if before != after or any(baseline[path] != current[path] for path in after):
-            raise QualificationIncompatible(f"Completed phase owning inputs changed: {instance}")
-    # Revoked/rotated public trust must not inherit an older completion decision.
-    authority = dict(tree_entries(root, original["signer_commit"]))
-    def public_policy(entries):
-        return {path: value for path, value in entries.items() if path ==
-                "gradle/release/product-signing-keys.json" or path.startswith("gradle/release/keys/")}
-    if public_policy(authority) != public_policy(current):
-        raise QualificationIncompatible("Completed reuse public trust changed")
-    authorities, unavailable = products._authorities(root, revision, tuple(sorted(phases)))
-    if (unavailable or authorities != spec["request"]["phaseAuthorities"]
-            or products._versions(root, revision) != spec["request"]["versions"]):
-        raise QualificationIncompatible("Completed reuse current Git authority or versions changed")
-    receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
+
+    def authenticate_frozen():
+        report, captured = _fetch_qualification_archive(destination, **original)
+        qualified = _authenticate_bytes(captured["qualification.json"], captured["bundle.jsonl"],
+            signer_commit=original["signer_commit"], source_commit=original["source_commit"],
+            policy_sha256=verifier_policy_sha256)  # Exact approved old policy, no compatibility fallback.
+        proof = load_canonical_json_bytes(captured["proof.json"])
+        phases = _completed_frozen_controls(spec, proof, qualified)
+        baseline, current = (dict(tree_entries(root, commit)) for commit in (spec["inventoryBaseline"], revision))
+        for instance in phases:
+            before = phase_inventory_paths(baseline, instance)
+            after = phase_inventory_paths(current, instance)
+            if before != after or any(baseline[path] != current[path] for path in after):
+                raise QualificationIncompatible(f"Completed phase owning inputs changed: {instance}")
+        # Revoked/rotated public trust must not inherit an older completion decision.
+        authority = dict(tree_entries(root, original["signer_commit"]))
+        def public_policy(entries):
+            return {path: value for path, value in entries.items() if path ==
+                    "gradle/release/product-signing-keys.json" or path.startswith("gradle/release/keys/")}
+        if public_policy(authority) != public_policy(current):
+            raise QualificationIncompatible("Completed reuse public trust changed")
+        authorities, unavailable = products._authorities(root, revision, tuple(sorted(phases)))
+        if (unavailable or authorities != spec["request"]["phaseAuthorities"]
+                or products._versions(root, revision) != spec["request"]["versions"]):
+            raise QualificationIncompatible("Completed reuse current Git authority or versions changed")
+        return report, qualified, phases
+
     sdk = None
-    if sdk_completion is not None:
-        sdk = _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
-            root=root, revision=revision, frozen=spec, token=original["token"])
+    if sdk_completion is None:
+        report, qualified, phases = authenticate_frozen()
+    else:
+        from products.restore import bounded_verify
+        frozen_result, sdk = bounded_verify(lambda verify: verify(), (
+            authenticate_frozen,
+            lambda: _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
+                root=root, revision=revision, frozen=spec, token=original["token"])))
+        report, qualified, phases = frozen_result
+
+    receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
+    if sdk is not None:
         receipts.extend(_capture_completed_contract_receipts(spec, sdk, qualified["originals"],
             Path(destination).parent / "contract-controls", original["token"]))
         request, phase, receipt, _ = _completed_sdk_controls(

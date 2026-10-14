@@ -1337,7 +1337,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         def materialize(source: str, artifact: dict[str, object], *_: object, **__: object) -> product_reuse.Catalog:
             return product_reuse.Catalog(source, {}, str(artifact["id"]), {}, {})
 
-        with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts) as listed, \
+        with mock.patch.object(product_reuse, "_catalog_artifacts", return_value=artifacts) as listed, \
                 mock.patch.object(product_reuse, "_catalog_index_hint", return_value={"entries": []}) as headers, \
                 mock.patch.object(product_reuse, "_same_pr_run", return_value={
                     "id": 7, "run_attempt": 1, "head_sha": COMMIT,
@@ -1361,6 +1361,71 @@ class ProductReuseAdapterTest(unittest.TestCase):
         listed.assert_called_once()
         self.assertEqual(3, downloaded.call_count)
         self.assertEqual([4, 6], [call.args[1]["id"] for call in headers.call_args_list])
+
+    def test_catalog_pages_overlap_without_reordering_or_using_a_shifted_partial_listing(self):
+        import threading
+        from urllib.parse import parse_qs, urlsplit
+        artifacts = [{'id': number, 'name': 'metadata-only'} for number in range(501, 0, -1)]
+        barrier = threading.Barrier(4)
+        reads = []
+
+        def response(url, token):
+            self.assertEqual('token', token)
+            query = parse_qs(urlsplit(url).query)
+            self.assertEqual(['100'], query['per_page'])
+            number = int(query['page'][0])
+            reads.append(number)
+            if number in range(2, 6):
+                barrier.wait(timeout=5)
+            return {'total_count': len(artifacts), 'artifacts': artifacts[(number - 1) * 100:number * 100]}
+
+        url = 'https://api.github.test/repos/owner/repo/actions/artifacts'
+        with mock.patch.object(product_reuse, 'api_json', side_effect=response), \
+                mock.patch.object(product_reuse, 'paginated_items', side_effect=AssertionError('ordinary fallback')), \
+                mock.patch.object(product_reuse, 'download_artifact_to_file', side_effect=AssertionError('body')):
+            self.assertEqual(artifacts, product_reuse._catalog_artifacts(url, 'token'))
+        self.assertCountEqual([1, 2, 3, 4, 5, 6, 1], reads)
+
+        for defect in ('count', 'short', 'duplicate', 'head', 'malformed', 'error'):
+            first_reads = 0
+
+            def changed(url, token):
+                nonlocal first_reads
+                number = int(parse_qs(urlsplit(url).query)['page'][0])
+                batch = [dict(row) for row in artifacts[(number - 1) * 100:number * 100]]
+                total = len(artifacts)
+                if number == 1:
+                    first_reads += 1
+                    if defect == 'head' and first_reads == 2:
+                        batch[0]['id'] = 999
+                if number == 2:
+                    if defect == 'error':
+                        raise ValueError('API denied')
+                    if defect == 'malformed':
+                        batch[0]['id'] = True
+                    if defect == 'count':
+                        total += 1
+                    if defect == 'short':
+                        batch.pop()
+                    if defect == 'duplicate':
+                        batch[0] = artifacts[0]
+                return {'total_count': total, 'artifacts': batch}
+
+            fresh = [{'id': 999, 'name': 'ordinary listing'}]
+            with self.subTest(defect=defect), mock.patch.object(product_reuse, 'api_json', side_effect=changed), \
+                    mock.patch.object(product_reuse, 'paginated_items', return_value=fresh) as fallback:
+                if defect in ('error', 'malformed'):
+                    with self.assertRaises(ValueError):
+                        product_reuse._catalog_artifacts(url, 'token')
+                    fallback.assert_not_called()
+                else:
+                    self.assertEqual(fresh, product_reuse._catalog_artifacts(url, 'token'))
+                    fallback.assert_called_once_with(url, 'artifacts', 'token')
+        for rows in ([], artifacts[:1], artifacts[:100]):
+            with self.subTest(size=len(rows)), mock.patch.object(product_reuse, 'api_json',
+                    return_value={'total_count': len(rows), 'artifacts': rows}) as request:
+                self.assertEqual(rows, product_reuse._catalog_artifacts(url, 'token'))
+                request.assert_called_once()
 
     def test_discovery_includes_exact_git_sdk_default_without_replacing_current_runtime(self) -> None:
         # Real Git policy, mocked transport only: discovery is not carrier admission.
@@ -1388,7 +1453,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://example.invalid",
                        "GITHUB_REPOSITORY": plan["repository"]}
         trust = product_reuse.ReleaseTrust(self.root / "keyring", self.root / "keys")
-        with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts) as listed, \
+        with mock.patch.object(product_reuse, "_catalog_artifacts", return_value=artifacts) as listed, \
                 mock.patch.object(product_reuse, "_materialize_catalog", side_effect=lambda source, artifact, *args, **kwargs: artifact) as materialized:
             result = product_reuse._discover_catalogs(plan, self.root / "catalogs", trust,
                                                       environment, versions, repository)
@@ -1415,7 +1480,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 {"manifest": str(artifact["id"])}, {entry["buildKey"]: self.root / "original.zip"})
         environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://api.github.com",
                        "GITHUB_REPOSITORY": "codex-agent-labs/codex-agent"}
-        with mock.patch.object(product_reuse, "paginated_items", return_value=artifacts), \
+        with mock.patch.object(product_reuse, "_catalog_artifacts", return_value=artifacts), \
                 mock.patch.object(product_reuse, "_catalog_index_hint",
                     side_effect=lambda source, artifact, *args, **kwargs: {"entries": [entries[artifact["id"]]]}) as headers, \
                 mock.patch.object(product_reuse, "_materialize_catalog", side_effect=materialize) as bodies:
@@ -1435,7 +1500,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
             with self.subTest(requested=requested), \
                     mock.patch.object(product_reuse, "_requested", return_value=requested), \
                     mock.patch("products.sdk_release_selection.read_sdk_release_selection", side_effect=AssertionError("Unexpected SDK policy read")), \
-                    mock.patch.object(product_reuse, "paginated_items", return_value=[]):
+                    mock.patch.object(product_reuse, "_catalog_artifacts", return_value=[]):
                 self.assertEqual([], product_reuse._discover_catalogs(plan, self.root / "catalogs", None,
                     environment, VERSIONS, self.root / "not-a-repository"))
 
@@ -1449,7 +1514,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 "validationCommit": tree}
         environment = {"GITHUB_TOKEN": "synthetic", "GITHUB_API_URL": "https://example.invalid",
                        "GITHUB_REPOSITORY": plan["repository"]}
-        with mock.patch.object(product_reuse, "paginated_items") as listed, self.assertRaisesRegex(ValueError, "absent"):
+        with mock.patch.object(product_reuse, "_catalog_artifacts") as listed, self.assertRaisesRegex(ValueError, "absent"):
             product_reuse._discover_catalogs(plan, self.root / "catalogs", None, environment, VERSIONS, repository)
         listed.assert_not_called()
 
@@ -1585,7 +1650,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
         environment = {"GITHUB_TOKEN": "unused", "GITHUB_API_URL": "https://api.github.test",
                        "GITHUB_REPOSITORY": producer["repository"]}
         destination = repository / "build/discovered"
-        with mock.patch.object(product_reuse, "paginated_items", return_value=[artifact]), \
+        with mock.patch.object(product_reuse, "_catalog_artifacts", return_value=[artifact]), \
                 mock.patch.object(product_reuse, "download_artifact_to_file",
                     side_effect=lambda artifact, token, destination, **kwargs: Path(destination).write_bytes(archive.read_bytes())), \
                 mock.patch.object(product_reuse, "api_json", side_effect=[run, tested]) as queried:

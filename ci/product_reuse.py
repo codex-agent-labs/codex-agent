@@ -2579,6 +2579,36 @@ def _catalog_index_hint(source, artifact, token, release_trust, *, repository, p
 
 
 @measured
+def _catalog_artifacts(url: str, token: str) -> list[object]:
+    """Enumerate candidate metadata concurrently; changing lists use the ordinary scan."""
+    from products.restore import bounded_verify
+    separator = "&" if "?" in url else "?"
+
+    def page(number):
+        count('catalogMetadataPageReads')
+        response = api_json(f"{url}{separator}per_page=100&page={number}", token)
+        total = require_integer(response.get("total_count"), "Artifact listing total", 0)
+        rows = require_array(response.get("artifacts"), "Artifact listing page")
+        for row in rows:
+            require_integer(require_object(row, "Artifact metadata").get("id"), "Artifact ID", 1)
+        return total, rows
+
+    total, first = page(1)
+    page_count = max(1, (total + 99) // 100)
+    remaining = bounded_verify(page, range(2, page_count + 1))
+    pages = [(total, first), *remaining]
+    rows = [row for _, batch in pages for row in batch]
+    stable = (all(size == total and len(batch) == min(100, max(0, total - index * 100))
+                  for index, (size, batch) in enumerate(pages))
+              and len({row['id'] for row in rows}) == total)
+    if stable and (page_count == 1 or page(1) == (total, first)):
+        return rows
+    # These are discovery hints, never authority. Do not use a partial concurrent result.
+    count('catalogListingFallbacks')
+    return paginated_items(url, "artifacts", token)
+
+
+@measured
 def _discover_catalogs(
     plan: Mapping[str, Any], destination: Path, release_trust: ReleaseTrust | None,
     environ: Mapping[str, str], versions: Mapping[str, str],
@@ -2603,9 +2633,7 @@ def _discover_catalogs(
         selected = read_sdk_release_selection(repository_root, plan["validationCommit"])
         read_sdk_runtime_compatibility_policy(repository_root, plan["validationCommit"])
         sdk_default = selected["defaultRuntimeVersion"]
-    artifacts = paginated_items(
-        f"{api}/repos/{repository}/actions/artifacts", "artifacts", token,
-    )
+    artifacts = _catalog_artifacts(f"{api}/repos/{repository}/actions/artifacts", token)
     if tooling_candidate_runs is not None:
         from tooling_discovery import candidate_run_ids
         tooling_candidate_runs.extend(candidate_run_ids(artifacts))

@@ -44,6 +44,9 @@ outputs:
   sdk-workers-required:
     description: Current-workflow routing hint.
     value: ${{ steps.route.outputs.sdk_workers_required }}
+  ios-validation-direct:
+    description: Current-workflow hint that iOS validation is ready and earlier SDK families elect no work.
+    value: ${{ steps.route.outputs.ios_validation_direct }}
   native-preparation-required:
     description: Current-workflow routing hint.
     value: ${{ steps.route.outputs.native_preparation_required }}

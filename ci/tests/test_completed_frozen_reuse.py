@@ -413,7 +413,7 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             "freshOriginalPhases": [{field: row[field] for field in (*FIELDS, "receiptSha256")}
                                     for row in rows if row["product"] == "runtime"]}
 
-    def fetched(self, root, *, proof=None, authentication_error=None):
+    def fetched(self, root, *, proof=None, authentication_error=None, sdk_completion=None):
         captured = {"qualification.json": b"synthetic native subject", "bundle.jsonl": b"synthetic native bundle",
                     "proof.json": canonical_json_bytes(self.proof if proof is None else proof)}
         with ExitStack() as stack:
@@ -429,11 +429,54 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             stack.enter_context(patch.object(product_reuse, "_versions", return_value=self.spec["request"]["versions"]))
             result = qualification.fetch_completed_frozen(root / "capture", consumer_commit="c" * 40,
                 verifier_policy_sha256=POLICY, repository_root=root, revision="d" * 40,
+                sdk_completion=sdk_completion,
                 signer_commit="b" * 40, source_commit="a" * 40, artifact_id=71,
                 artifact_sha256="sha256:" + "e" * 64, run_id=72, run_attempt=1, token="fixture")
             self.assertEqual(POLICY, native.call_args.kwargs["policy_sha256"])
             self.assertNotIn("compatible", native.call_args.kwargs)
             return result
+
+    def test_independent_native_authorities_overlap_and_both_must_finish_before_capability(self):
+        import threading
+        sdk, _, _, _ = self.sdk_fixture()
+        contract = [receipt for identity, receipt in self.receipts.items() if identity.product == 'contract']
+        for rejected in (None, 'frozen', 'sdk'):
+            barrier, finished = threading.Barrier(2), set()
+
+            def authenticate(name, result):
+                try:
+                    barrier.wait(timeout=5)
+                    if rejected == name:
+                        raise ValueError(name + ' rejected')
+                    return copy.deepcopy(result)
+                finally:
+                    finished.add(name)
+
+            def sdk_auth(*args, **kwargs):
+                return authenticate('sdk', sdk)
+
+            with self.subTest(rejected=rejected), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(qualification, '_fetch_completed_sdk', side_effect=sdk_auth), \
+                    patch.object(qualification, '_capture_completed_contract_receipts', return_value=contract) as captured, \
+                    patch.object(qualification, 'CompletedFrozenReuse', wraps=qualification.CompletedFrozenReuse) as capability:
+                def fetch():
+                    return self.fetched(Path(temporary).resolve(), sdk_completion={'synthetic': 'independent authority'},
+                        authentication_error=lambda *a, **kw: authenticate('frozen', self.qualified))
+                if rejected:
+                    with self.assertRaisesRegex(ValueError, rejected + ' rejected'):
+                        fetch()
+                    captured.assert_not_called()
+                    capability.assert_not_called()
+                else:
+                    cap, report = fetch()
+                    self.assertEqual(50, report['completedFrozenPhases'])
+                    self.assertEqual(1, report['completedSdkPhases'])
+                    self.assertEqual(0, report['productBodiesDownloaded'])
+                    # The v1 fixture defers 46 Runtime objects and one SDK object;
+                    # its Contract bytes still use the ordinary fallback.
+                    self.assertEqual(47, len(cap.deferred_objects(include_contract=True)))
+                    capability.assert_called_once()
+                self.assertEqual({'frozen', 'sdk'}, finished)
 
     def test_exact_fifty_phase_planner_uses_no_body_or_projection_verifier(self):
         with tempfile.TemporaryDirectory() as temporary:

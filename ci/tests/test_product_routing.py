@@ -61,7 +61,65 @@ class ProductRoutingTest(unittest.TestCase):
                     for family in ('javascript', 'ios-binary', *product_reuse.SDK_WORKER_FAMILIES):
                         decision = routing.select(value, self.locator, self.expected, family=family)
                         elected.extend(json.loads(decision['sdk_matrix'])['include'])
+                        if family == 'javascript':
+                            self.assertEqual(identity.component == 'sdk-ios' and identity.phase == 'validation',
+                                             decision['ios_validation_direct'], identity)
                 self.assertEqual([phase['buildKey']], [row['buildKey'] for row in elected], identity)
+
+    def test_ready_ios_prefix_never_bypasses_earlier_work_or_an_executed_job(self):
+        from ci.tests.test_sdk_native_continuation import ready, needs_for
+        from products.registry import PHASE_INSTANCE_IDS
+        import product_reuse
+        ios = ready('sdk-ios', 'validation', 'ios-simulator-arm64')
+        ios = {k: ios[k] for k in (*routing._IDENTITY, 'buildKey')}
+        decisions = {**deepcopy(self.decisions), 'ready': [ios]}
+        bound = routing.bind(decisions, self.locator, self.expected)
+        decision = routing.select(bound, self.locator, self.expected, family='javascript')
+        self.assertTrue(decision['ios_validation_direct'])
+        prefix = (*routing._IOS_PREFIX_RESULTS, 'sdk-native-metadata-plan',
+                  'sdk-native-metadata', 'sdk-collect-8')
+        needs = {name: {'result': 'skipped', 'outputs': {}} for name in prefix}
+        planned = {**self.locator, 'routing': json.dumps(bound, separators=(',', ':')),
+                   'sdk_workers_required': 'false', 'ios_validation_direct': 'true'}
+        needs['sdk-plan'] = {'result': 'success', 'outputs': planned}
+        before = deepcopy(needs)
+        self.assertEqual(routing.forward_routing(self.locator, planned), routing.select_ios_ready_prefix(needs))
+        self.assertEqual(before, needs)
+        for name in ('sdk-plan', *prefix):
+            for status in ('success', 'failure', 'cancelled', 'in_progress'):
+                if name == 'sdk-plan' and status == 'success':
+                    continue
+                changed = deepcopy(needs)
+                changed[name]['result'] = status
+                with self.subTest(name=name, status=status), self.assertRaises(ValueError):
+                    routing.select_ios_ready_prefix(changed)
+        for changes in ({'sdk_workers_required': 'true'}, {'artifact_id': '43'}, {'routing': ''}):
+            changed = deepcopy(needs)
+            changed['sdk-plan']['outputs'].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                routing.select_ios_ready_prefix(changed)
+        for name in prefix:
+            changed = deepcopy(needs)
+            changed[name]['outputs'] = dict(self.locator)
+            with self.subTest(unexpected_state=name), self.assertRaises(ValueError):
+                routing.select_ios_ready_prefix(changed)
+
+        earlier = ('csharp-binary', 'native-package', 'ios-package', 'javascript-metadata',
+                   'native-validation', 'native-metadata')
+        for identity in PHASE_INSTANCE_IDS:
+            if identity.product != 'sdk' or not (product_reuse._sdk_javascript_worker_instance(identity)
+                    or any(product_reuse._sdk_family_worker_instance(identity, family) for family in earlier)):
+                continue
+            extra = ready(identity.component, identity.phase, identity.target)
+            changed = {**deepcopy(decisions), 'ready': [ios, {k: extra[k] for k in (*routing._IDENTITY, 'buildKey')}],
+                       'preparation': routing.select_preparation_anchor([extra] if extra['phase'] != 'binary' else [])}
+            candidate = routing.bind(changed, self.locator, self.expected)
+            with self.subTest(earlier=identity):
+                self.assertFalse(routing.select(candidate, self.locator, self.expected,
+                                                family='javascript')['ios_validation_direct'])
+        legacy = needs_for('metadata', state=self.locator)
+        legacy['sdk-plan'] = {'result': 'success', 'outputs': {'ios_validation_direct': 'false'}}
+        self.assertEqual(self.locator, routing.select_ios_ready_prefix(legacy))
 
     def test_forwarding_checks_locator_and_terminal_gates(self):
         from ci.tests.test_sdk_native_continuation import needs_for

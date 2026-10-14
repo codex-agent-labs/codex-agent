@@ -1,6 +1,7 @@
 """Workflow source/control checks, not genuine product or hosted acceptance."""
 
 import os
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -16,6 +17,58 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductResumeWorkflowTest(unittest.TestCase):
+    def test_completed_prefix_skips_jobs_but_keeps_the_original_worker_and_terminal_gate(self):
+        from ci import sdk_native_continuation as routing
+        from ci.tests.test_product_routing import ProductRoutingTest
+        fixture = ProductRoutingTest()
+        fixture.setUp()
+        fixture.decisions['ready'] = [dict(product='sdk', component='sdk-ios', phase='validation',
+                                          target='ios-arm64', buildKey='sha256:' + 'd' * 64)]
+        bound = routing.bind(fixture.decisions, fixture.locator, fixture.expected)
+        election = routing.select(bound, fixture.locator, fixture.expected, family='javascript')
+        self.assertTrue(election['ios_validation_direct'])
+        self.assertFalse(election['sdk_workers_required'])
+        skipped = ('sdk-javascript', 'sdk-javascript-metadata-plan', 'sdk-javascript-metadata-result',
+                   'sdk-csharp-binary-plan', 'sdk-csharp-binary-result', 'sdk-native-plan',
+                   'sdk-native-packages', 'sdk-ios-package-plan', 'sdk-ios-packages',
+                   'sdk-native-validation-plan', 'sdk-native-validation-result', 'sdk-native-metadata-plan')
+        for name in skipped:
+            job = workflow_job(self.workflow, name)
+            header = job.split('    runs-on:', 1)[0]
+            self.assertIn("needs.sdk-plan.outputs.ios_validation_direct != 'true'", header, name)
+            self.assertRegex(header, r'needs: \[[^\n]*\bsdk-plan\b', name)
+        native = workflow_job(self.workflow, 'sdk-native-result')
+        self.assertNotIn("ios_validation_direct != 'true'", native)
+        script = textwrap.dedent(native.split("python3 - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
+        parents = (*routing._IOS_PREFIX_RESULTS, 'sdk-native-metadata-plan', 'sdk-native-metadata', 'sdk-collect-8')
+        for name in parents:
+            self.assertIn(name, native.split('    runs-on:', 1)[0])
+        needs = {name: {'result': 'skipped', 'outputs': {}} for name in parents}
+        planned = {**fixture.locator, 'routing': json.dumps(bound, separators=(',', ':')),
+                   'ios_validation_direct': 'true', 'sdk_workers_required': 'false'}
+        needs['sdk-plan'] = {'result': 'success', 'outputs': planned}
+        for status in ('skipped', 'failure'):
+            needs['sdk-ios-packages']['result'] = status
+            with tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / 'outputs'
+                with mock.patch.dict(os.environ, RESULTS=json.dumps(needs), GITHUB_OUTPUT=str(output)):
+                    if status == 'failure':
+                        with self.assertRaises(ValueError):
+                            exec(compile(script, '<native-prefix-boundary>', 'exec'), {})
+                        self.assertFalse(output.exists())
+                    else:
+                        exec(compile(script, '<native-prefix-boundary>', 'exec'), {})
+                        values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                        self.assertEqual(routing.forward_routing(fixture.locator, planned), values)
+        for name in ('sdk-ios-validation-plan', 'sdk-ios-validation', 'sdk-collect-9'):
+            job = workflow_job(self.workflow, name)
+            self.assertIn("needs.sdk-native-result.result == 'success'", job)
+            self.assertIn('artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}', job)
+        worker = workflow_job(self.workflow, 'sdk-ios-validation')
+        self.assertIn('uses: ./.github/actions/sdk-ios-validation-worker', worker)
+        self.assertIn('restore-reuse-qualification@reuse-authority', worker)
+        self.assertIn('sdk_completion --plan', workflow_job(self.workflow, 'sdk-completion'))
+
     def test_sdk_recovery_full_parity_uses_authenticated_state_and_no_legacy_inputs(self):
         parity = workflow_job(self.workflow, "sdk-parity")
         self.assertIn("needs.sdk-completion.outputs.complete == 'true'", parity)

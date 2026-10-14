@@ -50,6 +50,29 @@ _STAGES = {
     "android-metadata": ("sdk-android-validation-result", "sdk-android-metadata-plan", "sdk-android-metadata", "sdk-collect-18", "18"),
 }
 
+# These jobs ordinarily just forward sdk-plan when no earlier SDK family is ready.
+_IOS_PREFIX_RESULTS = (
+    "sdk-javascript", "sdk-javascript-metadata-result", "sdk-csharp-binary-result",
+    "sdk-native-packages", "sdk-ios-packages", "sdk-native-validation-result",
+)
+
+
+def select_ios_ready_prefix(needs):
+    """Collapse only an elected no-work prefix; the V worker still authenticates it."""
+    planned = _job(needs, "sdk-plan")
+    if planned["outputs"].get("ios_validation_direct") != "true":
+        return select_native_state(needs, stage="metadata")
+    if planned["result"] != "success" or planned["outputs"].get("sdk_workers_required") != "false":
+        raise ValueError("Direct iOS validation requires a successful no-work SDK prefix election")
+    for name in (*_IOS_PREFIX_RESULTS, "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8"):
+        job = _job(needs, name)
+        if job["result"] != "skipped" or any(_locator(job["outputs"]).values()):
+            raise ValueError("Direct iOS validation cannot bypass an executed prefix job: " + name)
+    state = forward_routing(planned["outputs"], planned["outputs"])
+    if not state["artifact_id"] or not state.get("routing"):
+        raise ValueError("Direct iOS validation requires the unchanged planned state and routing")
+    return state
+
 
 def select_preparation_anchor(ready_plans):
     """Choose one unchanged native diagnostic anchor from verified ready plans."""
@@ -282,6 +305,14 @@ def select(value, locator, expected, *, family):
         family=None if family in {'javascript', 'ios-binary'} else family)
     result = {'sdk_matrix': canonical_json_bytes(matrix).decode().strip(),
               'sdk_workers_required': bool(matrix['include'])}
+    if family == 'javascript':
+        # Reuse exactly the ordinary family elections; no new phase-completion authority.
+        preceding = ('javascript-metadata', 'csharp-binary', 'native-package',
+                     'ios-package', 'native-validation', 'native-metadata')
+        result['ios_validation_direct'] = (not matrix['include']
+            and not decisions['preparation']['preparation_required']
+            and not any(_matrix_from_plans(decisions['ready'], family=name)['include'] for name in preceding)
+            and bool(_matrix_from_plans(decisions['ready'], family='ios-validation')['include']))
     if family == 'native-package':
         result.update({'native_preparation_' + name.removeprefix('preparation_'): member
                        for name, member in decisions['preparation'].items()})
