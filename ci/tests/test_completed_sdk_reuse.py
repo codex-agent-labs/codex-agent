@@ -99,6 +99,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
         import json
         spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
         completed._spec(spec)
+        planned = deepcopy(spec)
+        planned['source']['jobName'] = 'product-validation / plan'
+        completed._spec(planned)
+        planned['source']['jobName'] = 'product-validation / unrelated'
+        with self.assertRaisesRegex(ValueError, 'successful resume contract'):
+            completed._spec(planned)
         proof = {key: {} for key in ('parentProof', 'controls', 'source', 'originals', 'members',
                                      'contractSource', 'contractFiles')}
         proof.update(schemaVersion=spec['schemaVersion'], kind='completed-sdk-reuse', issuerCommit='a' * 40,
@@ -112,6 +118,35 @@ class CompletedSdkControlsTest(unittest.TestCase):
         altered['source']['artifactBytes'] = completed.LIMIT + 1
         with self.assertRaisesRegex(ValueError, 'bounded original upload'):
             completed._spec(altered)
+
+    def test_future_completion_pins_both_fixed_state_roles_and_upload_windows(self):
+        import json
+        import product_reuse
+        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
+                             ('product-validation / plan', 'codex-agent-planned-product-resume-')):
+            source = {**spec['source'], 'jobName': role}
+            job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
+                       started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
+            artifact = dict(id=source['artifactId'], name=prefix + source['producer']['tree'],
+                            size_in_bytes=source['artifactBytes'], created_at='2026-01-01T01:01:00Z')
+            with self.subTest(role=role), patch.object(product_reuse, '_observe_ci_producer_jobs',
+                    return_value=[{'run': {'id': source['producer']['runId']}, 'jobs': [job]}]) as observe, \
+                    patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact) as metadata:
+                result = completed.observe_source(source, 'synthetic')
+                self.assertEqual(artifact, result[0])
+                self.assertEqual({'source': role}, observe.call_args.kwargs['jobs_by_phase'])
+                self.assertEqual(source['workflowSha'], observe.call_args.kwargs['trusted_workflow_sha'])
+                self.assertEqual(artifact['name'], metadata.call_args.args[2])
+                with self.assertRaisesRegex(ValueError, 'approved successful job'):
+                    completed.observe_source({**source, 'jobId': source['jobId'] + 1}, 'synthetic')
+                metadata.return_value = {**artifact, 'created_at': '2026-01-01T01:03:00Z'}
+                with self.assertRaisesRegex(ValueError, 'job-attempt window'):
+                    completed.observe_source(source, 'synthetic')
+                observe.reset_mock()
+                with self.assertRaisesRegex(ValueError, 'fixed native state producer'):
+                    completed.observe_source({**source, 'jobName': 'product-validation / unrelated'}, 'synthetic')
+                observe.assert_not_called()
 
     def test_native_csharp_and_ios_package_controls_route_without_body_or_gate_replay(self):
         import reuse_qualification as native

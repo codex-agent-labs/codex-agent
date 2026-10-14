@@ -89,6 +89,76 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("test \"$RUNTIME_WORKERS_REQUIRED\" = false", resume)
         self.assertIn('mode: bind', resume)
 
+    def test_native_sdk_shortcut_runs_actual_routing_scripts_without_recovering_the_envelope(self):
+        from ci.tests.test_product_routing import ProductRoutingTest
+        from ci.tests.test_sdk_native_continuation import ready
+        from ci import sdk_native_continuation as routing
+        import product_reuse
+        fixture = ProductRoutingTest()
+        fixture.setUp()
+        phase = ready('sdk-ios', 'validation', 'ios-simulator-arm64')
+        decisions = {**fixture.decisions, 'ready': [{k: phase[k] for k in (*routing._IDENTITY, 'buildKey')}],
+            'runtime': dict(aggregate_state='completed', aggregate_required='false',
+                aggregate_payload_complete='true', sdk_handoff_required='true',
+                aggregate_key='sha256:' + '1' * 64, aggregate_receipt_sha256='sha256:' + '2' * 64,
+                sdk_input_selection=json.dumps({'source': 'current-runtime'}))}
+        resume = workflow_job(self.workflow, 'product-resume')
+        def script(job, marker, end='PY'):
+            step = job.split(marker, 1)[1].split('\n      - ', 1)[0]
+            return textwrap.dedent(step.split("<<'" + end + "'\n", 1)[1].split('\n          ' + end, 1)[0])
+        select_script = script(resume, '      - id: native-route\n', 'PYTHON')
+        forward_script = script(resume, '      - name: Forward the completed transition')
+        parent_script = script(workflow_job(self.workflow, 'sdk-plan'), '      - id: parent\n')
+        env = {name: str(value) for name, value in dict(SDK_RECOVERY_ONLY='true',
+            ORIGINAL_RUNTIME_HANDOFF='caller-owned original locator', RETAINED_SDK_INPUTS_SOURCE='selected original',
+            ROUTING=json.dumps(decisions), ARTIFACT_ID=fixture.locator['artifact_id'],
+            ARTIFACT_SHA256=fixture.locator['artifact_digest'], RUNTIME_WORKERS_REQUIRED='false', SUPERVISOR_KEY='',
+            PLAN_ID=fixture.expected['planId'], VALIDATION_COMMIT=fixture.producer['commit'],
+            VALIDATION_TREE=fixture.producer['tree'], TRUSTED_WORKFLOW_SHA=fixture.expected['workflowSha'],
+            GITHUB_REPOSITORY=fixture.producer['repository'], GITHUB_RUN_ID=fixture.producer['runId'],
+            GITHUB_RUN_ATTEMPT=fixture.producer['runAttempt'], FULL_REUSE='false', TARGET_JOBS_REQUIRED='true',
+            RUNTIME_MATRIX='{"include":[]}', NATIVE_ARTIFACT_ID=fixture.locator['artifact_id'],
+            NATIVE_ARTIFACT_SHA256=fixture.locator['artifact_digest'], GITHUB_TOKEN='synthetic').items()}
+        bound = json.dumps(routing.bind(decisions, fixture.locator, fixture.expected), separators=(',', ':'))
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'outputs'
+            env['GITHUB_OUTPUT'] = str(output)
+            for shortcut in (True, False):
+                with self.subTest(shortcut=shortcut), mock.patch.dict(os.environ,
+                        {**env, 'SDK_RECOVERY_ONLY': str(shortcut).lower()}):
+                    exec(compile(select_script, '<native-route>', 'exec'), {})
+                    fields = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                    self.assertEqual(str(shortcut).lower(), fields['native_sdk_direct'])
+                    output.unlink()
+                    with mock.patch.dict(os.environ, NATIVE_SDK_DIRECT=fields['native_sdk_direct']), \
+                            mock.patch.object(product_reuse, 'capture_planned_native_resume') as capture:
+                        exec(compile(forward_script, '<native-forward>', 'exec'), {})
+                    self.assertEqual(0 if shortcut else 1, capture.call_count)
+                    output.unlink()
+                    parent = {**fixture.locator, 'routing': bound, 'native_sdk_direct': str(shortcut).lower()}
+                    needs = {'product-resume': {'result': 'success', 'outputs': parent},
+                        'runtime-continuation': {'result': 'skipped' if shortcut else 'success',
+                            'outputs': {**fixture.locator, **decisions['runtime'], 'routing': bound}},
+                        'runtime-aggregate-continuation': {'result': 'skipped' if shortcut else 'success',
+                            'outputs': {**fixture.locator, 'routing': bound}},
+                        'sdk-ios-binary-plan': {'result': 'skipped' if shortcut else 'success',
+                            'outputs': {'sdk_workers_required': 'false'}},
+                        'sdk-collect-3': {'result': 'skipped', 'outputs': {}}}
+                    with mock.patch.dict(os.environ, PREDECESSORS=json.dumps(needs)):
+                        exec(compile(parent_script, '<sdk-parent>', 'exec'), {})
+                    forwarded = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                    self.assertEqual({**fixture.locator, 'routing': bound}, forwarded)
+                    output.unlink()
+                    if shortcut:
+                        needs['runtime-continuation']['result'] = 'success'
+                        with mock.patch.dict(os.environ, PREDECESSORS=json.dumps(needs)), \
+                                self.assertRaisesRegex(ValueError, 'executed predecessor'):
+                            exec(compile(parent_script, '<sdk-parent>', 'exec'), {})
+        for name in ('runtime-continuation', 'runtime-aggregate-continuation', 'sdk-ios-binary-plan'):
+            self.assertIn("needs.product-resume.outputs.native_sdk_direct != 'true'", workflow_job(self.workflow, name))
+        for name in ('sdk-inputs', 'sdk-plan'):
+            self.assertIn('always() && !cancelled()', workflow_job(self.workflow, name))
+
     def test_sdk_reference_routing_carries_only_the_planned_locator_without_provisioning_again(self):
         from ci.tests.test_product_routing import ProductRoutingTest
         from products.inventory import canonical_json_bytes
@@ -101,7 +171,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("if: steps.product-reuse.outputs.native_contract_complete == 'true'", export)
         export_script = textwrap.dedent(export.split("python3 -B - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
         job = workflow_job(self.workflow, 'sdk-inputs')
-        self.assertIn("SDK_REFERENCE_SOURCE: ${{ inputs.sdkRecoveryOnly && fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'current-runtime' && needs.plan.outputs.retained_sdk_inputs_source || '' }}", job)
+        self.assertIn("SDK_REFERENCE_SOURCE: ${{ inputs.sdkRecoveryOnly && fromJSON((needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.sdk_input_selection || needs.runtime-continuation.outputs.sdk_input_selection)).source == 'current-runtime' && needs.plan.outputs.retained_sdk_inputs_source || '' }}", job)
         self.assertIn("restore-reuse-qualification@reuse-authority\n        if: env.SDK_REFERENCE_SOURCE == ''", job)
         carry = job.split('      - name: Carry the planned original locator', 1)[1].split('      - name:', 1)[0]
         self.assertIn("if: env.SDK_REFERENCE_SOURCE != ''", carry)

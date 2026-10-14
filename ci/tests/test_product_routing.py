@@ -121,6 +121,46 @@ class ProductRoutingTest(unittest.TestCase):
         legacy['sdk-plan'] = {'result': 'success', 'outputs': {'ios_validation_direct': 'false'}}
         self.assertEqual(self.locator, routing.select_ios_ready_prefix(legacy))
 
+    def test_native_resume_shortcut_requires_completed_runtime_and_only_ready_ios_validation(self):
+        from ci.tests.test_sdk_native_continuation import ready
+        ios = ready('sdk-ios', 'validation', 'ios-simulator-arm64')
+        decisions = {**deepcopy(self.decisions),
+            'ready': [{k: ios[k] for k in (*routing._IDENTITY, 'buildKey')}],
+            'runtime': dict(aggregate_state='completed', aggregate_required='false',
+                aggregate_payload_complete='true', sdk_handoff_required='true',
+                aggregate_key='sha256:' + '1' * 64, aggregate_receipt_sha256='sha256:' + '2' * 64,
+                sdk_input_selection=json.dumps({'source': 'current-runtime'}))}
+        arguments = dict(sdk_recovery_only=True, runtime_workers_required='false', supervisor_key='')
+        result = routing.native_sdk_resume(decisions, self.locator, self.expected, **arguments)
+        self.assertTrue(result['native_sdk_direct'])
+        self.assertEqual(decisions['runtime']['aggregate_key'], result['aggregate_key'])
+        for changes in ({'sdk_recovery_only': False}, {'runtime_workers_required': 'true'},
+                        {'supervisor_key': 'sha256:' + '3' * 64}):
+            with self.subTest(changes=changes):
+                self.assertEqual({'native_sdk_direct': False}, routing.native_sdk_resume(
+                    decisions, self.locator, self.expected, **{**arguments, **changes}))
+        for field, value in (('aggregate_state', 'ready'), ('aggregate_required', 'true'),
+                ('aggregate_payload_complete', 'false'), ('sdk_handoff_required', 'false'),
+                ('sdk_input_selection', json.dumps({'source': 'released-default'}))):
+            changed = deepcopy(decisions)
+            changed['runtime'][field] = value
+            with self.subTest(field=field):
+                self.assertEqual({'native_sdk_direct': False}, routing.native_sdk_resume(
+                    changed, self.locator, self.expected, **arguments))
+        for component, phase, target in (('sdk-ios', 'binary', 'ios'),
+                ('javascript', 'validation', 'node'), ('sdk-ios', 'package', 'ios')):
+            extra = ready(component, phase, target)
+            changed = deepcopy(decisions)
+            changed['ready'].append({k: extra[k] for k in (*routing._IDENTITY, 'buildKey')})
+            self.assertFalse(routing.native_sdk_resume(changed, self.locator, self.expected,
+                                                      **arguments)['native_sdk_direct'])
+        for changed in ({**self.expected, 'runId': 99}, {**self.expected, 'workflowSha': 'd' * 40}):
+            with self.assertRaises(ValueError):
+                routing.native_sdk_resume(decisions, self.locator, changed, **arguments)
+        with self.assertRaises(ValueError):
+            routing.native_sdk_resume(decisions, self.locator, self.expected,
+                                     **{**arguments, 'sdk_recovery_only': 'true'})
+
     def test_forwarding_checks_locator_and_terminal_gates(self):
         from ci.tests.test_sdk_native_continuation import needs_for
         encoded = json.dumps(routing.bind(self.decisions, self.locator, self.expected), separators=(',', ':'))

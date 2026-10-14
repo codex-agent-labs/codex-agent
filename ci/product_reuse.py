@@ -7004,6 +7004,18 @@ def capture_runtime_supervisor_upload(
     return evidence
 
 
+def _initial_runtime_upload_source(producer, artifact_id, token):
+    """Select one of two fixed source roles; the full source gates run afterwards."""
+    require_integer(artifact_id, "Initial Runtime upload ID", 1)
+    artifact = api_json(
+        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/{artifact_id}", token)
+    count("stateRoleMetadataReads")
+    planned = f"codex-agent-planned-product-resume-{producer['tree']}"
+    if artifact.get("name") == planned:
+        return "product-validation / plan", planned
+    return "product-validation / product-resume", f"codex-agent-product-resume-{producer['tree']}"
+
+
 @measured
 def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destination, *,
                                        trusted_workflow_sha, token, wanted, _targets=None):
@@ -7037,11 +7049,15 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
             job = f"product-validation / {parent_job} / sdk-collect-{sdk_wave}"
             workflow_policy = {"trusted_workflows_by_phase": {"resume": {
                 "path": f".github/workflows/{workflow_name}.yml", "sha": trusted_workflow_sha}}}
+    elif wave == 0:
+        job, name = _initial_runtime_upload_source(producer, base["artifactId"], token)
     observed = _observe_ci_producer_jobs({"resume": producer}, jobs_by_phase={"resume": job},
         **workflow_policy, token=token)
     artifact = _contract_ci_upload_metadata(base["artifactId"], base["artifactSha256"], name,
         producer, observed[0]["run"], token)
     _require_artifact_job_window(observed[0], job, artifact)
+    if job == "product-validation / plan" and artifact["size_in_bytes"] > 16 * 1024**2:
+        raise ValueError("Planned native state exceeds its original upload bound")
     plan_path = "product-resume-inputs/plan/impact-plan.json"
     wanted = dict(wanted)
     wanted[plan_path] = {"relativePath": plan_path, "bytes": len(plan_bytes), "sha256": sha256_bytes(plan_bytes)}
@@ -7067,6 +7083,11 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
         resolved_paths.add(path)
     with open_reference_archive(artifact, token) as (archive, stream):
         names = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
+        if job == "product-validation / plan" and (
+                ORIGINAL_REFERENCE_NAME not in names or "runtime-references.json" in names
+                or any(entry.file_size > 16 * 1024**2 for entry in archive.infolist())
+                or sum(entry.file_size for entry in archive.infolist()) > 64 * 1024**2):
+            raise ValueError("Planned native state requires its original-reference envelope")
         roots = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if wave or sdk_wave is not None else set())
         if any(path not in {"runtime-references.json", ORIGINAL_REFERENCE_NAME}
                and path.split("/")[0] not in roots for path in names):
@@ -7531,6 +7552,8 @@ def capture_runtime_resume_upload(
             job_name = f"product-validation / sdk-collect-{sdk_state_wave}"
             artifact_name = (f"codex-agent-sdk-wave-{sdk_state_wave}-state-{producer['tree']}-"
                              f"attempt-{producer['runAttempt']}")
+        elif state_wave == 0:
+            job_name, artifact_name = _initial_runtime_upload_source(producer, artifact_id, token)
         workflow_policy = {"trusted_workflow_sha": trusted_workflow_sha}
         if sdk_state_wave is not None and 11 <= sdk_state_wave <= 18:
             from ci.sdk_nested_wave_locator import _COLLECTORS
@@ -7552,11 +7575,14 @@ def capture_runtime_resume_upload(
         archive = private / "transport.zip"
         artifact, _ = _download_contract_ci_upload(
             artifact_id, artifact_sha256, artifact_name,
-            producer, observed[0]["run"], token, destination=archive)
-        if sdk_state_wave is not None or allow_earlier_attempt:
+            producer, observed[0]["run"], token, destination=archive,
+            **({"max_bytes": 16 * 1024**2} if job_name == "product-validation / plan" else {}))
+        if sdk_state_wave is not None or allow_earlier_attempt or job_name == "product-validation / plan":
             _require_artifact_job_window(observed[0], job_name, artifact)
-        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-                                             **_CATALOG_ZIP_LIMITS)
+        limits = (_CATALOG_ZIP_LIMITS if job_name != "product-validation / plan" else
+                  {**_CATALOG_ZIP_LIMITS, "max_archive_bytes": 16 * 1024**2,
+                   "max_entry_bytes": 16 * 1024**2, "max_total_bytes": 64 * 1024**2})
+        zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **limits)
         prepared = private / "captured"
         original = prepared / "original"
         safe_extract(archive, original)
@@ -7566,6 +7592,9 @@ def capture_runtime_resume_upload(
         reference_transport = None
         reference_control_digest = None
         original_reference_path = original / "runtime-original-references.json"
+        if job_name == "product-validation / plan" and (
+                not original_reference_path.is_file() or reference_path.exists()):
+            raise ValueError("Planned native state requires its original-reference envelope")
         original_reference_transports = []
         original_references = None
         selected_paths = None

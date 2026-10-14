@@ -163,7 +163,7 @@ class SdkCampaignObservationTest(TestCase):
             return state
 
         with patch.object(observed.product_reuse, "api_json",
-                          side_effect=[fixture.run, fixture.commit, fixture.artifact]), \
+                          side_effect=[fixture.artifact, fixture.run, fixture.commit, fixture.artifact]), \
              patch.object(observed.product_reuse, "paginated_items", return_value=[fixture.job]), \
              patch.object(observed.product_reuse, "download_artifact_to_file",
                           side_effect=lambda _artifact, _token, destination, **_:

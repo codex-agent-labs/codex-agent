@@ -133,7 +133,7 @@ class SdkIosBinaryProjectionTest(unittest.TestCase):
         shards = [] if failure else [self.destination / "collection" / row["shardDirectory"]]
         advanced.assert_called_once_with(self.plan, self.discovery, self.state, shards,
             self.destination / "handoff/runtime-state", self.output, repository_root=self.root, environ={},
-            failed_instances=failed, sdk_ios_binary_only=True, sdk_original_workflow_sha=PIN)
+            failed_instances=failed, sdk_ios_binary_only=True, routing_output=True, sdk_original_workflow_sha=PIN)
         if failure:
             matrix.assert_not_called()
             self.assertIn("sdk_workers_required=false", self.output.read_text())

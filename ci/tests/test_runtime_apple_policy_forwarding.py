@@ -92,7 +92,7 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
             for name in self.admissions:
                 self.assertNotIn(name, self.case.output.read_text())
 
-    def test_all_collection_waves_forward_policy_through_advance_and_final_replay(self):
+    def test_all_collection_waves_forward_policy_through_the_single_advance_replay(self):
         for wave in range(1, 6):
             for supplied in (False, True):
                 optional = {"sdk_apple_validation_policy": self.policy, **self.admissions} if supplied else {}
@@ -103,9 +103,13 @@ class RuntimeApplePolicyForwardingTest(unittest.TestCase):
                         patch.object(workflow.products, "runtime_worker_matrix", return_value={"include": []}) as matrix, \
                         patch.object(workflow.products, "inspect_products", return_value=self.case.final_fixture("retained")) as inspect:
                     self.case.collect(destination, wave, **optional)
-                for replay in (collector, advance, inspect if wave == 5 else matrix):
+                for replay in (collector, advance):
                     replay.assert_called_once()
                     self.assert_policy(replay, supplied)
+                self.assertIs(True, advance.call_args.kwargs['routing_output'])
+                self.assertEqual(wave, advance.call_args.kwargs['runtime_collection_wave'])
+                matrix.assert_not_called()
+                inspect.assert_not_called()
                 for name, raw in self.case.base.items():
                     self.assertEqual(raw, (destination / "handoff" / name).read_bytes())
 

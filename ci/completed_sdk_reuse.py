@@ -19,6 +19,10 @@ IDENTITY = ("product", "component", "phase", "target")
 OBJECT = ("buildKey", "receiptSha256", "objectSha256")
 LIMIT = 16 * 1024 * 1024
 IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+_SOURCE_UPLOADS = {
+    "product-validation / product-resume": "codex-agent-product-resume-",
+    "product-validation / plan": "codex-agent-planned-product-resume-",
+}
 
 
 def _identity(record):
@@ -154,9 +158,14 @@ def observe_source(source, token, *, contract=False):
     if (producer["repository"] != native.REPOSITORY or producer["event"] != "pull_request"
             or producer["pullRequest"] != 31 or producer["workflowPath"] != ".github/workflows/ci.yml"):
         raise ValueError("Incremental source changes its approved producer scope")
-    job = ("product-validation / contract-validation / contract-attestation" if contract
-           else "product-validation / product-resume")
-    prefix = "codex-agent-contract-release-controls-" if contract else "codex-agent-product-resume-"
+    if contract:
+        job, prefix = ("product-validation / contract-validation / contract-attestation",
+                       "codex-agent-contract-release-controls-")
+    else:
+        job = source.get("jobName")
+        if type(job) is not str or job not in _SOURCE_UPLOADS:
+            raise ValueError("Incremental source requires a fixed native state producer")
+        prefix = _SOURCE_UPLOADS[job]
     observed = products._observe_ci_producer_jobs({"source": producer}, jobs_by_phase={"source": job},
         trusted_workflow_sha=source["workflowSha"], token=token)
     selected = products._matching_ci_jobs(observed[0]["jobs"], job)
@@ -209,7 +218,8 @@ def _spec(spec):
         if source["artifactBytes"] > LIMIT:
             raise ValueError("Incremental controls exceed the bounded original upload")
     if (spec["stateRoot"] != "product-resume-state"
-            or spec["source"]["jobName"] != "product-validation / product-resume"):
+            or type(spec["source"]["jobName"]) is not str
+            or spec["source"]["jobName"] not in _SOURCE_UPLOADS):
         raise ValueError("Incremental native source changes its successful resume contract")
     native._commit(spec["source"]["inventoryCommit"])
     for row in originals.values():

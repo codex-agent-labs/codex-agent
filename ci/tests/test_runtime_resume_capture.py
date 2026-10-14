@@ -34,6 +34,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
     def capture(self, destination, *, run=None, commit=None, jobs=None, artifact=None, raw=None,
                 original_run_id=None, original_run_attempt=None, environment=None):
         with mock.patch.object(product_reuse, "api_json", side_effect=[
+            self.artifact if artifact is None else artifact,
             self.run if run is None else run, self.commit if commit is None else commit,
             self.artifact if artifact is None else artifact,
         ]) as query, mock.patch.object(product_reuse, "paginated_items", return_value=(
@@ -67,7 +68,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         def jobs(url, *args):
             return [original_job] if "/attempts/3/" in url else []
         with mock.patch.object(product_reuse, "api_json", side_effect=[
-                artifact, self.run, self.commit, artifact]), \
+                artifact, artifact, self.run, self.commit, artifact]), \
                 mock.patch.object(product_reuse, "paginated_items", side_effect=jobs), \
                 mock.patch.object(product_reuse, "download_artifact_to_file",
                     side_effect=lambda artifact, token, destination, **kw: Path(destination).write_bytes(self.raw)):
@@ -104,7 +105,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         self.assertEqual(self.run, result["observed"][0]["run"])
         self.assertEqual(self.commit, result["observed"][0]["testedCommit"])
         self.assertEqual([self.job], result["observed"][0]["jobs"])
-        self.assertEqual(3, query.call_count)
+        self.assertEqual(4, query.call_count)
         listing.assert_called_once_with(
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/91/attempts/3/jobs",
             "jobs", "not-a-real-token")
@@ -112,6 +113,41 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         self.assertEqual(product_reuse._CATALOG_LIMIT, download.call_args.kwargs["max_bytes"])
         # The fixture state is not valid JSON; capture therefore proves no phase replay.
         self.assertNotIn("fullReuse", result)
+
+    def test_planned_native_upload_keeps_exact_job_window_plan_and_envelope_gates(self):
+        from runtime_reference_transport import stage_original_reference_handoff
+        roots = {name: self.root / 'planned-inputs' / name for name in
+                 ('product-resume-inputs', 'product-resume-state')}
+        for name, raw in self.contents.items():
+            path = self.root / 'planned-inputs' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        (roots['product-resume-state'] / 'duplicate-plan.json').write_bytes(self.plan_path.read_bytes())
+        thin = self.root / 'thin-planned'
+        stage_original_reference_handoff(roots, [], thin)
+        physical = {path.relative_to(thin).as_posix(): path.read_bytes()
+                    for path in thin.rglob('*') if path.is_file()}
+        self.job.update(name='product-validation / plan', started_at='2026-01-01T01:00:00Z',
+                        completed_at='2026-01-01T01:02:00Z')
+        self.artifact.update(name=f"codex-agent-planned-product-resume-{self.producer['tree']}",
+                             created_at='2026-01-01T01:01:00Z')
+        result, query, _, _ = self.capture_members(self.root / 'build/planned-success', physical)
+        self.assertEqual('product-validation / plan', result['observed'][0]['jobs'][0]['name'])
+        self.assertEqual(self.artifact['name'], result['artifact']['name'])
+        self.assertEqual(4, query.call_count)
+        for index, (owner, change) in enumerate((
+                ('job', {'conclusion': 'failure'}), ('job', {'name': 'product-validation / unrelated'}),
+                ('artifact', {'created_at': '2026-01-01T01:03:00Z'}),
+                ('artifact', {'expired': True}),
+                ('artifact', {'name': f"codex-agent-planned-product-resume-{'0' * 40}"}))):
+            with self.subTest(change=change), mock.patch.object(self, owner, {**getattr(self, owner), **change}), \
+                    self.assertRaises(ValueError):
+                self.capture_members(self.root / f'build/planned-rejected-{index}', physical)
+        with self.assertRaisesRegex(ValueError, 'original-reference envelope'):
+            self.capture_members(self.root / 'build/planned-unbounded-format', self.contents)
+        with self.assertRaisesRegex(ValueError, 'transport limit'):
+            self.capture(self.root / 'build/planned-oversized',
+                         artifact={**self.artifact, 'size_in_bytes': 16 * 1024**2 + 1})
 
     def test_late_original_mutation_cannot_publish(self):
         destination = self.root / "build/rejected-resume-late-copy"

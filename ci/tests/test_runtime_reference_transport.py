@@ -126,18 +126,26 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         base = {'artifactId': artifact['id'], 'artifactSha256': artifact['digest'], 'stateWave': 0,
                 'referenceControlSha256': result['referenceControlSha256']}
         wanted = {row['relativePath']: row for row in value['inventory']}
-        ranges = RangeOpener({artifact['id']: raw})
-        observation = [{'run': fixture.run, 'testedCommit': fixture.commit, 'jobs': [fixture.job]}]
-        resolved = fixture.root / 'build/ancestor-initial'
-        with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observation), \
-                mock.patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact), \
-                mock.patch.object(product_reuse, '_reuse_contract_ci_upload',
-                                  side_effect=AssertionError('unnecessary full initial archive transfer')), \
-                mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
-            product_reuse._capture_runtime_reference_members({}, fixture.plan_path.read_bytes(),
-                fixture.producer, base, resolved, trusted_workflow_sha=fixture.pin,
-                token='not-a-real-token', wanted=wanted)
-        self.assertEqual(value['inventory'], regular_file_inventory(resolved, allow_empty=True))
+        for planned in (False, True):
+            role = 'product-validation / plan' if planned else fixture.job['name']
+            metadata = {**artifact, **({'name': f"codex-agent-planned-product-resume-{fixture.producer['tree']}"}
+                                      if planned else {})}
+            ranges = RangeOpener({artifact['id']: raw})
+            observation = [{'run': fixture.run, 'testedCommit': fixture.commit,
+                            'jobs': [{**fixture.job, 'name': role}]}]
+            resolved = fixture.root / f'build/ancestor-initial-{planned}'
+            with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observation) as observe, \
+                    mock.patch.object(product_reuse, 'api_json', return_value=metadata), \
+                    mock.patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=metadata) as source, \
+                    mock.patch.object(product_reuse, '_reuse_contract_ci_upload',
+                                      side_effect=AssertionError('unnecessary full initial archive transfer')), \
+                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
+                product_reuse._capture_runtime_reference_members({}, fixture.plan_path.read_bytes(),
+                    fixture.producer, base, resolved, trusted_workflow_sha=fixture.pin,
+                    token='not-a-real-token', wanted=wanted)
+            self.assertEqual({'resume': role}, observe.call_args.kwargs['jobs_by_phase'])
+            self.assertEqual(metadata['name'], source.call_args.args[2])
+            self.assertEqual(value['inventory'], regular_file_inventory(resolved, allow_empty=True))
         changed = copy.deepcopy(value)
         changed['references'][0]['sourcePath'] = changed['references'][0]['relativePath']
         with self.assertRaisesRegex(ValueError, 'cyclic'):
@@ -238,6 +246,7 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         for changed in (False, True):
             ranges = RangeOpener({101: base_raw, 102: changed_raw if changed else nested_raw})
             with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observed), \
+                    mock.patch.object(product_reuse, 'api_json', return_value=artifacts[101]), \
                     mock.patch.object(product_reuse, '_contract_ci_upload_metadata',
                                       side_effect=lambda identifier, *args: artifacts[identifier]), \
                     mock.patch.object(product_reuse, '_reuse_contract_ci_upload',
@@ -343,6 +352,7 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             ranges = RangeOpener({101: base_raw})
             with mock.patch.object(product_reuse, 'api_json', side_effect=[
                     fixture.run, fixture.commit, artifact,
+                    *([] if sdk else [original]),
                     {**fixture.run, "run_attempt": 2} if sdk else fixture.run, fixture.commit, original]), \
                     mock.patch.object(product_reuse, 'paginated_items', side_effect=[[jobs[0]], [jobs[1]]]), \
                     mock.patch.object(product_reuse, 'download_artifact_to_file',

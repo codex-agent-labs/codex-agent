@@ -319,6 +319,34 @@ def select(value, locator, expected, *, family):
     return result
 
 
+def native_sdk_resume(decisions, locator, expected, *, sdk_recovery_only,
+                      runtime_workers_required, supervisor_key):
+    """Forward a completed native prefix; consumers still authenticate its upload."""
+    if type(sdk_recovery_only) is not bool or runtime_workers_required not in ('true', 'false'):
+        raise ValueError('Native SDK resume requires exact recovery and Runtime election flags')
+    bound = bind(decisions, locator, expected)
+    runtime = bound['decisions']['runtime']
+    direct = (sdk_recovery_only and runtime_workers_required == 'false' and supervisor_key == ''
+        and bound['locator']['state_wave'] == '0' and bound['locator']['sdk_state_wave'] == ''
+        and isinstance(runtime, dict)
+        and runtime.get('aggregate_state') == 'completed'
+        and runtime.get('aggregate_required') == 'false'
+        and runtime.get('aggregate_payload_complete') == 'true'
+        and runtime.get('sdk_handoff_required') == 'true'
+        and select(bound, locator, expected, family='javascript')['ios_validation_direct']
+        and not select(bound, locator, expected, family='ios-binary')['sdk_workers_required'])
+    if direct:
+        source = json.loads(runtime.get('sdk_input_selection', '{}'))
+        direct = isinstance(source, dict) and source.get('source') == 'current-runtime'
+    if not direct:
+        return {'native_sdk_direct': False}
+    require_sha256(runtime.get('aggregate_key'), 'Completed native aggregate key')
+    require_sha256(runtime.get('aggregate_receipt_sha256'), 'Completed native aggregate receipt')
+    return {'native_sdk_direct': True, **{name: runtime[name] for name in (
+        'sdk_input_selection', 'aggregate_key', 'aggregate_receipt_sha256',
+        'aggregate_payload_complete')}}
+
+
 def main():
     """Inputs are fixed workflow expressions, never artifacts or user dispatch JSON."""
     import argparse
