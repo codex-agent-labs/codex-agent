@@ -100,7 +100,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         completed._spec(spec)
         proof = {key: {} for key in ('parentProof', 'controls', 'source', 'originals', 'members',
                                      'contractSource', 'contractFiles')}
-        proof.update(schemaVersion=2, kind='completed-sdk-reuse', issuerCommit='a' * 40,
+        proof.update(schemaVersion=spec['schemaVersion'], kind='completed-sdk-reuse', issuerCommit='a' * 40,
                      specSha256=sha256_bytes(canonical_json_bytes(spec)))
         with patch('reuse_qualification._validate_completed_sdk') as inherit:
             with self.assertRaisesRegex(ValueError, 'approved native issuer or parent'):
