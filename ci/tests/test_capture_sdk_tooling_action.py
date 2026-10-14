@@ -72,6 +72,7 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         self.assertEqual(canonical_json_bytes(self.producer), producer.read_bytes())
         self.assertEqual(self.repository, kwargs['cwd'])
         self.assertEqual('caller-token', kwargs['env']['GITHUB_TOKEN'])
+        self.assertEqual(self.environment['JAVA_HOME'], kwargs['env']['JAVA_HOME'])
         self.assertTrue(kwargs['check'])
         self.assertNotIn('shell', kwargs)
         destination.mkdir()
@@ -97,6 +98,40 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         self.environment['JAVA_HOME'] = str(alias)
         with patch('subprocess.run', side_effect=self.capture):
             self.execute()
+
+    def test_macos_arm_uses_installed_java21_only_for_verification(self):
+        self.environment.update(RUNNER_OS='macOS', RUNNER_ARCH='ARM64',
+                                JAVA_HOME_21_arm64=str(self.root / 'java21'))
+        producer_java = self.java
+        self.java = self.root / 'java21' / 'bin' / producer_java.name
+        self.java.parent.mkdir(parents=True)
+        self.java.write_bytes(b'caller installed Java 21')
+        with patch('subprocess.run', side_effect=self.capture) as run:
+            self.execute()
+        run.assert_called_once()
+        self.assertEqual(str(self.java_home), self.environment['JAVA_HOME'])
+        self.assertEqual(b'caller installed Java', producer_java.read_bytes())
+
+    def test_java17_fallback_and_other_platforms_keep_the_caller_runtime(self):
+        for system, architecture in (('macOS', 'ARM64'), ('macOS', 'X64'),
+                                     ('Linux', 'ARM64'), ('Windows', 'ARM64')):
+            with self.subTest(system=system, architecture=architecture):
+                self.environment.update(RUNNER_OS=system, RUNNER_ARCH=architecture)
+                if (system, architecture) != ('macOS', 'ARM64'):
+                    self.environment['JAVA_HOME_21_arm64'] = 'unused-invalid-alias'
+                with patch('subprocess.run', side_effect=self.capture) as run:
+                    self.execute()
+                run.assert_called_once()
+
+    def test_invalid_present_java21_alias_fails_before_capture(self):
+        self.environment.update(RUNNER_OS='macOS', RUNNER_ARCH='ARM64')
+        for alias in ('', 'relative', str(self.root / 'missing-java21'), str(self.original)):
+            with self.subTest(alias=alias):
+                self.environment['JAVA_HOME_21_arm64'] = alias
+                with patch('subprocess.run') as run, self.assertRaises((ValueError, OSError)):
+                    self.execute()
+                run.assert_not_called()
+                self.assertFalse(self.output.exists())
 
     def test_optional_plan_directory_is_fresh_external_and_shares_capture_parent(self):
         self.environment['PLAN_ID'] = '123'
@@ -126,7 +161,7 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         download, policy = download.split('    - id: apple-policy\n', 1)
         self.assertIn("if: inputs.plan-id != ''", download)
         self.assertIn('uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c', download)
-        self.assertIn('artifact-ids: ${{ inputs.plan-id }}', download)
+        self.assertIn('artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || inputs.plan-id }}', download)
         self.assertIn('path: ${{ steps.capture.outputs.plan_directory }}', download)
         self.assertIn('merge-multiple: true', download)
         self.assertIn("if: inputs.plan-id != ''", policy)

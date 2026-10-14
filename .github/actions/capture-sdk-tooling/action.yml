@@ -58,12 +58,17 @@ runs:
         from ci.products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes
         from ci.tooling_discovery import _original_tooling_workflow
         repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
-        java_home = Path(os.environ['JAVA_HOME'])
+        java_home = os.environ['JAVA_HOME']
+        # Use ARM SHA intrinsics for verification without changing the producer's Java 17.
+        if (os.environ.get('RUNNER_OS'), os.environ.get('RUNNER_ARCH')) == ('macOS', 'ARM64'):
+            java_home = os.environ.get('JAVA_HOME_21_arm64', java_home)
+        java_home = Path(java_home)
         scratch_root = Path(os.environ['RUNNER_TEMP'])
         if not java_home.is_absolute() or not scratch_root.is_absolute():
             raise ValueError('Tooling capture requires absolute caller Java and scratch paths')
         java = (java_home / 'bin' / ('java.exe' if os.name == 'nt' else 'java')).resolve(strict=True)
         read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+        print('SDK tooling verifier Java: ' + str(java), flush=True)
         scratch_root = scratch_root.resolve(strict=True)
         if scratch_root.is_relative_to(repository) or repository.is_relative_to(scratch_root):
             raise ValueError('Tooling capture scratch must be outside and separate from the checkout')
