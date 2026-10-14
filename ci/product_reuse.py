@@ -4352,7 +4352,8 @@ def _verified_product_state(
         prior_records.extend(replay_prior_ios_binary(package_capture, discovery_root,
             plan=plan, plan_path=plan_path, repository_root=root,
             consumer_producer=consumer["producer"], trusted_workflow_sha=sdk_original_workflow_sha,
-            token=environment["GITHUB_TOKEN"], environ=environment, phase="package"))
+            token=environment["GITHUB_TOKEN"], environ=environment, phase="package",
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                      ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
         instance = PhaseInstanceId("sdk", component, phase, target)

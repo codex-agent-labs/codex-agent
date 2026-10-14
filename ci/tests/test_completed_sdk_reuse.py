@@ -155,6 +155,38 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     return recovery.replay_prior_javascript_package(root / folder, root, component=component, **options)
                 self.assertEqual(records, replay(cap))
                 if component == 'sdk-ios':
+                    # Exercise the shared worker-entry replay, not only its leaf helper.
+                    plan.update(event='pull_request', validationCommit=receipt['producer']['commit'])
+                    plan_path.write_bytes(canonical_json_bytes(plan))
+                    (root / 'producer.json').write_bytes(canonical_json_bytes(consumer))
+                    instance = recovery.products._identity(receipt)
+                    request = {'requested': [recovery.products._identity_record(instance)],
+                               'sdkRuntimeSource': None}
+                    actual_replay = recovery.replay_prior_ios_binary
+
+                    class ReplayedControls(Exception):
+                        pass
+
+                    def replayed(*args, **kwargs):
+                        self.assertEqual(records, actual_replay(*args, **kwargs))
+                        raise ReplayedControls  # Stop before unrelated Contract/planner fixtures.
+
+                    with ExitStack() as shared:
+                        shared.enter_context(patch.object(native.CompletedFrozenReuse, 'check_request'))
+                        shared.enter_context(patch.object(recovery.products, '_consumer',
+                            return_value={'kind': 'ci', 'producer': consumer}))
+                        shared.enter_context(patch.object(recovery.products, '_relocated_wave_control', return_value=request))
+                        shared.enter_context(patch.object(recovery.products, '_requested', return_value=(instance,)))
+                        shared.enter_context(patch.object(recovery.products, '_versions',
+                            return_value={'sdk': '0.2.0', 'runtime-release': '0.2.0'}))
+                        shared.enter_context(patch.object(recovery.products, 'sdk_runtime_source', return_value=None))
+                        shared.enter_context(patch.object(recovery.products, '_dependency_closure', return_value=(instance,)))
+                        shared.enter_context(patch.object(recovery.products, '_authorities', return_value=([], None)))
+                        shared.enter_context(patch.object(recovery, 'replay_prior_ios_binary', side_effect=replayed))
+                        with self.assertRaises(ReplayedControls):
+                            recovery.products._verified_product_state(plan_path, root, root, root,
+                                {'GITHUB_TOKEN': 'synthetic'}, None, sdk_original_workflow_sha='a' * 40,
+                                completed_frozen=cap)
                     inputs = root / 'inputs'
                     inputs.mkdir()
                     (inputs / 'same-plan.json').write_bytes(plan_path.read_bytes())
