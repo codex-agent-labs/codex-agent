@@ -153,6 +153,26 @@ def select_native_state(needs, *, stage):
     if parent["result"] != "success":
         raise ValueError("Native predecessor gate failed")
     state = _locator(parent["outputs"])
+    if stage == "ios-validation":
+        planned = _job(needs, "plan")
+        native = _job(needs, "sdk-ios-validation-native")
+        direct = planned["outputs"].get("native_ios_worker_ready", "")
+        if direct not in ("", "true", "false"):
+            raise ValueError("Native iOS worker election is malformed")
+        if direct == "true":
+            outputs = planned["outputs"]
+            original = _locator(dict(artifact_id=outputs.get("native_resume_artifact_id", ""),
+                artifact_digest=outputs.get("native_resume_artifact_digest", ""),
+                state_wave="0", sdk_state_wave=""))
+            if (planned["result"] != "success" or workers["result"] != "skipped"
+                    or not original["artifact_id"] or state != original
+                    or election["outputs"].get("sdk_workers_required") != "true"
+                    or not outputs.get("native_ios_matrix")
+                    or election["outputs"].get("sdk_matrix") != outputs["native_ios_matrix"]):
+                raise ValueError("Native iOS worker differs from its exclusive planned election")
+            workers = native
+        elif native["result"] != "skipped":
+            raise ValueError("Unexpected native iOS worker without its planned election")
     preparation = _job(needs, "sdk-native-prepare") if stage == "package" else None
     apple_signing = tuple(_job(needs, name) for name in
         ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation")) if stage == "ios-validation" else ()
@@ -347,7 +367,9 @@ def native_sdk_resume(decisions, locator, expected, *, sdk_recovery_only,
         return {'native_sdk_direct': False}
     require_sha256(runtime.get('aggregate_key'), 'Completed native aggregate key')
     require_sha256(runtime.get('aggregate_receipt_sha256'), 'Completed native aggregate receipt')
-    return {'native_sdk_direct': True, **{name: runtime[name] for name in (
+    return {'native_sdk_direct': True,
+        'sdk_matrix': select(bound, locator, expected, family='ios-validation')['sdk_matrix'],
+        **{name: runtime[name] for name in (
         'sdk_input_selection', 'aggregate_key', 'aggregate_receipt_sha256',
         'aggregate_payload_complete')}}
 

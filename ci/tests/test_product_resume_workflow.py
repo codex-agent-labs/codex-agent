@@ -106,7 +106,10 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         def script(job, marker, end='PY'):
             step = job.split(marker, 1)[1].split('\n      - ', 1)[0]
             return textwrap.dedent(step.split("<<'" + end + "'\n", 1)[1].split('\n          ' + end, 1)[0])
-        select_script = script(resume, '      - id: native-route\n', 'PYTHON')
+        plan = workflow_job(self.workflow, 'plan')
+        self.assertLess(plan.index('id: upload_plan\n'), plan.index('id: native-route\n'))
+        self.assertNotIn('id: native-route\n', resume)
+        select_script = script(plan, '      - id: native-route\n', 'PYTHON')
         forward_script = script(resume, '      - name: Forward the completed transition')
         parent_script = script(workflow_job(self.workflow, 'sdk-plan'), '      - id: parent\n')
         env = {name: str(value) for name, value in dict(SDK_RECOVERY_ONLY='true',
@@ -256,7 +259,11 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         for name in ('sdk-ios-validation', 'sdk-collect-9'):
             job = workflow_job(self.workflow, name)
             self.assertIn("needs.sdk-native-result.result == 'success'", job)
-            self.assertIn('artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}', job)
+            if name == 'sdk-ios-validation':
+                self.assertIn('SDK_STATE_ARTIFACT_ID: ${{ needs.sdk-native-result.outputs.artifact_id }}', job)
+                self.assertIn('artifact-id: ${{ env.SDK_STATE_ARTIFACT_ID }}', job)
+            else:
+                self.assertIn('artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}', job)
             self.assertIn("needs.sdk-native-result.outputs.sdk_workers_required == 'true'", job)
         worker = workflow_job(self.workflow, 'sdk-ios-validation')
         self.assertIn('uses: ./.github/actions/sdk-ios-validation-worker', worker)

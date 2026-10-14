@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRICES = ("sdk-ios-validation", "sdk-apple-signing-prepare", "sdk-apple-validation-attestation")
-JOBS = ("sdk-native-result", *MATRICES, "sdk-collect-9", "sdk-ios-validation-result")
+JOBS = ("sdk-native-result", "sdk-ios-validation-native", *MATRICES, "sdk-collect-9", "sdk-ios-validation-result")
 
 
 class SdkAppleValidationWorkflowTest(unittest.TestCase):
@@ -62,7 +62,7 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                 condition = self.condition(job)
                 self.assertIn("always()", condition)
                 self.assertIn("needs.sdk-native-result.outputs.sdk_workers_required == 'true'", condition)
-                self.assertIn("(needs.sdk-ios-validation.result == 'success' || "
+                self.assertIn("(needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-native.result == 'success' || "
                               "needs.sdk-ios-validation-outcome.result == 'success')", condition)
                 self.assertIn("needs.sdk-ios-validation-outcome.outputs.all_failed != 'true'", condition)
                 for matrix in MATRICES[1:]:
@@ -96,7 +96,13 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                 block = job.split("uses: ./.github/actions/" + action, 1)[1].split("\n      - ", 1)[0]
                 for flag, output in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
                                      ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-                    self.assertIn(flag + ": ${{ needs.sdk-native-result.outputs." + output + " }}", block)
+                    if name == "sdk-ios-validation":
+                        env = {"artifact_id": "SDK_STATE_ARTIFACT_ID", "artifact_digest": "SDK_STATE_ARTIFACT_DIGEST",
+                               "state_wave": "SDK_STATE_WAVE", "sdk_state_wave": "SDK_STATE_SDK_WAVE"}[output]
+                        self.assertIn(flag + ": ${{ env." + env + " }}", block)
+                        self.assertIn(env + ": ${{ needs.sdk-native-result.outputs." + output + " }}", job)
+                    else:
+                        self.assertIn(flag + ": ${{ needs.sdk-native-result.outputs." + output + " }}", block)
                 self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", block)
                 self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", block)
                 self.assertIn("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", block)
@@ -107,7 +113,7 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                     self.assertIn("sdk-family: ios-validation", block)
         self.assertIn("wave: '9'", self.job("sdk-collect-9"))
         worker = self.job("sdk-ios-validation")
-        self.assertIn("name: sdk-sdk-ios-validation-${{ matrix.target }}", worker)
+        self.assertIn("format('sdk-sdk-ios-validation-{0}', matrix.target)", worker)
         self.assertIn("target: ${{ matrix.target }}", worker)
         self.assertIn("build-key: ${{ matrix.buildKey }}", worker)
 
@@ -133,9 +139,46 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
         for forbidden in ("capture-sdk-tooling", "prepare-sdk-apple-policy", "setup-kmp", "setup-java", "gradlew"):
             self.assertNotIn(forbidden, job)
 
+    def test_native_worker_starts_after_exact_checks_and_shares_unchanged_worker_steps(self):
+        native, ordinary, plan = (self.job(name) for name in ("sdk-ios-validation-native", "sdk-ios-validation", "plan"))
+        self.assertEqual({"plan", "workflow-lint"}, self.needs(native))
+        for guard in ("!cancelled()", "needs.plan.result == 'success'", "needs.workflow-lint.result == 'success'",
+                      "needs.plan.outputs.native_ios_worker_ready == 'true'",
+                      "needs.plan.outputs.validation_reused != 'true'", "github.event_name != 'workflow_dispatch'"):
+            self.assertIn(guard, self.condition(native))
+        self.assertIn("needs.plan.outputs.native_ios_worker_ready != 'true'", self.condition(ordinary))
+        self.assertIn("steps: &sdk_ios_validation_steps", ordinary)
+        self.assertIn("steps: *sdk_ios_validation_steps", native)
+        self.assertEqual(1, self.source.count("uses: ./.github/actions/sdk-ios-validation-worker"))
+        self.assertNotIn("needs.sdk-plan.", native)
+        self.assertNotIn("needs.sdk-native-result.", native)
+        self.assertIn("sdk-ios-validation-ordinary-inactive", ordinary)
+        self.assertIn("sdk-ios-validation-native-inactive", native)
+        for job in (native, ordinary):
+            self.assertIn("format('sdk-sdk-ios-validation-{0}', matrix.target)", job)
+        self.assertIn("matrix: ${{ fromJSON(needs.plan.outputs.native_ios_matrix || '{\"include\":[]}') }}", native)
+        self.assertIn("SDK_STATE_ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}", native)
+        self.assertIn("SDK_STATE_ARTIFACT_DIGEST: ${{ needs.plan.outputs.native_resume_artifact_digest }}", native)
+        self.assertIn("SDK_STATE_WAVE: '0'", native)
+        self.assertIn("SDK_STATE_SDK_WAVE: ''", native)
+        for field in ("ARTIFACT_ID", "ARTIFACT_SHA256", "TRANSPORT_PRODUCER"):
+            self.assertIn("SDK_TOOLING_" + field + ": ${{ needs.plan.outputs.tooling_" + field.lower() + " }}", native)
+        readiness = next(line for line in plan.splitlines() if "native_ios_worker_ready:" in line)
+        for gate in ("steps.native-route.outputs.native_sdk_direct == 'true'",
+                     "steps.product-reuse.outputs.native_contract_complete == 'true'",
+                     "steps.product-reuse.outputs.tooling_miss == 'false'",
+                     "steps.product-reuse.outputs.tooling_artifact_id != ''",
+                     "steps.product-reuse.outputs.tooling_transport_producer != ''"):
+            self.assertIn(gate, readiness)
+        for name in ("sdk-ios-validation-outcome", "sdk-apple-signing-prepare",
+                     "sdk-apple-validation-attestation", "sdk-collect-9", "sdk-ios-validation-result"):
+            self.assertTrue({"sdk-ios-validation", "sdk-ios-validation-native"} <= self.needs(self.job(name)))
+        outcome = self.condition(self.job("sdk-ios-validation-outcome"))
+        self.assertIn("needs.sdk-ios-validation.result != 'success' && needs.sdk-ios-validation-native.result != 'success'", outcome)
+
     def test_terminal_executes_selector_after_all_matrices_and_never_fabricates_output(self):
         job = self.job("sdk-ios-validation-result")
-        expected_jobs = {"plan", "sdk-native-result", *MATRICES, "sdk-collect-9"}
+        expected_jobs = {"plan", "sdk-native-result", "sdk-ios-validation-native", *MATRICES, "sdk-collect-9"}
         self.assertEqual(expected_jobs, self.needs(job))
         self.assertNotIn("sdk_workers_required", self.condition(job))
         for name in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):

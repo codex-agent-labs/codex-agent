@@ -44,6 +44,8 @@ def needs_for(stage, *, required=False, preparation=False, state=None):
         needs[election]["outputs"]["preparation_required"] = str(preparation).lower()
         needs["sdk-native-prepare"] = job("success" if preparation else "skipped")
     if stage == "ios-validation":
+        needs["plan"] = job("success", native_ios_worker_ready="false")
+        needs["sdk-ios-validation-native"] = job()
         for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation"):
             needs[name] = job("success" if required else "skipped")
     return needs
@@ -147,6 +149,54 @@ class NativeStateSelectionTest(unittest.TestCase):
                     changed["sdk-native-result"] = changed.pop("sdk-ios-validation-result")
                     with self.assertRaises(ValueError):
                         routing.select_native_state(changed, stage="ios-metadata")
+
+    def test_native_ios_worker_requires_exclusive_election_and_unchanged_original_parent(self):
+        state = locator("", "0")
+        needs = needs_for("ios-validation", required=True, state=state)
+        matrix = '{"include":[{"target":"ios-arm64","buildKey":"sha256:' + 'c' * 64 + '"}]}'
+        needs["plan"]["outputs"] = dict(native_ios_worker_ready="true", native_ios_matrix=matrix,
+            native_resume_artifact_id=state["artifact_id"], native_resume_artifact_digest=state["artifact_digest"])
+        needs["sdk-native-result"]["outputs"]["sdk_matrix"] = matrix
+        needs["sdk-ios-validation"] = job()
+        needs["sdk-ios-validation-native"] = job("success")
+        before = deepcopy(needs)
+        self.assertEqual("9", routing.select_native_state(needs, stage="ios-validation")["sdk_state_wave"])
+        self.assertEqual(before, needs)
+        for name in ("plan", "sdk-ios-validation-native", "sdk-apple-signing-prepare",
+                     "sdk-apple-validation-attestation", "sdk-collect-9"):
+            for status in ("skipped", "failure", "cancelled"):
+                changed = deepcopy(needs)
+                changed[name]["result"] = status
+                with self.subTest(name=name, status=status), self.assertRaises(ValueError):
+                    routing.select_native_state(changed, stage="ios-validation")
+        for name, key, value in (
+            ("plan", "native_ios_worker_ready", "false"), ("plan", "native_ios_worker_ready", True),
+            ("plan", "native_resume_artifact_id", "999"),
+            ("plan", "native_resume_artifact_digest", "sha256:" + "d" * 64),
+            ("plan", "native_ios_matrix", ""), ("plan", "native_ios_matrix", '{"include":[]}'),
+            ("sdk-native-result", "sdk_matrix", '{"include":[]}'),
+            ("sdk-native-result", "sdk_workers_required", "false"),
+            ("sdk-native-result", "sdk_state_wave", "8"), ("sdk-collect-9", "wave_failed", "true")):
+            changed = deepcopy(needs)
+            changed[name]["outputs"][key] = value
+            with self.subTest(name=name, key=key), self.assertRaises(ValueError):
+                routing.select_native_state(changed, stage="ios-validation")
+        for status in ("success", "failure", "cancelled"):
+            changed = deepcopy(needs)
+            changed["sdk-ios-validation"]["result"] = status
+            with self.subTest(ordinary=status), self.assertRaises(ValueError):
+                routing.select_native_state(changed, stage="ios-validation")
+        ordinary = needs_for("ios-validation", required=True, state=state)
+        for status in ("success", "failure", "cancelled"):
+            changed = deepcopy(ordinary)
+            changed["sdk-ios-validation-native"]["result"] = status
+            with self.subTest(unelected_native=status), self.assertRaises(ValueError):
+                routing.select_native_state(changed, stage="ios-validation")
+        for name in ("plan", "sdk-ios-validation-native"):
+            changed = deepcopy(needs)
+            del changed[name]
+            with self.subTest(missing=name), self.assertRaises(ValueError):
+                routing.select_native_state(changed, stage="ios-validation")
 
     def test_ios_validation_exact_terminal_route_and_all_preparation_signer_gates(self):
         self.assertEqual(("sdk-native-result", "sdk-native-result", "sdk-ios-validation", "sdk-collect-9", "9"),
@@ -256,6 +306,8 @@ class NativeStateSelectionTest(unittest.TestCase):
                     needs[name] = job()
             self.assertEqual(empty, routing.select_native_state(needs, stage=stage))
             for name in needs:
+                if name == "plan":
+                    continue  # Plan is upstream authorization, not an elected family operation.
                 changed = deepcopy(needs)
                 changed[name]["result"] = "failure" if name == parent else "success"
                 with self.subTest(stage=stage, name=name), self.assertRaises(ValueError):

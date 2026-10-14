@@ -133,6 +133,9 @@ class ProductRoutingTest(unittest.TestCase):
         arguments = dict(sdk_recovery_only=True, runtime_workers_required='false', supervisor_key='')
         result = routing.native_sdk_resume(decisions, self.locator, self.expected, **arguments)
         self.assertTrue(result['native_sdk_direct'])
+        bound = routing.bind(decisions, self.locator, self.expected)
+        self.assertEqual(routing.select(bound, self.locator, self.expected, family='ios-validation')['sdk_matrix'],
+                         result['sdk_matrix'])
         self.assertEqual(decisions['runtime']['aggregate_key'], result['aggregate_key'])
         for changes in ({'sdk_recovery_only': False}, {'runtime_workers_required': 'true'},
                         {'supervisor_key': 'sha256:' + '3' * 64}):

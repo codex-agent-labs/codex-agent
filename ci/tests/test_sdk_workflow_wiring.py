@@ -121,7 +121,9 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         self.assertNotIn("needs.sdk-inputs.", planner)
         input_gate = inputs.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0].strip()
         planner_gate = planner.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0].strip()
-        self.assertEqual(input_gate + " &&\n      needs.sdk-ios-binary-plan.result == 'success'", planner_gate)
+        binary_gate = " &&\n      needs.sdk-ios-binary-plan.result == 'success'"
+        self.assertEqual(input_gate, planner_gate.replace(binary_gate, ""))
+        self.assertTrue(planner_gate.endswith(binary_gate + "))"))
         for name in ("sdk-workers-1", "sdk-workers-2", "sdk-csharp-binary"):
             dependencies = re.search(r"    needs: \[(.*?)\]", self.job(name))[1].split(", ")
             self.assertIn("sdk-plan", dependencies)
