@@ -21,6 +21,25 @@ class SdkWorkflowWiringTest(unittest.TestCase):
     def job(self, name):
         return re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", self.workflow)[0]
 
+    def test_result_routing_stops_on_cancellation_but_still_handles_failures(self):
+        for name in ('sdk-javascript-metadata-result', 'sdk-csharp-binary-result',
+                     'sdk-native-packages', 'sdk-ios-packages', 'sdk-native-validation-result',
+                     'sdk-native-result', 'sdk-ios-validation-result', 'sdk-ios-metadata-result'):
+            with self.subTest(job=name):
+                condition = re.search(r'(?m)^    if:.*(?:\n      .*?)*$', self.job(name))[0]
+                self.assertIn('always() && !cancelled()', condition)
+                self.assertNotIn('success()', condition)
+                self.assertNotIn('||', condition)
+                self.assertIn("event_authorized == 'true'", condition)
+                self.assertIn("remote_build_authorized == 'true'", condition)
+        # Completion must still report failure/cancellation so partial-catalog preservation can run.
+        for name in ('sdk-completion', 'sdk-partial-catalog'):
+            condition = re.search(r'(?m)^    if:.*(?:\n      .*?)*$', self.job(name))[0]
+            self.assertIn('always()', condition)
+            self.assertNotIn('!cancelled()', condition)
+        action = (ROOT / '.github/actions/sdk-ios-validation-worker/action.yml').read_text()
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", action)
+
     def test_portable_authority_is_optional_and_precedes_all_core_consumers(self):
         parent = self.job("sdk-core-validation-wave")
         self.assertIn("reuseQualification: ${{ inputs.reuseQualification }}", parent)
@@ -78,7 +97,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if not root:
                     child_names.add(path.name)
                     self.assertRegex(text, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        self.assertEqual(45, restored)
+        self.assertEqual(46, restored)
         parent = (ROOT / ".github/workflows/product-validation.yml").read_text()
         for name in child_names:
             job = next(body for _, body in re.findall(

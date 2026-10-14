@@ -3333,7 +3333,7 @@ jobs:
     name: sdk-csharp-binary-result
     needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
     if: >-
-      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
     outputs:
@@ -3596,7 +3596,7 @@ jobs:
 
   sdk-native-packages:
     if: >-
-      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
     runs-on: ubuntu-24.04
@@ -3820,7 +3820,7 @@ jobs:
 
   sdk-ios-packages:
     if: >-
-      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package, sdk-collect-5]
     runs-on: ubuntu-24.04
@@ -4005,7 +4005,7 @@ jobs:
 
   sdk-javascript-metadata-result:
     if: >-
-      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
     runs-on: ubuntu-24.04
@@ -4220,7 +4220,7 @@ jobs:
 
   sdk-native-validation-result:
     if: >-
-      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
     runs-on: ubuntu-24.04
@@ -4417,7 +4417,7 @@ jobs:
 
   sdk-native-result:
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata, sdk-collect-8, sdk-plan, sdk-javascript, sdk-javascript-metadata-result, sdk-csharp-binary-result, sdk-native-packages, sdk-ios-packages]
     runs-on: ubuntu-24.04
@@ -4776,7 +4776,7 @@ jobs:
   sdk-ios-validation-result:
     needs: [plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
     outputs:
@@ -4971,7 +4971,7 @@ jobs:
   sdk-ios-metadata-result:
     needs: [plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-collect-10]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
     outputs:
