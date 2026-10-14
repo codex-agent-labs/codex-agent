@@ -313,6 +313,13 @@ jobs:
       contract_next_phase: ${{ steps.product-reuse.outputs.contract_next_phase }}
       native_contract_complete: ${{ steps.product-reuse.outputs.native_contract_complete }}
       native_resume_ready: ${{ steps.product-reuse.outputs.native_resume_ready }}
+      native_sdk_direct: ${{ steps.native-route.outputs.native_sdk_direct }}
+      native_sdk_input_selection: ${{ steps.native-route.outputs.sdk_input_selection }}
+      native_aggregate_key: ${{ steps.native-route.outputs.aggregate_key }}
+      native_aggregate_receipt_sha256: ${{ steps.native-route.outputs.aggregate_receipt_sha256 }}
+      native_aggregate_payload_complete: ${{ steps.native-route.outputs.aggregate_payload_complete }}
+      native_ios_matrix: ${{ steps.native-route.outputs.sdk_matrix }}
+      native_ios_worker_ready: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && steps.product-reuse.outputs.native_contract_complete == 'true' && steps.product-reuse.outputs.tooling_miss == 'false' && steps.product-reuse.outputs.tooling_artifact_id != '' && steps.product-reuse.outputs.tooling_transport_producer != '' }}
       native_resume_artifact_id: ${{ steps.upload_native_resume.outputs.artifact-id }}
       native_resume_artifact_digest: sha256:${{ steps.upload_native_resume.outputs.artifact-digest }}
       native_resume_full_reuse: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
@@ -529,6 +536,40 @@ jobs:
           path: build/ci/product-reuse/reuse-references.json
           compression-level: 0
           retention-days: 90
+      - id: native-route
+        name: Select the completed native SDK routing shortcut
+        if: steps.product-reuse.outputs.native_resume_ready == 'true'
+        env:
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
+          RETAINED_SDK_INPUTS_SOURCE: ${{ steps.retained-sdk-inputs.outputs.source }}
+          ROUTING: ${{ steps.product-reuse.outputs.native_resume_routing_decisions }}
+          ARTIFACT_ID: ${{ steps.upload_native_resume.outputs.artifact-id }}
+          ARTIFACT_SHA256: ${{ format('sha256:{0}', steps.upload_native_resume.outputs.artifact-digest) }}
+          RUNTIME_WORKERS_REQUIRED: ${{ steps.product-reuse.outputs.native_resume_runtime_workers_required }}
+          SUPERVISOR_KEY: ${{ steps.product-reuse.outputs.native_resume_supervisor_key }}
+          PLAN_ID: ${{ steps.upload_plan.outputs.artifact-id }}
+          VALIDATION_COMMIT: ${{ steps.impact.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ steps.impact.outputs.validation_tree }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import context, native_sdk_resume
+          from ci.reuse import github_output
+          recovery = os.environ['SDK_RECOVERY_ONLY']
+          if recovery not in ('true', 'false'):
+              raise ValueError('SDK recovery must be boolean')
+          locator = dict(artifact_id=os.environ['ARTIFACT_ID'], artifact_digest=os.environ['ARTIFACT_SHA256'],
+                         state_wave='0', sdk_state_wave='')
+          result = native_sdk_resume(json.loads(os.environ['ROUTING']), locator, context(os.environ),
+              sdk_recovery_only=recovery == 'true' and bool(os.environ['ORIGINAL_RUNTIME_HANDOFF'])
+                  and bool(os.environ['RETAINED_SDK_INPUTS_SOURCE']),
+              runtime_workers_required=os.environ['RUNTIME_WORKERS_REQUIRED'],
+              supervisor_key=os.environ['SUPERVISOR_KEY'])
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PYTHON
 
   product:
     name: product-${{ matrix.lane }}
@@ -653,15 +694,15 @@ jobs:
     needs: [plan, contract-validation]
     runs-on: ubuntu-24.04
     outputs:
-      artifact_name: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && format('codex-agent-planned-product-resume-{0}', needs.plan.outputs.validation_tree) || format('codex-agent-product-resume-{0}', needs.plan.outputs.validation_tree) }}
+      artifact_name: ${{ needs.plan.outputs.native_sdk_direct == 'true' && format('codex-agent-planned-product-resume-{0}', needs.plan.outputs.validation_tree) || format('codex-agent-product-resume-{0}', needs.plan.outputs.validation_tree) }}
       routing: ${{ steps.routing.outputs.routing }}
-      native_sdk_direct: ${{ steps.native-route.outputs.native_sdk_direct }}
-      sdk_input_selection: ${{ steps.native-route.outputs.sdk_input_selection }}
-      aggregate_key: ${{ steps.native-route.outputs.aggregate_key }}
-      aggregate_receipt_sha256: ${{ steps.native-route.outputs.aggregate_receipt_sha256 }}
-      aggregate_payload_complete: ${{ steps.native-route.outputs.aggregate_payload_complete }}
-      artifact_id: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
-      artifact_digest: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
+      native_sdk_direct: ${{ needs.plan.outputs.native_sdk_direct }}
+      sdk_input_selection: ${{ needs.plan.outputs.native_sdk_input_selection }}
+      aggregate_key: ${{ needs.plan.outputs.native_aggregate_key }}
+      aggregate_receipt_sha256: ${{ needs.plan.outputs.native_aggregate_receipt_sha256 }}
+      aggregate_payload_complete: ${{ needs.plan.outputs.native_aggregate_payload_complete }}
+      artifact_id: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
+      artifact_digest: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
       full_reuse: ${{ steps.forward.outputs.full_reuse || steps.resume.outputs.full_reuse }}
       target_jobs_required: ${{ steps.forward.outputs.target_jobs_required || steps.resume.outputs.target_jobs_required }}
       runtime_matrix: ${{ steps.forward.outputs.runtime_matrix || steps.resume.outputs.runtime_matrix }}
@@ -680,42 +721,8 @@ jobs:
         if: needs.plan.outputs.native_resume_ready != 'true'
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - id: native-route
-        name: Select the completed native SDK routing shortcut
-        if: needs.plan.outputs.native_resume_ready == 'true'
-        env:
-          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
-          ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
-          RETAINED_SDK_INPUTS_SOURCE: ${{ needs.plan.outputs.retained_sdk_inputs_source }}
-          ROUTING: ${{ needs.plan.outputs.native_resume_routing }}
-          ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}
-          ARTIFACT_SHA256: ${{ needs.plan.outputs.native_resume_artifact_digest }}
-          RUNTIME_WORKERS_REQUIRED: ${{ needs.plan.outputs.native_resume_runtime_workers_required }}
-          SUPERVISOR_KEY: ${{ needs.plan.outputs.native_resume_supervisor_key }}
-          PLAN_ID: ${{ needs.plan.outputs.plan_id }}
-          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
-          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
-          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
-        run: |
-          python3 -B - <<'PYTHON'
-          import json, os
-          from pathlib import Path
-          from ci.sdk_native_continuation import context, native_sdk_resume
-          from ci.reuse import github_output
-          recovery = os.environ['SDK_RECOVERY_ONLY']
-          if recovery not in ('true', 'false'):
-              raise ValueError('SDK recovery must be boolean')
-          locator = dict(artifact_id=os.environ['ARTIFACT_ID'], artifact_digest=os.environ['ARTIFACT_SHA256'],
-                         state_wave='0', sdk_state_wave='')
-          result = native_sdk_resume(json.loads(os.environ['ROUTING']), locator, context(os.environ),
-              sdk_recovery_only=recovery == 'true' and bool(os.environ['ORIGINAL_RUNTIME_HANDOFF'])
-                  and bool(os.environ['RETAINED_SDK_INPUTS_SOURCE']),
-              runtime_workers_required=os.environ['RUNTIME_WORKERS_REQUIRED'],
-              supervisor_key=os.environ['SUPERVISOR_KEY'])
-          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
-          PYTHON
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: steps.native-route.outputs.native_sdk_direct != 'true'
+        if: needs.plan.outputs.native_sdk_direct != 'true'
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/product-resume-plan
@@ -815,7 +822,7 @@ jobs:
           RUNTIME_MATRIX: ${{ needs.plan.outputs.native_resume_runtime_matrix }}
           RUNTIME_WORKERS_REQUIRED: ${{ needs.plan.outputs.native_resume_runtime_workers_required }}
           SUPERVISOR_KEY: ${{ needs.plan.outputs.native_resume_supervisor_key }}
-          NATIVE_SDK_DIRECT: ${{ steps.native-route.outputs.native_sdk_direct }}
+          NATIVE_SDK_DIRECT: ${{ needs.plan.outputs.native_sdk_direct }}
           NATIVE_ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}
           NATIVE_ARTIFACT_SHA256: ${{ needs.plan.outputs.native_resume_artifact_digest }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
@@ -852,7 +859,7 @@ jobs:
           test -z "$SUPERVISOR_KEY"
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
-        if: steps.native-route.outputs.native_sdk_direct != 'true'
+        if: needs.plan.outputs.native_sdk_direct != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -867,8 +874,8 @@ jobs:
         with:
           mode: bind
           routing: ${{ needs.plan.outputs.native_resume_ready == 'true' && needs.plan.outputs.native_resume_routing || steps.resume.outputs.routing_decisions }}
-          artifact-id: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
-          artifact-sha256: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
+          artifact-id: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
+          artifact-sha256: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
@@ -4525,10 +4532,10 @@ jobs:
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-validation:
-    name: sdk-sdk-ios-validation-${{ matrix.target }}
+    name: ${{ needs.plan.outputs.native_ios_worker_ready == 'true' && 'sdk-ios-validation-ordinary-inactive' || format('sdk-sdk-ios-validation-{0}', matrix.target) }}
     needs: [plan, sdk-plan, sdk-native-result]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.plan.outputs.native_ios_worker_ready != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
       needs.sdk-native-result.result == 'success' &&
@@ -4540,7 +4547,14 @@ jobs:
     timeout-minutes: 180
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
-    steps:
+      SDK_TOOLING_ARTIFACT_ID: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
+      SDK_TOOLING_ARTIFACT_SHA256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
+      SDK_TOOLING_TRANSPORT_PRODUCER: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+      SDK_STATE_ARTIFACT_ID: ${{ needs.sdk-native-result.outputs.artifact_id }}
+      SDK_STATE_ARTIFACT_DIGEST: ${{ needs.sdk-native-result.outputs.artifact_digest }}
+      SDK_STATE_WAVE: ${{ needs.sdk-native-result.outputs.state_wave }}
+      SDK_STATE_SDK_WAVE: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
+    steps: &sdk_ios_validation_steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -4558,9 +4572,9 @@ jobs:
       - id: tooling
         uses: ./.github/actions/capture-sdk-tooling
         with:
-          artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
+          artifact-id: ${{ env.SDK_TOOLING_ARTIFACT_ID }}
+          artifact-sha256: ${{ env.SDK_TOOLING_ARTIFACT_SHA256 }}
+          transport-producer: ${{ env.SDK_TOOLING_TRANSPORT_PRODUCER }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
@@ -4578,10 +4592,10 @@ jobs:
       - uses: ./.github/actions/sdk-ios-validation-worker
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-native-result.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
+          artifact-id: ${{ env.SDK_STATE_ARTIFACT_ID }}
+          artifact-sha256: ${{ env.SDK_STATE_ARTIFACT_DIGEST }}
+          state-wave: ${{ env.SDK_STATE_WAVE }}
+          sdk-state-wave: ${{ env.SDK_STATE_SDK_WAVE }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
@@ -4591,14 +4605,39 @@ jobs:
           developer-directory: /Applications/Xcode_26.6.app/Contents/Developer
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
 
+  sdk-ios-validation-native:
+    name: ${{ needs.plan.outputs.native_ios_worker_ready == 'true' && format('sdk-sdk-ios-validation-{0}', matrix.target) || 'sdk-ios-validation-native-inactive' }}
+    needs: [plan, workflow-lint]
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      needs.workflow-lint.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.validation_reused != 'true' && github.event_name != 'workflow_dispatch' &&
+      needs.plan.outputs.native_ios_worker_ready == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.native_ios_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
+      SDK_TOOLING_ARTIFACT_ID: ${{ needs.plan.outputs.tooling_artifact_id }}
+      SDK_TOOLING_ARTIFACT_SHA256: ${{ needs.plan.outputs.tooling_artifact_sha256 }}
+      SDK_TOOLING_TRANSPORT_PRODUCER: ${{ needs.plan.outputs.tooling_transport_producer }}
+      SDK_STATE_ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}
+      SDK_STATE_ARTIFACT_DIGEST: ${{ needs.plan.outputs.native_resume_artifact_digest }}
+      SDK_STATE_WAVE: '0'
+      SDK_STATE_SDK_WAVE: ''
+    steps: *sdk_ios_validation_steps
+
   sdk-ios-validation-outcome:
-    needs: [plan, sdk-native-result, sdk-ios-validation]
+    needs: [plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true' &&
-      needs.sdk-ios-validation.result != 'success'
+      needs.sdk-ios-validation.result != 'success' && needs.sdk-ios-validation-native.result != 'success'
     runs-on: ubuntu-24.04
     outputs:
       all_failed: ${{ steps.outcome.outputs.all_failed }}
@@ -4641,12 +4680,12 @@ jobs:
 
   sdk-apple-signing-prepare:
     name: sdk-apple-signing-prepare-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-outcome]
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.sdk-plan.result == 'success' &&
-      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
+      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-native.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
@@ -4700,12 +4739,12 @@ jobs:
 
   sdk-apple-validation-attestation:
     name: sdk-apple-validation-attestation-${{ matrix.target }}
-    needs: [workflow-lint, plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare]
+    needs: [workflow-lint, plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome, sdk-apple-signing-prepare]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.workflow-lint.result == 'success' &&
-      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
+      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-native.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
@@ -4750,12 +4789,12 @@ jobs:
           private-key: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
 
   sdk-collect-9:
-    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
-      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
+      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-native.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
@@ -4820,7 +4859,7 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-validation-result:
-    needs: [plan, sdk-native-result, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
+    needs: [plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
     if: >-
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
