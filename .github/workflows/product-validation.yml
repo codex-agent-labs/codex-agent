@@ -2645,6 +2645,7 @@ jobs:
       needs.sdk-ios-binary-plan.result == 'success'
     runs-on: ubuntu-24.04
     outputs:
+      ios_validation_direct: ${{ steps.capture.outputs.ios-validation-direct }}
       artifact_id: ${{ steps.parent.outputs.artifact_id }}
       routing: ${{ steps.parent.outputs.routing }}
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
@@ -2954,7 +2955,7 @@ jobs:
 
   sdk-javascript:
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success'
     needs: [plan, runtime-continuation, sdk-plan, sdk-collect-1, sdk-collect-2]
@@ -3027,7 +3028,7 @@ jobs:
     name: sdk-csharp-binary-plan
     needs: [plan, sdk-plan, sdk-javascript-metadata-result]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript-metadata-result.result == 'success' &&
       needs.sdk-javascript-metadata-result.outputs.artifact_id != '' &&
@@ -3174,9 +3175,9 @@ jobs:
 
   sdk-csharp-binary-result:
     name: sdk-csharp-binary-result
-    needs: [plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
+    needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
     outputs:
@@ -3208,7 +3209,7 @@ jobs:
   sdk-native-plan:
     needs: [plan, sdk-plan, sdk-csharp-binary-result]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-csharp-binary-result.result == 'success' &&
       needs.sdk-csharp-binary-result.outputs.artifact_id != '' &&
@@ -3439,9 +3440,9 @@ jobs:
 
   sdk-native-packages:
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
+    needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -3472,7 +3473,7 @@ jobs:
   sdk-ios-package-plan:
     needs: [plan, sdk-plan, sdk-native-packages]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-packages.result == 'success' &&
       needs.sdk-native-packages.outputs.artifact_id != '' &&
@@ -3663,9 +3664,9 @@ jobs:
 
   sdk-ios-packages:
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package, sdk-collect-5]
+    needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package, sdk-collect-5]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -3696,7 +3697,7 @@ jobs:
   sdk-javascript-metadata-plan:
     needs: [plan, sdk-plan, sdk-javascript]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript.result == 'success' &&
       needs.sdk-javascript.outputs.artifact_id != '' &&
@@ -3848,9 +3849,9 @@ jobs:
 
   sdk-javascript-metadata-result:
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
+    needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -3881,7 +3882,7 @@ jobs:
   sdk-native-validation-plan:
     needs: [plan, sdk-plan, sdk-ios-packages]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-packages.result == 'success' &&
       needs.sdk-ios-packages.outputs.artifact_id != '' &&
@@ -4063,9 +4064,9 @@ jobs:
 
   sdk-native-validation-result:
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
+    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -4096,7 +4097,7 @@ jobs:
   sdk-native-metadata-plan:
     needs: [plan, sdk-plan, sdk-native-validation-result]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-validation-result.result == 'success' &&
       needs.sdk-native-validation-result.outputs.artifact_id != '' &&
@@ -4262,7 +4263,7 @@ jobs:
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata, sdk-collect-8]
+    needs: [plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata, sdk-collect-8, sdk-plan, sdk-javascript, sdk-javascript-metadata-result, sdk-csharp-binary-result, sdk-native-packages, sdk-ios-packages]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -4284,9 +4285,9 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          from ci.sdk_native_continuation import select_native_state
+          from ci.sdk_native_continuation import select_ios_ready_prefix
           from ci.reuse import github_output
-          result = select_native_state(json.loads(os.environ['RESULTS']), stage='metadata')
+          result = select_ios_ready_prefix(json.loads(os.environ['RESULTS']))
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
 
