@@ -1,16 +1,20 @@
 """Runner orchestration only; mocked execution is not Apple semantic/host proof."""
 
 from contextlib import contextmanager
+import ctypes
+import errno
 import os
 from pathlib import Path
 import subprocess
 import io
 from contextlib import redirect_stderr
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
 from ci.products.inventory import regular_file_inventory
+from ci.products import sdk_apple_content as content
 from ci.products.sdk_apple_content import (
     verify_sdk_apple_original_execution, verify_sdk_apple_package_content, verify_sdk_apple_binary_package_content,
     verify_sdk_apple_validation_binding_content,
@@ -455,6 +459,146 @@ class SdkAppleContentTest(unittest.TestCase):
                     "execution_directory": self.execution,
                 }.items() if key not in {"product_directory", "validation_evidence_directory", "sdk_version"}}
             )
+
+
+@unittest.skipUnless(sys.platform == "darwin", "Exercises actual APFS private clones")
+class ApplePrivateSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="apple-clone-test-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.source = self.root / "source"
+        (self.source / "directory/empty").mkdir(parents=True)
+        self.body = self.source / "directory/body"
+        self.body.write_bytes(b"original bytes\n" * 1024)
+        self.body.chmod(0o751)
+        self.destination = self.root / "destination"
+
+    def native(self):
+        native = ctypes.CDLL(None, use_errno=True).fclonefileat
+        native.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        native.restype = ctypes.c_int
+        return native
+
+    def replacement(self, operation):
+        from types import SimpleNamespace
+        return patch.object(content.ctypes, "CDLL", return_value=SimpleNamespace(fclonefileat=operation))
+
+    def test_native_snapshot_has_independent_files_and_preserves_bytes_modes_empty_directories(self):
+        before = regular_file_inventory(self.source)
+        with patch.object(content, "snapshot_regular_tree", side_effect=AssertionError("byte copy")):
+            content._snapshot_apple_tree(self.source, self.destination)
+        private = self.destination / "directory/body"
+        self.assertEqual(before, regular_file_inventory(self.destination))
+        self.assertNotEqual(self.body.stat().st_ino, private.stat().st_ino)
+        self.assertEqual(0o751, private.stat().st_mode & 0o777)
+        self.assertTrue((self.destination / "directory/empty").is_dir())
+        private.write_bytes(b"private change")
+        self.assertEqual(before, regular_file_inventory(self.source))
+        self.body.write_bytes(b"source change")
+        self.assertEqual(b"private change", private.read_bytes())
+
+    def test_partial_clone_falls_back_only_for_supported_filesystem_errors(self):
+        native = self.native()
+        (self.source / "second").write_bytes(b"second body")
+        before = regular_file_inventory(self.source)
+        for index, code in enumerate((errno.ENOTSUP, errno.EXDEV, errno.EIO, errno.EEXIST)):
+            calls = []
+            def clone(source, destination, name, flags):
+                calls.append(name)
+                if len(calls) == 1:
+                    return native(source, destination, name, flags)
+                ctypes.set_errno(code)
+                return -1
+            destination = self.root / str(index)
+            with self.subTest(code=code), self.replacement(clone), patch.object(
+                    content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
+                if code in (errno.ENOTSUP, errno.EXDEV):
+                    content._snapshot_apple_tree(self.source, destination)
+                    self.assertEqual(before, regular_file_inventory(destination))
+                    fallback.assert_called_once()
+                else:
+                    with self.assertRaises(OSError) as failure:
+                        content._snapshot_apple_tree(self.source, destination)
+                    self.assertEqual(code, failure.exception.errno)
+                    fallback.assert_not_called()
+            self.assertEqual(before, regular_file_inventory(self.source))
+
+    def test_native_copy_rejects_source_mutation_even_with_restored_mtime(self):
+        native = self.native()
+        def mutate(source, destination, name, flags):
+            result = native(source, destination, name, flags)
+            metadata = self.body.stat()
+            self.body.write_bytes(b"!" * metadata.st_size)
+            os.utime(self.body, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            return result
+        with self.replacement(mutate), self.assertRaisesRegex(ValueError, "changed"):
+            content._snapshot_apple_tree(self.source, self.destination)
+
+    def test_fallback_refuses_replaced_destination_without_removing_it(self):
+        def replace(source, destination, name, flags):
+            self.destination.rename(self.root / "held-private")
+            self.destination.mkdir()
+            (self.destination / "preserve").write_bytes(b"unrelated")
+            ctypes.set_errno(errno.EXDEV)
+            return -1
+        with self.replacement(replace), patch.object(content, "snapshot_regular_tree") as fallback, \
+                self.assertRaisesRegex(ValueError, "destination changed"):
+            content._snapshot_apple_tree(self.source, self.destination)
+        fallback.assert_not_called()
+        self.assertEqual(b"unrelated", (self.destination / "preserve").read_bytes())
+
+    def test_clone_cannot_substitute_a_shared_hardlink(self):
+        def hardlink(source, destination, name, flags):
+            os.link(self.body, name, dst_dir_fd=destination)
+            return 0
+        with self.replacement(hardlink), self.assertRaisesRegex(ValueError, "independent regular file"):
+            content._snapshot_apple_tree(self.source, self.destination)
+
+    def test_special_file_flags_keep_byte_copy_behavior(self):
+        import stat
+        os.chflags(self.body, stat.UF_NODUMP)
+        with patch.object(content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
+            content._snapshot_apple_tree(self.source, self.destination)
+            fallback.assert_called_once()
+        self.assertEqual(regular_file_inventory(self.source), regular_file_inventory(self.destination))
+        self.assertEqual(0, (self.destination / "directory/body").stat().st_flags)
+
+    def test_unsafe_paths_overlap_and_occupied_destinations_are_rejected(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.source, target_is_directory=True)
+        for source, destination in ((alias, self.destination), (self.source, self.source),
+                                    (self.source, self.source / "child"), (self.source, self.root)):
+            with self.subTest(source=source, destination=destination), self.assertRaises(ValueError):
+                content._snapshot_apple_tree(source, destination)
+        self.destination.mkdir()
+        (self.destination / "held").write_bytes(b"preserve")
+        with self.assertRaises(ValueError):
+            content._snapshot_apple_tree(self.source, self.destination)
+        self.assertEqual(b"preserve", (self.destination / "held").read_bytes())
+        link = self.source / "link"
+        link.symlink_to(self.body)
+        with self.assertRaises(ValueError):
+            content._snapshot_apple_tree(self.source, self.root / "unsafe")
+        self.assertFalse((self.root / "unsafe").exists())
+        link.unlink()
+        os.mkfifo(link)
+        with self.assertRaises(ValueError):
+            content._snapshot_apple_tree(self.source, self.root / "fifo")
+        self.assertFalse((self.root / "fifo").exists())
+
+    def test_empty_files_and_unavailable_clone_use_existing_rules(self):
+        (self.source / "empty").touch()
+        with self.assertRaises(ValueError):
+            content._snapshot_apple_tree(self.source, self.destination)
+        content._snapshot_apple_tree(self.source, self.destination, allow_empty=True)
+        self.assertEqual(regular_file_inventory(self.source, allow_empty=True),
+                         regular_file_inventory(self.destination, allow_empty=True))
+        for index, platform in enumerate(("darwin", "linux", "win32")):
+            with patch.object(content.sys, "platform", platform), self.replacement(None), patch.object(
+                    content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
+                content._snapshot_apple_tree(self.source, self.root / str(index), allow_empty=True)
+                fallback.assert_called_once()
 
 
 if __name__ == "__main__":
