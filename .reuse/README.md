@@ -23,6 +23,13 @@ before exporting any environment values. It never restores a saved approval
 verdict. Explicit body qualification and later verification remain independent
 fresh operations. Source setup batches immutable Git blob reads while retaining
 full byte comparisons, bounds, inventory, symlink and loaded-source checks.
+
+Publication resolution freshly binds each required workflow path at the exact
+approved source commit to the same immutable Git blob in the protected publisher.
+It downloads each published workflow once and verifies its Git identity, full
+SHA-256, byte length and child-workflow closure. Directory metadata cannot accept
+missing, changed, duplicate or nonregular source members; authority protection and
+the publisher ref are still checked before and after resolution.
 The reusable
 job binds GitHub's native `job.workflow_sha`; a composite action checks its
 executing files against the independently protected source. Current receipt,

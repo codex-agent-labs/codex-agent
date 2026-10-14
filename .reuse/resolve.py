@@ -141,6 +141,14 @@ def resolve_publication(expected):
     rows = value["workflows"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 128:
         raise ValueError("Published workflow closure is missing or excessive")
+    members = api(f"contents/.github/workflows?ref={commit(value['sourceSha'])}")
+    if (not isinstance(members, list) or not 1 <= len(members) <= 1000
+            or any(not isinstance(member, dict) or not isinstance(member.get("path"), str)
+                   for member in members)):
+        raise ValueError("Reviewed workflow directory is malformed or excessive")
+    reviewed = {member["path"]: member for member in members}
+    if len(reviewed) != len(members):
+        raise ValueError("Reviewed workflow directory repeats a path")
     def verify_workflow(row):
         if set(row) != {"path", "bytes", "sha256"}:
             raise ValueError("Unexpected published workflow identity")
@@ -151,8 +159,14 @@ def resolve_publication(expected):
             raise ValueError("Published workflow byte length is invalid")
         digest(row["sha256"])
         published = contents(path, revision, maximum=1024 * 1024)
-        reviewed = contents(path, value["sourceSha"], maximum=1024 * 1024)
-        if (published != reviewed or len(published) != row["bytes"]
+        source = reviewed.get(path, {})
+        # The exact source path must reference this same Git blob in this
+        # repository. Still check its full bytes against the protected SHA256.
+        blob = hashlib.sha1(b"blob " + str(len(published)).encode() + b"\0" + published).hexdigest()
+        if (source.get("type") != "file" or type(source.get("size")) is not int
+                or source["size"] != len(published) or source.get("sha") != blob
+                or source.get("submodule_git_url") is not None or source.get("target") is not None
+                or len(published) != row["bytes"]
                 or "sha256:" + hashlib.sha256(published).hexdigest() != row["sha256"]):
             raise ValueError("Published workflow differs from its exact reviewed source")
         dependencies = set()
