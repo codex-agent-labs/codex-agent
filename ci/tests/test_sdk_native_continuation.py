@@ -37,6 +37,9 @@ def needs_for(stage, *, required=False, preparation=False, state=None):
         workers: job("success" if required else "skipped"),
         collector: job("success" if required else "skipped", artifact_id="456",
                        artifact_digest="sha256:" + "b" * 64, wave_failed="false")}
+    needs[parent]["outputs"].update(locator() if state is None else state)
+    if state == {} and parent == election:
+        needs[parent]["outputs"].pop("sdk_workers_required")
     if stage == "package":
         needs[election]["outputs"]["preparation_required"] = str(preparation).lower()
         needs["sdk-native-prepare"] = job("success" if preparation else "skipped")
@@ -146,7 +149,7 @@ class NativeStateSelectionTest(unittest.TestCase):
                         routing.select_native_state(changed, stage="ios-metadata")
 
     def test_ios_validation_exact_terminal_route_and_all_preparation_signer_gates(self):
-        self.assertEqual(("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
+        self.assertEqual(("sdk-native-result", "sdk-native-result", "sdk-ios-validation", "sdk-collect-9", "9"),
                          routing._STAGES["ios-validation"])
         parent = locator("8", "0")
         for required in (False, True):
@@ -257,6 +260,13 @@ class NativeStateSelectionTest(unittest.TestCase):
                 changed[name]["result"] = "failure" if name == parent else "success"
                 with self.subTest(stage=stage, name=name), self.assertRaises(ValueError):
                     routing.select_native_state(changed, stage=stage)
+
+    def test_combined_ios_election_cannot_run_without_parent(self):
+        for value in ("true", "false", True, None):
+            needs = needs_for("ios-validation", state={})
+            needs["sdk-native-result"]["outputs"]["sdk_workers_required"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "without parent"):
+                routing.select_native_state(needs, stage="ios-validation")
 
     def test_failed_siblings_never_pass_even_after_successful_collection(self):
         for stage, (parent, election, workers, collector, _) in routing._STAGES.items():

@@ -4480,6 +4480,8 @@ jobs:
     needs: [plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata, sdk-collect-8, sdk-plan, sdk-javascript, sdk-javascript-metadata-result, sdk-csharp-binary-result, sdk-native-packages, sdk-ios-packages]
     runs-on: ubuntu-24.04
     outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
       artifact_id: ${{ steps.result.outputs.artifact_id }}
       routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
@@ -4489,7 +4491,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ needs.plan.outputs.validation_commit }}
       - name: Fail after collecting every elected native metadata result
         id: result
@@ -4501,53 +4503,39 @@ jobs:
           from pathlib import Path
           from ci.sdk_native_continuation import select_ios_ready_prefix
           from ci.reuse import github_output
-          result = select_ios_ready_prefix(json.loads(os.environ['RESULTS']))
+          needs = json.loads(os.environ['RESULTS'])
+          result = select_ios_ready_prefix(needs)
+          if result['artifact_id'] and needs['sdk-plan']['result'] != 'success':
+              raise ValueError('iOS validation election requires a successful SDK plan')
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
-
-  sdk-ios-validation-plan:
-    needs: [plan, sdk-plan, sdk-native-result]
-    if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-native-result.result == 'success' &&
-      needs.sdk-native-result.outputs.artifact_id != '' && needs.sdk-plan.result == 'success'
-    runs-on: ubuntu-24.04
-    outputs:
-      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
-      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-          ref: ${{ needs.plan.outputs.validation_commit }}
       - id: capture
+        if: steps.result.outputs.artifact_id != ''
         uses: ./.github/actions/capture-runtime-state/route
         with:
           family: ios-validation
-          routing: ${{ needs.sdk-native-result.outputs.routing }}
+          routing: ${{ steps.result.outputs.routing }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-native-result.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-native-result.outputs.sdk_state_wave }}
+          artifact-id: ${{ steps.result.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.result.outputs.artifact_digest }}
+          state-wave: ${{ steps.result.outputs.state_wave }}
+          sdk-state-wave: ${{ steps.result.outputs.sdk_state_wave }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-validation:
     name: sdk-sdk-ios-validation-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation-plan]
+    needs: [plan, sdk-plan, sdk-native-result]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-native-result.result == 'success' && needs.sdk-plan.result == 'success' &&
-      needs.sdk-ios-validation-plan.result == 'success' &&
-      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-plan.result == 'success' &&
+      needs.sdk-native-result.result == 'success' &&
+      needs.sdk-native-result.outputs.sdk_workers_required == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+      matrix: ${{ fromJSON(needs.sdk-native-result.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     env:
@@ -4604,12 +4592,12 @@ jobs:
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
 
   sdk-ios-validation-outcome:
-    needs: [plan, sdk-ios-validation-plan, sdk-ios-validation]
+    needs: [plan, sdk-native-result, sdk-ios-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-ios-validation-plan.result == 'success' &&
-      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true' &&
+      needs.sdk-native-result.result == 'success' &&
+      needs.sdk-native-result.outputs.sdk_workers_required == 'true' &&
       needs.sdk-ios-validation.result != 'success'
     runs-on: ubuntu-24.04
     outputs:
@@ -4628,7 +4616,7 @@ jobs:
           merge-multiple: true
       - id: outcome
         env:
-          SDK_MATRIX: ${{ needs.sdk-ios-validation-plan.outputs.sdk_matrix }}
+          SDK_MATRIX: ${{ needs.sdk-native-result.outputs.sdk_matrix }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -4653,18 +4641,18 @@ jobs:
 
   sdk-apple-signing-prepare:
     name: sdk-apple-signing-prepare-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-ios-validation-plan, sdk-ios-validation, sdk-ios-validation-outcome]
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-outcome]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.sdk-plan.result == 'success' &&
       (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
-      needs.sdk-ios-validation-plan.result == 'success' &&
-      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-native-result.result == 'success' &&
+      needs.sdk-native-result.outputs.sdk_workers_required == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-native-result.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -4712,15 +4700,15 @@ jobs:
 
   sdk-apple-validation-attestation:
     name: sdk-apple-validation-attestation-${{ matrix.target }}
-    needs: [workflow-lint, plan, sdk-ios-validation-plan, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare]
+    needs: [workflow-lint, plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.workflow-lint.result == 'success' &&
       (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
-      needs.sdk-ios-validation-plan.result == 'success' &&
-      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-native-result.result == 'success' &&
+      needs.sdk-native-result.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: product-attestation
@@ -4729,7 +4717,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-native-result.outputs.sdk_matrix || '{"include":[]}') }}
     steps:
       - name: Check out reviewed Apple signer code only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4762,15 +4750,15 @@ jobs:
           private-key: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
 
   sdk-collect-9:
-    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-native-result.result == 'success' && needs.sdk-plan.result == 'success' &&
+      needs.sdk-plan.result == 'success' &&
       (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
-      needs.sdk-ios-validation-plan.result == 'success' &&
-      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-native-result.result == 'success' &&
+      needs.sdk-native-result.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4832,7 +4820,7 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-ios-validation-result:
-    needs: [plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
+    needs: [plan, sdk-native-result, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
     if: >-
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'

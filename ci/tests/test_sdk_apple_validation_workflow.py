@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRICES = ("sdk-ios-validation", "sdk-apple-signing-prepare", "sdk-apple-validation-attestation")
-JOBS = ("sdk-ios-validation-plan", *MATRICES, "sdk-collect-9", "sdk-ios-validation-result")
+JOBS = ("sdk-native-result", *MATRICES, "sdk-collect-9", "sdk-ios-validation-result")
 
 
 class SdkAppleValidationWorkflowTest(unittest.TestCase):
@@ -48,9 +48,12 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                 if name in MATRICES:
                     self.assertLess(job.index("    if:"), job.index("    strategy:"))
                     self.assertIn("fail-fast: false", job)
-                    self.assertIn("matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{\"include\":[]}') }}", job)
-                    self.assertIn("needs.sdk-ios-validation-plan.result == 'success'", condition)
-                    self.assertIn("needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'", condition)
+                    matrix = "needs.sdk-native-result.outputs.sdk_matrix"
+                    if name != "sdk-ios-validation":
+                        matrix = "needs.sdk-ios-validation-outcome.outputs.signing_matrix || " + matrix
+                    self.assertIn("matrix: ${{ fromJSON(" + matrix + " || '{\"include\":[]}') }}", job)
+                    self.assertIn("needs.sdk-native-result.result == 'success'", condition)
+                    self.assertIn("needs.sdk-native-result.outputs.sdk_workers_required == 'true'", condition)
 
     def test_failed_sibling_does_not_suppress_preparation_signing_or_collection(self):
         for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation", "sdk-collect-9"):
@@ -58,37 +61,35 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                 job = self.job(name)
                 condition = self.condition(job)
                 self.assertIn("always()", condition)
-                self.assertIn("needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'", condition)
-                for matrix in MATRICES:
+                self.assertIn("needs.sdk-native-result.outputs.sdk_workers_required == 'true'", condition)
+                self.assertIn("(needs.sdk-ios-validation.result == 'success' || "
+                              "needs.sdk-ios-validation-outcome.result == 'success')", condition)
+                self.assertIn("needs.sdk-ios-validation-outcome.outputs.all_failed != 'true'", condition)
+                for matrix in MATRICES[1:]:
                     self.assertNotIn("needs." + matrix + ".result", condition)
         self.assertIn("sdk-ios-validation", self.needs(self.job("sdk-apple-signing-prepare")))
         self.assertIn("sdk-apple-signing-prepare", self.needs(self.job("sdk-apple-validation-attestation")))
         self.assertTrue(set(MATRICES) <= self.needs(self.job("sdk-collect-9")))
 
-    def test_no_tooling_election_skips_exact_four_setup_steps_but_still_captures_state(self):
-        job = self.job("sdk-ios-validation-plan")
-        self.assertNotIn("tooling_required", self.condition(job))
-        steps = re.split(r"\n      - ", job)[1:]
-        markers = ("name: Select installed caller Java", "id: tooling\n",
-                   "uses: actions/download-artifact@", "id: apple-policy\n")
-        for marker in markers:
-            with self.subTest(step=marker):
-                selected = [step for step in steps if marker in step]
-                self.assertEqual(1, len(selected))
-                self.assertEqual(["needs.plan.outputs.tooling_required == 'true'"],
-                                 re.findall(r"(?m)^        if: (.+)$", selected[0]))
-        self.assertEqual(4, job.count("if: needs.plan.outputs.tooling_required == 'true'"))
-        capture = next(step for step in steps if step.startswith("id: capture\n"))
-        self.assertNotRegex(capture, r"(?m)^        if:")
-        self.assertIn("uses: ./.github/actions/capture-runtime-state", capture)
-        self.assertIn("sdk-family: ios-validation", capture)
-        self.assertIn("artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}", capture)
-        self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", capture)
-        self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", capture)
+    def test_prefix_gate_and_election_share_one_job_without_product_authentication(self):
+        job = self.job("sdk-native-result")
+        self.assertNotIn("  sdk-ios-validation-plan:", self.source)
+        self.assertEqual(1, job.count("uses: actions/checkout@"))
+        self.assertIn("fetch-depth: 1", job)
+        self.assertNotIn("tooling_required", job)
+        for action in ("capture-sdk-tooling", "prepare-sdk-apple-policy", "download-artifact"):
+            self.assertNotIn(action, job)
+        capture = job.split("      - id: capture\n", 1)[1]
+        self.assertIn("if: steps.result.outputs.artifact_id != ''", capture)
+        self.assertIn("uses: ./.github/actions/capture-runtime-state/route", capture)
+        self.assertIn("family: ios-validation", capture)
+        self.assertIn("artifact-id: ${{ steps.result.outputs.artifact_id }}", capture)
+        self.assertIn("needs['sdk-plan']['result'] != 'success'", job)
+        self.assertLess(job.index("select_ios_ready_prefix(needs)"), job.index("id: capture"))
+        self.assertIn("sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}", job)
 
     def test_election_worker_and_collector_preserve_parent_and_caller_policy(self):
-        for name, action in (("sdk-ios-validation-plan", "capture-runtime-state"),
-                             ("sdk-ios-validation", "sdk-ios-validation-worker"),
+        for name, action in (("sdk-ios-validation", "sdk-ios-validation-worker"),
                              ("sdk-collect-9", "collect-runtime-wave")):
             with self.subTest(job=name):
                 job = self.job(name)
@@ -126,7 +127,7 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
         for key in ("target", "build-key"):
             value = "target" if key == "target" else "buildKey"
             self.assertIn(key + ": ${{ matrix." + value + " }}", job)
-        for name in ("sdk-ios-validation-plan", "sdk-ios-validation", "sdk-apple-signing-prepare",
+        for name in ("sdk-native-result", "sdk-ios-validation", "sdk-apple-signing-prepare",
                      "sdk-collect-9", "sdk-ios-validation-result"):
             self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", self.job(name))
         for forbidden in ("capture-sdk-tooling", "prepare-sdk-apple-policy", "setup-kmp", "setup-java", "gradlew"):
@@ -134,7 +135,7 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
 
     def test_terminal_executes_selector_after_all_matrices_and_never_fabricates_output(self):
         job = self.job("sdk-ios-validation-result")
-        expected_jobs = {"plan", "sdk-native-result", "sdk-ios-validation-plan", *MATRICES, "sdk-collect-9"}
+        expected_jobs = {"plan", "sdk-native-result", *MATRICES, "sdk-collect-9"}
         self.assertEqual(expected_jobs, self.needs(job))
         self.assertNotIn("sdk_workers_required", self.condition(job))
         for name in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):

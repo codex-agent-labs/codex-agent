@@ -93,6 +93,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
     @staticmethod
     def sdk_predecessors(source="released-default", aggregate_state="completed", binary=False):
         return {
+            "product-resume": {"result": "success", "outputs": {"native_sdk_direct": "false"}},
             "runtime-continuation": {"result": "success", "outputs": {
                 "artifact_id": "41", "artifact_digest": "sha256:" + "a" * 64, "state_wave": "4",
                 "sdk_input_selection": json.dumps({"source": source}), "aggregate_state": aggregate_state}},

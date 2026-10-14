@@ -38,7 +38,7 @@ _STAGES = {
     "javascript-metadata": ("sdk-javascript", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
     "validation": ("sdk-ios-packages", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
     "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
-    "ios-validation": ("sdk-native-result", "sdk-ios-validation-plan", "sdk-ios-validation", "sdk-collect-9", "9"),
+    "ios-validation": ("sdk-native-result", "sdk-native-result", "sdk-ios-validation", "sdk-collect-9", "9"),
     "ios-metadata": ("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
     "core-binary": ("sdk-ios-metadata-result", "sdk-core-binary-plan", "sdk-core-binary", "sdk-collect-11", "11"),
     "core-package": ("sdk-core-binary-wave", "sdk-core-package-plan", "sdk-core-package", "sdk-collect-12", "12"),
@@ -157,8 +157,13 @@ def select_native_state(needs, *, stage):
     apple_signing = tuple(_job(needs, name) for name in
         ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation")) if stage == "ios-validation" else ()
     if not state["artifact_id"]:
+        # The iOS prefix gate and its election share one successful job; an absent
+        # parent must still skip its route step and every downstream operation.
+        if parent_name == election_name and election["outputs"].get("sdk_workers_required", "") != "":
+            raise ValueError("Unexpected native election without parent state")
         if any(job["result"] != "skipped" for job in
-               (election, workers, collector, *apple_signing, *((preparation,) if preparation is not None else ()))):
+               (*((election,) if parent_name != election_name else ()), workers, collector,
+                *apple_signing, *((preparation,) if preparation is not None else ()))):
             raise ValueError("Unexpected native jobs without parent state")
         return state
     if election["result"] != "success":

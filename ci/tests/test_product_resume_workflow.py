@@ -247,10 +247,17 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                         exec(compile(script, '<native-prefix-boundary>', 'exec'), {})
                         values = dict(line.split('=', 1) for line in output.read_text().splitlines())
                         self.assertEqual(routing.forward_routing(fixture.locator, planned), values)
-        for name in ('sdk-ios-validation-plan', 'sdk-ios-validation', 'sdk-collect-9'):
+        self.assertNotIn('  sdk-ios-validation-plan:', self.workflow)
+        self.assertIn("if: steps.result.outputs.artifact_id != ''", native)
+        self.assertIn('family: ios-validation', native)
+        self.assertIn('artifact-id: ${{ steps.result.outputs.artifact_id }}', native)
+        self.assertLess(native.index('id: result'), native.index('id: capture'))
+        self.assertEqual(1, native.count('uses: actions/checkout@'))
+        for name in ('sdk-ios-validation', 'sdk-collect-9'):
             job = workflow_job(self.workflow, name)
             self.assertIn("needs.sdk-native-result.result == 'success'", job)
             self.assertIn('artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}', job)
+            self.assertIn("needs.sdk-native-result.outputs.sdk_workers_required == 'true'", job)
         worker = workflow_job(self.workflow, 'sdk-ios-validation')
         self.assertIn('uses: ./.github/actions/sdk-ios-validation-worker', worker)
         self.assertIn('restore-reuse-qualification@reuse-authority', worker)
