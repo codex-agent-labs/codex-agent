@@ -31,6 +31,7 @@ class RecoveryGetRetryTest(unittest.TestCase):
                              (urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")), 4),
                              (urllib.error.URLError(ssl.SSLCertVerificationError("certificate rejected")), 1),
                              (urllib.error.URLError("unknown transport failure"), 1),
+                             (urllib.error.HTTPError("https://example.invalid", 500, "internal server error", {}, None), 4),
                              (urllib.error.HTTPError("https://example.invalid", 503, "unavailable", {}, None), 4),
                              (ValueError("digest mismatch"), 1),
                              (urllib.error.HTTPError("https://example.invalid", 403, "denied", {}, None), 1)):

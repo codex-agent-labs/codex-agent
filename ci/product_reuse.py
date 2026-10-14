@@ -45,7 +45,7 @@ def _retry_github_get(operation):
                 return operation(*args, **kwargs)
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
                 transient = (isinstance(error, (TimeoutError, ConnectionError))
-                    or isinstance(error, urllib.error.HTTPError) and error.code in {502, 503, 504}
+                    or isinstance(error, urllib.error.HTTPError) and error.code in {500, 502, 503, 504}
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (socket.gaierror, TimeoutError, ConnectionError)))
                 if attempt == 3 or not transient:
@@ -8051,6 +8051,32 @@ def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target,
 
 
 @measured
+def _prepare_cold_apple_workspace(workspace, environ, archive_bytes):
+    if environ.get("CODEX_AGENT_COLD_APPLE_WORKSPACE") != "true":
+        return
+    if any(environ.get(key) != value for key, value in {
+        "GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux",
+        "RUNNER_ENVIRONMENT": "github-hosted", "GITHUB_JOB": "product-resume",
+    }.items()):
+        raise ValueError("Cold Apple tool reclamation requires hosted product-resume")
+    # Reserve for the retained original, isolated inputs and frozen replay copies.
+    # This is a capacity preflight, never an artifact or admission authority.
+    required = 4 * archive_bytes + 8 * 1024**3
+    before = shutil.disk_usage(workspace).free
+    if before < required:
+        subprocess.run(["sudo", "-n", "rm", "-rf", "--",
+            "/usr/local/lib/android", "/usr/share/dotnet", "/opt/ghc",
+            "/usr/local/.ghcup", "/opt/hostedtoolcache/CodeQL"], check=True)
+    after = shutil.disk_usage(workspace).free
+    print("cold-apple-workspace " + canonical_json_bytes({
+        "beforeFreeBytes": before, "afterFreeBytes": after,
+        "requiredFreeBytes": required, "archiveBytes": archive_bytes,
+    }).decode().strip(), flush=True)
+    if after < required:
+        raise ValueError(f"Insufficient cold Apple workspace capacity: {after} free bytes; {required} required")
+
+
+@measured
 def _capture_sdk_ios_upload(plan_path, destination, **arguments):
     with _captured_sdk_ios_upload(plan_path, destination, **arguments) as (prepared, transport, expected):
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected)
@@ -8174,6 +8200,8 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
             for row in retained:
                 _copy_exact(source / row["relativePath"], original / row["relativePath"], row)
         else:
+            if phase == "package" and compact_recovery:
+                _prepare_cold_apple_workspace(prepared.parent, environment, artifact["size_in_bytes"])
             _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
                 destination=archive, limit=_ios_upload_zip_limits(phase)["max_archive_bytes"], artifact_sha256=artifact_sha256,
                 size=artifact["size_in_bytes"])
