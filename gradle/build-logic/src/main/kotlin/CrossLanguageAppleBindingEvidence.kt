@@ -55,6 +55,8 @@ private const val swiftBufferingTest =
     "CodexAgentObservationTests/testBufferingCancellationAndDroppedStreamReleaseTheObservation()"
 private const val swiftBrowserTest =
     "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()"
+private const val swiftBrowserFailureTest =
+    "CodexAuthorizationBrowserTests/testFailedBrowserSessionIsCancelled()"
 
 
 private const val appleCanonicalPackage = "io.github.codex_agent_labs.codexagent.agent"
@@ -3306,6 +3308,7 @@ internal val expectedAppleTests = listOf(
     swiftFailureTest,
     objectiveCFailureTest,
     swiftBrowserTest,
+    swiftBrowserFailureTest,
 ).sorted()
 
 internal val swiftAppleBindingScenarioTests = mapOf(

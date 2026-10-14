@@ -353,6 +353,60 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
                              execution["launchError"])
             self.assertFalse(self.archive.exists())
 
+    def test_failed_worker_retains_small_original_process_captures_without_products(self):
+        name = "swift-authentication-evidence-task/simulator-raw/attempt-0/ready-devices/stdout.bin"
+        raw = b'{"devices":{"runtime":[{"udid":"selected","state":"Booted"}]}}\n'
+
+        def process_outputs(_fields):
+            path = self.ios_build / name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(raw)
+            (self.ios_build / "swift-authentication-tests.xcresult").mkdir()
+            (self.ios_build / "swift-authentication-tests.xcresult/product.bin").write_bytes(b"excluded")
+
+        self.after_process = process_outputs
+        self.return_code = 70
+        with self.assertRaisesRegex(ValueError, "exit code 70"):
+            self.execute()
+        captured = self.destination / "failed-apple-processes"
+        self.assertEqual(raw, (captured / name).read_bytes())
+        self.assertEqual(raw, (self.ios_build / name).read_bytes())
+        self.assertEqual({name, "capture.json"}, {
+            str(path.relative_to(captured)) for path in captured.rglob("*") if path.is_file()})
+        self.assertEqual({"schemaVersion": 1, "retainedBytes": len(raw),
+                          "skippedUnsafeOrOverLimit": []},
+                         load_canonical_json_bytes((captured / "capture.json").read_bytes()))
+        self.assertFalse(self.archive.exists())
+
+    def test_failed_process_capture_bounds_bytes_and_rejects_symlink_members_and_parents(self):
+        self.ios_build.mkdir(parents=True)
+        self.destination.mkdir(parents=True)
+        names = ["simulator-devices.json", "swift-authentication-tests-summary.json"]
+        for name in names:
+            (self.ios_build / name).write_bytes(b"12345678")
+        raw = self.ios_build / "swift-authentication-evidence-task/raw"
+        raw.mkdir(parents=True)
+        (raw / "successful-attempt.json").write_bytes(b"over total budget")
+        operation = raw / "attempt-0/xcodebuild"
+        operation.mkdir(parents=True)
+        (operation / "stdout.bin").symlink_to(self.compatibility)
+        external = self.root / "external-process"
+        external.mkdir()
+        (external / "execution.json").write_bytes(b"secret")
+        (raw / "attempt-0/tests").symlink_to(external, target_is_directory=True)
+        with patch.object(sdk_ios_validation, "_LIMIT", 8):
+            sdk_ios_validation._retain_failed_apple_processes(self.ios_build, self.destination)
+        captured = self.destination / "failed-apple-processes"
+        self.assertEqual(set(names) | {"capture.json"}, {
+            str(path.relative_to(captured)) for path in captured.rglob("*") if path.is_file()})
+        report = load_canonical_json_bytes((captured / "capture.json").read_bytes())
+        self.assertEqual(16, report["retainedBytes"])
+        self.assertEqual({
+            "swift-authentication-evidence-task/raw/successful-attempt.json",
+            "swift-authentication-evidence-task/raw/attempt-0/xcodebuild/stdout.bin",
+            "swift-authentication-evidence-task/raw/attempt-0/tests/execution.json",
+        }, set(report["skippedUnsafeOrOverLimit"]))
+
     def test_missing_empty_extra_and_symlink_archive_outputs_are_rejected(self):
         for mode in ("missing", "empty", "extra", "symlink"):
             self.cleanup_outputs()

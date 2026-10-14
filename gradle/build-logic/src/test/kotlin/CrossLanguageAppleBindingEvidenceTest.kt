@@ -1429,6 +1429,12 @@ class CrossLanguageAppleBindingEvidenceTest {
         val registration = repository.resolve(
             "gradle/build-logic/src/main/kotlin/codexagent.ios-runtime.gradle.kts",
         ).readText()
+        val producerTests = Regex("\"([^\"]+)\"").findAll(
+            registration.substringAfter("private val expectedSwiftTestIdentifiers = listOf(\n")
+                .substringBefore("\n)"),
+        ).map { it.groupValues[1] }.sorted().toList()
+        assertEquals(5, producerTests.size)
+        assertEquals(producerTests, expectedAppleTests)
 
         listOf(
             "invalidateCodexAgentAppleBindingEvidence",
@@ -1602,12 +1608,13 @@ class CrossLanguageAppleBindingEvidenceTest {
             SWIFT_FAILURE_TEST,
             OBJECTIVE_C_FAILURE_TEST,
             "CodexAuthorizationBrowserTests/testGenericBrowserOpensTypedExternalURLAndCancelsPresentation()",
+            "CodexAuthorizationBrowserTests/testFailedBrowserSessionIsCancelled()",
         ).sorted()
         val xctest = buildJsonObject {
             put("schemaVersion", JsonPrimitive(1))
             put("protocol", JsonPrimitive("codex-agent-apple-xctest-v1"))
             put("result", JsonPrimitive("passed"))
-            put("totalTestCount", JsonPrimitive(4))
+            put("totalTestCount", JsonPrimitive(5))
             put("failedTests", JsonPrimitive(0))
             put("xcresultSha256", JsonPrimitive(SHA_D))
             put("tests", buildJsonArray { tests.forEach { test -> add(buildJsonObject {

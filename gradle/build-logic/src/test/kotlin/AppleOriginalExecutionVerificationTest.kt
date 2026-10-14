@@ -497,7 +497,7 @@ internal class OriginalAppleExecutionFixture : AutoCloseable {
     }
 
     private fun writeXCTestRaw(): JsonObject {
-        val summaryJson = "{\"totalTestCount\":4,\"failedTests\":0}"
+        val summaryJson = "{\"totalTestCount\":5,\"failedTests\":0}"
         val testsJson = releaseJson.encodeToString(JsonElement.serializer(), buildJsonObject {
             put("devices", JsonArray(emptyList()))
             put("testNodes", buildJsonArray { expectedAppleTests.forEach { identifier -> add(buildJsonObject {
