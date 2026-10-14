@@ -123,8 +123,8 @@ def validate_current(request, phases, receipts, *, root, revision, original_revi
             raise ValueError("Incremental SDK receipt changes its admitted phase authority")
 
 
-def observe_original(original, receipt, token):
-    """Fresh official original job/upload gates; a native member digest is separate."""
+def observe_original(original, receipt, token, *, native_locator=None):
+    """Fresh original gates; native_locator requires an authenticated native subject."""
     import product_reuse as products
     receipt = validate_phase_receipt(receipt)
     producer = validate_producer(receipt["producer"])
@@ -135,9 +135,13 @@ def observe_original(original, receipt, token):
     if instance.product != "sdk" or instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Incremental original must be a registered SDK phase")
     base_job = f"product-validation / sdk-{instance.component}-{instance.phase}-{instance.target}"
+    if native_locator is not None and (type(native_locator) is not dict
+            or type(native_locator.get("job")) is not dict or native_locator["job"].get("id") != original["jobId"]):
+        raise ValueError("Native original locator changes its independently pinned job")
     observed = products._observe_ci_producer_jobs({"original": producer},
         jobs_by_phase={"original": base_job}, build_keys_by_phase={"original": receipt["buildKey"]},
-        trusted_workflow_sha=original["workflowSha"], token=token)
+        trusted_workflow_sha=original["workflowSha"], token=token,
+        **({"native_job_ids_by_phase": {"original": original["jobId"]}} if native_locator is not None else {}))
     matches = products._matching_ci_jobs(observed[0]["jobs"], base_job, expected_build_key=receipt["buildKey"])
     if len(matches) != 1 or matches[0].get("id") != original["jobId"]:
         raise ValueError("Incremental SDK original job is missing or ambiguous")
@@ -147,11 +151,15 @@ def observe_original(original, receipt, token):
         name, producer, observed[0]["run"], token,
         **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if instance == IOS_PACKAGE else {}))
     products._require_artifact_job_window(observed[0], matches[0]["name"], artifact)
-    return artifact, observed, products._runtime_original_locator(
+    locator = products._runtime_original_locator(
         artifact, original["workflowSha"], instance, matches[0])
+    if native_locator is not None and locator != native_locator:
+        raise ValueError("Fresh original differs from its authenticated native locator")
+    return artifact, observed, locator
 
 
-def observe_source(source, token, *, contract=False):
+def observe_source(source, token, *, contract=False, native_locator=None):
+    """Issuers select fully; native consumers bind the complete authenticated locator."""
     import product_reuse as products
     import reuse_qualification as native
     producer = validate_producer(source["producer"])
@@ -166,8 +174,12 @@ def observe_source(source, token, *, contract=False):
         if type(job) is not str or job not in _SOURCE_UPLOADS:
             raise ValueError("Incremental source requires a fixed native state producer")
         prefix = _SOURCE_UPLOADS[job]
+    if native_locator is not None and (type(native_locator) is not dict
+            or type(native_locator.get("job")) is not dict or native_locator["job"].get("id") != source["jobId"]):
+        raise ValueError("Native source locator changes its independently pinned job")
     observed = products._observe_ci_producer_jobs({"source": producer}, jobs_by_phase={"source": job},
-        trusted_workflow_sha=source["workflowSha"], token=token)
+        trusted_workflow_sha=source["workflowSha"], token=token,
+        **({"native_job_ids_by_phase": {"source": source["jobId"]}} if native_locator is not None else {}))
     selected = products._matching_ci_jobs(observed[0]["jobs"], job)
     if len(selected) != 1 or selected[0]["id"] != source["jobId"]:
         raise ValueError("Incremental source differs from its approved successful job")
@@ -179,6 +191,8 @@ def observe_source(source, token, *, contract=False):
     locator = products._runtime_original_locator(artifact, source["workflowSha"],
         PhaseInstanceId("contract", "contract", "metadata", "common") if contract else
         PhaseInstanceId("sdk", "javascript", "metadata", "node"), selected[0])
+    if native_locator is not None and locator != native_locator:
+        raise ValueError("Fresh source differs from its authenticated native locator")
     return artifact, observed, locator
 
 
@@ -288,12 +302,15 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     import product_reuse as products
     from products.restore import bounded_verify
     _contract_files(spec, proof["contractFiles"], sdk)
+    if type(proof["originals"]) is not list or len(proof["originals"]) != len(receipts):
+        raise ValueError("Incremental SDK native original scope changed")
     with products._ci_observation_batch():
         source, contract, *expected_locators = bounded_verify(lambda observe: observe()[2], (
-            lambda: observe_source(spec["source"], token),
-            lambda: observe_source(spec["contractControls"], token, contract=True),
-            *(lambda receipt=receipt: observe_original(originals[_identity(receipt)], receipt, token)
-              for receipt in receipts)))
+            lambda: observe_source(spec["source"], token, native_locator=proof["source"]),
+            lambda: observe_source(spec["contractControls"], token, contract=True, native_locator=proof["contractSource"]),
+            *(lambda receipt=receipt, locator=locator: observe_original(
+                originals[_identity(receipt)], receipt, token, native_locator=locator)
+              for receipt, locator in zip(receipts, proof["originals"]))))
     if source != proof["source"]:
         raise ValueError("Incremental completed source changed")
     if contract != proof["contractSource"]:

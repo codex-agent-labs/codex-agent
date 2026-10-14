@@ -136,6 +136,86 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 **sources[0]['receipt'], 'producer': {**self.producer, 'runId': 999}}}], 'fixture')
         api.assert_not_called()
 
+    def test_native_job_lookup_preserves_every_fresh_identity_gate(self):
+        job = {**self.jobs[0], 'run_attempt': 2}
+        name = job['name']
+        original = self.api()
+        def http(url, token):
+            if url.endswith('/actions/jobs/101'):
+                return json.dumps(job).encode()
+            return original(url, token)
+        def observe(**changes):
+            options = dict(jobs_by_phase={'binary': name}, trusted_workflow_sha=self.pin,
+                           token='not-a-real-token', native_job_ids_by_phase={'binary': 101})
+            return adapter._observe_ci_producer_jobs({'binary': self.producer}, **{**options, **changes})
+        with mock.patch('reuse.api_request', side_effect=http) as api:
+            self.assertEqual([job], observe()[0]['jobs'])
+            self.assertFalse(any('/jobs?' in call.args[0] for call in api.call_args_list))
+            for field, value in (('id', 102), ('run_attempt', 1), ('run_attempt', None),
+                                 ('run_id', 72), ('head_sha', '0' * 40), ('name', 'unrelated'),
+                                 ('status', 'in_progress'), ('conclusion', 'failure')):
+                before = job[field]
+                job[field] = value
+                with self.subTest(job=field, value=value), self.assertRaises(ValueError):
+                    observe()
+                job[field] = before
+            for field, value in (('status', 'in_progress'), ('run_attempt', 1), ('event', 'workflow_dispatch')):
+                before = self.run[field]
+                self.run[field] = value
+                with self.subTest(run=field), self.assertRaises(ValueError):
+                    observe()
+                self.run[field] = before
+            before = self.commit['tree']
+            self.commit['tree'] = {'sha': '0' * 40}
+            with self.assertRaisesRegex(ValueError, 'commit/tree'):
+                observe()
+            self.commit['tree'] = before
+            with self.assertRaisesRegex(ValueError, 'workflow'):
+                observe(trusted_workflow_sha='0' * 40)
+            job['name'] = f"{name} (sha256:{'b' * 64}, ..."
+            observe(build_keys_by_phase={'binary': 'sha256:' + 'b' * 64})
+            with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                observe(build_keys_by_phase={'binary': 'sha256:' + 'a' * 64})
+            job['name'] = name
+            for pins in ({'binary': True}, {'binary': 0}, {'other': 101}):
+                with self.subTest(pins=pins), self.assertRaises(ValueError):
+                    observe(native_job_ids_by_phase=pins)
+
+    def test_native_job_observation_cannot_replace_full_selection_or_cross_scope(self):
+        job = {**self.jobs[0], 'run_attempt': 2}
+        name = job['name']
+        original = self.api()
+        def http(url, token):
+            if url.endswith('/actions/jobs/101'):
+                return json.dumps(job).encode()
+            return original(url, 'not-a-real-token')
+        def observe(*, native=True, token='not-a-real-token', pin=None):
+            return adapter._observe_ci_producer_jobs({'binary': self.producer},
+                jobs_by_phase={'binary': name}, trusted_workflow_sha=self.pin if pin is None else pin, token=token,
+                **({'native_job_ids_by_phase': {'binary': 101}} if native else {}))
+        with mock.patch('reuse.api_request', side_effect=http) as api:
+            with adapter._ci_observation_batch():
+                observed = observe()
+                observed[0]['jobs'][0]['conclusion'] = 'failure'
+                self.assertEqual('success', observe()[0]['jobs'][0]['conclusion'])
+                self.assertEqual(1, sum('/actions/jobs/101' in c.args[0] for c in api.call_args_list))
+                with self.assertRaisesRegex(ValueError, 'workflow'):
+                    observe(pin='0' * 40)
+                observe(token='other-token')
+                self.assertEqual(2, sum('/actions/jobs/101' in c.args[0] for c in api.call_args_list))
+                # A first-time/full selector still rejects ambiguous names;
+                # the sealed native identity never supplies its partial list.
+                self.jobs.append({**self.jobs[0], 'id': 999})
+                with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                    observe(native=False)
+                self.assertTrue(any('/jobs?' in c.args[0] for c in api.call_args_list))
+                self.jobs.pop()
+            api.reset_mock()
+            with adapter._ci_observation_batch(('71', '2')):
+                observe()
+                observe()
+            self.assertEqual(2, sum('/actions/jobs/101' in c.args[0] for c in api.call_args_list))
+
     def test_completed_attempt_observations_are_shared_only_inside_one_operation(self):
         from products.restore import verification_session
         with mock.patch('reuse.api_request', side_effect=self.api()) as http:

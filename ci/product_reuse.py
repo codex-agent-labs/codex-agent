@@ -713,9 +713,19 @@ def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
     trusted_workflows_by_phase=None, build_keys_by_phase=None, allow_protected_dispatch=False,
     dispatch_authorization_job="product-validation / dispatch-authorization",
+    native_job_ids_by_phase=None,
 ) -> list[dict[str, Any]]:
     # Callers choose fixed jobs and workflow references; transported data selects neither.
     require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
+    native_job_id = None
+    if native_job_ids_by_phase is not None:
+        # Native consumers pin these IDs through an authenticated subject AND
+        # its issuer Git spec, then compare the complete fresh upload locator.
+        # First-time issuers and untrusted discovery never supply this option.
+        require_exact_keys(native_job_ids_by_phase, set(jobs_by_phase), "Native original job IDs")
+        if len(jobs_by_phase) != 1 or allow_protected_dispatch:
+            raise ValueError("Native original lookup requires one authenticated PR phase")
+        native_job_id = require_integer(next(iter(native_job_ids_by_phase.values())), "Native original job ID", 1)
     for phase, job in jobs_by_phase.items():
         if type(job) is not str or not job:
             raise ValueError(f"Contract {phase} producer job must be caller-pinned text")
@@ -747,6 +757,8 @@ def _observe_ci_producer_jobs(
     attempts: dict[tuple[int, int], dict[str, Any]] = {}
     for phase in jobs_by_phase:
         producer = validate_producer(producers[phase], f"Contract {phase} producer")
+        if native_job_id is not None and (producer["event"] != "pull_request" or producer["pullRequest"] != 31):
+            raise ValueError("Native original lookup changes its authenticated PR scope")
         if (producer["repository"] != repository
                 or producer["workflowPath"] != ".github/workflows/ci.yml"
                 or producer["event"] not in ({"pull_request", "merge_group", "workflow_dispatch"}
@@ -768,6 +780,10 @@ def _observe_ci_producer_jobs(
         producer = original["producer"]
         url = f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"
         observation_key = (token, canonical_json_bytes(producer))
+        if native_job_id is not None:
+            # Only callers with an authenticated native locator may choose this
+            # exact identity. A partial observation must never serve discovery.
+            observation_key += ("native-job", native_job_id)
         def fetch():
             from products.restore import bounded_verify
             count('provenanceObservationsFetched')
@@ -778,14 +794,24 @@ def _observe_ci_producer_jobs(
                     expected_commit=producer["commit"], expected_tree=producer["tree"],
                     pull_request=producer["pullRequest"], allow_dispatch=allow_protected_dispatch)
                 return run, commit
+            def selected_jobs():
+                if native_job_id is None:
+                    return paginated_items(f"{url}/jobs", "jobs", token)
+                job = api_json(f"https://api.github.com/repos/{repository}/actions/jobs/{native_job_id}", token)
+                if (require_integer(job.get("id"), "Native original observed job ID", 1) != native_job_id
+                        or require_integer(job.get("run_attempt"), "Native original job attempt", 1) != attempt):
+                    raise ValueError("Native original job differs from its authenticated ID or attempt")
+                return [job]
             # Both endpoints are fixed by the validated producer. Join every
             # fresh read before checking the caller's exact workflow/job pins.
             (run, commit), jobs = bounded_verify(lambda read: read(), (
-                source, lambda: paginated_items(f"{url}/jobs", "jobs", token)))
+                source, selected_jobs))
             return {"run": run, "testedCommit": commit, "jobs": jobs}
         observation = _historical_ci_observation(observations, observation_key,
             (str(run_id), str(attempt)), fetch)
         run, commit, jobs = (observation[field] for field in ("run", "testedCommit", "jobs"))
+        if native_job_id is not None and run.get("status") != "completed":
+            raise ValueError("Native original attempt is not completed")
         # A completed original uploader, checked below, is authoritative; the
         # enclosing run status can briefly regress while new jobs are queued.
         if (require_integer(run.get("id"), "Contract original CI run ID", 1) != run_id

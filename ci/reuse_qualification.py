@@ -846,14 +846,19 @@ class CompletedFrozenReuse:
         source = spec["source"]["producer"]
         if (source["runId"], source["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
             raise ValueError("Incremental completion must precede its consumer")
-        artifact, _, locator = observe_source(spec["source"], token)
+        artifact, _, locator = observe_source(spec["source"], token, native_locator=proof["source"])
         if locator != proof["source"]:
             raise ValueError("Incremental admitted source changed")
         instance = products._identity(record)
         originals = _phase_records(spec["originals"], "Incremental SDK originals")
         if instance not in originals:
             raise ValueError("Incremental original is outside its exact approved scope")
-        original, observed, locator = observe_original(originals[instance], envelope["receipt"], token)
+        native = [locator for locator in proof["originals"]
+                  if locator["instance"] == {field: record[field] for field in _PHASE_FIELDS}]
+        if len(native) != 1:
+            raise ValueError("Incremental original native locator is missing or ambiguous")
+        original, observed, locator = observe_original(originals[instance], envelope["receipt"], token,
+            native_locator=native[0])
         if locator not in proof["originals"]:
             raise ValueError("Incremental original changed after native admission")
         return artifact, original, observed

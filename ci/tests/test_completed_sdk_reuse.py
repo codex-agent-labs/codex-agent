@@ -138,6 +138,18 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.assertEqual({'source': role}, observe.call_args.kwargs['jobs_by_phase'])
                 self.assertEqual(source['workflowSha'], observe.call_args.kwargs['trusted_workflow_sha'])
                 self.assertEqual(artifact['name'], metadata.call_args.args[2])
+                self.assertNotIn('native_job_ids_by_phase', observe.call_args.kwargs)
+                self.assertEqual(result, completed.observe_source(source, 'synthetic', native_locator=result[2]))
+                self.assertEqual({'source': source['jobId']}, observe.call_args.kwargs['native_job_ids_by_phase'])
+                altered = deepcopy(result[2])
+                altered['job']['completed_at'] = '2026-01-01T01:03:00Z'
+                with self.assertRaisesRegex(ValueError, 'authenticated native locator'):
+                    completed.observe_source(source, 'synthetic', native_locator=altered)
+                altered['job']['id'] += 1
+                observe.reset_mock()
+                with self.assertRaisesRegex(ValueError, 'independently pinned job'):
+                    completed.observe_source(source, 'synthetic', native_locator=altered)
+                observe.assert_not_called()
                 with self.assertRaisesRegex(ValueError, 'approved successful job'):
                     completed.observe_source({**source, 'jobId': source['jobId'] + 1}, 'synthetic')
                 metadata.return_value = {**artifact, 'created_at': '2026-01-01T01:03:00Z'}
@@ -147,6 +159,44 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'fixed native state producer'):
                     completed.observe_source({**source, 'jobName': 'product-validation / unrelated'}, 'synthetic')
                 observe.assert_not_called()
+
+    def test_native_original_locator_requires_independent_pin_and_exact_fresh_record(self):
+        import product_reuse
+        receipt = deepcopy(self.receipt)
+        receipt['producer']['workflowPath'] = '.github/workflows/ci.yml'
+        original = {'jobId': 71, 'workflowSha': 'a' * 40, 'artifactId': 72, 'artifactSha256': 'sha256:' + 'b' * 64}
+        job = {'id': 71, 'name': 'product-validation / sdk-csharp-binary-desktop',
+               'started_at': '2026-01-01T01:00:00Z', 'completed_at': '2026-01-01T01:02:00Z'}
+        artifact = {'id': 72, 'created_at': '2026-01-01T01:01:00Z'}
+        with patch.object(product_reuse, '_observe_ci_producer_jobs',
+                return_value=[{'run': {}, 'jobs': [job]}]) as observe, \
+                patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact):
+            result = completed.observe_original(original, receipt, 'synthetic')
+            self.assertNotIn('native_job_ids_by_phase', observe.call_args.kwargs)
+            self.assertEqual(result, completed.observe_original(original, receipt, 'synthetic', native_locator=result[2]))
+            self.assertEqual({'original': 71}, observe.call_args.kwargs['native_job_ids_by_phase'])
+            altered = deepcopy(result[2])
+            altered['artifact']['created_at'] = '2026-01-01T01:01:01Z'
+            with self.assertRaisesRegex(ValueError, 'authenticated native locator'):
+                completed.observe_original(original, receipt, 'synthetic', native_locator=altered)
+            altered['job']['id'] += 1
+            observe.reset_mock()
+            with self.assertRaisesRegex(ValueError, 'independently pinned job'):
+                completed.observe_original(original, receipt, 'synthetic', native_locator=altered)
+            observe.assert_not_called()
+
+    def test_native_job_selection_cannot_run_before_subject_authentication(self):
+        import reuse_qualification as native
+        pins = {'artifactId': 1, 'artifactSha256': 'sha256:' + 'a' * 64, 'runId': 2,
+                'runAttempt': 1, 'signerCommit': 'b' * 40, 'sourceCommit': 'c' * 40}
+        with patch.object(native, '_fetch_qualification_archive',
+                return_value=({}, {'completion.json': b'{}', 'bundle.jsonl': b'{}'})), \
+                patch.object(native, '_authenticate_native_subject', side_effect=ValueError('bad signature')), \
+                patch.object(native, '_validate_completed_sdk') as validate:
+            with self.assertRaisesRegex(ValueError, 'bad signature'):
+                native._fetch_completed_sdk(Path('unused'), pins, root=Path.cwd(),
+                    revision='d' * 40, frozen={}, token='synthetic')
+            validate.assert_not_called()
 
     def test_native_csharp_and_ios_package_controls_route_without_body_or_gate_replay(self):
         import reuse_qualification as native
