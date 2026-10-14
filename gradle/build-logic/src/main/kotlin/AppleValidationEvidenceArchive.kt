@@ -8,8 +8,14 @@ import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 
 private val appleValidationEvidenceTimestamp = LocalDateTime.of(1980, 1, 1, 0, 0)
+private const val appleValidationReferences = "apple-validation-references.json"
 
 /**
  * Writes caller-selected validation evidence without granting it semantic, producer, or host authority.
@@ -40,8 +46,42 @@ internal fun writeAppleValidationEvidenceArchive(roots: Map<String, File>, archi
     }
 
     val sources = collectAppleValidationEvidenceSources(namedRoots)
+    check(sources.keys.none { it.substringBefore('/') == appleValidationReferences } &&
+        sources.size <= 4095 && sources.values.all { it.length() <= 2L * 1024 * 1024 * 1024 } &&
+        sources.values.sumOf { it.length() } <= 32L * 1024 * 1024 * 1024) {
+        "Apple validation evidence exceeds its bounded logical inventory"
+    }
     val expected = sources.mapValues { (_, source) -> source.length() to source.releaseDigest() }
     verifyAppleValidationEvidenceSources(namedRoots, sources, expected)
+    val representatives = mutableMapOf<Pair<Long, String>, String>()
+    val references = linkedMapOf<String, String>()
+    expected.keys.sortedWith(::compareAppleValidationEvidenceNames).forEach { name ->
+        val identity = expected.getValue(name)
+        if (identity.first >= 1024 * 1024) {
+            representatives.putIfAbsent(identity, name)?.let { original -> references[name] = original }
+        }
+    }
+    val referenceBytes = if (references.isEmpty()) null else (Json.encodeToString(
+        JsonElement.serializer(), buildJsonObject {
+            put("references", buildJsonArray {
+                references.forEach { (name, original) -> add(buildJsonObject {
+                    put("bytes", JsonPrimitive(expected.getValue(name).first))
+                    put("relativePath", JsonPrimitive(name))
+                    put("sha256", JsonPrimitive("sha256:" + expected.getValue(name).second))
+                    put("sourcePath", JsonPrimitive(original))
+                }) }
+            })
+            put("schemaVersion", JsonPrimitive(1))
+        },
+    ) + "\n").toByteArray(UTF_8)
+    val stored = expected.filterKeys { it !in references }.toMutableMap()
+    referenceBytes?.let { bytes ->
+        check(bytes.size <= 16 * 1024 * 1024) { "Apple validation references exceed their bound" }
+        stored[appleValidationReferences] = bytes.size.toLong() to bytes.inputStream().releaseDigest()
+    }
+    check(stored.values.sumOf { it.first } <= 8L * 1024 * 1024 * 1024) {
+        "Apple validation evidence exceeds its physical archive bound"
+    }
 
     val parent = destination.parentFile
     parent.mkdirs()
@@ -53,16 +93,15 @@ internal fun writeAppleValidationEvidenceArchive(roots: Map<String, File>, archi
     val temporary = Files.createTempFile(parent.toPath(), ".${destination.name}-", ".tmp").toFile()
     try {
         ZipOutputStream(BufferedOutputStream(temporary.outputStream())).use { output ->
-            output.setLevel(Deflater.BEST_COMPRESSION)
-            sources.entries.sortedWith { left, right ->
-                compareAppleValidationEvidenceNames(left.key, right.key)
-            }.forEach { (name, source) ->
+            output.setLevel(Deflater.BEST_SPEED)
+            stored.keys.sortedWith(::compareAppleValidationEvidenceNames).forEach { name ->
                 output.putNextEntry(ZipEntry(name).apply { setTimeLocal(appleValidationEvidenceTimestamp) })
-                source.inputStream().use { input -> input.copyTo(output) }
+                if (name == appleValidationReferences) output.write(checkNotNull(referenceBytes))
+                else sources.getValue(name).inputStream().use { input -> input.copyTo(output) }
                 output.closeEntry()
             }
         }
-        verifyAppleValidationEvidenceArchive(temporary, expected)
+        verifyAppleValidationEvidenceArchive(temporary, stored)
         verifyAppleValidationEvidenceSources(namedRoots, sources, expected)
         requireApplePackagePathWithoutSymlinks(destination, "validation evidence archive")
         check(!Files.exists(destination.toPath(), NOFOLLOW_LINKS)) {
@@ -74,7 +113,7 @@ internal fun writeAppleValidationEvidenceArchive(roots: Map<String, File>, archi
         check(Files.isRegularFile(destination.toPath(), NOFOLLOW_LINKS)) {
             "Apple validation evidence archive publication is unsafe"
         }
-        verifyAppleValidationEvidenceArchive(destination, expected)
+        verifyAppleValidationEvidenceArchive(destination, stored)
         verifyAppleValidationEvidenceSources(namedRoots, sources, expected)
     } finally {
         Files.deleteIfExists(temporary.toPath())
@@ -152,6 +191,7 @@ private fun verifyAppleValidationEvidenceSources(
 }
 
 private fun verifyAppleValidationEvidenceArchive(archive: File, expected: Map<String, Pair<Long, String>>) {
+    check(archive.length() <= 8L * 1024 * 1024 * 1024) { "Apple validation archive exceeds its byte bound" }
     ZipFile(archive).use { zip ->
         val entries = buildList {
             val values = zip.entries()

@@ -11,8 +11,11 @@ from unittest import mock
 import warnings
 import zipfile
 
-from ci.products.inventory import sha256_bytes
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from ci.products.inventory import canonical_json_bytes, sha256_bytes
 from ci.products import sdk_apple_validation_evidence as evidence
+from ci.products.restore import verification_session
 
 
 class SdkAppleValidationEvidenceTest(unittest.TestCase):
@@ -92,10 +95,74 @@ class SdkAppleValidationEvidenceTest(unittest.TestCase):
         self.assertFalse(private.exists())
         self.assertEqual(original, self.archive.read_bytes())
 
+    def references(self, **changes):
+        reference = {"relativePath": "xctest/duplicate.bin", "sourcePath": "compiler/source.bin",
+                     "bytes": 4, "sha256": sha256_bytes(b"body")}
+        return [{**reference, **changes}]
+
+    def write_references(self, references=None, *, schema=1, extras=()):
+        control = {"schemaVersion": schema, "references": self.references() if references is None else references}
+        self.write(sorted([(evidence.REFERENCE_NAME, canonical_json_bytes(control)),
+                           ("compiler/source.bin", b"body"), *extras]))
+
+    def test_direct_references_preserve_logical_inventory_and_decode_the_zip_only_once(self):
+        self.write_references()
+        with mock.patch.object(evidence, "verified_zip_contents", wraps=evidence.verified_zip_contents) as scan, \
+                verification_session(), self.context() as extracted:
+            self.assertEqual(b"body", (extracted / "xctest/duplicate.bin").read_bytes())
+            self.assertEqual(b"body", (extracted / "compiler/source.bin").read_bytes())
+            self.assertFalse((extracted / evidence.REFERENCE_NAME).exists())
+        self.assertEqual(1, scan.call_count)
+
+    def test_reference_identity_schema_cycles_paths_and_bounds_are_rejected(self):
+        cases = [self.references(**change) for change in (
+            {"sourcePath": "../outside"}, {"sourcePath": "xctest/duplicate.bin"},
+            {"relativePath": "compiler/source.bin"}, {"relativePath": "compiler/source.bin/child"},
+            {"relativePath": "compiler"}, {"bytes": 5}, {"bytes": True},
+            {"sha256": sha256_bytes(b"wrong")}, {"extra": "field"},
+        )]
+        cases += [[], self.references() * 2,
+                  self.references() + self.references(relativePath="xctest/second.bin", sourcePath="xctest/duplicate.bin")]
+        for references in cases:
+            with self.subTest(references=references):
+                self.write_references(references)
+                with self.assertRaises(ValueError):
+                    with self.context():
+                        self.fail("invalid references must not yield")
+        for schema in (True, 2):
+            self.write_references(schema=schema)
+            with self.assertRaises(ValueError):
+                self.verify()
+        self.write_references()
+        with mock.patch.object(evidence, "_LOGICAL_BYTES", 7), self.assertRaisesRegex(ValueError, "byte bound"):
+            self.verify()
+        with mock.patch.dict(evidence.OBJECT_ZIP_LIMITS, {"max_members": 2}), \
+                self.assertRaisesRegex(ValueError, "member bound"):
+            self.verify()
+
+    def test_reference_copies_remain_independent_and_mutations_fail_with_hash_memoization(self):
+        self.write_references()
+        with verification_session(), self.assertRaises(ValueError):
+            with self.context() as extracted:
+                alias = extracted / "xctest/duplicate.bin"
+                before = alias.stat()
+                alias.write_bytes(b"drft")
+                os.utime(alias, ns=(before.st_atime_ns, before.st_mtime_ns))
+                self.assertEqual(b"body", (extracted / "compiler/source.bin").read_bytes())
+
     def test_context_rechecks_original_private_archive_and_extracted_tree_through_exit(self):
+        def change_same_size(path):
+            before = path.stat()
+            raw = bytearray(path.read_bytes())
+            raw[0] ^= 1
+            path.write_bytes(raw)
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
         mutations = {
             "original": lambda root: self.archive.write_bytes(b"changed archive\n"),
             "private archive": lambda root: (root.parent / "archive.zip").write_bytes(b"changed\n"),
+            "same-size original with restored mtime": lambda root: change_same_size(self.archive),
+            "same-size private with restored mtime": lambda root: change_same_size(root.parent / "archive.zip"),
             "extracted member": lambda root: (root / "compiler/execution.json").write_bytes(b"changed\n"),
             "added member": lambda root: (root / "compiler/extra.bin").write_bytes(b"extra\n"),
             "removed member": lambda root: (root / "xctest/attempt-0/stdout.bin").unlink(),
@@ -103,7 +170,7 @@ class SdkAppleValidationEvidenceTest(unittest.TestCase):
         for label, mutate in mutations.items():
             with self.subTest(label=label):
                 self.write(self.members)
-                with self.assertRaises(ValueError):
+                with verification_session(), self.assertRaises(ValueError):
                     with self.context() as extracted:
                         mutate(extracted)
 

@@ -12,6 +12,41 @@ import kotlin.test.assertFalse
 /** Archive transport fixtures only; archive membership grants no evidence or producer authority. */
 class AppleValidationEvidenceArchiveTest {
     @Test
+    fun `stores repeated large inputs once and Python reconstructs every exact byte`() = fixture().use { fixture ->
+        val raw = ByteArray(1024 * 1024).also { java.util.Random(31).nextBytes(it) }
+        val roots = listOf("device-package", "xcframework", "xctest-package").associateWith { name ->
+            fixture.root.resolve(name).apply { mkdir() }.also { it.resolve("binary").writeBytes(raw) }
+        }
+        val first = fixture.root.resolve("deduplicated.zip")
+        val second = fixture.root.resolve("deduplicated-again.zip")
+        writeAppleValidationEvidenceArchive(roots, first)
+        writeAppleValidationEvidenceArchive(roots.reversed(), second)
+        assertContentEquals(first.readBytes(), second.readBytes())
+        ZipFile(first).use { zip ->
+            assertEquals(listOf("apple-validation-references.json", "device-package/binary"),
+                zip.entries().asSequence().map { it.name }.toList())
+            assertContentEquals(raw, zip.getInputStream(zip.getEntry("device-package/binary")).readBytes())
+        }
+        val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
+            .first { it.resolve("ci/products/sdk_apple_validation_evidence.py").isFile }
+        val script = """
+            from pathlib import Path
+            import sys
+            from ci.products.inventory import sha256_file
+            from ci.products.sdk_apple_validation_evidence import verified_apple_validation_archive
+            archive = Path(sys.argv[1])
+            roots = ('device-package', 'xcframework', 'xctest-package')
+            with verified_apple_validation_archive(archive, expected_sha256=sha256_file(archive), expected_roots=roots) as work:
+                assert {str(p.relative_to(work)) for p in work.rglob('*') if p.is_file()} == {name + '/binary' for name in roots}
+                assert all((work / name / 'binary').read_bytes() == (archive.parent / name / 'binary').read_bytes() for name in roots)
+        """.trimIndent()
+        val process = ProcessBuilder("python3", "-B", "-c", script, first.path)
+            .directory(repository).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText()
+        assertEquals(0, process.waitFor(), output)
+    }
+
+    @Test
     fun `preserves exact raw trees and files deterministically`() = fixture().use { fixture ->
         val first = fixture.root.resolve("first.zip")
         val second = fixture.root.resolve("second.zip")
