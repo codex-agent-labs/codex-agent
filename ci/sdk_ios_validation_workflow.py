@@ -17,12 +17,14 @@ if __package__:
 import product_reuse
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
-    canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
-    require_integer, require_sha256, sha256_file, snapshot_regular_tree, write_canonical_json,
+    canonical_json_bytes, read_regular_file_bytes,
+    require_integer, require_sha256, sha256_file, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
 from products.restore import verify_object
+from products.restore import memoized_file_inventory as regular_file_inventory
 from products.signing_isolation import require_no_signing_secret
+from products.sdk_apple_content import _snapshot_apple_tree as snapshot_regular_tree
 from products.sdk_apple_validation_source import capture_apple_validation_sources
 from products.sdk_apple_validation_execution import verify_apple_validation_stage
 from products.sdk_apple_validation_context import verify_apple_validation_context

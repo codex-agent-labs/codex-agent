@@ -1,6 +1,7 @@
 """Property translation only: synthetic paths are not authenticated Apple inputs."""
 
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import sys
@@ -434,6 +435,27 @@ class SdkIosValidationExecutionTest(unittest.TestCase):
             self.execute()
         self.assertEqual(1, sum(Path(call.args[0]) == self.package
                                 for call in scan.call_args_list))
+        self.assertEqual(1, sum(Path(call.args[0]) == self.archive.parent
+                                for call in scan.call_args_list))
+
+    def test_archive_mutation_with_restored_mtime_is_rejected(self):
+        inventory = sdk_ios_validation.regular_file_inventory
+        calls = 0
+
+        def mutate(path, **kwargs):
+            nonlocal calls
+            if path == self.archive.parent:
+                calls += 1
+                if calls == 2:
+                    before = self.archive.stat()
+                    data = self.archive.read_bytes()
+                    self.archive.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+                    os.utime(self.archive, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return inventory(path, **kwargs)
+
+        with patch.object(sdk_ios_validation, "regular_file_inventory", side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, "output changed during verification"):
+            self.execute()
 
     def test_originals_election_and_private_bytecode_are_rechecked_after_execution(self):
         cases = {

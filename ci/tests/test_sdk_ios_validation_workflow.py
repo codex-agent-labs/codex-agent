@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_ios_validation_workflow as workflow
+from products import restore, sdk_apple_content
 
 
 SIGNING_SECRET = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
@@ -251,7 +252,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         return self.verified
 
     def execute(self, **changes):
-        with ExitStack() as stack:
+        with restore.verification_session(), ExitStack() as stack:
             for owner, name, options in (
                 (workflow.product_reuse, "_product_materialization_paths", {"return_value": (self.root, self.root, self.destination)}),
                 (workflow.product_reuse, "_verified_product_state", {"side_effect": self.verified_state}),
@@ -269,6 +270,39 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                 stack.enter_context(patch.object(owner, name, **options))
             return workflow.execute(self.plan, self.root, self.root, self.destination,
                                     **{**self.arguments, **changes})
+
+    @unittest.skipIf(os.name == "nt", "Guarded byte inventory reuse is POSIX-only")
+    def test_archive_retention_reuses_byte_inventory(self):
+        with patch.object(restore, "_uncached_file_inventory",
+                          wraps=restore._uncached_file_inventory) as scans:
+            self.execute()
+        for directory in (self.root / "raw-execution", self.destination / "execution"):
+            self.assertEqual(1, sum(Path(call.args[0]) == directory
+                                    for call in scans.call_args_list))
+
+    def test_retained_archive_is_private_and_restored_mtime_mutation_rejects(self):
+        replay = self.replay
+
+        def mutate(**arguments):
+            result = replay(**arguments)
+            retained = arguments["evidence_archive"]
+            original = self.root / "raw-execution/apple-validation-evidence.zip"
+            self.assertNotEqual(original.stat().st_ino, retained.stat().st_ino)
+            before = retained.stat()
+            retained.write_bytes(b"RAW archive fixture")
+            os.utime(retained, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(b"raw archive fixture", original.read_bytes())
+            return result
+
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback), ExitStack() as stack:
+                if fallback:
+                    stack.enter_context(patch.object(sdk_apple_content, "_apple_clone_operation", return_value=None))
+                stack.enter_context(patch.object(self, "replay", side_effect=mutate))
+                with self.assertRaisesRegex(ValueError, "retained evidence or election changed"):
+                    self.execute()
+                self.assertNotIn("finalize", self.events)
+            self.reset_outputs()
 
     def test_native_package_skips_legacy_history_and_finalizes_after_context_exit(self):
         cap = SimpleNamespace(envelope=lambda record: {"receipt": self.receipt, "receiptBytes": b"original receipt"})

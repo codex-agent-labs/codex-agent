@@ -11,12 +11,13 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
-    canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, read_regular_file_bytes,
     require_exact_keys, require_integer, require_semver, require_sha256,
     write_canonical_json,
 )
 from products.receipt import validate_producer, verify_output_manifest_identity
 from products.restore import PHASE_PLAN_KEYS
+from products.restore import memoized_file_inventory as regular_file_inventory
 from sdk_ios_phase import _directory, _request, _GIT_ID
 from runtime_reference_transport import count, measured
 
