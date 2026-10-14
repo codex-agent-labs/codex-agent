@@ -156,27 +156,29 @@ jobs:
       - name: Verify reviewed recovery controls only
         if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
         working-directory: recovery-reviewed-source
-        run: >-
-          python3 -B -m unittest
-          ci.tests.test_runtime_recovery_acceptance
-          ci.tests.test_runtime_workflow
-          ci.tests.test_prepare_runtime_signing_action
-          ci.tests.test_runtime_preparation_capture
-          ci.tests.test_runtime_prepared_release
-          ci.tests.test_runtime_aggregate_original_ci
-          ci.tests.test_runtime_native_attestation_workflow
-          ci.tests.test_runtime_aggregate_attestation_workflow
-          ci.tests.test_tooling_capture
-          ci.tests.test_tooling_discovery
-          ci.tests.test_sdk_prerequisite_reuse
-          ci.tests.test_sdk_transport_capture
-          ci.tests.test_sdk_ios_binary_worker_wiring
-          ci.tests.test_sdk_ios_binary_inputs
-          ci.tests.test_sdk_ios_binary_execution
-          ci.tests.test_reference_archive_download
-          ci.tests.test_runtime_reference_transport
-          ci.tests.test_runtime_signing_workflow_isolation
-          ci.tests.test_product_selection -v
+        run: |
+          set -euo pipefail
+          printf '%s\0' \
+            ci.tests.test_runtime_recovery_acceptance \
+            ci.tests.test_runtime_workflow \
+            ci.tests.test_prepare_runtime_signing_action \
+            ci.tests.test_runtime_preparation_capture \
+            ci.tests.test_runtime_prepared_release \
+            ci.tests.test_runtime_aggregate_original_ci \
+            ci.tests.test_runtime_native_attestation_workflow \
+            ci.tests.test_runtime_aggregate_attestation_workflow \
+            ci.tests.test_tooling_capture \
+            ci.tests.test_tooling_discovery \
+            ci.tests.test_sdk_prerequisite_reuse \
+            ci.tests.test_sdk_transport_capture \
+            ci.tests.test_sdk_ios_binary_worker_wiring \
+            ci.tests.test_sdk_ios_binary_inputs \
+            ci.tests.test_sdk_ios_binary_execution \
+            ci.tests.test_reference_archive_download \
+            ci.tests.test_runtime_reference_transport \
+            ci.tests.test_runtime_signing_workflow_isolation \
+            ci.tests.test_product_selection \
+            | xargs -0 -n 1 -P 4 python3 -B -m unittest -v
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
         run: python3 -m unittest discover -s ci/tests -v
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''

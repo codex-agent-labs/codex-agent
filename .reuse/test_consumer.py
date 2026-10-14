@@ -133,7 +133,7 @@ class AcquisitionTests(unittest.TestCase):
     def test_optional_selector_preserves_arguments_under_bash_nounset(self):
         root = Path(__file__).resolve().parents[1]
         action = (root / ".github/actions/restore-reuse-qualification/action.yml").read_text()
-        block = action.split("    - name: Fresh original native admission under the approved verifier", 1)[1]
+        block = action.split("    - name: Provision independent completion pins or authenticate an explicitly selected body qualification", 1)[1]
         script = "\n".join(line[8:] for line in block.split("      run: |\n", 1)[1].splitlines())
         for selector in ("", "77"):
             with self.subTest(selector=selector):

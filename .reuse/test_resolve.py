@@ -50,6 +50,52 @@ class AuthorityTests(unittest.TestCase):
         with self.assertRaises(ValueError): authority.decode(b'{"a":1,"a":2}')
         with self.assertRaises(ValueError): authority.decode(b"x" * (authority.LIMIT + 1))
 
+    def test_retained_verifiers_have_bounded_growth_without_dropping_older_authority(self):
+        value = copy.deepcopy(self.manifest)
+        retained = list(value["approvedVerifiers"])
+        additions = (f"{index:040x}" for index in range(2048))
+        while len(value["approvedVerifiers"]) < 1024:
+            candidate = next(additions)
+            if candidate not in value["approvedVerifiers"]:
+                value["approvedVerifiers"].append(candidate)
+        self.assertIs(value, authority.manifest(value))
+        self.assertEqual(retained, value["approvedVerifiers"][:len(retained)])
+        self.assertEqual(self.manifest["qualifications"], value["qualifications"])
+        self.assertLess(len(json.dumps(value, sort_keys=True).encode()), 64 * 1024)
+        value["approvedVerifiers"].append(next(additions))
+        with self.assertRaises(ValueError): authority.manifest(value)
+
+    def test_publication_checks_overlap_but_join_every_read_before_return_or_failure(self):
+        from threading import Barrier, Lock
+        publisher, source = "c" * 40, self.manifest["activeVerifier"]
+        names = ["a", "b", "c", "product-validation"]
+        bodies = {f".github/workflows/{name}.yml": b"name: exact reviewed workflow\n" for name in names}
+        publication = {"schemaVersion": 1, "sourceSha": source, "workflows": [
+            {"path": path, "bytes": len(raw), "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
+            for path, raw in bodies.items()]}
+        for failing in (False, True):
+            barrier, lock, finished = Barrier(4, timeout=5), Lock(), set()
+            def contents(path, revision, **_):
+                if path == ".reuse/workflow-publication.json": return json.dumps(publication).encode()
+                if revision == publisher:
+                    barrier.wait()
+                    with lock: finished.add(path)
+                    if failing and path.endswith('/a.yml'): raise ValueError('one original read failed')
+                return bodies[path]
+            def api(path):
+                self.assertEqual(set(bodies), finished)
+                if path.endswith('/protection'): return copy.deepcopy(self.protection)
+                return {"commit": {"sha": publisher}}
+            with patch.object(authority, 'resolve', return_value={"authorityCommit": publisher,
+                    "approvedVerifiers": [source]}), patch.object(authority, 'contents', side_effect=contents), \
+                    patch.object(authority, 'api', side_effect=api):
+                if failing:
+                    with self.assertRaisesRegex(ValueError, 'one original read failed'):
+                        authority.resolve_publication(publisher)
+                else:
+                    self.assertEqual(publication['workflows'], authority.resolve_publication(publisher)['workflows'])
+            self.assertEqual(set(bodies), finished)
+
     def test_exact_resolution_and_races(self):
         revision = "c" * 40
         def api(path):

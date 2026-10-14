@@ -1,6 +1,7 @@
 """Resolve owner-approved immutable controls; this file runs from the protected ref."""
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -56,7 +57,7 @@ def manifest(value):
     if set(value) != {"schemaVersion", "activeVerifier", "approvedVerifiers", "qualifications"} or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1:
         raise ValueError("Unsupported authority manifest")
     approved = value["approvedVerifiers"]
-    if not isinstance(approved, list) or not approved or len(approved) > 100:
+    if not isinstance(approved, list) or not approved or len(approved) > 1024:
         raise ValueError("Missing or excessive approved verifier identities")
     if len(set(map(commit, approved))) != len(approved) or commit(value["activeVerifier"]) not in approved:
         raise ValueError("Conflicting verifier approval")
@@ -140,8 +141,7 @@ def resolve_publication(expected):
     rows = value["workflows"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 128:
         raise ValueError("Published workflow closure is missing or excessive")
-    paths, dependencies = [], set()
-    for row in rows:
+    def verify_workflow(row):
         if set(row) != {"path", "bytes", "sha256"}:
             raise ValueError("Unexpected published workflow identity")
         path = row["path"]
@@ -155,6 +155,7 @@ def resolve_publication(expected):
         if (published != reviewed or len(published) != row["bytes"]
                 or "sha256:" + hashlib.sha256(published).hexdigest() != row["sha256"]):
             raise ValueError("Published workflow differs from its exact reviewed source")
+        dependencies = set()
         for reference in re.findall(r"^\s*(?:-\s+)?uses:[ \t]*([^\r\n]*)$", published.decode("utf-8"), re.MULTILINE):
             reference = reference.split("#", 1)[0].strip().strip("\"'")
             if reference.startswith("./.github/workflows/"):
@@ -164,7 +165,12 @@ def resolve_publication(expected):
                 if not separator or ref != BRANCH:
                     raise ValueError("Published project workflow is not owner-protected")
                 dependencies.add(member)
-        paths.append(path)
+        return path, dependencies
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        verified = list(executor.map(verify_workflow, rows))
+    paths = [path for path, _ in verified]
+    dependencies = set().union(*(dependencies for _, dependencies in verified))
     if paths != sorted(set(paths)) or ".github/workflows/product-validation.yml" not in paths:
         raise ValueError("Published workflow closure is duplicate, unsorted or missing its entrypoint")
     if not dependencies <= set(paths):
