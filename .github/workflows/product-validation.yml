@@ -109,13 +109,20 @@ jobs:
             <<<"$policies" >/dev/null
           echo 'approved=true' >> "$GITHUB_OUTPUT"
 
-  workflow-lint:
-    if: always()
-    needs: plan
+  recovery-controls:
+    if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
     runs-on: ubuntu-24.04
     outputs:
-      full_acceptance_current: ${{ steps.acceptance-kind.outputs.full_acceptance_current }}
+      publisher_sha: ${{ steps.publication.outputs.publisher-sha }}
+      source_sha: ${{ steps.publication.outputs.source-sha }}
     steps:
+      - id: publication
+        uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority
+        with:
+          native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          native-workflow-repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          native-workflow-path: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -137,7 +144,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codex-agent-labs/codex-agent
-          ref: ${{ needs.plan.outputs.source_sha }}
+          ref: ${{ steps.publication.outputs.source-sha }}
           path: recovery-reviewed-source
           fetch-depth: 0
           persist-credentials: false
@@ -145,8 +152,8 @@ jobs:
         if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
-          TRUSTED_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
+          TRUSTED_SOURCE_SHA: ${{ steps.publication.outputs.source-sha }}
         run: >-
           python3 -B recovery-reviewed-source/.github/actions/prepare-runtime-signing/recovery_acceptance.py
           --repository-root "$GITHUB_WORKSPACE"
@@ -179,6 +186,58 @@ jobs:
             ci.tests.test_runtime_signing_workflow_isolation \
             ci.tests.test_product_selection \
             | xargs -0 -n 1 -P 4 python3 -B -m unittest -v
+      - if: github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/actionlint
+          key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
+
+  workflow-lint:
+    if: always()
+    needs: [plan, recovery-controls]
+    runs-on: ubuntu-24.04
+    outputs:
+      full_acceptance_current: ${{ steps.acceptance-kind.outputs.full_acceptance_current }}
+    steps:
+      - name: Require the same protected publication and completed recovery checks
+        if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECKS_RESULT: ${{ needs.recovery-controls.result }}
+          PLAN_SOURCE: ${{ needs.plan.outputs.source_sha }}
+          PLAN_PUBLISHER: ${{ needs.plan.outputs.publisher_sha }}
+          CHECKS_SOURCE: ${{ needs.recovery-controls.outputs.source_sha }}
+          CHECKS_PUBLISHER: ${{ needs.recovery-controls.outputs.publisher_sha }}
+        run: |
+          set -euo pipefail
+          test "$PLAN_RESULT" = success
+          test "$CHECKS_RESULT" = success
+          [[ "$PLAN_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PLAN_PUBLISHER" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test "$PLAN_SOURCE" = "$CHECKS_SOURCE"
+          test "$PLAN_PUBLISHER" = "$CHECKS_PUBLISHER"
+      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.3"
+          cache: false
+      - id: actionlint-cache
+        if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/actionlint
+          key: actionlint-v1-${{ runner.os }}-${{ runner.arch }}-v1.7.12
+      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && steps.actionlint-cache.outputs.cache-hit != ''true'''
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        run: '"$HOME/go/bin/actionlint"'
+      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        run: sudo install -d -m 1777 /private/tmp
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
         run: python3 -m unittest discover -s ci/tests -v
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
@@ -203,7 +262,7 @@ jobs:
           else
             echo 'full_acceptance_current=true' >> "$GITHUB_OUTPUT"
           fi
-      - if: github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
+      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && github.event_name == ''pull_request'' && steps.actionlint-cache.outputs.cache-hit != ''true'''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/actionlint
@@ -252,6 +311,15 @@ jobs:
       contract_reconciliation_required: ${{ steps.product-reuse.outputs.contract_reconciliation_required }}
       contract_next_phase: ${{ steps.product-reuse.outputs.contract_next_phase }}
       native_contract_complete: ${{ steps.product-reuse.outputs.native_contract_complete }}
+      native_resume_ready: ${{ steps.product-reuse.outputs.native_resume_ready }}
+      native_resume_artifact_id: ${{ steps.upload_native_resume.outputs.artifact-id }}
+      native_resume_artifact_digest: sha256:${{ steps.upload_native_resume.outputs.artifact-digest }}
+      native_resume_full_reuse: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
+      native_resume_target_jobs_required: ${{ steps.product-reuse.outputs.native_resume_target_jobs_required }}
+      native_resume_routing: ${{ steps.product-reuse.outputs.native_resume_routing_decisions }}
+      native_resume_runtime_matrix: ${{ steps.product-reuse.outputs.native_resume_runtime_matrix }}
+      native_resume_runtime_workers_required: ${{ steps.product-reuse.outputs.native_resume_runtime_workers_required }}
+      native_resume_supervisor_key: ${{ steps.product-reuse.outputs.native_resume_supervisor_key }}
       retained_sdk_inputs_source: ${{ steps.retained-sdk-inputs.outputs.source }}
       tooling_required: ${{ steps.product-reuse.outputs.tooling_required }}
       tooling_miss: ${{ steps.product-reuse.outputs.tooling_miss }}
@@ -342,12 +410,16 @@ jobs:
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           java_executable=$(readlink -f "$JAVA_HOME_17_X64/bin/java")
           test -f "$java_executable"
           completion=()
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then completion=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ "$SDK_RECOVERY_ONLY" = true ]; then
+            completion+=(--native-resume-handoff build/native-product-resume-transport)
+          fi
           python3 ci/product_reuse.py discover --plan build/ci/impact-plan.json \
             --destination build/product-reuse --handoff build/ci/product-reuse \
             --tooling-java-executable "$java_executable" \
@@ -417,6 +489,17 @@ jobs:
           CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}
         run: |
           test "$CONTRACT_NEXT_PHASE" = none
+      - id: upload_native_resume
+        if: steps.product-reuse.outputs.native_resume_ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-planned-product-resume-${{ steps.impact.outputs.validation_tree }}
+          path: build/native-product-resume-transport
+          compression-level: 0
+          retention-days: 90
       - id: upload_plan_control
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -573,11 +656,11 @@ jobs:
       routing: ${{ steps.routing.outputs.routing }}
       artifact_id: ${{ steps.upload_resume.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
-      full_reuse: ${{ steps.resume.outputs.full_reuse }}
-      target_jobs_required: ${{ steps.resume.outputs.target_jobs_required }}
-      runtime_matrix: ${{ steps.resume.outputs.runtime_matrix }}
-      runtime_workers_required: ${{ steps.resume.outputs.runtime_workers_required }}
-      supervisor_key: ${{ steps.resume.outputs.supervisor_key }}
+      full_reuse: ${{ steps.forward.outputs.full_reuse || steps.resume.outputs.full_reuse }}
+      target_jobs_required: ${{ steps.forward.outputs.target_jobs_required || steps.resume.outputs.target_jobs_required }}
+      runtime_matrix: ${{ steps.forward.outputs.runtime_matrix || steps.resume.outputs.runtime_matrix }}
+      runtime_workers_required: ${{ steps.forward.outputs.runtime_workers_required || steps.resume.outputs.runtime_workers_required }}
+      supervisor_key: ${{ steps.forward.outputs.supervisor_key || steps.resume.outputs.supervisor_key }}
       wave_failed: 'false'
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
@@ -588,6 +671,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        if: needs.plan.outputs.native_resume_ready != 'true'
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -596,12 +680,12 @@ jobs:
           path: build/product-resume-plan
           merge-multiple: true
       - name: Select installed caller Java for SDK tooling
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: needs.plan.outputs.native_resume_ready != 'true' && needs.plan.outputs.tooling_required == 'true'
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - id: tooling
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: needs.plan.outputs.native_resume_ready != 'true' && needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
           artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
@@ -642,13 +726,14 @@ jobs:
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --destination build/product-resume-inputs ${controls[@]+"${controls[@]}"}
       - id: apple-policy
-        if: needs.plan.outputs.tooling_required == 'true'
+        if: needs.plan.outputs.native_resume_ready != 'true' && needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/prepare-sdk-apple-policy
         with:
           plan-path: ${{ github.workspace }}/build/product-resume-plan/impact-plan.json
           tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
       - name: Resume the existing product planner from authenticated Contract bytes
         id: resume
+        if: needs.plan.outputs.native_resume_ready != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           # Used only before a cold Apple package capture; native warm reuse skips it.
@@ -680,11 +765,45 @@ jobs:
                 --handoff build/product-resume-transport \
                 --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
                 --github-output "$GITHUB_OUTPUT" ${tooling[@]+"${tooling[@]}"}
+      - name: Forward the completed transition without repeating authentication
+        id: forward
+        if: needs.plan.outputs.native_resume_ready == 'true'
+        env:
+          FULL_REUSE: ${{ needs.plan.outputs.native_resume_full_reuse }}
+          TARGET_JOBS_REQUIRED: ${{ needs.plan.outputs.native_resume_target_jobs_required }}
+          RUNTIME_MATRIX: ${{ needs.plan.outputs.native_resume_runtime_matrix }}
+          RUNTIME_WORKERS_REQUIRED: ${{ needs.plan.outputs.native_resume_runtime_workers_required }}
+          SUPERVISOR_KEY: ${{ needs.plan.outputs.native_resume_supervisor_key }}
+          NATIVE_ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}
+          NATIVE_ARTIFACT_SHA256: ${{ needs.plan.outputs.native_resume_artifact_digest }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'ci')
+          from product_reuse import capture_planned_native_resume
+          if (os.environ['FULL_REUSE'], os.environ['TARGET_JOBS_REQUIRED']) not in (('true', 'false'), ('false', 'true')):
+              raise ValueError('Planned native transition has inconsistent completion')
+          if os.environ['RUNTIME_WORKERS_REQUIRED'] not in ('true', 'false'):
+              raise ValueError('Planned native transition lacks its Runtime election')
+          capture_planned_native_resume(Path('build/product-resume-plan/impact-plan.json'),
+              Path('build/product-resume-transport'), artifact_id=int(os.environ['NATIVE_ARTIFACT_ID']),
+              artifact_sha256=os.environ['NATIVE_ARTIFACT_SHA256'],
+              trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name in ('full_reuse', 'target_jobs_required', 'runtime_matrix', 'runtime_workers_required', 'supervisor_key'):
+                  value = os.environ[name.upper()]
+                  if '\n' in value or '\r' in value:
+                      raise ValueError('Multiline planned transition output')
+                  output.write(name + '=' + value + '\n')
+          PY
       - name: Require full Runtime reuse before SDK continuation
         if: inputs.sdkRecoveryOnly
         env:
-          RUNTIME_WORKERS_REQUIRED: ${{ steps.resume.outputs.runtime_workers_required }}
-          SUPERVISOR_KEY: ${{ steps.resume.outputs.supervisor_key }}
+          RUNTIME_WORKERS_REQUIRED: ${{ steps.forward.outputs.runtime_workers_required || steps.resume.outputs.runtime_workers_required }}
+          SUPERVISOR_KEY: ${{ steps.forward.outputs.supervisor_key || steps.resume.outputs.supervisor_key }}
         run: |
           test "$RUNTIME_WORKERS_REQUIRED" = false
           test -z "$SUPERVISOR_KEY"
@@ -703,7 +822,7 @@ jobs:
         uses: ./.github/actions/capture-runtime-state/route
         with:
           mode: bind
-          routing: ${{ steps.resume.outputs.routing_decisions }}
+          routing: ${{ needs.plan.outputs.native_resume_ready == 'true' && needs.plan.outputs.native_resume_routing || steps.resume.outputs.routing_decisions }}
           artifact-id: ${{ steps.upload_resume.outputs.artifact-id }}
           artifact-sha256: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
