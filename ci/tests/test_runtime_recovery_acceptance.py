@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,36 @@ SELECTOR = "ci/products/selection.py"
 
 
 class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from products.inventory import regular_file_inventory
+        cls.fixture = cls(methodName="runTest")
+        cls.addClassCleanup(cls.fixture.doCleanups)
+        cls.fixture._create_fixture()
+        before = regular_file_inventory(cls.fixture.root, allow_empty=True)
+        cls.addClassCleanup(lambda: cls.fixture.assertEqual(
+            before, regular_file_inventory(cls.fixture.root, allow_empty=True)))
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="runtime-recovery-acceptance-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        # Copy bytes, including Git objects: fault-injection tests must never
+        # share writable files or metadata with the class fixture or each other.
+        shutil.copytree(self.fixture.root, self.root, dirs_exist_ok=True)
+        self.trusted, self.candidate = self.root / "trusted", self.root / "candidate"
+        self.event_path = self.root / "event.json"
+        for name in ("ci", "base", "correction", "product_correction", "reuse_correction",
+                     "reviewed", "cache_correction", "activation", "merge"):
+            setattr(self, name, getattr(self.fixture, name))
+        values = copy.deepcopy({name: getattr(self.fixture, name) for name in
+                                ("producer", "event", "environment", "run", "job", "tested")})
+        for name, value in values.items():
+            setattr(self, name, value)
+        self.environment["GITHUB_EVENT_PATH"] = str(self.event_path)
+        self.git(self.candidate, "remote", "set-url", "origin", str(self.trusted))
+        self._patch_reviewed()
+
     def test_sdk_selector_pin_matches_reviewed_throughput_bytes(self):
         root = HELPER.parents[3]
         self.assertEqual("1ebcbc72e79abc273e428a470e8aa65966298fd8", recovery.SDK_SELECTION_REVISION)
@@ -70,7 +101,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         caller = (root / '.github/workflows/ci.yml').read_text()
         self.assertIn('test "$FULL_ACCEPTANCE_CURRENT" = true', caller)
 
-    def setUp(self):
+    def _create_fixture(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="runtime-recovery-acceptance-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
@@ -168,6 +199,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             "status": "completed", "conclusion": "success"}
         self.tested = {"sha": self.producer["commit"], "tree": {"sha": self.producer["tree"]},
             "parents": [{"sha": "b" * 40}, {"sha": "d" * 40}]}
+
+    def _patch_reviewed(self):
         for attribute, value in (("BASELINE_PRODUCER", self.producer), ("CORRECTION_REVISION", self.correction),
                                  ("PRODUCT_CORRECTION_REVISION", self.product_correction),
                                  ("REUSE_CONTROL_REVISION", self.reuse_correction),
@@ -272,9 +305,15 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_sdk_continuation_admits_only_exact_frozen_inputs_and_never_full_acceptance(self):
         self.sdk_mode()
-        with mock.patch.object(recovery, "phase_git_inventory", wraps=recovery.phase_git_inventory) as inventory:
+        with mock.patch.object(recovery, "_phase_git_inventories", wraps=recovery._phase_git_inventories) as inventory:
             result = self.verify()
-        self.assertEqual(100, inventory.call_count)
+        instances = tuple(instance for instance in recovery.PHASE_INSTANCE_IDS if instance.product != "sdk")
+        self.assertEqual(50, len(instances))
+        self.assertEqual(2, inventory.call_count)
+        inventory.assert_has_calls([
+            mock.call(self.trusted, recovery.SDK_FROZEN_REVISION, instances),
+            mock.call(self.trusted, self.reviewed, instances),
+        ])
         self.assertTrue(result["recovery_control_admitted"])
         self.assertFalse(result["full_acceptance_current"])
         self.assertEqual(self.producer, result["historical_acceptance_producer"])

@@ -17,7 +17,7 @@ from products.inventory import (
 )
 from reuse import github_output
 from products.registry import PHASE_INSTANCE_IDS
-from products.selection import phase_git_inventory
+from products.reuse import _phase_git_inventories
 
 
 BASELINE_PRODUCER = {
@@ -241,12 +241,11 @@ def _sdk_reviewed_scope(trusted, candidate, sha):
     if (reviewed.get(SDK_SELECTOR) != selection_authority.get(SDK_SELECTOR)
             or reviewed.get(SDK_SELECTOR, ())[:2] != ("100644", "blob")):
         raise ValueError("SDK recovery selector differs from independently reviewed authority")
-    for instance in PHASE_INSTANCE_IDS:
-        if instance.product == "sdk":
-            continue
-        before = phase_git_inventory(trusted, SDK_FROZEN_REVISION, instance)
-        after = phase_git_inventory(trusted, sha, instance)
-        if before != after:
+    instances = tuple(instance for instance in PHASE_INSTANCE_IDS if instance.product != "sdk")
+    before = _phase_git_inventories(trusted, SDK_FROZEN_REVISION, instances)
+    after = _phase_git_inventories(trusted, sha, instances)
+    for instance in instances:
+        if before[instance] != after[instance]:
             raise ValueError(f"SDK recovery changes frozen product inputs: {instance}")
     current = _tree(candidate, "HEAD")
     if current.keys() != reviewed.keys() or any(

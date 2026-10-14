@@ -330,6 +330,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
             "wave_failed": "false",
         }}
         needs = {"runtime-continuation": runtime, "runtime-aggregate-continuation": aggregate,
+                 "product-resume": {"result": "success", "outputs": {"native_sdk_direct": "false"}},
                  "sdk-ios-binary-plan": {"outputs": {"sdk_workers_required": "true"}},
                  "sdk-collect-3": binary}
         self.assertEqual({

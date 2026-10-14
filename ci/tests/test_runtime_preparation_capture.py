@@ -171,25 +171,64 @@ class RuntimePreparationCaptureTest(unittest.TestCase):
 class RuntimeNativeReleaseCaptureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from ci.tests.test_runtime_aggregate_release import RuntimeAggregateReleaseTest
-        cls.signed = RuntimeAggregateReleaseTest
-        cls.signed.setUpClass()
-        cls.addClassCleanup(cls.signed.doClassCleanups)
+        import subprocess
+        from ci.tests.test_contract_execution_closure import execution_closure_fixture
+        from ci.tests.test_contract_release_context import trusted_repository
+        from ci.tests.product_chain_variants import build_variants
+        from products.contract import verify_contract_bundle
+        from products.runtime_attestation import build_runtime_variant_attestation
+        from products.signatures import generate_development_key
+
+        base = fixtures.RuntimeAggregateUploadTest(methodName='runTest')
+        base.setUp()
+        cls.addClassCleanup(base.doCleanups)
+        root = base.work
+        private, public, signing = generate_development_key(root / 'native-capture-key')
+        context = dict(private_key=private, public_key=public, signing=signing, producer=base.producer)
+        # These capture tests consume five signed native leaves, not adapters,
+        # aggregate objects or a second original Contract execution closure.
+        payload, receipts, _ = execution_closure_fixture(root / 'contract-source',
+            context='producer-run-71', producer=base.producer)
+        variants = build_variants(root / 'variants', dict(payload=payload,
+            receipt=receipts['metadata'], manifest=verify_contract_bundle(payload)),
+            context, include_bootstrap=True)
+        cls.repository = root / 'trusted-caller'
+        trusted_repository(cls.repository)
+        keyring = cls.repository / 'gradle/release/product-signing-keys.json'
+        keys = cls.repository / 'gradle/release/keys'
+        keys.mkdir()
+        (keys / (signing['keyId'] + '.pub')).write_bytes(public.read_bytes())
+        keyring.write_bytes(canonical_json_bytes(dict(schemaVersion=1, algorithm=signing['algorithm'],
+            namespace=signing['namespace'], trustDomain='release',
+            activeKey={name: signing[name] for name in ('keyId', 'fingerprint')}, retiredKeys=[])))
+        subprocess.run(['git', 'add', 'gradle/release'], cwd=cls.repository, check=True, capture_output=True)
+        subprocess.run(['git', 'commit', '-qm', 'synthetic public release policy'],
+                       cwd=cls.repository, check=True, capture_output=True)
+        cls.pin = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cls.repository, text=True).strip()
+        cls.handoffs = {}
+        for target in NATIVE_TARGETS:
+            handoff = root / 'release-variants' / target
+            phases = variants['variant_phase_receipts'][target]
+            build_runtime_variant_attestation(variants['variant_bundles'][target],
+                *(phases[phase] for phase in ('binary', 'package', 'validation', 'metadata')),
+                variants['variant_validation_evidence'][target], {**signing, 'trustDomain': 'release'},
+                private, public, handoff, keyring=keyring, keys_directory=keys, complete_handoff=True)
+            cls.handoffs[target] = handoff
 
     def setUp(self):
         self.f = fixtures.RuntimeAggregateUploadTest(methodName='runTest')
         self.addCleanup(self.f.doCleanups)
         self.f.setUp()
         f = self.f
-        f.root = self.signed.repository
-        f.plan['validationCommit'] = self.signed.pin
+        f.root = self.repository
+        f.plan['validationCommit'] = self.pin
         self.output = f.root / 'build' / f.work.name
         self.uploads, self.raw, self.selected = {}, {}, {}
         self.original_files = {}
         f.jobs = []
         for index, target in enumerate(NATIVE_TARGETS):
-            files = {record['relativePath']: (self.signed.handoffs[target] / record['relativePath']).read_bytes()
-                     for record in regular_file_inventory(self.signed.handoffs[target])}
+            files = {record['relativePath']: (self.handoffs[target] / record['relativePath']).read_bytes()
+                     for record in regular_file_inventory(self.handoffs[target])}
             self.original_files[target] = files
             self.selected[target] = {phase: sha256_bytes(files[f'receipts/{phase}.json'])
                                     for phase in ('binary', 'package', 'validation', 'metadata')}
@@ -228,7 +267,7 @@ class RuntimeNativeReleaseCaptureTest(unittest.TestCase):
                 patch.object(capture.products, 'download_artifact_to_file', side_effect=stream):
             return capture.capture_runtime_native_release_handoffs(f.plan_path, self.output,
                 recovery=self.recovery, selected_receipt_sha256s=self.selected,
-                trusted_workflow_sha=self.signed.pin, repository_root=f.root,
+                trusted_workflow_sha=self.pin, repository_root=f.root,
                 environ={'GITHUB_RUN_ID': '72', 'GITHUB_RUN_ATTEMPT': '1'}, token='synthetic-token')
 
     def test_signed_originals_survive_failed_campaign_in_current_workspace(self):
