@@ -19,6 +19,8 @@ from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.registry import PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
 from products.restore import memoized_file_inventory as regular_file_inventory
+from products.restore import _verified_object_snapshot, _extract_verified_stage
+from runtime_reference_transport import measured, count
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_apple_content import _input_inventory
 from products.sdk_apple_package_execution import verify_apple_package_execution_context
@@ -29,6 +31,18 @@ from products.sdk_release_selection import sdk_runtime_source
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 _LIMIT = 16 * 1024 * 1024
+
+
+@measured
+def _restore_completed_input(body, stage, record):
+    # This stage belongs to the caller's private input lifetime. Extract there
+    # after full verification instead of copying an already-extracted stage.
+    with _verified_object_snapshot(body, build_key=record["buildKey"],
+            receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"]) as (snapshot, value):
+        stage.parent.mkdir(parents=True)
+        _extract_verified_stage(snapshot, value, stage)
+        count("completedInputExtractedBytes", sum(row["bytes"] for row in value["manifest"]["outputs"]))
+        return {field: value[field] for field in ("receipt", "receiptBytes", "objectSha256")}
 
 
 @contextmanager
@@ -121,8 +135,7 @@ def verified_completed_ios_package(plan, package_receipt_path, *, completed_froz
             completed_frozen.capture_object(record, body, plan=current, producer=consumer["producer"],
                 trusted_workflow_sha=trusted_workflow_sha, token=token)
             directory = original / "inputs" / "-".join(getattr(identity, key) for key in product_reuse._IDENTITY_KEYS)
-            value = restore_object(body, directory / "stage", build_key=record["buildKey"],
-                receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+            value = _restore_completed_input(body, directory / "stage", record)
             body.unlink()
             if value["receiptBytes"] != envelopes[identity]["receiptBytes"]:
                 raise ValueError("Consumed Apple object differs from its native receipt")

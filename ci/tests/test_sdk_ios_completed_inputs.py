@@ -14,6 +14,7 @@ from products.inventory import canonical_json_bytes, sha256_bytes, sha256_file, 
 from products.receipt import write_output_manifest
 from products.registry import PhaseInstanceId
 from products.restore import _write_object
+from products import restore
 
 
 class CompletedAppleInputsTest(unittest.TestCase):
@@ -85,7 +86,8 @@ class CompletedAppleInputsTest(unittest.TestCase):
 
     def test_consumes_only_two_objects_and_retains_no_bodies(self):
         retained = self.root / "retained"
-        with self.seams(), self.inputs() as selected:
+        with self.seams(), patch.object(restore, "snapshot_regular_tree",
+                side_effect=AssertionError("Verified private input was copied again")), self.inputs() as selected:
             self.assertEqual(self.selected.read_bytes(), selected["receiptBytes"])
             self.assertEqual({"package-receipt.json", "completed-package.json"},
                              {path.name for path in selected["completedCapture"].iterdir()})
@@ -106,7 +108,8 @@ class CompletedAppleInputsTest(unittest.TestCase):
         with self.seams(), self.assertRaisesRegex(ValueError, "concrete native"), self.inputs():
             pass
         self.cap = original
-        with self.seams(), self.assertRaisesRegex(ValueError, "inputs changed"), self.inputs() as selected:
+        with restore.verification_session(), self.seams(), \
+                self.assertRaisesRegex(ValueError, "inputs changed"), self.inputs() as selected:
             (selected["stage"] / "outputs/payload").write_bytes(b"changed after use")
         self.objects[self.package].write_bytes(b"corrupt product object")
         with self.seams(), self.assertRaises(ValueError), self.inputs():
