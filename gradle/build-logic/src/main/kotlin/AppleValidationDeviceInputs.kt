@@ -1,6 +1,4 @@
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.LinkOption
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.Directory
 import org.gradle.api.file.DirectoryProperty
@@ -39,9 +37,7 @@ internal fun stageAppleValidationDeviceInputs(
         "Apple validation device inputs overlap"
     }
     requireOriginalAppleSnapshotDisjoint(work, listOf(testApplication, packageRoot))
-    check(!Files.exists(work.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-        "Apple validation device work directory must be fresh"
-    }
+    requireFreshAppleValidationWorkDirectory(work)
 
     fun inventory(root: File, label: String): Map<String, File> = verifiedRegularFiles(root).also { files ->
         check(files.isNotEmpty() && files.values.all { it.length() > 0L }) {

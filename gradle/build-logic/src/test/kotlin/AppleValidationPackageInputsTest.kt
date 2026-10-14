@@ -7,6 +7,15 @@ import kotlin.test.assertFailsWith
 /** Artifact comparison fixtures only; they grant no receipt, producer, host, or replay authority. */
 class AppleValidationPackageInputsTest {
     @Test
+    fun `accepts an empty output directory created by Gradle`() = fixture().use { fixture ->
+        val before = fixture.inputDigests()
+        fixture.work.mkdirs()
+        val result = fixture.prepare()
+        assertEquals(fixture.packageDigests(), result.packageDirectory.digests())
+        assertEquals(before, fixture.inputDigests())
+    }
+
+    @Test
     fun `extracts exact authenticated package inputs without changing originals`() = fixture().use { fixture ->
         val before = fixture.inputDigests()
 
@@ -63,7 +72,9 @@ class AppleValidationPackageInputsTest {
         }
         fixture().use { fixture ->
             fixture.work.mkdirs()
+            fixture.work.resolve("caller-marker").writeText("preserve\n")
             assertFailsWith<IllegalStateException> { fixture.prepare() }
+            assertEquals("preserve\n", fixture.work.resolve("caller-marker").readText())
         }
         fixture().use { fixture ->
             assertFailsWith<IllegalStateException> { fixture.prepare(work = fixture.product.resolve("work")) }

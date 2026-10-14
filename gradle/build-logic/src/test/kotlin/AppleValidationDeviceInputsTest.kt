@@ -11,6 +11,17 @@ import org.gradle.testfixtures.ProjectBuilder
 /** Copy and Gradle wiring fixtures only; they grant no source, host, or execution authority. */
 class AppleValidationDeviceInputsTest {
     @Test
+    fun `accepts an empty output directory created by Gradle`() = fixture().use { fixture ->
+        val before = fixture.inputDigests()
+        fixture.work.mkdirs()
+        val task = fixture.task()
+        task.stage()
+        assertEquals(fixture.testApplication.digests(), task.stagedTestApplicationDirectory.get().asFile.digests())
+        assertEquals(fixture.packageDirectory.digests(), task.stagedPackageDirectory.get().asFile.digests())
+        assertEquals(before, fixture.inputDigests())
+    }
+
+    @Test
     fun `task stages exact consumer and package bytes`() = fixture().use { fixture ->
         val task = fixture.task()
         val before = fixture.inputDigests()

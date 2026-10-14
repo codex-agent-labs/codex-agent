@@ -1,6 +1,5 @@
 import java.io.File
 import java.nio.file.Files
-import java.nio.file.LinkOption
 import javax.inject.Inject
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.Directory
@@ -56,9 +55,7 @@ internal fun verifyAppleDeviceConsumer(
         "Apple device consumer developer directory is missing or unsafe"
     }
     requireOriginalAppleSnapshotDisjoint(work, listOf(testApplication, packageRoot, developer))
-    check(!Files.exists(work.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-        "Apple device consumer work directory must be fresh"
-    }
+    requireFreshAppleValidationWorkDirectory(work)
     fun inventory(root: File, label: String) = verifiedRegularFiles(root).also { files ->
         check(files.isNotEmpty() && files.values.all { it.length() > 0L }) {
             "Apple device consumer $label is empty or unsafe"

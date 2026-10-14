@@ -11,6 +11,14 @@ internal data class AppleValidationPackageInputs(
     val xcframeworkDirectory: File,
 )
 
+internal fun requireFreshAppleValidationWorkDirectory(work: File) {
+    // Gradle creates @OutputDirectory roots before invoking task actions.
+    check(!Files.exists(work.toPath(), LinkOption.NOFOLLOW_LINKS) ||
+        (Files.isDirectory(work.toPath(), LinkOption.NOFOLLOW_LINKS) && work.list()?.isEmpty() == true)) {
+        "Apple validation work directory must be absent or empty"
+    }
+}
+
 internal fun prepareAppleValidationPackageInputs(
     productDirectory: File,
     sdkVersion: String,
@@ -30,9 +38,7 @@ internal fun prepareAppleValidationPackageInputs(
         "Apple validation package input is missing or unsafe"
     }
     requireOriginalAppleSnapshotDisjoint(work, listOf(product, compatibility))
-    check(!Files.exists(work.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-        "Apple validation package work directory must be fresh"
-    }
+    requireFreshAppleValidationWorkDirectory(work)
 
     fun digests(files: Map<String, File>) = files.mapValues { (_, file) -> file.releaseDigest() }
     val productFiles = verifiedRegularFiles(product)

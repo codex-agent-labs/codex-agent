@@ -17,6 +17,15 @@ import org.gradle.process.ExecSpec
 /** Mock-process fixtures only; they do not claim native Xcode or Apple host acceptance. */
 class AppleDeviceValidationTaskTest {
     @Test
+    fun `accepts an empty output directory created by Gradle`() = fixture().use { fixture ->
+        val before = fixture.inputDigests()
+        fixture.work.mkdirs()
+        fixture.verify(fixture.operations())
+        assertTrue(fixture.archive.resolve("Products/Application.bin").isFile)
+        assertEquals(before, fixture.inputDigests())
+    }
+
+    @Test
     fun `command is the fixed legacy device archive recipe`() = fixture().use { fixture ->
         assertEquals(listOf(
             "/usr/bin/xcodebuild",

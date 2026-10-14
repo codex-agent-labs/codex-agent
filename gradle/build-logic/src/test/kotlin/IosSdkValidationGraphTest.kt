@@ -12,6 +12,34 @@ class IosSdkValidationGraphTest {
         .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-runtime-ios").isDirectory }
 
     @Test
+    fun `validation graph stores and reuses configuration without captured script objects`() {
+        val root = createTempDirectory("ios-sdk-validation-cache-").toFile().canonicalFile
+        try {
+            val runner = GradleRunner.create().withProjectDir(repository)
+                .withEnvironment(System.getenv() + ("DEVELOPER_DIR" to root.resolve("developer").path))
+                .withArguments(
+                    "ciProductPhase", "--dry-run", "--offline", "--configuration-cache", "--console=plain",
+                    "-Pkotlin.daemon.jvmargs=-Xmx2g", "--project-cache-dir", root.resolve("cache").path,
+                    "--gradle-user-home", System.getenv("GRADLE_USER_HOME") ?: File(System.getProperty("user.home"), ".gradle").path,
+                    "-PcodexAgent.product=sdk", "-PcodexAgent.component=sdk-ios", "-PcodexAgent.phase=validation",
+                    "-PcodexAgent.target=ios-simulator-arm64", "-PcodexAgent.candidateTree=${"3".repeat(40)}",
+                    "-PcodexAgent.iosValidationPackageStage=${root.resolve("package")}",
+                    "-PcodexAgent.contractBinaryStage=${root.resolve("contract")}",
+                    "-PcodexAgent.sdkCompatibilityFile=${root.resolve("compatibility.json")}",
+                    "-PcodexAgent.iosValidationTestApplicationDirectory=${root.resolve("TestApp")}",
+                    "-PcodexAgent.iosValidationCompilerConsumersDirectory=${root.resolve("CompilerEvidence")}",
+                    "-PcodexAgent.sdkVersion=0.8.0", "-PcodexAgent.contractVersion=0.8.0",
+                )
+            val stored = runner.build()
+            assertTrue("Configuration cache entry stored" in stored.output, stored.output)
+            val reused = runner.build()
+            assertTrue("Configuration cache entry reused" in reused.output, reused.output)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `validation consumes private original package and Contract snapshots without product producers`() {
         val root = createTempDirectory("ios-sdk-validation-graph-").toFile().canonicalFile
         try {
