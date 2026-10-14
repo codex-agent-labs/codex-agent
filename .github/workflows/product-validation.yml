@@ -4388,18 +4388,68 @@ jobs:
           developer-directory: /Applications/Xcode_26.6.app/Contents/Developer
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
 
+  sdk-ios-validation-outcome:
+    needs: [plan, sdk-ios-validation-plan, sdk-ios-validation]
+    if: >-
+      always() && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.sdk-ios-validation-plan.result == 'success' &&
+      needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true' &&
+      needs.sdk-ios-validation.result != 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      all_failed: ${{ steps.outcome.outputs.all_failed }}
+      signing_matrix: ${{ steps.outcome.outputs.signing_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
+          path: build/failure-plan
+          merge-multiple: true
+      - id: outcome
+        env:
+          SDK_MATRIX: ${{ needs.sdk-ios-validation-plan.outputs.sdk_matrix }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          from ci import sdk_workflow
+          from runtime_workflow import ios_validation_outcome
+          from reuse import github_output
+          outcome = ios_validation_outcome(Path('build/failure-plan/impact-plan.json'),
+              json.loads(os.environ['SDK_MATRIX']), Path('build/validation-outcomes.json'),
+              trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
+          github_output(Path(os.environ['GITHUB_OUTPUT']), outcome)
+          PYTHON
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-sdk-wave-9-outcomes-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: build/validation-outcomes.json
+          if-no-files-found: ignore
+          overwrite: false
+          retention-days: 90
+
   sdk-apple-signing-prepare:
     name: sdk-apple-signing-prepare-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-ios-validation-plan, sdk-ios-validation]
+    needs: [plan, sdk-plan, sdk-ios-validation-plan, sdk-ios-validation, sdk-ios-validation-outcome]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.sdk-plan.result == 'success' &&
+      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
+      needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-ios-validation-plan.result == 'success' &&
       needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -4447,11 +4497,13 @@ jobs:
 
   sdk-apple-validation-attestation:
     name: sdk-apple-validation-attestation-${{ matrix.target }}
-    needs: [workflow-lint, plan, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare]
+    needs: [workflow-lint, plan, sdk-ios-validation-plan, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.workflow-lint.result == 'success' &&
+      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
+      needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-ios-validation-plan.result == 'success' &&
       needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
@@ -4462,7 +4514,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+      matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-ios-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
     steps:
       - name: Check out reviewed Apple signer code only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4495,11 +4547,13 @@ jobs:
           private-key: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
 
   sdk-collect-9:
-    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
+    needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation-plan, sdk-ios-validation, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-result.result == 'success' && needs.sdk-plan.result == 'success' &&
+      (needs.sdk-ios-validation.result == 'success' || needs.sdk-ios-validation-outcome.result == 'success') &&
+      needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-ios-validation-plan.result == 'success' &&
       needs.sdk-ios-validation-plan.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04

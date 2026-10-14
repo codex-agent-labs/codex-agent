@@ -68,6 +68,75 @@ def failed_ios_package(plan_path, selected, destination, *, trusted_workflow_sha
     return True
 
 
+def ios_validation_outcome(plan_path, selected, destination, *, trusted_workflow_sha, token,
+                           repository_root=None, environ=None):
+    """Route terminal worker outcomes, never grant phase or signing authority."""
+    root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
+    plan = products._validate_plan(plan_path, root)
+    producer = products._consumer(plan, os.environ if environ is None else environ)["producer"]
+    if plan["remoteBuildAuthorized"] is not True:
+        raise ValueError("Apple outcome requires an authorized original plan")
+    rows = selected.get("include") if type(selected) is dict else None
+    allowed = {PhaseInstanceId("sdk", "sdk-ios", "validation", target)
+               for target in ("ios-arm64", "ios-simulator-arm64")}
+    if (type(rows) is not list or not rows or any(type(row) is not dict for row in rows)
+            or len({products._identity(row) for row in rows}) != len(rows)
+            or any(products._identity(row) not in allowed for row in rows)):
+        raise ValueError("Apple outcome requires its exact original target election")
+    keys = {products._identity(row): require_sha256(row.get("buildKey"), "Apple outcome elected key")
+            for row in rows}
+    # An earlier successful attempt must still reach ordinary recovery.
+    fallback = {"all_failed": False, "signing_matrix": canonical_json_bytes(selected).decode().strip()}
+    if producer["runAttempt"] != 1 or plan["event"] != "pull_request":
+        return fallback
+    observed = products._observe_ci_producer_jobs({"resume": producer},
+        jobs_by_phase={"resume": "product-validation / product-resume"},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    outcomes, successes = [], []
+    for instance in allowed - keys.keys():
+        if any(job.get("conclusion") != "skipped" for job in products._matching_ci_jobs(
+                observed[0]["jobs"], products._worker_job_name("sdk", instance))):
+            raise ValueError("Apple outcome election omits an observed sibling")
+    for row in rows:
+        instance = products._identity(row)
+        jobs = products._matching_ci_jobs(observed[0]["jobs"], products._worker_job_name("sdk", instance),
+                                          expected_build_key=keys[instance])
+        if len(jobs) != 1:
+            raise ValueError("Apple outcome worker is missing or ambiguous")
+        job = jobs[0]
+        products.require_integer(job.get("id"), "Apple outcome job", 1)
+        if (job.get("run_id") != producer["runId"] or job.get("head_sha") != observed[0]["run"]["head_sha"]
+                or job.get("status") != "completed"):
+            raise ValueError("Apple outcome worker is not terminal for its exact producer")
+        if job.get("conclusion") == "success":
+            successes.append(row)
+        elif job.get("conclusion") not in {"failure", "cancelled", "timed_out"}:
+            return fallback
+        outcomes.append({"selected": row, "worker": job, "artifact": None})
+    uploads = products.paginated_items(
+        f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
+        "artifacts", token)
+    for outcome in outcomes:
+        if outcome["worker"]["conclusion"] == "success":
+            continue  # Full original capture and preparation still precede signing.
+        instance = products._identity(outcome["selected"])
+        name = (products._worker_artifact_prefix("sdk", instance)
+                + f"{keys[instance][7:]}-{producer['tree']}-attempt-{producer['runAttempt']}")
+        candidates = [item for item in uploads if isinstance(item, dict) and item.get("name") == name]
+        if len(candidates) > 1:
+            raise ValueError("Failed Apple worker upload is ambiguous")
+        if candidates:
+            artifact = products._contract_ci_upload_metadata(candidates[0].get("id"), candidates[0].get("digest"),
+                name, producer, observed[0]["run"], token)
+            products._require_artifact_job_window(observed[0], outcome["worker"]["name"], artifact)
+            outcome["artifact"] = artifact
+    products.write_canonical_json(destination, {"schemaVersion": 1, "kind": "worker-outcome-observation",
+        "producer": producer, "observed": observed, "workers": outcomes,
+        "admittedPhases": [], "productBodiesDownloaded": 0})
+    return {"all_failed": not successes,
+            "signing_matrix": canonical_json_bytes({"include": successes}).decode().strip()}
+
+
 def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,
            sdk_validation_tooling=None, sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):

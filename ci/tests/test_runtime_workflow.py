@@ -778,6 +778,94 @@ class RuntimeWorkflowTest(unittest.TestCase):
 
 
 class WorkerUploadPreflightTest(unittest.TestCase):
+    def test_apple_outcome_keeps_successful_siblings_and_rejects_uncertain_originals(self):
+        from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest, PIN as original_pin
+        fixture = SdkWorkerCollectionTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.producer['runAttempt'] = 1
+        elected = dict(fixture.shard('validation', component='sdk-ios', target=target)[:2]
+                       for target in ('ios-arm64', 'ios-simulator-arm64'))
+        rows = list(elected.values())
+        products = workflow.products
+        for case in ('failed', 'mixed', 'success', 'retry', 'missing-upload', 'running', 'foreign-job',
+                     'duplicate-job', 'missing-job', 'duplicate-upload', 'bad-digest', 'expired', 'window',
+                     'omitted-sibling', 'duplicate-election'):
+            destination = fixture.repository / (case + '.json')
+            producer = {**fixture.producer, 'runAttempt': 2} if case == 'retry' else fixture.producer
+            with self.subTest(case=case), fixture.official_api(elected,
+                    {instance: b'body must stay remote' for instance in elected}) as (query, listing, downloaded), \
+                    mock.patch.object(products, '_validate_plan', return_value={
+                        'event': 'pull_request', 'remoteBuildAuthorized': True}), \
+                    mock.patch.object(products, '_consumer', return_value={'producer': producer}), \
+                    mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('state replay')):
+                original_query, original_listing = query.side_effect, listing.side_effect
+
+                def observe(url, token):
+                    value = deepcopy(original_query(url, token))
+                    if '/actions/artifacts/' in url:
+                        value.update({'bad-digest': {'digest': 'sha256:' + 'f' * 64},
+                            'expired': {'expired': True}, 'window': {'created_at': '2026-09-08T09:00:00Z'}}.get(case, {}))
+                    return value
+
+                def list_originals(url, field, token):
+                    values = deepcopy(original_listing(url, field, token))
+                    if field == 'jobs':
+                        workers = [job for job in values if 'sdk-sdk-ios-validation-' in job['name']]
+                        for job in workers:
+                            job['conclusion'] = 'success' if case == 'success' else 'failure'
+                        if case == 'mixed': workers[-1]['conclusion'] = 'success'
+                        if case == 'running': workers[-1]['status'] = 'in_progress'
+                        if case == 'foreign-job': workers[-1]['head_sha'] = 'f' * 40
+                        if case == 'duplicate-job': values.append(deepcopy(workers[-1]))
+                        if case == 'missing-job': values.remove(workers[-1])
+                    elif case == 'missing-upload': values = []
+                    elif case == 'duplicate-upload': values.append(deepcopy(values[-1]))
+                    return values
+
+                query.side_effect, listing.side_effect = observe, list_originals
+                selected = {'include': rows[:1] if case == 'omitted-sibling' else
+                            [*rows, rows[0]] if case == 'duplicate-election' else rows}
+                def decide():
+                    return workflow.ios_validation_outcome(fixture.plan_path, selected, destination,
+                        trusted_workflow_sha=original_pin, token='synthetic-token', repository_root=fixture.repository)
+                if case in {'running', 'foreign-job', 'duplicate-job', 'missing-job', 'duplicate-upload',
+                            'bad-digest', 'expired', 'window', 'omitted-sibling', 'duplicate-election'}:
+                    with self.assertRaises(ValueError): decide()
+                    self.assertFalse(destination.exists())
+                else:
+                    result = decide()
+                    expected = rows if case in {'success', 'retry'} else rows[-1:] if case == 'mixed' else []
+                    self.assertEqual(expected, json.loads(result['signing_matrix'])['include'])
+                    self.assertEqual(not expected, result['all_failed'])
+                    if case == 'retry':
+                        self.assertFalse(destination.exists())
+                        query.assert_not_called()
+                    else:
+                        report = json.loads(destination.read_bytes())
+                        self.assertEqual([], report['admittedPhases'])
+                        self.assertEqual(0, report['productBodiesDownloaded'])
+                        self.assertEqual(2, len(report['workers']))
+                downloaded.assert_not_called()
+
+    def test_apple_failed_wave_stops_before_signing_and_predecessor_replay(self):
+        import re
+        text = (Path(__file__).resolve().parents[2] / '.github/workflows/product-validation.yml').read_text()
+        def job(name):
+            return re.split(r'\n  [\w-]+:\n', text.split('\n  ' + name + ':\n', 1)[1], maxsplit=1)[0]
+        outcome = job('sdk-ios-validation-outcome')
+        self.assertIn('ios_validation_outcome(', outcome)
+        self.assertIn('needs.plan.outputs.plan_control_id', outcome)
+        for forbidden in ('restore-reuse-qualification', 'capture-sdk-tooling', 'environment:', 'collect-runtime-wave'):
+            self.assertNotIn(forbidden, outcome)
+        for name in ('sdk-apple-signing-prepare', 'sdk-apple-validation-attestation', 'sdk-collect-9'):
+            block = job(name)
+            self.assertIn("needs.sdk-ios-validation-outcome.outputs.all_failed != 'true'", block)
+            self.assertIn("needs.sdk-ios-validation-outcome.result == 'success'", block)
+            if name != 'sdk-collect-9':
+                self.assertIn('fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix ||', block)
+        self.assertIn('environment: product-attestation', job('sdk-apple-validation-attestation'))
+
     def test_failed_package_decision_skips_bodies_and_preserves_success_retry_and_provenance_gates(self):
         from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest, PIN as original_pin
         fixture = SdkWorkerCollectionTest()
