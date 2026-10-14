@@ -509,7 +509,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         request, phases, receipts = self.validate()
         expected = request['phaseAuthorities'][-1]
         with patch('products.inventory.tree_entries', return_value=[('owned', ('100644', 'same'))]) as trees, \
-                patch('products.selection.phase_inventory_paths', return_value=['owned']), \
+                patch('products.selection.phase_inventory_paths',
+                      side_effect=lambda paths, instance: ['owned'] if 'owned' in paths else []), \
                 patch('product_reuse._authorities', return_value=([expected], None)) as authorities:
             arguments = dict(root=Path('/synthetic'), revision='b' * 40, original_revision='a' * 40)
             completed.validate_current(request, phases, receipts, **arguments)

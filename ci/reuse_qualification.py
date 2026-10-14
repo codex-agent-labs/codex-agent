@@ -58,6 +58,13 @@ def _commit(value):
     return value
 
 
+def _changed_inventory_paths(before, after):
+    """Compare complete Git entries; validate unchanged paths as well as changes."""
+    from products.selection import _normalized_paths
+    paths = set(_normalized_paths(before)) | set(_normalized_paths(after))
+    return tuple(sorted(path for path in paths if before.get(path) != after.get(path)))
+
+
 def validate(value):
     value = require_exact_keys(value, {"schemaVersion", "sourceCommit", "verifierPolicySha256", "originals"},
                                "Reuse qualification")
@@ -1289,10 +1296,9 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         proof = load_canonical_json_bytes(captured["proof.json"])
         phases = _completed_frozen_controls(spec, proof, qualified)
         baseline, current = (dict(tree_entries(root, commit)) for commit in (spec["inventoryBaseline"], revision))
+        changed = _changed_inventory_paths(baseline, current)
         for instance in phases:
-            before = phase_inventory_paths(baseline, instance)
-            after = phase_inventory_paths(current, instance)
-            if before != after or any(baseline[path] != current[path] for path in after):
+            if phase_inventory_paths(changed, instance):
                 raise QualificationIncompatible(f"Completed phase owning inputs changed: {instance}")
         # Revoked/rotated public trust must not inherit an older completion decision.
         authority = dict(tree_entries(root, original["signer_commit"]))
@@ -1394,8 +1400,7 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     instance = products._identity(receipt)
     _ensure_native_issuer_commit(root, spec["producer"]["commit"], token)
     before, after = (dict(tree_entries(root, commit)) for commit in (spec["producer"]["commit"], revision))
-    paths = phase_inventory_paths(before, instance)
-    if paths != phase_inventory_paths(after, instance) or any(before[path] != after[path] for path in paths):
+    if phase_inventory_paths(_changed_inventory_paths(before, after), instance):
         raise QualificationIncompatible("Completed SDK owning inputs changed")
     expected = _phase_records(request["phaseAuthorities"], "Completed SDK authority")[instance]
     authorities, unavailable = products._authorities(root, revision, (instance,))

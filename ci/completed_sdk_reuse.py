@@ -102,14 +102,14 @@ def validate_current(request, phases, receipts, *, root, revision, original_revi
     import product_reuse
     from products.inventory import tree_entries
     from products.selection import phase_inventory_paths
-    from reuse_qualification import QualificationIncompatible
+    from reuse_qualification import QualificationIncompatible, _changed_inventory_paths
     before, after = (dict(tree_entries(Path(root), commit)) for commit in (original_revision, revision))
+    changed = _changed_inventory_paths(before, after)
     expected = _records(request["phaseAuthorities"], "Incremental SDK authorities")
     by_id = {_identity(receipt): receipt for receipt in receipts}
     for phase in phases:
         instance = _identity(phase)
-        paths = phase_inventory_paths(before, instance)
-        if paths != phase_inventory_paths(after, instance) or any(before[path] != after[path] for path in paths):
+        if phase_inventory_paths(changed, instance):
             raise QualificationIncompatible("Incremental SDK owning inputs changed")
         authorities, unavailable = product_reuse._authorities(root, revision, (instance,))
         if unavailable or authorities != [expected[instance]]:

@@ -22,6 +22,38 @@ FIELDS = ("product", "component", "phase", "target")
 POLICY = "sha256:" + "a" * 64
 
 
+class CompletedOwningInputComparisonTest(unittest.TestCase):
+    def test_changed_paths_match_complete_phase_inventories(self):
+        from products.registry import PHASE_INSTANCE_IDS
+        from products.selection import phase_inventory_paths
+        before = {
+            "ci/product_reuse.py": "100644 blob control",
+            "gradle/build-logic/build.gradle.kts": "100644 blob shared",
+            "codex-agent-runtime-ios/apple/TestApp/TestApp.xcodeproj/project.pbxproj": "100644 blob apple",
+            "unclassified-product-input": "100644 blob unknown",
+        }
+        variants = [dict(before), {**before, "ci/product_reuse.py": "100644 blob new-control"}]
+        for path in before:
+            removed = {name: value for name, value in before.items() if name != path}
+            variants.extend((removed, {**before, path: "100755 blob changed-mode"},
+                             {**before, path: "100644 blob changed-content"},
+                             {**removed, path + ".renamed": before[path]}))
+        variants.append({**before, "new-unclassified-input": "100644 blob added"})
+        for after in variants:
+            changed = qualification._changed_inventory_paths(before, after)
+            for instance in PHASE_INSTANCE_IDS:
+                with self.subTest(after=after, instance=instance):
+                    a = phase_inventory_paths(before, instance)
+                    b = phase_inventory_paths(after, instance)
+                    expected = a != b or any(before[path] != after[path] for path in a)
+                    self.assertEqual(expected, bool(phase_inventory_paths(changed, instance)))
+
+    def test_unchanged_malformed_paths_still_reject(self):
+        for path in ("../outside", "directory/./input", "/absolute", "control\ninput", " backspace"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                qualification._changed_inventory_paths({path: "same"}, {path: "same"})
+
+
 class CompletedFrozenReuseTest(unittest.TestCase):
     def contract_stage_fixture(self, root):
         """Real deterministic objects inside a small synthetic qualified upload."""
