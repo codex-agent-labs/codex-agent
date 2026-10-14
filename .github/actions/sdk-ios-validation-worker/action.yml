@@ -106,6 +106,36 @@ runs:
             output.write('policy_sha256=' + sha256_bytes(raw) + '\n')
             output.write('apple_policy_sha256=' + apple_digest + '\n')
         PY
+    - id: prewarm
+      name: Start the selected simulator while authenticated inputs are prepared
+      shell: bash
+      env:
+        DEVELOPER_DIR: ${{ inputs.developer-directory }}
+      run: |
+        python3 -B - <<'PY'
+        import json, subprocess, uuid
+        def observe(kind):
+            return json.loads(subprocess.check_output(
+                ['/usr/bin/xcrun', 'simctl', 'list', '-j', kind], text=True))
+        # Match the existing XCTest task's first available runtime/device.
+        # That task still records bootstatus, readiness and actual test execution.
+        runtime = next((row for row in observe('runtimes')['runtimes']
+            if row.get('name') == 'iOS 26.5' and row.get('isAvailable') is True), None)
+        if runtime is None:
+            raise ValueError('Required iOS 26.5 simulator runtime is unavailable')
+        device = next((row for row in observe('devices')['devices'].get(runtime['identifier'], [])
+            if row.get('deviceTypeIdentifier') == 'com.apple.CoreSimulator.SimDeviceType.iPhone-17'
+            and row.get('isAvailable') is True), None)
+        if device is None:
+            raise ValueError('Required iPhone 17 simulator is unavailable')
+        identifier = device['udid']
+        if not isinstance(identifier, str) or str(uuid.UUID(identifier)) != identifier.lower():
+            raise ValueError('Selected simulator identity is malformed')
+        if device['state'] == 'Shutdown':
+            subprocess.run(['/usr/bin/xcrun', 'simctl', 'boot', identifier], check=True)
+        elif device['state'] not in ('Booted', 'Booting'):
+            raise ValueError('Selected simulator cannot be started from its current state')
+        PY
     - id: captured
       uses: ./.github/actions/capture-runtime-state
       with:

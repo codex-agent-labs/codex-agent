@@ -225,10 +225,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Diagnose the actual simulator host with an isolated non-product XCTest
+      - name: Start the production simulator selection while restoring the warm package
         run: |
           python3 -B - <<'PY'
-          import json, os, re, subprocess, time
+          import json, os, re, subprocess, sys, textwrap, time
           from pathlib import Path
           root = Path(os.environ['RUNNER_TEMP']) / 'apple-warm-host-diagnostics'
           root.mkdir()
@@ -246,6 +246,10 @@ jobs:
           assert status == 0 and version.startswith('Xcode 26.6\n'), version
           run('first-launch', ['/usr/bin/xcodebuild', '-checkFirstLaunchStatus'])
           run('sdks', ['/usr/bin/xcodebuild', '-showsdks'])
+          source = Path('.github/actions/sdk-ios-validation-worker/action.yml').read_text()
+          block = source.split('    - id: prewarm\n', 1)[1].split('    - id: captured\n', 1)[0]
+          script = textwrap.dedent(block.split("<<'PY'\n", 1)[1].rsplit('        PY', 1)[0])
+          assert run('prewarm', [sys.executable, '-B', '-c', script])[0] == 0
           status, runtimes = run('runtimes', ['/usr/bin/xcrun', 'simctl', 'list', '-j', 'runtimes'])
           assert status == 0
           runtime = [row for row in json.loads(runtimes)['runtimes']
@@ -269,16 +273,7 @@ jobs:
           (fixture / 'Sources/HostProbe/HostProbe.swift').write_text('public let hostProbeValue = 1\n')
           (fixture / 'Tests/HostProbeTests/HostProbeTests.swift').write_text('import XCTest\nimport HostProbe\n'
               'final class HostProbeTests: XCTestCase { func testHost() { XCTAssertEqual(hostProbeValue, 1) } }\n')
-          run('destinations-before', ['/usr/bin/xcodebuild', '-scheme', 'CodexAgent-Package', '-showdestinations'], fixture)
-          if device[0]['state'] != 'Booted':
-              assert run('boot', ['/usr/bin/xcrun', 'simctl', 'boot', identifier])[0] == 0
-          assert run('bootstatus', ['/usr/bin/xcrun', 'simctl', 'bootstatus', identifier, '-b'])[0] == 0
-          run('destinations-after', ['/usr/bin/xcodebuild', '-scheme', 'CodexAgent-Package', '-showdestinations'], fixture)
-          status, _ = run('test', ['/usr/bin/xcodebuild', '-scheme', 'CodexAgent-Package',
-              '-destination', 'platform=iOS Simulator,id=' + identifier,
-              '-derivedDataPath', str(Path(os.environ['RUNNER_TEMP']) / 'apple-host-probe-derived'),
-              'CODE_SIGNING_ALLOWED=NO', 'test'], fixture)
-          assert status == 0, 'Host-only XCTest failed; original SDK state remains untouched'
+          (root / 'selection.json').write_text(json.dumps({'identifier': identifier}))
           PY
       - name: Measure only the existing immutable package cache without artifact fallback
         if: always() && !cancelled()
@@ -298,8 +293,38 @@ jobs:
             report = json.loads((root / 'cache-restore.json').read_bytes())
             assert report['entries'] == report['hits'] == 1 and report['misses'] == 0, report
             assert report['hydratedBytes'] == member['bytes'] and report['saved'] == 0, report
+            assert report['parallelEntries'] == 1, report
             print(json.dumps(report))
             PY
+      - name: Verify remaining simulator readiness and the fixture's actual XCTest scheme
+        if: always() && !cancelled()
+        run: |
+          python3 -B - <<'PY'
+          import json, os, subprocess, time
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'apple-warm-host-diagnostics'
+          identifier = json.loads((root / 'selection.json').read_bytes())['identifier']
+          fixture = root / 'CodexAgentPackage'
+          def run(name, args, cwd=None):
+              start = time.monotonic()
+              with (root / (name + '.stdout')).open('wb') as out, (root / (name + '.stderr')).open('wb') as err:
+                  result = subprocess.run(args, cwd=cwd, stdout=out, stderr=err, timeout=360)
+              (root / (name + '.json')).write_text(json.dumps(dict(command=args,
+                  exitCode=result.returncode, seconds=time.monotonic()-start), indent=2))
+              return result.returncode, (root / (name + '.stdout')).read_text()
+          assert run('bootstatus', ['/usr/bin/xcrun', 'simctl', 'bootstatus', identifier, '-b'])[0] == 0
+          status, listing = run('schemes', ['/usr/bin/xcodebuild', '-list', '-json'], fixture)
+          assert status == 0
+          schemes = {scheme for value in json.loads(listing).values() if isinstance(value, dict)
+                     for scheme in value.get('schemes', [])}
+          assert 'HostProbe' in schemes, schemes
+          run('destinations-after', ['/usr/bin/xcodebuild', '-scheme', 'HostProbe', '-showdestinations'], fixture)
+          status, _ = run('test', ['/usr/bin/xcodebuild', '-scheme', 'HostProbe',
+              '-destination', 'platform=iOS Simulator,id=' + identifier,
+              '-derivedDataPath', str(Path(os.environ['RUNNER_TEMP']) / 'apple-host-probe-derived'),
+              'CODE_SIGNING_ALLOWED=NO', 'test'], fixture)
+          assert status == 0, 'Host-only XCTest failed; original SDK state remains untouched'
+          PY
       - name: Preserve small diagnostic records only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

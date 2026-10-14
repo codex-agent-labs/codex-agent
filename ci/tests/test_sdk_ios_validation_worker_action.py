@@ -97,6 +97,46 @@ class IosValidationWorkerActionTest(unittest.TestCase):
             self.assertEqual("key_hex=" + "a" * 64 + "\n", self.output.read_text())
             self.output.unlink()
 
+    def test_simulator_boot_overlaps_capture_but_does_not_claim_readiness_or_tests(self):
+        import subprocess
+        identifier = '88931AEA-62E6-447F-8697-DCE00A671384'
+        runtime = {'name': 'iOS 26.5', 'identifier': 'runtime', 'isAvailable': True}
+        device = {'deviceTypeIdentifier': 'com.apple.CoreSimulator.SimDeviceType.iPhone-17',
+                  'isAvailable': True, 'udid': identifier, 'state': 'Shutdown'}
+        self.assertLess(self.action.index('id: policy'), self.action.index('id: prewarm'))
+        self.assertLess(self.action.index('id: prewarm'), self.action.index('id: captured'))
+        self.assertIn('DEVELOPER_DIR: ${{ inputs.developer-directory }}', self.block('prewarm'))
+        for state in ('Shutdown', 'Booting', 'Booted'):
+            responses = [{'runtimes': [{**runtime, 'isAvailable': False}, runtime]},
+                         {'devices': {'runtime': [{**device, 'isAvailable': False},
+                                                  {**device, 'state': state}, {**device, 'udid': 'other'}]}}]
+            with self.subTest(state=state), patch('subprocess.check_output',
+                    side_effect=[json.dumps(row) for row in responses]) as observe, \
+                    patch('subprocess.run') as boot:
+                self.run_snippet('prewarm')
+                self.assertEqual([(['/usr/bin/xcrun', 'simctl', 'list', '-j', kind],)
+                                  for kind in ('runtimes', 'devices')], [c.args for c in observe.call_args_list])
+                if state == 'Shutdown':
+                    boot.assert_called_once_with(['/usr/bin/xcrun', 'simctl', 'boot', identifier], check=True)
+                else:
+                    boot.assert_not_called()
+            self.assertFalse(self.output.exists())
+        for changes in ({'isAvailable': False}, {'udid': 'bad'}, {'state': 'Shutting Down'}):
+            with self.subTest(changes=changes), patch('subprocess.check_output', side_effect=[
+                    json.dumps({'runtimes': [runtime]}),
+                    json.dumps({'devices': {'runtime': [{**device, **changes}]}})]), \
+                    patch('subprocess.run') as boot, self.assertRaises(ValueError):
+                self.run_snippet('prewarm')
+            boot.assert_not_called()
+        with patch('subprocess.check_output', return_value='{"runtimes":[]}'), \
+                self.assertRaises(ValueError):
+            self.run_snippet('prewarm')
+        with patch('subprocess.check_output', side_effect=[json.dumps({'runtimes': [runtime]}),
+                json.dumps({'devices': {'runtime': [device]}})]), \
+                patch('subprocess.run', side_effect=subprocess.CalledProcessError(1, 'boot')), \
+                self.assertRaises(subprocess.CalledProcessError):
+            self.run_snippet('prewarm')
+
     def test_wrong_host_election_target_key_tree_or_changed_policy_reject_before_output(self):
         self.pin()
         baseline = dict(self.environment)

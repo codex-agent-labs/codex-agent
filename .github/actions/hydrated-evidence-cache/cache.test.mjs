@@ -4,12 +4,97 @@ import {createHash} from 'node:crypto';
 import {Readable, Writable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {createGzip, createGunzip, gzipSync, gunzipSync} from 'node:zlib';
-import {verify, main, cacheResponse} from './cache.mjs';
+import {verify, main, cacheResponse, azureCacheChunks} from './cache.mjs';
+import {BlockBlobClient} from '@azure/storage-blob';
 import {mkdtemp, mkdir, writeFile, readFile, rm, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import fs from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
+
+test('parallel Azure segments are bounded, ordered and pinned to one ETag', async () => {
+  const size = 128 * 1024 ** 2 + 7;
+  const calls = [];
+  const client = {downloadToBuffer: async (offset, count, options) => {
+    calls.push([offset, count]);
+    assert.equal(options.concurrency, 8);
+    assert.equal(options.blockSize, 8 * 1024 ** 2);
+    assert.deepEqual(options.conditions, {ifMatch: '"immutable"'});
+    assert.equal(options.abortSignal.aborted, false);
+    return Buffer.alloc(count, calls.length);
+  }};
+  let total = 0, ordinal = 0;
+  for await (const body of azureCacheChunks(client, {contentLength: size, etag: '"immutable"'}, size)) {
+    assert.equal(body[0], ++ordinal);
+    assert.equal(body.at(-1), ordinal);
+    total += body.length;
+  }
+  assert.equal(total, size);
+  assert.deepEqual(calls, [[0, 128 * 1024 ** 2], [128 * 1024 ** 2, 7]]);
+  async function consume(client, properties) {
+    for await (const _ of azureCacheChunks(client, properties, 10)) { /* consume */ }
+  }
+  const noRead = {downloadToBuffer: async () => assert.fail('Invalid properties reached body storage')};
+  for (const contentLength of [-1, 11, 1.5, '1', null, Number.MAX_SAFE_INTEGER + 1])
+    await assert.rejects(consume(noRead, {contentLength, etag: '"immutable"'}), /transport properties/);
+  for (const etag of [undefined, '', 'W/"weak"', '"bad\nvalue"', '"' + 'a'.repeat(257) + '"'])
+    await assert.rejects(consume(noRead, {contentLength: 1, etag}), /transport properties/);
+  for (const body of [Buffer.alloc(1), Buffer.alloc(3), new Uint8Array(2)])
+    await assert.rejects(consume({downloadToBuffer: async () => body},
+      {contentLength: 2, etag: '"immutable"'}), /segment length/);
+  const changed = Object.assign(Error('ETag changed'), {statusCode: 412});
+  await assert.rejects(consume({downloadToBuffer: async () => { throw changed; }},
+    {contentLength: 2, etag: '"immutable"'}), error => error === changed);
+});
+
+test('large Azure restore uses parallel bounded bytes through the same gzip and SHA publication gate', async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'parallel-cache-')));
+  const previous = {...process.env};
+  try {
+    const bytes = 256 * 1024 ** 2;
+    const block = Buffer.alloc(1024 ** 2);
+    const hash = createHash('sha256');
+    for (let i = 0; i < 256; i++) hash.update(block);
+    const digest = hash.digest('hex');
+    const compressed = [];
+    await pipeline(Readable.from((async function* () { for (let i = 0; i < 256; i++) yield block; })()),
+      createGzip(), new Writable({write(chunk, _, done) { compressed.push(chunk); done(); }}));
+    const archive = Buffer.concat(compressed);
+    const manifest = join(directory, 'manifest.json'), report = join(directory, 'report.json');
+    await writeFile(manifest, JSON.stringify([{bytes, sha256: `sha256:${digest}`} ]));
+    Object.assign(process.env, {INPUT_MODE: 'restore', INPUT_ROOT: directory,
+      INPUT_MANIFEST: manifest, INPUT_REPORT: report});
+    mock.method(globalThis, 'fetch', () => assert.fail('Large Azure body used the sequential fetch'));
+    mock.method(BlockBlobClient.prototype, 'getProperties', async () => ({contentLength: archive.length, etag: '"immutable"'}));
+    const download = mock.method(BlockBlobClient.prototype, 'downloadToBuffer', async (offset, count, options) => {
+      assert.equal(offset, 0);
+      assert.equal(count, archive.length);
+      assert.equal(options.conditions.ifMatch, '"immutable"');
+      return archive;
+    });
+    const client = {GetCacheEntryDownloadURL: async ({key}) => ({ok: true, matchedKey: key,
+      signedDownloadUrl: 'https://cache.blob.core.windows.net/fixture/body'})};
+    await main(client);
+    const stats = JSON.parse(await readFile(report));
+    assert.equal(stats.parallelEntries, 1);
+    assert.equal(stats.hits, 1);
+    assert.equal(stats.hydratedBytes, bytes);
+    assert.equal(stats.compressedBytes, archive.length);
+    assert.equal((await fs.promises.stat(join(directory, 'blobs', digest.slice(0, 2), digest))).size, bytes);
+    assert.equal(download.mock.callCount(), 1);
+    await rm(report);
+    await rm(join(directory, 'blobs', digest.slice(0, 2), digest));
+    download.mock.mockImplementation(async () => Buffer.alloc(archive.length));
+    await assert.rejects(main(client));
+    await assert.rejects(readFile(join(directory, 'blobs', digest.slice(0, 2), digest)), {code: 'ENOENT'});
+    await assert.rejects(readFile(report), {code: 'ENOENT'});
+  } finally {
+    mock.restoreAll();
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+    await rm(directory, {recursive: true, force: true});
+  }
+});
 
 test('cache service failures and competing saves preserve original bytes; integrity and defects remain fatal', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'cache-outage-')));
