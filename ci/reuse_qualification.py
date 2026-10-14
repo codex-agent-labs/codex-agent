@@ -1444,7 +1444,7 @@ def add_completed_frozen_argument(parser):
 
 
 @contextmanager
-def completed_frozen_options(arguments):
+def completed_frozen_options(arguments, *, defer=False):
     """Authenticate explicit CLI policy once for this invocation, without ambient fallback."""
     import os
     values = vars(arguments) if not isinstance(arguments, dict) else arguments
@@ -1481,19 +1481,37 @@ def completed_frozen_options(arguments):
                 or read_regular_file_bytes(plan_path, max_bytes=LIMIT, reject_symlink_parents=True) != original_plan):
             raise ValueError("Completed reuse caller policy or current plan changed during use")
     with tempfile.TemporaryDirectory(prefix="completed-reuse-authority-") as temporary:
-        cap, _ = fetch_completed_frozen(Path(temporary).resolve() / "native", repository_root=root,
-            revision=plan["validationCommit"], token=os.environ.get("GITHUB_TOKEN", ""),
-            **({"sdk_completion": policy["sdkCompletion"]} if extra else {}),
-            **{argument: policy[field] for argument, field in (
-                ("consumer_commit", "consumerCommit"), ("verifier_policy_sha256", "verifierPolicySha256"),
-                ("artifact_id", "artifactId"), ("artifact_sha256", "artifactSha256"), ("run_id", "runId"),
-                ("run_attempt", "runAttempt"), ("signer_commit", "signerCommit"), ("source_commit", "sourceCommit"))})
-        cap.check_consumer(products._consumer(plan, os.environ))
-        unchanged()
-        try:
-            yield {"completed_frozen": cap}
-        finally:
+        def authenticate():
+            cap, _ = fetch_completed_frozen(Path(temporary).resolve() / "native", repository_root=root,
+                revision=plan["validationCommit"], token=os.environ.get("GITHUB_TOKEN", ""),
+                **({"sdk_completion": policy["sdkCompletion"]} if extra else {}),
+                **{argument: policy[field] for argument, field in (
+                    ("consumer_commit", "consumerCommit"), ("verifier_policy_sha256", "verifierPolicySha256"),
+                    ("artifact_id", "artifactId"), ("artifact_sha256", "artifactSha256"), ("run_id", "runId"),
+                    ("run_attempt", "runAttempt"), ("signer_commit", "signerCommit"), ("source_commit", "sourceCommit"))})
+            cap.check_consumer(products._consumer(plan, os.environ))
             unchanged()
+            return cap
+        if defer:
+            from concurrent.futures import ThreadPoolExecutor
+            from contextvars import copy_context
+            # Discovery may read independent catalogs/tooling while this runs.
+            # Keep custody alive and join even if the caller never asks for it.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(copy_context().run, authenticate)
+                try:
+                    yield {"completed_frozen_future": pending}
+                finally:
+                    try:
+                        pending.result()
+                    finally:
+                        unchanged()
+        else:
+            cap = authenticate()
+            try:
+                yield {"completed_frozen": cap}
+            finally:
+                unchanged()
 
 
 def _original_receipt_bytes(source, references):

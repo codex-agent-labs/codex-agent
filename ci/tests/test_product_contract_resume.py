@@ -326,29 +326,46 @@ class ContractProductResumeTest(unittest.TestCase):
         self.assertFalse((rejected / 'native-contract-state').exists())
 
     def test_native_discovery_composes_resume_under_the_same_capability(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
         from products.inventory import load_canonical_json_bytes
         from runtime_reference_transport import validate_original_references
         cap, _ = self.completed_contract_fixture(incremental=True)
         discovery = self.scratch / 'composed-discovery'
         handoff = self.scratch / 'composed-handoff'
         output = self.scratch / 'composed-output'
+        started, release = Event(), Event()
+        def authenticate():
+            started.set()
+            if not release.wait(5):
+                raise AssertionError('Native authentication blocked independent discovery')
+            return cap
+        def catalogs(*_, **__):
+            self.assertTrue(started.wait(5))
+            self.assertFalse(pending.done())
+            release.set()
+            return []
         wave_request = adapter._wave_request
         def original_location(*args, **kwargs):
             request = wave_request(*args, **kwargs)
             if all(instance.product == 'contract' for instance in args[3]):
                 request['artifactRoot'] = str(self.repository / 'build/product-reuse')
             return request
-        with self.control_seams(), \
-                mock.patch.object(adapter, '_discover_catalogs', return_value=[]), \
+        with ThreadPoolExecutor(max_workers=1) as executor, self.control_seams(), \
+                mock.patch.object(adapter, '_discover_catalogs', side_effect=catalogs), \
                 mock.patch.object(adapter, '_wave_request', side_effect=original_location), \
                 mock.patch.object(adapter, 'verify_object', side_effect=AssertionError('Contract body opened')), \
                 mock.patch.object(adapter, 'capture_product_resume_inputs', side_effect=AssertionError('Plan recaptured')), \
                 mock.patch.object(adapter, 'resume_products', wraps=adapter.resume_products) as resume, \
                 mock.patch('sdk_ios_binary_recovery.capture_completed_ios_binary', return_value=[]):
-            result = adapter.discover(self.plan_path, discovery, output,
-                repository_root=self.repository, environ=self.environment, completed_frozen=cap,
-                native_resume_handoff=handoff, tooling_workflow_sha='c' * 40,
-                tooling_java_executable=Path('/unused-java'))
+            pending = executor.submit(authenticate)
+            try:
+                result = adapter.discover(self.plan_path, discovery, output,
+                    repository_root=self.repository, environ=self.environment, completed_frozen_future=pending,
+                    native_resume_handoff=handoff, tooling_workflow_sha='c' * 40,
+                    tooling_java_executable=Path('/unused-java'))
+            finally:
+                release.set()
             self.assertEqual('native-contract-complete', result['reason'])
             resume.assert_called_once()
             self.assertIs(cap, resume.call_args.kwargs['completed_frozen'])
@@ -426,6 +443,33 @@ class ContractProductResumeTest(unittest.TestCase):
                             capture()
                         self.assertFalse(forwarded.exists())
                     self.assertEqual({'plan': 'product-validation / plan'}, observe.call_args.kwargs['jobs_by_phase'])
+
+    def test_deferred_native_failure_cannot_publish_reuse_or_succeed_on_early_returns(self):
+        from concurrent.futures import Future
+        cases = ('normal', 'no-work', 'dispatch', 'unauthorized', 'wrong-capability')
+        for case in cases:
+            pending = Future()
+            if case == 'wrong-capability':
+                pending.set_result(object())
+            else:
+                pending.set_exception(ValueError('native authentication failed'))
+            plan = {**self.plan}
+            if case == 'dispatch': plan['event'] = 'workflow_dispatch'
+            if case == 'unauthorized': plan['remoteBuildAuthorized'] = False
+            output = self.scratch / (case + '-output')
+            with self.subTest(case=case), self.control_seams(), \
+                    mock.patch.object(adapter, '_validate_plan', return_value=plan), \
+                    mock.patch.object(adapter, '_requested', return_value=() if case == 'no-work' else (JVM,)), \
+                    mock.patch.object(adapter, '_discover_catalogs', return_value=[]), \
+                    mock.patch.object(adapter, '_seed_completed_contract_discovery',
+                        side_effect=AssertionError('Unauthenticated native replay')), \
+                    mock.patch.object(adapter, '_finish', side_effect=AssertionError('Unauthenticated completion')):
+                with self.assertRaisesRegex(ValueError, 'native authentication failed|concrete native completion'):
+                    adapter.discover(self.plan_path, self.scratch / case, output,
+                        repository_root=self.repository, environ=self.environment, completed_frozen_future=pending)
+            values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            self.assertEqual('false', values['full_reuse'])
+            self.assertEqual('false', values['native_resume_ready'])
 
     def test_native_contract_consumption_uses_bundle_once_and_reproduces_all_original_objects(self):
         from contextlib import contextmanager

@@ -862,6 +862,63 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     with qualification.completed_frozen_options({**values, "completed_frozen_policy": policy_path}):
                         policy_path.write_bytes(b"changed caller policy")
 
+    def test_deferred_cli_authentication_preserves_custody_and_propagates_every_failure(self):
+        from contextvars import ContextVar
+        from threading import Event
+        custody = ContextVar('test_native_custody', default=None)
+        marker = custody.set('current invocation')
+        self.addCleanup(custody.reset, marker)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            plan_path, policy_path = root / 'plan.json', root / 'policy.json'
+            policy = dict(schemaVersion=1, kind='completed-frozen-reuse', consumerCommit='c' * 40,
+                verifierPolicySha256=POLICY, artifactId=71, artifactSha256='sha256:' + 'e' * 64,
+                runId=72, runAttempt=1, signerCommit='b' * 40, sourceCommit='a' * 40)
+            consumer = {'kind': 'ci', 'producer': {'repository': qualification.REPOSITORY,
+                'pullRequest': 31, 'event': 'pull_request'}}
+            for mutation in (None, 'policy', 'plan', 'authentication'):
+                plan_path.write_bytes(b'current plan')
+                inventory.write_canonical_json(policy_path, policy)
+                started, release, paths = Event(), Event(), []
+                def fetch(destination, **_):
+                    self.assertEqual('current invocation', custody.get())
+                    paths.append(destination.parent)
+                    started.set()
+                    if not release.wait(5):
+                        raise AssertionError('Authentication was serialized before discovery')
+                    self.assertTrue(destination.parent.is_dir())
+                    if mutation == 'authentication':
+                        raise ValueError('native authentication failed')
+                    return cap, {}
+                def use():
+                    values = dict(plan=plan_path, repository_root=root, completed_frozen_policy=policy_path)
+                    with qualification.completed_frozen_options(values, defer=True) as options:
+                        self.assertTrue(started.wait(5))
+                        pending = options['completed_frozen_future']
+                        self.assertFalse(pending.done())
+                        self.assertTrue(paths[0].is_dir())
+                        if mutation in ('policy', 'plan'):
+                            (policy_path if mutation == 'policy' else plan_path).write_bytes(b'changed')
+                        release.set()
+                        if mutation is None:
+                            self.assertIs(cap, pending.result(timeout=5))
+                            self.assertTrue(paths[0].is_dir())
+                        # Deliberately leave failed futures unconsumed: context exit must reject.
+                with self.subTest(mutation=mutation), \
+                        patch.object(product_reuse, '_validate_plan', return_value={'validationCommit': 'd' * 40}), \
+                        patch.object(product_reuse, '_consumer', return_value=consumer), \
+                        patch.object(qualification, 'fetch_completed_frozen', side_effect=fetch):
+                    try:
+                        if mutation is None:
+                            use()
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'changed during use|native authentication failed'):
+                                use()
+                    finally:
+                        release.set()
+                    self.assertFalse(paths[0].exists())
+
     def test_sdk_join_requires_exact_completed_receipts_and_signed_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -9487,8 +9487,17 @@ def discover(
     tooling_java_executable: Path | None = None,
     tooling_workflow_sha: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
-    native_resume_handoff: Path | None = None,
+    native_resume_handoff: Path | None = None, completed_frozen_future: Future | None = None,
 ) -> dict[str, Any]:
+    if completed_frozen_future is not None and (
+            type(completed_frozen_future) is not Future or completed_frozen is not None):
+        raise ValueError("Deferred native discovery requires one concrete authentication future")
+    def native_completion():
+        from reuse_qualification import CompletedFrozenReuse
+        cap = completed_frozen_future.result()
+        if type(cap) is not CompletedFrozenReuse:
+            raise ValueError("Deferred native discovery requires concrete native completion")
+        return cap
     automatic_tooling = tooling_java_executable is not None or tooling_workflow_sha is not None
     if automatic_tooling and (tooling_java_executable is None or tooling_workflow_sha is None
                              or sdk_validation_tooling is not None):
@@ -9514,6 +9523,9 @@ def discover(
     plan = _validate_plan(plan_path, root)
     requested = _requested(plan)
     request = _discovery_request(plan, requested)
+    if completed_frozen_future is not None and (not requested or plan["event"] == "workflow_dispatch"
+                                               or plan["remoteBuildAuthorized"] is not True):
+        completed_frozen = native_completion()
     if not requested:
         return _finish(destination, request, _result(
             requested, complete=True, reason="no-product-work",
@@ -9632,6 +9644,8 @@ def discover(
     aggregate_records = _capture_aggregate_handoffs((*catalog_aggregate_roots, *aggregate_evidence_roots),
         destination / "runtime-aggregate-release-evidence", destination, trust)
 
+    if completed_frozen_future is not None:
+        completed_frozen = native_completion()
     contract_evidence = None
     contract = PhaseInstanceId("contract", "contract", "metadata", "common")
     if contract in closure:
@@ -10003,7 +10017,8 @@ def main(argv: list[str] | None = None) -> int:
                        for field, path in expected.items()):
                     raise ValueError("Native resume capture requires the exact standard input layout")
                 semantic_arguments = {**vars(arguments), "plan": arguments.native_contract_plan}
-        with metadata_admission_options(semantic_arguments) as admissions, completed_frozen_options(semantic_arguments) as semantic:
+        with metadata_admission_options(semantic_arguments) as admissions, completed_frozen_options(
+                semantic_arguments, **({"defer": True} if arguments.command == "discover" else {})) as semantic:
             tooling = None
             if getattr(arguments, "sdk_validation_tooling", None) is not None:
                 tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
