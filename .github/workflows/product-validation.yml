@@ -167,12 +167,14 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\0' \
+            ci.tests.test_runtime_aggregate_original_ci \
+            ci.tests.test_runtime_reference_transport \
+            ci.tests.test_product_selection \
+            ci.tests.test_runtime_preparation_capture \
             ci.tests.test_runtime_recovery_acceptance \
             ci.tests.test_runtime_workflow \
             ci.tests.test_prepare_runtime_signing_action \
-            ci.tests.test_runtime_preparation_capture \
             ci.tests.test_runtime_prepared_release \
-            ci.tests.test_runtime_aggregate_original_ci \
             ci.tests.test_runtime_native_attestation_workflow \
             ci.tests.test_runtime_aggregate_attestation_workflow \
             ci.tests.test_tooling_capture \
@@ -183,9 +185,7 @@ jobs:
             ci.tests.test_sdk_ios_binary_inputs \
             ci.tests.test_sdk_ios_binary_execution \
             ci.tests.test_reference_archive_download \
-            ci.tests.test_runtime_reference_transport \
             ci.tests.test_runtime_signing_workflow_isolation \
-            ci.tests.test_product_selection \
             | xargs -0 -n 1 -P 4 python3 -B -m unittest -v
       - if: github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
