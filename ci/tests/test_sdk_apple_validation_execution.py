@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -71,7 +72,7 @@ class AppleValidationExecutionTest(unittest.TestCase):
             if name == leaves[5]:
                 self.assertEqual(self.sources["toolchain"], kwargs["expected_toolchain"])
                 if mutation:
-                    mutation.write_bytes(b"changed")
+                    mutation() if callable(mutation) else mutation.write_bytes(b"changed")
         with ExitStack() as stack:
             for name in leaves:
                 stack.enter_context(patch.object(gate, name,
@@ -83,6 +84,23 @@ class AppleValidationExecutionTest(unittest.TestCase):
         self.assertEqual(6, len(self.calls))
         self.assertLess(self.calls.index("verify_sdk_apple_validation_binding_content"),
                         self.calls.index("verify_apple_device_evidence"))
+
+    @unittest.skipIf(os.name == "nt", "Guarded byte inventory reuse is POSIX-only")
+    def test_scoped_inventory_reuse_keeps_every_gate_and_detects_restored_mtime(self):
+        from ci.products import restore
+        with restore.verification_session(), patch.object(
+                restore, "_uncached_file_inventory", wraps=restore._uncached_file_inventory) as scans:
+            self.run_gate()
+            self.run_gate()
+            self.assertEqual(12, len(self.calls))
+            self.assertEqual(1, sum(call.args[0] == self.evidence for call in scans.call_args_list))
+            def mutate():
+                path = self.evidence / "device-package/file"
+                metadata, raw = path.stat(), path.read_bytes()
+                path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                self.run_gate(mutation=mutate)
 
     def test_each_failure_prevents_later_gates(self):
         self.run_gate()

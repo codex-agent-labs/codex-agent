@@ -13,9 +13,10 @@ import tempfile
 from typing import Any
 
 from .inventory import (
-    read_regular_file_bytes, regular_file_inventory, require_regular_directory, require_semver,
+    read_regular_file_bytes, require_regular_directory, require_semver,
     snapshot_regular_tree,
 )
+from .restore import memoized_file_inventory as regular_file_inventory
 from .tooling import verified_tooling_capture
 from .sdk_apple_package_source import capture_apple_package_sources
 

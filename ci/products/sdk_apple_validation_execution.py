@@ -4,9 +4,10 @@ from pathlib import Path
 import tempfile
 
 from .inventory import (
-    canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
     require_sha256, sha256_file, snapshot_regular_tree,
 )
+from .restore import memoized_file_inventory as regular_file_inventory
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity
 from .sdk_apple_content import verify_sdk_apple_validation_binding_content
 from .sdk_apple_device_evidence import verify_apple_device_evidence

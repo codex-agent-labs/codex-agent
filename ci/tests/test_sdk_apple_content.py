@@ -1,6 +1,7 @@
 """Runner orchestration only; mocked execution is not Apple semantic/host proof."""
 
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import subprocess
 import io
@@ -222,6 +223,38 @@ class SdkAppleContentTest(unittest.TestCase):
         with patch.dict("os.environ", {"JAVA_TOOL_OPTIONS": "injected"}):
             self.assertIsNone(self.verify_validation_binding())
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+
+    @unittest.skipIf(os.name == "nt", "Guarded byte inventory reuse is POSIX-only")
+    def test_validation_replay_reuses_scans_but_repeats_tooling_and_private_copies(self):
+        from ci.products import restore
+        self.validation_binding_inputs()
+        with restore.verification_session(), patch.object(
+                restore, "_uncached_file_inventory", wraps=restore._uncached_file_inventory) as scans:
+            self.verify_validation_binding()
+            self.verify_validation_binding()
+            # Three originals once; each invocation still hashes its three fresh copies.
+            self.assertEqual(9, scans.call_count)
+        self.assertEqual(2, len(self.calls))
+
+    def test_guarded_replay_rejects_same_size_source_and_private_tampering(self):
+        from ci.products.restore import verification_session
+        self.validation_binding_inputs()
+        original = self.execution / "compiler-raw/raw-observation.json"
+        saved = original.read_bytes()
+        for private in (False, True):
+            def mutate(fields):
+                path = (fields["--evidence-directory"] / "compiler-raw/raw-observation.json"
+                        if private else original)
+                metadata, raw = path.stat(), path.read_bytes()
+                path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            self.mutate = mutate
+            try:
+                with self.subTest(private=private), verification_session(), self.assertRaisesRegex(
+                        ValueError, "changed during verification"):
+                    self.verify_validation_binding()
+            finally:
+                original.write_bytes(saved)
 
     def test_validation_binding_replay_rejects_each_private_authority_mutation_and_failure(self):
         self.validation_binding_inputs()
