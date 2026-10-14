@@ -12,7 +12,7 @@ if __package__:
 
 from products.inventory import (
     canonical_json_bytes, read_regular_file_bytes,
-    require_exact_keys, require_integer, require_semver, require_sha256,
+    require_exact_keys, require_integer, require_regular_directory, require_semver, require_sha256,
     write_canonical_json,
 )
 from products.receipt import validate_producer, verify_output_manifest_identity
@@ -288,7 +288,7 @@ def execute(
             "outputs/validation/apple-validation.json"):
         raise ValueError("iOS SDK validation canonical output is missing or ambiguous")
     output_inventory = _inventory(stage)
-    evidence_inventory = regular_file_inventory(envelope)
+    evidence_inventory = regular_file_inventory(require_regular_directory(envelope, "iOS validation evidence envelope"))
     if ([record["relativePath"] for record in evidence_inventory] != [archive.name]
             or evidence_inventory[0]["bytes"] <= 0):
         raise ValueError("iOS SDK validation evidence archive output is missing or ambiguous")

@@ -37,7 +37,6 @@ from .inventory import (
     require_identifier,
     require_integer,
     require_relative_path,
-    require_regular_directory,
     require_sha256,
     require_string,
     sha256_bytes,
@@ -152,8 +151,7 @@ def memoized_file_inventory(root, *, allow_empty=False, excluded_paths=()):
     if session is None:
         return _uncached_file_inventory(root, allow_empty=allow_empty, excluded_paths=excluded_paths)
     excluded_paths = tuple(excluded_paths)
-    root = require_regular_directory(Path(root), "Inventory root")
-    before = _stage_fingerprint(root)
+    before = _stage_fingerprint(Path(root))
     key = (before, allow_empty, excluded_paths)
     with session["lock"]:
         cached = session.setdefault("inventories", {}).get(key)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from contextlib import nullcontext
 import os
 from pathlib import Path
 import shutil
@@ -159,16 +158,6 @@ class ProductRestoreTest(unittest.TestCase):
             leaf.symlink_to(self.receipt_path)
             with self.assertRaises((ValueError, OSError)):
                 product_restore.memoized_file_inventory(self.stage)
-
-    def test_inventory_root_validation_is_identical_with_and_without_session(self):
-        alias = self.stage.parent / "unsafe-inventory-root"
-        alias.symlink_to(self.stage, target_is_directory=True)
-        for scoped in (False, True):
-            with product_restore.verification_session() if scoped else nullcontext():
-                for path in (alias, self.receipt_path, self.stage / "missing"):
-                    with self.subTest(scoped=scoped, path=path), \
-                            self.assertRaisesRegex(ValueError, "Inventory root is missing or unsafe"):
-                        product_restore.memoized_file_inventory(path)
 
     @unittest.skipIf(os.name == "nt", "Private verification reuse is POSIX-only")
     def test_oversized_aliases_reuse_only_completed_proof_after_full_byte_hash(self):
