@@ -652,10 +652,15 @@ jobs:
     needs: [plan, contract-validation]
     runs-on: ubuntu-24.04
     outputs:
-      artifact_name: codex-agent-product-resume-${{ needs.plan.outputs.validation_tree }}
+      artifact_name: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && format('codex-agent-planned-product-resume-{0}', needs.plan.outputs.validation_tree) || format('codex-agent-product-resume-{0}', needs.plan.outputs.validation_tree) }}
       routing: ${{ steps.routing.outputs.routing }}
-      artifact_id: ${{ steps.upload_resume.outputs.artifact-id }}
-      artifact_digest: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
+      native_sdk_direct: ${{ steps.native-route.outputs.native_sdk_direct }}
+      sdk_input_selection: ${{ steps.native-route.outputs.sdk_input_selection }}
+      aggregate_key: ${{ steps.native-route.outputs.aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.native-route.outputs.aggregate_receipt_sha256 }}
+      aggregate_payload_complete: ${{ steps.native-route.outputs.aggregate_payload_complete }}
+      artifact_id: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
+      artifact_digest: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
       full_reuse: ${{ steps.forward.outputs.full_reuse || steps.resume.outputs.full_reuse }}
       target_jobs_required: ${{ steps.forward.outputs.target_jobs_required || steps.resume.outputs.target_jobs_required }}
       runtime_matrix: ${{ steps.forward.outputs.runtime_matrix || steps.resume.outputs.runtime_matrix }}
@@ -674,7 +679,42 @@ jobs:
         if: needs.plan.outputs.native_resume_ready != 'true'
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - id: native-route
+        name: Select the completed native SDK routing shortcut
+        if: needs.plan.outputs.native_resume_ready == 'true'
+        env:
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
+          RETAINED_SDK_INPUTS_SOURCE: ${{ needs.plan.outputs.retained_sdk_inputs_source }}
+          ROUTING: ${{ needs.plan.outputs.native_resume_routing }}
+          ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}
+          ARTIFACT_SHA256: ${{ needs.plan.outputs.native_resume_artifact_digest }}
+          RUNTIME_WORKERS_REQUIRED: ${{ needs.plan.outputs.native_resume_runtime_workers_required }}
+          SUPERVISOR_KEY: ${{ needs.plan.outputs.native_resume_supervisor_key }}
+          PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import context, native_sdk_resume
+          from ci.reuse import github_output
+          recovery = os.environ['SDK_RECOVERY_ONLY']
+          if recovery not in ('true', 'false'):
+              raise ValueError('SDK recovery must be boolean')
+          locator = dict(artifact_id=os.environ['ARTIFACT_ID'], artifact_digest=os.environ['ARTIFACT_SHA256'],
+                         state_wave='0', sdk_state_wave='')
+          result = native_sdk_resume(json.loads(os.environ['ROUTING']), locator, context(os.environ),
+              sdk_recovery_only=recovery == 'true' and bool(os.environ['ORIGINAL_RUNTIME_HANDOFF'])
+                  and bool(os.environ['RETAINED_SDK_INPUTS_SOURCE']),
+              runtime_workers_required=os.environ['RUNTIME_WORKERS_REQUIRED'],
+              supervisor_key=os.environ['SUPERVISOR_KEY'])
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PYTHON
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.native-route.outputs.native_sdk_direct != 'true'
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/product-resume-plan
@@ -774,6 +814,7 @@ jobs:
           RUNTIME_MATRIX: ${{ needs.plan.outputs.native_resume_runtime_matrix }}
           RUNTIME_WORKERS_REQUIRED: ${{ needs.plan.outputs.native_resume_runtime_workers_required }}
           SUPERVISOR_KEY: ${{ needs.plan.outputs.native_resume_supervisor_key }}
+          NATIVE_SDK_DIRECT: ${{ steps.native-route.outputs.native_sdk_direct }}
           NATIVE_ARTIFACT_ID: ${{ needs.plan.outputs.native_resume_artifact_id }}
           NATIVE_ARTIFACT_SHA256: ${{ needs.plan.outputs.native_resume_artifact_digest }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
@@ -788,10 +829,11 @@ jobs:
               raise ValueError('Planned native transition has inconsistent completion')
           if os.environ['RUNTIME_WORKERS_REQUIRED'] not in ('true', 'false'):
               raise ValueError('Planned native transition lacks its Runtime election')
-          capture_planned_native_resume(Path('build/product-resume-plan/impact-plan.json'),
-              Path('build/product-resume-transport'), artifact_id=int(os.environ['NATIVE_ARTIFACT_ID']),
-              artifact_sha256=os.environ['NATIVE_ARTIFACT_SHA256'],
-              trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
+          if os.environ['NATIVE_SDK_DIRECT'] != 'true':
+              capture_planned_native_resume(Path('build/product-resume-plan/impact-plan.json'),
+                  Path('build/product-resume-transport'), artifact_id=int(os.environ['NATIVE_ARTIFACT_ID']),
+                  artifact_sha256=os.environ['NATIVE_ARTIFACT_SHA256'],
+                  trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for name in ('full_reuse', 'target_jobs_required', 'runtime_matrix', 'runtime_workers_required', 'supervisor_key'):
                   value = os.environ[name.upper()]
@@ -809,6 +851,7 @@ jobs:
           test -z "$SUPERVISOR_KEY"
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
+        if: steps.native-route.outputs.native_sdk_direct != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -823,8 +866,8 @@ jobs:
         with:
           mode: bind
           routing: ${{ needs.plan.outputs.native_resume_ready == 'true' && needs.plan.outputs.native_resume_routing || steps.resume.outputs.routing_decisions }}
-          artifact-id: ${{ steps.upload_resume.outputs.artifact-id }}
-          artifact-sha256: sha256:${{ steps.upload_resume.outputs.artifact-digest }}
+          artifact-id: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
+          artifact-sha256: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
@@ -1529,6 +1572,7 @@ jobs:
     name: runtime-continuation
     needs: [plan, product-resume, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, contract-validation]
     if: >-
+      needs.product-resume.outputs.native_sdk_direct != 'true' &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success' &&
@@ -2020,8 +2064,9 @@ jobs:
 
   runtime-aggregate-continuation:
     name: runtime-aggregate-continuation
-    needs: [plan, runtime-continuation, runtime-collect-5, contract-validation]
+    needs: [plan, product-resume, runtime-continuation, runtime-collect-5, contract-validation]
     if: >-
+      needs.product-resume.outputs.native_sdk_direct != 'true' &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success' &&
@@ -2339,18 +2384,19 @@ jobs:
 
   sdk-inputs:
     name: sdk-inputs
-    needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation]
+    needs: [workflow-lint, plan, product-resume, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.workflow-lint.result == 'success' &&
-      needs.runtime-continuation.result == 'success' &&
+      ((needs.product-resume.result == 'success' && needs.product-resume.outputs.native_sdk_direct == 'true') ||
+      (needs.runtime-continuation.result == 'success' &&
       needs.runtime-continuation.outputs.sdk_handoff_required == 'true' &&
       (fromJSON(needs.runtime-continuation.outputs.sdk_input_selection || '{}').source == 'released-default' ||
        needs.runtime-aggregate-attestation.result == 'success' ||
        (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.result == 'success' &&
         needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
-        inputs.runtimeAggregateHandoffRecovery != ''))
+        inputs.runtimeAggregateHandoffRecovery != ''))))
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -2359,7 +2405,7 @@ jobs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
     env:
-      SDK_REFERENCE_SOURCE: ${{ inputs.sdkRecoveryOnly && fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'current-runtime' && needs.plan.outputs.retained_sdk_inputs_source || '' }}
+      SDK_REFERENCE_SOURCE: ${{ inputs.sdkRecoveryOnly && fromJSON((needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.sdk_input_selection || needs.runtime-continuation.outputs.sdk_input_selection)).source == 'current-runtime' && needs.plan.outputs.retained_sdk_inputs_source || '' }}
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2388,12 +2434,12 @@ jobs:
               output.write('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=' + str(destination) + '\n')
           PYTHON
       - name: Select installed caller Java for SDK tooling
-        if: fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
+        if: fromJSON((needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.sdk_input_selection || needs.runtime-continuation.outputs.sdk_input_selection)).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - id: tooling
-        if: fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
+        if: fromJSON((needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.sdk_input_selection || needs.runtime-continuation.outputs.sdk_input_selection)).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -2415,16 +2461,16 @@ jobs:
           PLAN: ${{ github.workspace }}/build/runtime-plan/impact-plan.json
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          STATE_ARTIFACT_ID: ${{ needs.runtime-continuation.outputs.artifact_id }}
-          STATE_ARTIFACT_SHA256: ${{ needs.runtime-continuation.outputs.artifact_digest }}
-          STATE_WAVE: ${{ needs.runtime-continuation.outputs.state_wave }}
-          ROUTING: ${{ needs.runtime-continuation.outputs.routing }}
+          STATE_ARTIFACT_ID: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.artifact_id || needs.runtime-continuation.outputs.artifact_id }}
+          STATE_ARTIFACT_SHA256: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.artifact_digest || needs.runtime-continuation.outputs.artifact_digest }}
+          STATE_WAVE: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && '0' || needs.runtime-continuation.outputs.state_wave }}
+          ROUTING: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.routing || needs.runtime-continuation.outputs.routing }}
           PLAN_ID: ${{ needs.plan.outputs.plan_id }}
-          SDK_SOURCE: ${{ fromJSON(needs.runtime-continuation.outputs.sdk_input_selection).source }}
+          SDK_SOURCE: ${{ fromJSON((needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.sdk_input_selection || needs.runtime-continuation.outputs.sdk_input_selection)).source }}
           ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
-          AGGREGATE_KEY: ${{ inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_key || needs.runtime-aggregate-attestation.outputs.aggregate_key }}
-          AGGREGATE_RECEIPT: ${{ inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256 || needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256 }}
+          AGGREGATE_KEY: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.aggregate_key || (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_key || needs.runtime-aggregate-attestation.outputs.aggregate_key) }}
+          AGGREGATE_RECEIPT: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.aggregate_receipt_sha256 || (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256 || needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256) }}
           SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
           ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
@@ -2620,6 +2666,7 @@ jobs:
   sdk-ios-binary-plan:
     needs: [plan, product-resume, contract-validation]
     if: >-
+      needs.product-resume.outputs.native_sdk_direct != 'true' &&
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.product-resume.result == 'success'
@@ -2786,19 +2833,20 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-plan:
-    needs: [workflow-lint, plan, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-ios-binary-plan, sdk-collect-3]
+    needs: [workflow-lint, plan, product-resume, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
-      always() && needs.plan.outputs.event_authorized == 'true' &&
+      always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.workflow-lint.result == 'success' &&
-      needs.runtime-continuation.result == 'success' &&
+      ((needs.product-resume.result == 'success' && needs.product-resume.outputs.native_sdk_direct == 'true') ||
+      (needs.runtime-continuation.result == 'success' &&
       needs.runtime-continuation.outputs.sdk_handoff_required == 'true' &&
       (fromJSON(needs.runtime-continuation.outputs.sdk_input_selection || '{}').source == 'released-default' ||
        needs.runtime-aggregate-attestation.result == 'success' ||
        (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.result == 'success' &&
         needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
         inputs.runtimeAggregateHandoffRecovery != '')) &&
-      needs.sdk-ios-binary-plan.result == 'success'
+      needs.sdk-ios-binary-plan.result == 'success'))
     runs-on: ubuntu-24.04
     outputs:
       ios_validation_direct: ${{ steps.capture.outputs.ios-validation-direct }}
@@ -2825,34 +2873,43 @@ jobs:
           python3 - <<'PY'
           import json, os
           needs = json.loads(os.environ['PREDECESSORS'])
-          source = json.loads(needs['runtime-continuation']['outputs']['sdk_input_selection'])['source']
-          if source not in ('released-default', 'current-runtime'):
-              raise ValueError('Unknown SDK Runtime source')
-          aggregate_state = needs['runtime-continuation']['outputs'].get('aggregate_state')
-          if aggregate_state not in ('not-selected', 'ready', 'completed'):
-              raise ValueError('Runtime aggregate election is incomplete')
-          if source == 'current-runtime' and aggregate_state == 'not-selected':
-              raise ValueError('Current Runtime SDK input has no selected aggregate')
-          # State history includes current Runtime work even when SDK bytes use an older default.
-          parent = needs['runtime-continuation' if aggregate_state == 'not-selected' else 'runtime-aggregate-continuation']
-          if parent['result'] != 'success':
-              raise ValueError('Latest Runtime predecessor state is incomplete')
-          binary_required = needs['sdk-ios-binary-plan']['outputs'].get('sdk_workers_required')
-          if binary_required not in ('true', 'false'):
-              raise ValueError('SDK iOS binary election is incomplete')
-          sdk_wave = ''
-          if binary_required == 'true':
-              parent = needs['sdk-collect-3']
-              if parent['outputs'].get('wave_failed') != 'false':
-                  raise ValueError('SDK iOS binary collection failed')
-              sdk_wave = '3'
-          if parent['result'] != 'success':
-              raise ValueError('SDK predecessor state is incomplete')
-          from ci.sdk_native_continuation import forward_routing
-          values = {name: parent['outputs'][name] for name in ('artifact_id', 'artifact_digest')}
-          values['state_wave'] = '0' if sdk_wave else parent['outputs']['state_wave']
-          values['sdk_state_wave'] = sdk_wave
-          values = forward_routing(values, parent['outputs'])
+          if needs['product-resume']['outputs'].get('native_sdk_direct') == 'true':
+              from ci.sdk_native_continuation import forward_routing
+              parent = needs['product-resume']
+              if parent['result'] != 'success' or any(needs[name]['result'] != 'skipped'
+                      for name in ('runtime-continuation', 'runtime-aggregate-continuation', 'sdk-ios-binary-plan')):
+                  raise ValueError('Native SDK routing cannot bypass an executed predecessor')
+              values = forward_routing({**{name: parent['outputs'][name] for name in
+                  ('artifact_id', 'artifact_digest')}, 'state_wave': '0', 'sdk_state_wave': ''}, parent['outputs'])
+          else:
+              source = json.loads(needs['runtime-continuation']['outputs']['sdk_input_selection'])['source']
+              if source not in ('released-default', 'current-runtime'):
+                  raise ValueError('Unknown SDK Runtime source')
+              aggregate_state = needs['runtime-continuation']['outputs'].get('aggregate_state')
+              if aggregate_state not in ('not-selected', 'ready', 'completed'):
+                  raise ValueError('Runtime aggregate election is incomplete')
+              if source == 'current-runtime' and aggregate_state == 'not-selected':
+                  raise ValueError('Current Runtime SDK input has no selected aggregate')
+              # State history includes current Runtime work even when SDK bytes use an older default.
+              parent = needs['runtime-continuation' if aggregate_state == 'not-selected' else 'runtime-aggregate-continuation']
+              if parent['result'] != 'success':
+                  raise ValueError('Latest Runtime predecessor state is incomplete')
+              binary_required = needs['sdk-ios-binary-plan']['outputs'].get('sdk_workers_required')
+              if binary_required not in ('true', 'false'):
+                  raise ValueError('SDK iOS binary election is incomplete')
+              sdk_wave = ''
+              if binary_required == 'true':
+                  parent = needs['sdk-collect-3']
+                  if parent['outputs'].get('wave_failed') != 'false':
+                      raise ValueError('SDK iOS binary collection failed')
+                  sdk_wave = '3'
+              if parent['result'] != 'success':
+                  raise ValueError('SDK predecessor state is incomplete')
+              from ci.sdk_native_continuation import forward_routing
+              values = {name: parent['outputs'][name] for name in ('artifact_id', 'artifact_digest')}
+              values['state_wave'] = '0' if sdk_wave else parent['outputs']['state_wave']
+              values['sdk_state_wave'] = sdk_wave
+              values = forward_routing(values, parent['outputs'])
           if not values['artifact_id']:
               raise ValueError('SDK predecessor upload locator is missing')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
