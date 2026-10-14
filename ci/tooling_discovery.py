@@ -30,6 +30,7 @@ _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0
 _PRIOR_TOOLING_WORKFLOW_SHAS = (
     "00feb2e6ffc0e633042ac4cebfb6495718fb82f7",
     "cc4f623bf4d1e244a8469eea92c4baf9c00a5434",
+    "07712206009da19a5de9c4d237cb241cda81be84",
 )
 
 
