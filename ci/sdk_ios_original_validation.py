@@ -66,7 +66,8 @@ def observe_validation_recovery(plan, consumer, phase, origin, *, repository_roo
     """Freshly authenticate the failed original; do not promote its job outcome."""
     from sdk_ios_binary_recovery import _require_prior
     from sdk_handoff import _ensure_observed_sdk_commit
-    if origin != validation_recovery_origin(phase) or origin is None:
+    expected = validation_recovery_origin(phase)
+    if expected is None or canonical_json_bytes(origin) != canonical_json_bytes(expected):
         raise ValueError("Apple validation recovery differs from its independently selected origin")
     producer = product_reuse.validate_producer(origin["producer"])
     prior = product_reuse._original_ci_run(producer, token)

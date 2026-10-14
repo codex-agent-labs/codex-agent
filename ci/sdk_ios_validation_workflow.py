@@ -40,6 +40,11 @@ def _recover_validation(plan, phase, producer, inputs, destination, *, repositor
     origin = validation_recovery_origin(phase)
     if origin is None:
         return None
+    historical = origin["producer"]
+    if (any(producer[name] != historical[name] for name in ("repository", "event", "pullRequest"))
+            or (producer["runId"], producer["runAttempt"]) <=
+               (historical["runId"], historical["runAttempt"])):
+        return None
     from products.receipt import write_output_manifest
     recovery = destination / "recovery"
     recovery.mkdir()

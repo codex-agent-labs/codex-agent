@@ -6,6 +6,7 @@ These fixtures do not establish hosted provenance or Apple semantic acceptance.
 from contextlib import ExitStack
 from pathlib import Path
 import shutil
+import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -63,6 +64,23 @@ class ValidationRecoveryOriginTest(unittest.TestCase):
             self.assertIsNone(reader.validation_recovery_origin({**self.phase, field: value}))
         with self.assertRaisesRegex(ValueError, "independently selected"):
             self.observe(origin={**self.origin, "jobId": self.origin["jobId"] + 1})
+        with patch.object(reader.product_reuse, "_original_ci_run", side_effect=AssertionError("Network before rejection")), \
+                self.assertRaisesRegex(ValueError, "independently selected"):
+            reader.observe_validation_recovery(self.plan, self.consumer, self.phase,
+                {**self.origin, "schemaVersion": True}, repository_root=Path("/fixture"), token="no-network")
+
+    def test_other_prs_events_repositories_and_earlier_attempts_keep_ordinary_production(self):
+        for change in ({"pullRequest": 32}, {"event": "merge_group", "pullRequest": None},
+                {"runId": self.producer["runId"], "runAttempt": 1},
+                {"runId": self.producer["runId"] - 1, "runAttempt": 99}, {"repository": "someone/other"}):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(worker, "verified_validation_recovery", side_effect=AssertionError("Unrelated recovery")):
+                root = Path(temporary)
+                destination = root / "must-not-exist"
+                result = worker._recover_validation({}, self.phase, {**self.consumer, **change}, {}, destination,
+                    repository_root=root, token="no-network", tooling={})
+                self.assertIsNone(result)
+                self.assertFalse(destination.exists())
 
     def test_wrong_job_success_duplicate_attempt_workflow_expiry_and_window_reject(self):
         for object_, field, value in ((self.job, "conclusion", "success"), (self.job, "head_sha", "b" * 40),

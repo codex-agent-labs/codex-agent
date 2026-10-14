@@ -32,6 +32,54 @@ class AppleOriginalExecutionVerificationTest {
         }
 
     @Test
+    fun `known Foundation supplements require exact observation and leave originals unchanged`() =
+        OriginalAppleExecutionFixture(foundationExtensions = true).use { fixture ->
+            val before = fixture.compilerInputDigests()
+            fixture.verifyCompiler()
+            fixture.verify()
+            assertEquals(before, fixture.compilerInputDigests())
+            listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
+                val supplement = fixture.execution.resolve(
+                    "compiler-raw/$slice/swift-symbols/CodexAgent@Foundation.symbols.json",
+                )
+                val original = supplement.readText()
+                listOf(
+                    original.replace("kotlinException", "unexpectedProperty"),
+                    original.replace("Foundation", "UIKit"),
+                    original.replace("Apple Swift version 6.3.3", "Apple Swift version 0.0.0"),
+                    original.replace("\"open\"", "\"public\""),
+                    original.replace("\"arm64\"", "\"x86_64\""),
+                    "{}\n", "",
+                ).forEach { contents ->
+                    try {
+                        supplement.writeText(contents)
+                        val changed = fixture.compilerInputDigests()
+                        assertFailsWith<IllegalStateException> { fixture.verifyCompiler() }
+                        assertEquals(changed, fixture.compilerInputDigests())
+                    } finally {
+                        supplement.writeText(original)
+                    }
+                }
+            }
+            val extra = fixture.execution.resolve("compiler-raw/ios-arm64/swift-symbols/Unexpected.symbols.json")
+            extra.writeText(foundationGraphFixture)
+            try {
+                assertFailsWith<IllegalStateException> { fixture.verifyCompiler() }
+            } finally {
+                extra.delete()
+            }
+            val required = fixture.execution.resolve("compiler-raw/toolchain/xcode/stderr.bin")
+            val bytes = required.readBytes()
+            try {
+                required.delete()
+                assertFailsWith<IllegalStateException> { fixture.verifyCompiler() }
+            } finally {
+                required.writeBytes(bytes)
+            }
+            assertEquals(before, fixture.compilerInputDigests())
+        }
+
+    @Test
     fun `compiler only replay rejects raw report header and consumer drift without rewriting inputs`() =
         OriginalAppleExecutionFixture().use { fixture ->
             fixture.verifyCompiler()
@@ -221,7 +269,7 @@ class AppleOriginalExecutionVerificationTest {
     }
 }
 
-internal class OriginalAppleExecutionFixture : AutoCloseable {
+internal class OriginalAppleExecutionFixture(private val foundationExtensions: Boolean = false) : AutoCloseable {
     val root = createTempDirectory("original-apple-execution").toFile().canonicalFile
     val distribution = root.resolve("distribution").apply { mkdirs() }
     val execution = root.resolve("execution").apply { mkdirs() }
@@ -348,7 +396,10 @@ internal class OriginalAppleExecutionFixture : AutoCloseable {
         listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
             val framework = execution.resolve("xcframework/$slice/CodexAgent.framework")
             framework.resolve("CodexAgent").writeFixture("binary:$slice\n")
-            framework.resolve("Headers/CodexAgent.h").writeFixture("header\n")
+            framework.resolve("Headers/CodexAgent.h").writeFixture("header\n" + if (foundationExtensions) {
+                "@interface NSError (NSErrorCodexAgentKotlinException)\n" +
+                    "@property (readonly) id _Nullable kotlinException;\n@end\n"
+            } else "")
             framework.resolve("Modules/module.modulemap").writeFixture("modulemap\n")
             framework.resolve("Info.plist").writeFixture("plist:$slice\n")
         }
@@ -433,6 +484,22 @@ internal class OriginalAppleExecutionFixture : AutoCloseable {
                 specification.second, sdk, frameworkSearch, work.resolve("swift-module-cache"), swiftOutput,
             ))
             swiftOutput.resolve("CodexAgent.symbols.json").writeFixture(swiftSurface)
+            if (foundationExtensions) {
+                val observation = releaseJson.parseToJsonElement(foundationGraphFixture) as JsonObject
+                val platform = observation.releaseObject("module").releaseObject("platform")
+                val module = JsonObject(observation.releaseObject("module") + ("platform" to
+                    if (slice.endsWith("simulator")) JsonObject(platform + ("environment" to JsonPrimitive("simulator")))
+                    else platform))
+                val metadata = JsonObject(observation.releaseObject("metadata") +
+                    ("generator" to JsonPrimitive("Apple Swift version 6.3.3")))
+                val graph = releaseJson.parseToJsonElement(swiftSurface) as JsonObject
+                swiftOutput.resolve("CodexAgent.symbols.json").atomicWriteJson(
+                    JsonObject(graph + mapOf("metadata" to metadata, "module" to module)),
+                )
+                swiftOutput.resolve("CodexAgent@Foundation.symbols.json").atomicWriteJson(
+                    JsonObject(observation + mapOf("metadata" to metadata, "module" to module)),
+                )
+            }
             capture("$slice/objective-c-extract-api", objectiveCExtractApiCommand(
                 specification.second, sdk, frameworkSearch, work.resolve("clang-module-cache"),
                 frameworkSearch.resolve("CodexAgent.framework/Headers/CodexAgent.h"), objectiveOutput,
@@ -664,3 +731,6 @@ private fun assertFailureContains(expected: String, block: () -> Unit) {
     val failure = assertFailsWith<IllegalStateException>(block = block)
     assertTrue(failure.message?.contains(expected) == true, failure.message)
 }
+
+// Original upload11887642828, ios-arm64 supplementary Swift graph.
+private val foundationGraphFixture = """{"metadata":{"formatVersion":{"major":0,"minor":6,"patch":0},"generator":"Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)"},"module":{"name":"CodexAgent","platform":{"architecture":"arm64","vendor":"apple","operatingSystem":{"name":"ios","minimumVersion":{"major":15,"minor":0}}}},"symbols":[{"kind":{"identifier":"swift.property","displayName":"Instance Property"},"identifier":{"precise":"c:objc(cs)NSError(py)kotlinException","interfaceLanguage":"swift"},"pathComponents":["NSError","kotlinException"],"names":{"title":"kotlinException","subHeading":[{"kind":"keyword","spelling":"var"},{"kind":"text","spelling":" "},{"kind":"identifier","spelling":"kotlinException"},{"kind":"text","spelling":": "},{"kind":"keyword","spelling":"Any"},{"kind":"text","spelling":"?"}]},"swiftExtension":{"extendedModule":"Foundation","typeKind":"swift.class"},"declarationFragments":[{"kind":"keyword","spelling":"var"},{"kind":"text","spelling":" "},{"kind":"identifier","spelling":"kotlinException"},{"kind":"text","spelling":": "},{"kind":"keyword","spelling":"Any"},{"kind":"text","spelling":"? { "},{"kind":"keyword","spelling":"get"},{"kind":"text","spelling":" }"}],"accessLevel":"open"}],"relationships":[{"kind":"memberOf","source":"c:objc(cs)NSError(py)kotlinException","target":"c:objc(cs)NSError","targetFallback":"Foundation.NSError"}]}"""

@@ -236,7 +236,7 @@ internal fun verifyOriginalAppleCompilerEvidence(
     objectiveCConsumer: File,
 ) {
     val compiler = compilerFile.readCanonicalOriginalAppleObject("Original Apple compiler evidence")
-    val rawSlices = verifyOriginalAppleCompilerRaw(rawDirectory, compiler)
+    val rawSlices = verifyOriginalAppleCompilerRaw(rawDirectory, compiler, xcframework)
     verifyCompilerReportDomains(compiler, rawSlices)
     validateAppleCompilerEvidence(
         canonical, compiler, xcframework.crossLanguageTreeDigest(),
@@ -249,6 +249,7 @@ internal fun verifyOriginalAppleCompilerEvidence(
 private fun verifyOriginalAppleCompilerRaw(
     raw: File,
     compiler: JsonObject,
+    xcframework: File,
 ): Map<String, OriginalAppleCompilerSliceReplay> {
     val triplet = setOf("execution.json", "stdout.bin", "stderr.bin")
     val expected = buildSet {
@@ -264,7 +265,16 @@ private fun verifyOriginalAppleCompilerRaw(
             add("$slice/CodexAgent.objc.symbols.json")
         }
     }
-    check(verifiedRegularFiles(raw).keys == expected) { "Original Apple compiler raw inventory changed" }
+    val files = verifiedRegularFiles(raw).keys
+    val supplements = originalAppleCompilerSlices.keys.associateBy {
+        "$it/swift-symbols/CodexAgent@Foundation.symbols.json"
+    }
+    check(files.containsAll(expected) && (files - expected).all { it in supplements }) {
+        "Original Apple compiler raw inventory changed"
+    }
+    (files - expected).forEach { name ->
+        verifyOriginalAppleFoundationGraph(raw, supplements.getValue(name), xcframework)
+    }
     val compilerToolchain = compiler.releaseObject("toolchain")
     val xcode = raw.verifyOriginalAppleProcess("toolchain/xcode", true)
     val swift = raw.verifyOriginalAppleProcess("toolchain/swift", true)
@@ -380,6 +390,131 @@ private fun verifyOriginalAppleCompilerRaw(
         OriginalAppleCompilerSliceReplay(
             swiftSurface, objectiveSurface, swiftReferences, objectiveReferences, sdkVersion,
         )
+    }
+}
+
+// Swift emits a separate graph for Kotlin/Native's NSError category. Keep the
+// original 49-file gate and validate only this exact supplementary observation.
+private fun verifyOriginalAppleFoundationGraph(raw: File, slice: String, xcframework: File) {
+    val directory = raw.resolve("$slice/swift-symbols")
+    val supplement = directory.resolve("CodexAgent@Foundation.symbols.json")
+    check(supplement.length() in 1L..65_536L) { "Original Apple Foundation graph exceeds its bound" }
+    val main = releaseJson.parseToJsonElement(directory.resolve("CodexAgent.symbols.json").readStrictUtf8())
+        as? JsonObject ?: error("Original Apple Swift graph is not an object")
+    val metadata = main.releaseObject("metadata")
+    val module = main.releaseObject("module")
+    val version = releaseJson.parseToJsonElement("""{"major":0,"minor":6,"patch":0}""")
+    val swift = raw.resolve("toolchain/swift/stdout.bin").readStrictUtf8().lineSequence()
+        .firstOrNull { it.startsWith("Apple Swift version ") }
+    check(metadata["formatVersion"] == version && metadata.releaseString("generator") == swift &&
+        module.releaseString("name") == "CodexAgent") { "Original Apple Foundation graph changes its compiler/module" }
+    val shape = releaseJson.parseToJsonElement(
+        """
+        {
+          "symbols": [
+            {
+              "kind": {
+                "identifier": "swift.property",
+                "displayName": "Instance Property"
+              },
+              "identifier": {
+                "precise": "c:objc(cs)NSError(py)kotlinException",
+                "interfaceLanguage": "swift"
+              },
+              "pathComponents": [
+                "NSError",
+                "kotlinException"
+              ],
+              "names": {
+                "title": "kotlinException",
+                "subHeading": [
+                  {
+                    "kind": "keyword",
+                    "spelling": "var"
+                  },
+                  {
+                    "kind": "text",
+                    "spelling": " "
+                  },
+                  {
+                    "kind": "identifier",
+                    "spelling": "kotlinException"
+                  },
+                  {
+                    "kind": "text",
+                    "spelling": ": "
+                  },
+                  {
+                    "kind": "keyword",
+                    "spelling": "Any"
+                  },
+                  {
+                    "kind": "text",
+                    "spelling": "?"
+                  }
+                ]
+              },
+              "swiftExtension": {
+                "extendedModule": "Foundation",
+                "typeKind": "swift.class"
+              },
+              "declarationFragments": [
+                {
+                  "kind": "keyword",
+                  "spelling": "var"
+                },
+                {
+                  "kind": "text",
+                  "spelling": " "
+                },
+                {
+                  "kind": "identifier",
+                  "spelling": "kotlinException"
+                },
+                {
+                  "kind": "text",
+                  "spelling": ": "
+                },
+                {
+                  "kind": "keyword",
+                  "spelling": "Any"
+                },
+                {
+                  "kind": "text",
+                  "spelling": "? { "
+                },
+                {
+                  "kind": "keyword",
+                  "spelling": "get"
+                },
+                {
+                  "kind": "text",
+                  "spelling": " }"
+                }
+              ],
+              "accessLevel": "open"
+            }
+          ],
+          "relationships": [
+            {
+              "kind": "memberOf",
+              "source": "c:objc(cs)NSError(py)kotlinException",
+              "target": "c:objc(cs)NSError",
+              "targetFallback": "Foundation.NSError"
+            }
+          ]
+        }
+        """.trimIndent(),
+    ) as JsonObject
+    val expected = JsonObject(shape + mapOf("metadata" to metadata, "module" to module))
+    check(releaseJson.parseToJsonElement(supplement.readStrictUtf8()) == expected) {
+        "Original Apple Foundation extension graph differs from the known NSError property"
+    }
+    val declaration = "@interface NSError (NSErrorCodexAgentKotlinException)\n" +
+        "@property (readonly) id _Nullable kotlinException;\n@end"
+    check(xcframework.resolve("$slice/CodexAgent.framework/Headers/CodexAgent.h")
+        .readStrictUtf8().contains(declaration)) {
+        "Original Apple Foundation extension differs from its bound framework header"
     }
 }
 
