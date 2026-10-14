@@ -274,6 +274,12 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
             policy["expected_binding_sha256"],
         )
         expected = json.loads(policy["expected_execution_files"].read_bytes())
+        # The retained Kotlin verifier requires its four-space pretty JSON,
+        # independently of the compact JSON used for phase receipts.
+        self.assertEqual(
+            (json.dumps(expected, ensure_ascii=False, allow_nan=False, indent=4) + "\n").encode(),
+            policy["expected_execution_files"].read_bytes(),
+        )
         records = regular_file_inventory(self.last_original / "package-execution", allow_empty=True)
         self.assertEqual({
             record["relativePath"].removeprefix("events/"): record["sha256"].removeprefix("sha256:")

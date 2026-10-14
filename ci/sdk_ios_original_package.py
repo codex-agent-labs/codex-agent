@@ -1,6 +1,7 @@
 """Recover one original iOS package through the existing complete content gates."""
 
 from contextlib import contextmanager, ExitStack
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -366,8 +367,11 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
         sdk_before = regular_file_inventory(sdk_capture, allow_empty=True)
         records = descriptor["captureFiles"]
         binding_digest = next(record["sha256"] for record in records if record["relativePath"] == "input-binding.json")
-        event_bytes = canonical_json_bytes({record["relativePath"].removeprefix("events/"):
-            record["sha256"].removeprefix("sha256:") for record in records if record["relativePath"].startswith("events/")})
+        # This caller-derived control uses the retained Kotlin verifier's JSON
+        # format, not the compact encoding of the authenticated descriptor.
+        event_bytes = (json.dumps({record["relativePath"].removeprefix("events/"):
+            record["sha256"].removeprefix("sha256:") for record in records if record["relativePath"].startswith("events/")},
+            ensure_ascii=False, allow_nan=False, indent=4) + "\n").encode("utf-8")
         expected_events = private / "expected-execution-files.json"
         expected_events.write_bytes(event_bytes)
 
