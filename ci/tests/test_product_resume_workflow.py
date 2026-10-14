@@ -17,6 +17,40 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductResumeWorkflowTest(unittest.TestCase):
+    def test_parallel_recovery_checks_run_every_module_and_propagate_any_failure(self):
+        job = workflow_job(self.workflow, 'workflow-lint')
+        step = job.split('      - name: Verify reviewed recovery controls only\n', 1)[1].split('\n      - ', 1)[0]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        modules = re.findall(r'ci\.tests\.[a-z_]+', script)
+        preserved = ('runtime_recovery_acceptance runtime_workflow prepare_runtime_signing_action '
+                     'runtime_preparation_capture runtime_prepared_release runtime_aggregate_original_ci '
+                     'runtime_native_attestation_workflow runtime_aggregate_attestation_workflow '
+                     'tooling_capture tooling_discovery sdk_prerequisite_reuse sdk_transport_capture '
+                     'sdk_ios_binary_worker_wiring sdk_ios_binary_inputs sdk_ios_binary_execution '
+                     'reference_archive_download runtime_reference_transport runtime_signing_workflow_isolation '
+                     'product_selection').split()
+        self.assertLessEqual({'ci.tests.test_' + name for name in preserved}, set(modules))
+        self.assertEqual(len(modules), len(set(modules)))
+        self.assertIn('xargs -0 -n 1 -P 4 python3 -B -m unittest -v', script)
+        for failed in ('', modules[0], modules[-1]):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                records = root / 'records'
+                records.mkdir()
+                python = root / 'python3'
+                python.write_text('#!/bin/sh\nfor module do :; done\n'
+                                  'printf "%s\\n" "$@" >> "$RECORDS/$module"\n'
+                                  '[ "$module" != "$FAIL_MODULE" ]\n')
+                python.chmod(0o700)
+                result = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                    env={**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                         'RECORDS': str(records), 'FAIL_MODULE': failed})
+                self.assertEqual(not failed, result.returncode == 0, result.stderr)
+                self.assertEqual(set(modules), {path.name for path in records.iterdir()})
+                for module in modules:
+                    self.assertEqual(['-B', '-m', 'unittest', '-v', module],
+                                     (records / module).read_text().splitlines())
+
     def test_sdk_reference_routing_carries_only_the_planned_locator_without_provisioning_again(self):
         from ci.tests.test_product_routing import ProductRoutingTest
         from products.inventory import canonical_json_bytes
