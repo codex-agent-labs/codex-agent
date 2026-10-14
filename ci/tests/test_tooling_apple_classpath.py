@@ -13,6 +13,22 @@ JAR = ROOT / 'gradle/build-logic/build/libs/codex-agent-release-tooling.jar'
 
 class AppleToolingClasspathTest(unittest.TestCase):
     @unittest.skipUnless(JAR.is_file() and shutil.which('java'), 'requires the emitted tooling JAR and Java')
+    def test_validation_binding_cli_reaches_input_validation_without_gradle(self):
+        with tempfile.TemporaryDirectory(prefix='apple-validation-classpath-') as temporary:
+            root = Path(temporary).resolve()
+            options = {name: root / name for name in (
+                'evidence-directory', 'product-directory', 'sdk-compatibility', 'canonical-api',
+                'canonical-coverage', 'consumer-source-directory', 'work-directory')}
+            command = [shutil.which('java'), '-jar', str(JAR),
+                       'verify-apple-validation-binding-content', '--version', '0.8.0']
+            command += [part for name, value in options.items() for part in ('--' + name, str(value))]
+            result = subprocess.run(command, capture_output=True, timeout=30)
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn(b'NoClassDefFoundError', result.stderr)
+            self.assertIn(b'Apple validation binding replay input is missing or unsafe', result.stderr)
+            self.assertEqual([], list(root.iterdir()))
+
+    @unittest.skipUnless(JAR.is_file() and shutil.which('java'), 'requires the emitted tooling JAR and Java')
     def test_capture_cli_reaches_input_validation_with_complete_helper_closure(self):
         classes = json.loads((ROOT / '.github/actions/run-ci-lane/release_tooling_classes.json').read_bytes())
         with zipfile.ZipFile(JAR) as archive:

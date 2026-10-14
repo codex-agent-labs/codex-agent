@@ -1,6 +1,8 @@
 import java.io.File
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -11,6 +13,26 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /** Synthetic immutable snapshots only; these tests grant no receipt, producer, source, or host authority. */
 class AppleValidationBindingReplayTest {
+    @Test
+    fun `packaged verifier replays complete binding evidence and rejects drift without Gradle`() = fixture().use {
+        // The frozen shared recipe omits tooling-only additions; CI assembles them with this init script.
+        assumeTrue("Requires --init-script .github/actions/run-ci-lane/release_tooling.init.gradle",
+            ZipFile(checkNotNull(System.getProperty("codexAgent.releaseToolingJar"))).use { jar ->
+                jar.getEntry("ApplePackageExecutionContext.class") != null
+            })
+        val before = it.inputDigests()
+        val (exit, output) = it.verifyPackaged()
+        assertEquals(0, exit, output)
+        assertEquals(before, it.inputDigests())
+
+        it.evidence.resolve("xctest-package/Package.swift").appendText("// changed\n")
+        val changed = it.inputDigests()
+        val (failed, failure) = it.verifyPackaged(it.root.resolve("tampered-work"))
+        assertTrue(failed != 0, failure)
+        assertTrue("Retained Apple validation xctest-package differs" in failure, failure)
+        assertEquals(changed, it.inputDigests())
+    }
+
     @Test
     fun `replays exact selected package and retained binding evidence without changing inputs`() = fixture().use {
         val before = it.inputDigests()
@@ -140,6 +162,21 @@ private class AppleValidationBindingReplayFixture : AutoCloseable {
     )
 
     fun verifyBaseline() = verify(work = root.resolve("baseline-work"))
+
+    fun verifyPackaged(work: File = this.work): Pair<Int, String> {
+        val java = File(System.getProperty("java.home"), "bin/java")
+        val jar = checkNotNull(System.getProperty("codexAgent.releaseToolingJar"))
+        val options = mapOf("evidence-directory" to evidence.path, "product-directory" to product.path,
+            "version" to version, "sdk-compatibility" to compatibility.path,
+            "canonical-api" to canonicalApi.path, "canonical-coverage" to canonicalCoverage.path,
+            "consumer-source-directory" to consumers.path, "work-directory" to work.path)
+        val process = ProcessBuilder(listOf(java.path, "-jar", jar, "verify-apple-validation-binding-content") +
+            options.flatMap { (key, value) -> listOf("--$key", value) })
+            .directory(root).redirectErrorStream(true).start()
+        process.outputStream.close()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        return process.waitFor() to output
+    }
 
     fun inputDigests(): Map<String, Map<String, String>> = mapOf(
         "evidence" to evidence.digests(),
