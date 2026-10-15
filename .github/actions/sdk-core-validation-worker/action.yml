@@ -285,7 +285,7 @@ runs:
         trap 'if [ -f "$RUNNER_TEMP/sdk-core-consumer-dependencies/gradle.log" ]; then tail -n 120 "$RUNNER_TEMP/sdk-core-consumer-dependencies/gradle.log"; fi' ERR
         optional=()
         if [ -n "$NATIVE_COMPILER_ARCHIVE" ]; then optional+=(--native-archive "$NATIVE_COMPILER_ARCHIVE"); fi
-        python3 -B -m ci.sdk_core_validation_dependencies \
+        python3 -B -m ci.products.gradle_bootstrap \
           --request "$GITHUB_WORKSPACE/build/sdk-core-validation-policy/facade-request.json" \
           --repository "$GITHUB_WORKSPACE" --revision "$POLICY_REVISION" --target "$TARGET" \
           --destination "$RUNNER_TEMP/sdk-core-consumer-dependencies" \

@@ -180,7 +180,7 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             self.assertIn("'" + flag + "'", command)
         self.assertIn("'core-validation'", command)
         self.assertIn("ci.sdk_core_validation_policy", self.action)
-        dependency_preparation = self.action.index('python3 -B -m ci.sdk_core_validation_dependencies')
+        dependency_preparation = self.action.index('python3 -B -m ci.products.gradle_bootstrap')
         self.assertLess(self.action.index('uses: ./.github/actions/setup-kmp'), dependency_preparation)
         self.assertLess(dependency_preparation, self.action.index('    - id: execute'))
         self.assertIn('--revision "$POLICY_REVISION" --target "$TARGET"', self.action)
