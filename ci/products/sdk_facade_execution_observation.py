@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
 import re
+import shlex
 import subprocess
 
 from .inventory import (
@@ -26,13 +27,13 @@ from .tooling_local import _execution
 from .gradle_bootstrap import require_preprovisioned_gradle
 
 
-def native_data_directory(environment):
-    """Bind KGP's optional property to its existing independently selected cache."""
+def native_data_options(environment):
+    """Bind the exact existing native cache through both nested Java launches."""
     data = Path(environment.get("KONAN_DATA_DIR", str(Path.home() / ".konan")))
     require_regular_directory(data, "Core native consumer data directory")
     if not data.is_absolute() or data.resolve(strict=True) != data:
         raise ValueError("Core native consumer data directory must be absolute and non-symbolic")
-    return str(data)
+    return shlex.quote("-Dorg.gradle.project.konan.data.dir=" + str(data))
 
 
 @contextmanager
@@ -59,9 +60,9 @@ def capture_facade_execution_observation(*, repository, producer, target, enviro
     if HOSTS[host["classifier"]][2:4] != (topology["runnerOs"], topology["runnerArch"]):
         raise ValueError("Core launcher observation differs from the elected actual host")
     for key, value in environment.items():
-        if (key == "ORG_GRADLE_PROJECT_konan.data.dir" and
+        if (key == "JAVA_TOOL_OPTIONS" and
                 target not in {"android", "jvm", "node-js", "node-wasm"} and
-                value == native_data_directory(environment)):
+                value == native_data_options(environment)):
             continue
         if value and (key.startswith("ORG_GRADLE_PROJECT_") or key in {
                 "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS", "GRADLE_OPTS"}):

@@ -78,7 +78,7 @@ class FacadeValidationPhaseTest(unittest.TestCase):
     def expected_environment(self):
         if self.plan["target"] in {"android", "jvm", "node-js", "node-wasm"}:
             return self.environment
-        return {**self.environment, "ORG_GRADLE_PROJECT_konan.data.dir": self.environment["KONAN_DATA_DIR"]}
+        return {**self.environment, "JAVA_TOOL_OPTIONS": phase.native_data_options(self.environment)}
 
     @property
     def work(self):

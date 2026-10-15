@@ -94,18 +94,22 @@ class FacadeExecutionObservationTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_native_property_must_match_independent_directory_and_other_options_still_reject(self):
-        data = self.root / "konan"
+        data = self.root / "konan cache's directory"
         data.mkdir()
-        key = "ORG_GRADLE_PROJECT_konan.data.dir"
+        key = "JAVA_TOOL_OPTIONS"
         self.environment.update(KONAN_DATA_DIR=str(data))
-        for target, options in (("jvm", {key: str(data)}),
+        expected = observation.native_data_options(self.environment)
+        self.assertEqual(["-Dorg.gradle.project.konan.data.dir=" + str(data)], observation.shlex.split(expected))
+        for target, options in (("jvm", {key: expected}),
                                 ("linux-x64", {key: str(self.root)}),
-                                ("linux-x64", {key: str(data), "ORG_GRADLE_PROJECT_other": "bad"})):
+                                ("linux-x64", {key: expected + " -javaagent:untrusted.jar"}),
+                                ("linux-x64", {key: expected, "ORG_GRADLE_PROJECT_other": "bad"}),
+                                ("linux-x64", {"ORG_GRADLE_PROJECT_konan.data.dir": str(data)})):
             with self.subTest(target=target, options=options), self.assertRaisesRegex(ValueError, "injected"), \
                     self.call(target=target, environment={**self.environment, **options}):
                 self.fail("untrusted options must not reach probes")
         self.process.assert_not_called()
-        self.environment[key] = str(data)
+        self.environment[key] = expected
         with self.call(target="linux-x64"):
             pass
         self.assertEqual(2, self.process.call_count)
