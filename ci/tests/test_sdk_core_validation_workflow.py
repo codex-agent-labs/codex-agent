@@ -31,6 +31,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                     "core-validation-host-diagnostic", "exec")
         for required in ("ci.tests.test_sdk_android_archive_provision",
                          "ci.tests.test_sdk_core_native_archive_provision", "packages: platform-tools",
+                         "capture_facade_validation_sources", "_stage_fingerprint(captured)",
                          "GITHUB_TOKEN: ${{ github.token }}", "x-ratelimit-remaining", "report_api_error"):
             self.assertIn(required, block)
     def test_wave_thirteen_uses_original_inputs_and_fails_after_collection(self):

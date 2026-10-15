@@ -59,13 +59,38 @@ class FacadeSourceTest(unittest.TestCase):
                 self.assertEqual(expected, regular_file_inventory(fixture.output))
                 for relative, contents in _FILES.items():
                     self.assertEqual(contents.encode(), (fixture.output / relative).read_bytes())
-                self.assertEqual(0o755, stat.S_IMODE((fixture.output / "gradlew").stat().st_mode))
-                self.assertEqual(0o644, stat.S_IMODE((fixture.output / "gradlew.bat").stat().st_mode))
+                if os.name != "nt":
+                    self.assertEqual(0o755, stat.S_IMODE((fixture.output / "gradlew").stat().st_mode))
+                    self.assertEqual(0o644, stat.S_IMODE((fixture.output / "gradlew.bat").stat().st_mode))
                 self.assertFalse((fixture.output / "build").exists())
                 self.assertFalse((fixture.output / "codex-agent-sdk").exists())
                 self.assertFalse((fixture.output / f"{_TEMPLATE}/untracked.txt").exists())
                 self.assertEqual(b"dirty wrong init generator\n", (fixture.repository /
                     "gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt").read_bytes())
+
+    def test_windows_source_capture_pins_git_bytes_without_claiming_posix_modes(self):
+        for mutate in (False, True):
+            with self.subTest(mutate=mutate), repository_fixture() as fixture:
+                revision = fixture.commit()
+                expected = git_file_inventory(fixture.repository, revision, _FILES)
+
+                def publish(captured, output, **kwargs):
+                    self.assertEqual(expected, kwargs["expected_inventory"])
+                    self.assertIsNone(kwargs["expected_modes"])
+                    if mutate:
+                        (captured / "gradlew.bat").write_bytes(b"changed launcher")
+                    actual_publish_regular_tree(captured, output, **kwargs)
+
+                with patch.object(source, "_is_windows", return_value=True), \
+                        patch.object(source, "publish_regular_tree", side_effect=publish):
+                    if mutate:
+                        with self.assertRaisesRegex(ValueError, "pinned inventory"):
+                            source.capture_facade_validation_sources(fixture.repository, revision, fixture.output)
+                        self.assertFalse(fixture.output.exists())
+                    else:
+                        result = source.capture_facade_validation_sources(fixture.repository, revision, fixture.output)
+                        self.assertEqual(expected, result["files"])
+                        self.assertEqual(expected, regular_file_inventory(fixture.output))
 
     def test_every_generator_wrapper_and_required_template_input_is_mandatory(self):
         required = [name for name in _FILES if not name.endswith("nested/input.txt")]
@@ -136,6 +161,7 @@ class FacadeSourceTest(unittest.TestCase):
                 source.capture_facade_validation_sources(fixture.repository, revision, fixture.output)
             self.assertFalse(fixture.output.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX executable-mode publication")
     def test_late_executable_mode_mutation_cannot_be_published(self):
         with repository_fixture() as fixture:
             revision = fixture.commit()

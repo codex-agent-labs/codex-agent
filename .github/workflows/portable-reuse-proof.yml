@@ -76,6 +76,17 @@ jobs:
           subprocess.run([sys.executable, '-B', '-m', 'unittest',
               'ci.tests.test_sdk_android_archive_provision',
               'ci.tests.test_sdk_core_native_archive_provision'], check=True)
+          import tempfile
+          from products.sdk_facade_source import capture_facade_validation_sources
+          from products.restore import _stage_fingerprint
+          with tempfile.TemporaryDirectory(prefix='core-source-host-check-') as temporary:
+              captured = pathlib.Path(temporary).resolve() / 'source'
+              result = capture_facade_validation_sources(pathlib.Path.cwd(), source, captured)
+              assert result['tree'] == subprocess.check_output(['git', 'rev-parse', source + '^{tree}'], text=True).strip()
+              fingerprint = _stage_fingerprint(captured)
+              assert fingerprint == _stage_fingerprint(captured)
+              print(json.dumps({'exactGitSourceCapture': 'pass', 'heldStageFingerprint': 'pass',
+                  'sourceFiles': len(result['files']), 'productExecuted': False}), flush=True)
       - name: Exercise hydrated cache command bootstrap on the actual host
         uses: ./.github/actions/hydrated-evidence-cache
         with:

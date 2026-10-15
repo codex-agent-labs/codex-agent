@@ -224,7 +224,15 @@ def _dependency_selection(selection, contents, observed):
     path = PureWindowsPath(data) if windows else PurePosixPath(data)
     if directory != str(path / "dependencies"):
         raise ValueError("Native dependency directory differs from its selected data directory")
+    suffix = target if host == target else f"{host}-{target}"
     keys = [f"llvmHome.{host}", f"libffiDir.{host}"]
+    # GccConfigurables adds its selected emulator to the ordinary dependencies.
+    if target in {"linux_x64", "linux_arm64"}:
+        if "emulatorDependency" in properties:
+            raise ValueError("Generic native emulator configuration is unsupported")
+        key = "emulatorDependency." + suffix
+        if key in properties:
+            keys.append(key)
     expected = set()
     for key in keys:
         name = _expand_property(properties, key)
@@ -236,7 +244,6 @@ def _dependency_selection(selection, contents, observed):
     # Fail closed if a future pinned distribution introduces one.
     if "dependencies" in properties:
         raise ValueError("Generic native dependency configuration is unsupported")
-    suffix = target if host == target else f"{host}-{target}"
     key = "dependencies." + suffix
     if key in properties:
         for name in _expand_property(properties, key).split():

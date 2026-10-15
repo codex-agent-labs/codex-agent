@@ -63,6 +63,8 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
                 "sha256:fd47b4a4dd636e150f5d4a8533c8f7226654afafb7555b995570d32f7f0d0ae5", 116566324093),
             "jvm": ("sha256:cf5ea06b6743251e3b4b495e961e9c3185829ccafe023c2ac361d0725479d2f6", 11994318412,
                 "sha256:4e0ebada8c75598c29a72b6ef2839be9b6524585f95dca3b9739cd5fb876a03f", 116566323763),
+            "linux-x64": ("sha256:5cc349c57628460f4988674a798c397324a7002c65f84e4035d523aa3779bfd2", 11997978627,
+                "sha256:e31eb13719f66817d70310f5632d8b6ac4770b7726302b7d3ab4f9d6a8fea264", 116595906434),
             "macos-arm64": ("sha256:fe2acd38a99d7960b4b584ea1fbe0d94bc72264ae2ce46f6280fa62614c3c98f", 11994962517,
                 "sha256:1a3ff44490e9beb3fc145fc6d52e449b8572f4967b1924485740ca0e83a2cc7f", 116566323856),
             "macos-x64": ("sha256:5c9b2857e70101c4245577540bcc8e75222d336c321a4fecbd745272d0180524", 11996805810,
@@ -75,11 +77,15 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
         if selected is None:
             return None
         expected_key, artifact, digest, job = selected
-        android = target == "android"
+        commit, tree, run, workflow = (
+            ("1bbcf292d420ec54d93a96d620623f4576a6e5fa", "9ffc5fabfc5dea967e272e721e96ab18153add47",
+             38768220181, "729a9283d164366fc133821145743ee937494cfe") if target == "android" else
+            ("44c296812f9a69ff8b43c8c3c534493d1daf401d", "6dbccef6c93a752f230e4f75836177b65cfa855b",
+             38784033203, "b4fbebd49866c0607bceee8fa9882f041ef0f2b0") if target == "linux-x64" else
+            ("d767e75d7a77e5f907e21ed6132ae72ab7bd8bd6", "8addaed53fbe2179052abc6b20c3cb1da55db0ed",
+             38776265359, "d1946db206f57cb392d344b1a2110d4438802782"))
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
-            "commit": "1bbcf292d420ec54d93a96d620623f4576a6e5fa" if android else "d767e75d7a77e5f907e21ed6132ae72ab7bd8bd6",
-            "tree": "9ffc5fabfc5dea967e272e721e96ab18153add47" if android else "8addaed53fbe2179052abc6b20c3cb1da55db0ed",
-            "event": "pull_request", "runId": 38768220181 if android else 38776265359,
+            "commit": commit, "tree": tree, "event": "pull_request", "runId": run,
             "runAttempt": 1, "pullRequest": 31}
         if (build_key != expected_key
                 or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
@@ -87,8 +93,7 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
                 or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
             return None
         return {"producer": producer, "artifact_id": artifact, "artifact_sha256": digest,
-            "job_id": job, "workflow_sha": ("729a9283d164366fc133821145743ee937494cfe" if android else
-                "d1946db206f57cb392d344b1a2110d4438802782"),
+            "job_id": job, "workflow_sha": workflow,
             "workflow_path": ".github/workflows/sdk-core-validation.yml",
             "job_name": "product-validation / sdk-core-validation-wave / sdk-core-validation-" + target}
     if target != "common":

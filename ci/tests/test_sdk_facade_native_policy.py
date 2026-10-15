@@ -274,11 +274,32 @@ class FacadeNativePolicyTest(unittest.TestCase):
                     f"llvmHome.{host_name} = llvm-reviewed\n"
                     f"libffiDir.{host_name} = libffi-reviewed\n"
                     f"dependencies.{dependency_suffix} = lldb-reviewed\n").encode()
+                if target == "linux-arm64":
+                    self.selected["konan/konan.properties"] += (
+                        b"emulatorDependency.linux_x64-linux_arm64 = $emulator.reviewed\n"
+                        b"emulator.reviewed = qemu-reviewed\n")
                 self.write_archive()
                 self.value = self.observation_v2(target)
+                if target == "linux-arm64":
+                    root = "/original/konan/dependencies/qemu-reviewed"
+                    self.value["nativeSelection"]["dependencies"].append({
+                        "name": "qemu-reviewed", "root": root,
+                        "inventory": self.inventory({"bin/qemu": b"unreviewed emulator bytes"}, root=root),
+                        "symlinks": []})
                 self.save()
                 self.assertIsNone(self.call())
                 if target == "linux-arm64":
+                    emulator = self.value["nativeSelection"]["dependencies"].pop()
+                    self.save()
+                    with self.assertRaisesRegex(ValueError, "exact pinned property selection"):
+                        self.call()
+                    self.value["nativeSelection"]["dependencies"].append(emulator)
+                    with self.assertRaisesRegex(ValueError, "Generic native emulator"):
+                        policy._dependency_selection(self.value["nativeSelection"],
+                            self.selected["konan/konan.properties"] + b"emulatorDependency = unreviewed-fallback\n", {})
+                    with self.assertRaisesRegex(ValueError, "pinned property selection"):
+                        policy._dependency_selection(self.value["nativeSelection"],
+                            self.selected["konan/konan.properties"].replace(b"qemu-reviewed", b"other-emulator"), {})
                     for field, incorrect in (("host", "linux_arm64"), ("target", "linux_x64")):
                         self.value["nativeSelection"][field] = incorrect
                         self.save()
