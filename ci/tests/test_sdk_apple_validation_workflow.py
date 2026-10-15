@@ -165,6 +165,7 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
             self.assertIn("SDK_TOOLING_" + field + ": ${{ needs.plan.outputs.tooling_" + field.lower() + " }}", native)
         readiness = next(line for line in plan.splitlines() if "native_ios_worker_ready:" in line)
         for gate in ("steps.native-route.outputs.native_sdk_direct == 'true'",
+                     "steps.native-route.outputs.sdk_workers_required == 'true'",
                      "steps.product-reuse.outputs.native_contract_complete == 'true'",
                      "steps.product-reuse.outputs.tooling_miss == 'false'",
                      "steps.product-reuse.outputs.tooling_artifact_id != ''",

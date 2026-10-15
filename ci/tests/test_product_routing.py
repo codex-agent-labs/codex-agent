@@ -122,7 +122,7 @@ class ProductRoutingTest(unittest.TestCase):
         self.assertEqual(self.locator, routing.select_ios_ready_prefix(legacy))
 
     def test_native_resume_shortcut_requires_completed_runtime_and_ready_ios_frontier(self):
-        from ci.tests.test_sdk_native_continuation import ready
+        from ci.tests.test_sdk_native_continuation import needs_for, ready
         ios = ready('sdk-ios', 'validation', 'ios-simulator-arm64')
         decisions = {**deepcopy(self.decisions),
             'ready': [{k: ios[k] for k in (*routing._IDENTITY, 'buildKey')}],
@@ -133,6 +133,7 @@ class ProductRoutingTest(unittest.TestCase):
         arguments = dict(sdk_recovery_only=True, runtime_workers_required='false', supervisor_key='')
         result = routing.native_sdk_resume(decisions, self.locator, self.expected, **arguments)
         self.assertTrue(result['native_sdk_direct'])
+        self.assertTrue(result['sdk_workers_required'])
         bound = routing.bind(decisions, self.locator, self.expected)
         self.assertEqual(routing.select(bound, self.locator, self.expected, family='ios-validation')['sdk_matrix'],
                          result['sdk_matrix'])
@@ -143,7 +144,12 @@ class ProductRoutingTest(unittest.TestCase):
                           ready('sdk-android', 'binary', 'android'))]
         direct_metadata = routing.native_sdk_resume(metadata, self.locator, self.expected, **arguments)
         self.assertTrue(direct_metadata['native_sdk_direct'])
+        self.assertFalse(direct_metadata['sdk_workers_required'])
         self.assertEqual({'include': []}, json.loads(direct_metadata['sdk_matrix']))
+        joined = needs_for('ios-validation', state=self.locator)
+        joined['plan']['outputs']['native_ios_worker_ready'] = str(
+            direct_metadata['native_sdk_direct'] and direct_metadata['sdk_workers_required']).lower()
+        self.assertEqual(self.locator, routing.select_native_state(joined, stage='ios-validation'))
         metadata_bound = routing.bind(metadata, self.locator, self.expected)
         self.assertTrue(routing.select(metadata_bound, self.locator, self.expected,
                                        family='javascript')['ios_validation_direct'])

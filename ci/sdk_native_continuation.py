@@ -376,8 +376,9 @@ def native_sdk_resume(decisions, locator, expected, *, sdk_recovery_only,
         return {'native_sdk_direct': False}
     require_sha256(runtime.get('aggregate_key'), 'Completed native aggregate key')
     require_sha256(runtime.get('aggregate_receipt_sha256'), 'Completed native aggregate receipt')
+    validation = select(bound, locator, expected, family='ios-validation')
     return {'native_sdk_direct': True,
-        'sdk_matrix': select(bound, locator, expected, family='ios-validation')['sdk_matrix'],
+        **{name: validation[name] for name in ('sdk_matrix', 'sdk_workers_required')},
         **{name: runtime[name] for name in (
         'sdk_input_selection', 'aggregate_key', 'aggregate_receipt_sha256',
         'aggregate_payload_complete')}}

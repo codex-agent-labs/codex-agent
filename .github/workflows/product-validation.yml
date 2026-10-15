@@ -319,7 +319,7 @@ jobs:
       native_aggregate_receipt_sha256: ${{ steps.native-route.outputs.aggregate_receipt_sha256 }}
       native_aggregate_payload_complete: ${{ steps.native-route.outputs.aggregate_payload_complete }}
       native_ios_matrix: ${{ steps.native-route.outputs.sdk_matrix }}
-      native_ios_worker_ready: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && steps.product-reuse.outputs.native_contract_complete == 'true' && steps.product-reuse.outputs.tooling_miss == 'false' && steps.product-reuse.outputs.tooling_artifact_id != '' && steps.product-reuse.outputs.tooling_transport_producer != '' }}
+      native_ios_worker_ready: ${{ steps.native-route.outputs.native_sdk_direct == 'true' && steps.native-route.outputs.sdk_workers_required == 'true' && steps.product-reuse.outputs.native_contract_complete == 'true' && steps.product-reuse.outputs.tooling_miss == 'false' && steps.product-reuse.outputs.tooling_artifact_id != '' && steps.product-reuse.outputs.tooling_transport_producer != '' }}
       native_resume_artifact_id: ${{ steps.upload_native_resume.outputs.artifact-id }}
       native_resume_artifact_digest: sha256:${{ steps.upload_native_resume.outputs.artifact-digest }}
       native_resume_full_reuse: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
