@@ -58,7 +58,7 @@ _IOS_PREFIX_RESULTS = (
 
 
 def select_ios_ready_prefix(needs):
-    """Collapse only an elected no-work prefix; the V worker still authenticates it."""
+    """Collapse an elected no-work prefix; the iOS consumer still authenticates it."""
     planned = _job(needs, "sdk-plan")
     if planned["outputs"].get("ios_validation_direct") != "true":
         return select_native_state(needs, stage="metadata")
@@ -345,7 +345,8 @@ def select(value, locator, expected, *, family):
         result['ios_validation_direct'] = (not matrix['include']
             and not decisions['preparation']['preparation_required']
             and not any(_matrix_from_plans(decisions['ready'], family=name)['include'] for name in preceding)
-            and bool(_matrix_from_plans(decisions['ready'], family='ios-validation')['include']))
+            and any(_matrix_from_plans(decisions['ready'], family=name)['include']
+                    for name in ('ios-validation', 'ios-metadata')))
     if family == 'native-package':
         result.update({'native_preparation_' + name.removeprefix('preparation_'): member
                        for name, member in decisions['preparation'].items()})

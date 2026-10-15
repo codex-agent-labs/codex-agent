@@ -108,7 +108,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     plan={'repository': receipt['producer']['repository']}, consumer_producer=consumer,
                     trusted_workflow_sha='a' * 40, token='synthetic', environ={}, completed_frozen=authority,
                     phase=phase, component=component, target=target)
-            self.assertEqual(records, replay(cap))
+            with patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value=None), \
+                    patch.object(recovery, '_require_prior', side_effect=AssertionError('legacy failed-run gate')):
+                self.assertEqual(records, replay(cap))
             self.assertEqual(2, observed.call_count)
             self.assertFalse((root / records[0]['objectPath']).exists())
             shard = capture / f'{component}/{phase}/{target}/original/shard'

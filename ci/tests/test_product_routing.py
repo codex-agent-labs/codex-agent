@@ -62,7 +62,7 @@ class ProductRoutingTest(unittest.TestCase):
                         decision = routing.select(value, self.locator, self.expected, family=family)
                         elected.extend(json.loads(decision['sdk_matrix'])['include'])
                         if family == 'javascript':
-                            self.assertEqual(identity.component == 'sdk-ios' and identity.phase == 'validation',
+                            self.assertEqual(identity.component == 'sdk-ios' and identity.phase in {'validation', 'metadata'},
                                              decision['ios_validation_direct'], identity)
                 self.assertEqual([phase['buildKey']], [row['buildKey'] for row in elected], identity)
 
@@ -121,7 +121,7 @@ class ProductRoutingTest(unittest.TestCase):
         legacy['sdk-plan'] = {'result': 'success', 'outputs': {'ios_validation_direct': 'false'}}
         self.assertEqual(self.locator, routing.select_ios_ready_prefix(legacy))
 
-    def test_native_resume_shortcut_requires_completed_runtime_and_only_ready_ios_validation(self):
+    def test_native_resume_shortcut_requires_completed_runtime_and_ready_ios_frontier(self):
         from ci.tests.test_sdk_native_continuation import ready
         ios = ready('sdk-ios', 'validation', 'ios-simulator-arm64')
         decisions = {**deepcopy(self.decisions),
@@ -137,6 +137,18 @@ class ProductRoutingTest(unittest.TestCase):
         self.assertEqual(routing.select(bound, self.locator, self.expected, family='ios-validation')['sdk_matrix'],
                          result['sdk_matrix'])
         self.assertEqual(decisions['runtime']['aggregate_key'], result['aggregate_key'])
+        metadata = deepcopy(decisions)
+        metadata['ready'] = [{key: phase[key] for key in (*routing._IDENTITY, 'buildKey')}
+            for phase in (ready('sdk-ios', 'metadata', 'ios'), ready('sdk-core', 'binary', 'common'),
+                          ready('sdk-android', 'binary', 'android'))]
+        direct_metadata = routing.native_sdk_resume(metadata, self.locator, self.expected, **arguments)
+        self.assertTrue(direct_metadata['native_sdk_direct'])
+        self.assertEqual({'include': []}, json.loads(direct_metadata['sdk_matrix']))
+        metadata_bound = routing.bind(metadata, self.locator, self.expected)
+        self.assertTrue(routing.select(metadata_bound, self.locator, self.expected,
+                                       family='javascript')['ios_validation_direct'])
+        self.assertTrue(routing.select(metadata_bound, self.locator, self.expected,
+                                       family='ios-metadata')['sdk_workers_required'])
         for changes in ({'sdk_recovery_only': False}, {'runtime_workers_required': 'true'},
                         {'supervisor_key': 'sha256:' + '3' * 64}):
             with self.subTest(changes=changes):

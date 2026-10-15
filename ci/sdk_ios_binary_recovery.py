@@ -211,12 +211,6 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
     if products._identity(receipt) != instance:
         raise ValueError("Prior JavaScript recovery requires its exact package receipt")
     producer = receipt["producer"]
-    prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
-        f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
-    _require_prior(plan, consumer_producer, prior)
-    workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
-    if workflow is None:
-        raise ValueError("Prior JavaScript package lacks its reviewed original workflow")
     transport = require_exact_keys(products._canonical_control(parent / "capture-transport.json", "Prior JS transport"),
         {"artifact", "captureProducer", "observed", f"{phase}ReceiptSha256"}, "Prior JS transport")
     if transport["captureProducer"] != producer or transport[f"{phase}ReceiptSha256"] != sha256_bytes(raw):
@@ -242,6 +236,12 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
             return [record]
     if instance.component == "sdk-ios":
         raise ValueError("Completed iOS validation controls require exact native authority")
+    prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
+        f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
+    _require_prior(plan, consumer_producer, prior)
+    workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
+    if workflow is None:
+        raise ValueError("Prior JavaScript package lacks its reviewed original workflow")
     with tempfile.TemporaryDirectory(prefix="sdk-javascript-replay-") as temporary:
         fresh = Path(temporary).resolve() / "capture"
         _capture_javascript_package(prior, transport["artifact"], fresh, plan=plan,
