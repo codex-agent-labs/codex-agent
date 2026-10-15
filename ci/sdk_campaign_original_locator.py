@@ -27,6 +27,7 @@ from products.signing_isolation import require_no_signing_secret
 
 
 RETAINED_CORE_BINARY_KEY = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
+RETAINED_CORE_PACKAGE_KEY = "sha256:6179fe876ee780222026ed9aaea33369fae8a65b927555c854c11e4151df5670"
 
 
 def retained_core_binary_origin(build_key, consumer):
@@ -48,7 +49,30 @@ def retained_core_binary_origin(build_key, consumer):
             "workerRoot": "/Users/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker"}}
 
 
-def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_build_key, token, environ=None):
+def retained_core_origin(phase, build_key, consumer):
+    """Keep the two reviewed Core originals separate from current admission."""
+    if phase == "binary":
+        return retained_core_binary_origin(build_key, consumer)
+    producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+        "commit": "42cee47db4198cc8de71ccef1c0c01758e325482", "tree": "ce3b15db4547f0261d16db9b7efc324a436fc51e",
+        "event": "pull_request", "runId": 38715748096, "runAttempt": 1, "pullRequest": 31}
+    if (phase != "package" or build_key != RETAINED_CORE_PACKAGE_KEY
+            or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+            or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+            or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+        return None
+    return {"producer": producer, "artifact_id": 11964185144,
+        "artifact_sha256": "sha256:e458b4b10b0de81ebb80cb95387b9d9a46a1749e26429402026cfa3a051ffded",
+        "job_id": 116359065578, "workflow_sha": "f09abcc6e6783bec2bea31d8c3db93c861d3a9cb",
+        "workflow_path": ".github/workflows/sdk-core-package-validation.yml",
+        "job_name": "product-validation / sdk-core-package-wave / sdk-core-package-common",
+        "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+            "workerRoot": "/home/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker",
+            "compatibilityRequest": "/tmp/sdk-consumer-inputs-vz5aacgm/capture/original/sdk-inputs/sdk-compatibility-request.json"}}
+
+
+def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_build_key, token, environ=None,
+                                      phase="binary"):
     """Avoid production for an exact retained success; this grants no admission."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -59,13 +83,13 @@ def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_bu
         raise ValueError("Retained Core lookup requires an authorized PR or merge-group plan")
     before = canonical_json_bytes(plan)
     consumer = products.validate_producer(products._consumer(plan, environment)["producer"])
-    origin = retained_core_binary_origin(expected_build_key, consumer)
+    origin = retained_core_origin(phase, expected_build_key, consumer)
     if origin is not None:
         producer = origin["producer"]
-        name = (f"codex-agent-sdk-worker-sdk-core-binary-common-{expected_build_key[7:]}-"
+        name = (f"codex-agent-sdk-worker-sdk-core-{phase}-common-{expected_build_key[7:]}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
-        located = _locate(producer, phase="binary", job=origin["job_name"], name=name, token=token,
-            trusted_workflows_by_phase={"binary": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+        located = _locate(producer, phase=phase, job=origin["job_name"], name=name, token=token,
+            trusted_workflows_by_phase={phase: {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
             expected_build_key=expected_build_key, expected_job_id=origin["job_id"])
         if located != {key: origin[key] for key in ("artifact_id", "artifact_sha256")}:
             raise ValueError("Retained Core upload differs from its reviewed successful original")
@@ -73,7 +97,7 @@ def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_bu
     if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
             or canonical_json_bytes(plan) != before
             or products.validate_producer(products._consumer(plan, environment)["producer"]) != consumer
-            or origin != retained_core_binary_origin(expected_build_key, consumer)):
+            or origin != retained_core_origin(phase, expected_build_key, consumer)):
         raise ValueError("Retained Core election or original changed during lookup")
     return origin
 

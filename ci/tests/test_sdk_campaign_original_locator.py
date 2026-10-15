@@ -18,6 +18,28 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class SdkCampaignOriginalLocatorTest(TestCase):
+    def test_retained_package_lookup_binds_exact_original_and_later_consumer(self):
+        key = locator.RETAINED_CORE_PACKAGE_KEY
+        consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
+        origin = locator.retained_core_origin("package", key, consumer)
+        self.assertEqual(11964185144, origin["artifact_id"])
+        for phase, change in (("binary", {}), ("validation", {}), ("package", {"pullRequest": 32}),
+                ("package", {"runId": 38715748096}), ("package", {"runId": True}),
+                ("package", {"repository": "other/repository"}), ("package", {"event": "merge_group"})):
+            self.assertIsNone(locator.retained_core_origin(phase, key, {**consumer, **change}))
+        plan = {"event": "pull_request", "remoteBuildAuthorized": True}
+        with patch.object(locator.products, "_validate_plan", return_value=plan), \
+                patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                patch.object(locator, "_locate", return_value={name: origin[name] for name in
+                    ("artifact_id", "artifact_sha256")}) as observe:
+            result = locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                expected_build_key=key, token="synthetic-token", environ={}, phase="package")
+            self.assertEqual(origin, result)
+            self.assertEqual("package", observe.call_args.kwargs["phase"])
+            self.assertEqual(origin["job_id"], observe.call_args.kwargs["expected_job_id"])
+            self.assertEqual({"package": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+                observe.call_args.kwargs["trusted_workflows_by_phase"])
+
     def test_retained_locator_imports_from_direct_ci_script_path(self):
         import subprocess, sys
         from pathlib import Path

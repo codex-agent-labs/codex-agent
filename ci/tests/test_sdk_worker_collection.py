@@ -279,7 +279,15 @@ class SdkWorkerCollectionTest(unittest.TestCase):
             self.assertEqual(self.child_job, result["rows"][0]["jobName"])
 
     def test_retained_core_original_needs_fresh_collection_session_and_exact_child(self):
-        instance, ready, _, _, files = self.shard("binary", component="sdk-core", target="common")
+        self.check_retained_core_original("binary")
+
+    def test_retained_core_package_needs_fresh_collection_session_and_exact_child(self):
+        self.check_retained_core_original("package")
+
+    def check_retained_core_original(self, phase):
+        self.child_path = f".github/workflows/sdk-core-{phase}-validation.yml"
+        self.child_job = f"product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-common"
+        instance, ready, _, _, files = self.shard(phase, component="sdk-core", target="common")
         raw = archive(files)
         original = dict(self.producer)
         artifact_name = self.names(instance, ready["buildKey"])[1]
@@ -302,7 +310,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         with adapter.verification_session(), \
                 patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
                 self.official_api({instance: ready}, {instance: raw}) as (query, _, downloaded), \
-                patch("sdk_campaign_original_locator.retained_core_binary_origin", return_value=origin), \
+                patch("sdk_campaign_original_locator.retained_core_origin", return_value=origin), \
                 patch.object(adapter, "_observe_ci_producer_jobs", side_effect=observed), \
                 patch("sdk_handoff._ensure_observed_sdk_commit") as source:
             old_query = query.side_effect
@@ -319,7 +327,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
             def collect(path, child=self.child_path):
                 return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
                     path, trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
-                    token="synthetic-token", sdk_family="core-binary",
+                    token="synthetic-token", sdk_family="core-" + phase,
                     sdk_worker_workflow_path=child, sdk_worker_job_name=self.child_job)
             result = collect(destination)
             row, = result["rows"]
@@ -337,7 +345,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
             failed = collect(self.repository / "build/wrong-original-job")
             self.assertIn("reviewed successful job", failed["rows"][0]["reason"])
             downloaded.assert_called_once()
-        with patch("sdk_campaign_original_locator.retained_core_binary_origin", return_value=origin), \
+        with patch("sdk_campaign_original_locator.retained_core_origin", return_value=origin), \
                 self.assertRaisesRegex(ValueError, "fresh authenticated"):
             adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, PIN)
 

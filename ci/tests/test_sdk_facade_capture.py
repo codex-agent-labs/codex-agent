@@ -273,15 +273,15 @@ class CoreBinaryCaptureTest(FacadeCaptureTest):
                     with self.assertRaisesRegex(ValueError, "missing or ambiguous"): self.call()
 
     def test_retained_core_binary_keeps_original_publisher_and_exact_locator(self):
-        if (self.component, self.phase) != ("sdk-core", "binary"):
-            self.skipTest("Exact retained Core binary only")
-        path = ".github/workflows/sdk-core-binary-validation.yml"
-        job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
+        if self.component != "sdk-core" or self.phase not in ("binary", "package"):
+            self.skipTest("Exact retained Core binary/package only")
+        path = f".github/workflows/sdk-core-{self.phase}-validation.yml"
+        job = f"product-validation / sdk-core-{self.phase}-wave / sdk-core-{self.phase}-common"
         origin = {"producer": self.producer, "artifact_id": 701, "artifact_sha256": self.artifact["digest"],
             "workflow_path": path, "workflow_sha": self.pin, "job_name": job, "job_id": self.jobs[0]["id"]}
         self.run["referenced_workflows"][0]["path"] = f"codex-agent-labs/codex-agent/{path}@{self.pin}"
         self.jobs[0]["name"] = f"{job} ({self.receipt['buildKey']}, ..."[:118] + "..."
-        with patch("sdk_campaign_original_locator.retained_core_binary_origin", return_value=origin):
+        with patch("sdk_campaign_original_locator.retained_core_origin", return_value=origin):
             arguments = dict(trusted_workflow_path=path, trusted_job_name=job, trusted_workflow_sha="f" * 40)
             self.call(**arguments)
             shutil.rmtree(self.output)

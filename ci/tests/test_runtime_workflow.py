@@ -834,7 +834,7 @@ class RuntimeWorkflowTest(unittest.TestCase):
 class WorkerUploadPreflightTest(unittest.TestCase):
     def test_retained_core_presence_reaches_collection_without_current_upload(self):
         from ci.tests import test_runtime_resume_capture as fixtures
-        from sdk_campaign_original_locator import RETAINED_CORE_BINARY_KEY
+        from sdk_campaign_original_locator import RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY
         fixture = fixtures.RuntimeResumeCaptureTest()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
@@ -853,7 +853,12 @@ class WorkerUploadPreflightTest(unittest.TestCase):
             locate.assert_called_once_with(fixture.plan_path, fixture.root,
                 expected_build_key=RETAINED_CORE_BINARY_KEY, token='fixture', environ=fixture.environment)
             locate.reset_mock()
-            for family, wave in (('core-package', 12), ('core-binary', 12)):
+            preflight('core-package', 12)
+            locate.assert_called_once_with(fixture.plan_path, fixture.root,
+                expected_build_key=RETAINED_CORE_PACKAGE_KEY, token='fixture', environ=fixture.environment,
+                phase='package')
+            locate.reset_mock()
+            for family, wave in (('core-package', 11), ('core-binary', 12)):
                 with self.subTest(family=family, wave=wave), self.assertRaisesRegex(ValueError, 'parent recovery'):
                     preflight(family, wave)
             locate.assert_not_called()

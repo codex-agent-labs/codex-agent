@@ -35,6 +35,9 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
     def test_retained_original_skips_production_and_keeps_original_context(self):
         from ci import sdk_campaign_original_locator as locator
         source = self.source("retained")
+        retained = self.action.split("    - id: retained\n", 1)[1].split("    - id: context", 1)[0]
+        self.assertNotIn("if: inputs.phase == 'binary'", retained)
+        self.assertIn("PHASE: ${{ inputs.phase }}", retained)
         self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))
         self.assertLess(self.action.index("- id: retained"), self.action.index("uses: ./.github/actions/setup-kmp"))
         self.assertIn("if: steps.retained.outputs.reused != 'true'", self.action)
@@ -47,7 +50,7 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
                 output.write_text("")
                 with patch.dict(os.environ, {"PLAN": "/current/plan", "BUILD_KEY": KEY,
                         "GITHUB_TOKEN": "synthetic-token", "GITHUB_WORKSPACE": str(ROOT),
-                        "GITHUB_OUTPUT": str(output)}, clear=True), \
+                        "GITHUB_OUTPUT": str(output), "PHASE": "package"}, clear=True), \
                         patch.object(locator, "locate_retained_core_binary_upload", return_value=selected):
                     exec(compile(source, "retained-core", "exec"), {})
                 values = dict(line.split("=", 1) for line in output.read_text().splitlines())
