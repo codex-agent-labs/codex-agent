@@ -17,6 +17,36 @@ from products.inventory import canonical_json_bytes
 
 
 class OriginalAppleUploadLocatorTest(unittest.TestCase):
+    def test_retained_signatures_bind_exact_election_and_fresh_original_job_window(self):
+        consumer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+                    "event": "pull_request", "pullRequest": 31, "runId": 38660614467, "runAttempt": 1}
+        for target, row in locator.RETAINED_VALIDATION_UPLOADS.items():
+            origin = locator.retained_validation_attestation_origin(target, row[0], consumer)
+            self.assertIsNotNone(origin)
+            for changes in ({"runId": 38660614466}, {"runId": True}, {"pullRequest": 32},
+                            {"repository": "other/repository"}, {"event": "push"}):
+                self.assertIsNone(locator.retained_validation_attestation_origin(target, row[0], {**consumer, **changes}))
+            self.assertIsNone(locator.retained_validation_attestation_origin(target, "sha256:" + "0" * 64, consumer))
+            job = {"id": origin["job_id"], "name": f"product-validation / sdk-apple-validation-attestation-{target}",
+                   "started_at": "2026-10-15T00:54:00Z", "completed_at": "2026-10-15T01:10:00Z"}
+            artifact = {"size_in_bytes": origin["artifact_bytes"], "created_at": "2026-10-15T01:08:00Z"}
+            with patch.object(locator.products, "_observe_ci_producer_jobs", return_value=[{"run": {}, "jobs": [job]}]) as observe, \
+                    patch.object(locator.products, "_contract_ci_upload_metadata", return_value=artifact) as metadata:
+                result = locator.observe_retained_validation_attestation(target, row[0], consumer, token="synthetic")
+                self.assertEqual(origin["producer"], observe.call_args.args[0]["attestation"])
+                self.assertEqual(origin["workflow_sha"], observe.call_args.kwargs["trusted_workflow_sha"])
+                self.assertEqual((origin["artifact_id"], origin["artifact_sha256"]), metadata.call_args.args[:2])
+                self.assertEqual(origin["receipt_sha256"], result["receipt_sha256"])
+                for change in ("job", "size", "window"):
+                    old_job, old_artifact = deepcopy(job), deepcopy(artifact)
+                    if change == "job": job["id"] += 1
+                    elif change == "size": artifact["size_in_bytes"] += 1
+                    else: artifact["created_at"] = "2026-10-15T02:00:00Z"
+                    with self.subTest(target=target, change=change), self.assertRaises(ValueError):
+                        locator.observe_retained_validation_attestation(target, row[0], consumer, token="synthetic")
+                    job.clear(); job.update(old_job)
+                    artifact.clear(); artifact.update(old_artifact)
+
     def setUp(self):
         self.f = fixture.RuntimeAggregateUploadTest(methodName="runTest")
         self.addCleanup(self.f.doCleanups)

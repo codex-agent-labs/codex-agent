@@ -74,6 +74,7 @@ class AppleWorkerCollectionTest(unittest.TestCase):
         return job, artifact
 
     def captured(self, plan, destination, **kwargs):
+        capture._require_capability_output_separate(Path(destination), [kwargs["repository_root"], Path(plan)])
         self.assertEqual(self.plan_path, plan)
         self.assertEqual(self.originals[kwargs["target"]][1]["receiptSha256"], kwargs["expected_receipt_sha256"])
         self.assertEqual(PIN, kwargs["trusted_workflow_sha"])
@@ -133,7 +134,7 @@ class AppleWorkerCollectionTest(unittest.TestCase):
             trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
             token="synthetic-token", sdk_family="ios-validation", sdk_apple_validation_policy=self.policy)
 
-    def test_both_targets_pair_real_original_shards_and_retain_separate_full_signed_upload(self):
+    def test_both_targets_capture_externally_and_retain_admitted_evidence_with_original_locators(self):
         rows = [self.shard(target) for target in TARGETS]
         ready, uploads = {row[0]: row[1] for row in rows}, {row[0]: row[2] for row in rows}
         before = {target: regular_file_inventory(self.originals[target][0]) for target in TARGETS}
@@ -158,7 +159,13 @@ class AppleWorkerCollectionTest(unittest.TestCase):
             self.assertEqual(self.originals[target][2], {item["relativePath"]: (original / item["relativePath"]).read_bytes()
                 for item in regular_file_inventory(original, allow_empty=True)})
             retained = original.parent / "apple-attestation-upload"
-            self.assertEqual(b"opaque complete signed controller upload\x00\xff", (retained / "original-upload.zip").read_bytes())
+            self.assertFalse((retained / "original-upload.zip").exists())
+            self.assertEqual({"capture-transport.json", "inventory.json", "original"},
+                             {path.name for path in retained.iterdir()})
+            inventory = load_canonical_json(retained / "inventory.json")
+            transport = next(row for row in inventory["files"] if row["relativePath"] == "original-upload.zip")
+            self.assertEqual(sha256_bytes(b"opaque complete signed controller upload\x00\xff"), transport["sha256"])
+            self.assertEqual(b"opaque transport observation\n", (retained / "capture-transport.json").read_bytes())
             self.assertEqual(b"opaque caller provenance\n", (retained / "original/caller.json").read_bytes())
             evidence = destination / row["sdkAppleValidationEvidenceDirectory"]
             self.assertEqual(original.parent / "sdk-apple-validation-evidence", evidence)
@@ -241,12 +248,15 @@ class AppleWorkerCollectionTest(unittest.TestCase):
         self.assertIn("elected plan and producer", row["reason"])
         self.assertTrue((destination / row["originalDirectory"] / "worker/gradle.log").is_file())
 
-    def test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(self):
+    def test_retained_worker_and_signer_preserve_both_original_producers(self):
+        self.test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(retain_signer=True)
+
+    def test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(self, retain_signer=False):
         instance, ready, raw = self.shard(TARGETS[0])
         original = deepcopy(self.producer)
-        self.producer = {**original, "runId": 8, "runAttempt": 1, "commit": "c" * 40, "tree": "d" * 40}
+        self.producer = {**original, "runId": 9 if retain_signer else 8, "runAttempt": 1, "commit": "c" * 40, "tree": "d" * 40}
         self.plan["validationCommit"] = self.producer["commit"]
-        self.environment.update(GITHUB_RUN_ID="8", GITHUB_RUN_ATTEMPT="1")
+        self.environment.update(GITHUB_RUN_ID=str(self.producer["runId"]), GITHUB_RUN_ATTEMPT="1")
         origin = {"producer": original, "artifact_id": 901, "artifact_sha256": sha256_bytes(raw),
                   "job_id": 901, "workflow_sha": PIN}
         worker_name = f"product-validation / sdk-sdk-ios-validation-{instance.target}"
@@ -263,11 +273,26 @@ class AppleWorkerCollectionTest(unittest.TestCase):
                 return [{"run": {"head_sha": original["commit"]}, "jobs": [old_job]}]
             return observe(producers, **kwargs)
         destination = self.repository / "build/retained-original"
+        signed = None
+        if retain_signer:
+            signer_producer = {**self.producer, "runId": 8, "commit": "e" * 40, "tree": "f" * 40}
+            signer_job, signer_artifact = self.signer(instance.target, 1901)
+            signer_job.update(run_id=8, head_sha=signer_producer["commit"])
+            signer_artifact["name"] = signer_artifact["name"].replace(self.producer["tree"], signer_producer["tree"])
+            signer_artifact["workflow_run"] = {"id": 8, "head_sha": signer_producer["commit"]}
+            signed = {"producer": signer_producer, "workflow_sha": PIN,
+                "receipt_sha256": self.originals[instance.target][1]["receiptSha256"], "artifact": signer_artifact,
+                "observed": [{"run": {"head_sha": signer_producer["commit"]}, "jobs": [signer_job]}]}
         with adapter.verification_session():
             with self.controls({instance: ready}, {instance: raw}) as controls, \
                     patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
+                    patch("sdk_apple_upload_locator.observe_retained_validation_attestation", return_value=signed) as retained_signer, \
                     patch.object(adapter, "_observe_ci_producer_jobs", side_effect=observe_original), \
                     patch.object(adapter, "api_json", wraps=adapter.api_json) as query:
+                if retain_signer:
+                    listed = controls[1].side_effect
+                    controls[1].side_effect = lambda *args: [row for row in listed(*args)
+                        if "sdk-apple-validation" not in row.get("name", "")]
                 current_query = query._mock_wraps
                 def metadata(url, token):
                     value = current_query(url, token)
@@ -279,6 +304,7 @@ class AppleWorkerCollectionTest(unittest.TestCase):
                 result = self.collect(destination)
                 row, = result["rows"]
                 self.assertEqual("success", row["result"], row["reason"])
+                retained_signer.assert_called_once_with(instance.target, ready["buildKey"], self.producer, token="synthetic-token")
                 self.assertNotIn("original_run_attempt", controls[2].call_args.kwargs)
                 shard = destination / row["shardDirectory"]
                 verified = verify_phase_shard(shard, instance)
@@ -308,13 +334,15 @@ class AppleWorkerCollectionTest(unittest.TestCase):
     def test_admission_time_shard_or_signed_provenance_mutation_cannot_mark_success(self):
         rows = [self.shard(target) for target in TARGETS]
         ready, uploads = {row[0]: row[1] for row in rows}, {row[0]: row[2] for row in rows}
-        for selected in ("shard", "provenance"):
+        for selected in ("shard", "provenance", "retained-provenance"):
             destination = self.repository / f"build/mutation-{selected}"
             def mutate(shard, carrier, output, **kwargs):
                 result = self.admitted(shard, carrier, output, **kwargs)
                 if kwargs["target"] == TARGETS[0]:
                     path = (Path(shard) / "phase-receipt.json" if selected == "shard" else
                             Path(carrier).parent / "caller.json")
+                    if selected == "retained-provenance":
+                        path = Path(shard).parents[1] / "apple-attestation-upload/capture-transport.json"
                     path.write_bytes(path.read_bytes() + b"late mutation")
                 return result
             with self.subTest(selected=selected), self.controls(ready, uploads) as controls:

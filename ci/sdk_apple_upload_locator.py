@@ -47,6 +47,48 @@ def retained_validation_origin(target, build_key, consumer):
             "workflow_sha": "950d5d73b96d95d99c38156297f3bcd6031e19f1"}
 
 
+def retained_validation_attestation_origin(target, build_key, consumer):
+    """Keep the two completed protected signatures when later collection fails."""
+    worker = retained_validation_origin(target, build_key, consumer)
+    if worker is None:
+        return None
+    producer = {**worker["producer"], "commit": "38045b7856bf12a6007306df07661f2f71672c0b",
+        "tree": "8a0c0ba0fb7446dfe83d689ef624d96e553a7342", "runId": 38660614466, "runAttempt": 1}
+    if (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"]):
+        return None
+    row = {
+        "ios-arm64": (11939829176, "sha256:9d3a933a94186474d41c5bb648d683e4182d9cbb7ee73d98ab1a0990bc376f6e",
+            3225406781, 116186904230, "sha256:f4d24e7f2f09630811e0d930a86f1f8964711898b6577ee48e386d86b8926be0"),
+        "ios-simulator-arm64": (11939862672, "sha256:2a98b32a3f2f1494c0259c9db060bea29ef15f549e1ad7a10572860b6ef99526",
+            3225851351, 116186904368, "sha256:0088a74dbd328828ba42ca6bf83d166f09aa1f50eceb206bea94659af97243c4"),
+    }[target]
+    return {"producer": producer, "artifact_id": row[0], "artifact_sha256": row[1],
+        "artifact_bytes": row[2], "job_id": row[3], "receipt_sha256": row[4],
+        "workflow_sha": "0217db8b553dfe4ed3a09b6531636ff5aa7e2ede"}
+
+
+def observe_retained_validation_attestation(target, build_key, consumer, *, token):
+    """Fresh fixed-origin routing only; full capture/signature/admission follow."""
+    origin = retained_validation_attestation_origin(target, build_key, consumer)
+    if origin is None:
+        return None
+    producer = origin["producer"]
+    job = f"product-validation / sdk-apple-validation-attestation-{target}"
+    observed = products._observe_ci_producer_jobs({"attestation": producer},
+        jobs_by_phase={"attestation": job}, trusted_workflow_sha=origin["workflow_sha"], token=token)
+    jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]
+    if len(jobs) != 1 or jobs[0].get("id") != origin["job_id"]:
+        raise ValueError("Retained Apple attestation differs from its reviewed successful job")
+    name = (f"codex-agent-sdk-apple-validation-evidence-{target}-{origin['receipt_sha256'][7:]}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+    artifact = products._contract_ci_upload_metadata(origin["artifact_id"], origin["artifact_sha256"],
+        name, producer, observed[0]["run"], token)
+    products._require_artifact_job_window(observed[0], job, artifact)
+    if artifact["size_in_bytes"] != origin["artifact_bytes"]:
+        raise ValueError("Retained Apple attestation differs from its reviewed upload size")
+    return {**origin, "artifact": artifact, "observed": observed}
+
+
 def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
             trusted_workflows_by_phase=None, expected_build_key=None, expected_job_id=None):
     """Shared fixed-callsite observation/list/detail/window checks, no downloads."""

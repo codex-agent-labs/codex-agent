@@ -198,7 +198,15 @@ def select_native_state(needs, *, stage):
         if preparation["result"] != ("success" if prepare == "true" else "skipped"):
             raise ValueError("Native preparation did not match its election")
     expected = "success" if required == "true" else "skipped"
-    if any(job["result"] != expected for job in apple_signing):
+    signing_expected = expected
+    if apple_signing and required == "true" and "sdk-ios-validation-outcome" in needs:
+        outcome = _job(needs, "sdk-ios-validation-outcome")
+        signing = outcome["outputs"].get("signing_required")
+        if (outcome["result"] != "success" or signing not in ("true", "false")
+                or outcome["outputs"].get("all_failed") != "false"):
+            raise ValueError("Apple signing outcome failed or is incomplete")
+        signing_expected = "success" if signing == "true" else "skipped"
+    if any(job["result"] != signing_expected for job in apple_signing):
         raise ValueError("Apple preparation or attestation failed or differed from election")
     if workers["result"] != expected or collector["result"] != expected:
         raise ValueError("Native workers or collection failed or differed from election")

@@ -6399,10 +6399,12 @@ def collect_runtime_workers(
             try:
                 original_producer, original_observed, original_jobs = producer, observed, jobs
                 candidates = [item for item in artifacts if isinstance(item, dict) and item.get("name") == artifact_name]
-                retained_validation = None
+                retained_validation = retained_attestation = None
                 if sdk_family == "ios-validation":
-                    from sdk_apple_upload_locator import retained_validation_origin
+                    from sdk_apple_upload_locator import retained_validation_origin, observe_retained_validation_attestation
                     retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
+                    retained_attestation = observe_retained_validation_attestation(
+                        instance.target, ready["buildKey"], producer, token=token)
                     if retained_validation is not None:
                         original_producer = retained_validation["producer"]
                         artifact_name = (_worker_artifact_prefix(product, instance) + ready["buildKey"][7:] + "-"
@@ -6452,10 +6454,13 @@ def collect_runtime_workers(
                 candidate = candidates[0]
                 signer_failed = False
                 if sdk_family == "ios-validation":
-                    signer_producer = producer if retained_validation else original_producer
-                    signer_observation = observed if retained_validation else original_observed
+                    signer_producer = (retained_attestation["producer"] if retained_attestation else
+                                       producer if retained_validation else original_producer)
+                    signer_observation = (retained_attestation["observed"] if retained_attestation else
+                                          observed if retained_validation else original_observed)
                     signer_job = f"product-validation / sdk-apple-validation-attestation-{instance.target}"
-                    signer_jobs = [item for item in (current_jobs if retained_validation else original_jobs)
+                    signer_jobs = [item for item in (retained_attestation["observed"][0]["jobs"] if retained_attestation else
+                                   current_jobs if retained_validation else original_jobs)
                                    if item.get("name") == signer_job]
                     signer_failed = (len(signer_jobs) != 1 or signer_jobs[0].get("conclusion") != "success"
                         or signer_jobs[0].get("run_id") != signer_producer["runId"]
@@ -6522,24 +6527,38 @@ def collect_runtime_workers(
                     signer_name = (f"codex-agent-sdk-apple-validation-evidence-{instance.target}-"
                         f"{verified['receiptSha256'].removeprefix('sha256:')}-{signer_producer['tree']}-"
                         f"attempt-{signer_producer['runAttempt']}")
-                    signer_artifacts = [item for item in artifacts if isinstance(item, dict)
+                    signer_artifacts = [item for item in ([retained_attestation["artifact"]] if retained_attestation else artifacts)
+                                        if isinstance(item, dict)
                                         and item.get("name") == signer_name]
                     if len(signer_artifacts) != 1:
                         raise ValueError("Apple signer upload is missing or ambiguous")
                     signed = signer_artifacts[0]
-                    signed_capture = retained / "apple-attestation-upload"
-                    capture_apple_validation_attestation(plan_path, signed_capture,
-                        target=instance.target, expected_receipt_sha256=verified["receiptSha256"],
-                        artifact_id=signed.get("id"), artifact_sha256=signed.get("digest"),
-                        trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
-                        environ=environment, token=token,
-                        **({"original_run_attempt": signer_producer["runAttempt"]}
-                           if signer_producer != producer else {}))
-                    signed_inventory = regular_file_inventory(signed_capture, allow_empty=True)
+                    if retained_attestation and verified["receiptSha256"] != retained_attestation["receipt_sha256"]:
+                        raise ValueError("Retained Apple signer differs from the selected original receipt")
                     authenticated = retained / "sdk-apple-validation-evidence"
-                    # Admission cannot publish inside its source repository.
-                    # Retain its verified bytes only after that external gate exits.
+                    # Capture and admission both require external destinations.
+                    # Keep original upload locators/inventories, not another copy
+                    # of the complete signed carrier retained after admission.
                     with tempfile.TemporaryDirectory(prefix="apple-collected-admission-") as staging:
+                        signed_capture = Path(staging).resolve() / "apple-attestation-upload"
+                        capture_apple_validation_attestation(plan_path, signed_capture,
+                            target=instance.target, expected_receipt_sha256=verified["receiptSha256"],
+                            artifact_id=signed.get("id"), artifact_sha256=signed.get("digest"),
+                            trusted_workflow_sha=(retained_attestation["workflow_sha"] if retained_attestation else
+                                                  trusted_workflow_sha), repository_root=root,
+                            environ=environment, token=token,
+                            **({"original_run_attempt": signer_producer["runAttempt"]}
+                               if signer_producer != producer and retained_attestation is None else {}))
+                        signed_inventory = regular_file_inventory(signed_capture, allow_empty=True)
+                        provenance = retained / "apple-attestation-upload"
+                        for path in ("capture-transport.json", "original/caller.json"):
+                            retained_control = provenance / path
+                            retained_control.parent.mkdir(parents=True, exist_ok=True)
+                            retained_control.write_bytes(read_regular_file_bytes(signed_capture / path,
+                                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+                        write_canonical_json(provenance / "inventory.json",
+                            {"schemaVersion": 1, "files": signed_inventory})
+                        provenance_inventory = regular_file_inventory(provenance, allow_empty=True)
                         staged = Path(staging).resolve() / "evidence"
                         stage_collected_apple_validation(original / "shard",
                             signed_capture / "original/sdk-apple-validation-evidence", staged,
@@ -6551,9 +6570,10 @@ def collect_runtime_workers(
                         if (regular_file_inventory(staged, allow_empty=True) != staged_inventory
                                 or regular_file_inventory(authenticated, allow_empty=True) != staged_inventory):
                             raise ValueError("Apple admitted carrier changed during retention")
-                    if (verify_phase_shard(original / "shard", instance) != verified
-                            or regular_file_inventory(signed_capture, allow_empty=True) != signed_inventory):
-                        raise ValueError("Apple original shard or signer evidence changed during collection")
+                        if (verify_phase_shard(original / "shard", instance) != verified
+                                or regular_file_inventory(signed_capture, allow_empty=True) != signed_inventory
+                                or regular_file_inventory(provenance, allow_empty=True) != provenance_inventory):
+                            raise ValueError("Apple original shard or signer evidence changed during collection")
                     row["sdkAppleValidationEvidenceDirectory"] = authenticated.relative_to(prepared).as_posix()
                 if sdk_family == "ios-metadata":
                     from products.sdk_apple_validation_admission import AppleValidationAdmission

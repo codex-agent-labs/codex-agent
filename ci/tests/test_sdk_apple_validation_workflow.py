@@ -174,11 +174,18 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
                      "sdk-apple-validation-attestation", "sdk-collect-9", "sdk-ios-validation-result"):
             self.assertTrue({"sdk-ios-validation", "sdk-ios-validation-native"} <= self.needs(self.job(name)))
         outcome = self.condition(self.job("sdk-ios-validation-outcome"))
-        self.assertIn("needs.sdk-ios-validation.result != 'success' && needs.sdk-ios-validation-native.result != 'success'", outcome)
+        self.assertIn("needs.sdk-native-result.outputs.sdk_workers_required == 'true'", outcome)
+        self.assertNotIn("needs.sdk-ios-validation.result != 'success'", outcome)
+        for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation"):
+            self.assertIn("needs.sdk-ios-validation-outcome.outputs.signing_required == 'true'",
+                          self.condition(self.job(name)))
+        for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation", "sdk-collect-9"):
+            self.assertIn("needs.sdk-ios-validation-outcome.result == 'success' &&",
+                          self.condition(self.job(name)))
 
     def test_terminal_executes_selector_after_all_matrices_and_never_fabricates_output(self):
         job = self.job("sdk-ios-validation-result")
-        expected_jobs = {"plan", "sdk-native-result", "sdk-ios-validation-native", *MATRICES, "sdk-collect-9"}
+        expected_jobs = {"plan", "sdk-native-result", "sdk-ios-validation-native", "sdk-ios-validation-outcome", *MATRICES, "sdk-collect-9"}
         self.assertEqual(expected_jobs, self.needs(job))
         self.assertNotIn("sdk_workers_required", self.condition(job))
         for name in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):

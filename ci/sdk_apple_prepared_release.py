@@ -17,9 +17,10 @@ from product_reuse import _validate_plan, _consumer, _release_trust, capture_sdk
 from runtime_aggregate_release import _destination
 from sdk_apple_preparation_capture import capture_apple_signing_preparation
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     require_integer, require_sha256, sha256_bytes, snapshot_regular_tree, write_canonical_json,
 )
+from products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from products.sdk_apple_validation_attestation import (
     ATTESTATION_NAME, derive_apple_validation_attestation, verified_prepared_apple_validation,
 )
@@ -27,6 +28,7 @@ from products.sdk_apple_validation_inputs import capture_sdk_apple_validation_ev
 from products.signatures import load_keyring, private_key_bytes, require_active_release_key, sign_manifest, verify_manifest_signature
 
 
+@verification_scoped
 def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_path,
         validation_receipt_path, destination, *, target, expected_receipt_sha256,
         artifact_id, artifact_sha256, preparation_artifact_id, preparation_artifact_sha256,

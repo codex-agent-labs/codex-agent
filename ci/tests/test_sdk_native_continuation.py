@@ -97,6 +97,23 @@ class NativePreparationAnchorSelectionTest(unittest.TestCase):
 
 
 class NativeStateSelectionTest(unittest.TestCase):
+    def test_retained_signing_route_still_requires_complete_successful_collection(self):
+        needs = needs_for("ios-validation", required=True)
+        needs["sdk-ios-validation-outcome"] = job("success", signing_required="false", all_failed="false")
+        for name in ("sdk-apple-signing-prepare", "sdk-apple-validation-attestation"):
+            needs[name] = job()
+        self.assertEqual("9", routing.select_native_state(needs, stage="ios-validation")["sdk_state_wave"])
+        for failure in ("outcome", "missing", "all-failed", "signer", "collector", "wave-failed"):
+            changed = deepcopy(needs)
+            if failure == "outcome": changed["sdk-ios-validation-outcome"]["result"] = "failure"
+            elif failure == "missing": del changed["sdk-ios-validation-outcome"]["outputs"]["signing_required"]
+            elif failure == "all-failed": changed["sdk-ios-validation-outcome"]["outputs"]["all_failed"] = "true"
+            elif failure == "signer": changed["sdk-apple-validation-attestation"]["result"] = "failure"
+            elif failure == "collector": changed["sdk-collect-9"]["result"] = "failure"
+            else: changed["sdk-collect-9"]["outputs"]["wave_failed"] = "true"
+            with self.subTest(failure=failure), self.assertRaises(ValueError):
+                routing.select_native_state(changed, stage="ios-validation")
+
     def test_core_android_continuation_has_exact_eight_wave_chain(self):
         families = ("core-binary", "core-package", "core-validation", "core-metadata",
                     "android-binary", "android-package", "android-validation", "android-metadata")

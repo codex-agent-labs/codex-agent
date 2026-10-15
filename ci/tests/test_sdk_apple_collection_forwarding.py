@@ -74,6 +74,7 @@ class AppleCollectionForwardingTest(unittest.TestCase):
                 failed_instances=(workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-simulator-arm64"),)
                     if failed else (), sdk_family="ios-validation", **policy,
                 sdk_original_workflow_sha=fixtures.PIN,
+                routing_output=True,
                 sdk_apple_evidence_roots=tuple(destination / "collection" / row["sdkAppleValidationEvidenceDirectory"]
                                              for row in successes))
             self.assertNotIn("sdk_evidence_roots", advanced.call_args.kwargs)

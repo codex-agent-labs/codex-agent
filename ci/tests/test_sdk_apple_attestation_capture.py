@@ -88,6 +88,31 @@ class AppleAttestationCaptureTest(unittest.TestCase):
         self.assertEqual(self.fixture.producer, result["captureProducer"])
         self.assertEqual("3", environment["GITHUB_RUN_ATTEMPT"])
 
+    def test_retained_cross_run_signer_keeps_original_producer_and_all_transport_gates(self):
+        f = self.fixture
+        origin = {"producer": f.producer, "artifact_id": 701, "artifact_sha256": f.artifact["digest"],
+                  "receipt_sha256": self.receipt_sha, "workflow_sha": f.pin,
+                  "job_id": f.jobs[0]["id"], "artifact_bytes": f.artifact["size_in_bytes"]}
+        environment = {"GITHUB_RUN_ID": "72", "GITHUB_RUN_ATTEMPT": "1"}
+        for failure in (None, "job", "size", "receipt", "workflow", "attempt"):
+            selected = deepcopy(origin)
+            f.output = f.work / (failure or "retained")
+            changes = {"environ": environment}
+            if failure == "job": selected["job_id"] += 1
+            elif failure == "size": selected["artifact_bytes"] += 1
+            elif failure == "receipt": selected["receipt_sha256"] = "sha256:" + "0" * 64
+            elif failure == "workflow": changes["trusted_workflow_sha"] = "f" * 40
+            elif failure == "attempt": changes["original_run_attempt"] = 2
+            with self.subTest(failure=failure), patch(
+                    "sdk_apple_upload_locator.retained_validation_attestation_origin", return_value=selected):
+                if failure:
+                    with self.assertRaises(ValueError): self.call(**changes)
+                    self.assertFalse(f.output.exists())
+                else:
+                    self.assertEqual(f.producer, self.call(**changes)["captureProducer"])
+                    self.assertEqual(f.raw, (f.output / "original-upload.zip").read_bytes())
+            self.assertEqual("72", environment["GITHUB_RUN_ID"])
+
     def test_both_targets_preserve_full_carrier_under_current_not_original_producer(self):
         f = self.fixture
         before = regular_file_inventory(self.carrier_fixture.root, allow_empty=True)

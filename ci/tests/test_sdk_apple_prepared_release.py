@@ -18,6 +18,7 @@ from ci.products.sdk_apple_validation_inputs import load_sdk_apple_validation_ev
 from ci.products.sdk_apple_validation_attestation import verified_apple_validation_attestation
 from ci.products.signatures import generate_development_key
 from ci.tests import test_sdk_apple_prepared_binding as fixtures
+from products.restore import _VERIFICATION_SESSION
 
 
 SECRET = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
@@ -88,6 +89,7 @@ class ApplePreparedReleaseTest(unittest.TestCase):
         return dict(self.plan_value)
 
     def capture_preparation(self, plan, destination, **kwargs):
+        self.assertIsNotNone(_VERIFICATION_SESSION.get())
         self.assertEqual(self.fixture.plan.read_bytes(), Path(plan).read_bytes())
         self.assertEqual(dict(target="ios-arm64", artifact_id=101, artifact_sha256="sha256:" + "1" * 64,
             trusted_workflow_sha="f" * 40, repository_root=self.candidate, environ=self.invocation_environment,
@@ -117,8 +119,12 @@ class ApplePreparedReleaseTest(unittest.TestCase):
 
     def invoke(self, **changes):
         self.invocation_environment = changes.get("environment", self.environment)
-        return release.attest_prepared_apple_validation_ci(self.trusted, self.candidate,
-            self.fixture.plan, self.fixture.receipt, self.destination, **{**self.arguments, **changes})
+        before = _VERIFICATION_SESSION.get()
+        try:
+            return release.attest_prepared_apple_validation_ci(self.trusted, self.candidate,
+                self.fixture.plan, self.fixture.receipt, self.destination, **{**self.arguments, **changes})
+        finally:
+            self.assertIs(before, _VERIFICATION_SESSION.get())
 
     def test_local_archive_hint_still_uses_independent_capture_and_real_signature(self):
         self.arguments["validation_archive"] = self.fixture.original / "transport.zip"

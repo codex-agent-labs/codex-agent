@@ -86,13 +86,14 @@ def ios_validation_outcome(plan_path, selected, destination, *, trusted_workflow
     keys = {products._identity(row): require_sha256(row.get("buildKey"), "Apple outcome elected key")
             for row in rows}
     # An earlier successful attempt must still reach ordinary recovery.
-    fallback = {"all_failed": False, "signing_matrix": canonical_json_bytes(selected).decode().strip()}
+    fallback = {"all_failed": False, "signing_required": True,
+                "signing_matrix": canonical_json_bytes(selected).decode().strip()}
     if producer["runAttempt"] != 1 or plan["event"] != "pull_request":
         return fallback
     observed = products._observe_ci_producer_jobs({"resume": producer},
         jobs_by_phase={"resume": "product-validation / product-resume"},
         trusted_workflow_sha=trusted_workflow_sha, token=token)
-    outcomes, successes = [], []
+    outcomes, successes, signing = [], [], []
     for instance in allowed - keys.keys():
         if any(job.get("conclusion") != "skipped" for job in products._matching_ci_jobs(
                 observed[0]["jobs"], products._worker_job_name("sdk", instance))):
@@ -118,7 +119,15 @@ def ios_validation_outcome(plan_path, selected, destination, *, trusted_workflow
         "artifacts", token)
     for outcome in outcomes:
         if outcome["worker"]["conclusion"] == "success":
-            continue  # Full original capture and preparation still precede signing.
+            from sdk_apple_upload_locator import observe_retained_validation_attestation
+            selected = outcome["selected"]
+            retained = observe_retained_validation_attestation(selected["target"], selected["buildKey"],
+                producer, token=token)
+            if retained is None:
+                signing.append(selected)  # Full capture/preparation precede new signing.
+            else:
+                outcome["retainedAttestation"] = retained
+            continue
         instance = products._identity(outcome["selected"])
         name = (products._worker_artifact_prefix("sdk", instance)
                 + f"{keys[instance][7:]}-{producer['tree']}-attempt-{producer['runAttempt']}")
@@ -134,7 +143,8 @@ def ios_validation_outcome(plan_path, selected, destination, *, trusted_workflow
         "producer": producer, "observed": observed, "workers": outcomes,
         "admittedPhases": [], "productBodiesDownloaded": 0})
     return {"all_failed": not successes,
-            "signing_matrix": canonical_json_bytes({"include": successes}).decode().strip()}
+            "signing_required": bool(signing),
+            "signing_matrix": canonical_json_bytes({"include": signing}).decode().strip()}
 
 
 def matrix(plan_path, discovery_root, state_root, github_output_path, *, repository_root=None, environ=None,

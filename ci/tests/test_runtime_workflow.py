@@ -788,7 +788,7 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                        for target in ('ios-arm64', 'ios-simulator-arm64'))
         rows = list(elected.values())
         products = workflow.products
-        for case in ('failed', 'mixed', 'success', 'retry', 'missing-upload', 'running', 'foreign-job',
+        for case in ('failed', 'mixed', 'success', 'retry', 'retained', 'partial-retained', 'bad-retained', 'missing-upload', 'running', 'foreign-job',
                      'duplicate-job', 'missing-job', 'duplicate-upload', 'bad-digest', 'expired', 'window',
                      'omitted-sibling', 'duplicate-election'):
             destination = fixture.repository / (case + '.json')
@@ -798,8 +798,12 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                     mock.patch.object(products, '_validate_plan', return_value={
                         'event': 'pull_request', 'remoteBuildAuthorized': True}), \
                     mock.patch.object(products, '_consumer', return_value={'producer': producer}), \
-                    mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('state replay')):
+                    mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('state replay')), \
+                    mock.patch('sdk_apple_upload_locator.observe_retained_validation_attestation', return_value=None) as retained:
                 original_query, original_listing = query.side_effect, listing.side_effect
+                if case == 'retained': retained.return_value = {'synthetic': 'observed original signer'}
+                elif case == 'partial-retained': retained.side_effect = [{'synthetic': 'observed original signer'}, None]
+                elif case == 'bad-retained': retained.side_effect = ValueError('retained original observation rejected')
 
                 def observe(url, token):
                     value = deepcopy(original_query(url, token))
@@ -813,7 +817,7 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                     if field == 'jobs':
                         workers = [job for job in values if 'sdk-sdk-ios-validation-' in job['name']]
                         for job in workers:
-                            job['conclusion'] = 'success' if case == 'success' else 'failure'
+                            job['conclusion'] = 'success' if case in {'success', 'retained', 'partial-retained', 'bad-retained'} else 'failure'
                         if case == 'mixed': workers[-1]['conclusion'] = 'success'
                         if case == 'running': workers[-1]['status'] = 'in_progress'
                         if case == 'foreign-job': workers[-1]['head_sha'] = 'f' * 40
@@ -830,14 +834,15 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                     return workflow.ios_validation_outcome(fixture.plan_path, selected, destination,
                         trusted_workflow_sha=original_pin, token='synthetic-token', repository_root=fixture.repository)
                 if case in {'running', 'foreign-job', 'duplicate-job', 'missing-job', 'duplicate-upload',
-                            'bad-digest', 'expired', 'window', 'omitted-sibling', 'duplicate-election'}:
+                            'bad-digest', 'expired', 'window', 'omitted-sibling', 'duplicate-election', 'bad-retained'}:
                     with self.assertRaises(ValueError): decide()
                     self.assertFalse(destination.exists())
                 else:
                     result = decide()
-                    expected = rows if case in {'success', 'retry'} else rows[-1:] if case == 'mixed' else []
+                    expected = rows if case in {'success', 'retry'} else rows[-1:] if case in {'mixed', 'partial-retained'} else []
                     self.assertEqual(expected, json.loads(result['signing_matrix'])['include'])
-                    self.assertEqual(not expected, result['all_failed'])
+                    self.assertEqual(not expected and case != 'retained', result['all_failed'])
+                    self.assertEqual(bool(expected), result['signing_required'])
                     if case == 'retry':
                         self.assertFalse(destination.exists())
                         query.assert_not_called()
