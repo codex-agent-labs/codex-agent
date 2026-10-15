@@ -4565,7 +4565,7 @@ def _verified_product_state(
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 trusted_workflow_sha=sdk_original_workflow_sha,
                 token=environment["GITHUB_TOKEN"], environ=environment)))
-    native_sdk = completed_frozen.sdk_original() if completed_frozen is not None else None
+    native_sdk = completed_frozen.sdk_original() if sdk_replays and completed_frozen is not None else None
     native_ids = set()
     if native_sdk is not None:
         native_ids.add(_identity(native_sdk["spec"]["completedPhase"]))
@@ -9456,15 +9456,12 @@ def resume_products(
             if instance in originals:
                 carrier_phases.append(originals[instance])
             elif instance in elected_prior:
-                sdk_capture_root = (("prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)) if instance.component == "javascript"
-                                    else "prior-failed-sdk-csharp" if instance.component == "csharp"
-                                    else "prior-failed-sdk-ios-package" if instance.phase == "package"
-                                    else f"prior-completed-sdk-ios-{instance.phase}-{instance.target}" if instance.phase in {"validation", "metadata"}
-                                    else "prior-failed-sdk")
-                shard = (prepared / sdk_capture_root / instance.component / instance.phase /
-                         instance.target / "original/shard" if instance.product == "sdk" else
-                         prepared / "prior-failed-runtime" / instance.component / instance.phase / instance.target /
-                         "phases" / instance.phase / "original/shard")
+                record = elected_prior[instance]
+                relative = require_relative_path(record["objectPath"], "Elected original object path")
+                suffix = "/" + object_relative_path(record["buildKey"], record["receiptSha256"])
+                if not relative.endswith(suffix):
+                    raise ValueError("Elected original object lacks its exact shard identity path")
+                shard = prepared / require_relative_path(relative.removesuffix(suffix), "Elected original shard")
                 descriptor = _canonical_control(shard / PHASE_SHARD_NAME, "Prior failed Runtime shard")
                 receipt = verify_phase_shard(shard, instance, **semantic)["receipt"]
                 carrier_phases.append({**by_id[instance], "state": "reused", "source": "phase-shard",

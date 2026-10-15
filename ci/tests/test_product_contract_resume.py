@@ -741,6 +741,7 @@ class ContractProductResumeTest(unittest.TestCase):
                     self.repository, self.environment, None, requested_scope=(javascript,))
 
     def test_recovered_javascript_package_is_carried_from_its_own_root(self):
+        # A relocated authenticated shard must not be rediscovered by guessing its family folder.
         # Orchestration fixture: synthetic SDK election, real Contract replay,
         # original object/shard verification and carrier writing. No host proof.
         from products import reuse as reuse_planner
@@ -806,8 +807,8 @@ class ContractProductResumeTest(unittest.TestCase):
             self.assertEqual("prior-failed-sdk-javascript", destination.name)
             fixture.finalize_phase_object(stage_root=stage, phase_plan=package_plan,
                 producer=receipt["producer"], product_version="0.2.0", trust_domain="development",
-                destination=destination / "javascript/package/node/original/shard")
-            return [recovery._javascript_package_record(destination / "javascript/package/node", artifact_root)]
+                destination=destination / "retained-original/javascript/package/node/original/shard")
+            return [recovery._javascript_package_record(destination / "retained-original/javascript/package/node", artifact_root)]
 
         def synthetic_election(result, requested, **kwargs):
             # Runtime execution prerequisites are intentionally absent here.
@@ -835,7 +836,7 @@ class ContractProductResumeTest(unittest.TestCase):
         retained = next(row for row in reuse["phases"] if adapter._identity(row) == package)
         self.assertEqual("retained", retained["state"])
         self.assertEqual(receipt["buildKey"], retained["buildKey"])
-        original = resumed / "prior-failed-sdk-javascript/javascript/package/node/original/shard"
+        original = resumed / "prior-failed-sdk-javascript/retained-original/javascript/package/node/original/shard"
         self.assertEqual((self.scratch / "original-receipt.json").read_bytes(),
                          (original / "phase-receipt.json").read_bytes())
         self.assertTrue(result["targetJobsRequired"])
