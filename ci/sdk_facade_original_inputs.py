@@ -37,6 +37,20 @@ from sdk_phase import maven_consumed_predecessors
 _FRESH_INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
 
 
+def _retained_validation_origin(raw, consumer):
+    from sdk_campaign_original_locator import retained_core_origin
+    receipt = load_canonical_json_bytes(raw)
+    if tuple(receipt.get(name) for name in ("product", "component", "phase")) != ("sdk", "sdk-core", "validation"):
+        return None
+    origin = retained_core_origin("validation", receipt["buildKey"], consumer, target=receipt["target"])
+    return origin if origin is not None and origin["producer"] == receipt["producer"] else None
+
+
+def _require_retained_upload(locator, origin):
+    if origin is not None and locator != {name: origin[name] for name in ("artifact_id", "artifact_sha256")}:
+        raise ValueError("Core validation metadata input differs from its reviewed original upload")
+
+
 def _fresh_policy_sources(policy):
     """Pin typed caller inputs before any original-upload API observation."""
     require_exact_keys(policy, {"plan", "toolingEvidence", "toolingPublicKey", "javaExecutable",
@@ -160,13 +174,16 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
         for target in SDK_FACADE_TARGETS:
             unchanged()
             path = Path(policy["validations"][target]["validationReceipt"])
+            origin = _retained_validation_origin(receipts[target], elected.producer)
+            workflow = trusted_workflow_sha if origin is None else origin["workflow_sha"]
             locator = locate_original_facade_upload(path, expected_receipt_sha256=sha256_bytes(receipts[target]),
-                trusted_workflow_sha=trusted_workflow_sha, token=token)
+                trusted_workflow_sha=workflow, token=token)
+            _require_retained_upload(locator, origin)
             unchanged()
             capture = captures / target
             capture_sdk_facade_validation_upload(plan, capture, validation_receipt_path=path,
                 artifact_id=locator["artifact_id"], artifact_sha256=locator["artifact_sha256"],
-                trusted_workflow_sha=trusted_workflow_sha, repository_root=root, token=token)
+                trusted_workflow_sha=workflow, repository_root=root, environ=environ, token=token)
             policy["validations"][target]["captureRoot"] = str(capture)
         arguments = fresh_metadata_arguments(policy)
         before = _inventory(captures, allow_empty=True)
@@ -258,13 +275,17 @@ def held_original_facade_metadata_policy(plan, *, catalog, catalog_source,
         for target in (*SDK_FACADE_TARGETS, "common"):
             unchanged()
             path = paths[target]
+            origin = _retained_validation_origin(originals[target],
+                load_canonical_json_bytes(originals["common"])["producer"])
+            workflow = trusted_workflow_sha if origin is None else origin["workflow_sha"]
             locator = locate_original_facade_upload(path,
                 expected_receipt_sha256=expected[target],
-                trusted_workflow_sha=trusted_workflow_sha, token=token)
+                trusted_workflow_sha=workflow, token=token)
+            _require_retained_upload(locator, origin)
             unchanged()
             arguments = dict(artifact_id=locator["artifact_id"],
                 artifact_sha256=locator["artifact_sha256"],
-                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_sha=workflow,
                 repository_root=root, token=token)
             capture = evidence / target
             if target == "common":

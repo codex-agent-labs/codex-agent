@@ -20,10 +20,15 @@ class OriginalFacadeInputsTest(unittest.TestCase):
         self.root.mkdir()
         self.plan = self.root / "plan.json"
         self.plan.write_bytes(b"current plan\n")
+        self.producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "event": "pull_request", "pullRequest": 31, "runId": 40000000000, "runAttempt": 1,
+            "commit": "a" * 40, "tree": "b" * 40}
         self.paths = {}
         for target in ("common", *SDK_FACADE_TARGETS):
             path = self.root / f"{target}-original-receipt.json"
-            path.write_bytes(canonical_json_bytes({"target": target, "original": True}))
+            path.write_bytes(canonical_json_bytes({"product": "sdk", "component": "sdk-core",
+                "phase": "metadata" if target == "common" else "validation", "target": target,
+                "buildKey": "sha256:" + "2" * 64, "producer": self.producer, "original": True}))
             self.paths[target] = path
         self.expected = {target: sha256_bytes(path.read_bytes()) for target, path in self.paths.items()}
         self.policy = {"validations": {target: {
@@ -146,7 +151,7 @@ class OriginalFacadeInputsTest(unittest.TestCase):
         (discovery / "state.json").write_bytes(b"fixed state")
         ready = {"buildKey": "sha256:" + "2" * 64}
         elected = SimpleNamespace(prior_ready_plans={inputs._FRESH_INSTANCE: ready},
-                                  plan={"validationCommit": "a" * 40})
+                                  plan={"validationCommit": "a" * 40}, producer=self.producer)
         def materialize(_plan, _discovery, _state, _instance, destination, **_kwargs):
             self.assertEqual(17, len(_kwargs["materialized_scope"]))
             self.assertFalse(any(item.product == "runtime" for item in _kwargs["materialized_scope"]))
@@ -209,6 +214,40 @@ class OriginalFacadeInputsTest(unittest.TestCase):
                     Path(value["evidenceRoot"]).iterdir()})
                 self.assertEqual(11, len([event for event in self.events if event[0] == "capture"]))
         self.assertFalse(descriptor.exists())
+
+    def test_retained_android_uses_original_workflow_and_upload_in_both_metadata_paths(self):
+        from sdk_campaign_original_locator import retained_core_origin, RETAINED_CORE_ANDROID_VALIDATION_KEY
+        origin = retained_core_origin("validation", RETAINED_CORE_ANDROID_VALIDATION_KEY,
+            self.producer, target="android")
+        receipt = load_canonical_json_bytes(self.paths["android"].read_bytes())
+        receipt.update(buildKey=RETAINED_CORE_ANDROID_VALIDATION_KEY, producer=origin["producer"])
+        self.paths["android"].write_bytes(canonical_json_bytes(receipt))
+        self.expected["android"] = sha256_bytes(self.paths["android"].read_bytes())
+        self.assertIsNone(inputs._retained_validation_origin(canonical_json_bytes({**receipt,
+            "producer": self.producer}), self.producer))
+        def locate(path, **arguments):
+            target = next(target for target, value in self.paths.items() if value == path)
+            self.assertEqual(origin["workflow_sha"] if target == "android" else "c" * 40,
+                arguments["trusted_workflow_sha"])
+            result = self.locator(path, **{**arguments, "trusted_workflow_sha": "c" * 40})
+            return {name: origin[name] for name in ("artifact_id", "artifact_sha256")} if target == "android" else result
+        def capture(plan, destination, **arguments):
+            self.assertEqual(origin["workflow_sha"] if destination.name == "android" else "c" * 40,
+                arguments["trusted_workflow_sha"])
+            self.capture(plan, destination, **arguments)
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh), ExitStack() as stack:
+                for mocked in (self.fresh_mocks() if fresh else self.mocks()): stack.enter_context(mocked)
+                stack.enter_context(patch.object(inputs, "locate_original_facade_upload", side_effect=locate))
+                stack.enter_context(patch.object(inputs, "capture_sdk_facade_validation_upload", side_effect=capture))
+                with (self.fresh_call() if fresh else self.call()): pass
+        with ExitStack() as stack:
+            for mocked in self.mocks(): stack.enter_context(mocked)
+            def wrong_upload(path, **arguments):
+                result = locate(path, **arguments)
+                return {**result, "artifact_id": 999} if path == self.paths["android"] else result
+            stack.enter_context(patch.object(inputs, "locate_original_facade_upload", side_effect=wrong_upload))
+            with self.assertRaisesRegex(ValueError, "reviewed original upload"), self.call(): pass
 
     def test_fresh_wrong_key_fails_before_official_observation(self):
         with ExitStack() as stack:
