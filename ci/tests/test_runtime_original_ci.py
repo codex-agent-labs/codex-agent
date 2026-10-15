@@ -216,6 +216,34 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 observe()
             self.assertEqual(2, sum('/actions/jobs/101' in c.args[0] for c in api.call_args_list))
 
+    def test_operation_batch_binds_positional_environment_and_never_leaks(self):
+        prior_context = adapter._CI_OBSERVATIONS.get()
+        @adapter._fresh_ci_observations
+        def read(environment, *, fail=False):
+            for _ in range(2):
+                adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token')
+            if fail:
+                raise ValueError('after observations')
+        for keyword in (False, True):
+            for current, expected in (('72', 1), ('71', 2)):
+                environment = {'GITHUB_RUN_ID': current, 'GITHUB_RUN_ATTEMPT': '2'}
+                with self.subTest(keyword=keyword, current=current), \
+                        mock.patch('reuse.api_request', side_effect=self.api()) as http:
+                    for fail in (False, True):
+                        arguments = {'environment': environment} if keyword else {}
+                        positional = () if keyword else (environment,)
+                        if fail:
+                            with self.assertRaisesRegex(ValueError, 'after observations'):
+                                read(*positional, **arguments, fail=True)
+                        else:
+                            read(*positional, **arguments)
+                        calls = [c for c in http.call_args_list
+                                 if c.args[0].endswith('/actions/runs/71/attempts/2')]
+                        self.assertEqual(expected * (2 if fail else 1), len(calls))
+                        self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
+
     def test_completed_attempt_observations_are_shared_only_inside_one_operation(self):
         from products.restore import verification_session
         with mock.patch('reuse.api_request', side_effect=self.api()) as http:

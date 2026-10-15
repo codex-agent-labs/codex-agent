@@ -332,31 +332,16 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
     raw = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024**2, reject_symlink_parents=True)
     receipt = products.validate_phase_receipt(load_canonical_json_bytes(raw))
     producer = receipt["producer"]
-    prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
-        f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
-    _require_prior(plan, consumer_producer, prior)
-    workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
-    if workflow is None:
-        raise ValueError("Prior SDK binary lacks a reviewed original workflow")
-    locator = locate_original_apple_upload(receipt_path, trusted_workflow_sha=workflow,
-        token=token, environ=environ)
     transport = require_exact_keys(products._canonical_control(
         capture / "capture-transport.json", "Prior SDK transport"),
         {"artifact", "captureProducer", "observed", f"{phase}ReceiptSha256"}, "Prior SDK transport")
-    if (locator["artifact_id"] != transport["artifact"].get("id")
-            or locator["artifact_sha256"] != transport["artifact"].get("digest")
-            or transport["captureProducer"] != producer
+    if (transport["captureProducer"] != producer
             or transport[f"{phase}ReceiptSha256"] != sha256_bytes(raw)
             or receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
             or producer["pullRequest"] != plan["pullRequest"]):
         raise ValueError("Prior SDK retained upload differs from freshly observed original")
     artifact_fields = ("id", "name", "digest", "size_in_bytes", "created_at",
                        "archive_download_url", "workflow_run")
-    current = products._contract_ci_upload_metadata(locator["artifact_id"], locator["artifact_sha256"],
-        transport["artifact"]["name"], producer, prior, token,
-        **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {}))
-    if any(current.get(field) != transport["artifact"].get(field) for field in artifact_fields):
-        raise ValueError("Prior SDK retained upload metadata changed")
     if completed_frozen is not None:
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
@@ -366,19 +351,39 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
                     extension is not None and instance in {
                         products._identity(row) for row in extension["spec"]["completedPhases"]})
         if admitted:
+            if any(plan.get(field) != consumer_producer.get(field) for field in ("repository", "event", "pullRequest")):
+                raise ValueError("Completed SDK plan differs from its current consumer")
+            context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
             record = _record(capture, Path(artifact_root), completed_frozen=completed_frozen, phase=phase)
             completed_frozen.envelope(record, raw)
             _, original_artifact, _ = (completed_frozen.observe_sdk(
                 plan=plan, producer=consumer_producer, token=token) if phase == "binary" else
                 completed_frozen.observe_extended_sdk(record, producer=consumer_producer, token=token))
-            if (any(original_artifact.get(field) != current.get(field) for field in artifact_fields)
+            if (any(original_artifact.get(field) != transport["artifact"].get(field) for field in artifact_fields)
                     or {row["relativePath"] for row in inventory} != {
                         "capture-transport.json", "original/shard/phase-receipt.json", "original/shard/" + PHASE_SHARD_NAME}
                     or _stage_fingerprint(root) != fingerprint or regular_file_inventory(capture) != inventory
-                    or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes):
+                    or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes
+                    or canonical_json_bytes({"plan": plan, "consumer": consumer_producer}) != context):
                 raise ValueError("Completed SDK controls or original identity changed during replay")
             require_no_signing_secret(environ)
             return [record]
+    prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
+        f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
+    _require_prior(plan, consumer_producer, prior)
+    workflow = products._runtime_prior_workflow_sha(prior, trusted_workflow_sha)
+    if workflow is None:
+        raise ValueError("Prior SDK binary lacks a reviewed original workflow")
+    locator = locate_original_apple_upload(receipt_path, trusted_workflow_sha=workflow,
+        token=token, environ=environ)
+    if (locator["artifact_id"] != transport["artifact"].get("id")
+            or locator["artifact_sha256"] != transport["artifact"].get("digest")):
+        raise ValueError("Prior SDK retained upload differs from freshly observed original")
+    current = products._contract_ci_upload_metadata(locator["artifact_id"], locator["artifact_sha256"],
+        transport["artifact"]["name"], producer, prior, token,
+        **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if phase == "package" else {}))
+    if any(current.get(field) != transport["artifact"].get(field) for field in artifact_fields):
+        raise ValueError("Prior SDK retained upload metadata changed")
     # A disk descriptor is never authority. Seal only a successful full-original
     # comparison, after all exit checks. No evidence or trust crosses processes.
     session = None if _is_windows() else _VERIFICATION_SESSION.get()

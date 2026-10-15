@@ -91,15 +91,16 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
         self.assert_admissions(options)
         return self.verified
 
-    def materialize(self, plan, discovery, state, instance, destination, **options):
+    def materialize(self, verified, instance, destination, key, root, **options):
+        self.assertIs(self.verified, verified)
+        from products.restore import _VERIFICATION_SESSION
+        self.assertIsNotNone(_VERIFICATION_SESSION.get())
+        self.assertEqual(self.root, root)
         self.assertEqual(workflow._INSTANCE, instance)
-        self.assertEqual(self.ready["buildKey"], options["expected_build_key"])
-        self.assertEqual(self.policy, options["sdk_apple_validation_policy"])
-        self.assertEqual(self.workflow_sha, options["sdk_original_workflow_sha"])
+        self.assertEqual(self.ready["buildKey"], key)
         self.assertEqual((workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64"),
                           workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-simulator-arm64")),
                          options.get("materialized_scope"))
-        self.assert_admissions(options)
         destination.mkdir(parents=True)
         (destination / "producer.json").write_bytes(workflow.canonical_json_bytes(self.producer))
         for target in workflow._TARGETS:
@@ -188,8 +189,8 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
     def run_controller(self, **changes):
         self.admissions = {name: changes[name] for name in (
             "sdk_facade_metadata_admission", "sdk_android_metadata_admission") if name in changes}
-        with patch.object(workflow.product_reuse, "_verified_product_state", side_effect=self.verified_state), \
-                patch.object(workflow.product_reuse, "materialize_product_predecessors", side_effect=self.materialize), \
+        with patch.object(workflow.product_reuse, "_verified_product_state", side_effect=self.verified_state) as authenticated, \
+                patch.object(workflow.product_reuse, "_materialize_product_predecessors", side_effect=self.materialize), \
                 patch.object(workflow.product_reuse, "_canonical_control", return_value=self.producer), \
                 patch.object(workflow.product_reuse, "validate_phase_receipt", side_effect=lambda value: value), \
                 patch.object(workflow, "verify_output_manifest_identity",
@@ -201,10 +202,12 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
                 patch.object(workflow.product_reuse, "finalize_phase_object", side_effect=self.finalize), \
                 patch.object(workflow, "verify_sdk_apple_metadata_admission", side_effect=self.admit), \
                 patch.object(workflow, "verify_phase_shard", side_effect=self.verify_shard):
-            return workflow.execute(self.plan, self.discovery, self.state, self.destination,
+            result = workflow.execute(self.plan, self.discovery, self.state, self.destination,
                 expected_build_key=self.ready["buildKey"], repository_root=self.root,
                 environ={}, trusted_workflow_sha=self.workflow_sha,
                 sdk_apple_validation_policy=self.policy, **changes)
+            authenticated.assert_called_once()
+            return result
 
     def test_two_full_original_gates_exit_before_final_receipt_and_publication(self):
         result = self.run_controller()
@@ -213,7 +216,7 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
         self.assertTrue((self.destination / "shard/phase-receipt.json").is_file())
         self.assertEqual(self.records, self.verified.rebased_request["sdkAppleValidationEvidence"])
 
-    def test_metadata_admissions_reach_state_and_materializer_without_serialization(self):
+    def test_metadata_admissions_reach_state_without_serialization_or_repeat_authentication(self):
         admissions = {"sdk_facade_metadata_admission": object(),
                       "sdk_android_metadata_admission": object()}
         result = self.run_controller(**admissions)

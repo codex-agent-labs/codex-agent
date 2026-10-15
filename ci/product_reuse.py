@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import wraps
 import errno
+from inspect import signature
 import os
 import ntpath
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -647,11 +648,13 @@ def _ci_observation_batch(current_attempt=None):
 
 
 def _fresh_ci_observations(operation):
+    parameters = signature(operation)
     @wraps(operation)
     def observed(*args, **kwargs):
-        environment = kwargs.get("environ")
+        arguments = parameters.bind(*args, **kwargs).arguments
+        environment = arguments.get("environ", arguments.get("environment"))
         environment = os.environ if environment is None else environment
-        producer = kwargs.get("consumer_producer")
+        producer = arguments.get("consumer_producer")
         current = ((producer["runId"], producer["runAttempt"]) if producer is not None else
                    (environment.get("GITHUB_RUN_ID"), environment.get("GITHUB_RUN_ATTEMPT")))
         with _ci_observation_batch(tuple(str(value) for value in current)):
@@ -4448,6 +4451,7 @@ def _scoped_reuse_result(value, closure):
 
 
 @verification_scoped
+@_fresh_ci_observations
 def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,

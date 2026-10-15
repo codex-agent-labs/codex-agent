@@ -278,10 +278,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     revision='d' * 40, frozen={}, token='synthetic')
             validate.assert_not_called()
 
-    def test_native_csharp_and_ios_package_controls_route_without_body_or_gate_replay(self):
+    def test_native_csharp_and_ios_controls_route_without_body_or_gate_replay(self):
         import reuse_qualification as native
         import sdk_ios_binary_recovery as recovery
-        for component, phase, target in (('csharp', 'binary', 'desktop'), ('sdk-ios', 'package', 'ios')):
+        for component, phase, target in (('csharp', 'binary', 'desktop'), ('sdk-ios', 'binary', 'ios'), ('sdk-ios', 'package', 'ios')):
             receipt = deepcopy(self.receipt)
             receipt.update(component=component, phase=phase, target=target)
             receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
@@ -289,16 +289,18 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': sha256_bytes(b'object')}
             cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': [record]}},
                 [receipt], native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
-                sdk={'extension': {'spec': {'schemaVersion': 3, 'completedPhases': [record]}, 'proof': {}}})
+                sdk={'spec': {'completedPhase': record},
+                     'extension': {'spec': {'schemaVersion': 3, 'completedPhases': [record]}, 'proof': {}}})
             consumer = {**receipt['producer'], 'runId': receipt['producer']['runId'] + 1}
             artifact = {'id': 71, 'name': 'synthetic-original', 'digest': sha256_bytes(b'original')}
-            plan = {'repository': receipt['producer']['repository'], 'remoteBuildAuthorized': True,
+            plan = {'repository': receipt['producer']['repository'], 'event': 'pull_request', 'remoteBuildAuthorized': True,
                     'pullRequest': receipt['producer']['pullRequest']}
             with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
                 root = Path(temporary).resolve()
                 plan_path = root / 'plan.json'
                 plan_path.write_bytes(canonical_json_bytes(plan))
                 stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({}, artifact, [])))
+                stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_sdk', return_value=({}, artifact, [])))
                 stack.enter_context(patch.object(recovery.products, 'api_json', return_value={}))
                 stack.enter_context(patch.object(recovery, '_require_prior', return_value=(7, 1)))
                 stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
@@ -308,10 +310,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     'artifact_id': 71, 'artifact_sha256': artifact['digest']}))
                 stack.enter_context(patch.object(recovery, '_capture_ios_original', side_effect=AssertionError('body/gate replay')))
                 stack.enter_context(patch.object(recovery, '_capture_javascript_package', side_effect=AssertionError('body replay')))
-                records = recovery.capture_completed_javascript(root, root, completed_frozen=cap, producer=consumer, token='synthetic')
+                if component == 'sdk-ios' and phase == 'binary':
+                    records = recovery.capture_completed_ios_binary(root / 'prior-failed-sdk', root,
+                        completed_frozen=cap, plan=plan, producer=consumer, token='synthetic')
+                else:
+                    records = recovery.capture_completed_javascript(root, root, completed_frozen=cap, producer=consumer, token='synthetic')
                 self.assertEqual(1, len(records))
                 self.assertFalse((root / records[0]['objectPath']).exists())
-                folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk-csharp'
+                folder = ('prior-failed-sdk' if phase == 'binary' else 'prior-failed-sdk-ios-package') if component == 'sdk-ios' else 'prior-failed-sdk-csharp'
                 def replay(authority):
                     options = dict(plan=plan, consumer_producer=consumer, trusted_workflow_sha='a' * 40,
                                    token='synthetic', environ={}, completed_frozen=authority, phase=phase)
@@ -319,8 +325,34 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         return recovery.replay_prior_ios_binary(root / folder, root,
                             plan_path=plan_path, repository_root=root, **options)
                     return recovery.replay_prior_javascript_package(root / folder, root, component=component, **options)
-                self.assertEqual(records, replay(cap))
-                if component == 'sdk-ios':
+                with patch.object(recovery, '_require_prior', side_effect=AssertionError('legacy lookup')), \
+                        patch.object(recovery, 'locate_original_apple_upload', side_effect=AssertionError('legacy locator')):
+                    self.assertEqual(records, replay(cap))
+                    observation = 'observe_sdk' if component == 'sdk-ios' and phase == 'binary' else 'observe_extended_sdk'
+                    with patch.object(native.CompletedFrozenReuse, observation,
+                                      return_value=({}, {**artifact, 'digest': 'sha256:' + 'f' * 64}, [])):
+                        with self.assertRaisesRegex(ValueError, 'Completed SDK controls'):
+                            replay(cap)
+                    def late_mutation(*args, **kwargs):
+                        consumer['runAttempt'] += 1
+                        return {}, artifact, []
+                    try:
+                        with patch.object(native.CompletedFrozenReuse, observation, side_effect=late_mutation):
+                            with self.assertRaisesRegex(ValueError, 'Completed SDK controls'):
+                                replay(cap)
+                    finally:
+                        consumer['runAttempt'] -= 1
+                    if component == 'sdk-ios':
+                        old_event = plan['event']
+                        try:
+                            plan['event'] = 'merge_group'
+                            plan_path.write_bytes(canonical_json_bytes(plan))
+                            with self.assertRaisesRegex(ValueError, 'current consumer'):
+                                replay(cap)
+                        finally:
+                            plan['event'] = old_event
+                            plan_path.write_bytes(canonical_json_bytes(plan))
+                if component == 'sdk-ios' and phase == 'package':
                     # Exercise the shared worker-entry replay, not only its leaf helper.
                     plan.update(event='pull_request', validationCommit=receipt['producer']['commit'])
                     plan_path.write_bytes(canonical_json_bytes(plan))

@@ -193,13 +193,10 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     producer_bytes = canonical_json_bytes(producer)
     controls_unchanged()
     prepared = destination / "inputs"
-    materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
-        expected_build_key=expected_build_key, repository_root=root, environ=environ,
-        sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
-        sdk_original_workflow_sha=trusted_workflow_sha,
-        materialized_scope=tuple(PhaseInstanceId("sdk", "sdk-ios", "validation", target) for target in _TARGETS),
-        **admissions,
-                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+    with product_reuse.verification_session():
+        materialized = product_reuse._materialize_product_predecessors(
+            verified, _INSTANCE, prepared, expected_build_key, root,
+            materialized_scope=tuple(PhaseInstanceId("sdk", "sdk-ios", "validation", target) for target in _TARGETS))
     controls_unchanged()
     if canonical_json_bytes(ready) != ready_bytes or canonical_json_bytes(producer) != producer_bytes:
         raise ValueError("iOS metadata election changed during predecessor materialization")
