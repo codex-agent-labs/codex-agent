@@ -22,6 +22,7 @@ from products.inventory import (load_canonical_json_bytes, publish_regular_tree,
     snapshot_regular_tree, write_canonical_json)
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
+from products.restore import verification_scoped
 from products.sdk_facade_inputs import _request
 from products.sdk_facade_validation_admission import _native_archive_path
 from products.sdk_inputs import REQUEST_NAME
@@ -29,6 +30,7 @@ from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
 from sdk_phase import maven_consumed_predecessors
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
 
 
 _BINARY = PhaseInstanceId("sdk", "sdk-core", "binary", "common")
@@ -37,12 +39,14 @@ _METADATA = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
 _CONTRACT = PhaseInstanceId("contract", "contract", "metadata", "common")
 
 
+@verification_scoped
 def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
             native_compiler_archive=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
-            sdk_android_metadata_admission=None, expected_metadata_build_key=None, retained_sdk_inputs_source=None):
+            sdk_android_metadata_admission=None, expected_metadata_build_key=None, retained_sdk_inputs_source=None,
+            completed_frozen=None):
     """Write an exact facade request; never read authority from a retained request."""
     require_no_signing_secret(environ)
     if target not in SDK_FACADE_TARGETS:
@@ -68,6 +72,7 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
         sdk_validation_tooling, requested_scope=(_METADATA if expected_metadata_build_key is not None else instance,), sdk_original_workflow_sha=trusted_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **{name: value for name, value in policies.items() if name != "sdk_validation_tooling"})
     if expected_metadata_build_key is None:
         selected_instance, selected_key = instance, expected_build_key
@@ -166,6 +171,7 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
                 token=token, **policies,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as sdk_inputs:
             if {"product": "sdk", "component": "sdk-core", "phase": "validation", "target": target} not in \
                     sdk_inputs["selection"]["consumers"]:
@@ -224,6 +230,7 @@ def main(argv=None):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = vars(parser.parse_args(argv))
     for name, replacement in (("discovery_root", "discovery"), ("state_root", "state")):
@@ -235,8 +242,8 @@ def main(argv=None):
         if "retained_sdk_inputs_source" in args:
             args["retained_sdk_inputs_source"] = product_reuse._canonical_control(
                 args["retained_sdk_inputs_source"], "Caller retained SDK input source")
-        with metadata_admission_options(args) as admissions:
-            prepare(**args, **admissions, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+        with metadata_admission_options(args) as admissions, completed_frozen_options(args) as native:
+            prepare(**args, **admissions, **native, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

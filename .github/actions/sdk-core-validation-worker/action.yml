@@ -249,6 +249,7 @@ runs:
             raise ValueError('Core validation caller authority changed before request preparation')
         PY
         optional=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then optional+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         for pair in SDK_VALIDATION_TOOLING:--sdk-validation-tooling SDK_APPLE_VALIDATION_POLICY:--sdk-apple-validation-policy SDK_FACADE_METADATA_POLICY:--sdk-facade-metadata-policy SDK_ANDROID_METADATA_POLICY:--sdk-android-metadata-policy NATIVE_COMPILER_ARCHIVE:--native-compiler-archive; do
           variable="${pair%%:*}"
           flag="${pair#*:}"

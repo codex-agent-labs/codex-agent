@@ -21,6 +21,7 @@ from products.inventory import (git_regular_blob_bytes, load_canonical_json_byte
 from products.plan import _contract_projection_from_request
 from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
+from products.restore import verification_scoped
 from products.sdk_facade_inputs import _request
 from products.sdk_facade_validation_admission import _NON_NATIVE_TARGETS, _native_archive_path
 from products.sdk_package import _require_capability_output_separate
@@ -28,6 +29,7 @@ from products.signing_isolation import require_no_signing_secret
 from products.toolchain import HOSTS, _metadata_checksum, RUNTIME_VERIFICATION_METADATA, VERSION_CATALOG
 from sdk_core_validation_policy import prepare as prepare_validation_request
 from sdk_phase import route
+from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
 
 
 _METADATA = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -61,10 +63,11 @@ def _native_archives(root, revision, values):
     return archives, digests
 
 
+@verification_scoped
 def prepare(plan, discovery, state, requests_root, destination, *, expected_build_key,
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         sdk_validation_tooling, native_compiler_archives, keyring, keys_directory,
-        repository_root, environ, token, sdk_apple_validation_policy=None):
+        repository_root, environ, token, sdk_apple_validation_policy=None, completed_frozen=None):
     """Create one external bootstrap policy using exact retained wave-13 originals."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -95,6 +98,8 @@ def prepare(plan, discovery, state, requests_root, destination, *, expected_buil
     before = {path: regular_file_inventory(path, allow_empty=True) for path in (discovery, state)}
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
         tooling, sdk_original_workflow_sha=trusted_workflow_sha,
+        requested_scope=(_METADATA,),
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
            if sdk_apple_validation_policy is not None else {}))
     ready = verified.prior_ready_plans.get(_METADATA)
@@ -133,6 +138,7 @@ def prepare(plan, discovery, state, requests_root, destination, *, expected_buil
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
             keys_directory=keys_directory, repository_root=root, environ=environ, token=token,
             native_compiler_archive=archives.get(target), sdk_validation_tooling=tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             sdk_apple_validation_policy=sdk_apple_validation_policy)
         request = Path(prepared["facadeRequest"])
         receipt_path = output / f"predecessors/sdk-sdk-core-validation-{target}/phase-receipt.json"
@@ -190,14 +196,16 @@ def main(argv=None):
     parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--native-compiler-archive", action="append", default=[], metavar="TARGET=PATH")
+    add_completed_frozen_argument(parser)
     args = vars(parser.parse_args(argv))
     try:
         pairs = [value.split("=", 1) for value in args.pop("native_compiler_archive")]
         if (any(len(pair) != 2 or not pair[0] or not pair[1] for pair in pairs)
                 or len({pair[0] for pair in pairs}) != len(pairs)):
             raise ValueError("Core metadata native archives require unique TARGET=PATH values")
-        prepare(**args, native_compiler_archives={key: value for key, value in pairs},
-                environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+        with completed_frozen_options(args) as native:
+            prepare(**args, **native, native_compiler_archives={key: value for key, value in pairs},
+                    environ=os.environ, token=os.environ["GITHUB_TOKEN"])
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     return 0

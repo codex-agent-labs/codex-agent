@@ -46,7 +46,9 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
             plan={"validationCommit": "b" * 40})
 
     def invoke(self, *, bad_target=None):
+        native = object()
         def request(_plan, _discovery, _state, output, **kwargs):
+            self.assertIs(native, kwargs["completed_frozen"])
             target = kwargs["target"]
             self.assertEqual(_KEY, kwargs["expected_metadata_build_key"])
             self.assertEqual(_KEY, kwargs["expected_build_key"])
@@ -65,7 +67,7 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
                                       "sha256": "sha256:" + "d" * 64}]})
 
         archives = {target: self.base / "caller-archive.tar.gz" for target in bootstrap._NATIVE}
-        with (patch.object(bootstrap.product_reuse, "_verified_product_state", return_value=self.verified),
+        with (patch.object(bootstrap.product_reuse, "_verified_product_state", return_value=self.verified) as replay,
               patch.object(bootstrap, "_native_archives", return_value=(archives, {})),
               patch.object(bootstrap, "prepare_validation_request", side_effect=request) as prepared,
               patch.object(bootstrap, "validate_phase_receipt", side_effect=lambda value: value),
@@ -78,7 +80,9 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
                 sdk_inputs_artifact_sha256=_KEY, trusted_workflow_sha="e" * 40,
                 sdk_validation_tooling=self.tooling, native_compiler_archives={},
                 keyring=self.root / "keyring", keys_directory=self.root / "keys",
-                repository_root=self.root, environ={}, token="local-token")
+                repository_root=self.root, environ={}, token="local-token", completed_frozen=native)
+        self.assertIs(native, replay.call_args.kwargs["completed_frozen"])
+        self.assertEqual((bootstrap._METADATA,), replay.call_args.kwargs["requested_scope"])
         return value, prepared
 
     def test_projects_all_elected_originals_without_uploaded_request_authority(self):

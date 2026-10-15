@@ -155,6 +155,7 @@ runs:
         bootstrap_dir=$(mktemp -d "$RUNNER_TEMP/core-metadata-bootstrap.XXXXXXXX")
         policy_path="$bootstrap_dir/policy.json"
         options=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then options+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         if [ -n "$APPLE_POLICY" ]; then options+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
         python3 -B -m ci.sdk_core_metadata_bootstrap \
           --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \

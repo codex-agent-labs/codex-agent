@@ -178,6 +178,8 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             self.assertIn("'" + flag + "'", command)
         self.assertIn("'core-validation'", command)
         self.assertIn("ci.sdk_core_validation_policy", self.action)
+        preparation = self.action.split("optional=()", 1)[1].split("- uses: ./.github/actions/setup-kmp", 1)[0]
+        self.assertIn('optional+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', preparation)
         self.assertLess(self.action.index("Core validation caller authority changed before request preparation"),
                         self.action.index("python3 -B -m ci.sdk_core_validation_policy"))
         self.assertLess(self.script("execute").index("Core validation caller authority changed before execution"),

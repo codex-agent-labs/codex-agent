@@ -82,6 +82,7 @@ class CoreValidationPolicyTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_request_uses_selected_objects_and_official_sdk_input_capture(self):
+        native = object()
         selected = policy.PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
         phases = {phase: {"state": "retained"} for phase in
                   (policy._BINARY, policy._PACKAGE, policy._CONTRACT)}
@@ -141,12 +142,13 @@ class CoreValidationPolicyTests(unittest.TestCase):
         def original_inputs(*args, **kwargs):
             self.assertEqual(19, kwargs["artifact_id"])
             self.assertEqual(_KEY, kwargs["artifact_sha256"])
+            self.assertIs(native, kwargs["completed_frozen"])
             yield {"selection": {"consumers": [{"product": "sdk", "component": "sdk-core",
                 "phase": "validation", "target": "jvm"}]}, "sdk": {"directory": sdk,
                 "compatibility": {"sdkVersion": "0.8.0", "contract": {"version": "0.8.0"},
                     "runtime": {"defaultRuntimeVersion": "0.8.0"}}}}
 
-        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=verified),
+        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=verified) as replay,
               patch.object(policy.product_reuse, "_release_trust", side_effect=release_trust),
               patch.object(policy.product_reuse, "_materialize_product_predecessors", side_effect=materialize),
               patch.object(policy.product_reuse, "_capture_runtime_contract", side_effect=capture),
@@ -154,7 +156,8 @@ class CoreValidationPolicyTests(unittest.TestCase):
               patch.object(policy, "validate_phase_receipt", side_effect=lambda value: value),
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": []}),
               patch.object(policy.sdk_workflow, "verified_inputs", side_effect=original_inputs)):
-            result = policy.prepare(**self.args())
+            result = policy.prepare(**self.args(completed_frozen=native))
+        self.assertIs(native, replay.call_args.kwargs["completed_frozen"])
         request, _ = policy._request(Path(result["facadeRequest"]))
         self.assertEqual(self.root / "build/core-validation-policy/sdk-inputs/sdk-compatibility-request.json",
                          Path(request["compatibilityRequest"]))
