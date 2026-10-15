@@ -124,11 +124,13 @@ class CompletedSdkControlsTest(unittest.TestCase):
         import product_reuse
         spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
         for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
-                             ('product-validation / plan', 'codex-agent-planned-product-resume-')):
+                             ('product-validation / plan', 'codex-agent-planned-product-resume-'),
+                             ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
-            artifact = dict(id=source['artifactId'], name=prefix + source['producer']['tree'],
+            suffix = f"-attempt-{source['producer']['runAttempt']}" if role.endswith('sdk-collect-9') else ''
+            artifact = dict(id=source['artifactId'], name=prefix + source['producer']['tree'] + suffix,
                             size_in_bytes=source['artifactBytes'], created_at='2026-01-01T01:01:00Z')
             with self.subTest(role=role), patch.object(product_reuse, '_observe_ci_producer_jobs',
                     return_value=[{'run': {'id': source['producer']['runId']}, 'jobs': [job]}]) as observe, \
@@ -159,6 +161,40 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'fixed native state producer'):
                     completed.observe_source({**source, 'jobName': 'product-validation / unrelated'}, 'synthetic')
                 observe.assert_not_called()
+
+    def test_collected_source_requires_exact_plan_manifest_role_root_and_bounded_controls(self):
+        import json
+        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        for invalid in (None, {}, {**spec, 'source': []}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                completed._spec(invalid)
+        spec['stateRoot'] = 'runtime-state'
+        spec['source'].update(jobName='product-validation / sdk-collect-9',
+            artifactBytes=6_500_000_000, referenceControlSha256='sha256:' + 'a' * 64)
+        producer = spec['source']['producer']
+        plan = {key: producer[key] for key in ('repository', 'event', 'pullRequest')}
+        plan.update(validationCommit=producer['commit'], validationTree=producer['tree'], remoteBuildAuthorized=True)
+        spec['sourcePlan'] = plan
+        raw = canonical_json_bytes(plan)
+        spec['controls'].append({'relativePath': 'product-resume-inputs/plan/impact-plan.json',
+                                'bytes': len(raw), 'sha256': sha256_bytes(raw)})
+        completed._spec(spec)
+        for change in (
+            lambda value: value['source'].pop('referenceControlSha256'),
+            lambda value: value['source'].update(referenceControlSha256='unqualified'),
+            lambda value: value['source'].update(jobName='product-validation / sdk-collect-10'),
+            lambda value: value.update(stateRoot='product-resume-state'),
+            lambda value: value.update(schemaVersion=2),
+            lambda value: value['sourcePlan'].update(validationCommit='f' * 40),
+            lambda value: value['sourcePlan'].update(remoteBuildAuthorized=False),
+            lambda value: value['controls'].pop(),
+            lambda value: value['source'].update(artifactBytes=16 * 1024**3 + 1),
+            lambda value: value['contractControls'].update(artifactBytes=completed.LIMIT + 1),
+        ):
+            altered = deepcopy(spec)
+            change(altered)
+            with self.subTest(altered=change), self.assertRaises(ValueError):
+                completed._spec(altered)
 
     def test_native_original_locator_requires_independent_pin_and_exact_fresh_record(self):
         import product_reuse
@@ -444,7 +480,13 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target)
 
-    def check_v3_issuer_original_member(self, component, phase_name, target):
+    def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
+        for phase, target in (('package', 'ios'), ('validation', 'ios-arm64')):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.check_v3_issuer_original_member('sdk-ios', phase, target, collected=True)
+
+    def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -460,20 +502,34 @@ class CompletedSdkControlsTest(unittest.TestCase):
         folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk'
         self.receipt_path = (f'product-resume-state/{folder}/{component}/{phase_name}/{target}/'
                             'original/shard/phase-receipt.json')
+        if collected and phase_name == 'validation':
+            self.receipt_path = self.receipt_path.replace('product-resume-state/', 'runtime-state/', 1)
         phase = {**{key: receipt[key] for key in completed.IDENTITY},
             **{key: verified[key] for key in completed.OBJECT}, 'receiptPath': self.receipt_path}
-        prefix = 'product-resume-state/'
+        prefix = 'runtime-state/' if collected else 'product-resume-state/'
+        if collected:
+            for name in ('reuse-wave-request.json', 'reuse-wave-result.json', 'producer.json'):
+                self.controls[prefix + name] = self.controls.pop('product-resume-state/' + name)
         request = self.controls[prefix + 'reuse-wave-request.json']
         request['availableObjects'][-1] = {**phase, 'objectPath': 'deferred-package.zip'}
         request['phaseAuthorities'][-1] = {**{key: phase[key] for key in completed.IDENTITY},
             **{key: receipt['inputs'][key] for key in ('toolchainProfileDigest', 'flagsDigest', 'outputSchemaVersion')}}
         self.controls[prefix + 'reuse-wave-result.json']['phases'][-1] = {**phase, 'state': 'retained'}
         self.controls[self.receipt_path] = receipt
+        if collected:
+            producer = self.controls[prefix + 'producer.json']
+            plan = {key: producer[key] for key in ('repository', 'event', 'pullRequest')}
+            plan.update(validationCommit=producer['commit'], validationTree=producer['tree'], remoteBuildAuthorized=True)
+            self.controls[completed.SOURCE_PLAN] = plan
         self.spec['completedPhases'] = [phase]
         self.bind_controls()
         spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
         spec.update(schemaVersion=3, completedPhases=[phase], controls=self.spec['controls'])
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
+        if collected:
+            spec.update(stateRoot='runtime-state', sourcePlan=plan)
+            spec['source'].update(jobName=completed.COLLECTED_VALIDATION_JOB,
+                                  referenceControlSha256='sha256:' + 'a' * 64)
         spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
         parent = {'schemaVersion': 1}
         spec['parentProofSha256'] = sha256_bytes(canonical_json_bytes(parent))
@@ -483,7 +539,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 for name, value in files.items(): archive.writestr(name, value)
             return raw.getvalue()
         source_files = {name: canonical_json_bytes(value) for name, value in self.controls.items()}
-        package = component == 'sdk-ios'
+        package = component == 'sdk-ios' and phase_name == 'package'
         if package:
             del source_files[self.receipt_path]  # Ordinary P exports retain this only by reference.
         producer_row = next(row for row in spec['controls'] if row['relativePath'] == prefix + 'producer.json')
@@ -501,6 +557,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         contract = zipped({row['relativePath']: b'{}' for row in spec['contractFiles']})
         for item, raw in ((spec['source'], source), (spec['contractControls'], contract)):
             item.update(artifactBytes=len(raw), artifactSha256=sha256_bytes(raw))
+        if collected:
+            spec['source']['artifactBytes'] = 6_500_000_000
         name = 'shard/' + verified['objectPath']
         body = (shard / verified['objectPath']).read_bytes()
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
@@ -511,7 +569,28 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(completed, '_contract_files'))
             stack.enter_context(patch.object(completed, 'observe_source', side_effect=lambda item, token, **kw:
                 ({'name': 'controls'}, [{'run': {}}], {'source': item['artifactId']})))
-            stack.enter_context(patch.object(completed, 'observe_original', return_value=({'id': 71}, [], {'original': 71})))
+            observe_original = stack.enter_context(patch.object(completed, 'observe_original',
+                return_value=({'id': 71}, [], {'original': 71})))
+            if collected:
+                ensure_commit = stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
+                validate_plan = stack.enter_context(patch.object(products, '_validate_plan', return_value=plan))
+                def capture(actual_plan, raw_plan, producer, base, destination, *, trusted_workflow_sha, token, wanted):
+                    self.assertEqual((plan, canonical_json_bytes(plan), spec['source']['producer']),
+                                     (actual_plan, raw_plan, producer))
+                    self.assertEqual({'artifactId': spec['source']['artifactId'],
+                        'artifactSha256': spec['source']['artifactSha256'], 'stateWave': 0, 'sdkStateWave': 9,
+                        'referenceControlSha256': spec['source']['referenceControlSha256'],
+                        'runAttempt': producer['runAttempt']}, base)
+                    self.assertEqual({row['relativePath']: row for row in spec['controls']}, wanted)
+                    self.assertEqual(spec['source']['workflowSha'], trusted_workflow_sha)
+                    for path, value in self.controls.items():
+                        target = destination / path
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(canonical_json_bytes(value))
+                    return {'artifact': {'name': 'controls'}, 'rangeBytes': 600,
+                            'referenceBase': {'originalReferenceSources': [{'rangeBytes': 100}]}}
+                capture_controls = stack.enter_context(patch.object(products, '_capture_runtime_reference_members',
+                    side_effect=capture))
             def download(identifier, digest, artifact_name, producer, run, token, *, destination, max_bytes):
                 raw = source if identifier == spec['source']['artifactId'] else contract
                 self.assertEqual((sha256_bytes(raw), len(raw)), (digest, max_bytes))
@@ -536,10 +615,31 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         result = json.loads((work / 'completion.json').read_bytes())
                         self.assertEqual(3, result['schemaVersion'])
                         self.assertEqual([{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}], result['members'])
-                        self.assertEqual(len(source) + len(contract), report['downloadedOriginalBytes'])
+                        self.assertEqual(len(contract) + (0 if collected else len(source)), report['downloadedOriginalBytes'])
+                        self.assertEqual(700 if collected else 0, report['sourceControlRangeBytes'])
                         self.assertEqual(len(body), report['originalMemberRangeBytes'])
                         self.assertEqual(0, report['productPhasesExecuted'])
-                        self.assertEqual(2, downloads.call_count)
+                        self.assertEqual(1 if collected else 2, downloads.call_count)
+                        if collected:
+                            ensure_commit.assert_called_once_with(fixture.repository, spec['source']['producer'], 'synthetic')
+                            self.assertEqual(spec['source']['producer']['commit'],
+                                             validate_plan.call_args.kwargs['expected_revision'])
+                            self.assertEqual(1, capture_controls.call_count)
+            if collected:
+                self.controls[prefix + 'reuse-wave-result.json']['phases'][-1]['state'] = 'failed'
+                self.bind_controls()
+                spec['controls'] = self.spec['controls']
+                observe_original.reset_mock()
+                downloads.reset_mock()
+                work = Path(temporary).resolve() / 'failed-state'
+                work.mkdir()
+                with patch('runtime_reference_archive.open_reference_archive', side_effect=AssertionError('body read')):
+                    with self.assertRaisesRegex(ValueError, 'successful original scope'):
+                        completed.issue_extension(spec, work, root=fixture.repository,
+                            revision='a' * 40, frozen={}, token='synthetic')
+                observe_original.assert_not_called()
+                downloads.assert_not_called()
+                self.assertFalse((work / 'completion.json').exists())
 
     def test_native_parent_commit_is_fetched_only_when_missing_and_exactly_pinned(self):
         import reuse_qualification as native
@@ -576,6 +676,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 objectSha256=sha256_bytes(b'changed native predecessor')),
             lambda: self.controls['product-resume-state/reuse-wave-request.json'].update(catalogs=[{}]),
             lambda: self.controls['product-resume-state/producer.json'].update(runId=9),
+            lambda: self.controls['product-resume-state/reuse-wave-result.json']['phases'][-1].update(state='failed'),
         )
         for mutate in mutations:
             self.controls = deepcopy(saved)

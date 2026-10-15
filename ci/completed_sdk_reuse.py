@@ -19,9 +19,12 @@ IDENTITY = ("product", "component", "phase", "target")
 OBJECT = ("buildKey", "receiptSha256", "objectSha256")
 LIMIT = 16 * 1024 * 1024
 IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+COLLECTED_VALIDATION_JOB = "product-validation / sdk-collect-9"
+SOURCE_PLAN = "product-resume-inputs/plan/impact-plan.json"
 _SOURCE_UPLOADS = {
     "product-validation / product-resume": "codex-agent-product-resume-",
     "product-validation / plan": "codex-agent-planned-product-resume-",
+    COLLECTED_VALIDATION_JOB: "codex-agent-sdk-wave-9-state-",
 }
 
 
@@ -32,6 +35,11 @@ def _identity(record):
 def original_worker_member(spec):
     """V3 compact states omit bodies; consumption uses exact original workers."""
     return spec["schemaVersion"] == 3
+
+
+def collected_validation(spec):
+    return (type(spec) is dict and type(spec.get("source")) is dict
+            and spec["source"].get("jobName") == COLLECTED_VALIDATION_JOB)
 
 
 def _records(rows, label):
@@ -85,11 +93,12 @@ def validate_controls(spec, controls, base):
         if instance in frozen and authorities.get(instance) != original_authorities[instance]:
             raise ValueError("Incremental SDK completion changes a native predecessor authority")
     receipts = []
+    receipt_prefixes = (prefix, "product-resume-state/") if collected_validation(spec) else (prefix,)
     for instance, phase in selected.items():
         require_exact_keys(phase, set(IDENTITY + OBJECT) | {"receiptPath"}, "Incremental SDK phase")
         path = require_relative_path(phase["receiptPath"], "Incremental SDK receipt path")
         receipt = validate_phase_receipt(controls[path])
-        if (not path.startswith(prefix) or _identity(receipt) != instance
+        if (not path.startswith(receipt_prefixes) or _identity(receipt) != instance
                 or receipt["buildKey"] != phase["buildKey"]
                 or sha256_bytes(canonical_json_bytes(receipt)) != phase["receiptSha256"]
                 or any(receipt["producer"][field] != producer[field]
@@ -183,8 +192,9 @@ def observe_source(source, token, *, contract=False, native_locator=None):
     selected = products._matching_ci_jobs(observed[0]["jobs"], job)
     if len(selected) != 1 or selected[0]["id"] != source["jobId"]:
         raise ValueError("Incremental source differs from its approved successful job")
+    suffix = f"-attempt-{producer['runAttempt']}" if job == COLLECTED_VALIDATION_JOB else ""
     artifact = products._contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"],
-        prefix + producer["tree"], producer, observed[0]["run"], token)
+        prefix + producer["tree"] + suffix, producer, observed[0]["run"], token)
     if artifact["size_in_bytes"] != source["artifactBytes"]:
         raise ValueError("Incremental source size changed")
     products._require_artifact_job_window(observed[0], job, artifact)
@@ -210,8 +220,10 @@ def _base(frozen, sdk):
 
 def _spec(spec):
     import reuse_qualification as native
+    collected = collected_validation(spec)
     require_exact_keys(spec, {"schemaVersion", "parent", "parentProofSha256", "source", "stateRoot",
-        "controls", "completedPhases", "originals", "contractControls", "contractFiles"}, "Incremental SDK spec")
+        "controls", "completedPhases", "originals", "contractControls", "contractFiles"}
+        | ({"sourcePlan"} if collected else set()), "Incremental SDK spec")
     if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3):
         raise ValueError("Unsupported incremental SDK spec")
     native._native_pin_arguments(spec["parent"])
@@ -222,19 +234,33 @@ def _spec(spec):
         raise ValueError("Incremental SDK original scope changed")
     for source, contract in ((spec["source"], False), (spec["contractControls"], True)):
         require_exact_keys(source, {"producer", "workflowSha", "jobId", "artifactId", "artifactSha256",
-            "artifactBytes"} | (set() if contract else {"jobName", "inventoryCommit"}), "Incremental native source")
+            "artifactBytes"} | (set() if contract else {"jobName", "inventoryCommit"})
+            | ({"referenceControlSha256"} if collected and not contract else set()), "Incremental native source")
         validate_producer(source["producer"])
         native._commit(source["workflowSha"])
         native.require_sha256(source["artifactSha256"], "Incremental original upload")
         for field in ("jobId", "artifactId", "artifactBytes"):
             if type(source[field]) is not int or source[field] <= 0:
                 raise ValueError("Incremental native source has invalid positive identity")
-        if source["artifactBytes"] > LIMIT:
+        if source["artifactBytes"] > (16 * 1024**3 if collected and not contract else LIMIT):
             raise ValueError("Incremental controls exceed the bounded original upload")
-    if (spec["stateRoot"] != "product-resume-state"
+    if (spec["stateRoot"] != ("runtime-state" if collected else "product-resume-state")
             or type(spec["source"]["jobName"]) is not str
-            or spec["source"]["jobName"] not in _SOURCE_UPLOADS):
+            or spec["source"]["jobName"] not in _SOURCE_UPLOADS
+            or collected and spec["schemaVersion"] != 3):
         raise ValueError("Incremental native source changes its successful resume contract")
+    if collected:
+        native.require_sha256(spec["source"]["referenceControlSha256"], "Approved collector reference control")
+        plan, producer = spec["sourcePlan"], spec["source"]["producer"]
+        if (type(plan) is not dict or plan.get("remoteBuildAuthorized") is not True
+                or any(plan.get(field) != producer[field] for field in ("repository", "event", "pullRequest"))
+                or plan.get("validationCommit") != producer["commit"]
+                or plan.get("validationTree") != producer["tree"]):
+            raise ValueError("Collector source plan differs from its exact authorized producer")
+        raw = canonical_json_bytes(plan)
+        expected = {"relativePath": SOURCE_PLAN, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+        if len(raw) > LIMIT or [row for row in spec["controls"] if row["relativePath"] == SOURCE_PLAN] != [expected]:
+            raise ValueError("Collector source plan lacks its exact bounded control pin")
     native._commit(spec["source"]["inventoryCommit"])
     for row in originals.values():
         require_exact_keys(row, set(IDENTITY) | {"artifactId", "artifactSha256", "jobId", "workflowSha"},
@@ -372,39 +398,76 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             raise ValueError("Incremental original member is not bounded regular evidence")
         return archive.read(entry)
 
-    path = work / "completed-state.zip"
-    source = download(spec["source"], path)
-    with zipfile.ZipFile(path) as archive:
-        directory(archive)
-        from runtime_reference_transport import validate_original_references
-        references = validate_original_references(load_canonical_json_bytes(read(archive, "runtime-original-references.json")))
-        inventory = {row["relativePath"]: row for row in references["inventory"]}
-        aliases = {row["relativePath"]: row for row in references["references"]}
-        sources = {row["relativePath"]: row for row in references["sources"]}
+    from contextlib import nullcontext
+    source_range_bytes = 0
+    if collected_validation(spec):
+        from sdk_handoff import _ensure_observed_sdk_commit
+        from products.inventory import read_regular_file_bytes
+        artifact, _, source = observe_source(spec["source"], token)
+        producer = spec["source"]["producer"]
+        _ensure_observed_sdk_commit(root, producer, token)
+        plan_path = work / "source-plan.json"
+        write_canonical_json(plan_path, spec["sourcePlan"])
+        plan = products._validate_plan(plan_path, root, expected_revision=producer["commit"])
+        raw_plan = canonical_json_bytes(spec["sourcePlan"])
+        destination = work / "source-controls"
+        # Reviewed issuer Git independently pins this reference control and all
+        # requested members. No whole-archive hash or body-admission claim here.
+        base = {key: spec["source"][key] for key in
+                ("artifactId", "artifactSha256", "referenceControlSha256")}
+        base.update(stateWave=0, sdkStateWave=9, runAttempt=producer["runAttempt"])
+        transport = products._capture_runtime_reference_members(plan, raw_plan, producer, base, destination,
+            trusted_workflow_sha=spec["source"]["workflowSha"], token=token,
+            wanted={row["relativePath"]: row for row in spec["controls"]})
+        if transport["artifact"] != artifact:
+            raise ValueError("Collector control intake changes its observed source upload")
+        controls = {row["relativePath"]: load_canonical_json_bytes(read_regular_file_bytes(
+            destination / row["relativePath"], max_bytes=LIMIT, reject_symlink_parents=True))
+            for row in spec["controls"]}
+        pending = [transport]
+        while pending:
+            current = pending.pop()
+            source_range_bytes += current.get("rangeBytes", 0)
+            pending.extend(current.get("originalReferenceSources", []))
+            if current.get("referenceBase") is not None:
+                pending.append(current["referenceBase"])
+        source_archive = nullcontext(None)
+    else:
+        path = work / "completed-state.zip"
+        source = download(spec["source"], path)
+        source_archive = zipfile.ZipFile(path)
+    with source_archive as archive:
+        if archive is not None:
+            directory(archive)
+            from runtime_reference_transport import validate_original_references
+            references = validate_original_references(load_canonical_json_bytes(read(archive, "runtime-original-references.json")))
+            inventory = {row["relativePath"]: row for row in references["inventory"]}
+            aliases = {row["relativePath"]: row for row in references["references"]}
+            sources = {row["relativePath"]: row for row in references["sources"]}
 
-        def retained(name):
-            row = inventory[name]
-            alias = aliases.get(name, {})
-            if alias.get("source") is not None:
-                source = sources[alias["source"]]
-                receipt = source["receipt"]
-                original = originals.get(_identity(receipt))
-                if (not original_worker_member(spec) or _identity(receipt) != IOS_PACKAGE
-                        or source["kind"] != "sdk-package"
-                        or alias["sourcePath"] != "shard/phase-receipt.json" or original is None
-                        or any(source[field] != original[field] for field in ("artifactId", "artifactSha256"))):
-                    raise ValueError("Incremental external control is outside its approved package receipt")
-                # This exact receipt is inside the whole-authenticated successful
-                # resume. Its native Git pin and fresh original provenance remain mandatory.
-                raw = canonical_json_bytes(receipt)
-            else:
-                raw = read(archive, alias.get("sourcePath", name))
-            if len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
-                raise ValueError("Incremental retained control differs from its exact archive member")
-            return raw
+            def retained(name):
+                row = inventory[name]
+                alias = aliases.get(name, {})
+                if alias.get("source") is not None:
+                    source = sources[alias["source"]]
+                    receipt = source["receipt"]
+                    original = originals.get(_identity(receipt))
+                    if (not original_worker_member(spec) or _identity(receipt) != IOS_PACKAGE
+                            or source["kind"] != "sdk-package"
+                            or alias["sourcePath"] != "shard/phase-receipt.json" or original is None
+                            or any(source[field] != original[field] for field in ("artifactId", "artifactSha256"))):
+                        raise ValueError("Incremental external control is outside its approved package receipt")
+                    # This exact receipt is inside the whole-authenticated successful
+                    # resume. Its native Git pin and fresh original provenance remain mandatory.
+                    raw = canonical_json_bytes(receipt)
+                else:
+                    raw = read(archive, alias.get("sourcePath", name))
+                if len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
+                    raise ValueError("Incremental retained control differs from its exact archive member")
+                return raw
 
-        controls = {row["relativePath"]: load_canonical_json_bytes(retained(row["relativePath"]))
-                    for row in spec["controls"]}
+            controls = {row["relativePath"]: load_canonical_json_bytes(retained(row["relativePath"]))
+                        for row in spec["controls"]}
         request, phases, receipts = validate_controls(spec, controls, _base(frozen, sdk))
         validate_current(request, phases, receipts, root=root, revision=revision,
                          original_revision=_inventory_revision(spec, root))
@@ -448,8 +511,9 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         "source": source, "controls": controls, "originals": locators, "members": members,
         "contractSource": contract_source, "contractFiles": files}
     write_canonical_json(work / "completion.json", proof)
-    report = {"downloadedOriginalBytes": spec["source"]["artifactBytes"] + spec["contractControls"]["artifactBytes"],
-        "originalMemberRangeBytes": transferred,
+    report = {"downloadedOriginalBytes": spec["contractControls"]["artifactBytes"] + (
+        0 if collected_validation(spec) else spec["source"]["artifactBytes"]),
+        "sourceControlRangeBytes": source_range_bytes, "originalMemberRangeBytes": transferred,
         "verifiedObjectBytes": sum(row["bytes"] for row in members), "completedSdkPhases": len(phases) + 1,
         "seconds": str(time.perf_counter() - started), "productPhasesExecuted": 0}
     import json
