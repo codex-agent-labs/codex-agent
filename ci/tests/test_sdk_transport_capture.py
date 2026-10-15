@@ -32,10 +32,42 @@ class SdkTransportCaptureTest(unittest.TestCase):
                 environ={}, token="synthetic", allow_earlier_attempt=True)
             self.assertEqual(destination / "original/runtime-state", paths["state_root"])
             self.assertEqual(destination / "original/product-resume-state", paths["discovery_root"])
-            self.assertEqual(destination / "original/product-resume-inputs/plan/impact-plan.json", paths["plan_path"])
+            self.assertEqual(plan, paths["plan_path"])
             raw = output.read_text()
             self.assertIn("state_root=" + str(paths["state_root"]), raw)
             self.assertNotIn("sdk_matrix", raw)
+
+    def test_compact_capture_keeps_complete_caller_plan_for_apple_intake(self):
+        from receipt import INPUT_NAMES
+        from sdk_apple_native import LANES
+        with tempfile.TemporaryDirectory() as checkout, tempfile.TemporaryDirectory() as outputs:
+            root = Path(checkout).resolve()
+            plan, destination = root / "plan/impact-plan.json", root / "build/captured"
+            plan.parent.mkdir()
+            plan.write_bytes(b"exact current plan\n")
+            for lane in LANES:
+                for name in INPUT_NAMES.values():
+                    member = plan.parent / "inventories" / lane / name
+                    member.parent.mkdir(parents=True, exist_ok=True)
+                    member.write_bytes((lane + "/" + name).encode())
+            output = Path(outputs).resolve() / "github-output"
+            output.touch()
+
+            def capture(source, target, **kwargs):
+                compact = target / "original/product-resume-inputs/plan/impact-plan.json"
+                compact.parent.mkdir(parents=True)
+                compact.write_bytes(source.read_bytes())
+
+            with patch.object(product_reuse, "capture_runtime_resume_upload", side_effect=capture):
+                paths = sdk_workflow.capture_transport(plan, destination, output, artifact_id=71,
+                    artifact_sha256="sha256:" + "a" * 64, trusted_workflow_sha="b" * 40,
+                    repository_root=root, environ={}, token="synthetic")
+            for lane in LANES:
+                for name in INPUT_NAMES.values():
+                    self.assertEqual((lane + "/" + name).encode(),
+                        (paths["plan_path"].parent / "inventories" / lane / name).read_bytes())
+            compact = destination / "original/product-resume-inputs/plan"
+            self.assertEqual(["impact-plan.json"], sorted(p.name for p in compact.iterdir()))
 
     def test_forwarded_runtime_or_initial_state_uses_its_exact_transport_root(self):
         for wave, expected_root in ((0, "product-resume-state"), (5, "runtime-state")):

@@ -933,8 +933,10 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
             environ=environ, token=token, allow_earlier_attempt=True,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         original = destination / "original"
+        # Capture binds these exact caller plan bytes to the original upload.
+        # Keep its lane inventories: compact native carriers omit those files.
         paths = {"input_root": original,
-            "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
+            "plan_path": plan,
             "discovery_root": original / "product-resume-state",
             "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None
                                       else "product-resume-state")}
