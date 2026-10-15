@@ -46,7 +46,9 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
         package_receipt_path=selected, compact_recovery=True, **options)
 
 
-def _javascript_instance(phase, component="javascript"):
+def _javascript_instance(phase, component="javascript", target=None):
+    if component == "sdk-ios" and phase == "validation" and target in {"ios-arm64", "ios-simulator-arm64"}:
+        return PhaseInstanceId("sdk", component, phase, target)
     if component == "csharp" and phase == "binary":
         return PhaseInstanceId("sdk", "csharp", "binary", "desktop")
     if component != "javascript" or phase not in {"package", "validation", "metadata"}:
@@ -54,8 +56,8 @@ def _javascript_instance(phase, component="javascript"):
     return PhaseInstanceId("sdk", "javascript", phase, "node")
 
 
-def _javascript_package_record(capture, artifact_root, phase="package", *, component="javascript", completed_frozen=None):
-    instance = _javascript_instance(phase, component)
+def _javascript_package_record(capture, artifact_root, phase="package", *, component="javascript", target=None, completed_frozen=None):
+    instance = _javascript_instance(phase, component, target)
     verified = verify_phase_shard(Path(capture) / "original/shard", instance,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     return {**products._identity_record(instance),
@@ -186,7 +188,7 @@ def capture_prior_javascript_package(plan, consumer_producer, build_key, destina
 
 
 def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consumer_producer,
-        trusted_workflow_sha, token, environ, phase="package", component="javascript", completed_frozen=None):
+        trusted_workflow_sha, token, environ, phase="package", component="javascript", target=None, completed_frozen=None):
     """Freshly authenticate the small original upload; never admit failed state ZIPs."""
     require_no_signing_secret(environ)
     context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
@@ -195,7 +197,7 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
         return []
     require_regular_directory(root, "Prior JavaScript package recovery")
     parent = root
-    instance = _javascript_instance(phase, component)
+    instance = _javascript_instance(phase, component, target)
     for name in f"{component}/{phase}/{instance.target}".split("/"):
         if sorted(path.name for path in parent.iterdir()) != [name]:
             raise ValueError("Prior JavaScript capture has an unexpected family")
@@ -226,7 +228,7 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
         extension = completed_frozen.sdk_extension()
         if extension is not None and instance in {products._identity(row) for row in extension["spec"]["completedPhases"]}:
             record = _javascript_package_record(parent, Path(artifact_root), phase,
-                component=component, completed_frozen=completed_frozen)
+                component=component, target=target, completed_frozen=completed_frozen)
             completed_frozen.envelope(record, raw)
             _, artifact, _ = completed_frozen.observe_extended_sdk(record, producer=consumer_producer, token=token)
             if (any(artifact.get(field) != transport["artifact"].get(field) for field in (
@@ -238,6 +240,8 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
                 raise ValueError("Completed SDK controls changed during native readmission")
             require_no_signing_secret(environ)
             return [record]
+    if instance.component == "sdk-ios":
+        raise ValueError("Completed iOS validation controls require exact native authority")
     with tempfile.TemporaryDirectory(prefix="sdk-javascript-replay-") as temporary:
         fresh = Path(temporary).resolve() / "capture"
         _capture_javascript_package(prior, transport["artifact"], fresh, plan=plan,
@@ -462,14 +466,15 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
     def capture_one(selected):
         ios_package = products._identity(selected) == _ios_instance("package")
         instance = (_ios_instance("package") if ios_package else
-                    _javascript_instance(selected["phase"], selected["component"]))
+                    _javascript_instance(selected["phase"], selected["component"], selected["target"]))
         if products._identity(selected) != instance:
             raise ValueError("Completed SDK capture changes its supported scope")
         record = {field: selected[field] for field in (
             "product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256")}
         envelope = completed_frozen.envelope(record)
         _, artifact, observed = completed_frozen.observe_extended_sdk(record, producer=producer, token=token)
-        folder = ("prior-failed-sdk-ios-package" if ios_package else "prior-failed-sdk-csharp"
+        folder = ("prior-failed-sdk-ios-package" if ios_package else
+                  "prior-completed-sdk-ios-validation-" + instance.target if instance.component == "sdk-ios" else "prior-failed-sdk-csharp"
                   if instance.component == "csharp" else "prior-failed-sdk-javascript"
                   + ("" if instance.phase == "package" else "-" + instance.phase))
         capture = Path(destination) / folder / f"{instance.component}/{instance.phase}/{instance.target}"
@@ -483,7 +488,7 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
             f"{instance.phase}ReceiptSha256": record["receiptSha256"]})
         return (_record(capture, Path(artifact_root), phase="package", completed_frozen=completed_frozen)
             if ios_package else _javascript_package_record(capture, Path(artifact_root), instance.phase,
-                component=instance.component, completed_frozen=completed_frozen))
+                component=instance.component, target=instance.target, completed_frozen=completed_frozen))
     from products.restore import bounded_verify
     with products._ci_observation_batch():
         return bounded_verify(capture_one, extension["spec"]["completedPhases"])

@@ -4541,9 +4541,11 @@ def _verified_product_state(
             token=environment["GITHUB_TOKEN"], environ=environment, phase="package",
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
-                                     ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
+                                     ("javascript", "metadata", "node"), ("csharp", "binary", "desktop"),
+                                     ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64")):
         instance = PhaseInstanceId("sdk", component, phase, target)
-        capture = discovery_root / ("prior-failed-sdk-csharp" if component == "csharp" else
+        capture = discovery_root / ("prior-completed-sdk-ios-validation-" + target if component == "sdk-ios" else
+            "prior-failed-sdk-csharp" if component == "csharp" else
             "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
         if (requested_scope is None or instance in closure) and (capture.exists() or capture.is_symlink()):
             if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
@@ -4553,6 +4555,7 @@ def _verified_product_state(
                 plan=plan, consumer_producer=consumer["producer"],
                 **({"phase": phase} if phase != "package" else {}),
                 **({"component": component} if component != "javascript" else {}),
+                **({"target": target} if component == "sdk-ios" else {}),
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 trusted_workflow_sha=sdk_original_workflow_sha,
                 token=environment["GITHUB_TOKEN"], environ=environment))
@@ -9416,6 +9419,7 @@ def resume_products(
                 sdk_capture_root = (("prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)) if instance.component == "javascript"
                                     else "prior-failed-sdk-csharp" if instance.component == "csharp"
                                     else "prior-failed-sdk-ios-package" if instance.phase == "package"
+                                    else "prior-completed-sdk-ios-validation-" + instance.target if instance.phase == "validation"
                                     else "prior-failed-sdk")
                 shard = (prepared / sdk_capture_root / instance.component / instance.phase /
                          instance.target / "original/shard" if instance.product == "sdk" else

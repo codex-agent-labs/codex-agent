@@ -69,12 +69,19 @@ class CompletedSdkControlsTest(unittest.TestCase):
         self.spec['controls'] = [{'relativePath': path, 'bytes': len(control_bytes(path, value)),
             'sha256': sha256_bytes(control_bytes(path, value))} for path, value in sorted(self.controls.items())]
 
-    def test_native_javascript_capture_and_replay_keep_only_exact_controls(self):
+    def test_native_sdk_capture_and_replay_keep_only_exact_controls(self):
+        for component, phase, target in (('javascript', 'package', 'node'),
+                                         ('sdk-ios', 'validation', 'ios-arm64'),
+                                         ('sdk-ios', 'validation', 'ios-simulator-arm64')):
+            with self.subTest(component=component, target=target):
+                self._check_native_capture_and_replay(component, phase, target)
+
+    def _check_native_capture_and_replay(self, component, phase, target):
         import reuse_qualification as native
         import sdk_ios_binary_recovery as recovery
         from products.restore import PHASE_SHARD_NAME
         receipt = deepcopy(self.receipt)
-        receipt.update(component='javascript', phase='package', target='node')
+        receipt.update(component=component, phase=phase, target=target)
         receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
         record = {**{field: receipt[field] for field in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
                   'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
@@ -94,18 +101,20 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
                 producer=consumer, token='synthetic')
-            capture = root / 'prior-failed-sdk-javascript'
+            capture = root / ('prior-completed-sdk-ios-validation-' + target if component == 'sdk-ios'
+                              else 'prior-failed-sdk-javascript')
             def replay(authority):
                 return recovery.replay_prior_javascript_package(capture, root,
                     plan={'repository': receipt['producer']['repository']}, consumer_producer=consumer,
-                    trusted_workflow_sha='a' * 40, token='synthetic', environ={}, completed_frozen=authority)
+                    trusted_workflow_sha='a' * 40, token='synthetic', environ={}, completed_frozen=authority,
+                    phase=phase, component=component, target=target)
             self.assertEqual(records, replay(cap))
             self.assertEqual(2, observed.call_count)
             self.assertFalse((root / records[0]['objectPath']).exists())
-            shard = capture / 'javascript/package/node/original/shard'
+            shard = capture / f'{component}/{phase}/{target}/original/shard'
             self.assertEqual({PHASE_SHARD_NAME, 'phase-receipt.json'}, {p.name for p in shard.iterdir()})
             with patch.object(recovery, '_capture_javascript_package', side_effect=ValueError('ordinary whole upload required')):
-                with self.assertRaisesRegex(ValueError, 'whole upload required'):
+                with self.assertRaisesRegex(ValueError, 'exact native authority' if component == 'sdk-ios' else 'whole upload required'):
                     replay(None)
             with self.assertRaisesRegex(ValueError, 'concrete native authority'):
                 replay(object())
