@@ -40,6 +40,43 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             self.assertEqual({"validation": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
                 observe.call_args.kwargs["trusted_workflows_by_phase"])
 
+    def test_successful_core_validation_siblings_keep_exact_original_routes(self):
+        consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
+        rows = (
+            ("ios-arm64", "sha256:cd75408f1678521c7c8a3ec4a2d9d3077b244468b06e1d0277d2b2e280bc4526", 11994444162, 116566324230),
+            ("ios-simulator-arm64", "sha256:04c1c231cf4442734cfa544321cd41f3a46951ce66dff3634c6ee3576cbfaf06", 11995665186, 116566324093),
+            ("jvm", "sha256:cf5ea06b6743251e3b4b495e961e9c3185829ccafe023c2ac361d0725479d2f6", 11994318412, 116566323763),
+            ("macos-arm64", "sha256:fe2acd38a99d7960b4b584ea1fbe0d94bc72264ae2ce46f6280fa62614c3c98f", 11994962517, 116566323856),
+            ("macos-x64", "sha256:5c9b2857e70101c4245577540bcc8e75222d336c321a4fecbd745272d0180524", 11996805810, 116566323760),
+            ("node-js", "sha256:05bdd186e96b395ed4cc99d5b6167ab1b3f0e0494e7257f47da528b4644cc2fb", 11995046121, 116566323778),
+            ("node-wasm", "sha256:a9366d071b40d9ee2f328943189765cf0ece959453f877b577deaa03391f3b6a", 11993489491, 116566323791),
+        )
+        for target, key, artifact, job in rows:
+            with self.subTest(target=target):
+                origin = locator.retained_core_origin("validation", key, consumer, target=target)
+                self.assertEqual((artifact, job), (origin["artifact_id"], origin["job_id"]))
+                self.assertEqual((38776265359, 1), (origin["producer"]["runId"], origin["producer"]["runAttempt"]))
+                self.assertEqual("d1946db206f57cb392d344b1a2110d4438802782", origin["workflow_sha"])
+                self.assertEqual("product-validation / sdk-core-validation-wave / sdk-core-validation-" + target,
+                                 origin["job_name"])
+                for changed_key, changes in (("sha256:" + "0" * 64, {}), (key, {"pullRequest": 32}),
+                        (key, {"runId": 38776265359}), (key, {"event": "merge_group"}),
+                        (key, {"repository": "other/repository"}), (key, {"runAttempt": True})):
+                    self.assertIsNone(locator.retained_core_origin("validation", changed_key,
+                        {**consumer, **changes}, target=target))
+                with patch.object(locator.products, "_validate_plan", return_value={"event": "pull_request", "remoteBuildAuthorized": True}), \
+                        patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                        patch.object(locator, "_locate", return_value={name: origin[name] for name in
+                            ("artifact_id", "artifact_sha256")}) as observe:
+                    self.assertEqual(origin, locator.locate_retained_core_binary_upload(self.fixture.plan_path,
+                        self.fixture.repository, expected_build_key=key, token="synthetic", environ={},
+                        phase="validation", target=target))
+                    self.assertEqual(job, observe.call_args.kwargs["expected_job_id"])
+                    self.assertEqual({"validation": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+                                     observe.call_args.kwargs["trusted_workflows_by_phase"])
+        for target in ("windows-x64", "linux-x64", "linux-arm64", "unknown"):
+            self.assertIsNone(locator.retained_core_origin("validation", rows[0][1], consumer, target=target))
+
     def test_retained_package_lookup_binds_exact_original_and_later_consumer(self):
         key = locator.RETAINED_CORE_PACKAGE_KEY
         consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}

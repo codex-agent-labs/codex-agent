@@ -52,20 +52,45 @@ def retained_core_binary_origin(build_key, consumer):
 
 def retained_core_origin(phase, build_key, consumer, *, target="common"):
     """Keep reviewed successful Core originals separate from current admission."""
-    if phase == "validation" and target == "android":
+    if phase == "validation":
+        # Exact successful originals; metadata lookup never grants admission.
+        selected = {
+            "android": (RETAINED_CORE_ANDROID_VALIDATION_KEY, 11990927907,
+                "sha256:95e575a4d4e57a376dfc199105f434090986dffe8965cf2febf4fbccaad12341", 116538699791),
+            "ios-arm64": ("sha256:cd75408f1678521c7c8a3ec4a2d9d3077b244468b06e1d0277d2b2e280bc4526", 11994444162,
+                "sha256:2ee4aacb2ec3e6460504608ab5c7ef3a287940774de662d120f38c99c7f33a93", 116566324230),
+            "ios-simulator-arm64": ("sha256:04c1c231cf4442734cfa544321cd41f3a46951ce66dff3634c6ee3576cbfaf06", 11995665186,
+                "sha256:fd47b4a4dd636e150f5d4a8533c8f7226654afafb7555b995570d32f7f0d0ae5", 116566324093),
+            "jvm": ("sha256:cf5ea06b6743251e3b4b495e961e9c3185829ccafe023c2ac361d0725479d2f6", 11994318412,
+                "sha256:4e0ebada8c75598c29a72b6ef2839be9b6524585f95dca3b9739cd5fb876a03f", 116566323763),
+            "macos-arm64": ("sha256:fe2acd38a99d7960b4b584ea1fbe0d94bc72264ae2ce46f6280fa62614c3c98f", 11994962517,
+                "sha256:1a3ff44490e9beb3fc145fc6d52e449b8572f4967b1924485740ca0e83a2cc7f", 116566323856),
+            "macos-x64": ("sha256:5c9b2857e70101c4245577540bcc8e75222d336c321a4fecbd745272d0180524", 11996805810,
+                "sha256:d81a3721326732251e5f1270c69878ee783b675d07a94abcbfc3e57b7250a9bb", 116566323760),
+            "node-js": ("sha256:05bdd186e96b395ed4cc99d5b6167ab1b3f0e0494e7257f47da528b4644cc2fb", 11995046121,
+                "sha256:5db2f9b7c2aac7c9a32cbbdf0eadf3f7aaf024205e249a178e249b81ba995046", 116566323778),
+            "node-wasm": ("sha256:a9366d071b40d9ee2f328943189765cf0ece959453f877b577deaa03391f3b6a", 11993489491,
+                "sha256:e84454a23da3e8b0a7fc502fbf90dc3b0d444ad0ab02175b2a549dc350c534f4", 116566323791),
+        }.get(target)
+        if selected is None:
+            return None
+        expected_key, artifact, digest, job = selected
+        android = target == "android"
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
-            "commit": "1bbcf292d420ec54d93a96d620623f4576a6e5fa", "tree": "9ffc5fabfc5dea967e272e721e96ab18153add47",
-            "event": "pull_request", "runId": 38768220181, "runAttempt": 1, "pullRequest": 31}
-        if (build_key != RETAINED_CORE_ANDROID_VALIDATION_KEY
+            "commit": "1bbcf292d420ec54d93a96d620623f4576a6e5fa" if android else "d767e75d7a77e5f907e21ed6132ae72ab7bd8bd6",
+            "tree": "9ffc5fabfc5dea967e272e721e96ab18153add47" if android else "8addaed53fbe2179052abc6b20c3cb1da55db0ed",
+            "event": "pull_request", "runId": 38768220181 if android else 38776265359,
+            "runAttempt": 1, "pullRequest": 31}
+        if (build_key != expected_key
                 or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
                 or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
                 or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
             return None
-        return {"producer": producer, "artifact_id": 11990927907,
-            "artifact_sha256": "sha256:95e575a4d4e57a376dfc199105f434090986dffe8965cf2febf4fbccaad12341",
-            "job_id": 116538699791, "workflow_sha": "729a9283d164366fc133821145743ee937494cfe",
+        return {"producer": producer, "artifact_id": artifact, "artifact_sha256": digest,
+            "job_id": job, "workflow_sha": ("729a9283d164366fc133821145743ee937494cfe" if android else
+                "d1946db206f57cb392d344b1a2110d4438802782"),
             "workflow_path": ".github/workflows/sdk-core-validation.yml",
-            "job_name": "product-validation / sdk-core-validation-wave / sdk-core-validation-android"}
+            "job_name": "product-validation / sdk-core-validation-wave / sdk-core-validation-" + target}
     if target != "common":
         return None
     if phase == "binary":
