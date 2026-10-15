@@ -23,10 +23,10 @@ from products.inventory import (
 from products.plan import _contract_projection_from_request
 from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
+from products.restore import PHASE_PLAN_KEYS, memoized_file_inventory, restore_object, verify_phase_shard
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS, _path
-from products.sdk_facade_validation import _inventory, _original_path
+from products.sdk_facade_validation import _original_path
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_maven import verify_sdk_maven_binary_content
 from products.sdk_package import _require_capability_output_separate, _verify_plan, verify_sdk_package_inputs
@@ -39,6 +39,12 @@ from sdk_ios_package import _record
 
 _TARGETS = {"sdk-core": "common", "sdk-android": "android"}
 _LIMIT = 512 * 1024 * 1024
+
+
+def _inventory(root: Path, *, allow_empty=False):
+    for ancestor in (root, *root.parents):
+        require_regular_directory(ancestor, "Maven input ancestry")
+    return memoized_file_inventory(root, allow_empty=allow_empty)
 
 
 def _read(path):

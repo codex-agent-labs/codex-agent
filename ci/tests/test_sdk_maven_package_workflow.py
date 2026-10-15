@@ -21,6 +21,8 @@ from products.restore import PHASE_PLAN_KEYS
 
 class MavenPackageWorkflowTest(unittest.TestCase):
     def setUp(self):
+        from products.restore import verification_session
+        self.enterContext(verification_session())
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()

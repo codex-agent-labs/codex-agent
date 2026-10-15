@@ -14,11 +14,12 @@ from ci import sdk_maven_original as original
 from ci.tests.product_chain_support import write_receipt
 from products.inventory import canonical_json_bytes, snapshot_regular_tree, write_canonical_json, sha256_file
 from products.receipt import write_output_manifest
-from products.restore import finalize_phase_object
+from products.restore import finalize_phase_object, verification_session
 
 
 class MavenOriginalTest(unittest.TestCase):
     def setUp(self):
+        self.enterContext(verification_session())
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
@@ -424,6 +425,27 @@ class MavenOriginalTest(unittest.TestCase):
             result["receipt"]["producer"]["runId"] += 1
         with self.assertRaisesRegex(ValueError, "changed"), self.call():
             self.context["workerRoot"] = "/old/checkout/changed"
+
+    def test_inventory_reuses_bytes_but_rejects_changed_content_and_ancestry(self):
+        from products import restore
+        if restore._is_windows():
+            self.skipTest("Windows deliberately uses full byte scans")
+        tree = self.base / "retained"
+        tree.mkdir()
+        member = tree / "input.bin"
+        member.write_bytes(b"before")
+        with patch.object(restore, "_uncached_file_inventory", wraps=restore._uncached_file_inventory) as scan:
+            before = original._inventory(tree)
+            self.assertEqual(original._inventory(tree), before)
+            self.assertEqual(scan.call_count, 1)
+            member.write_bytes(b"after!")
+            self.assertNotEqual(original._inventory(tree), before)
+            self.assertEqual(scan.call_count, 2)
+            moved = self.base / "moved"
+            tree.rename(moved)
+            tree.symlink_to(moved, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "ancestry"):
+                original._inventory(tree)
 
     def test_package_context_exit_failure_and_nested_original_mutation_reject(self):
         self.prepare(phase="package")

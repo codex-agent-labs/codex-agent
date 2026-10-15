@@ -22,13 +22,12 @@ from products.registry import PhaseInstanceId
 from products.restore import PHASE_RECEIPT_NAME, verify_phase_shard
 from products.runtime_aggregate_handoff import _public_policy
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS, _path
-from products.sdk_facade_validation import _inventory
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
 from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
 from sdk_maven_phase import execute as execute_package
-from sdk_maven_original import _context, verified_original_maven_phase, verified_retained_maven_phase
+from sdk_maven_original import _context, _inventory, verified_original_maven_phase, verified_retained_maven_phase
 
 
 _TARGETS = {"sdk-core": "common", "sdk-android": "android"}
