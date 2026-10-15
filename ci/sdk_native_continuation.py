@@ -30,25 +30,10 @@ from sdk_native_prepare import validate_anchor
 
 _IDENTITY = ("product", "component", "phase", "target")
 _LOCATOR = ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave")
-_STAGES = {
-    # Wave 19 is an additive pre-package compatibility slot; numbers are upload identities, not chronology.
-    "csharp-binary": ("sdk-javascript-metadata-result", "sdk-csharp-binary-plan", "sdk-csharp-binary", "sdk-collect-19", "19"),
-    "package": ("sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-workers", "sdk-collect-4", "4"),
-    "ios-package": ("sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package", "sdk-collect-5", "5"),
-    "javascript-metadata": ("sdk-javascript", "sdk-javascript-metadata-plan", "sdk-javascript-metadata", "sdk-collect-6", "6"),
-    "validation": ("sdk-ios-packages", "sdk-native-validation-plan", "sdk-native-validation", "sdk-collect-7", "7"),
-    "metadata": ("sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", "sdk-collect-8", "8"),
-    "ios-validation": ("sdk-native-result", "sdk-native-result", "sdk-ios-validation", "sdk-collect-9", "9"),
-    "ios-metadata": ("sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", "sdk-collect-10", "10"),
-    "core-binary": ("sdk-ios-metadata-result", "sdk-core-binary-plan", "sdk-core-binary", "sdk-collect-11", "11"),
-    "core-package": ("sdk-core-binary-wave", "sdk-core-package-plan", "sdk-core-package", "sdk-collect-12", "12"),
-    "core-validation": ("sdk-core-package-wave", "sdk-core-validation-plan", "sdk-core-validation", "sdk-collect-13", "13"),
-    "core-metadata": ("sdk-core-validation-wave", "sdk-core-metadata-plan", "sdk-core-metadata", "sdk-collect-14", "14"),
-    "android-binary": ("sdk-core-metadata-wave", "sdk-android-binary-plan", "sdk-android-binary", "sdk-collect-15", "15"),
-    "android-package": ("sdk-android-binary-result", "sdk-android-package-plan", "sdk-android-package", "sdk-collect-16", "16"),
-    "android-validation": ("sdk-android-package-result", "sdk-android-validation-plan", "sdk-android-validation", "sdk-collect-17", "17"),
-    "android-metadata": ("sdk-android-validation-result", "sdk-android-metadata-plan", "sdk-android-metadata", "sdk-collect-18", "18"),
-}
+from sdk_phase import SDK_FAMILY_ROUTES
+
+_STAGES = {row.stage: (row.predecessor, row.election, row.workers, row.collector, str(row.wave))
+           for row in SDK_FAMILY_ROUTES}
 
 # These jobs ordinarily just forward sdk-plan when no earlier SDK family is ready.
 _IOS_PREFIX_RESULTS = (

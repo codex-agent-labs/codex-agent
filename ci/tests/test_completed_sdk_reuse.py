@@ -70,11 +70,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
             'sha256': sha256_bytes(control_bytes(path, value))} for path, value in sorted(self.controls.items())]
 
     def test_native_sdk_capture_and_replay_keep_only_exact_controls(self):
-        for component, phase, target in (('javascript', 'package', 'node'),
-                                         ('sdk-ios', 'validation', 'ios-arm64'),
-                                         ('sdk-ios', 'validation', 'ios-simulator-arm64'),
-                                         ('sdk-ios', 'metadata', 'ios'), ('sdk-core', 'binary', 'common'),
-                                         ('sdk-core', 'package', 'common')):
+        from sdk_phase import COMPACT_REPLAY_INSTANCES
+        for instance in COMPACT_REPLAY_INSTANCES:
+            component, phase, target = instance.component, instance.phase, instance.target
             with self.subTest(component=component, target=target):
                 self._check_native_capture_and_replay(component, phase, target)
 
@@ -103,8 +101,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
                 producer=consumer, token='synthetic')
-            capture = root / (f'prior-completed-{component}-{phase}-{target}' if component in {'sdk-ios', 'sdk-core'}
-                              else 'prior-failed-sdk-javascript')
+            from sdk_phase import completed_recovery_folder
+            capture = root / completed_recovery_folder(recovery._javascript_instance(phase, component, target))
             def replay(authority):
                 return recovery.replay_prior_javascript_package(capture, root,
                     plan={'repository': receipt['producer']['repository']}, consumer_producer=consumer,

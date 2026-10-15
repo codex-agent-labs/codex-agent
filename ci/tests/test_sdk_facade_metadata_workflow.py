@@ -68,6 +68,10 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
     def materialize_inputs(self, plan, discovery, state, instance, destination, **kwargs):
         self.assertEqual(workflow._INSTANCE, instance)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
+        self.assertEqual(17, len(kwargs["materialized_scope"]))
+        self.assertFalse(any(item.product == "runtime" for item in kwargs["materialized_scope"]))
+        self.assertEqual(set(SDK_FACADE_TARGETS), {item.target for item in kwargs["materialized_scope"]
+            if item.product == "sdk" and item.phase == "validation"})
         destination.mkdir()
         for target in ("package", *SDK_FACADE_TARGETS):
             name = "sdk-sdk-core-package-common" if target == "package" else f"sdk-sdk-core-validation-{target}"

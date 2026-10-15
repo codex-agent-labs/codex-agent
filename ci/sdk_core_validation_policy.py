@@ -27,6 +27,7 @@ from products.sdk_facade_validation_admission import _native_archive_path
 from products.sdk_inputs import REQUEST_NAME
 from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
+from sdk_phase import maven_consumed_predecessors
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
 
@@ -105,7 +106,9 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             raise ValueError("Core validation lacks Git-authoritative release trust")
         predecessors = prepared / "predecessors"
         ready = product_reuse._materialize_product_predecessors(
-            verified, selected_instance, predecessors, selected_key, root)
+            verified, selected_instance, predecessors, selected_key, root,
+            materialized_scope=maven_consumed_predecessors(selected_instance,
+                validation_target=target if expected_metadata_build_key is not None else None))
         if ready != elected:
             raise ValueError("Core validation predecessor election changed")
         if expected_metadata_build_key is not None:

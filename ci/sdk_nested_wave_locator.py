@@ -13,16 +13,9 @@ from products.signing_isolation import require_no_signing_secret
 import product_reuse as products
 
 
-_COLLECTORS = {
-    11: ("sdk-core-binary-validation", "sdk-core-binary-wave"),
-    12: ("sdk-core-package-validation", "sdk-core-package-wave"),
-    13: ("sdk-core-validation", "sdk-core-validation-wave"),
-    14: ("sdk-core-metadata-validation", "sdk-core-metadata-wave"),
-    15: ("sdk-android-binary-validation", "sdk-android-binary-result"),
-    16: ("sdk-android-package-validation", "sdk-android-package-result"),
-    17: ("sdk-android-validation", "sdk-android-validation-result"),
-    18: ("sdk-android-metadata-validation", "sdk-android-metadata-result"),
-}
+from sdk_phase import SDK_FAMILY_ROUTES
+
+_COLLECTORS = {row.wave: (row.child, row.parent) for row in SDK_FAMILY_ROUTES if row.child}
 
 
 def locate_failed_nested_sdk_wave(producer, *, wave, trusted_workflow_sha,

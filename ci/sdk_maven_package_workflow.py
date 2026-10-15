@@ -27,6 +27,7 @@ from products.sdk_package import _require_capability_output_separate, verify_sdk
 from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
 from sdk_maven_phase import execute as execute_package
+from sdk_phase import maven_consumed_predecessors
 from sdk_maven_original import _context, _inventory, verified_original_maven_phase, verified_retained_maven_phase
 
 
@@ -162,9 +163,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                     expected_build_key=expected_build_key, repository_root=root, environ=environ,
                     # Keep the complete Runtime dependency authentication above;
                     # Maven packaging and its retained reader consume only these stages.
-                    materialized_scope=tuple(PhaseInstanceId("contract", "contract", phase, "common")
-                        for phase in ("binary", "package", "validation", "metadata")) +
-                        (PhaseInstanceId("sdk", component, "binary", target),),
+                    materialized_scope=maven_consumed_predecessors(instance),
                     sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                 retained[prepared] = _inventory(prepared, allow_empty=True)

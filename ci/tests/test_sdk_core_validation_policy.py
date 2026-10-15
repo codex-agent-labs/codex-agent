@@ -104,10 +104,13 @@ class CoreValidationPolicyTests(unittest.TestCase):
             (keys / "active.pub").write_bytes(b"key")
             return SimpleNamespace(keyring=ring, keys=keys)
 
-        def materialize(state, instance, destination, expected_key, root):
+        def materialize(state, instance, destination, expected_key, root, *, materialized_scope):
             self.assertIs(state, verified)
             self.assertEqual(selected, instance)
             self.assertEqual(_KEY, expected_key)
+            self.assertEqual({policy.PhaseInstanceId("contract", "contract", phase, "common")
+                for phase in ("binary", "package", "validation", "metadata")} |
+                {policy._BINARY, policy._PACKAGE}, set(materialized_scope))
             for product, component, phase, target in (
                     ("sdk", "sdk-core", "binary", "common"),
                     ("sdk", "sdk-core", "package", "common"),
@@ -179,6 +182,10 @@ class CoreValidationPolicyTests(unittest.TestCase):
             policy.prepare(**self.args(expected_metadata_build_key=_KEY))
         self.assertEqual(policy._METADATA, materialized.call_args.args[1])
         self.assertEqual(_KEY, materialized.call_args.args[3])
+        self.assertEqual({policy.PhaseInstanceId("contract", "contract", phase, "common")
+            for phase in ("binary", "package", "validation", "metadata")} |
+            {policy._BINARY, policy._PACKAGE, instance},
+            set(materialized.call_args.kwargs["materialized_scope"]))
         selected[instance]["state"] = "reused"
         with (patch.object(policy.product_reuse, "_verified_product_state", return_value=verified),
               patch.object(policy.product_reuse, "_materialize_product_predecessors") as materialized,

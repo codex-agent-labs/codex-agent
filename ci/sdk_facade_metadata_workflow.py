@@ -31,6 +31,7 @@ from products.sdk_platform_metadata import OUTPUT_KIND, OUTPUT_PATH
 from products.sdk_validation_inputs import _request_inventory
 from products.signing_isolation import require_no_signing_secret
 from sdk_facade_metadata_inputs import _records, _native_archives, verified_facade_metadata_inputs
+from sdk_phase import maven_consumed_predecessors
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -125,6 +126,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
         destination = product_reuse._prepare_destination(destination, root)
         prepared = destination / "inputs"
         materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
+            materialized_scope=maven_consumed_predecessors(_INSTANCE),
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
             sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **optional,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))

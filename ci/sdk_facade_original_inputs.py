@@ -19,7 +19,7 @@ from ci.products.inventory import (canonical_json_bytes, load_canonical_json_byt
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
     require_sha256, sha256_bytes, sha256_file, write_canonical_json)
 from ci.products.receipt import validate_phase_receipt
-from ci.products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
+from products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
 from ci.products.sdk_facade_inputs import _path, _request, _sources
 from ci.products.sdk_facade_metadata_admission import fresh_metadata_arguments
 from ci.products.sdk_facade_validation import _inventory
@@ -31,6 +31,7 @@ from ci.sdk_facade_capture import (capture_sdk_facade_metadata_upload,
 from ci.sdk_facade_metadata_inputs import verified_facade_metadata_inputs
 from ci.sdk_facade_metadata_selection import write_selected_facade_metadata_policy
 from ci.sdk_facade_upload_locator import locate_original_facade_upload
+from sdk_phase import maven_consumed_predecessors
 
 
 _FRESH_INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -134,6 +135,7 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
             raise ValueError("Fresh Core original scratch must be outside the source checkout")
         materialized = product_reuse.materialize_product_predecessors(plan, discovery, state,
             _FRESH_INSTANCE, predecessors, expected_build_key=expected_build_key,
+            materialized_scope=maven_consumed_predecessors(_FRESH_INSTANCE),
             repository_root=root, environ=environ, sdk_validation_tooling=tooling,
             sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_original_workflow_sha=trusted_workflow_sha,

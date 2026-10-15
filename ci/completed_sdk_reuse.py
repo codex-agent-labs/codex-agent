@@ -13,6 +13,7 @@ from products.inventory import (
 )
 from products.receipt import validate_phase_receipt, validate_producer
 from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
+from sdk_phase import CHECKPOINT_ROUTES, SDK_FAMILY_INSTANCES
 
 
 IDENTITY = ("product", "component", "phase", "target")
@@ -22,8 +23,7 @@ IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 COLLECTED_VALIDATION_JOB = "product-validation / sdk-collect-9"
 _CORE_COLLECTOR = "product-validation / sdk-core-binary-wave / sdk-collect-11"
 _CORE_PACKAGE_COLLECTOR = "product-validation / sdk-core-package-wave / sdk-collect-12"
-_COLLECTED_WAVES = {COLLECTED_VALIDATION_JOB: 9, "product-validation / sdk-collect-10": 10,
-                    _CORE_COLLECTOR: 11, _CORE_PACKAGE_COLLECTOR: 12}
+_COLLECTED_WAVES = {job: row.wave for job, row in CHECKPOINT_ROUTES.items()}
 SOURCE_PLAN = "product-resume-inputs/plan/impact-plan.json"
 _SOURCE_UPLOADS = {
     "product-validation / product-resume": "codex-agent-product-resume-",
@@ -177,12 +177,13 @@ def observe_original(original, receipt, token, *, native_locator=None):
         raise ValueError("Incremental original must be a registered SDK phase")
     base_job = f"product-validation / sdk-{instance.component}-{instance.phase}-{instance.target}"
     workflow = {"trusted_workflow_sha": original["workflowSha"]}
-    if instance in (PhaseInstanceId("sdk", "sdk-core", "binary", "common"),
-                    PhaseInstanceId("sdk", "sdk-core", "package", "common")):
+    child = next((row for row in CHECKPOINT_ROUTES.values()
+                  if row.child and instance in SDK_FAMILY_INSTANCES[row.family]), None)
+    if child is not None:
         from sdk_campaign_original_locator import fresh_sdk_worker_route
         base_job, _ = fresh_sdk_worker_route(instance, receipt)
         workflow = {"trusted_workflows_by_phase": {"original": {
-            "path": f".github/workflows/sdk-core-{instance.phase}-validation.yml", "sha": original["workflowSha"]}}}
+            "path": child.workflow_path, "sha": original["workflowSha"]}}}
     if native_locator is not None and (type(native_locator) is not dict
             or type(native_locator.get("job")) is not dict or native_locator["job"].get("id") != original["jobId"]):
         raise ValueError("Native original locator changes its independently pinned job")
@@ -225,8 +226,8 @@ def observe_source(source, token, *, contract=False, native_locator=None):
     if native_locator is not None and (type(native_locator) is not dict
             or type(native_locator.get("job")) is not dict or native_locator["job"].get("id") != source["jobId"]):
         raise ValueError("Native source locator changes its independently pinned job")
-    child = {_CORE_COLLECTOR: ".github/workflows/sdk-core-binary-validation.yml",
-             _CORE_PACKAGE_COLLECTOR: ".github/workflows/sdk-core-package-validation.yml"}.get(job)
+    route = CHECKPOINT_ROUTES.get(job)
+    child = route.workflow_path if route is not None and route.child else None
     workflow = ({"trusted_workflows_by_phase": {"source": {
         "path": child, "sha": source["workflowSha"]}}}
         if child is not None else {"trusted_workflow_sha": source["workflowSha"]})

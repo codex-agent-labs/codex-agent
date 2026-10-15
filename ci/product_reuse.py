@@ -4548,15 +4548,9 @@ def _verified_product_state(
             consumer_producer=consumer["producer"], trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment, phase="package",
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))))
-    for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
-                                     ("javascript", "metadata", "node"), ("csharp", "binary", "desktop"),
-                                     ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64"),
-                                     ("sdk-ios", "metadata", "ios"), ("sdk-core", "binary", "common"),
-                                     ("sdk-core", "package", "common")):
-        instance = PhaseInstanceId("sdk", component, phase, target)
-        capture = discovery_root / (f"prior-completed-{component}-{phase}-{target}" if component in {"sdk-ios", "sdk-core"} else
-            "prior-failed-sdk-csharp" if component == "csharp" else
-            "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
+    for instance in COMPACT_REPLAY_INSTANCES:
+        component, phase, target = instance.component, instance.phase, instance.target
+        capture = discovery_root / completed_recovery_folder(instance)
         if (requested_scope is None or instance in closure) and (capture.exists() or capture.is_symlink()):
             if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
                 raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
@@ -4565,7 +4559,7 @@ def _verified_product_state(
                 plan=plan, consumer_producer=consumer["producer"],
                 **({"phase": phase} if phase != "package" else {}),
                 **({"component": component} if component != "javascript" else {}),
-                **({"target": target} if component in {"sdk-ios", "sdk-core"} else {}),
+                target=target,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 trusted_workflow_sha=sdk_original_workflow_sha,
                 token=environment["GITHUB_TOKEN"], environ=environment)))
@@ -4929,39 +4923,15 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
-SDK_WORKER_FAMILIES = (
-    "csharp-binary", "native-package", "ios-package", "javascript-metadata", "native-validation",
-    "native-metadata", "ios-validation", "ios-metadata",
-    "core-binary", "core-package", "core-validation", "core-metadata",
-    "android-binary", "android-package", "android-validation", "android-metadata",
-)
+from sdk_phase import SDK_FAMILY_INSTANCES, COMPACT_REPLAY_INSTANCES, completed_recovery_folder
+
+SDK_WORKER_FAMILIES = tuple(SDK_FAMILY_INSTANCES)
 
 
 def _sdk_family_worker_instance(instance, family):
-    if type(family) is not str or family not in SDK_WORKER_FAMILIES:
+    if type(family) is not str or family not in SDK_FAMILY_INSTANCES:
         raise ValueError("Unsupported SDK worker family")
-    if family == "csharp-binary":
-        return instance == PhaseInstanceId("sdk", "csharp", "binary", "desktop")
-    if family == "native-package":
-        return instance in {PhaseInstanceId("sdk", language, "package", "desktop") for language in NATIVE_BINDINGS}
-    if family == "native-validation":
-        return instance in {PhaseInstanceId("sdk", language, "validation", target)
-                            for language in NATIVE_BINDINGS for target in NATIVE_TARGETS}
-    if family == "native-metadata":
-        return instance in {PhaseInstanceId("sdk", language, "metadata", "desktop") for language in NATIVE_BINDINGS}
-    if family == "ios-validation":
-        return instance in {PhaseInstanceId("sdk", "sdk-ios", "validation", target)
-                            for target in ("ios-arm64", "ios-simulator-arm64")}
-    if family == "ios-metadata":
-        return instance == PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")
-    if family.startswith("core-"):
-        phase = family.removeprefix("core-")
-        targets = SDK_FACADE_TARGETS if phase == "validation" else ("common",)
-        return instance in {PhaseInstanceId("sdk", "sdk-core", phase, target) for target in targets}
-    if family.startswith("android-"):
-        return instance == PhaseInstanceId("sdk", "sdk-android", family.removeprefix("android-"), "android")
-    return instance == (PhaseInstanceId("sdk", "sdk-ios", "package", "ios") if family == "ios-package"
-                        else PhaseInstanceId("sdk", "javascript", "metadata", "node"))
+    return instance in SDK_FAMILY_INSTANCES[family]
 
 
 def _runtime_worker_instance(instance):

@@ -144,6 +144,8 @@ class FacadeWorkflowTest(unittest.TestCase):
     def materialize_inputs(self, plan, discovery, state, instance, output, **kwargs):
         self.assertEqual(PhaseInstanceId("sdk", "sdk-core", "validation", "jvm"), instance)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
+        self.assertEqual(6, len(kwargs["materialized_scope"]))
+        self.assertFalse(any(item.product == "runtime" for item in kwargs["materialized_scope"]))
         output.mkdir()
         for name, stage, receipt in (("sdk-sdk-core-package-common", self.f.f.package, self.f.receipt),
                 ("contract-contract-metadata-common", self.f.f.contract, Path(self.f.evidence["phaseReceipt"]))):

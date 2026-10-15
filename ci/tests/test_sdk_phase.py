@@ -117,5 +117,53 @@ class SdkPhaseTest(unittest.TestCase):
         self.records[identity] = original
 
 
+class SdkRoutingContractTests(unittest.TestCase):
+    def test_registered_worker_families_partition_existing_sdk_instances(self):
+        from sdk_phase import SDK_FAMILY_ROUTES, SDK_FAMILY_INSTANCES
+        from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
+        families = [row.family for row in SDK_FAMILY_ROUTES]
+        self.assertEqual(len(families), len(set(families)))
+        self.assertEqual(len(families), len({row.wave for row in SDK_FAMILY_ROUTES}))
+        members = [item for family in families for item in SDK_FAMILY_INSTANCES[family]]
+        self.assertEqual(len(members), len(set(members)))
+        # These three legacy workers precede the family continuation mechanism.
+        legacy = {PhaseInstanceId("sdk", "javascript", phase, "node") for phase in ("package", "validation")}
+        legacy.add(PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
+        self.assertEqual({item for item in PHASE_INSTANCE_IDS if item.product == "sdk"} - legacy, set(members))
+        root = Path(__file__).resolve().parents[2]
+        parent = (root / ".github/workflows/product-validation.yml").read_text()
+        for row in SDK_FAMILY_ROUTES:
+            with self.subTest(family=row.family):
+                self.assertTrue(SDK_FAMILY_INSTANCES[row.family])
+                workflow = (root / row.workflow_path).read_text()
+                self.assertIn(f"  {row.collector}:\n", workflow)
+                if row.child:
+                    self.assertIn(f"  {row.parent}:\n", parent)
+                    self.assertIn(f"uses: ./{row.workflow_path}", parent)
+
+    def test_consumed_inputs_are_bounded_subsets_not_the_authenticated_closure(self):
+        from sdk_phase import maven_consumed_predecessors, SDK_FAMILY_INSTANCES
+        from products.registry import PhaseInstanceId
+        from products.reuse import _dependency_closure
+        metadata = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
+        cases = [(PhaseInstanceId("sdk", "sdk-core", "package", "common"), None, 5),
+                 (PhaseInstanceId("sdk", "sdk-android", "package", "android"), None, 5), (metadata, None, 17)]
+        for validation in sorted(SDK_FAMILY_INSTANCES["core-validation"]):
+            cases.extend(((validation, None, 6), (metadata, validation.target, 7)))
+        for instance, target, count in cases:
+            with self.subTest(instance=instance, target=target):
+                consumed = maven_consumed_predecessors(instance, validation_target=target)
+                closure = set(_dependency_closure((instance,))) - {instance}
+                self.assertEqual(count, len(consumed))
+                self.assertEqual(len(consumed), len(set(consumed)))
+                self.assertTrue(set(consumed) < closure)
+                self.assertFalse(any(item.product == "runtime" for item in consumed))
+                self.assertEqual(46, sum(item.product == "runtime" for item in closure))
+        for instance, target in ((metadata, "unknown"),
+                (cases[0][0], "jvm"), (PhaseInstanceId("sdk", "python", "package", "desktop"), None)):
+            with self.subTest(instance=instance, target=target), self.assertRaises(ValueError):
+                maven_consumed_predecessors(instance, validation_target=target)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ from products.sdk_validation_inputs import _request_inventory
 from products.signatures import load_keyring, public_key_path
 from products.signing_isolation import require_no_signing_secret
 from sdk_facade_validation_phase import execute as execute_validation
+from sdk_phase import maven_consumed_predecessors
 
 
 def _read(path):
@@ -150,6 +151,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         ready = product_reuse.materialize_product_predecessors(
             Path(plan), discovery, state, PhaseInstanceId("sdk", "sdk-core", "validation", target), inputs,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
+            materialized_scope=maven_consumed_predecessors(PhaseInstanceId("sdk", "sdk-core", "validation", target)),
             sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_original_workflow_sha=trusted_workflow_sha, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))

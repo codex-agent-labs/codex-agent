@@ -15,6 +15,7 @@ from products.inventory import (
     require_regular_directory, require_sha256, sha256_bytes,
 )
 from products.registry import PhaseInstanceId
+from sdk_phase import COMPACT_REPLAY_INSTANCES, LEGACY_REPLAY_INSTANCES, completed_recovery_folder
 from products.restore import (
     _VERIFICATION_SESSION, _stage_fingerprint, verify_phase_shard, PHASE_SHARD_NAME,
     memoized_file_inventory as regular_file_inventory,
@@ -47,17 +48,12 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
 
 
 def _javascript_instance(phase, component="javascript", target=None):
-    if component == "sdk-core" and phase in {"binary", "package"} and target == "common":
-        return PhaseInstanceId("sdk", component, phase, target)
-    if component == "sdk-ios" and phase == "metadata" and target == "ios":
-        return PhaseInstanceId("sdk", component, phase, target)
-    if component == "sdk-ios" and phase == "validation" and target in {"ios-arm64", "ios-simulator-arm64"}:
-        return PhaseInstanceId("sdk", component, phase, target)
-    if component == "csharp" and phase == "binary":
-        return PhaseInstanceId("sdk", "csharp", "binary", "desktop")
-    if component != "javascript" or phase not in {"package", "validation", "metadata"}:
-        raise ValueError("Unsupported JavaScript original recovery phase")
-    return PhaseInstanceId("sdk", "javascript", phase, "node")
+    # Keep legacy default targets; newer compact readers require exact targets.
+    target = {"javascript": "node", "csharp": "desktop"}.get(component, target)
+    instance = PhaseInstanceId("sdk", component, phase, target)
+    if instance not in COMPACT_REPLAY_INSTANCES:
+        raise ValueError("Unsupported SDK original recovery phase")
+    return instance
 
 
 def _javascript_package_record(capture, artifact_root, phase="package", *, component="javascript", target=None, completed_frozen=None):
@@ -238,7 +234,7 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
                 raise ValueError("Completed SDK controls changed during native readmission")
             require_no_signing_secret(environ)
             return [record]
-    if instance.component in {"sdk-ios", "sdk-core"}:
+    if instance not in LEGACY_REPLAY_INSTANCES:
         raise ValueError("Completed iOS/Core controls require exact native authority")
     prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
         f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
@@ -482,11 +478,7 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
             "product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256")}
         envelope = completed_frozen.envelope(record)
         _, artifact, observed = completed_frozen.observe_extended_sdk(record, producer=producer, token=token)
-        folder = ("prior-failed-sdk-ios-package" if ios_package else
-                  f"prior-completed-{instance.component}-{instance.phase}-{instance.target}"
-                  if instance.component in {"sdk-ios", "sdk-core"} else "prior-failed-sdk-csharp"
-                  if instance.component == "csharp" else "prior-failed-sdk-javascript"
-                  + ("" if instance.phase == "package" else "-" + instance.phase))
+        folder = completed_recovery_folder(instance)
         capture = Path(destination) / folder / f"{instance.component}/{instance.phase}/{instance.target}"
         shard = capture / "original/shard"
         shard.mkdir(parents=True, exist_ok=False)

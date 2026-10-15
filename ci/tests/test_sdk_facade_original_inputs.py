@@ -148,6 +148,10 @@ class OriginalFacadeInputsTest(unittest.TestCase):
         elected = SimpleNamespace(prior_ready_plans={inputs._FRESH_INSTANCE: ready},
                                   plan={"validationCommit": "a" * 40})
         def materialize(_plan, _discovery, _state, _instance, destination, **_kwargs):
+            self.assertEqual(17, len(_kwargs["materialized_scope"]))
+            self.assertFalse(any(item.product == "runtime" for item in _kwargs["materialized_scope"]))
+            self.assertEqual(set(SDK_FACADE_TARGETS), {item.target for item in _kwargs["materialized_scope"]
+                if item.product == "sdk" and item.phase == "validation"})
             destination.mkdir()
             package = destination / "sdk-sdk-core-package-common"
             package.mkdir()
