@@ -76,6 +76,20 @@ jobs:
           subprocess.run([sys.executable, '-B', '-m', 'unittest',
               'ci.tests.test_sdk_android_archive_provision',
               'ci.tests.test_sdk_core_native_archive_provision'], check=True)
+      - name: Exercise hydrated cache command bootstrap on the actual host
+        uses: ./.github/actions/hydrated-evidence-cache
+        with:
+          mode: execute
+          script: |
+            node --input-type=module - <<'JS'
+            import assert from 'node:assert/strict';
+            import {isAbsolute} from 'node:path';
+            import {pathToFileURL} from 'node:url';
+            assert.ok(isAbsolute(process.env.CODEX_AGENT_HYDRATED_EVIDENCE));
+            const toolkit = await import(pathToFileURL(process.env.CODEX_AGENT_HOSTED_CACHE_BACKEND));
+            assert.equal(typeof toolkit.main, 'function');
+            console.log('Actual host npm bootstrap, bash child and pinned cache toolkit import passed');
+            JS
       - if: runner.os == 'Linux'
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
         with:
