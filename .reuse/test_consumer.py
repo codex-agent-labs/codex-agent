@@ -18,6 +18,28 @@ RECORD = APPROVAL["qualifications"][0]
 
 
 class AcquisitionTests(unittest.TestCase):
+    def test_completed_history_bound_preserves_exact_identities(self):
+        with patch.dict(consumer.sys.modules):
+            from products.inventory import canonical_json_bytes
+            original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+            for count in (1, 8, 10, 16):
+                value = copy.deepcopy(original)
+                value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
+                    "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
+                self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(value), APPROVAL), value)
+            for fault in ("empty", "excessive", "duplicate", "repository", "commit", "tree", "extra"):
+                with self.subTest(fault=fault):
+                    value = copy.deepcopy(original)
+                    rows = value["gitHistory"]
+                    if fault == "empty": rows.clear()
+                    elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(17)]
+                    elif fault == "duplicate": rows.append(dict(rows[0]))
+                    elif fault == "extra": rows[0]["untrusted"] = True
+                    else: rows[0][fault] = "unreviewed"
+                    with self.assertRaises(ValueError):
+                        consumer.completed_descriptor(canonical_json_bytes(value), APPROVAL)
+
     def test_batched_blobs_keep_exact_bytes_and_reject_protocol_corruption(self):
         oid = "b" * 40
         header = (oid + " blob 3\n").encode()

@@ -310,7 +310,7 @@ def completed_descriptor(raw, value):
         raise ValueError("Completed frozen proof differs from preserved qualification identity")
     validate_sdk_input_source(document["retainedSdkInputsSource"])
     records = document["gitHistory"]
-    if not isinstance(records, list) or not 1 <= len(records) <= 8:
+    if not isinstance(records, list) or not 1 <= len(records) <= 16:
         raise ValueError("Completed reuse Git history is missing or excessive")
     seen = set()
     for record in records:
