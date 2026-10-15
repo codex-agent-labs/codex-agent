@@ -8,7 +8,7 @@ authenticates its attestation before creating the sealed completed-reuse capabil
 from pathlib import Path
 
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, require_exact_keys,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, require_exact_keys,
     require_relative_path, sha256_bytes, validate_file_record,
 )
 from products.receipt import validate_phase_receipt, validate_producer
@@ -61,7 +61,13 @@ def validate_controls(spec, controls, base):
         raise ValueError("Incremental completion changes its fixed controls")
     for row in rows:
         validate_file_record(row, "Incremental SDK control", with_kind=False)
-        raw = canonical_json_bytes(controls[row["relativePath"]])
+        value = controls[row["relativePath"]]
+        if collected_validation(spec) and row["relativePath"] == SOURCE_PLAN:
+            if type(value) is not str or value != spec["sourcePlan"]:
+                raise ValueError("Collector source plan changes its exact original bytes")
+            raw = value.encode("utf-8")
+        else:
+            raw = canonical_json_bytes(value)
         if len(raw) > LIMIT or len(raw) != row["bytes"] or sha256_bytes(raw) != row["sha256"]:
             raise ValueError("Incremental SDK control differs from its approved original")
     prefix = require_relative_path(spec["stateRoot"], "Incremental SDK state root") + "/"
@@ -253,13 +259,17 @@ def _spec(spec):
         raise ValueError("Incremental native source changes its successful resume contract")
     if collected:
         native.require_sha256(spec["source"]["referenceControlSha256"], "Approved collector reference control")
-        plan, producer = spec["sourcePlan"], spec["source"]["producer"]
+        if type(spec["sourcePlan"]) is not str:
+            raise ValueError("Collector source plan must preserve its original JSON text")
+        raw = spec["sourcePlan"].encode("utf-8")
+        if len(raw) > LIMIT:
+            raise ValueError("Collector source plan exceeds its bounded control size")
+        plan, producer = load_json_bytes(raw), spec["source"]["producer"]
         if (type(plan) is not dict or plan.get("remoteBuildAuthorized") is not True
                 or any(plan.get(field) != producer[field] for field in ("repository", "event", "pullRequest"))
                 or plan.get("validationCommit") != producer["commit"]
                 or plan.get("validationTree") != producer["tree"]):
             raise ValueError("Collector source plan differs from its exact authorized producer")
-        raw = canonical_json_bytes(plan)
         expected = {"relativePath": SOURCE_PLAN, "bytes": len(raw), "sha256": sha256_bytes(raw)}
         if len(raw) > LIMIT or [row for row in spec["controls"] if row["relativePath"] == SOURCE_PLAN] != [expected]:
             raise ValueError("Collector source plan lacks its exact bounded control pin")
@@ -445,9 +455,9 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         producer = spec["source"]["producer"]
         _ensure_observed_sdk_commit(root, producer, token)
         plan_path = work / "source-plan.json"
-        write_canonical_json(plan_path, spec["sourcePlan"])
+        raw_plan = spec["sourcePlan"].encode("utf-8")
+        plan_path.write_bytes(raw_plan)
         plan = products._validate_plan(plan_path, root, expected_revision=producer["commit"])
-        raw_plan = canonical_json_bytes(spec["sourcePlan"])
         destination = work / "source-controls"
         # Reviewed issuer Git independently pins this reference control and all
         # requested members. No whole-archive hash or body-admission claim here.
@@ -459,9 +469,11 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             wanted={row["relativePath"]: row for row in spec["controls"]})
         if transport["artifact"] != artifact:
             raise ValueError("Collector control intake changes its observed source upload")
-        controls = {row["relativePath"]: load_canonical_json_bytes(read_regular_file_bytes(
-            destination / row["relativePath"], max_bytes=LIMIT, reject_symlink_parents=True))
-            for row in spec["controls"]}
+        controls = {}
+        for row in spec["controls"]:
+            raw = read_regular_file_bytes(destination / row["relativePath"], max_bytes=LIMIT, reject_symlink_parents=True)
+            controls[row["relativePath"]] = (raw.decode("utf-8") if row["relativePath"] == SOURCE_PLAN
+                                             else load_canonical_json_bytes(raw))
         pending = [transport]
         while pending:
             current = pending.pop()

@@ -15,6 +15,10 @@ from reuse_qualification import QualificationIncompatible
 from ci.tests.test_products import phase_receipt
 
 
+def control_bytes(path, value):
+    return value.encode('utf-8') if path == completed.SOURCE_PLAN else canonical_json_bytes(value)
+
+
 class CompletedSdkControlsTest(unittest.TestCase):
     def setUp(self):
         def record(receipt):
@@ -48,8 +52,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         self.bind_controls()
 
     def bind_controls(self):
-        self.spec['controls'] = [{'relativePath': path, 'bytes': len(canonical_json_bytes(value)),
-            'sha256': sha256_bytes(canonical_json_bytes(value))} for path, value in sorted(self.controls.items())]
+        self.spec['controls'] = [{'relativePath': path, 'bytes': len(control_bytes(path, value)),
+            'sha256': sha256_bytes(control_bytes(path, value))} for path, value in sorted(self.controls.items())]
 
     def test_native_javascript_capture_and_replay_keep_only_exact_controls(self):
         import reuse_qualification as native
@@ -174,8 +178,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
         producer = spec['source']['producer']
         plan = {key: producer[key] for key in ('repository', 'event', 'pullRequest')}
         plan.update(validationCommit=producer['commit'], validationTree=producer['tree'], remoteBuildAuthorized=True)
-        spec['sourcePlan'] = plan
-        raw = canonical_json_bytes(plan)
+        spec['sourcePlan'] = json.dumps(plan, indent=2) + '\n'
+        raw = spec['sourcePlan'].encode('utf-8')
+        self.assertNotEqual(canonical_json_bytes(plan), raw)
         spec['controls'].append({'relativePath': 'product-resume-inputs/plan/impact-plan.json',
                                 'bytes': len(raw), 'sha256': sha256_bytes(raw)})
         completed._spec(spec)
@@ -195,8 +200,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
             lambda value: value['source'].update(jobName='product-validation / sdk-collect-10'),
             lambda value: value.update(stateRoot='product-resume-state'),
             lambda value: value.update(schemaVersion=2),
-            lambda value: value['sourcePlan'].update(validationCommit='f' * 40),
-            lambda value: value['sourcePlan'].update(remoteBuildAuthorized=False),
+            lambda value: value.update(sourcePlan=plan),
+            lambda value: value.update(sourcePlan=json.dumps({**plan, 'validationCommit': 'f' * 40})),
+            lambda value: value.update(sourcePlan=json.dumps({**plan, 'remoteBuildAuthorized': False})),
+            lambda value: value.update(sourcePlan=canonical_json_bytes(plan).decode()),
             lambda value: value['controls'].pop(),
             lambda value: value['source'].update(artifactBytes=16 * 1024**3 + 1),
             lambda value: value['contractControls'].update(artifactBytes=completed.LIMIT + 1),
@@ -559,14 +566,15 @@ class CompletedSdkControlsTest(unittest.TestCase):
             producer = self.controls[prefix + 'producer.json']
             plan = {key: producer[key] for key in ('repository', 'event', 'pullRequest')}
             plan.update(validationCommit=producer['commit'], validationTree=producer['tree'], remoteBuildAuthorized=True)
-            self.controls[completed.SOURCE_PLAN] = plan
+            plan_text = json.dumps(plan, indent=2) + '\n'
+            self.controls[completed.SOURCE_PLAN] = plan_text
         self.spec['completedPhases'] = [phase]
         self.bind_controls()
         spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
         spec.update(schemaVersion=3, completedPhases=[phase], controls=self.spec['controls'])
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
         if collected:
-            spec.update(stateRoot='runtime-state', sourcePlan=plan)
+            spec.update(stateRoot='runtime-state', sourcePlan=plan_text)
             spec['source'].update(jobName=completed.COLLECTED_VALIDATION_JOB,
                                   referenceControlSha256='sha256:' + 'a' * 64)
         spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
@@ -577,7 +585,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             with zipfile.ZipFile(raw, 'w') as archive:
                 for name, value in files.items(): archive.writestr(name, value)
             return raw.getvalue()
-        source_files = {name: canonical_json_bytes(value) for name, value in self.controls.items()}
+        source_files = {name: control_bytes(name, value) for name, value in self.controls.items()}
         package = component == 'sdk-ios' and phase_name == 'package'
         if package:
             del source_files[self.receipt_path]  # Ordinary P exports retain this only by reference.
@@ -629,7 +637,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 ensure_commit = stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
                 validate_plan = stack.enter_context(patch.object(products, '_validate_plan', return_value=plan))
                 def capture(actual_plan, raw_plan, producer, base, destination, *, trusted_workflow_sha, token, wanted):
-                    self.assertEqual((plan, canonical_json_bytes(plan), spec['source']['producer']),
+                    self.assertEqual((plan, plan_text.encode('utf-8'), spec['source']['producer']),
                                      (actual_plan, raw_plan, producer))
                     self.assertEqual({'artifactId': spec['source']['artifactId'],
                         'artifactSha256': spec['source']['artifactSha256'], 'stateWave': 0, 'sdkStateWave': 9,
@@ -640,7 +648,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     for path, value in self.controls.items():
                         target = destination / path
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_bytes(canonical_json_bytes(value))
+                        target.write_bytes(control_bytes(path, value))
                     return {'artifact': {'name': 'controls'}, 'rangeBytes': 600,
                             'referenceBase': {'originalReferenceSources': [{'rangeBytes': 100}]}}
                 capture_controls = stack.enter_context(patch.object(products, '_capture_runtime_reference_members',
@@ -704,6 +712,20 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 fetched.side_effect = native_completion
                 observe_original.return_value = {'id': 71}, [], {'original': 71}
             if collected:
+                original_plan_text = self.controls[completed.SOURCE_PLAN]
+                self.controls[completed.SOURCE_PLAN] += '\n'
+                observe_original.reset_mock()
+                downloads.reset_mock()
+                work = Path(temporary).resolve() / 'changed-plan-bytes'
+                work.mkdir()
+                with patch('runtime_reference_archive.open_reference_archive', side_effect=AssertionError('body read')):
+                    with self.assertRaisesRegex(ValueError, 'exact original bytes'):
+                        completed.issue_extension(spec, work, root=fixture.repository,
+                            revision='a' * 40, frozen={}, token='synthetic')
+                observe_original.assert_not_called()
+                downloads.assert_not_called()
+                self.assertFalse((work / 'completion.json').exists())
+                self.controls[completed.SOURCE_PLAN] = original_plan_text
                 self.controls[prefix + 'reuse-wave-result.json']['phases'][-1]['state'] = 'failed'
                 self.bind_controls()
                 spec['controls'] = self.spec['controls']
