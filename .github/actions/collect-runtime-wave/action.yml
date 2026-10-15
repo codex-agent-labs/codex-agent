@@ -98,7 +98,7 @@ runs:
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
         state-wave: ${{ inputs.state-wave }}
     - id: collect
-      shell: bash
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         INPUT_ROOT: ${{ steps.captured.outputs.input-root }}
         WAVE: ${{ inputs.wave }}
@@ -113,54 +113,56 @@ runs:
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        case "$PRODUCT" in
-          runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
-          sdk)
-            command=(python3 -B -m ci.sdk_workflow collect); state=()
-            if [ -n "$SDK_FAMILY" ]; then
-              case "$SDK_FAMILY" in
-                csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) state=(--family "$SDK_FAMILY") ;;
-                *) echo 'Unknown SDK family' >&2; exit 1 ;;
-              esac
-            fi ;;
-          sdk-ios-binary) test -z "$SDK_FAMILY"; command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
-          *) echo 'Unknown product collection scope' >&2; exit 1 ;;
-        esac
-        if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
-          state+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
-        fi
-        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
-          state+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
-        fi
-        if [ -n "${SDK_WORKER_WORKFLOW_PATH:-}" ] || [ -n "${SDK_WORKER_JOB_NAME:-}" ]; then
-          state+=(--sdk-worker-workflow-path "$SDK_WORKER_WORKFLOW_PATH" --sdk-worker-job-name "$SDK_WORKER_JOB_NAME")
-        fi
-        if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
-          test "$PRODUCT" = sdk
-          state+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
-        fi
-        if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
-          test "$PRODUCT" = sdk
-          state+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
-        fi
-        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
-          state+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
-        fi
-        "${command[@]}" --input-root "$INPUT_ROOT" \
-          --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
-        # Pinned native/aggregate signers consume waves 4/5 as full envelopes.
-        # SDK waves and earlier Runtime waves reference authenticated predecessors.
-        if [ "$PRODUCT" != runtime ] || [ "$WAVE" -le 3 ]; then
-          reference_wave=(--state-wave "$WAVE")
-          if [ "$PRODUCT" != runtime ]; then reference_wave=(--state-wave 0 --sdk-state-wave "$WAVE"); fi
-          python3 -B ci/runtime_workflow.py export-references \
-            --handoff build/runtime-next/handoff --base-root "$INPUT_ROOT" \
-            --base-capture "${INPUT_ROOT%/original}/capture-transport.json" \
-            --destination build/runtime-reference-handoff "${reference_wave[@]}"
-        fi
+      with:
+        mode: execute
+        script: |
+          set -euo pipefail
+          case "$PRODUCT" in
+            runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
+            sdk)
+              command=(python3 -B -m ci.sdk_workflow collect); state=()
+              if [ -n "$SDK_FAMILY" ]; then
+                case "$SDK_FAMILY" in
+                  csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) state=(--family "$SDK_FAMILY") ;;
+                  *) echo 'Unknown SDK family' >&2; exit 1 ;;
+                esac
+              fi ;;
+            sdk-ios-binary) test -z "$SDK_FAMILY"; command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
+            *) echo 'Unknown product collection scope' >&2; exit 1 ;;
+          esac
+          if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+            state+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+          fi
+          if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+            state+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+          fi
+          if [ -n "${SDK_WORKER_WORKFLOW_PATH:-}" ] || [ -n "${SDK_WORKER_JOB_NAME:-}" ]; then
+            state+=(--sdk-worker-workflow-path "$SDK_WORKER_WORKFLOW_PATH" --sdk-worker-job-name "$SDK_WORKER_JOB_NAME")
+          fi
+          if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+            test "$PRODUCT" = sdk
+            state+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+          fi
+          if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+            test "$PRODUCT" = sdk
+            state+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
+          fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            state+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
+          "${command[@]}" --input-root "$INPUT_ROOT" \
+            --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+          # Pinned native/aggregate signers consume waves 4/5 as full envelopes.
+          # SDK waves and earlier Runtime waves reference authenticated predecessors.
+          if [ "$PRODUCT" != runtime ] || [ "$WAVE" -le 3 ]; then
+            reference_wave=(--state-wave "$WAVE")
+            if [ "$PRODUCT" != runtime ]; then reference_wave=(--state-wave 0 --sdk-state-wave "$WAVE"); fi
+            python3 -B ci/runtime_workflow.py export-references \
+              --handoff build/runtime-next/handoff --base-root "$INPUT_ROOT" \
+              --base-capture "${INPUT_ROOT%/original}/capture-transport.json" \
+              --destination build/runtime-reference-handoff "${reference_wave[@]}"
+          fi
     - id: upload
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

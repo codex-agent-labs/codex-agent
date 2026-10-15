@@ -78,6 +78,14 @@ class RuntimeWorkflowTest(unittest.TestCase):
         self.assertLess(action.index('./.github/actions/capture-runtime-state'), action.index('./.github/actions/setup-kmp'))
         self.assertLess(action.index('./.github/actions/capture-runtime-state'), action.index('./.github/actions/setup-msvc'))
         collected = (root / '.github/actions/collect-runtime-wave/action.yml').read_text()
+        collect_step = collected.split('    - id: collect\n', 1)[1].split('    - id: upload\n', 1)[0]
+        self.assertIn('uses: ./.github/actions/hydrated-evidence-cache', collect_step)
+        self.assertIn('mode: execute\n        script: |', collect_step)
+        adapter = (root / '.github/actions/hydrated-evidence-cache/action.yml').read_text()
+        for output in ('sdk_matrix', 'sdk_workers_required', 'runtime_matrix', 'runtime_workers_required',
+                       'wave_failed', 'full_reuse', 'aggregate_payload_complete', 'aggregate_key',
+                       'aggregate_receipt_sha256', 'routing_decisions'):
+            self.assertIn(f'\n  {output}:\n', adapter)
         self.assertIn('runtime_workflow.py export-references', collected)
         self.assertIn("path: ${{ (inputs.product != 'runtime' || inputs.wave == '1' || inputs.wave == '2' || inputs.wave == '3') && 'build/runtime-reference-handoff' || 'build/runtime-next/handoff' }}", collected)
         self.assertIn('build/runtime-next/collection', collected)

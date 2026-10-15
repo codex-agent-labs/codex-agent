@@ -38,7 +38,8 @@ class SdkWorkflowWiringTest(unittest.TestCase):
             self.assertIn('always()', condition)
             self.assertNotIn('!cancelled()', condition)
         action = (ROOT / '.github/actions/sdk-ios-validation-worker/action.yml').read_text()
-        self.assertIn("if: always() && steps.identity.outcome == 'success'", action)
+        self.assertIn("if: always() && (steps.identity.outcome == 'success' || "
+                      "steps.policy.outputs.retained_original == 'true')", action)
 
     def test_portable_authority_is_optional_and_precedes_all_core_consumers(self):
         parent = self.job("sdk-core-validation-wave")

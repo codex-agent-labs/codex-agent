@@ -6469,6 +6469,9 @@ def collect_runtime_workers(
                 retained.mkdir(parents=True)
                 archive = retained / "transport.zip"
                 if job.get("conclusion") == "success" and not signer_failed:
+                    if retained_validation is not None:
+                        from sdk_handoff import _ensure_observed_sdk_commit
+                        _ensure_observed_sdk_commit(root, original_producer, token)
                     artifact, _ = _download_contract_ci_upload(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token, destination=archive,

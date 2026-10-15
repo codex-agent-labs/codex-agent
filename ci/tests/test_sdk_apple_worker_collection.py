@@ -251,7 +251,12 @@ class AppleWorkerCollectionTest(unittest.TestCase):
     def test_retained_worker_and_signer_preserve_both_original_producers(self):
         self.test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(retain_signer=True)
 
-    def test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(self, retain_signer=False):
+    def test_retained_source_failure_stops_before_either_body_download(self):
+        self.test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(
+            retain_signer=True, source_failure=True)
+
+    def test_retained_worker_uses_original_receipt_and_current_signer_with_scoped_authority(
+            self, retain_signer=False, source_failure=False):
         instance, ready, raw = self.shard(TARGETS[0])
         original = deepcopy(self.producer)
         self.producer = {**original, "runId": 9 if retain_signer else 8, "runAttempt": 1, "commit": "c" * 40, "tree": "d" * 40}
@@ -266,12 +271,23 @@ class AppleWorkerCollectionTest(unittest.TestCase):
             "status": "completed", "conclusion": "success", "started_at": "2026-09-08T10:00:00Z",
             "completed_at": "2026-09-08T10:10:00Z"}
         observe = adapter._observe_ci_producer_jobs
+        observed_original = []
         def observe_original(producers, **kwargs):
             if "worker" in producers:
                 self.assertEqual(original, producers["worker"])
                 self.assertEqual(PIN, kwargs["trusted_workflow_sha"])
+                observed_original.append(original)
                 return [{"run": {"head_sha": original["commit"]}, "jobs": [old_job]}]
             return observe(producers, **kwargs)
+        def ensure_source(repository, producer, token):
+            self.assertEqual([original], observed_original)
+            self.assertEqual((self.repository, original, "synthetic-token"), (repository, producer, token))
+            if source_failure:
+                raise ValueError("Cannot fetch the authenticated original SDK commit")
+        download = adapter._download_contract_ci_upload
+        def download_after_source(*args, **kwargs):
+            source.assert_called_once_with(self.repository, original, "synthetic-token")
+            return download(*args, **kwargs)
         destination = self.repository / "build/retained-original"
         signed = None
         if retain_signer:
@@ -288,6 +304,8 @@ class AppleWorkerCollectionTest(unittest.TestCase):
                     patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
                     patch("sdk_apple_upload_locator.observe_retained_validation_attestation", return_value=signed) as retained_signer, \
                     patch.object(adapter, "_observe_ci_producer_jobs", side_effect=observe_original), \
+                    patch("sdk_handoff._ensure_observed_sdk_commit", side_effect=ensure_source) as source, \
+                    patch.object(adapter, "_download_contract_ci_upload", side_effect=download_after_source) as downloaded, \
                     patch.object(adapter, "api_json", wraps=adapter.api_json) as query:
                 if retain_signer:
                     listed = controls[1].side_effect
@@ -303,6 +321,14 @@ class AppleWorkerCollectionTest(unittest.TestCase):
                 query.side_effect = metadata
                 result = self.collect(destination)
                 row, = result["rows"]
+                source.assert_called_once_with(self.repository, original, "synthetic-token")
+                if source_failure:
+                    self.assertEqual("failure", row["result"])
+                    self.assertIn("Cannot fetch the authenticated original SDK commit", row["reason"])
+                    downloaded.assert_not_called()
+                    controls[2].assert_not_called()
+                    controls[3].assert_not_called()
+                    return
                 self.assertEqual("success", row["result"], row["reason"])
                 retained_signer.assert_called_once_with(instance.target, ready["buildKey"], self.producer, token="synthetic-token")
                 self.assertNotIn("original_run_attempt", controls[2].call_args.kwargs)
