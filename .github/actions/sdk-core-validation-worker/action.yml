@@ -274,6 +274,22 @@ runs:
       uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
       with:
         packages: platform-tools
+    - name: Prepare pinned dependencies for the elected offline consumer
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        POLICY_REVISION: ${{ steps.identity.outputs.policy_revision }}
+        NATIVE_COMPILER_ARCHIVE: ${{ inputs.native-compiler-archive }}
+      run: |
+        set -euo pipefail
+        trap 'if [ -f "$RUNNER_TEMP/sdk-core-consumer-dependencies/gradle.log" ]; then tail -n 120 "$RUNNER_TEMP/sdk-core-consumer-dependencies/gradle.log"; fi' ERR
+        optional=()
+        if [ -n "$NATIVE_COMPILER_ARCHIVE" ]; then optional+=(--native-archive "$NATIVE_COMPILER_ARCHIVE"); fi
+        python3 -B -m ci.sdk_core_validation_dependencies \
+          --request "$GITHUB_WORKSPACE/build/sdk-core-validation-policy/facade-request.json" \
+          --repository "$GITHUB_WORKSPACE" --revision "$POLICY_REVISION" --target "$TARGET" \
+          --destination "$RUNNER_TEMP/sdk-core-consumer-dependencies" \
+          ${optional[@]+"${optional[@]}"}
     - id: execute
       name: Run existing Core installed-consumer and complete original replay
       shell: bash

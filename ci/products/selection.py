@@ -337,6 +337,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_core_metadata_protected_handoff.py",
     "ci/sdk_core_native_archive_provision.py",
     "ci/sdk_core_package_policy.py",
+    "ci/sdk_core_validation_dependencies.py",
     "ci/sdk_core_validation_policy.py",
     "ci/sdk_facade_original_inputs.py",
     "ci/sdk_facade_upload_locator.py",

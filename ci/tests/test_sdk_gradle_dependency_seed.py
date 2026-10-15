@@ -308,6 +308,64 @@ assert "ci" not in sys.modules
                 self.assertIn('"' + name + '"', script)
             self.assertNotIn('findAll', script)
 
+    def test_consumer_probe_uses_exact_target_template_and_rejects_changed_native_bytes(self):
+        import hashlib
+        from ci.products import contract_attestation
+        from ci.products.toolchain import RUNTIME_VERIFICATION_METADATA
+        from ci.products.sdk_facade_validation import FACADE_CONSUMER_TASKS
+        repository = Path(__file__).resolve().parents[2]
+        template = (repository / 'gradle/release/sdk-facade-consumer-template/build.gradle.kts').read_bytes()
+        archive_name = 'kotlin-native-prebuilt-2.3.10-macos-aarch64.tar.gz'
+        body = b'original independently pinned archive'
+        digest = hashlib.sha256(body).hexdigest()
+        metadata = (f'<verification-metadata xmlns="https://schema.gradle.org/dependency-verification">'
+            '<configuration><verify-metadata>true</verify-metadata></configuration><components>'
+            '<component group="org.jetbrains.kotlin" name="kotlin-native-prebuilt" version="2.3.10">'
+            f'<artifact name="{archive_name}"><sha256 value="{digest}"/></artifact>'
+            '</component></components></verification-metadata>').encode()
+        for target in ('jvm', 'macos-arm64'):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                archive = root / 'original.tar.gz'
+                archive.write_bytes(body)
+                def blob(*args, **limits):
+                    path = args[2]
+                    if path.endswith('.toml'): return b'[versions]\nkotlin="2.3.10"\nagp="9.2.1"\n'
+                    if path == RUNTIME_VERIFICATION_METADATA: return metadata
+                    if path.endswith('.xml'): return self.metadata('native')
+                    if path.endswith('build.gradle.kts'): return template
+                    return b'# immutable dependency lock\n'
+                fields = {'codexAgent.component': 'sdk-core', 'codexAgent.contractVersion': '0.8.0', **{
+                    'codexAgent.' + name: str(root / name) for name in
+                    ('contractPayload', 'contractMetadataReceipt', 'contractAttestation',
+                     'contractAttestationSignature', 'contractPublicKey')}}
+                with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=blob), \
+                        patch.object(contract_attestation, 'materialize_contract_payload',
+                            return_value={'mavenFiles': []}), \
+                        patch.object(bootstrap.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                    destination = root / 'probe'
+                    bootstrap.seed_sdk_maven_binary_dependencies(root, 'a' * 40, root / 'gradlew',
+                        {}, destination, fields, consumer_target=target,
+                        native_archive=archive if target == 'macos-arm64' else None)
+                    command = run.call_args.args[0]
+                    self.assertIn(FACADE_CONSUMER_TASKS[target], command)
+                    self.assertIn('--dependency-verification=strict', command)
+                    self.assertIn('-PcodexAgent.consumerTarget=' + target, command)
+                    self.assertNotIn('mavenLocal', (destination / 'settings.gradle.kts').read_text())
+                    self.assertEqual(template.decode().replace('codex-agent:$codexAgentSdkVersion',
+                        'codex-agent-core:$codexAgentSdkVersion'), (destination / 'build.gradle.kts').read_text())
+                    self.assertEqual(body, archive.read_bytes())
+                    if target == 'macos-arm64':
+                        cached = destination / 'local-maven/org/jetbrains/kotlin/kotlin-native-prebuilt/2.3.10' / archive_name
+                        self.assertEqual(body, cached.read_bytes())
+                        self.assertIn(digest.encode(), (destination / 'gradle/verification-metadata.xml').read_bytes())
+                        archive.write_bytes(b'changed archive')
+                        run.reset_mock()
+                        with self.assertRaisesRegex(ValueError, 'differs from the Git pin'):
+                            bootstrap.seed_sdk_maven_binary_dependencies(root, 'a' * 40, root / 'gradlew',
+                                {}, root / 'changed', fields, consumer_target=target, native_archive=archive)
+                        run.assert_not_called()
+
     def test_shared_environment_seeds_only_explicit_sdk_after_wrapper_admission(self):
         from ci import product_reuse as worker
         for directory in ('runtime', '.'):

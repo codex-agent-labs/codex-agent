@@ -180,6 +180,11 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             self.assertIn("'" + flag + "'", command)
         self.assertIn("'core-validation'", command)
         self.assertIn("ci.sdk_core_validation_policy", self.action)
+        dependency_preparation = self.action.index('python3 -B -m ci.sdk_core_validation_dependencies')
+        self.assertLess(self.action.index('uses: ./.github/actions/setup-kmp'), dependency_preparation)
+        self.assertLess(dependency_preparation, self.action.index('    - id: execute'))
+        self.assertIn('--revision "$POLICY_REVISION" --target "$TARGET"', self.action)
+        self.assertIn('optional+=(--native-archive "$NATIVE_COMPILER_ARCHIVE")', self.action)
         preparation = self.action.split("optional=()", 1)[1].split("- uses: ./.github/actions/setup-kmp", 1)[0]
         self.assertIn('optional+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', preparation)
         self.assertIn('optional+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")', preparation)

@@ -195,7 +195,8 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
 
 
 def seed_sdk_maven_binary_dependencies(root: Path, revision: str, wrapper: Path,
-                                      environment, destination: Path, properties) -> None:
+                                      environment, destination: Path, properties, *,
+                                      consumer_target=None, native_archive=None) -> None:
     """Resolve the locked facade/Android tools against authenticated Contract bytes."""
     import json
     import tomllib
@@ -210,6 +211,15 @@ def seed_sdk_maven_binary_dependencies(root: Path, revision: str, wrapper: Path,
     if component not in {'sdk-core', 'sdk-android'}:
         raise ValueError('Unsupported Maven SDK dependency seed component')
     core = component == 'sdk-core'
+    from .sdk_facade_validation import FACADE_CONSUMER_TASKS
+    from .sdk_facade_native_policy import _ROUTES
+    if consumer_target is not None:
+        if not core or consumer_target not in FACADE_CONSUMER_TASKS:
+            raise ValueError('Dependency probe requires a registered Core consumer target')
+        if (consumer_target in _ROUTES) != (native_archive is not None):
+            raise ValueError('Native dependency probe requires its independent pinned archive')
+    elif native_archive is not None:
+        raise ValueError('Native archive requires an elected consumer target')
     if destination.exists() or destination.is_symlink():
         raise ValueError('Android dependency seed requires a fresh destination')
     require_regular_directory(destination.parent, 'Android dependency seed parent')
@@ -336,18 +346,59 @@ def seed_sdk_maven_binary_dependencies(root: Path, revision: str, wrapper: Path,
         '        configurations.getByName(name).files.forEach { println("SDK_DEPENDENCY ${it.name}") }\n'
         '    }\n'
         '} }\n')
+    if consumer_target is not None:
+        # Exercise exactly the selected compiler with disposable source, never
+        # an SDK product task. Reuse the real consumer template's target routing.
+        core_script = git_regular_blob_bytes(root, revision,
+            'gradle/release/sdk-facade-consumer-template/build.gradle.kts', max_bytes=4 * 1024**2).decode('utf-8')
+        coordinate = 'io.github.codex-agent-labs:codex-agent:$codexAgentSdkVersion'
+        if core_script.count(coordinate) != 1:
+            raise ValueError('Core dependency probe template has changed its fixed dependency')
+        core_script = core_script.replace(coordinate,
+            'io.github.codex-agent-labs:codex-agent-core:$codexAgentSdkVersion')
+        probe = destination / 'src/commonMain/kotlin/DependencyProbe.kt'
+        probe.parent.mkdir(parents=True)
+        probe.write_text('internal fun dependencyProbe() = Unit\n', encoding='utf-8')
     (destination / 'build.gradle.kts').write_text(core_script if core else android_script, encoding='utf-8')
     original = _runtime_worker_command(wrapper, {}, environment, build_directory='.')
     command = [*original[:original.index('--offline')], '-p', str(destination),
-        'resolveSdkCoreDependencies' if core else 'resolveSdkAndroidDependencies', '--dependency-verification=strict',
+        (FACADE_CONSUMER_TASKS[consumer_target] if consumer_target is not None else
+         'resolveSdkCoreDependencies' if core else 'resolveSdkAndroidDependencies'), '--dependency-verification=strict',
         '--no-daemon', '--no-configuration-cache', '--console=plain']
     if core:
         command.append('-Pkotlin.native.distribution.type=prebuilt')
+    if consumer_target is not None:
+        command.extend([f'-PcodexAgent.consumerTarget={consumer_target}', f'-PcodexAgent.sdkVersion={version}'])
+    if native_archive is not None:
+        from .toolchain import _metadata_checksum, RUNTIME_VERIFICATION_METADATA
+        if __package__ == 'ci.products':
+            from ci.sdk_android_archive_provision import _copy_archive
+        else:
+            from sdk_android_archive_provision import _copy_archive
+        kotlin_version = versions['kotlin']
+        extension = 'zip' if consumer_target == 'windows-x64' else 'tar.gz'
+        name = f'kotlin-native-prebuilt-{kotlin_version}-{_ROUTES[consumer_target][2]}.{extension}'
+        expected = _metadata_checksum(git_regular_blob_bytes(root, revision,
+            RUNTIME_VERIFICATION_METADATA, max_bytes=4 * 1024**2), name)
+        pin(('org', 'jetbrains', 'kotlin', 'kotlin-native-prebuilt', kotlin_version, name),
+            name, expected.removeprefix('sha256:'))
+        (destination / 'gradle/verification-metadata.xml').write_bytes(
+            ET.tostring(metadata, encoding='utf-8', xml_declaration=True))
+        maven = destination / 'local-maven'
+        cached = maven / 'org/jetbrains/kotlin/kotlin-native-prebuilt' / kotlin_version / name
+        cached.parent.mkdir(parents=True)
+        _copy_archive(Path(native_archive), cached, expected, 512 * 1024**2)
+        # Gradle may reuse these bytes only after matching the remote checksum;
+        # mavenLocal is deliberately NOT added as a resolution repository.
+        command.append(f'-Dmaven.repo.local={maven}')
+    started = time.monotonic_ns()
     with (destination / 'gradle.log').open('xb') as log:
         result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
             stderr=subprocess.STDOUT, check=False)
     if result.returncode:
-        raise ValueError(f'Pinned Android dependency seed failed; see {destination / "gradle.log"}')
+        raise ValueError(f'Pinned SDK dependency seed failed; see {destination / "gradle.log"}')
+    write_canonical_json(destination / 'seed-timing.json', {
+        'elapsedNs': time.monotonic_ns() - started, 'consumerTarget': consumer_target})
 
 
 def seed_sdk_ios_native_distribution(root: Path, revision: str, wrapper: Path,

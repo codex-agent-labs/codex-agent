@@ -59,6 +59,13 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_core_dependency_preparation_preserves_all_product_inventories(self):
+        path = 'ci/sdk_core_validation_dependencies.py'
+        result = classify_paths((path,))
+        self.assertTrue(result.instances)
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((), phase_inventory_paths((path,), instance))
+
     def test_native_validation_projection_preserves_expensive_predecessor_keys(self) -> None:
         changed = (
             "ci/product_reuse.py", "ci/products/selection.py",
