@@ -169,7 +169,12 @@ def _binary_origin(original, context, evidence, contract_version):
          "metadataReceiptSha256"}, "Original Maven Contract locator")
     handoff = original / "inputs/contract-input"
     metadata = original / "inputs/predecessors/contract-contract-metadata-common"
-    source = require_exact_keys(locator["sourceEvidence"], _EVIDENCE_FIELDS,
+    # The producer pins metadata paths/inventories separately. Its release
+    # evidence omits those two caller fields; retain the complete legacy form.
+    source_fields = (_EVIDENCE_FIELDS if isinstance(locator["sourceEvidence"], dict)
+        and {"stageRoot", "phaseReceipt"} <= locator["sourceEvidence"].keys()
+        else _EVIDENCE_FIELDS - {"stageRoot", "phaseReceipt"})
+    source = require_exact_keys(locator["sourceEvidence"], source_fields,
                                 "Original Maven producer Contract source")
     if (locator["contractVersion"] != contract_version
             or source["expectedTrustDomain"] != evidence["expectedTrustDomain"]

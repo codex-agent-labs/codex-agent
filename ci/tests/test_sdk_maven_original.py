@@ -342,6 +342,26 @@ class MavenOriginalTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fixed offline command"), self.call():
             pass
 
+    def test_producer_release_locator_and_legacy_caller_form_keep_metadata_pins(self):
+        self.prepare()
+        path = self.original / "selection/original-contract-locator.json"
+        baseline = original._json(path)
+        value = deepcopy(baseline)
+        for name in ("stageRoot", "phaseReceipt"): value["sourceEvidence"].pop(name)
+        write_canonical_json(path, value)
+        with self.call(): pass
+        self.binary_gate.assert_called_once()
+        for field, replacement in (("stageRoot", "/unpaired"), ("phaseReceipt", "/unpaired"),
+                                   ("unknown", "unreviewed"), ("expectedTrustDomain", "development")):
+            changed = deepcopy(value)
+            changed["sourceEvidence"][field] = replacement
+            write_canonical_json(path, changed)
+            with self.assertRaises(ValueError), self.call(): pass
+        changed = deepcopy(value)
+        changed["metadataReceiptSha256"] = "sha256:" + "0" * 64
+        write_canonical_json(path, changed)
+        with self.assertRaisesRegex(ValueError, "differs from independent proof"), self.call(): pass
+
     def test_binary_producer_locator_must_match_original_contract_and_context(self):
         self.prepare()
         selected = self.original / "selection"

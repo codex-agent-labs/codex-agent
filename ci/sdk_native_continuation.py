@@ -346,7 +346,9 @@ def select(value, locator, expected, *, family):
             and not decisions['preparation']['preparation_required']
             and not any(_matrix_from_plans(decisions['ready'], family=name)['include'] for name in preceding)
             and any(_matrix_from_plans(decisions['ready'], family=name)['include']
-                    for name in ('ios-validation', 'ios-metadata')))
+                    for name in ('ios-validation', 'ios-metadata', 'core-binary', 'core-package',
+                                 'core-validation', 'core-metadata', 'android-binary', 'android-package',
+                                 'android-validation', 'android-metadata')))
     if family == 'native-package':
         result.update({'native_preparation_' + name.removeprefix('preparation_'): member
                        for name, member in decisions['preparation'].items()})

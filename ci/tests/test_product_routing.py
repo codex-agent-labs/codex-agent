@@ -62,7 +62,8 @@ class ProductRoutingTest(unittest.TestCase):
                         decision = routing.select(value, self.locator, self.expected, family=family)
                         elected.extend(json.loads(decision['sdk_matrix'])['include'])
                         if family == 'javascript':
-                            self.assertEqual(identity.component == 'sdk-ios' and identity.phase in {'validation', 'metadata'},
+                            self.assertEqual(identity.component in {'sdk-core', 'sdk-android'} or
+                                             identity.component == 'sdk-ios' and identity.phase in {'validation', 'metadata'},
                                              decision['ios_validation_direct'], identity)
                 self.assertEqual([phase['buildKey']], [row['buildKey'] for row in elected], identity)
 
@@ -121,7 +122,7 @@ class ProductRoutingTest(unittest.TestCase):
         legacy['sdk-plan'] = {'result': 'success', 'outputs': {'ios_validation_direct': 'false'}}
         self.assertEqual(self.locator, routing.select_ios_ready_prefix(legacy))
 
-    def test_native_resume_shortcut_requires_completed_runtime_and_ready_ios_frontier(self):
+    def test_native_resume_shortcut_requires_completed_runtime_and_ready_late_frontier(self):
         from ci.tests.test_sdk_native_continuation import needs_for, ready
         ios = ready('sdk-ios', 'validation', 'ios-simulator-arm64')
         decisions = {**deepcopy(self.decisions),
@@ -155,6 +156,16 @@ class ProductRoutingTest(unittest.TestCase):
                                        family='javascript')['ios_validation_direct'])
         self.assertTrue(routing.select(metadata_bound, self.locator, self.expected,
                                        family='ios-metadata')['sdk_workers_required'])
+        later = deepcopy(metadata)
+        later['ready'] = [row for row in later['ready'] if row['component'] != 'sdk-ios']
+        direct_later = routing.native_sdk_resume(later, self.locator, self.expected, **arguments)
+        self.assertTrue(direct_later['native_sdk_direct'])
+        self.assertFalse(direct_later['sdk_workers_required'])
+        later_bound = routing.bind(later, self.locator, self.expected)
+        self.assertFalse(routing.select(later_bound, self.locator, self.expected,
+                                       family='ios-metadata')['sdk_workers_required'])
+        self.assertTrue(routing.select(later_bound, self.locator, self.expected,
+                                      family='core-binary')['sdk_workers_required'])
         for changes in ({'sdk_recovery_only': False}, {'runtime_workers_required': 'true'},
                         {'supervisor_key': 'sha256:' + '3' * 64}):
             with self.subTest(changes=changes):
