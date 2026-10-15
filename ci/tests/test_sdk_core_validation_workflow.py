@@ -26,8 +26,13 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             self.assertIn(required, block)
         for forbidden in ("secrets.", "id-token: write", "attestations: write", "gradlew", "response.read("):
             self.assertNotIn(forbidden, block)
-        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
-        compile(script, "core-validation-headers-diagnostic", "exec")
+        for script in block.split("        run: |\n")[1:]:
+            compile(textwrap.dedent(script.split("\n      - ", 1)[0]),
+                    "core-validation-host-diagnostic", "exec")
+        for required in ("ci.tests.test_sdk_android_archive_provision",
+                         "ci.tests.test_sdk_core_native_archive_provision", "packages: platform-tools",
+                         "GITHUB_TOKEN: ${{ github.token }}", "x-ratelimit-remaining", "report_api_error"):
+            self.assertIn(required, block)
     def test_wave_thirteen_uses_original_inputs_and_fails_after_collection(self):
         source = CHILD.read_text()
         self.assertIn("GIT_CONFIG_KEY_0: core.autocrlf", source)

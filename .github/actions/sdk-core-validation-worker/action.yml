@@ -272,10 +272,13 @@ runs:
         product-worker: 'true'
     - if: inputs.target == 'android'
       uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: platform-tools
     - id: execute
       name: Run existing Core installed-consumer and complete original replay
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}

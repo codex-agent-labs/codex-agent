@@ -32,7 +32,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
           fetch-depth: 1
-      - name: Observe checkout bytes and official Maven headers only
+      - name: Check exact checkout and portable archive publication
         shell: python
         run: |
           import hashlib, json, pathlib, subprocess, sys, urllib.parse, urllib.request
@@ -73,6 +73,36 @@ jobs:
               print(json.dumps({'status': response.status, 'finalHost': urllib.parse.urlsplit(response.geturl()).hostname,
                   'declaredBytes': response.headers.get('Content-Length'), 'archiveBodyBytesRead': 0}), flush=True)
               provider._github_https(response.geturl())
+          subprocess.run([sys.executable, '-B', '-m', 'unittest',
+              'ci.tests.test_sdk_android_archive_provision',
+              'ci.tests.test_sdk_core_native_archive_provision'], check=True)
+      - if: runner.os == 'Linux'
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: platform-tools
+      - name: Observe caller API access and rate-limit headers
+        if: always()
+        shell: python
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          import json, os, pathlib, sys, urllib.error, urllib.request
+          sys.path.insert(0, str(pathlib.Path.cwd() / 'ci'))
+          from reuse import OriginBoundRedirectHandler
+          from runtime_reference_transport import report_api_error
+          opener = urllib.request.build_opener(OriginBoundRedirectHandler())
+          for endpoint in ('rate_limit', 'repos/codex-agent-labs/codex-agent/actions/runs/38645987435/attempts/1'):
+              request = urllib.request.Request('https://api.github.com/' + endpoint,
+                  headers={'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'],
+                           'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+              try:
+                  with opener.open(request, timeout=30) as response:
+                      headers = {name: response.headers.get(name) for name in (
+                          'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-used', 'x-ratelimit-reset')}
+                      print(json.dumps({'endpoint': endpoint, 'status': response.status, 'rateLimit': headers}), flush=True)
+              except urllib.error.HTTPError as error:
+                  report_api_error(error)
+                  raise
   recovery-diagnostics:
     if: >-
       github.event.label.name == 'ci:reuse-recovery-diagnostics' &&

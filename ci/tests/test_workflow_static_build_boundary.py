@@ -9,6 +9,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
+    def test_all_pinned_android_callers_select_supported_packages_explicitly(self):
+        callers = []
+        for path in (ROOT / ".github").rglob("*.yml"):
+            text = path.read_text()
+            for match in re.finditer(r"(?m)^([ \t]*)(- )?uses: android-actions/setup-android@[^\n]+\n", text):
+                callers.append(path)
+                indent = match[1] + ("  " if match[2] else "")
+                self.assertTrue(text[match.end():].startswith(
+                    indent + "with:\n" + indent + "  packages: platform-tools\n"), path)
+        self.assertGreaterEqual(len(callers), 7)
+
     def test_focused_diagnostics_are_exact_source_and_unprivileged(self):
         caller = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         match = re.search(r"^  build-logic-diagnostics:\n(.*?)(?=^  [a-z0-9-]+:\n)",

@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 import tempfile
+import urllib.error
 
 from products.inventory import (
     PRODUCT_JSON_LIMIT, _open_regular_file, _stat_identity,
@@ -38,6 +39,28 @@ def count(name, amount=1):
         counters[name] = counters.get(name, 0) + amount
 
 
+def report_api_error(error: urllib.error.HTTPError) -> None:
+    """Report bounded classifications and numeric headers, never URLs or credentials."""
+    details = {"status": error.code, "messageKind": "unclassified", "rateLimit": {}}
+    for name in ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-used",
+                 "x-ratelimit-reset", "retry-after"):
+        value = error.headers.get(name, "") if error.headers else ""
+        if isinstance(value, str) and len(value) <= 20 and value.isascii() and value.isdecimal():
+            details["rateLimit"][name] = int(value)
+    try:
+        body = error.read(4096).lower()
+        for phrase, kind in ((b"secondary rate limit", "secondary-rate-limit"),
+                             (b"rate limit exceeded", "primary-rate-limit"),
+                             (b"resource not accessible", "resource-not-accessible"),
+                             (b"bad credentials", "bad-credentials")):
+            if phrase in body:
+                details["messageKind"] = kind
+                break
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass  # Diagnostic failure must not replace the original HTTP failure.
+    print("github-api-error " + json.dumps(details, sort_keys=True), file=sys.stderr, flush=True)
+
+
 def measured(operation):
     @wraps(operation)
     def timed(*args, **kwargs):
@@ -50,6 +73,9 @@ def measured(operation):
             result = operation(*args, **kwargs)
             succeeded = True
             return result
+        except urllib.error.HTTPError as error:
+            report_api_error(error)
+            raise
         finally:
             _MEASUREMENTS.reset(token)
             print('throughput ' + json.dumps(dict(operation=operation.__name__, success=succeeded,

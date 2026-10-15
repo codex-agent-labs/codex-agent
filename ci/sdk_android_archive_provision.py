@@ -21,7 +21,8 @@ if __package__:
 import product_reuse
 from products.inventory import (git_regular_blob_bytes,
     read_regular_file_bytes, require_regular_directory, require_semver,
-    require_sha256, sha256_file, _open_regular_file, _stat_identity)
+    require_sha256, sha256_file, _open_regular_file, _stat_identity, _is_windows,
+    _is_reparse_point)
 from products.signing_isolation import require_no_signing_secret
 from products.toolchain import _properties
 
@@ -101,6 +102,35 @@ def _fetch_pinned_archive(url, archive, expected, limit, opener, validate_url):
 
 def _publish_archive(archive, destination):
     """Link one checked staging inode into a fresh name, removing only our inode on failure."""
+    if _is_windows():
+        from products.index import _held_output_parent, _require_parent_identity
+        with (_held_output_parent(archive.parent) as (source_fd, source_parent),
+              _held_output_parent(destination.parent) as (destination_fd, destination_parent)):
+            source = archive.lstat()
+            if not stat.S_ISREG(source.st_mode) or _is_reparse_point(source):
+                raise ValueError("Android Codex staging archive is not a regular file")
+            _require_parent_identity(source_fd, source_parent)
+            _require_parent_identity(destination_fd, destination_parent)
+            try:
+                # Existing Windows handles deny parent rename/delete; link is no-replace.
+                os.link(archive, destination, follow_symlinks=False)
+                _require_parent_identity(source_fd, source_parent)
+                _require_parent_identity(destination_fd, destination_parent)
+                published = destination.lstat()
+                if (not stat.S_ISREG(published.st_mode) or _is_reparse_point(published) or
+                        (published.st_dev, published.st_ino) != (source.st_dev, source.st_ino)):
+                    raise ValueError("Android archive destination changed during publication")
+            except BaseException:
+                _require_parent_identity(destination_fd, destination_parent)
+                try:
+                    current = destination.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (current.st_dev, current.st_ino) == (source.st_dev, source.st_ino):
+                        destination.unlink()
+                raise
+        return
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     source_fd = os.open(archive.parent, directory_flags)
     try:

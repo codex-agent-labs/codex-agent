@@ -31,6 +31,7 @@ from sdk_ios_package import _record
 from sdk_phase import maven_consumed_predecessors
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
+from runtime_reference_transport import measured
 
 
 _BINARY = PhaseInstanceId("sdk", "sdk-core", "binary", "common")
@@ -39,6 +40,7 @@ _METADATA = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
 _CONTRACT = PhaseInstanceId("contract", "contract", "metadata", "common")
 
 
+@measured
 @verification_scoped
 def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,

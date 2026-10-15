@@ -163,7 +163,8 @@ class AndroidArchiveProvisionTest(unittest.TestCase):
         failed = []
 
         def failed_location_check(path, *args, **kwargs):
-            if path == self.destination.name and kwargs.get("dir_fd") is not None and not failed:
+            if ((path == self.destination.name and kwargs.get("dir_fd") is not None
+                    or path == self.destination) and not failed):
                 try:
                     real_stat(self.destination, follow_symlinks=False)
                 except FileNotFoundError:
@@ -174,9 +175,35 @@ class AndroidArchiveProvisionTest(unittest.TestCase):
             return real_stat(path, *args, **kwargs)
 
         with patch.object(provider.os, "stat", side_effect=failed_location_check), \
+                patch.object(provider.os, "lstat", side_effect=lambda path, **kwargs:
+                    failed_location_check(path, follow_symlinks=False, **kwargs)), \
                 self.assertRaisesRegex(ValueError, "location failure"):
             self.run_provider()
         self.assertEqual([True], failed)
+        self.assertFalse(self.destination.exists())
+
+    def test_windows_publication_reuses_held_parents_and_preserves_foreign_files(self):
+        # Exercises the Windows branch locally; the hosted diagnostic uses real handles.
+        with patch.object(provider, "_is_windows", return_value=True):
+            self.test_fixed_url_and_authenticated_git_hash_publish_exact_archive()
+            self.destination.unlink()
+            self.test_publication_failure_after_link_removes_only_our_inode()
+            self.destination.unlink()
+            self.test_post_link_location_check_failure_rolls_back_our_inode()
+            self.destination.write_bytes(b"foreign")
+            source = self.base / "staged"
+            source.write_bytes(self.payload)
+            with self.assertRaises(FileExistsError):
+                provider._publish_archive(source, self.destination)
+            self.assertEqual(b"foreign", self.destination.read_bytes())
+
+    def test_windows_publication_rejects_a_linked_source(self):
+        source = self.base / "linked"
+        payload = self.base / "payload"
+        payload.write_bytes(self.payload)
+        source.symlink_to(payload)
+        with patch.object(provider, "_is_windows", return_value=True), self.assertRaises(ValueError):
+            provider._publish_archive(source, self.destination)
         self.assertFalse(self.destination.exists())
 
     def test_unauthorized_plan_unsafe_location_and_malformed_git_pin_do_not_download(self):

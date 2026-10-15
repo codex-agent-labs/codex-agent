@@ -171,6 +171,8 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
 
     def test_existing_full_controller_receives_request_and_separate_original_authorities(self):
         command = self.script("execute")
+        execution = self.action.split("    - id: execute\n", 1)[1].split("      run: |", 1)[0]
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", execution)
         for flag in ("--facade-request", "--sdk-apple-validation-policy", "--native-compiler-archive",
                      "--tooling-evidence", "--tooling-public-key", "--tooling-keyring",
                      "--tooling-keys-directory", "--java-executable", "--required-trust-domain",

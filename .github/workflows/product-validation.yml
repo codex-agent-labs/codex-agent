@@ -2550,6 +2550,8 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: platform-tools
       - id: lane
         uses: ./.github/actions/run-ci-lane
         with:

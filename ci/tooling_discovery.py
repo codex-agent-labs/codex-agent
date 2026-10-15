@@ -23,6 +23,7 @@ from products.inventory import (
 )
 from products.receipt import validate_producer
 from products.tooling import _COMPILER_INPUTS
+from runtime_reference_transport import measured
 
 
 _API = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions"
@@ -35,6 +36,7 @@ _PRIOR_TOOLING_WORKFLOW_SHAS = (
 )
 
 
+@measured
 def _original_tooling_workflow(producer, current_sha, token, *, repository_root=None):
     producer = validate_producer(producer, 'Original tooling producer hint')
     if not isinstance(current_sha, str) or re.fullmatch(r'[0-9a-f]{40}', current_sha) is None:

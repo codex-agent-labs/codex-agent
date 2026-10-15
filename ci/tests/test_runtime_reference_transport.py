@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 from ci.tests.test_product_resume_capture import product_reuse
@@ -34,6 +35,37 @@ class RangeOpener:
 
 
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_http_diagnostics_keep_failure_and_never_print_credentials(self):
+        import json
+        import os
+        from contextlib import redirect_stderr
+        from runtime_reference_transport import measured
+        for body, kind in ((b'API rate limit exceeded', 'primary-rate-limit'),
+                           (b'You exceeded a secondary rate limit', 'secondary-rate-limit'),
+                           (b'Resource not accessible by integration', 'resource-not-accessible'),
+                           (b'Bad credentials', 'bad-credentials'),
+                           (b'token-secret https://storage.invalid/?sig=secret', 'unclassified')):
+            error = urllib.error.HTTPError('https://storage.invalid/?sig=secret', 403, 'Forbidden',
+                {'x-ratelimit-limit': '1000', 'x-ratelimit-remaining': '0',
+                 'x-ratelimit-reset': '1234567890', 'retry-after': 'token-secret'}, io.BytesIO(body))
+            calls = []
+            @measured
+            def failed():
+                calls.append(True)
+                raise error
+            output = io.StringIO()
+            with self.subTest(kind=kind), mock.patch.dict(os.environ, {'CODEX_AGENT_THROUGHPUT_TRACE': '1'}), \
+                    redirect_stderr(output), self.assertRaises(urllib.error.HTTPError) as caught:
+                failed()
+            self.assertIs(error, caught.exception)
+            error.close()
+            self.assertEqual([True], calls)
+            value = json.loads(output.getvalue().splitlines()[0].removeprefix('github-api-error '))
+            self.assertEqual(kind, value['messageKind'])
+            self.assertEqual(0, value['rateLimit']['x-ratelimit-remaining'])
+            for forbidden in ('token-secret', 'sig=', 'storage.invalid', 'retry-after'):
+                self.assertNotIn(forbidden, output.getvalue())
+
     def test_scoped_sdk_alias_selection_preserves_full_state_plan_and_physical_sources(self):
         from runtime_reference_transport import (stage_original_reference_handoff,
             selected_reference_paths, resolve_original_reference_handoff)
