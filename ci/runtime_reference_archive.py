@@ -94,6 +94,7 @@ class _Archive(io.RawIOBase):
                 request_headers.update({'Accept': 'application/vnd.github+json',
                     'Authorization': f'Bearer {self.token}', 'X-GitHub-Api-Version': '2022-11-28'})
             return self.opener.open(urllib.request.Request(url, headers=request_headers), timeout=60)
+        waited_for_reset = False
         for attempt in range(3):
             try:
                 try:
@@ -127,18 +128,25 @@ class _Archive(io.RawIOBase):
                         raise http.client.IncompleteRead(bytes(raw), size - len(raw))
                     return bytes(raw)
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
+                from product_reuse import _primary_rate_limit_delay
+                from runtime_reference_transport import count
+                delay = None if waited_for_reset else _primary_rate_limit_delay(error)
                 transient = (isinstance(error, (TimeoutError, ConnectionError, http.client.IncompleteRead))
-                    or isinstance(error, urllib.error.HTTPError) and error.code in {408, 429, 500, 502, 503, 504}
+                    or isinstance(error, urllib.error.HTTPError) and error.code in {408, 500, 502, 503, 504}
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (TimeoutError, ConnectionError, socket.gaierror)))
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
-                if not transient or attempt == 2:
+                if not transient and delay is None or attempt == 2:
                     if isinstance(error, http.client.IncompleteRead):
                         raise ValueError(f'Reference archive range was truncated: received {len(error.partial)}, '
                                          f'expected {size}; range {begin}-{end}, attempts {attempt + 1}') from error
                     raise
-                time.sleep(2 ** attempt)
+                if delay is not None:
+                    waited_for_reset = True
+                    count('primaryRateLimitRetries')
+                    count('primaryRateLimitWaitSeconds', delay)
+                time.sleep(2 ** attempt if delay is None else delay)
 
 
 def download_archive(artifact, token, destination, *, max_bytes):

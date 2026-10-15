@@ -14,8 +14,8 @@ if __package__:
 from product_reuse import (
     _CATALOG_LIMIT, _CATALOG_ZIP_LIMITS, _release_trust,
     _runtime_prior_workflow_sha, _require_ci_workflow_reference,
+    api_json, download_artifact, paginated_items,
 )
-from reuse import api_json, download_artifact, paginated_items
 from tooling_capture import capture_tooling_ci
 from products.inventory import (
     git_inventory, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,

@@ -1,4 +1,5 @@
 import java.io.File
+import java.nio.file.Files
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -20,6 +21,44 @@ class SdkFacadeValidationTasksTest {
         "linux-arm64" to "compileKotlinLinuxArm64", "linux-x64" to "compileKotlinLinuxX64",
         "windows-x64" to "compileKotlinMingwX64", "node-js" to "compileKotlinJs", "node-wasm" to "compileKotlinWasmJs",
     )
+
+    @Test
+    fun `Core capture action accepts only empty Gradle output skeletons`() = fixture { project ->
+        register(project, "jvm")
+        val consumer = project.tasks.named("verifySdkCoreValidationConsumer", VerifyStagedKmpConsumerTask::class.java).get()
+        val execution = consumer.executionCaptureDirectory.get().asFile
+        val inputs = consumer.consumerInputsCaptureDirectory.get().asFile
+        execution.mkdirs(); inputs.mkdirs()
+        consumer.actions.first().execute(consumer)
+        assertFalse(execution.exists()); assertFalse(inputs.exists())
+        // The original shared action still owns publication and rejects occupied outputs.
+        assertEquals(2, consumer.actions.size)
+        execution.mkdirs(); inputs.mkdirs()
+        val retained = inputs.resolve("original.txt").apply { writeText("original bytes") }
+        assertFailsWith<IllegalStateException> { consumer.actions.first().execute(consumer) }
+        assertTrue(execution.isDirectory)
+        assertEquals("original bytes", retained.readText())
+        retained.delete(); inputs.delete()
+        inputs.writeText("foreign file")
+        assertFailsWith<IllegalStateException> { consumer.actions.first().execute(consumer) }
+        assertEquals("foreign file", inputs.readText())
+        inputs.delete()
+        val foreign = project.file("foreign").apply { mkdirs() }
+        Files.createSymbolicLink(inputs.toPath(), foreign.toPath())
+        assertFailsWith<IllegalStateException> { consumer.actions.first().execute(consumer) }
+        assertTrue(Files.isSymbolicLink(inputs.toPath()))
+        assertTrue(foreign.isDirectory)
+    }
+
+    @Test
+    fun `Core capture skeleton cannot remove input directories`() = fixture { project ->
+        register(project, "jvm")
+        val consumer = project.tasks.named("verifySdkCoreValidationConsumer", VerifyStagedKmpConsumerTask::class.java).get()
+        val repository = consumer.repositoryDirectory.get().asFile.apply { mkdirs() }
+        consumer.executionCaptureDirectory.set(repository)
+        assertFailsWith<IllegalStateException> { consumer.actions.first().execute(consumer) }
+        assertTrue(repository.isDirectory)
+    }
 
     @Test
     fun `all eleven target graphs use only authenticated imports and fixed captured consumer`() {

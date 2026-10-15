@@ -36,6 +36,28 @@ private fun requireFacadeRequestIdentity(request: File, target: String, sdk: Str
     }
 }
 
+/** Remove only Gradle's empty output skeletons before the shared strict capture action. */
+internal fun prepareFacadeCaptureDirectories(task: VerifyStagedKmpConsumerTask) {
+    val captures = listOf(task.executionCaptureDirectory.get().asFile, task.consumerInputsCaptureDirectory.get().asFile)
+    val sources = listOf(task.repositoryDirectory.get().asFile, task.templateDirectory.get().asFile,
+        task.mavenInventory.get().asFile, task.gradleWrapper.get().asFile) +
+        listOfNotNull(task.javaExecutable.orNull?.asFile)
+    val otherOutputs = listOf(task.consumerDirectory.get().asFile, task.resultFile.get().asFile) +
+        listOfNotNull(task.compilerInputsCaptureFile.orNull?.asFile)
+    (captures + sources + otherOutputs).forEach { requireApplePackagePathWithoutSymlinks(it, "facade capture") }
+    captures.forEach { directory ->
+        requireOriginalAppleSnapshotDisjoint(directory, sources + otherOutputs + captures.filter { it != directory })
+        requireFreshAppleValidationWorkDirectory(directory)
+    }
+    val existing = captures.filter { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+    if (existing.isNotEmpty()) {
+        // rmdir refuses files, links and nonempty directories even if one appears after the checks.
+        val command = listOf("python3", "-B", "-c", "import os,sys; [os.rmdir(p) for p in sys.argv[1:]]") +
+            existing.map { it.absolutePath }
+        check(ProcessBuilder(command).inheritIO().start().waitFor() == 0) { "Facade capture skeleton changed" }
+    }
+}
+
 /** Full imported-input checks remain in the existing Python gate, not this task registration. */
 @DisableCachingByDefault(because = "Authenticates fresh caller-owned facade inputs")
 abstract class PrepareSdkFacadeValidationInputsTask @Inject constructor(private val processes: ExecOperations) : DefaultTask() {
@@ -213,6 +235,7 @@ internal fun Project.registerSdkFacadeValidationTasks(
         resultFile.set(work.map { it.file("report.json") })
         executionCaptureDirectory.set(evidence)
         compilerInputsCaptureFile.set(work.map { it.file("compiler-inputs.json") })
+        doFirst { prepareFacadeCaptureDirectories(this as VerifyStagedKmpConsumerTask) }
     }
     val content = tasks.register<WriteSdkFacadeValidationContentTask>("writeSdkCoreValidationContent") {
         dependsOn(consumer)

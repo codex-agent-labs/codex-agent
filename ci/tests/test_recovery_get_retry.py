@@ -14,6 +14,58 @@ import reuse
 
 
 class RecoveryGetRetryTest(unittest.TestCase):
+    def test_primary_exhaustion_waits_once_for_reset_without_changing_request(self):
+        headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
+                   'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}
+        for repeated in (False, True):
+            error = urllib.error.HTTPError('https://api.github.com/repos/a/b/actions/runs/1',
+                                          403, 'denied', headers, io.BytesIO(b'private body'))
+            self.addCleanup(error.close)
+            operation = mock.Mock(side_effect=[error, error if repeated else {'id': 1}])
+            with mock.patch.object(recovery.time, 'time', return_value=1000), \
+                    mock.patch.object(recovery.time, 'sleep') as sleep, \
+                    mock.patch.object(recovery.sys, 'stderr', new_callable=io.StringIO) as log:
+                if repeated:
+                    with self.assertRaises(urllib.error.HTTPError):
+                        recovery._retry_github_get(operation)('exact-url', token='secret-token')
+                else:
+                    self.assertEqual({'id': 1}, recovery._retry_github_get(operation)(
+                        'exact-url', token='secret-token'))
+                self.assertEqual([mock.call('exact-url', token='secret-token')] * 2, operation.call_args_list)
+                sleep.assert_called_once_with(122)
+                self.assertNotIn('secret-token', log.getvalue())
+                self.assertNotIn('private body', log.getvalue())
+
+    def test_other_denials_and_unbounded_or_untrusted_resets_never_authorize_wait(self):
+        headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
+                   'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}
+        cases = [(401, 'https://api.github.com/x', headers),
+                 (403, 'https://api.github.com.evil.invalid/x', headers),
+                 (403, 'http://api.github.com/x', headers),
+                 (403, 'https://secret@api.github.com/x', headers)]
+        for field, value in [('x-ratelimit-limit', '0'), ('x-ratelimit-remaining', '1'),
+                             ('x-ratelimit-used', '4999'), ('x-ratelimit-reset', '9999999'),
+                             ('x-ratelimit-reset', '990'), ('x-ratelimit-reset', '-1'),
+                             ('x-ratelimit-reset', '１２３'), ('retry-after', '7200'),
+                             ('retry-after', 'malformed')]:
+            cases.append((403, 'https://api.github.com/x', dict(headers, **{field: value})))
+        for code, url, values in cases:
+            with self.subTest(code=code, url=url, headers=values), \
+                    mock.patch.object(recovery.time, 'time', return_value=1000), \
+                    mock.patch.object(recovery.time, 'sleep') as sleep:
+                error = urllib.error.HTTPError(url, code, 'denied', values, None)
+                self.addCleanup(error.close)
+                operation = mock.Mock(side_effect=error)
+                with self.assertRaises(urllib.error.HTTPError):
+                    recovery._retry_github_get(operation)()
+                operation.assert_called_once()
+                sleep.assert_not_called()
+        error = urllib.error.HTTPError('https://api.github.com/x', 429, 'limited',
+                                      dict(headers, **{'retry-after': '200'}), None)
+        self.addCleanup(error.close)
+        with mock.patch.object(recovery.time, 'time', return_value=1000):
+            self.assertEqual(202, recovery._primary_rate_limit_delay(error))
+
     def test_failed_original_transfer_reports_identity_without_retry_or_admission(self):
         digest = "sha256:" + "a" * 64
         failure = ValueError("GitHub artifact transport digest or size mismatch")

@@ -13,6 +13,38 @@ import runtime_reference_archive as transport
 
 
 class ReferenceDownloadTest(unittest.TestCase):
+    def test_primary_quota_wait_retries_only_the_same_authenticated_range(self):
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        from products.inventory import sha256_bytes
+        raw = b'original bytes'
+        artifact = dict(id=1, size_in_bytes=len(raw), digest=sha256_bytes(raw),
+            archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+        for repeated in (False, True):
+            requests = []
+            opener = RangeOpener({1: raw})
+            def open_range(request, timeout):
+                requests.append(request)
+                if repeated or len(requests) == 1:
+                    raise urllib.error.HTTPError(request.full_url, 403, 'limited',
+                        {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
+                         'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}, io.BytesIO())
+                return opener.open(request, timeout)
+            with mock.patch.object(transport.urllib.request, 'build_opener') as factory, \
+                    mock.patch.object(transport.time, 'time', return_value=1000), \
+                    mock.patch.object(transport.time, 'sleep') as sleep:
+                factory.return_value.open.side_effect = open_range
+                stream = transport._Archive(artifact, 'secret')
+                if repeated:
+                    with self.assertRaises(urllib.error.HTTPError):
+                        stream.read(len(raw))
+                    self.assertEqual(0, stream.tell())
+                else:
+                    self.assertEqual(raw, stream.read(len(raw)))
+                self.assertEqual(2, len(requests))
+                self.assertEqual(requests[0].full_url, requests[1].full_url)
+                self.assertEqual(requests[0].headers, requests[1].headers)
+                sleep.assert_called_once_with(122)
+
     def test_large_stored_member_uses_two_bounded_ranges_and_keeps_exact_digest(self):
         from ci.tests.test_runtime_reference_transport import RangeOpener
         from products.inventory import sha256_bytes

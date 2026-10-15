@@ -26,6 +26,7 @@ import time
 from threading import Lock
 from typing import Any, Mapping
 import urllib.error
+import urllib.parse
 import zipfile
 
 if __package__:
@@ -39,24 +40,60 @@ from runtime_reference_transport import measured, count
 from reuse import api_json, download_artifact, download_artifact_to_file, github_output, paginated_items, run_matches_pr
 
 
+def _primary_rate_limit_delay(error):
+    """Only a GitHub API exhaustion response authorizes waiting for its reset."""
+    if not isinstance(error, urllib.error.HTTPError) or error.code not in {403, 429}:
+        return None
+    origin = urllib.parse.urlsplit(error.geturl())
+    if (origin.scheme != 'https' or origin.netloc != 'api.github.com' or not error.headers):
+        return None
+    values = [error.headers.get(name, '') for name in
+              ('x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-used', 'x-ratelimit-reset')]
+    if any(not isinstance(value, str) or re.fullmatch(r'[0-9]{1,20}', value) is None for value in values):
+        return None
+    limit, remaining, used, reset = map(int, values)
+    if limit <= 0 or remaining != 0 or used < limit:
+        return None
+    delay = reset - time.time()
+    if not -5 <= delay <= 3600:
+        return None
+    retry_after = error.headers.get('retry-after')
+    if retry_after is not None:
+        if not isinstance(retry_after, str) or re.fullmatch(r'[0-9]{1,4}', retry_after) is None:
+            return None
+        delay = max(delay, int(retry_after))
+        if delay > 3600:
+            return None
+    return max(0, delay) + 2
+
+
 def _retry_github_get(operation):
     """Retry transient recovery GETs; every attempt retains full authentication."""
     @wraps(operation)
     def retry(*args, **kwargs):
+        waited_for_reset = False
         for attempt in range(4):
             try:
                 return operation(*args, **kwargs)
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                delay = None if waited_for_reset else _primary_rate_limit_delay(error)
                 transient = (isinstance(error, (TimeoutError, ConnectionError))
                     or isinstance(error, urllib.error.HTTPError) and error.code in {500, 502, 503, 504}
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (socket.gaierror, TimeoutError, ConnectionError)))
-                if attempt == 3 or not transient:
+                if attempt == 3 or not transient and delay is None:
                     raise
-                count('transientGetRetries')
+                if delay is not None:
+                    waited_for_reset = True
+                    count('primaryRateLimitRetries')
+                    count('primaryRateLimitWaitSeconds', delay)
+                    print(f'github-api-rate-limit: waiting {delay:.3f}s for primary quota reset',
+                          file=sys.stderr, flush=True)
+                else:
+                    count('transientGetRetries')
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt if delay is None else delay)
     return retry
 
 
