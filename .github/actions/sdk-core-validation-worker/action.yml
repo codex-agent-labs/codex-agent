@@ -155,7 +155,7 @@ runs:
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import host_classifier
-        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
             read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
         from products.sdk_facade_validation_admission import _native_archive_path
         from products.signing_isolation import require_no_signing_secret
@@ -181,7 +181,7 @@ runs:
                     (expected['runnerOs'], expected['runnerArch'])
                 or host_classifier() != expected_host):
             raise ValueError('Core validation differs from its elected physical host')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree or not re.fullmatch(r'[0-9a-f]{40}', plan['validationCommit']):
             raise ValueError('Core validation source differs from its authenticated plan')
         tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),

@@ -66,7 +66,7 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
                 exec(self.script("policy"), {})
             pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
             plan = root / "plan.json"
-            plan.write_bytes(canonical_json_bytes({"validationTree": TREE, "validationCommit": "c" * 40}))
+            plan.write_text(json.dumps({"validationTree": TREE, "validationCommit": "c" * 40}, indent=2) + "\n")
             row = {"product": "sdk", "component": "sdk-core", "phase": "validation",
                 "target": "jvm", "buildKey": KEY, "runner": "ubuntu-24.04",
                 "runnerOs": "Linux", "runnerArch": "X64"}
@@ -75,6 +75,13 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
                           POLICY_SHA256=pin, RUNNER_OS="Linux", RUNNER_ARCH="X64")
             with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"):
                 exec(self.script("identity"), {})
+                original_plan = plan.read_bytes()
+                for invalid in (b'{"validationTree":"a","validationTree":"b"}',
+                                b'{"number":1.5}', b'not json', b'\xff'):
+                    plan.write_bytes(invalid)
+                    with self.assertRaises(ValueError):
+                        exec(self.script("identity"), {})
+                plan.write_bytes(original_plan)
                 (root / "evidence/original").write_bytes(b"mutated\n")
                 with self.assertRaisesRegex(ValueError, "changed during state capture"):
                     exec(self.script("identity"), {})

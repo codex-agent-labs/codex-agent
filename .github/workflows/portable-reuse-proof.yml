@@ -9,6 +9,65 @@ permissions:
   actions: read
 
 jobs:
+  core-validation-diagnostics:
+    if: >-
+      github.event.label.name == 'ci:core-validation-diagnostics' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Observe checkout bytes and official Maven headers only
+        shell: python
+        run: |
+          import hashlib, json, pathlib, subprocess, sys, urllib.parse, urllib.request
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          print(json.dumps({'diagnosticOnly': True, 'source': source, 'productExecuted': False,
+              'autocrlf': subprocess.run(['git', 'config', '--get', 'core.autocrlf'], capture_output=True, text=True).stdout.strip()}), flush=True)
+          sys.path.insert(0, str(pathlib.Path.cwd() / 'ci'))
+          from reuse_qualification import read_blobs
+          changed = []
+          selected = []
+          listing = subprocess.check_output(['git', 'ls-tree', '-rz', 'HEAD', '--', 'ci', '.github'])
+          for row in listing.split(b'\0'):
+              if not row:
+                  continue
+              header, name = row.split(b'\t', 1)
+              path = pathlib.Path(name.decode())
+              if path.suffix not in {'.py', '.json', '.yml', '.yaml', '.sh', '.js', '.mjs'} or 'tests' in path.parts:
+                  continue
+              selected.append((path, header.split()[2].decode()))
+          blobs = read_blobs(pathlib.Path.cwd(), (oid for _, oid in selected),
+              max_bytes=16 * 1024**2, total_bytes=64 * 1024**2)
+          for path, oid in selected:
+              expected = blobs[oid]
+              actual = path.read_bytes()
+              if expected != actual:
+                  changed.append({'path': path.as_posix(), 'expectedSha256': hashlib.sha256(expected).hexdigest(),
+                      'actualSha256': hashlib.sha256(actual).hexdigest(), 'crlfOnly': actual.replace(b'\r\n', b'\n') == expected})
+          print(json.dumps({'changedControlCount': len(changed), 'changedControls': changed}), flush=True)
+          import sdk_core_native_archive_provision as provider
+          class ObservedRedirect(provider._MavenRedirect):
+              def redirect_request(self, request, response, code, message, headers, new_url):
+                  value = urllib.parse.urlsplit(new_url)
+                  print(json.dumps({'redirectCode': code, 'scheme': value.scheme, 'host': value.hostname, 'port': value.port}), flush=True)
+                  return super().redirect_request(request, response, code, message, headers, new_url)
+          url = provider._MAVEN_ROOT + '/2.3.10/kotlin-native-prebuilt-2.3.10-macos-aarch64.tar.gz'
+          with urllib.request.build_opener(ObservedRedirect()).open(urllib.request.Request(url), timeout=30) as response:
+              print(json.dumps({'status': response.status, 'finalUrl': response.geturl(),
+                  'declaredBytes': response.headers.get('Content-Length'), 'archiveBodyBytesRead': 0}), flush=True)
+              provider._maven_https(response.geturl())
   recovery-diagnostics:
     if: >-
       github.event.label.name == 'ci:reuse-recovery-diagnostics' &&

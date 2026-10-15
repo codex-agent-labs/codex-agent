@@ -17,6 +17,16 @@ CHILD = WORKFLOW.with_name("sdk-core-validation.yml")
 
 
 class CoreValidationWorkflowTest(unittest.TestCase):
+    def test_narrow_diagnostics_are_read_only_and_separate_from_product_proofs(self):
+        source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
+        block = source.split("  core-validation-diagnostics:\n", 1)[1].split("  recovery-diagnostics:\n", 1)[0]
+        for required in ("ci:core-validation-diagnostics", "pull_request.number == 31",
+                         "head.repo.fork == false", "persist-credentials: false", "'archiveBodyBytesRead': 0"):
+            self.assertIn(required, block)
+        for forbidden in ("secrets.", "id-token: write", "attestations: write", "gradlew", "response.read("):
+            self.assertNotIn(forbidden, block)
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        compile(script, "core-validation-headers-diagnostic", "exec")
     def test_wave_thirteen_uses_original_inputs_and_fails_after_collection(self):
         source = CHILD.read_text()
 
