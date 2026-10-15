@@ -7710,6 +7710,18 @@ def _retry_upload_producer(producer, artifact_id, artifact_sha256, name_prefix, 
             _require_artifact_job_window({"jobs": jobs}, job, artifact)
         except ValueError:
             continue
+        original_run = _original_ci_run({**producer, "runAttempt": attempt}, token)
+        if original_run.get("id") != producer["runId"] or original_run.get("run_attempt") != attempt:
+            raise ValueError("Retry upload attempt metadata differs from its requested identity")
+        started, job_started = [datetime.fromisoformat(require_string(value,
+            "Retry original attempt timestamp").replace("Z", "+00:00")) for value in (
+                original_run.get("run_started_at"), _matching_ci_jobs(jobs, job)[0].get("started_at"))]
+        if started.utcoffset() != timedelta(0) or job_started.utcoffset() != timedelta(0):
+            raise ValueError("Retry original attempt timestamps must be UTC")
+        # Rerun listings can project older successful jobs with new job IDs.
+        # Such a job cannot have executed before its claimed attempt began.
+        if job_started < started:
+            continue
         matches.append(attempt)
     if len(matches) != 1:
         raise ValueError("Retry upload has no unique original job-attempt window")

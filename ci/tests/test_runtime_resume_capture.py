@@ -66,10 +66,19 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
                         "completed_at": "2026-01-01T11:00:00Z"}
         artifact = {**self.artifact, "created_at": "2026-01-01T10:30:00Z"}
         def jobs(url, *args):
-            return [original_job] if "/attempts/3/" in url else []
-        with mock.patch.object(product_reuse, "api_json", side_effect=[
-                artifact, artifact, self.run, self.commit, artifact]), \
-                mock.patch.object(product_reuse, "paginated_items", side_effect=jobs), \
+            # GitHub also projects this old window into the later attempt,
+            # changing the job ID without executing the successful job again.
+            return [dict(original_job, id=999)] if "/attempts/4/" in url else [original_job]
+        def query(url, *args):
+            if "/artifacts/" in url: return artifact
+            if "/commits/" in url: return self.commit
+            attempt = int(url.rsplit("/", 1)[1])
+            return {**self.run, "run_attempt": attempt, "run_started_at":
+                    "2026-01-01T12:00:00Z" if attempt == 4 else "2026-01-01T09:59:00Z"}
+        def selected_jobs(url, *args):
+            return jobs(url, *args) if any(f"/attempts/{i}/" in url for i in (3, 4)) else []
+        with mock.patch.object(product_reuse, "api_json", side_effect=query), \
+                mock.patch.object(product_reuse, "paginated_items", side_effect=selected_jobs), \
                 mock.patch.object(product_reuse, "download_artifact_to_file",
                     side_effect=lambda artifact, token, destination, **kw: Path(destination).write_bytes(self.raw)):
             result = product_reuse.capture_runtime_resume_upload(self.plan_path,
