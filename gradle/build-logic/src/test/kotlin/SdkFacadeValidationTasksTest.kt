@@ -45,7 +45,7 @@ class SdkFacadeValidationTasksTest {
             assertEquals(setOf(prepare, metadata, consumer, content, manifest), closure(manifest))
             assertEquals(closure(manifest).map { it.name }.toSet(), project.tasks.names.toSet() - before)
             assertEquals(listOf("python3", "-m", "ci.products.sdk_facade_inputs", "prepare", "--request", request.path,
-                "--destination", work.resolve("inputs").path), prepare.commandLine)
+                "--destination", work.resolve("inputs").path, "--allow-empty-destination"), prepare.commandLine)
             assertEquals(work.resolve("inputs/package-stage"), metadata.packageStage.get().asFile)
             assertEquals(listOf("0.8.1", "0.8.0", "1.2.3", "2.3.10"), listOf(metadata.sdkVersion.get(),
                 metadata.runtimeVersion.get(), metadata.contractVersion.get(), metadata.kotlinVersion.get()))

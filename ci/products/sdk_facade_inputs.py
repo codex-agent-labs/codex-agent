@@ -16,7 +16,7 @@ from .contract import verify_contract_bundle
 from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, require_exact_keys, require_semver, require_string,
+    read_regular_file_bytes, require_exact_keys, require_regular_directory, require_semver, require_string,
     snapshot_regular_tree, verified_zip_contents, write_canonical_json,
 )
 from .plan import _contract_projection_from_request
@@ -75,11 +75,16 @@ def _request(path):
     return value, raw
 
 
-def _fresh(destination, sources):
+def _fresh(destination, sources, *, allow_empty_directory=False):
     destination = Path(destination).absolute()
-    if destination.resolve(strict=False) != destination or destination.exists() or destination.is_symlink():
+    if destination.resolve(strict=False) != destination or destination.is_symlink():
         raise ValueError("Facade destination must be fresh, normalized and non-symbolic")
     _require_capability_output_separate(destination, sources)
+    if allow_empty_directory and destination.exists():
+        require_regular_directory(destination, "Gradle facade output directory")
+        destination.rmdir()  # Gradle precreates the root; never remove files or nonempty trees.
+    if destination.exists():
+        raise ValueError("Facade destination must be fresh, normalized and non-symbolic")
     return destination
 
 
@@ -99,7 +104,7 @@ def _sources(value):
     return originals, trees, files
 
 
-def prepare_facade_validation_inputs(request: Path, destination: Path) -> dict:
+def prepare_facade_validation_inputs(request: Path, destination: Path, *, allow_empty_destination=False) -> dict:
     """Prepare exact admitted input bytes; no consumer or dependency proof minted.
 
     The canonical request is explicit caller policy, not downloaded authority.
@@ -120,7 +125,8 @@ def prepare_facade_validation_inputs(request: Path, destination: Path) -> dict:
                 ("sdk", "sdk-core", phase, "common", value["sdkVersion"]):
             raise ValueError("Facade input requires its exact original Core package and binary receipts")
     request_inventory = _request_inventory(originals["compatibilityRequest"])
-    destination = _fresh(destination, [request, *trees.values(), *files.values(), *request_inventory])
+    destination = _fresh(destination, [request, *trees.values(), *files.values(), *request_inventory],
+                         allow_empty_directory=allow_empty_destination)
 
     def unchanged():
         if (_read(request) != request_bytes or
@@ -309,6 +315,8 @@ def main(argv=None):
     prepare = modes.add_parser("prepare")
     prepare.add_argument("--request", type=Path, required=True)
     prepare.add_argument("--destination", type=Path, required=True)
+    prepare.add_argument("--allow-empty-destination", action="store_true",
+                         help="Accept only the empty regular output directory precreated by Gradle")
     content = modes.add_parser("content")
     for name in ("request", "inputs", "evidence", "output"):
         content.add_argument("--" + name, type=Path, required=True)
