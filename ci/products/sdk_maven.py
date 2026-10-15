@@ -862,7 +862,7 @@ def _update_module_metadata(repository: Path, changed: dict[str, bytes]) -> None
         referenced = update(value, archive_name, contents)
         module.write_text(
             json.dumps(value, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+            encoding="utf-8", newline="\n",
         )
         if referenced == 0:
             raise ValueError(f"packaged SDK artifact is absent from its exact Gradle module metadata: {archive_name}")
@@ -879,7 +879,7 @@ def _refresh_checksums(repository: Path) -> None:
             if not primary.is_file() or primary.is_symlink():
                 raise ValueError(f"Maven checksum has no regular primary: {sidecar}")
             _, _, primaries[primary] = _file_identity(primary, retain_contents=False)
-        sidecar.write_text(primaries[primary][algorithm] + "\n", encoding="ascii")
+        sidecar.write_text(primaries[primary][algorithm] + "\n", encoding="ascii", newline="\n")
 
 
 def package_sdk_maven(

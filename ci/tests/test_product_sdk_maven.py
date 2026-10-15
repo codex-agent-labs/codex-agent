@@ -83,7 +83,7 @@ def _checksums(primary: Path) -> None:
     for suffix, algorithm in ((".md5", "md5"), (".sha1", "sha1"),
                               (".sha256", "sha256"), (".sha512", "sha512")):
         primary.with_name(primary.name + suffix).write_text(
-            hashlib.new(algorithm, contents).hexdigest() + "\n", encoding="ascii",
+            hashlib.new(algorithm, contents).hexdigest() + "\n", encoding="ascii", newline="\n",
         )
 
 
@@ -253,6 +253,12 @@ def _write_apple_binary(stage: Path) -> None:
 
 class SdkMavenPackagingTest(unittest.TestCase):
     def test_every_component_packages_its_exact_carrier_set(self) -> None:
+        write_text = Path.write_text
+
+        def windows_write_text(path, data, encoding=None, errors=None, newline=None):
+            return write_text(path, data, encoding=encoding, errors=errors,
+                              newline="\r\n" if newline is None else newline)
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             version = "0.2.0"
@@ -279,8 +285,10 @@ class SdkMavenPackagingTest(unittest.TestCase):
                         for path in output.rglob("*") if path.is_file()
                     })
                     repeated = root / f"repeated-{component}"
-                    package_sdk_maven(source, repeated, compatibility,
-                                      "io.github.codex-agent-labs", version, component)
+                    # Replay must preserve every byte when the host defaults to CRLF.
+                    with patch.object(Path, "write_text", windows_write_text):
+                        package_sdk_maven(source, repeated, compatibility,
+                                          "io.github.codex-agent-labs", version, component)
                     self.assertEqual(
                         {path.relative_to(output).as_posix(): path.read_bytes()
                          for path in output.rglob("*") if path.is_file()},
