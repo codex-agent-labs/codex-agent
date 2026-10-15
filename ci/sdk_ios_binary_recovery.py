@@ -47,7 +47,7 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
 
 
 def _javascript_instance(phase, component="javascript", target=None):
-    if component == "sdk-core" and phase == "binary" and target == "common":
+    if component == "sdk-core" and phase in {"binary", "package"} and target == "common":
         return PhaseInstanceId("sdk", component, phase, target)
     if component == "sdk-ios" and phase == "metadata" and target == "ios":
         return PhaseInstanceId("sdk", component, phase, target)

@@ -4551,7 +4551,8 @@ def _verified_product_state(
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                      ("javascript", "metadata", "node"), ("csharp", "binary", "desktop"),
                                      ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64"),
-                                     ("sdk-ios", "metadata", "ios"), ("sdk-core", "binary", "common")):
+                                     ("sdk-ios", "metadata", "ios"), ("sdk-core", "binary", "common"),
+                                     ("sdk-core", "package", "common")):
         instance = PhaseInstanceId("sdk", component, phase, target)
         capture = discovery_root / (f"prior-completed-{component}-{phase}-{target}" if component in {"sdk-ios", "sdk-core"} else
             "prior-failed-sdk-csharp" if component == "csharp" else

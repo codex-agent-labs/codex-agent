@@ -73,7 +73,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         for component, phase, target in (('javascript', 'package', 'node'),
                                          ('sdk-ios', 'validation', 'ios-arm64'),
                                          ('sdk-ios', 'validation', 'ios-simulator-arm64'),
-                                         ('sdk-ios', 'metadata', 'ios'), ('sdk-core', 'binary', 'common')):
+                                         ('sdk-ios', 'metadata', 'ios'), ('sdk-core', 'binary', 'common'),
+                                         ('sdk-core', 'package', 'common')):
             with self.subTest(component=component, target=target):
                 self._check_native_capture_and_replay(component, phase, target)
 
@@ -173,7 +174,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                              ('product-validation / plan', 'codex-agent-planned-product-resume-'),
                              ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-'),
                              ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-'),
-                             (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-')):
+                             (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-'),
+                             (completed._CORE_PACKAGE_COLLECTOR, 'codex-agent-sdk-wave-12-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
@@ -186,8 +188,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 result = completed.observe_source(source, 'synthetic')
                 self.assertEqual(artifact, result[0])
                 self.assertEqual({'source': role}, observe.call_args.kwargs['jobs_by_phase'])
-                if role == completed._CORE_COLLECTOR:
-                    self.assertEqual({'source': {'path': '.github/workflows/sdk-core-binary-validation.yml',
+                if role in (completed._CORE_COLLECTOR, completed._CORE_PACKAGE_COLLECTOR):
+                    phase = 'binary' if role == completed._CORE_COLLECTOR else 'package'
+                    self.assertEqual({'source': {'path': f'.github/workflows/sdk-core-{phase}-validation.yml',
                         'sha': source['workflowSha']}}, observe.call_args.kwargs['trusted_workflows_by_phase'])
                     self.assertNotIn('trusted_workflow_sha', observe.call_args.kwargs)
                 else:
@@ -314,14 +317,19 @@ class CompletedSdkControlsTest(unittest.TestCase):
             observe.assert_not_called()
 
     def test_core_original_requires_exact_nested_child_and_matrix_key(self):
+        for phase in ('binary', 'package'):
+            with self.subTest(phase=phase):
+                self.check_core_original(phase)
+
+    def check_core_original(self, phase):
         import product_reuse
         receipt = deepcopy(self.receipt)
-        receipt.update(component='sdk-core', phase='binary', target='common')
+        receipt.update(component='sdk-core', phase=phase, target='common')
         receipt['producer']['workflowPath'] = '.github/workflows/ci.yml'
         receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
         original = {'jobId': 71, 'workflowSha': 'a' * 40, 'artifactId': 72,
                     'artifactSha256': 'sha256:' + 'b' * 64}
-        name = 'product-validation / sdk-core-binary-wave / sdk-core-binary-common'
+        name = f'product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-common'
         job = {'id': 71, 'name': name + ' (' + receipt['buildKey'] + ', ...',
                'started_at': '2026-01-01T01:00:00Z', 'completed_at': '2026-01-01T01:02:00Z'}
         artifact = {'id': 72, 'created_at': '2026-01-01T01:01:00Z'}
@@ -331,10 +339,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
             completed.observe_original(original, receipt, 'synthetic')
             self.assertEqual({'original': name}, observe.call_args.kwargs['jobs_by_phase'])
             self.assertEqual({'original': receipt['buildKey']}, observe.call_args.kwargs['build_keys_by_phase'])
-            self.assertEqual({'original': {'path': '.github/workflows/sdk-core-binary-validation.yml',
+            self.assertEqual({'original': {'path': f'.github/workflows/sdk-core-{phase}-validation.yml',
                 'sha': original['workflowSha']}}, observe.call_args.kwargs['trusted_workflows_by_phase'])
             self.assertNotIn('trusted_workflow_sha', observe.call_args.kwargs)
-            for invalid in ('product-validation / sdk-core-binary-common', name + ' (sha256:' + '0' * 64 + ', ...'):
+            for invalid in (f'product-validation / sdk-core-{phase}-common', name + ' (sha256:' + '0' * 64 + ', ...'):
                 job['name'] = invalid
                 with self.assertRaises(ValueError): completed.observe_original(original, receipt, 'synthetic')
 
@@ -696,7 +704,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
         for component, phase, target, wave in (('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
-                ('sdk-core', 'binary', 'common', 11)):
+                ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target, collected=True, collected_wave=wave)
@@ -779,6 +787,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         if collected:
             spec.update(stateRoot='runtime-state', sourcePlan=plan_text)
             spec['source'].update(jobName=completed._CORE_COLLECTOR if collected_wave == 11 else
+                                  completed._CORE_PACKAGE_COLLECTOR if collected_wave == 12 else
                                   f'product-validation / sdk-collect-{collected_wave}',
                                   referenceControlSha256='sha256:' + 'a' * 64)
         if embedded:
