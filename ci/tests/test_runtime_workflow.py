@@ -7,8 +7,12 @@ below only verify delegation to their existing separately tested authorities.
 from pathlib import Path
 from copy import deepcopy
 import json
+import os
+import re
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -30,6 +34,48 @@ def row(instance, **extra):
 
 
 class RuntimeWorkflowTest(unittest.TestCase):
+    def test_collector_root_survives_javascript_action_input_defaults(self):
+        root = Path(__file__).resolve().parents[2]
+        action = (root / '.github/actions/collect-runtime-wave/action.yml').read_text()
+        step = action.split('    - id: collect\n', 1)[1].split('    - id: upload\n', 1)[0]
+        script = textwrap.dedent(step.split('        script: |\n', 1)[1])
+        adapter = root / '.github/actions/hydrated-evidence-cache'
+        inputs = (adapter / 'action.yml').read_text().split('inputs:\n', 1)[1].split('outputs:\n', 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary).resolve()
+            bin_dir = scratch / 'bin'
+            bin_dir.mkdir()
+            for name, body in {'npm': '#!/bin/sh\nexit 0\n', 'python3':
+                    f'#!{sys.executable}\nimport json, os, sys\n'
+                    'with open(os.environ["COMMAND_LOG"], "a") as stream:\n'
+                    '    stream.write(json.dumps(sys.argv[1:]) + "\\n")\n'}.items():
+                executable = bin_dir / name
+                executable.write_text(body)
+                executable.chmod(0o700)
+            source = str(scratch / 'captured inputs/original')
+            for product in ('runtime', 'sdk', 'sdk-ios-binary'):
+                with self.subTest(product=product):
+                    log = scratch / (product + '.jsonl')
+                    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
+                        RUNNER_TEMP=str(scratch), COMMAND_LOG=str(log), GITHUB_OUTPUT=str(scratch / 'output'))
+                    for key, value in re.findall(r'^        (\w+): (.*)$', step, re.M):
+                        env[key] = source if value == '${{ steps.captured.outputs.input-root }}' else ''
+                    env.update(PRODUCT=product, WAVE='1', STATE_WAVE='0', TRUSTED_WORKFLOW_SHA=PIN)
+                    # The runner sets every declared action input after caller env,
+                    # including empty optional inputs such as INPUT_ROOT.
+                    for name in re.findall(r'^  ([\w-]+):$', inputs, re.M):
+                        env['INPUT_' + name.upper().replace(' ', '_')] = ''
+                    env.update(INPUT_MODE='execute', INPUT_SCRIPT=script)
+                    result = subprocess.run(['node', str(adapter / 'entry.mjs')], env=env,
+                        cwd=root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    commands = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(2, len(commands))
+                    self.assertEqual(source, commands[0][commands[0].index('--input-root') + 1])
+                    self.assertEqual(source, commands[1][commands[1].index('--base-root') + 1])
+                    self.assertEqual(str(Path(source).parent / 'capture-transport.json'),
+                        commands[1][commands[1].index('--base-capture') + 1])
+
     def test_variant_trust_cli_preserves_explicit_paths_and_rejects_duplicate_targets(self):
         arguments = ["variant-trust", "--destination", "output", "--keyring", "policy.json",
                      "--keys-directory", "keys"]

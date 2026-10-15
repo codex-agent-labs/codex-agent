@@ -100,7 +100,7 @@ runs:
     - id: collect
       uses: ./.github/actions/hydrated-evidence-cache
       env:
-        INPUT_ROOT: ${{ steps.captured.outputs.input-root }}
+        COLLECT_INPUT_ROOT: ${{ steps.captured.outputs.input-root }}
         WAVE: ${{ inputs.wave }}
         STATE_WAVE: ${{ inputs.state-wave }}
         PRODUCT: ${{ inputs.product }}
@@ -117,6 +117,7 @@ runs:
         mode: execute
         script: |
           set -euo pipefail
+          : "${COLLECT_INPUT_ROOT:?Missing authenticated predecessor root}"
           case "$PRODUCT" in
             runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
             sdk)
@@ -150,7 +151,7 @@ runs:
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
             state+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
           fi
-          "${command[@]}" --input-root "$INPUT_ROOT" \
+          "${command[@]}" --input-root "$COLLECT_INPUT_ROOT" \
             --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
           # Pinned native/aggregate signers consume waves 4/5 as full envelopes.
@@ -159,8 +160,8 @@ runs:
             reference_wave=(--state-wave "$WAVE")
             if [ "$PRODUCT" != runtime ]; then reference_wave=(--state-wave 0 --sdk-state-wave "$WAVE"); fi
             python3 -B ci/runtime_workflow.py export-references \
-              --handoff build/runtime-next/handoff --base-root "$INPUT_ROOT" \
-              --base-capture "${INPUT_ROOT%/original}/capture-transport.json" \
+              --handoff build/runtime-next/handoff --base-root "$COLLECT_INPUT_ROOT" \
+              --base-capture "${COLLECT_INPUT_ROOT%/original}/capture-transport.json" \
               --destination build/runtime-reference-handoff "${reference_wave[@]}"
           fi
     - id: upload
