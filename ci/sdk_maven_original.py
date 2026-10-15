@@ -81,7 +81,12 @@ def _same_record(record, stage, receipt):
 
 
 def _worker(original, receipt, context, contract_version, archive_name):
-    _layout(original / "worker", {"execution.json", "gradle.log"})
+    names = {"execution.json", "gradle.log"}
+    seed = original / "worker/dependency-seed"
+    if seed.exists():
+        require_regular_directory(seed, "Original Maven worker dependency seed")
+        names.add("dependency-seed")
+    _layout(original / "worker", names)
     execution = require_exact_keys(_json(original / "worker/execution.json"),
         {"schemaVersion", "producer", "buildKey", "command", "returnCode", "launchError", "elapsedNs"},
         "Original Maven execution")

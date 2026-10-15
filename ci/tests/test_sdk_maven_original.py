@@ -319,12 +319,17 @@ class MavenOriginalTest(unittest.TestCase):
         seed = self.original / "worker-dependency-seed"
         seed.mkdir()
         (seed / "diagnostic.json").write_bytes(b"opaque dependency cache")
+        worker_seed = self.original / "worker/dependency-seed"
+        worker_seed.mkdir()
+        (worker_seed / "diagnostic.json").write_bytes(b"opaque worker cache")
         with self.call() as result:
             self.assertEqual(self.receipt, result["receipt"])
         self.binary_gate.assert_called_once()
         with self.assertRaisesRegex(ValueError, "changed"):
-            with self.call(retained=True):
-                (seed / "diagnostic.json").write_bytes(b"changed")
+            with self.call() as result:
+                (result["original"] / "worker/dependency-seed/diagnostic.json").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            with self.call(retained=True): (seed / "diagnostic.json").write_bytes(b"changed")
         (self.original / "unreviewed-extra").mkdir()
         with self.assertRaisesRegex(ValueError, "unexpected layout"):
             with self.call(): pass
