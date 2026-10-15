@@ -9,7 +9,6 @@ import tempfile
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ci.sdk_campaign_observation import ObservedSdkOriginal
 from sdk_apple_upload_locator import _locate
 from sdk_facade_capture import _capture_route
 import product_reuse as products
@@ -560,6 +559,7 @@ def locate_fresh_sdk_original_upload(instance, original, *, expected_receipt_sha
     state. This locator never accepts a claimed artifact ID, name, or path from
     that state. The consumer must still download and verify the exact upload.
     """
+    from ci.sdk_campaign_observation import ObservedSdkOriginal
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
     if environment is not os.environ:

@@ -18,6 +18,15 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class SdkCampaignOriginalLocatorTest(TestCase):
+    def test_retained_locator_imports_from_direct_ci_script_path(self):
+        import subprocess, sys
+        from pathlib import Path
+        subprocess.run([sys.executable, '-I', '-B', '-c',
+            'import sys; sys.path.insert(0, sys.argv[1]); '
+            'import sdk_campaign_original_locator as locator; '
+            'assert callable(locator.locate_retained_core_binary_upload)',
+            str(Path(__file__).resolve().parents[1])], check=True, capture_output=True)
+
     def test_retained_core_lookup_binds_election_original_and_lifetime(self):
         key = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
         consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
