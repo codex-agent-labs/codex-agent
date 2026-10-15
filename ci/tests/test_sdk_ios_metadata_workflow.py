@@ -59,6 +59,14 @@ class SdkIosMetadataWorkflowTest(unittest.TestCase):
         for unnecessary in ('capture-sdk-tooling', 'actions/download-artifact@', 'prepare-sdk-apple-policy'):
             self.assertNotIn(unnecessary, job)
 
+    def test_metadata_controller_can_authenticate_originals_with_the_read_token(self):
+        action = (Path(__file__).resolve().parents[2] /
+                  '.github/actions/sdk-ios-metadata-worker/action.yml').read_text()
+        execution = action.split('    - id: execute\n', 1)[1].split('\n    - ', 1)[0]
+        self.assertIn('GITHUB_TOKEN: ${{ github.token }}', execution)
+        self.assertIn("fields['--completed-frozen-policy']", execution)
+        self.assertNotIn('secrets.', execution)
+
     def test_all_replay_routes_preserve_parent_and_construct_policy_first(self):
         for name, action in (('sdk-ios-metadata', 'sdk-ios-metadata-worker'),
                              ('sdk-collect-10', 'collect-runtime-wave')):

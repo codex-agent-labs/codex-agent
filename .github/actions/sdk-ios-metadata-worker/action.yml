@@ -137,6 +137,7 @@ runs:
       name: Join metadata inside both complete original validation lifetimes
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
