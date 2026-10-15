@@ -166,10 +166,15 @@ class SdkIosMetadataCollectionTest(unittest.TestCase):
             self.assertEqual(1, len(matches))
             matches[0].write_bytes(b"late mutation")
 
-    def collect(self, destination, *, policy=True, missing_target=None):
+    def collect(self, destination, *, policy=True, missing_target=None, completed=None):
         state = self.state(missing_target=missing_target)
         retained = [record for record in self.external_records
                     if record not in state.rebased_request["sdkAppleValidationEvidence"]]
+        if completed is not None:
+            state.rebased_request = {}
+            state.sources = {identity: self.repository / ('deferred-' + identity.target + '.zip')
+                             for identity in state.sources}
+            retained = []
         with patch.object(adapter, "_verified_product_state", return_value=state), \
                 self.official_api({INSTANCE: self.metadata_ready}, {INSTANCE: self.metadata_upload}), \
                 patch.object(adapter, "_retained_apple_handoffs", return_value=retained), \
@@ -177,8 +182,23 @@ class SdkIosMetadataCollectionTest(unittest.TestCase):
             result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery, destination,
                 trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
                 token="synthetic-token", sdk_family="ios-metadata",
+                **({"completed_frozen": completed} if completed is not None else {}),
                 **({"sdk_apple_validation_policy": self.policy} if policy else {}))
         return result, admission
+
+    def test_native_validation_controls_reach_metadata_admission_without_deferred_body_reads(self):
+        import reuse_qualification as native
+        state = self.state()
+        cap = native.CompletedFrozenReuse({'expectedResult': {'phases': list(state.prior_carrier_phases.values())}},
+            [value[2]['receipt'] for value in self.validation.values()], native._COMPLETED_FROZEN,
+            revision=self.producer['commit'])
+        with patch.object(adapter, 'verify_object', side_effect=AssertionError('Deferred V body opened before its consumer gate')):
+            result, admission = self.collect(self.repository / 'build/native-metadata-collection', completed=cap)
+        row, = result['rows']
+        self.assertEqual('success', row['result'])
+        self.gate.verify_metadata.assert_called_once()
+        admission.assert_called_once_with(self.repository, [], repository=self.repository,
+            policy_revision=self.producer['commit'], policy=self.policy, completed_frozen=cap)
 
     def test_exact_worker_job_upload_key_and_full_gate_precede_success(self):
         destination = self.repository / "build/collected-ios-metadata"

@@ -137,6 +137,22 @@ class AppleTransportTest(TestCase):
                 with self.assertRaises(ValueError):
                     adapter._rebase_native_request(request, self.discovery, self.root)
 
+    def test_native_metadata_keeps_mandatory_caller_admission_without_physical_carriers(self):
+        request = self.wave()
+        before = canonical_json_bytes(request)
+        capability = object()  # Planner/native authority deliberately mocked in this wiring test.
+        with patch.object(adapter, "plan_reuse_wave", return_value={}) as plan:
+            adapter._plan_with_sdk_tooling(request, None, apple_policy=self.policy, completed_frozen=capability)
+        invocation = plan.call_args.args[0]
+        self.assertEqual([], invocation["sdkAppleValidationEvidence"])
+        self.assertIs(self.policy, invocation["sdkAppleValidationPolicy"])
+        self.assertIs(capability, plan.call_args.kwargs["completed_frozen"])
+        self.assertEqual(before, canonical_json_bytes(request))
+        with patch.object(adapter, "plan_reuse_wave", return_value={}) as plan:
+            adapter._plan_with_sdk_tooling(request, None, completed_frozen=capability)
+        self.assertNotIn("sdkAppleValidationEvidence", plan.call_args.args[0])
+        self.assertNotIn("sdkAppleValidationPolicy", plan.call_args.args[0])
+
     def test_omitted_policy_preserves_legacy_shape_and_does_not_invent_authority(self):
         with patch.object(adapter, "plan_reuse_wave", return_value={}) as plan:
             adapter._plan_with_sdk_tooling({}, None)

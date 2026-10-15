@@ -3641,7 +3641,9 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
     invocation = dict(request)
     if tooling is not None:
         invocation["sdkValidationTooling"] = tooling
-    if "sdkAppleValidationEvidence" in request:
+    if apple_policy is not None and kwargs.get("completed_frozen") is not None:
+        invocation.setdefault("sdkAppleValidationEvidence", [])
+    if "sdkAppleValidationEvidence" in invocation:
         if apple_policy is None:
             raise ValueError("Retained Apple evidence requires caller-owned validation policy")
         invocation["sdkAppleValidationPolicy"] = apple_policy
@@ -6594,8 +6596,10 @@ def collect_runtime_workers(
                         if identity not in state.sources or identity not in state.prior_carrier_phases:
                             raise ValueError("Apple metadata collection lacks both original validation predecessors")
                         record = state.prior_carrier_phases[identity]
-                        predecessor = verify_object(state.sources[identity], build_key=record["buildKey"],
-                            receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+                        predecessor = None if completed_frozen is None else completed_frozen.envelope(record)
+                        if predecessor is None:
+                            predecessor = verify_object(state.sources[identity], build_key=record["buildKey"],
+                                receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
                         predecessors.append({"receipt": predecessor["receipt"],
                             "receiptBytes": predecessor["receiptBytes"],
                             "receiptSha256": record["receiptSha256"], "objectSha256": record["objectSha256"]})
