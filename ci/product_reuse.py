@@ -440,6 +440,24 @@ def _same_pr_run(
 
 
 @measured
+def _resume_recovery_artifact_prefixes(phases):
+    # Blocked descendants can become ready after recovering a predecessor.
+    # Keep their candidates, while completed Runtime phases need no history scan.
+    prefixes = {
+        "codex-agent-sdk-worker-javascript-package-node-",
+        "codex-agent-sdk-worker-javascript-validation-node-",
+        "codex-agent-sdk-worker-javascript-metadata-node-",
+        "codex-agent-sdk-worker-sdk-csharp-binary-desktop-",
+        "codex-agent-sdk-worker-sdk-ios-package-ios-",
+    }
+    for phase in phases:
+        if phase["state"] in {"build", "blocked"} and (
+                phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
+                or _identity(phase) == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")):
+            prefixes.add(f"codex-agent-{phase['product']}-worker-{phase['component']}-{phase['phase']}-{phase['target']}-")
+    return tuple(sorted(prefixes))
+
+
 def _prior_failed_pr_attempts(
     plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
     *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),
@@ -9321,19 +9339,11 @@ def resume_products(
                     PhaseInstanceId("sdk", "javascript", "metadata", "node"),
                     PhaseInstanceId("sdk", "csharp", "binary", "desktop")}) for phase in reuse["phases"])
             recovery_hints = {}
-            if recoverable and completed_frozen is not None and not any(
-                    phase["state"] == "build" and (phase["product"] == "runtime"
-                    or _identity(phase) == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
-                    for phase in reuse["phases"]):
-                # All Runtime/iOS predecessors are already proved. Discover every
-                # JS candidate from the fresh global index, then authenticate its
-                # exact failed attempt and ordinary original bytes/conflicts.
-                recovery_hints = {"required_artifact_prefixes": (
-                    "codex-agent-sdk-worker-javascript-package-node-",
-                    "codex-agent-sdk-worker-javascript-validation-node-",
-                    "codex-agent-sdk-worker-javascript-metadata-node-",
-                    "codex-agent-sdk-worker-sdk-csharp-binary-desktop-",
-                    "codex-agent-sdk-worker-sdk-ios-package-ios-"),
+            if recoverable and completed_frozen is not None:
+                # The fresh global index bounds discovery for every unfinished
+                # family; exact original attempts and byte gates still follow.
+                recovery_hints = {
+                    "required_artifact_prefixes": _resume_recovery_artifact_prefixes(reuse["phases"]),
                     "artifact_inventory": paginated_items(
                         f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
                         "artifacts", environment["GITHUB_TOKEN"])}

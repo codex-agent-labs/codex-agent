@@ -448,6 +448,30 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
                 product_reuse._prior_failed_pr_attempts(self.plan, self.producer, "token",
                     required_artifact_prefixes=(prefix,), artifact_inventory=rows)
 
+    def test_native_requalification_index_preserves_blocked_recovery_and_skips_completed_runtime(self):
+        phases = [dict(product="runtime", component="runtime-aggregate", phase="metadata", target="aggregate", state="build"),
+                  dict(product="sdk", component="sdk-ios", phase="binary", target="ios", state="blocked"),
+                  dict(product="runtime", component="linux-x64", phase="binary", target="linux-x64", state="retained")]
+        prefixes = product_reuse._resume_recovery_artifact_prefixes(phases)
+        aggregate = "codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-"
+        ios = "codex-agent-sdk-worker-sdk-ios-binary-ios-"
+        self.assertIn(aggregate, prefixes)
+        self.assertIn(ios, prefixes)
+        self.assertNotIn("codex-agent-runtime-worker-linux-x64-binary-linux-x64-", prefixes)
+        older = {**self.run, "id": 80, "run_attempt": 1}
+        rows = [{"name": prefix + "key-tree-attempt-" + str(attempt), "expired": False,
+                 "workflow_run": {"id": run}} for prefix, run, attempt in
+                ((aggregate, 90, 2), (ios, 80, 1),
+                 ("codex-agent-runtime-worker-linux-x64-binary-linux-x64-", 70, 1))]
+        with mock.patch.object(product_reuse, "paginated_items") as history, \
+                mock.patch.object(product_reuse, "api_json", side_effect=[self.run, older]) as exact:
+            self.assertEqual((self.run, older), product_reuse._prior_failed_pr_attempts(
+                self.plan, self.producer, "token", required_artifact_prefixes=prefixes, artifact_inventory=rows))
+            history.assert_not_called()
+            self.assertEqual(2, exact.call_count)
+        phases[0]["state"] = "retained"
+        self.assertNotIn(aggregate, product_reuse._resume_recovery_artifact_prefixes(phases))
+
     def test_contract_candidate_index_avoids_unrelated_attempt_queries(self):
         older = {**self.run, "id": 80, "run_attempt": 1}
         with mock.patch.object(product_reuse, "paginated_items", return_value=[self.run, older]), \
