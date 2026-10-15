@@ -46,6 +46,7 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             ("ios-arm64", "sha256:cd75408f1678521c7c8a3ec4a2d9d3077b244468b06e1d0277d2b2e280bc4526", 11994444162, 116566324230),
             ("ios-simulator-arm64", "sha256:04c1c231cf4442734cfa544321cd41f3a46951ce66dff3634c6ee3576cbfaf06", 11995665186, 116566324093),
             ("jvm", "sha256:cf5ea06b6743251e3b4b495e961e9c3185829ccafe023c2ac361d0725479d2f6", 11994318412, 116566323763),
+            ("linux-arm64", "sha256:1193bd6254ebcfa6f1a5ad1e44128cde4210d094790b69e1c10653fbc0871852", 12000985511, 116614307314),
             ("linux-x64", "sha256:5cc349c57628460f4988674a798c397324a7002c65f84e4035d523aa3779bfd2", 11997978627, 116595906434),
             ("macos-arm64", "sha256:fe2acd38a99d7960b4b584ea1fbe0d94bc72264ae2ce46f6280fa62614c3c98f", 11994962517, 116566323856),
             ("macos-x64", "sha256:5c9b2857e70101c4245577540bcc8e75222d336c321a4fecbd745272d0180524", 11996805810, 116566323760),
@@ -57,6 +58,7 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                 origin = locator.retained_core_origin("validation", key, consumer, target=target)
                 self.assertEqual((artifact, job), (origin["artifact_id"], origin["job_id"]))
                 run, workflow = ((38784033203, "b4fbebd49866c0607bceee8fa9882f041ef0f2b0") if target == "linux-x64"
+                                 else (38790148727, "844ec467af054a7d785c5023faf54e547d8a7761") if target == "linux-arm64"
                                  else (38776265359, "d1946db206f57cb392d344b1a2110d4438802782"))
                 self.assertEqual((run, 1), (origin["producer"]["runId"], origin["producer"]["runAttempt"]))
                 self.assertEqual(workflow, origin["workflow_sha"])

@@ -67,6 +67,8 @@ class FacadeExecutionObservationTest(unittest.TestCase):
             self.assertEqual(["--offline", "--no-daemon", "--version"], command[-3:])
             self.assertNotIn("ciProductPhase", command)
             raw = f"\nGradle {self.gradle_version}\n\n".encode()
+        if self.system.return_value == "Windows":
+            raw = raw.replace(b"\n", b"\r\n")
         return SimpleNamespace(returncode=0, stdout=raw)
 
     def call(self, **changes):
@@ -148,10 +150,11 @@ class FacadeExecutionObservationTest(unittest.TestCase):
         self.process.assert_not_called()
 
     def test_wrong_gradle_version_and_java_arch_retain_raw_but_no_success(self):
-        for index, mismatch in enumerate(("gradle", "java")):
-            self.gradle_version, self.java_arch = ("8.0", "amd64") if mismatch == "gradle" else ("9.1.0", "aarch64")
+        for index, (self.gradle_version, self.java_arch) in enumerate((
+                ("8.0", "amd64"), ("9.1.0", "aarch64"), ("9.1.0\rjunk", "amd64"),
+                ("9.1.0 extra", "amd64"))):
             destination = self.root / f"failed-{index}"
-            with self.subTest(mismatch=mismatch), self.assertRaises(ValueError), self.call(destination=destination):
+            with self.subTest(version=self.gradle_version, arch=self.java_arch), self.assertRaises(ValueError), self.call(destination=destination):
                 pass
             self.assertTrue((destination / "java-execution.json").is_file())
             self.assertFalse((destination / "observation.json").exists())
@@ -245,6 +248,8 @@ class FacadeExecutionObservationTest(unittest.TestCase):
             path = self.output / name
             raw = load_canonical_json_bytes(path.read_bytes())
             raw["command"] = command
+            output = observation.base64.b64decode(raw["outputBase64"]).replace(b"\n", b"\r\n")
+            raw["outputBase64"] = observation.base64.b64encode(output).decode("ascii")
             path.write_bytes(observation.canonical_json_bytes(raw))
         record["executions"] = [row for row in observation._inventory(self.output) if row["relativePath"] != "observation.json"]
         record_path.write_bytes(observation.canonical_json_bytes(record))

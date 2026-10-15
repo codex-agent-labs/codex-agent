@@ -63,6 +63,8 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
                 "sha256:fd47b4a4dd636e150f5d4a8533c8f7226654afafb7555b995570d32f7f0d0ae5", 116566324093),
             "jvm": ("sha256:cf5ea06b6743251e3b4b495e961e9c3185829ccafe023c2ac361d0725479d2f6", 11994318412,
                 "sha256:4e0ebada8c75598c29a72b6ef2839be9b6524585f95dca3b9739cd5fb876a03f", 116566323763),
+            "linux-arm64": ("sha256:1193bd6254ebcfa6f1a5ad1e44128cde4210d094790b69e1c10653fbc0871852", 12000985511,
+                "sha256:506c21f0d254a56c8f586a1a41e7b229f05e782d0eb18dac15cc9f8622ba80b4", 116614307314),
             "linux-x64": ("sha256:5cc349c57628460f4988674a798c397324a7002c65f84e4035d523aa3779bfd2", 11997978627,
                 "sha256:e31eb13719f66817d70310f5632d8b6ac4770b7726302b7d3ab4f9d6a8fea264", 116595906434),
             "macos-arm64": ("sha256:fe2acd38a99d7960b4b584ea1fbe0d94bc72264ae2ce46f6280fa62614c3c98f", 11994962517,
@@ -82,6 +84,8 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
              38768220181, "729a9283d164366fc133821145743ee937494cfe") if target == "android" else
             ("44c296812f9a69ff8b43c8c3c534493d1daf401d", "6dbccef6c93a752f230e4f75836177b65cfa855b",
              38784033203, "b4fbebd49866c0607bceee8fa9882f041ef0f2b0") if target == "linux-x64" else
+            ("fea5b081bb54c1092be5b546c6d0d8c5b42c45b3", "3d2532126543f0a5006d3cc0a1bfe5d722279bcd",
+             38790148727, "844ec467af054a7d785c5023faf54e547d8a7761") if target == "linux-arm64" else
             ("d767e75d7a77e5f907e21ed6132ae72ab7bd8bd6", "8addaed53fbe2179052abc6b20c3cb1da55db0ed",
              38776265359, "d1946db206f57cb392d344b1a2110d4438802782"))
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",

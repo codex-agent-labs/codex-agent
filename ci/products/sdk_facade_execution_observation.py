@@ -136,7 +136,7 @@ def capture_facade_execution_observation(*, repository, producer, target, enviro
         java_arch = _match(r"^\s*os\.arch = (.+)$", java_text, "Core Java architecture")
         if java_arch.lower() not in HOSTS[host["classifier"]][1]:
             raise ValueError("Core Java launcher architecture differs from actual elected host")
-        if _match(r"^Gradle ([^\s]+)$", gradle_text, "Core Gradle version") != version:
+        if _match(r"^Gradle ([^\s]+)\r?$", gradle_text, "Core Gradle version") != version:
             raise ValueError("Core observed Gradle version differs from immutable wrapper source")
         value = {"schemaVersion": 1, "kind": "sdk-facade-launcher-observation", "target": target,
             "producer": dict(selected), "host": host,
@@ -234,7 +234,7 @@ def verify_facade_execution_observation(directory, *, repository, producer, targ
     if (java["arch"] != _match(r"^\s*os\.arch = (.+)$", text, "Core original Java architecture")
             or java["arch"].lower() not in HOSTS[matches[0]][1]
             or java["runtimeVersion"] != _match(r"^\s*java\.runtime\.version = (.+)$", text, "Core original Java version")
-            or gradle["version"] != _match(r"^Gradle ([^\s]+)$", gradle_output.decode("utf-8", errors="strict"), "Core original Gradle")):
+            or gradle["version"] != _match(r"^Gradle ([^\s]+)\r?$", gradle_output.decode("utf-8", errors="strict"), "Core original Gradle")):
         raise ValueError("Core original probe output differs from retained observation")
     if value["executions"] != [row for row in before if row["relativePath"] != "observation.json"]:
         raise ValueError("Core original raw probe bytes differ from retained hashes")
