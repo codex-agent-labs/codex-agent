@@ -144,7 +144,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
                       '00feb2e6ffc0e633042ac4cebfb6495718fb82f7',
                       'cc4f623bf4d1e244a8469eea92c4baf9c00a5434',
                       '07712206009da19a5de9c4d237cb241cda81be84',
-                      '894ecc38ae7463c98ee2742fca69c0f08dca56d2'):
+                      '894ecc38ae7463c98ee2742fca69c0f08dca56d2',
+                      'b4fbebd49866c0607bceee8fa9882f041ef0f2b0'):
             with self.subTest(prior=prior):
                 run = copy.deepcopy(self.fixture.run)
                 run['referenced_workflows'] = [
