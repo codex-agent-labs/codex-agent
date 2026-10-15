@@ -710,6 +710,44 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                     trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
                     consumer_producer={"runId": 100, "runAttempt": 1})
 
+    def test_unqualified_physical_projection_reuses_bytes_with_partial_native_proof(self):
+        from ci.tests.test_completed_frozen_reuse import CompletedFrozenReuseTest
+        from products.restore import verification_session
+        native_fixture = CompletedFrozenReuseTest()
+        native_fixture.setUp()
+        (self.root / "native-proof").mkdir()
+        cap, _ = native_fixture.fetched(self.root / "native-proof")
+        cap._eligible = frozenset()  # The new physical original is not in this native proof.
+        captured = self.root / "qualified-carrier"
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api()):
+            observation = adapter.capture_runtime_original_ci_phases(
+                {"binary": self.receipts["binary"]}, captured, target=TARGET,
+                trusted_workflow_sha=self.pin, token="not-a-real-token", recovery_projection=True)
+        projected = captured / "phases/binary/original"
+        receipt = fixture.load_canonical_json_bytes((projected / "shard/phase-receipt.json").read_bytes())
+        source = {"kind": "phase", "relativePath": projected.relative_to(self.root).as_posix(), "receipt": receipt}
+        transport = {"artifact": self.artifacts["binary"], "observed": observation["observed"]}
+        # Signing preparation also has native proof, but no hosted cache setup.
+        with mock.patch("hydrated_evidence.root", return_value=None), \
+                verification_session() as session, \
+                mock.patch("reuse.api_request", side_effect=self.api()) as http, \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=AssertionError("duplicate body transfer")):
+            adapter._register_qualified_original_projections(self.root, {"sources": [source]}, [transport],
+                trusted_workflow_sha=self.pin, completed_frozen=cap)
+            self.assertEqual(1, len(session["qualifiedOriginalProjections"]))
+            replay = self.root / "replayed-physical"
+            adapter.capture_runtime_original_ci_phases({"binary": self.receipts["binary"]}, replay,
+                target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token", recovery_projection=True)
+            self.assertGreater(http.call_count, 0)  # Original CI remains freshly authenticated.
+            self.assertEqual(adapter.regular_file_inventory(projected),
+                             adapter.regular_file_inventory(replay / "phases/binary/original"))
+            (replay / "phases/binary/original/shard/phase-receipt.json").write_bytes(b"changed private evidence")
+            with self.assertRaisesRegex(ValueError, "capture changed"):
+                adapter.capture_runtime_original_ci_phases({"binary": self.receipts["binary"]},
+                    self.root / "rejected-physical", target=TARGET, trusted_workflow_sha=self.pin,
+                    token="not-a-real-token", recovery_projection=True)
+
     def test_completed_candidate_mutation_rejects_after_fresh_origin_authentication(self):
         from products.restore import verification_session
         instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)

@@ -18,6 +18,31 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeContinuationWorkflowTest(unittest.TestCase):
+    def test_retained_signed_handoffs_cover_ready_and_recovered_aggregate(self):
+        step = self.job.split("      - id: retained\n", 1)[1].split("        env:", 1)[0]
+        expression = " ".join(step.split("if: >-\n", 1)[1].split())
+        for state in ("ready", "completed", "not-selected", ""):
+            for matrix in ('{"include":[{}]}', '{"include":[]}'):
+                for recovery in ("exact original locator", ""):
+                    for authorized in (True, False):
+                        values = {
+                            "inputs.sdkRecoveryOnly": True,
+                            "inputs.runtimeAggregateRequalification": authorized,
+                            "steps.captured.outputs.aggregate_state": state,
+                            "steps.captured.outputs.native_attestation_matrix": matrix,
+                            "inputs.runtimeNativeHandoffRecovery": recovery,
+                        }
+                        condition = expression
+                        for name, value in values.items():
+                            condition = condition.replace(name, repr(value))
+                        condition = re.sub(r"!(?!=)", "not ", condition).replace("&&", "and").replace("||", "or")
+                        with self.subTest(**values):
+                            self.assertEqual(authorized and state in ("ready", "completed")
+                                             and matrix != '{"include":[]}' and bool(recovery),
+                                             eval(condition, {"__builtins__": {}}))
+        self.assertIn("--selected-receipts-json", self.job)
+        self.assertIn("steps.retained.outputs.native_attestation_matrix", self.job)
+
     def test_aggregate_executes_only_after_election_and_collects_even_failed_metadata(self):
         aggregate = workflow_job(self.workflow, "runtime-aggregate")
         collector = workflow_job(self.workflow, "runtime-collect-5")

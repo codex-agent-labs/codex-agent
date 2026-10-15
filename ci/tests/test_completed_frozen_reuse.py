@@ -469,11 +469,15 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     "proof.json": canonical_json_bytes(self.proof if proof is None else proof)}
         with ExitStack() as stack:
             stack.enter_context(patch.object(qualification, "_compatible_verifier", return_value=True))
+            history = stack.enter_context(patch.object(qualification, "_ensure_native_issuer_commit"))
             stack.enter_context(patch.object(qualification, "_fetch_qualification_archive",
                 return_value=({"downloadedQualificationBytes": sum(map(len, captured.values()))}, captured)))
             native = stack.enter_context(patch.object(qualification, "_authenticate_bytes",
                 return_value=self.qualified, side_effect=authentication_error))
-            stack.enter_context(patch.object(inventory, "git_regular_blob_bytes", return_value=canonical_json_bytes(self.spec)))
+            def fixed_spec(*args, **kwargs):
+                history.assert_called_with(root, "b" * 40, "fixture")
+                return canonical_json_bytes(self.spec)
+            stack.enter_context(patch.object(inventory, "git_regular_blob_bytes", side_effect=fixed_spec))
             stack.enter_context(patch.object(inventory, "tree_entries", return_value=()))
             stack.enter_context(patch.object(product_reuse, "_authorities",
                 return_value=(self.spec["request"]["phaseAuthorities"], None)))
@@ -486,6 +490,8 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 artifact_sha256="sha256:" + "e" * 64, run_id=72, run_attempt=1, token="fixture")
             self.assertEqual(POLICY, native.call_args.kwargs["policy_sha256"])
             self.assertNotIn("compatible", native.call_args.kwargs)
+            for commit in (self.spec["inventoryBaseline"], requalification_baseline or "d" * 40):
+                history.assert_any_call(root, commit, "fixture")
             return result
 
     def test_requalification_retains_only_unchanged_dependency_closures(self):

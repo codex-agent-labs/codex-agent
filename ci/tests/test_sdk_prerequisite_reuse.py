@@ -20,6 +20,59 @@ SPEC.loader.exec_module(helper)
 
 
 class SdkPrerequisiteReuseTest(unittest.TestCase):
+    def test_index_observes_only_candidate_runs_and_preserves_scope_and_order(self):
+        lane = 'ios-rust-device'
+        def artifact(identifier, run, **changes):
+            return {'id': identifier, 'workflow_run': {'id': run}, 'expired': False,
+                    'name': f'codex-agent-ci-{lane}-original', 'archive_download_url': 'https://example.invalid',
+                    **changes}
+        rows = [artifact(11, 1), artifact(22, 2), artifact(23, 2),
+                artifact(31, 3), artifact(41, 4), artifact(51, 5), artifact(61, 6),
+                artifact(71, 7, expired=True), artifact(81, 8),
+                artifact(91, 9, name='unrelated-lane')]
+        def run(url, token):
+            identifier = int(url.rsplit('/', 1)[1])
+            return {'id': identifier, 'event': 'push' if identifier == 6 else 'pull_request',
+                    'status': 'in_progress' if identifier == 5 else 'completed',
+                    'path': '.github/workflows/other.yml' if identifier == 3 else '.github/workflows/ci.yml',
+                    'pull_requests': [{'number': 32 if identifier == 4 else 31}],
+                    'created_at': f'2026-10-{identifier:02}T00:00:00Z'}
+        with mock.patch('product_reuse._catalog_artifacts', return_value=rows) as index, \
+                mock.patch('reuse.api_json', side_effect=run) as observed:
+            result = helper._indexed_candidates('https://api.github.invalid', 'owner/repo', 'ci.yml',
+                                                lane, 31, 'fixture-token', 8)
+        self.assertEqual([23, 22, 11], [row['id'] for row in result])
+        index.assert_called_once()
+        self.assertEqual({1, 2, 3, 4, 5, 6}, {int(c.args[0].rsplit('/', 1)[1]) for c in observed.call_args_list})
+        with mock.patch('product_reuse._catalog_artifacts', return_value=rows), \
+                mock.patch('reuse.api_json', return_value={'id': 999}), \
+                self.assertRaisesRegex(ValueError, 'run identity changed'):
+            helper._indexed_candidates('https://api.github.invalid', 'owner/repo', 'ci.yml',
+                                       lane, 31, 'fixture-token', 8)
+
+    def test_native_modes_share_only_private_discovery_metadata(self):
+        root = self.fixture.root
+        lane = 'ios-native-tests'
+        arguments = Namespace(plan=self.fixture.plan_path, lane=lane, workflow='ci.yml',
+            runner=[], toolchain=[], api_url='https://api.github.invalid', destination=root / 'full',
+            production_destination=root / 'production')
+        legacy = SimpleNamespace(download_artifact=mock.Mock(), validate_receipt=mock.Mock(),
+            candidate_artifacts=mock.Mock(side_effect=AssertionError('unbounded legacy discovery')),
+            promoted_artifacts=lambda *a: [])
+        download = legacy.download_artifact
+        def restore(args):
+            candidates = legacy.candidate_artifacts(arguments.api_url, 'owner/repo', 'ci.yml',
+                                                     lane, 31, 'fixture-token', 8)
+            self.assertEqual([self.artifact], candidates)
+            candidates.append({'mutation': 'caller-owned result'})
+            return {'reused': False, 'mode': args.mode}
+        legacy.restore = restore
+        with mock.patch.object(helper, '_legacy_module', return_value=legacy), \
+                mock.patch.object(helper, '_indexed_candidates', return_value=[self.artifact]) as index:
+            helper.restore_both(arguments)
+        index.assert_called_once()
+        download.assert_not_called()  # Discovery never grants positive admission.
+
     def test_combined_lookup_is_only_enabled_for_sdk_apple_prerequisites(self):
         root = PATH.parents[3]
         action = (PATH.parent / 'action.yml').read_text()

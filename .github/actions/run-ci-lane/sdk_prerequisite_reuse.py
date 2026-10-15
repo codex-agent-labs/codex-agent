@@ -14,6 +14,36 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'ci'))
 from products.inventory import regular_file_inventory, sha256_file
 from sdk_apple_source import _producer_from_receipt
+from runtime_reference_transport import measured
+
+
+@measured
+def _indexed_candidates(api_url, repository, workflow, lane, pull_request, token, current_run):
+    """Bound discovery to uploads for this lane; all original admission gates follow."""
+    from product_reuse import _catalog_artifacts
+    from products.restore import bounded_verify
+    from reuse import api_json, run_matches_pr
+    prefix = f'codex-agent-ci-{lane}-'
+    rows = [row for row in _catalog_artifacts(f'{api_url}/repos/{repository}/actions/artifacts', token)
+            if isinstance(row, dict) and row.get('expired') is False
+            and isinstance(row.get('name'), str) and row['name'].startswith(prefix)
+            and isinstance(row.get('archive_download_url'), str)
+            and isinstance(row.get('workflow_run'), dict)
+            and type(row['workflow_run'].get('id')) is int
+            and row['workflow_run']['id'] != current_run]
+    def observe(run):
+        value = api_json(f'{api_url}/repos/{repository}/actions/runs/{run}', token)
+        if value.get('id') != run:
+            raise ValueError('SDK prerequisite candidate run identity changed')
+        return value
+    runs = bounded_verify(observe, sorted({row['workflow_run']['id'] for row in rows}))
+    expected_path = workflow if workflow.startswith('.github/workflows/') else '.github/workflows/' + workflow
+    accepted = {run['id']: run for run in runs
+                if run.get('event') == 'pull_request' and run.get('status') == 'completed'
+                and run.get('path') == expected_path and run_matches_pr(run, pull_request)}
+    return sorted((row for row in rows if row['workflow_run']['id'] in accepted),
+                  key=lambda row: (accepted[row['workflow_run']['id']]['created_at'],
+                                   row['workflow_run']['id'], row['id']), reverse=True)
 
 
 def _legacy_module():
@@ -43,6 +73,7 @@ def restore_both(arguments):
     current_body = None
     qualified = None
     production_mode = False
+    discovered = {}
     inventories = arguments.plan.parent / 'inventories' / arguments.lane
     def context():
         return (sha256_file(arguments.plan), regular_file_inventory(inventories, allow_empty=True),
@@ -112,7 +143,14 @@ def restore_both(arguments):
             raise
 
     def candidates(*args, **kwargs):
-        values = original_candidates(*args, **kwargs)
+        if (arguments.lane in ('ios-native-tests', 'ios-rust-device', 'ios-rust-simulator')
+                and arguments.workflow in ('ci.yml', '.github/workflows/ci.yml')):
+            key = (args, tuple(sorted(kwargs.items())))
+            if key not in discovered:
+                discovered[key] = _indexed_candidates(*args, **kwargs)
+            values = discovered[key]
+        else:
+            values = original_candidates(*args, **kwargs)
         return [value for value in values if not production_mode or identity(value) not in negative]
 
     def promoted(*args, **kwargs):

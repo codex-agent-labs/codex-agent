@@ -7590,7 +7590,8 @@ def _qualified_original_projection(locator):
     return qualified
 
 
-def _register_qualified_original_projections(original, references, transports, *, trusted_workflow_sha):
+def _register_qualified_original_projections(original, references, transports, *, trusted_workflow_sha,
+                                            completed_frozen=None):
     """Private custody from a freshly SHA-authenticated reviewed carrier.
 
     Reference resolution and fresh source CI gates have finished. Replays still
@@ -7601,7 +7602,7 @@ def _register_qualified_original_projections(original, references, transports, *
     from products.restore import _VERIFICATION_SESSION, _stage_fingerprint
     from products.verified_evidence import _source_identity
     session = _VERIFICATION_SESSION.get()
-    if hydrated_evidence.root() is None or session is None:
+    if session is None or (hydrated_evidence.root() is None and completed_frozen is None):
         return
     policy = _source_identity()
     for source, transport in zip(references["sources"], transports, strict=True):
@@ -7614,6 +7615,12 @@ def _register_qualified_original_projections(original, references, transports, *
                                          "Qualified original phase observation")
         if "recoveryProjection" not in observation:
             continue  # Legacy evidence retains its full cold authentication.
+        verified = verify_phase_shard(projected / "shard", instance,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+        if verified["receipt"] != source["receipt"]:
+            raise ValueError("Qualified original projection changes its original receipt")
+        if completed_frozen is not None and completed_frozen.envelope(verified, verified["receiptBytes"]) is not None:
+            continue  # Native-deferred bodies cannot create a physical projection witness.
         fresh = {**observation, "observed": transport["observed"],
                  "artifacts": {instance.phase: transport["artifact"]}}
         if _runtime_capture_identity(observation, instance) != _runtime_capture_identity(fresh, instance):
@@ -7622,9 +7629,6 @@ def _register_qualified_original_projections(original, references, transports, *
         expected = [row for row in zipped if not row["relativePath"].startswith("inputs/")]
         if regular_file_inventory(projected, allow_empty=True) != expected:
             raise ValueError("Qualified original projection changes its authenticated inventory")
-        verified = verify_phase_shard(projected / "shard", instance)
-        if verified["receipt"] != source["receipt"]:
-            raise ValueError("Qualified original projection changes its original receipt")
         job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         job = next(value for value in transport["observed"][0]["jobs"] if value.get("name") == job_name)
         run = transport["observed"][0]["run"]
@@ -7940,9 +7944,9 @@ def capture_runtime_resume_upload(
             raise ValueError("Runtime resume capture changed before publication")
         publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected_files)
         if original_references is not None:
-            if completed_frozen is None:
-                _register_qualified_original_projections(destination / "original", original_references,
-                    original_reference_transports, trusted_workflow_sha=trusted_workflow_sha)
+            _register_qualified_original_projections(destination / "original", original_references,
+                original_reference_transports, trusted_workflow_sha=trusted_workflow_sha,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             hosted("save", original_references, private,
                    **({'selected_paths': selected_paths} if selected_paths is not None else {}))
     return transport

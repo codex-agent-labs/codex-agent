@@ -1322,8 +1322,12 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     current_revision = revision
     if requalification_baseline is not None:
         revision = _commit(requalification_baseline)
+    # Signers keep candidate Git separate from the bootstrapped trusted checkout.
+    _ensure_native_issuer_commit(root, original["signer_commit"], original.get("token"))
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root, original["signer_commit"],
         "ci/tests/data/hosted-frozen-reuse.json", max_bytes=LIMIT))
+    for historical in sorted({spec["inventoryBaseline"], revision}):
+        _ensure_native_issuer_commit(root, historical, original.get("token"))
 
     def authenticate_frozen():
         report, captured = _fetch_qualification_archive(destination, **original)
