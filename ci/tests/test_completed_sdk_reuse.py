@@ -19,6 +19,20 @@ def control_bytes(path, value):
     return value.encode('utf-8') if path == completed.SOURCE_PLAN else canonical_json_bytes(value)
 
 
+def ordinary_spec():
+    """Keep legacy intake regressions independent of the current issuer role."""
+    import json
+    spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+    for field in ('sourcePlan', 'reuseCompletion', 'reuseCompletionProofSha256'):
+        spec.pop(field, None)
+    spec['stateRoot'] = 'product-resume-state'
+    spec['source'].pop('referenceControlSha256', None)
+    spec['source'].update(jobName='product-validation / product-resume',
+                          artifactBytes=min(spec['source']['artifactBytes'], completed.LIMIT))
+    spec['controls'] = [row for row in spec['controls'] if row['relativePath'] != completed.SOURCE_PLAN]
+    return spec
+
+
 class CompletedSdkControlsTest(unittest.TestCase):
     def setUp(self):
         def record(receipt):
@@ -101,7 +115,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_incremental_schema_and_parent_subject_are_fixed_before_inheritance(self):
         import json
-        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        actual = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        completed._spec(actual)
+        spec = ordinary_spec()
         completed._spec(spec)
         planned = deepcopy(spec)
         planned['source']['jobName'] = 'product-validation / plan'
@@ -126,7 +142,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
     def test_future_completion_pins_both_fixed_state_roles_and_upload_windows(self):
         import json
         import product_reuse
-        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        spec = ordinary_spec()
         for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
                              ('product-validation / plan', 'codex-agent-planned-product-resume-'),
                              ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-')):
@@ -168,7 +184,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_collected_source_requires_exact_plan_manifest_role_root_and_bounded_controls(self):
         import json
-        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        spec = ordinary_spec()
         for invalid in (None, {}, {**spec, 'source': []}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 completed._spec(invalid)
@@ -387,7 +403,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         import json
         import reuse_qualification as native
         from products.restore import object_relative_path
-        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        spec = ordinary_spec()
         phase = {**spec['completedPhases'][0], 'component': 'sdk-ios', 'phase': 'package', 'target': 'ios'}
         spec['completedPhases'] = [phase]
         spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
@@ -570,7 +586,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             self.controls[completed.SOURCE_PLAN] = plan_text
         self.spec['completedPhases'] = [phase]
         self.bind_controls()
-        spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
+        spec = ordinary_spec()
         spec.update(schemaVersion=3, completedPhases=[phase], controls=self.spec['controls'])
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
         if collected:
