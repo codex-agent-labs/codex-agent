@@ -15,13 +15,14 @@ from .inventory import (
     regular_file_inventory, require_exact_keys, require_regular_directory,
     require_semver, require_sha256, require_string, write_canonical_json,
 )
-from .receipt import output_inventory_digest, verify_output_manifest_identity
+from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity
 from .sdk_apple_validation_content import validate_apple_validation_content
 from .sdk_package import _require_capability_output_separate
 
 
 OUTPUT_PATH = "outputs/evidence/apple-metadata.json"
 OUTPUT_KIND = "apple-metadata-content"
+PACKAGE_INPUT_NAME = "package-metadata-input.json"
 _TARGETS = ("ios-arm64", "ios-simulator-arm64")
 _LIMIT = 16 * 1024 * 1024
 
@@ -61,7 +62,9 @@ def write_apple_metadata_content(*, sdk_version, package_stage, device_validatio
                                 simulator_validation, output):
     """Write a fresh canonical join, preserving every original input unchanged.
 
-    The original package manifest supplies the complete content inventory. The
+    The package directory contains either a complete original stage or the
+    explicit receipt-input format. Both supply the complete output inventory;
+    the receipt-input format claims no signature or admission authority. The
     two canonical validation files must agree on Contract identity; their data
     does not authenticate that Contract or their own original receipt lineage.
     All such authority remains with the caller's full original-input contexts.
@@ -91,11 +94,26 @@ def write_apple_metadata_content(*, sdk_version, package_stage, device_validatio
             raise ValueError("Apple metadata original package or validation content changed")
 
     try:
-        manifest = verify_output_manifest_identity(package_stage, "sdk", "sdk-ios", "package", "ios", sdk_version)
+        receipt_input = package_stage / PACKAGE_INPUT_NAME
+        if receipt_input.exists() or receipt_input.is_symlink():
+            if {row["relativePath"] for row in before} != {PACKAGE_INPUT_NAME}:
+                raise ValueError("Apple metadata receipt input contains unexpected files")
+            value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+                receipt_input, max_bytes=_LIMIT, reject_symlink_parents=True)),
+                {"schemaVersion", "kind", "receipt"}, "Apple metadata package input")
+            if type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1 or value["kind"] != "package-receipt-input":
+                raise ValueError("Unsupported Apple metadata package input")
+            receipt = validate_phase_receipt(value["receipt"])
+            if tuple(receipt[name] for name in ("product", "component", "phase", "target", "productVersion")) != (
+                    "sdk", "sdk-ios", "package", "ios", sdk_version):
+                raise ValueError("Apple metadata package input changes its identity or version")
+            outputs = receipt["outputs"]
+        else:
+            outputs = verify_output_manifest_identity(package_stage, "sdk", "sdk-ios", "package", "ios", sdk_version)["outputs"]
         contents = {target: load_canonical_json_bytes(raw) for target, raw in originals.items()}
         selected = validate_apple_validation_content(contents["ios-arm64"])
         content = apple_metadata_content(sdk_version=sdk_version,
-            package_outputs_digest=output_inventory_digest(manifest["outputs"]),
+            package_outputs_digest=output_inventory_digest(outputs),
             contract_digest=selected["contractDigest"], expected_canonical=selected["canonical"],
             validation_contents=contents)
     finally:

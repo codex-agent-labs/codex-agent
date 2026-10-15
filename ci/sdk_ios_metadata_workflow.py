@@ -234,6 +234,10 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     for target in _TARGETS:
         digest = sha256_bytes(read_regular_file_bytes(validation_receipts[target]))
         record = by_digest.get(digest)
+        if record is None and completed_frozen is not None:
+            # The input gate below must bind both V receipts and P to concrete
+            # native completion before it can omit either complete carrier.
+            continue
         if record is None or record["target"] != target:
             raise ValueError("iOS metadata lacks the exact signed validation carrier")
         selected_records.append(record)

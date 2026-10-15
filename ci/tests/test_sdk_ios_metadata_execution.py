@@ -220,6 +220,21 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
             for name in admissions:
                 self.assertNotIn(name.encode(), raw)
 
+    def test_missing_carriers_can_reach_native_gate_but_never_skip_it(self):
+        # Gate/authentication itself is covered with real sealed-capability and
+        # object checks in test_sdk_apple_metadata_admission; this tests wiring.
+        self.records.clear()
+        cap = object()
+        result = self.run_controller(completed_frozen=cap)
+        self.assertEqual(self.ready['buildKey'], result['buildKey'])
+        self.assertEqual(['full-enter', 'worker', 'full-exit', 'finalize', 'admit'], self.events)
+
+    def test_missing_carriers_without_native_completion_reject_before_execution(self):
+        self.records.clear()
+        with self.assertRaisesRegex(ValueError, 'exact signed validation carrier'):
+            self.run_controller()
+        self.assertEqual([], self.events)
+
     def test_context_exit_predecessor_content_and_candidate_admission_fail_without_shard(self):
         for mutation, message in (("context-exit", "full Apple"), ("predecessor-exit", "predecessors changed"),
                                   ("content", "producer differs"), ("admission", "metadata rejected"),

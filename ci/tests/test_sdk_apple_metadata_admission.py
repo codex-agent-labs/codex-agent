@@ -6,6 +6,7 @@ These tests prove composition and lifetime rejection, not Git or hosted trust.
 from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -117,6 +118,120 @@ class AppleMetadataAdmissionTest(unittest.TestCase):
     def verify(self):
         return admission.verify_sdk_apple_metadata_admission(metadata_stage=self.stage,
             metadata_receipt=self.metadata_path, **self.arguments)
+
+    @contextmanager
+    def native_boundaries(self, *, mutation=None):
+        """Synthetic native/source authority; real receipts, objects, restores and content."""
+        import product_reuse as products
+        import reuse_qualification as native
+        from products.restore import _write_object
+        from ci.products.receipt import output_inventory_digest
+
+        upstream = {name: self.package[name] for name in ('product', 'component', 'phase', 'target', 'buildKey')}
+        upstream['outputsDigest'] = output_inventory_digest(self.package['outputs'])
+        if mutation == 'lineage':
+            upstream['buildKey'] = 'sha256:' + '9' * 64
+        rows, receipts, bodies = [], [self.package], {}
+        for target in admission._TARGETS:
+            receipt = write_receipt(self.paths[target], product='sdk', component='sdk-ios', phase='validation',
+                target=target, version=self.f.version, version_identity=self.f.version,
+                upstream=[upstream], outputs=self.receipts[target]['outputs'], context={'producer': self.producer})
+            self.receipts[target] = receipt
+            receipts.append(receipt)
+            body = self.root / (target + '.zip')
+            _write_object(self.values[target]['stage'], canonical_json_bytes(receipt), body)
+            bodies[target] = body.read_bytes()
+        for receipt in receipts:
+            rows.append({**{name: receipt[name] for name in ('product', 'component', 'phase', 'target', 'buildKey')},
+                'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
+                'objectSha256': sha256_bytes(bodies.get(receipt['target'], b'package never consumed'))})
+        if mutation == 'missing-phase':
+            rows.pop()
+        if mutation == 'body':
+            bodies['ios-arm64'] = b'corrupt object'
+        cap = native.CompletedFrozenReuse({'expectedResult': {'phases': rows}}, receipts,
+            native._COMPLETED_FROZEN, revision='c' * 40)
+        if mutation == 'selected':
+            self.paths['ios-arm64'].write_bytes(self.package_raw)
+        self.policy.update(attestationTrustDomain='release', attestationPublicKey=None)
+        plan = Path(self.policy['plan'])
+        plan.write_bytes(b'{"synthetic":"current plan"}\n')
+        keyring, keys = self.root / 'current-keyring.json', self.root / 'current-keys'
+        keyring.write_bytes(b'current caller Git keyring')
+        expected_keyring = self.root / 'expected-keyring.json'
+        expected_keyring.write_bytes(keyring.read_bytes())
+        if mutation == 'keys':
+            keyring.write_bytes(b'not the current Git keyring')
+        keys.mkdir()
+        (keys / 'public.pub').write_bytes(b'current caller Git public key')
+        self.policy.update(keyring=str(keyring), keysDirectory=str(keys), toolingKeyring=str(keyring),
+                           toolingKeysDirectory=str(keys))
+        current = {'validationCommit': 'c' * 40, 'remoteBuildAuthorized': mutation != 'unauthorized'}
+        if mutation == 'revision':
+            current['validationCommit'] = 'd' * 40
+        original = {**self.producer, 'repository': 'codex-agent-labs/codex-agent'}
+        captures = []
+        def capture(record, destination, **options):
+            self.assertEqual('validation', record['phase'], 'Must never consume P or other body bytes')
+            captures.append(record['target'])
+            destination.write_bytes(bodies[record['target']])
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(products, '_validate_plan', return_value=current))
+            stack.enter_context(patch.object(products, '_consumer', return_value={'kind': 'ci', 'producer': original}))
+            stack.enter_context(patch.object(products, '_release_trust', return_value=SimpleNamespace(keyring=expected_keyring, keys=keys)))
+            stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk'))
+            stack.enter_context(patch.object(native.CompletedFrozenReuse, 'capture_object', side_effect=capture))
+            stack.enter_context(patch.object(admission, 'verified_apple_validation_handoff',
+                side_effect=AssertionError('Native-completed metadata must not replay full handoffs')))
+            yield cap, captures
+
+    def test_native_inputs_consume_only_small_validations_and_explicit_package_receipt(self):
+        from ci.products import sdk_apple_metadata
+        with self.native_boundaries() as (cap, captures):
+            with admission.verified_sdk_apple_metadata_inputs(**{**self.arguments,
+                    'evidence_records': [], 'completed_frozen': cap}) as inputs:
+                self.assertEqual(list(admission._TARGETS), captures)
+                self.assertEqual(self.package_raw, inputs['package_receipt_bytes'])
+                self.assertEqual({admission.PACKAGE_INPUT_NAME}, {path.name for path in inputs['package_stage'].iterdir()})
+                value = sdk_apple_metadata.write_apple_metadata_content(sdk_version=self.f.version,
+                    package_stage=inputs['package_stage'], device_validation=inputs['validation_contents']['ios-arm64'],
+                    simulator_validation=inputs['validation_contents']['ios-simulator-arm64'], output=self.root / 'native-content.json')
+                self.assertEqual(admission.apple_metadata_content(**self.f.arguments), value)
+                self.assertEqual(value, inputs['content'])
+            self.assertFalse(inputs['package_stage'].exists())
+
+    def test_native_inputs_reject_wrong_authority_lineage_body_and_current_plan(self):
+        with self.assertRaisesRegex(ValueError, 'concrete native'):
+            with admission.verified_sdk_apple_metadata_inputs(**{**self.arguments, 'completed_frozen': {}}):
+                self.fail('dictionary granted native authority')
+        for mutation in ('lineage', 'body', 'revision', 'unauthorized', 'keys', 'selected'):
+            with self.subTest(mutation=mutation), self.native_boundaries(mutation=mutation) as (cap, captures):
+                with self.assertRaises(ValueError):
+                    with admission.verified_sdk_apple_metadata_inputs(**{**self.arguments, 'completed_frozen': cap}):
+                        self.fail('invalid completed inputs yielded')
+                if mutation != 'body':
+                    self.assertEqual([], captures)
+            (self.root / 'current-keys/public.pub').unlink()
+            (self.root / 'current-keys').rmdir()
+            for target in admission._TARGETS:
+                (self.root / (target + '.zip')).unlink()
+
+    def test_partial_native_scope_requires_full_handoff_instead_of_receipt_only_input(self):
+        with self.native_boundaries(mutation='missing-phase') as (cap, captures):
+            with self.assertRaisesRegex(ValueError, 'lacks an exact original validation evidence record'):
+                with admission.verified_sdk_apple_metadata_inputs(**{**self.arguments,
+                        'evidence_records': [], 'completed_frozen': cap}):
+                    self.fail('partial native scope bypassed full admission')
+            self.assertEqual([], captures)
+
+    def test_native_inputs_check_consumed_bytes_and_controls_after_use(self):
+        with self.native_boundaries() as (cap, _):
+            with self.assertRaisesRegex(ValueError, 'consumed inputs changed'):
+                with admission.verified_sdk_apple_metadata_inputs(**{**self.arguments, 'completed_frozen': cap}) as inputs:
+                    inputs['validation_contents']['ios-arm64'].write_bytes(b'late mutation')
+            with self.assertRaisesRegex(ValueError, 'controls or current policy changed'):
+                with admission.verified_sdk_apple_metadata_inputs(**{**self.arguments, 'completed_frozen': cap}) as inputs:
+                    inputs['package_receipt']['producer']['runId'] += 1
 
     def test_real_plan_and_content_accept_mixed_validation_producers_after_both_clean_exits(self):
         with self.boundaries():

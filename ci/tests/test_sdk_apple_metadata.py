@@ -134,6 +134,28 @@ class AppleMetadataTest(unittest.TestCase):
         with self.assertRaises(ValueError): metadata.write_apple_metadata_content(**self.writer_arguments)
         self.assertFalse(self.output.exists())
 
+    def test_explicit_receipt_input_projects_identical_content_without_package_bodies(self):
+        from ci.tests.product_chain_support import write_receipt
+        inputs = self.root / "receipt-input"
+        receipt = write_receipt(self.root / "package-receipt.json", product="sdk", component="sdk-ios",
+            phase="package", target="ios", version=self.version, version_identity=self.version,
+            upstream=[], outputs=self.manifest["outputs"], context={"producer": {
+                "repository": "owner/repository", "workflowPath": ".github/workflows/ci.yml",
+                "commit": "a" * 40, "tree": "b" * 40, "event": "pull_request",
+                "runId": 1, "runAttempt": 1, "pullRequest": 31}})
+        metadata.write_canonical_json(inputs / metadata.PACKAGE_INPUT_NAME,
+            {"schemaVersion": 1, "kind": "package-receipt-input", "receipt": receipt})
+        with patch.object(metadata, "verify_output_manifest_identity",
+                          side_effect=AssertionError("Receipt input is not an incomplete package stage")):
+            content = metadata.write_apple_metadata_content(**{**self.writer_arguments, "package_stage": inputs})
+        self.assertEqual(metadata.apple_metadata_content(**self.arguments), content)
+        self.assertEqual({metadata.PACKAGE_INPUT_NAME}, {path.name for path in inputs.iterdir()})
+        self.output.unlink()
+        (inputs / "unexpected").write_bytes(b"not an exact receipt input")
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            metadata.write_apple_metadata_content(**{**self.writer_arguments, "package_stage": inputs})
+        self.assertFalse(self.output.exists())
+
     def test_verifier_or_writer_input_mutation_prevents_publication(self):
         original_join, original_write = metadata.apple_metadata_content, metadata.write_canonical_json
         for seam in ("join", "write"):
