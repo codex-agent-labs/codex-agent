@@ -17,6 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductResumeWorkflowTest(unittest.TestCase):
+    def test_lint_cache_hits_do_not_require_a_go_setup_action(self):
+        for name in ('recovery-controls', 'workflow-lint'):
+            job = workflow_job(self.workflow, name)
+            self.assertNotIn('actions/setup-go@', job)
+            installer = next(step for step in job.split('      - ') if 'go install ' in step)
+            self.assertIn("steps.actionlint-cache.outputs.cache-hit != ", installer)
+            self.assertIn('GOTOOLCHAIN=go1.26.3 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12', installer)
+            self.assertIn('run: \'"$HOME/go/bin/actionlint"\'', job)
+
     def test_parallel_recovery_checks_run_every_module_and_propagate_any_failure(self):
         job = workflow_job(self.workflow, 'recovery-controls')
         step = job.split('      - name: Verify reviewed recovery controls only\n', 1)[1].split('\n      - ', 1)[0]

@@ -133,12 +133,7 @@ jobs:
           path: ~/go/bin/actionlint
           key: actionlint-v1-${{ runner.os }}-${{ runner.arch }}-v1.7.12
       - if: steps.actionlint-cache.outputs.cache-hit != 'true'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26.3"
-          cache: false
-      - if: steps.actionlint-cache.outputs.cache-hit != 'true'
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        run: GOTOOLCHAIN=go1.26.3 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: '"$HOME/go/bin/actionlint"'
       - run: sudo install -d -m 1777 /private/tmp
       - if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
@@ -222,11 +217,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26.3"
-          cache: false
       - id: actionlint-cache
         if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -234,7 +224,7 @@ jobs:
           path: ~/go/bin/actionlint
           key: actionlint-v1-${{ runner.os }}-${{ runner.arch }}-v1.7.12
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && steps.actionlint-cache.outputs.cache-hit != ''true'''
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        run: GOTOOLCHAIN=go1.26.3 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
         run: '"$HOME/go/bin/actionlint"'
       - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
