@@ -43,6 +43,9 @@ permissions:
   contents: read
 
 env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: 'false'
   CODEX_AGENT_THROUGHPUT_TRACE: '1'
   CODEX_AGENT_PLAN_CONTROL_ID: ${{ fromJSON(inputs.planOutputs).plan_control_id }}
 
