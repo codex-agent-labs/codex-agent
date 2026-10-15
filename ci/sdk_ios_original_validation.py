@@ -25,7 +25,7 @@ from products.inventory import (
 from products.plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
+from products.restore import PHASE_PLAN_KEYS, restore_object, verification_scoped, verify_phase_shard
 from products.sdk_apple_content import _input_inventory
 from products.sdk_apple_device_evidence import _original_directory
 from products.sdk_apple_validation_context import verify_apple_validation_context
@@ -171,6 +171,7 @@ def verified_validation_recovery(plan, consumer, phase, origin, archive, *, pack
             unchanged()
 
 
+@verification_scoped
 def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destination, *,
         target, expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,

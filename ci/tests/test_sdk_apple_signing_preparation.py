@@ -15,6 +15,7 @@ from unittest.mock import patch
 from ci import sdk_ios_original_validation as preparation
 from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
 from ci.tests import test_sdk_apple_validation_inputs as fixtures
+from products.restore import _VERIFICATION_SESSION
 
 
 SECRET = "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"
@@ -72,6 +73,7 @@ class AppleSigningPreparationTest(unittest.TestCase):
 
     @contextmanager
     def original(self, plan, receipt_path, **arguments):
+        self.assertIsNotNone(_VERIFICATION_SESSION.get())
         self.events.append("enter")
         self.assertEqual(self.plan.read_bytes(), Path(plan).read_bytes())
         self.assertEqual(self.raw, Path(receipt_path).read_bytes())
@@ -95,8 +97,12 @@ class AppleSigningPreparationTest(unittest.TestCase):
             os.environ[SECRET] = ""
 
     def invoke(self, **changes):
-        return preparation.prepare_ios_validation_signing_inputs(self.plan, self.receipt_path, self.destination,
-                                                                 **{**self.arguments, **changes})
+        before = _VERIFICATION_SESSION.get()
+        try:
+            return preparation.prepare_ios_validation_signing_inputs(self.plan, self.receipt_path, self.destination,
+                                                                     **{**self.arguments, **changes})
+        finally:
+            self.assertIs(before, _VERIFICATION_SESSION.get())
 
     def test_exact_forwarding_full_capture_preservation_and_publication_only_after_context_exit(self):
         before = regular_file_inventory(self.capture, allow_empty=True)
