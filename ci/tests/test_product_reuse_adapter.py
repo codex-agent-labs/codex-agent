@@ -517,6 +517,16 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
                 token="token", attempts=(prior,)))
         artifacts.assert_not_called()
 
+    def test_maven_requalification_original_keeps_its_reviewed_publisher(self):
+        pin = "cdcad0d7bb1be2633ba24ba65ca5e694f0e9222e"
+        reference = {"path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+                     "ref": "refs/heads/reuse-authority", "sha": pin}
+        run = {**self.run, "referenced_workflows": [reference]}
+        self.assertEqual(pin, product_reuse._runtime_prior_workflow_sha(run, "b" * 40))
+        for invalid in ({**reference, "sha": "a" * 40}, {**reference, "ref": "refs/heads/untrusted"}):
+            self.assertIsNone(product_reuse._runtime_prior_workflow_sha(
+                {**run, "referenced_workflows": [invalid]}, "b" * 40))
+
     def test_skips_nonfailed_or_other_pr_and_fails_closed_on_mismatched_exact_attempt(self):
         with mock.patch.object(product_reuse, "paginated_items", return_value=[
             {**self.run, "conclusion": "success"},
