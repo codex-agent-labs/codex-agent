@@ -96,6 +96,9 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
         self.assertEqual(self.ready["buildKey"], options["expected_build_key"])
         self.assertEqual(self.policy, options["sdk_apple_validation_policy"])
         self.assertEqual(self.workflow_sha, options["sdk_original_workflow_sha"])
+        self.assertEqual((workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64"),
+                          workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-simulator-arm64")),
+                         options.get("materialized_scope"))
         self.assert_admissions(options)
         destination.mkdir(parents=True)
         (destination / "producer.json").write_bytes(workflow.canonical_json_bytes(self.producer))

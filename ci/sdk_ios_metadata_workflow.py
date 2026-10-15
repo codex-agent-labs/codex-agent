@@ -197,6 +197,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
         sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
         sdk_original_workflow_sha=trusted_workflow_sha,
+        materialized_scope=tuple(PhaseInstanceId("sdk", "sdk-ios", "validation", target) for target in _TARGETS),
         **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     controls_unchanged()
