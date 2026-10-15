@@ -134,27 +134,24 @@ class FacadeInputsTest(unittest.TestCase):
             finally:
                 gate.side_effect = previous
 
-    def test_explicit_gradle_empty_output_uses_full_gates_and_rejects_existing_content(self):
+    def test_gradle_empty_output_uses_full_gates_and_rejects_existing_content(self):
         self.destination.mkdir()
-        with self.assertRaisesRegex(ValueError, 'fresh'):
-            inputs.prepare_facade_validation_inputs(self.request, self.destination)
-        inputs.main(['prepare', '--request', str(self.request), '--destination', str(self.destination),
-                     '--allow-empty-destination'])
+        inputs.main(['prepare', '--request', str(self.request), '--destination', str(self.destination)])
         self.package_gate.assert_called_once()
         self.contract_gate.assert_called_once()
         before = regular_file_inventory(self.destination)
         with self.assertRaises(OSError):
-            inputs.prepare_facade_validation_inputs(self.request, self.destination, allow_empty_destination=True)
+            inputs.prepare_facade_validation_inputs(self.request, self.destination)
         self.assertEqual(before, regular_file_inventory(self.destination))
         for output in (self.request, self.f.package, self.f.package / 'overlap'):
             with self.subTest(output=output), self.assertRaises(ValueError):
-                inputs.prepare_facade_validation_inputs(self.request, output, allow_empty_destination=True)
+                inputs.prepare_facade_validation_inputs(self.request, output)
         alias = self.root / 'empty-alias'
         empty = self.root / 'empty'
         empty.mkdir()
         alias.symlink_to(empty, target_is_directory=True)
         with self.assertRaises(ValueError):
-            inputs.prepare_facade_validation_inputs(self.request, alias, allow_empty_destination=True)
+            inputs.prepare_facade_validation_inputs(self.request, alias)
         self.assertTrue(alias.is_symlink())
         self.assertTrue(empty.is_dir())
 
@@ -165,7 +162,7 @@ class FacadeInputsTest(unittest.TestCase):
             (path / 'foreign').write_bytes(b'preserve')
             return rmdir(path)
         with patch.object(Path, 'rmdir', competing_writer), self.assertRaises(OSError):
-            inputs.prepare_facade_validation_inputs(self.request, self.destination, allow_empty_destination=True)
+            inputs.prepare_facade_validation_inputs(self.request, self.destination)
         self.assertEqual(b'preserve', (self.destination / 'foreign').read_bytes())
         self.package_gate.assert_not_called()
 

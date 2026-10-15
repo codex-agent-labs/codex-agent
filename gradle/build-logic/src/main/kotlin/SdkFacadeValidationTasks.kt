@@ -55,7 +55,6 @@ abstract class PrepareSdkFacadeValidationInputsTask @Inject constructor(private 
         pythonExecutable.get(), "-m", "ci.products.sdk_facade_inputs", "prepare",
         "--request", requestFile.get().asFile.absolutePath,
         "--destination", outputDirectory.get().asFile.absolutePath,
-        "--allow-empty-destination",
     )
 
     @TaskAction fun prepare() {

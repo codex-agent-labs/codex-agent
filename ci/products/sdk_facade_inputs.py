@@ -104,7 +104,7 @@ def _sources(value):
     return originals, trees, files
 
 
-def prepare_facade_validation_inputs(request: Path, destination: Path, *, allow_empty_destination=False) -> dict:
+def prepare_facade_validation_inputs(request: Path, destination: Path) -> dict:
     """Prepare exact admitted input bytes; no consumer or dependency proof minted.
 
     The canonical request is explicit caller policy, not downloaded authority.
@@ -125,8 +125,11 @@ def prepare_facade_validation_inputs(request: Path, destination: Path, *, allow_
                 ("sdk", "sdk-core", phase, "common", value["sdkVersion"]):
             raise ValueError("Facade input requires its exact original Core package and binary receipts")
     request_inventory = _request_inventory(originals["compatibilityRequest"])
+    # Gradle creates its declared output root before invoking this gate. An empty
+    # regular directory contains no inputs; remove only that skeleton, then keep
+    # the existing absent-destination and atomic no-replacement publication gates.
     destination = _fresh(destination, [request, *trees.values(), *files.values(), *request_inventory],
-                         allow_empty_directory=allow_empty_destination)
+                         allow_empty_directory=True)
 
     def unchanged():
         if (_read(request) != request_bytes or
@@ -315,8 +318,6 @@ def main(argv=None):
     prepare = modes.add_parser("prepare")
     prepare.add_argument("--request", type=Path, required=True)
     prepare.add_argument("--destination", type=Path, required=True)
-    prepare.add_argument("--allow-empty-destination", action="store_true",
-                         help="Accept only the empty regular output directory precreated by Gradle")
     content = modes.add_parser("content")
     for name in ("request", "inputs", "evidence", "output"):
         content.add_argument("--" + name, type=Path, required=True)
