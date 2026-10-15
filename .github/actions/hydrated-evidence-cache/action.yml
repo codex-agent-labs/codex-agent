@@ -41,6 +41,8 @@ outputs:
     description: Original capture command output.
   phase_plan:
     description: Original capture command output.
+  preparation_path:
+    description: Original non-secret preparation command output.
   plan_path:
     description: Original capture command output.
   product_reuse_reason:

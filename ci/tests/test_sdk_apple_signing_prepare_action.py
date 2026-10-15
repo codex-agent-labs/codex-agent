@@ -45,7 +45,7 @@ class AppleSigningPrepareActionTest(unittest.TestCase):
         self.action = (ROOT / ".github/actions/prepare-sdk-apple-signing/action.yml").read_text()
 
     def execute(self):
-        source = textwrap.dedent(self.action.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        source = textwrap.dedent(self.action.split("          python3 -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
         with patch.dict(os.environ, self.environment, clear=True):
             exec(compile(source, "apple-signing-prepare-action", "exec"), {})
 
@@ -98,6 +98,19 @@ class AppleSigningPrepareActionTest(unittest.TestCase):
         self.prepared = prepared
         self.calls.append("prepare")
         return subprocess.CompletedProcess(argv, 0)
+
+    def test_preparation_connects_existing_untrusted_cache_to_full_replay(self):
+        step = self.action.split("    - id: prepare\n", 1)[1].split("    - id: upload\n", 1)[0]
+        self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", step)
+        self.assertIn("mode: execute", step)
+        self.assertIn("--validation-archive", step)
+        self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY:", step)
+        self.environment.update(CODEX_AGENT_HYDRATED_EVIDENCE=str(self.scratch / "hydrated"),
+            CODEX_AGENT_HOSTED_CACHE_BACKEND="/caller/cache.mjs", CODEX_AGENT_CACHE_NODE="/caller/node")
+        with patch("subprocess.run", side_effect=self.child) as child:
+            self.execute()
+        self.assertEqual(2, child.call_count)
+        self.assertEqual(["capture", "prepare"], self.calls)
 
     def test_both_targets_exact_capture_then_prepare_with_external_paths_and_preserved_inputs(self):
         for target in ("ios-arm64", "ios-simulator-arm64"):
