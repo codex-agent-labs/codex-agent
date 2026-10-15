@@ -2009,7 +2009,8 @@ def _prior_failed_runtime_objects(
                             raise ValueError("Prior failed Runtime producer lacks a reviewed workflow")
                         observation = _canonical_control(captured / "transport/original-ci-phases.json",
                                                          "Prior Runtime original observation")
-                        if completed_frozen is not None:
+                        if (completed_frozen is not None and
+                                completed_frozen.envelope(verified, verified["receiptBytes"]) is not None):
                             pending.append((instance, phase, shard, receipt, observation, original_workflow_sha))
                             continue
                         with tempfile.TemporaryDirectory(prefix="phase-", dir=temporary) as phase_temporary:
@@ -4169,11 +4170,12 @@ def _materialize_runtime_validation_handoffs(
     return records
 
 
-def _initial_runtime_validation_handoffs(closure, objects, object_root, destination, artifact_root):
+def _initial_runtime_validation_handoffs(closure, objects, object_root, destination, artifact_root, *,
+                                        completed_frozen=None):
     phases = {_identity(record): record for record in objects}
     sources = {instance: object_root / record["objectPath"] for instance, record in phases.items()}
     return _materialize_runtime_validation_handoffs(
-        closure, phases, sources, destination, artifact_root,
+        closure, phases, sources, destination, artifact_root, completed_frozen=completed_frozen,
     )
 
 
@@ -9369,8 +9371,12 @@ def resume_products(
                     artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
                 if not captured:
                     break
-                prior_records = _prior_failed_runtime_objects(prepared / "prior-failed-runtime", prepared)
-                wave["availableObjects"] = sorted((*initial_objects, *prior_records), key=_identity)
+                prior_records = _prior_failed_runtime_objects(prepared / "prior-failed-runtime", prepared,
+                    **({"completed_frozen": completed_frozen, "plan": plan,
+                        "consumer_producer": current_producer,
+                        "trusted_workflow_sha": sdk_original_workflow_sha,
+                        "token": environment["GITHUB_TOKEN"]} if completed_frozen is not None else {}))
+                wave["availableObjects"] = sorted((*initial_objects, *prior_records, *prior_sdk_records), key=_identity)
                 completed_evidence = {_identity(record) for record in wave["runtimeValidationEvidence"]}
                 wave["runtimeValidationEvidence"] = sorted([
                     *wave["runtimeValidationEvidence"],
@@ -9379,6 +9385,7 @@ def resume_products(
                               if instance not in completed_evidence),
                         wave["availableObjects"], prepared,
                         prepared / "initial-runtime-validation-handoffs", prepared,
+                        **semantic,
                     ),
                 ], key=_identity)
                 ready_plans.clear()

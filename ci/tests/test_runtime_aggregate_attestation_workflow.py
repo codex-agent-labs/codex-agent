@@ -23,7 +23,8 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
         cls.source = (ROOT / ".github/workflows/product-validation.yml").read_text()
         cls.job = workflow_job(cls.source, "runtime-aggregate-attestation")
         cls.steps = re.split(r"(?=^      - )", cls.job, flags=re.MULTILINE)
-        cls.signing_step, = [step for step in cls.steps if "secrets." in step]
+        cls.signing_step, = [step for step in cls.steps
+                            if "secrets." in step.replace("secrets.REUSE_AUTHORITY_READ_TOKEN", "")]
         cls.gate = workflow_job(cls.source, "merge-gate")
 
     def test_aggregate_resolves_pinned_dependencies_without_relying_on_warm_cache(self):
@@ -55,6 +56,10 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
             self.assertFalse(any(phase_inventory_paths((path,), phase) for phase in PHASE_INSTANCE_IDS))
 
     def test_authorized_completed_state_and_pinned_code_precede_signing(self):
+        bootstrap, = [step for step in self.steps if "secrets.REUSE_AUTHORITY_READ_TOKEN" in step]
+        self.assertIn("uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority", bootstrap)
+        self.assertIn("repository-root: ${{ github.workspace }}/trusted-source", bootstrap)
+        self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", bootstrap)
         guards = self.job.split("    runs-on:", 1)[0]
         for guard in ("always()", "needs.plan.outputs.event_authorized == 'true'",
                       "needs.plan.outputs.remote_build_authorized == 'true'",
@@ -89,6 +94,7 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
             "GITHUB_RUN_ATTEMPT": "2", "VALIDATION_TREE": "d" * 40, "TRUSTED_SOURCE_SHA": PIN,
             "TRUSTED_WORKFLOW_SHA": "e" * 40, "ARTIFACT_ID": "71", "ARTIFACT_SHA256": "sha256:" + "a" * 64,
             "STATE_WAVE": "5", "BUILD_KEY": "sha256:" + "b" * 64,
+            "CODEX_AGENT_COMPLETED_REUSE_POLICY": "/private/native-policy.json",
             "PREPARATION_ID": "72", "PREPARATION_SHA256": "sha256:" + "f" * 64}
         # The shell runs, but the only Python invocation is replaced before it can execute any code.
         script = 'python3() { printf "%s\\n" "$@"; }\n' + shell(self.signing_step)
@@ -107,6 +113,8 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
                 self.assertEqual(count, arguments.count("--variant-handoff"))
                 self.assertEqual("aggregate", arguments[arguments.index("--target") + 1])
                 self.assertEqual("5", arguments[arguments.index("--state-wave") + 1])
+                self.assertEqual("/private/native-policy.json",
+                                 arguments[arguments.index("--completed-frozen-policy") + 1])
                 self.assertEqual("72", arguments[arguments.index("--preparation-artifact-id") + 1])
                 self.assertEqual("sha256:" + "f" * 64,
                                  arguments[arguments.index("--preparation-artifact-sha256") + 1])

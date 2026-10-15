@@ -780,6 +780,10 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             with patch.object(product_reuse, "restore_object", side_effect=AssertionError("redundant report materialization")):
                 self.assertEqual([], product_reuse._materialize_runtime_validation_handoffs(
                     tuple(phases), phases, sources, root / "reports", root, completed_frozen=cap))
+                self.assertEqual([], product_reuse._initial_runtime_validation_handoffs(
+                    tuple(phases), [{**row, "objectPath": sources[identity].relative_to(root).as_posix()}
+                                    for identity, row in phases.items()],
+                    root, root / "reports", root, completed_frozen=cap))
             self.assertFalse((root / "reports").exists())
 
     def test_deferred_consumption_fetches_one_bound_member_after_fresh_original_checks(self):
@@ -937,6 +941,74 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     product_reuse._prior_failed_runtime_objects(root / "prior", root, **options)
                 self.assertEqual(46, len(started))  # Join every observation before returning a failure.
                 self.assertEqual(before, inventory.regular_file_inventory(root / "prior"))
+
+    def test_mixed_recovery_keeps_new_aggregate_on_full_original_body_path(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            producer = dict(repository=qualification.REPOSITORY, pullRequest=31,
+                            event="pull_request", runId=8, runAttempt=1)
+            official = dict(id=7, run_attempt=1, event="pull_request", path=".github/workflows/ci.yml",
+                status="completed", conclusion="failure", pull_requests=[{"number": 31}],
+                repository={"full_name": qualification.REPOSITORY, "fork": False},
+                head_repository={"full_name": qualification.REPOSITORY, "fork": False})
+
+            def observe(_plan, _producer, source, **_):
+                receipt = source["receipt"]
+                name = "product-validation / runtime-" + "-".join(
+                    receipt[field] for field in ("component", "phase", "target"))
+                return {"id": 71, "digest": POLICY}, {}, [{"run": official,
+                    "testedCommit": receipt["producer"]["commit"],
+                    "jobs": [{"id": 71, "name": name}]}], "a" * 40
+
+            def locator(_artifact, _workflow, instance, _job):
+                return {**{name: getattr(instance, name) for name in FIELDS},
+                        "artifact": {"id": 71, "digest": POLICY}}
+
+            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source", side_effect=observe) as native, \
+                    patch.object(product_reuse, "_runtime_original_locator", side_effect=locator), \
+                    patch.object(product_reuse, "api_json", return_value=official), \
+                    patch.object(product_reuse, "_runtime_prior_workflow_sha", return_value="a" * 40):
+                rows = product_reuse._capture_completed_runtime_controls({}, producer, root / "prior", root,
+                    completed_frozen=cap, trusted_workflow_sha="a" * 40, token="fixture")
+                aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+                row = next(row for row in rows if product_reuse._identity(row) == aggregate)
+                body = root / row["objectPath"]
+                shard = body.parents[4]
+                captured = shard.parents[3]
+                receipt = self.receipts[aggregate]
+                stage = root / "new-aggregate-stage"
+                (stage / "payload").mkdir(parents=True)
+                (stage / "payload/value.bin").write_bytes(b"a")
+                inventory.write_canonical_json(stage / "output-manifest.json", {
+                    "schemaVersion": 1, **{field: receipt[field] for field in (*FIELDS, "productVersion", "outputs")}})
+                body.parent.mkdir(parents=True)
+                restore._write_object(stage, canonical_json_bytes(receipt), body)
+                descriptor = load_canonical_json_bytes((shard / restore.PHASE_SHARD_NAME).read_bytes())
+                descriptor["objectSha256"] = sha256_bytes(body.read_bytes())
+                inventory.write_canonical_json(shard / restore.PHASE_SHARD_NAME, descriptor)
+                cap._eligible = frozenset(cap.completed_phases()) - {aggregate}
+
+                def replay(receipts, destination, **kwargs):
+                    self.assertEqual(aggregate, kwargs["original_instance"])
+                    self.assertEqual({"metadata": shard / restore.PHASE_RECEIPT_NAME}, receipts)
+                    shutil.copytree(captured, destination)
+                    return load_canonical_json_bytes((captured / "transport/original-ci-phases.json").read_bytes())
+
+                native.reset_mock()
+                options = dict(plan=producer, consumer_producer=producer, completed_frozen=cap,
+                               trusted_workflow_sha="a" * 40, token="fixture")
+                with patch.object(product_reuse, "capture_runtime_original_ci_phases", side_effect=replay) as original:
+                    actual = product_reuse._prior_failed_runtime_objects(root / "prior", root, **options)
+                    self.assertEqual(46, len(actual))
+                    self.assertEqual(45, native.call_count)
+                    original.assert_called_once()
+                    self.assertEqual([body], list((root / "prior").rglob("*.zip")))
+                    body.write_bytes(b"corrupt new aggregate")
+                    with self.assertRaises(ValueError):
+                        product_reuse._prior_failed_runtime_objects(root / "prior", root, **options)
+                    original.assert_called_once()  # Corrupt physical bytes never reach original admission.
 
     def test_cli_policy_is_explicit_pinned_and_unchanged_through_use(self):
         with patch.object(qualification, "fetch_completed_frozen", side_effect=AssertionError("ambient authority")):

@@ -56,6 +56,10 @@ class PrepareRuntimeSigningActionTest(unittest.TestCase):
         with patch.dict(os.environ, self.environment, clear=True), \
                 patch('products.inventory.run_git', side_effect=lambda root, *args: 'c' * 40 if args == ('rev-parse', 'HEAD') else ''), \
                 patch.object(product_reuse, '_validate_plan', return_value=self.plan), \
+                patch('tooling_discovery._original_tooling_workflow', return_value={
+                    'trusted_workflow_sha': '9' * 40,
+                    'trusted_workflow_path': '.github/workflows/contract-validation.yml',
+                    'trusted_job_name': 'product-validation / contract-validation / tooling-attestation'}), \
                 patch('sys.path', list(__import__('sys').path)):
             exec(compile(textwrap.dedent(code), '<prepare-runtime-signing-action>', 'exec'), {})
 
@@ -71,6 +75,7 @@ class PrepareRuntimeSigningActionTest(unittest.TestCase):
             self.assertEqual(str(self.candidate), fields['--repository-root'])
             self.assertEqual(self.plan['validationCommit'], fields['--policy-revision'])
             self.assertEqual(str(self.java), fields['--java-executable'])
+            self.assertEqual('9' * 40, fields['--trusted-workflow-sha'])
             self.assertEqual('.github/workflows/contract-validation.yml', fields['--trusted-workflow-path'])
             self.assertEqual('product-validation / contract-validation / tooling-attestation',
                              fields['--trusted-job-name'])
@@ -105,21 +110,24 @@ class PrepareRuntimeSigningActionTest(unittest.TestCase):
             if self.environment['TOOLING_ARTIFACT_ID']:
                 expected['--sdk-validation-tooling'] = str(self.policy)
                 expected['--sdk-apple-validation-policy'] = str(self.apple_policy)
+            if self.environment.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+                expected['--completed-frozen-policy'] = self.environment['CODEX_AGENT_COMPLETED_REUSE_POLICY']
             self.assertEqual(expected, fields)
             self.destination.mkdir()
             (self.destination / 'preparation.json').write_bytes(b'{"synthetic":"preparation boundary"}\n')
         return subprocess.CompletedProcess(command, 0)
 
     def test_optional_tooling_uses_trusted_scripts_and_candidate_git_policy(self):
-        for target, supplied in product(('linux-x64', 'aggregate'), (False, True)):
-            self.destination = self.scratch / f'prepared-{target}-{supplied}'
+        for target, supplied, native in product(('linux-x64', 'aggregate'), (False, True), (False, True)):
+            self.destination = self.scratch / f'prepared-{target}-{supplied}-{native}'
             self.environment['DESTINATION'] = str(self.destination)
+            self.environment['CODEX_AGENT_COMPLETED_REUSE_POLICY'] = str(self.root / 'native-policy.json') if native else ''
             self.environment.update(TARGET=target, TOOLING_ARTIFACT_ID='', TOOLING_ARTIFACT_SHA256='',
                                     TOOLING_TRANSPORT_PRODUCER='')
             if supplied:
                 self.environment.update(TOOLING_ARTIFACT_ID='72', TOOLING_ARTIFACT_SHA256='sha256:' + '1' * 64,
                     TOOLING_TRANSPORT_PRODUCER=canonical_json_bytes(self.producer).decode())
-            with self.subTest(target=target, supplied=supplied), patch('subprocess.run', side_effect=self.process) as run:
+            with self.subTest(target=target, supplied=supplied, native=native), patch('subprocess.run', side_effect=self.process) as run:
                 self.execute()
                 self.assertEqual(['tooling_capture.py', 'sdk_apple_policy.py', 'runtime_release.py'] if supplied else
                                  ['runtime_release.py'], [Path(call.args[0][2]).name for call in run.call_args_list])

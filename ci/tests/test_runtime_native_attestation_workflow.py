@@ -48,7 +48,12 @@ class RuntimeNativeAttestationWorkflowTest(unittest.TestCase):
 
     def test_secret_only_reaches_reviewed_caller_with_exact_original_selection(self):
         steps = re.split(r"(?=^      - )", self.job, flags=re.MULTILINE)
-        secret_steps = [step for step in steps if "secrets." in step]
+        bootstrap, = [step for step in steps if "secrets.REUSE_AUTHORITY_READ_TOKEN" in step]
+        self.assertIn("uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority", bootstrap)
+        self.assertIn("repository-root: ${{ github.workspace }}/trusted-source", bootstrap)
+        self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", bootstrap)
+        secret_steps = [step for step in steps
+                        if "secrets." in step.replace("secrets.REUSE_AUTHORITY_READ_TOKEN", "")]
         self.assertEqual(1, len(secret_steps))
         self.assertEqual(1, self.job.count("python3 -B trusted-source/ci/runtime_release.py"))
         self.assertIn("python3 -B trusted-source/ci/runtime_release.py", secret_steps[0])
