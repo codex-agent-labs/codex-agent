@@ -1,6 +1,10 @@
 name: Restore independently owner-approved reuse qualification
 description: Qualification inputs assert original identities; only the protected owner source selects verification code.
 inputs:
+  repository-root:
+    required: false
+    default: ''
+    description: Explicit checkout root for trusted nested checkouts; defaults to the workspace.
   authority-read-token:
     required: false
     default: ''
@@ -28,6 +32,7 @@ runs:
   steps:
     - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
       with:
+        repository-root: ${{ inputs.repository-root }}
         authority-read-token: ${{ inputs.authority-read-token || env.REUSE_AUTHORITY_READ_TOKEN }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}

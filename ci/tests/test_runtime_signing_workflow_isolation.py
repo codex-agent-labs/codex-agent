@@ -50,7 +50,8 @@ class RuntimeSigningWorkflowIsolationTest(unittest.TestCase):
                               "!contains(needs.*.result, 'cancelled')"):
                     self.assertIn(guard, before_runner)
                 self.assertNotIn("    environment:", job)
-                self.assertNotIn("secrets.", job)
+                self.assertNotIn("secrets.", job.replace('secrets.REUSE_AUTHORITY_READ_TOKEN', 'read-authority'))
+                self.assertIn('repository-root: ${{ github.workspace }}/trusted-source', job)
                 self.assertNotIn("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY", job)
                 self.assertEqual(2, job.count("uses: actions/checkout@"))
                 self.assertIn("path: trusted-source", job)
@@ -82,6 +83,10 @@ class RuntimeSigningWorkflowIsolationTest(unittest.TestCase):
         self.assertIn("str(trusted / 'ci/tooling_capture.py')", self.action)
         self.assertLess(self.action.index("str(trusted / 'ci/tooling_capture.py')"),
                         self.action.index("str(trusted / 'ci/runtime_release.py')"))
+        self.assertLess(self.action.index("original = _original_tooling_workflow("),
+                        self.action.index("str(trusted / 'ci/tooling_capture.py')"))
+        self.assertIn("'--trusted-workflow-sha', original['trusted_workflow_sha']", self.action)
+        self.assertIn("'--policy-revision', plan['validationCommit'], *workflow_policy", self.action)
 
     def test_signers_resolve_preparation_before_the_only_secret_step(self):
         cases = (
@@ -98,7 +103,8 @@ class RuntimeSigningWorkflowIsolationTest(unittest.TestCase):
                 steps = job_steps(job)
                 locator_index, locator = next((index, step) for index, step in enumerate(steps)
                                               if "runtime_preparation_locator.py" in step)
-                secret_steps = [(index, step) for index, step in enumerate(steps) if "secrets." in step]
+                secret_steps = [(index, step) for index, step in enumerate(steps)
+                                if "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY" in step]
                 self.assertEqual(1, len(secret_steps))
                 secret_index, signer = secret_steps[0]
                 self.assertLess(locator_index, secret_index)
@@ -109,6 +115,8 @@ class RuntimeSigningWorkflowIsolationTest(unittest.TestCase):
                 self.assertIn("PREPARATION_SHA256: ${{ steps.preparation.outputs.artifact_sha256 }}", signer)
                 self.assertIn('--preparation-artifact-id "$PREPARATION_ID"', signer)
                 self.assertIn('--preparation-artifact-sha256 "$PREPARATION_SHA256"', signer)
+                self.assertIn('--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"', signer)
+                self.assertIn('repository-root: ${{ github.workspace }}/trusted-source', job)
 
     def test_merge_gate_directly_waits_for_both_non_secret_preparations(self):
         needs = job_needs(workflow_job(self.source, "merge-gate"))

@@ -1751,6 +1751,10 @@ jobs:
           path: candidate-source
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          repository-root: ${{ github.workspace }}/trusted-source
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -1820,6 +1824,10 @@ jobs:
           path: candidate-source
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          repository-root: ${{ github.workspace }}/trusted-source
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -1855,6 +1863,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B trusted-source/ci/runtime_release.py \
+            --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY" \
             --repository-root "$GITHUB_WORKSPACE/trusted-source" \
             --candidate-root "$GITHUB_WORKSPACE/candidate-source" \
             --plan "$RUNNER_TEMP/runtime-attestation-plan/impact-plan.json" \
@@ -2219,6 +2228,10 @@ jobs:
           path: candidate-source
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          repository-root: ${{ github.workspace }}/trusted-source
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -2289,6 +2302,10 @@ jobs:
           path: candidate-source
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          repository-root: ${{ github.workspace }}/trusted-source
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -2350,6 +2367,7 @@ jobs:
             exit 1
           fi
           python3 -B trusted-source/ci/runtime_release.py \
+            --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY" \
             --repository-root "$GITHUB_WORKSPACE/trusted-source" \
             --candidate-root "$GITHUB_WORKSPACE/candidate-source" \
             --plan "$RUNNER_TEMP/runtime-aggregate-attestation-plan/impact-plan.json" \

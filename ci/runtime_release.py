@@ -291,6 +291,7 @@ process or product compiler is executed. The reviewed source remains separate.
 
 
 def main(argv: list[str] | None = None) -> None:
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("repository-root", "candidate-root", "plan", "destination"):
         parser.add_argument(f"--{name}", type=Path, required=True)
@@ -307,12 +308,15 @@ def main(argv: list[str] | None = None) -> None:
                         help="Materialize original signing inputs on a non-secret runner; never sign")
     parser.add_argument("--preparation-artifact-id", type=int)
     parser.add_argument("--preparation-artifact-sha256")
+    add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     prepared_mode = args.preparation_artifact_id is not None or args.preparation_artifact_sha256 is not None
     if prepared_mode and (args.preparation_artifact_id is None or args.preparation_artifact_sha256 is None):
         parser.error("prepared release requires paired preparation artifact ID and digest")
     if prepared_mode and args.prepare_only:
         parser.error("prepared release and preparation-only modes are mutually exclusive")
+    if args.completed_frozen_policy is not None and not (prepared_mode or args.prepare_only):
+        parser.error("completed reuse policy requires preparation or the prepared signing route")
     if prepared_mode and args.sdk_validation_tooling is not None:
         parser.error("prepared release does not accept SDK tooling")
     if args.sdk_apple_validation_policy is not None and not args.prepare_only:
@@ -376,14 +380,16 @@ def main(argv: list[str] | None = None) -> None:
         component_arguments = {"target": args.target}
     if not args.prepare_only and not prepared_mode:
         component_arguments["release_handoffs"] = tuple(args.release_handoff)
-    caller(
-        args.repository_root, args.candidate_root, args.plan, args.destination, **component_arguments,
-        expected_build_key=args.expected_build_key, artifact_id=args.artifact_id,
-        artifact_sha256=args.artifact_sha256, state_wave=args.state_wave,
-        trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,
-        transport_producer=producer, event_payload=event_payload, environment=os.environ,
-        token=os.environ.get("GITHUB_TOKEN"),
-        **({} if prepared_mode else {"sdk_validation_tooling": tooling}), **apple)
+    with completed_frozen_options({"repository_root": args.candidate_root, "plan": args.plan,
+                                  "completed_frozen_policy": args.completed_frozen_policy}) as semantic:
+        caller(
+            args.repository_root, args.candidate_root, args.plan, args.destination, **component_arguments,
+            expected_build_key=args.expected_build_key, artifact_id=args.artifact_id,
+            artifact_sha256=args.artifact_sha256, state_wave=args.state_wave,
+            trusted_source_sha=args.trusted_source_sha, trusted_workflow_sha=args.trusted_workflow_sha,
+            transport_producer=producer, event_payload=event_payload, environment=os.environ,
+            token=os.environ.get("GITHUB_TOKEN"),
+            **({} if prepared_mode else {"sdk_validation_tooling": tooling}), **apple, **semantic)
 
 
 if __name__ == "__main__":

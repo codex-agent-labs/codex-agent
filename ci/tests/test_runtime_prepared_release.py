@@ -159,6 +159,45 @@ class RuntimePreparedReleaseTest(unittest.TestCase):
         self.options.update(changes)
         return release.attest_prepared_runtime_ci(self.trusted, self.candidate, self.plan, self.output, **self.options)
 
+    def test_private_native_capability_reaches_independent_capture_restore_and_signing_leaf(self):
+        capability = object()  # Composition seam, not authenticated native authority.
+        self.invoke(target='aggregate', completed_frozen=capability)
+        for reader in (self.state, self.restore, self.sign_aggregate):
+            self.assertIs(capability, reader.call_args.kwargs['completed_frozen'])
+        self.assertEqual(self.prepared_root / 'selected-inputs', self.restore.call_args.kwargs['selected_root'])
+
+    def test_release_cli_authenticates_policy_against_candidate_data_before_either_route(self):
+        from contextlib import contextmanager
+        import os
+        import runtime_release as cli
+        import runtime_prepared_release as prepared
+        import runtime_signing_preparation as preparation
+        import reuse_qualification as native
+        capability = object()
+        policy = self.root / 'caller-policy.json'
+        event = self.root / 'event.json'
+        event.write_bytes(canonical_json_bytes({'number': 31}))
+        @contextmanager
+        def authenticate(values):
+            self.assertEqual({'repository_root': self.candidate, 'plan': self.plan,
+                              'completed_frozen_policy': policy}, values)
+            yield {'completed_frozen': capability}
+        args = ['--repository-root', str(self.trusted), '--candidate-root', str(self.candidate),
+            '--plan', str(self.plan), '--destination', str(self.output), '--target', 'aggregate',
+            '--artifact-id', '701', '--artifact-sha256', self.options['artifact_sha256'], '--state-wave', '5',
+            '--expected-build-key', self.options['expected_build_key'], '--trusted-source-sha', 'f' * 40,
+            '--trusted-workflow-sha', '1' * 40, '--validation-tree', 'b' * 40,
+            '--completed-frozen-policy', str(policy)]
+        for owner, method, extra in ((preparation, 'prepare_runtime_signing_inputs', ['--prepare-only']),
+                (prepared, 'attest_prepared_runtime_ci', ['--preparation-artifact-id', '702',
+                    '--preparation-artifact-sha256', self.options['preparation_artifact_sha256']])):
+            with self.subTest(route=method), patch.object(native, 'completed_frozen_options', authenticate), \
+                    patch.object(owner, method) as caller, patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(event),
+                        'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_REPOSITORY': self.producer['repository'],
+                        'GITHUB_SHA': 'a' * 40, 'GITHUB_RUN_ID': '71', 'GITHUB_RUN_ATTEMPT': '2'}, clear=True):
+                cli.main(args + extra)
+            self.assertIs(capability, caller.call_args.kwargs['completed_frozen'])
+
     def test_independent_capture_ids_and_private_lifetime_before_publication(self):
         result = self.invoke()
         self.assertEqual(self.leaf_result, result)

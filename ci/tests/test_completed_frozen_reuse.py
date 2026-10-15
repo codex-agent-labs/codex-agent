@@ -752,8 +752,18 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual(receipt, verified["receipt"])
             locator = {**{field: row[field] for field in FIELDS}, "artifact": {"id": 71, "digest": POLICY}}
             cap.require_original_locator(locator, receipt)
+            files = cap.original_files(locator, receipt)
+            self.assertTrue(files)
+            files.clear()
+            self.assertTrue(cap.original_files(locator, receipt))
             with self.assertRaisesRegex(ValueError, "Fresh original locator"):
                 cap.require_original_locator({**locator, "different": True}, receipt)
+            with self.assertRaisesRegex(ValueError, "Fresh original locator"):
+                cap.original_files({**locator, "different": True}, receipt)
+            cap._eligible = frozenset()
+            with self.assertRaisesRegex(ValueError, "outside current native completion"):
+                cap.original_files(locator, receipt)
+            cap._eligible = None
             with self.assertRaises((ValueError, FileNotFoundError)):
                 restore.verify_phase_shard(shard, instance)
             (shard / "unexpected").write_bytes(b"unproved")

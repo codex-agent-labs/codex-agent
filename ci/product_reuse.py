@@ -5338,7 +5338,7 @@ def materialize_runtime_aggregate_release_evidence(
     plan_path, discovery_root, state_root, destination, *, expected_build_key,
     keyring, keys_directory, repository_root=None, environ=None, sdk_validation_tooling=None,
     sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ):
     """Select the complete original carrier; selected-stage equality is checked by the caller."""
     root = (Path(__file__).resolve().parents[1] if repository_root is None else repository_root).resolve()
@@ -5346,6 +5346,7 @@ def materialize_runtime_aggregate_release_evidence(
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     instance = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
@@ -5398,7 +5399,7 @@ def materialize_runtime_attestation_inputs(
     sdk_original_workflow_sha: str | None = None,
     retained_release_keyring: Path | None = None,
     retained_release_keys_directory: Path | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Restore a completed native or aggregate closure, not a new build election.
 
@@ -5419,6 +5420,7 @@ the complete product semantics. This selection never grants signing authority.
     state = _verified_product_state(plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     _runtime_worker_checkout(root, state.producer)

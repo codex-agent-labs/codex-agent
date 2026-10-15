@@ -1,10 +1,13 @@
 """Synthetic original shards and mocked HTTP, not aggregate workflow execution."""
 
 import copy
+from contextlib import contextmanager
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci.tests import test_contract_ci_originals as fixture
@@ -107,6 +110,59 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
         inputs.update(changes)
         return capture_runtime_aggregate_original_ci(**inputs)
 
+    def native_adapters(self):
+        """Synthetic native issuer seam; original observers and byte checks stay real."""
+        from products.restore import PHASE_SHARD_NAME
+        from reuse_qualification import CompletedFrozenReuse, _COMPLETED_FROZEN
+        rows, originals, receipts = [], [], []
+        for name, raw in self.archives.items():
+            if name == AGGREGATE:
+                continue
+            receipt = json.loads(self.receipts[name].read_bytes())
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                row = json.loads(archive.read('shard/' + PHASE_SHARD_NAME))
+                files = [{'relativePath': item.filename, 'bytes': item.file_size,
+                          'sha256': fixture.sha256_bytes(archive.read(item))} for item in archive.infolist()]
+            rows.append(row)
+            identity = PhaseInstanceId(*(receipt[f] for f in ('product', 'component', 'phase', 'target')))
+            job = next(j for j in self.jobs if j['name'] == 'product-validation / runtime-' + name)
+            locator = fixture.product_reuse._runtime_original_locator(self.artifacts[name], self.base.pin, identity, job)
+            originals.append({'identity': {'locator': locator}, 'receipt': receipt, 'originalFiles': files,
+                              'objectSha256': row['objectSha256'], 'receiptSha256': row['receiptSha256']})
+            receipts.append(receipt)
+        return CompletedFrozenReuse({'request': {}, 'expectedResult': {'phases': rows}}, receipts,
+            _COMPLETED_FROZEN, revision=self.base.producer['commit'], originals=originals)
+
+    def test_native_adapters_keep_all_original_gates_and_download_only_new_aggregate(self):
+        _, _, signing = generate_development_key(self.work / 'native-key')
+        signing['trustDomain'] = 'release'
+        cap = self.native_adapters()
+        downloaded = []
+        def download(artifact, token, destination, **_):
+            self.assertEqual(self.artifacts[AGGREGATE]['id'], artifact['id'])
+            downloaded.append(artifact['id'])
+            Path(destination).write_bytes(self.archives[AGGREGATE])
+        with patch('reuse.api_request', side_effect=self.api), \
+                patch('product_reuse.download_artifact_to_file', side_effect=download):
+            result = self.capture(signing_metadata=signing, completed_frozen=cap)
+        self.assertEqual([self.artifacts[AGGREGATE]['id']], downloaded)
+        self.assertEqual(26, len(result['artifacts']))
+        self.assertEqual(self.artifacts, result['artifacts'])
+        native_name = next(n for n in self.artifacts if n != AGGREGATE)
+        for fault in ('digest', 'window', 'job'):
+            before_artifact = copy.deepcopy(self.artifacts[native_name])
+            job = next(j for j in self.jobs if j['name'] == 'product-validation / runtime-' + native_name)
+            before_job = copy.deepcopy(job)
+            if fault == 'digest': self.artifacts[native_name]['digest'] = 'sha256:' + '0' * 64
+            elif fault == 'window': self.artifacts[native_name]['created_at'] = '2026-09-06T11:00:00Z'
+            else: job['conclusion'] = 'failure'
+            output = self.work / ('rejected-' + fault)
+            with self.subTest(fault=fault), patch('reuse.api_request', side_effect=self.api), self.assertRaises(ValueError):
+                self.capture(destination=output, signing_metadata=signing, completed_frozen=cap)
+            self.assertFalse(output.exists())
+            self.artifacts[native_name] = before_artifact
+            job.clear(); job.update(before_job)
+
     def test_exact_26_original_uploads_receipts_and_empty_diagnostics_are_preserved(self):
         before = {name: path.read_bytes() for name, path in self.receipts.items()}
         with patch("reuse.api_request", side_effect=self.api) as http:
@@ -174,6 +230,24 @@ class RuntimeAggregateOriginalCiTest(unittest.TestCase):
         retained = self.output / "adapter-contracts"
         self.assertEqual([digest[7:]], [path.name for path in retained.iterdir()])
         self.assertEqual(raw_contract, (retained / digest[7:] / "execution-closure/receipts/metadata.json").read_bytes())
+        _, _, signing = generate_development_key(self.work / 'historical-key')
+        signing['trustDomain'] = 'release'
+        @contextmanager
+        def ranges(artifact, token):
+            name = next(name for name, row in self.artifacts.items() if row['id'] == artifact['id'])
+            with zipfile.ZipFile(io.BytesIO(self.archives[name])) as archive:
+                yield archive, None
+        def download(artifact, token, destination, **_):
+            self.assertEqual(self.artifacts[AGGREGATE]['id'], artifact['id'])
+            Path(destination).write_bytes(self.archives[AGGREGATE])
+        with patch('reuse.api_request', side_effect=self.api), \
+                patch('runtime_reference_archive.open_reference_archive', side_effect=ranges) as ranged, \
+                patch('product_reuse.download_artifact_to_file', side_effect=download):
+            self.capture(destination=self.work / 'native-historical', signing_metadata=signing,
+                completed_frozen=self.native_adapters(), selected_contract_receipt_sha256='sha256:' + '0' * 64)
+        ranged.assert_called_once()
+        self.assertEqual(regular_file_inventory(retained),
+                         regular_file_inventory(self.work / 'native-historical/adapter-contracts'))
 
     def test_compact_release_proof_is_signed_exactly_and_binds_all_originals(self):
         private, public, signing = generate_development_key(self.work / "key")

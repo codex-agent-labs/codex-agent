@@ -28,7 +28,7 @@ from products.signatures import require_release_signing_metadata
 def capture_runtime_aggregate_original_ci(
     aggregate_receipt: Path, adapter_receipts: list[dict[str, Any]], destination: Path,
     *, trusted_workflow_sha: str, token: str, signing_metadata: dict[str, Any] | None = None,
-    selected_contract_receipt_sha256: str | None = None,
+    selected_contract_receipt_sha256: str | None = None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Capture exact original attempts/uploads; never sign or admit semantics."""
     # Share the established observer, official downloader and safe extractor;
@@ -36,11 +36,19 @@ def capture_runtime_aggregate_original_ci(
     from product_reuse import (
         _CATALOG_ZIP_LIMITS, _download_contract_ci_upload, _observe_ci_producer_jobs,
         _runtime_prior_workflow_sha, api_json, paginated_items, safe_extract,
+        _contract_ci_upload_metadata, _require_artifact_job_window, _runtime_original_locator,
     )
 
     if type(token) is not str or not token:
         raise ValueError("Original Runtime aggregate CI capture requires an observation token")
     signing = None if signing_metadata is None else require_release_signing_metadata(signing_metadata)
+    native = {}
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse or signing is None:
+            raise ValueError("Compact native original reuse requires the authenticated signing route")
+        native = {PhaseInstanceId(*(row["receipt"][field] for field in
+            ("product", "component", "phase", "target"))): row for row in completed_frozen.runtime_sources()}
     inputs = []
     for value in require_array(adapter_receipts, "Runtime aggregate adapter receipt inputs"):
         record = require_exact_keys(value, {"component", "phase", "target", "receipt"},
@@ -106,6 +114,44 @@ def capture_runtime_aggregate_original_ci(
                 raise ValueError("Original Runtime aggregate upload is missing or ambiguous")
             observation = attempts[(run_id, producer["runAttempt"])]
             candidate = candidates[0]
+            prior = native.get(identities[name])
+            if prior is not None:
+                if prior["receipt"] != receipt:
+                    raise ValueError("Selected Runtime receipt differs from its native-qualified original")
+                artifact = _contract_ci_upload_metadata(prior["artifactId"], prior["artifactSha256"],
+                    expected_name, producer, observation["run"], token)
+                if candidate != artifact:
+                    raise ValueError("Native Runtime original differs from the fresh artifact inventory")
+                _require_artifact_job_window(observation, jobs[name], artifact)
+                job = next(value for value in observation["jobs"] if value.get("name") == jobs[name])
+                locator = _runtime_original_locator(artifact, workflow_policies[name]["sha"], identities[name], job)
+                files = completed_frozen.original_files(locator, receipt)
+                if selected_contract_receipt_sha256 is not None and receipt["phase"] == "binary":
+                    upstreams = receipt["inputs"]["upstreamArtifacts"]
+                    if len(upstreams) != 1 or "contractProjection" not in upstreams[0]:
+                        raise ValueError("Original adapter binary lacks its Contract predecessor")
+                    digest = upstreams[0]["contractProjection"]["receiptSha256"]
+                    if digest != selected_contract_receipt_sha256:
+                        from products.inventory import require_sha256
+                        from runtime_reference_archive import open_reference_archive, copy_reference_member
+                        require_sha256(digest, "Original adapter Contract receipt digest")
+                        target = prepared / "adapter-contracts" / digest[7:]
+                        if not target.exists():
+                            prefix = "inputs/contract-input/"
+                            members = [row for row in files if row["relativePath"].startswith(prefix)]
+                            if not members:
+                                raise ValueError("Native original lacks its historical Contract handoff")
+                            with open_reference_archive(artifact, token) as (archive, _):
+                                for row in members:
+                                    copy_reference_member(archive, row["relativePath"],
+                                        target / row["relativePath"].removeprefix(prefix), row)
+                            expected_files.extend({**row, "relativePath": f"adapter-contracts/{digest[7:]}/"
+                                + row["relativePath"].removeprefix(prefix)} for row in members)
+                        if sha256_bytes(read_regular_file_bytes(target / "execution-closure/receipts/metadata.json",
+                                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)) != digest:
+                            raise ValueError("Native original changes its historical Contract receipt")
+                artifacts[name] = artifact
+                continue
             # New release proofs retain immutable upload identities, not 26 raw
             # archives plus their full extractions. Authenticate one at a time.
             scratch = tempfile.TemporaryDirectory(prefix="original-phase-", dir=temporary) if signing else nullcontext(None)

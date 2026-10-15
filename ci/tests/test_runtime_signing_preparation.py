@@ -161,6 +161,12 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
         self.assertFalse((self.root / "output/release-handoff").exists())
         self.assertEqual(self.capture_root / "original/product-resume-state", self.aggregate.call_args.args[2])
 
+    def test_private_native_capability_reaches_capture_and_both_readers(self):
+        capability = object()  # Composition seam; each real reader rejects forged authority.
+        self.invoke(target="aggregate", completed_frozen=capability)
+        for reader in (self.capture, self.selector, self.aggregate):
+            self.assertIs(capability, reader.call_args.kwargs['completed_frozen'])
+
     def test_apple_policy_native_and_aggregate_replay_receive_copy_never_serialized_authority(self):
         original = deepcopy(self.apple_policy)
         raw = canonical_json_bytes(original)

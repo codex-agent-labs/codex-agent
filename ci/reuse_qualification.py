@@ -754,7 +754,7 @@ class CompletedFrozenReuse:
     private product state. Bodies remain digest-checked when actually consumed.
     Only fetch_completed_frozen can create it after fresh native authentication.
     """
-    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible")
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible")
 
     def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None):
         if verified is not _COMPLETED_FROZEN:
@@ -769,6 +769,8 @@ class CompletedFrozenReuse:
         self._body_cache = None if body_cache is None else str(Path(body_cache))
         self._originals = frozenset((canonical_json_bytes(record["identity"]["locator"]),
             sha256_bytes(canonical_json_bytes(record["receipt"]))) for record in originals)
+        self._files = tuple((canonical_json_bytes(record["identity"]["locator"]),
+            canonical_json_bytes(record["originalFiles"])) for record in originals)
         from products.restore import object_relative_path
         bodies = []
         for record in originals:
@@ -1032,6 +1034,19 @@ class CompletedFrozenReuse:
         self._values()
         if (canonical_json_bytes(locator), sha256_bytes(canonical_json_bytes(receipt))) not in self._originals:
             raise ValueError("Fresh original locator differs from completed native evidence")
+
+    def original_files(self, locator, receipt):
+        """Copied native-qualified member identities, after fresh original observation."""
+        from products.registry import PhaseInstanceId
+        self.require_original_locator(locator, receipt)
+        instance = PhaseInstanceId(*(receipt[field] for field in _PHASE_FIELDS))
+        if instance not in self._values()[1]:
+            raise ValueError("Original members are outside current native completion")
+        key = canonical_json_bytes(locator)
+        matches = [raw for original, raw in self._files if original == key]
+        if len(matches) != 1:
+            raise ValueError("Native original member inventory is missing or ambiguous")
+        return load_canonical_json_bytes(matches[0])
 
     @measured
     def capture_object(self, record, destination, *, plan, producer, trusted_workflow_sha, token):

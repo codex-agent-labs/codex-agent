@@ -77,6 +77,7 @@ runs:
         trusted = Path(os.environ['GITHUB_ACTION_PATH']).resolve(strict=True).parents[2]
         sys.path.insert(0, str(trusted / 'ci'))
         from product_reuse import _validate_plan
+        from tooling_discovery import _original_tooling_workflow
         from runtime_aggregate_release import _destination
         from products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes, run_git
         from products.receipt import validate_producer
@@ -102,6 +103,8 @@ runs:
         if any(locator) and not all(locator):
             raise ValueError('Tooling capture requires the complete caller locator tuple')
         optional = []
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            optional += ['--completed-frozen-policy', os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']]
         if all(locator):
             scratch = Path(os.environ['RUNNER_TEMP'])
             java_home = Path(os.environ['JAVA_HOME_17_' + os.environ['RUNNER_ARCH']])
@@ -114,6 +117,12 @@ runs:
             java = (java_home / 'bin' / ('java.exe' if os.name == 'nt' else 'java')).resolve(strict=True)
             read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
             producer = validate_producer(load_json_bytes(locator[2].encode('utf-8')))
+            original = _original_tooling_workflow(producer, os.environ['WORKFLOW_SHA'],
+                os.environ['GITHUB_TOKEN'], repository_root=candidate)
+            workflow_policy = ([
+                '--trusted-workflow-path', original['trusted_workflow_path'],
+                '--trusted-job-name', original['trusted_job_name'],
+            ] if 'trusted_workflow_path' in original else [])
             parent = Path(tempfile.mkdtemp(prefix='runtime-preparation-tooling-', dir=scratch)).resolve(strict=True)
             producer_path, capture = parent / 'transport-producer.json', parent / 'capture'
             producer_path.write_bytes(canonical_json_bytes(producer))
@@ -121,9 +130,8 @@ runs:
                 '--destination', str(capture), '--repository-root', str(candidate),
                 '--transport-producer', str(producer_path), '--java-executable', str(java),
                 '--artifact-id', locator[0], '--artifact-sha256', locator[1],
-                '--trusted-workflow-sha', os.environ['WORKFLOW_SHA'], '--policy-revision', plan['validationCommit'],
-                '--trusted-workflow-path', '.github/workflows/contract-validation.yml',
-                '--trusted-job-name', 'product-validation / contract-validation / tooling-attestation'],
+                '--trusted-workflow-sha', original['trusted_workflow_sha'],
+                '--policy-revision', plan['validationCommit'], *workflow_policy],
                 cwd=trusted, env=os.environ, check=True)
             policy = capture / 'tooling-policy.json'
             read_regular_file_bytes(policy, reject_symlink_parents=True)
@@ -135,7 +143,7 @@ runs:
                 cwd=trusted, env=os.environ, check=True)
             apple_policy = apple_destination / 'apple-validation-policy.json'
             read_regular_file_bytes(apple_policy, reject_symlink_parents=True)
-            optional = ['--sdk-validation-tooling', str(policy), '--sdk-apple-validation-policy', str(apple_policy)]
+            optional += ['--sdk-validation-tooling', str(policy), '--sdk-apple-validation-policy', str(apple_policy)]
         require_no_signing_secret(os.environ)
         if read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_bytes:
             raise ValueError('Original preparation plan changed before execution')

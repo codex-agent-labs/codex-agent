@@ -35,6 +35,7 @@ def prepare_runtime_signing_inputs(
     environment: Mapping[str, str], token: str,
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
+    completed_frozen=None,
 ) -> dict[str, Any]:
     """Capture/elect originals without access to the product signing secret.
 
@@ -79,6 +80,8 @@ def prepare_runtime_signing_inputs(
     plan_bytes = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     tooling = {"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}
     tooling["sdk_original_workflow_sha"] = trusted_workflow_sha
+    semantic = {} if completed_frozen is None else {"completed_frozen": completed_frozen}
+    tooling.update(semantic)
     if apple_bytes is not None:
         tooling["sdk_apple_validation_policy"] = load_canonical_json_bytes(apple_bytes)
     with tempfile.TemporaryDirectory(prefix="runtime-signing-inputs-", dir=candidate) as temporary:
@@ -86,7 +89,7 @@ def prepare_runtime_signing_inputs(
         capture = root / "capture"
         capture_runtime_resume_upload(plan_path, capture, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-            state_wave=state_wave, repository_root=candidate, environ=environment, token=token)
+            state_wave=state_wave, repository_root=candidate, environ=environment, token=token, **semantic)
         baselines = {capture: regular_file_inventory(capture, allow_empty=True)}
 
         def unchanged():

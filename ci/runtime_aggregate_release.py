@@ -109,6 +109,7 @@ def _attest_selected_runtime_aggregate(
     expected_build_key: str, trusted_source_sha: str, trusted_workflow_sha: str,
     transport_producer: Mapping[str, Any], event_payload: dict[str, Any], environment: Mapping[str, str],
     token: str | None, variant_handoffs: dict[str, Path], release_handoff: Path | None = None,
+    completed_frozen=None,
 ) -> dict[str, Any]:
     """Private composition seam; the public entry elects/restores the selection."""
     trusted, producer, source_tree, expected_environment, reason = verify_product_release_context(
@@ -257,7 +258,8 @@ def _attest_selected_runtime_aggregate(
         signing.update(active)
         capture_runtime_aggregate_original_ci(aggregate["receiptPath"], records["adapter_receipts"],
             prepared / "original-evidence", trusted_workflow_sha=trusted_workflow_sha, token=token,
-            signing_metadata=signing, selected_contract_receipt_sha256=sha256_file(contract["receiptPath"]))
+            signing_metadata=signing, selected_contract_receipt_sha256=sha256_file(contract["receiptPath"]),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         historical_contracts = prepared / "original-evidence/adapter-contracts"
         adapter_contract_handoffs = ({f"sha256:{path.name}": path for path in historical_contracts.iterdir()}
                                     if historical_contracts.exists() else {})
