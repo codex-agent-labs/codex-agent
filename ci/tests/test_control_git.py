@@ -9,6 +9,31 @@ from ci.reuse_qualification import read_blobs
 
 
 class ControlGitTest(unittest.TestCase):
+    def test_large_batch_uses_seekable_input_and_returns_exact_originals(self):
+        import hashlib
+        import zlib
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            expected = {}
+            for number in range(2048):
+                body = ('original control ' + str(number)).encode()
+                raw = f'blob {len(body)}\0'.encode() + body
+                oid = hashlib.sha1(raw).hexdigest()
+                path = root / '.git/objects' / oid[:2] / oid[2:]
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(zlib.compress(raw))
+                expected[oid] = body
+            run = subprocess.run
+            def checked(*args, **kwargs):
+                self.assertTrue(kwargs['stdin'].seekable())
+                self.assertEqual(0, kwargs['stdin'].tell())
+                self.assertNotIn('input', kwargs)
+                return run(*args, **kwargs)
+            with patch('ci.reuse_qualification.subprocess.run', side_effect=checked) as calls:
+                self.assertEqual(expected, read_blobs(root, expected, max_bytes=100, total_bytes=100_000))
+                self.assertEqual(2, calls.call_count)
+
     def test_batch_bounds_identity_and_framing(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

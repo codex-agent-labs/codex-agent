@@ -1785,8 +1785,15 @@ def read_blobs(repository, objects, *, max_bytes, total_bytes):
         return {}
     command = ["git", "--no-replace-objects", "-C", str(repository), "cat-file"]
     request = "".join(oid + "\n" for oid in identifiers).encode("ascii")
-    headers = subprocess.run(command + ["--batch-check"], input=request,
-        capture_output=True, check=True, timeout=30).stdout.splitlines()
+    def batch(mode):
+        # A seekable request avoids both ends blocking on full pipes (observed
+        # with large control inventories on macOS). Keep the same bounded reads.
+        with tempfile.TemporaryFile() as source:
+            source.write(request)
+            source.seek(0)
+            return subprocess.run(command + [mode], stdin=source,
+                capture_output=True, check=True, timeout=30).stdout
+    headers = batch("--batch-check").splitlines()
     if len(headers) != len(identifiers):
         raise ValueError("Control Git metadata count differs")
     sizes, total = [], 0
@@ -1799,8 +1806,7 @@ def read_blobs(repository, objects, *, max_bytes, total_bytes):
         if size > max_bytes or total > total_bytes:
             raise ValueError("Control Git blobs exceed the source-byte bound")
         sizes.append(size)
-    raw = subprocess.run(command + ["--batch"], input=request,
-        capture_output=True, check=True, timeout=30).stdout
+    raw = batch("--batch")
     result, offset = {}, 0
     for oid, size in zip(identifiers, sizes, strict=True):
         header = f"{oid} blob {size}\n".encode("ascii")
