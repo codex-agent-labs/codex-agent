@@ -16,7 +16,7 @@ from products.inventory import (
     read_regular_file_bytes, run_git,
 )
 from reuse import github_output
-from products.registry import PHASE_INSTANCE_IDS
+from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
 from products.reuse import _phase_git_inventories
 
 
@@ -137,6 +137,9 @@ SDK_REGISTRY = "ci/products/registry.py"
 # Reviewed memoization and native-completion control registration preserve every owning inventory.
 SDK_SELECTION_REVISION = "1ebcbc72e79abc273e428a470e8aa65966298fd8"
 SDK_SELECTOR = "ci/products/selection.py"
+# Reviewed canonical LF writer correction. Historical acceptance never admits
+# the resulting new aggregate key; ordinary production/signature gates do that.
+SDK_AGGREGATE_CORRECTION = "1b33491ad273aa42ba0d6b4cd7d7b98562141ad8"
 
 
 def _tree(root, revision):
@@ -223,7 +226,7 @@ def _reviewed_scope(trusted, candidate, sha):
 
 
 def _sdk_reviewed_scope(trusted, candidate, sha):
-    """Reviewed SDK inputs may evolve; completed Contract/Runtime inputs may not."""
+    """Preserve frozen inputs, allowing only the reviewed aggregate correction."""
     baseline = _tree(trusted, SDK_FROZEN_REVISION)
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys()
@@ -246,6 +249,10 @@ def _sdk_reviewed_scope(trusted, candidate, sha):
     after = _phase_git_inventories(trusted, sha, instances)
     for instance in instances:
         if before[instance] != after[instance]:
+            aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+            if instance == aggregate and after[instance] == _phase_git_inventories(
+                    trusted, SDK_AGGREGATE_CORRECTION, (aggregate,))[aggregate]:
+                continue
             raise ValueError(f"SDK recovery changes frozen product inputs: {instance}")
     current = _tree(candidate, "HEAD")
     if current.keys() != reviewed.keys() or any(

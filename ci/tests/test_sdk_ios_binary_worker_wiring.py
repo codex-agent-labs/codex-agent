@@ -235,6 +235,33 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         self.assertIn('test "$AGGREGATE_STATE" = completed', self.job('runtime-continuation'))
         self.assertIn('test "$AGGREGATE_PAYLOAD_COMPLETE" = true', self.job('runtime-continuation'))
 
+    def test_aggregate_requalification_keeps_other_runtime_and_phase10_jobs_disabled(self):
+        allowed = {"runtime-signing-prepare-native", "runtime-native-attestation",
+                   "runtime-aggregate", "runtime-collect-5",
+                   "runtime-signing-prepare-aggregate", "runtime-aggregate-attestation"}
+        names = set(re.findall(r"^  ([a-z][a-z0-9-]*):$", self.workflow, re.MULTILINE))
+        for name in names:
+            job = self.job(name)
+            guard = re.search(r"(?ms)^    if: (.*?)(?=^    [a-z]|\Z)", job)
+            if guard and "runtimeAggregateRequalification" in guard[1]:
+                self.assertIn(name, allowed)
+                allowed.remove(name)
+        self.assertFalse(allowed)
+        self.assertIn("test \"$RUNTIME_WORKERS_REQUIRED\" = false", self.job("product-resume"))
+        self.assertIn("test \"$CONTRACT_NEXT_PHASE\" = none", self.job("plan"))
+        self.assertIn("SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification }}",
+                      self.job("sdk-inputs"))
+        continuation = self.job("runtime-continuation")
+        self.assertIn("if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification", continuation)
+        self.assertIn("if: inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification", continuation)
+        caller = (ROOT / '.github/workflows/ci.yml').read_text()
+        self.assertIn("sdkRecoveryOnly: true\n      runtimeAggregateRequalification: true", caller)
+        original = json.loads(re.search(r"(?m)^      runtimeNativeHandoffRecovery: '([^']+)'$", caller)[1])
+        self.assertEqual(37081083913, original["producer"]["runId"])
+        self.assertEqual("cec458a479c0556d39aa6a75b18311500ce66d71", original["trustedWorkflowSha"])
+        self.assertEqual({11265028687, 11264924644, 11265498341, 11265627180, 11265542901},
+                         {row["artifactId"] for row in original["artifacts"]})
+
     def test_sdk_recovery_preserves_original_handoff_and_separates_replay_authority(self):
         caller = (ROOT / '.github/workflows/ci.yml').read_text()
         locator = json.loads(re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])

@@ -1,5 +1,7 @@
 """Real CI transport parsers, mocked HTTP and plan/Git boundary; no signing proof."""
 
+from contextlib import contextmanager
+from types import SimpleNamespace
 from copy import deepcopy
 import io
 import json
@@ -259,12 +261,16 @@ class RuntimeNativeReleaseCaptureTest(unittest.TestCase):
                 if url == artifact['archive_download_url'].removesuffix('/zip'):
                     return json.dumps(artifact).encode()
             return f.api(url, token)
-        def stream(artifact, token, destination, *, max_bytes):
-            self.assertEqual(capture.products._CATALOG_LIMIT, max_bytes)
-            Path(destination).write_bytes(self.raw[artifact['id']])
+        @contextmanager
+        def selected_archive(artifact, token):
+            with zipfile.ZipFile(io.BytesIO(self.raw[artifact['id']])) as archive:
+                yield archive, SimpleNamespace(transferred=sum(entry.compress_size for entry in archive.infolist()
+                    if entry.filename.startswith('runtime-input/')))
+
         with patch.object(capture.products, '_validate_plan', return_value=f.plan), \
                 patch('reuse.api_request', side_effect=api), \
-                patch.object(capture.products, 'download_artifact_to_file', side_effect=stream):
+                patch.object(capture, 'open_reference_archive', side_effect=selected_archive), \
+                patch.object(capture.products, 'download_artifact_to_file', side_effect=AssertionError('whole archive download forbidden')):
             return capture.capture_runtime_native_release_handoffs(f.plan_path, self.output,
                 recovery=self.recovery, selected_receipt_sha256s=self.selected,
                 trusted_workflow_sha=self.pin, repository_root=f.root,
@@ -281,6 +287,10 @@ class RuntimeNativeReleaseCaptureTest(unittest.TestCase):
         self.assertEqual(self.f.producer, transport['producer'])
         self.assertEqual(72, transport['captureProducer']['runId'])
         self.assertEqual(self.f.pin, transport['trustedWorkflowSha'])
+        for row in transport['artifacts']:
+            self.assertFalse(row['archiveBodyHashed'])
+            self.assertEqual('complete-signed-runtime-handoff', row['verifiedScope'])
+            self.assertLess(row['archiveBytesRead'], row['artifact']['size_in_bytes'])
 
     def test_missing_target_failed_job_wrong_source_or_current_receipt_reject(self):
         baseline = deepcopy((self.recovery, self.selected, self.f.jobs, self.f.run))
@@ -292,6 +302,24 @@ class RuntimeNativeReleaseCaptureTest(unittest.TestCase):
             elif case == 'source': self.recovery['trustedWorkflowSha'] = 'd' * 40
             else: self.selected[NATIVE_TARGETS[0]]['binary'] = 'sha256:' + 'd' * 64
             with self.subTest(case=case), self.assertRaises(ValueError):
+                self.call()
+            self.assertFalse(self.output.exists())
+
+    def test_selected_leaf_rejects_missing_and_extra_members(self):
+        record = self.recovery['artifacts'][0]
+        original = self.raw[record['artifactId']]
+        for extra in (False, True):
+            output = io.BytesIO()
+            with zipfile.ZipFile(io.BytesIO(original)) as source, zipfile.ZipFile(output, 'w') as archive:
+                for entry in source.infolist():
+                    if extra or not entry.filename.endswith('.attestation.sig'):
+                        archive.writestr(entry.filename, source.read(entry.filename))
+                if extra:
+                    archive.writestr('runtime-input/extra.bin', b'unselected')
+            self.raw[record['artifactId']] = output.getvalue()
+            record['artifactSha256'] = sha256_bytes(output.getvalue())
+            self.uploads[record['artifactId']].update(digest=record['artifactSha256'], size_in_bytes=len(output.getvalue()))
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'nine-file signed leaf'):
                 self.call()
             self.assertFalse(self.output.exists())
 

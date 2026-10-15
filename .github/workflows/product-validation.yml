@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      runtimeAggregateRequalification:
+        description: Requalify changed aggregate inputs within SDK-only recovery; never enable Runtime workers or Phase 10
+        required: false
+        default: false
+        type: boolean
       reuseQualification:
         description: Independently approved qualification assertions from the trusted caller, never product-plan or event data
         required: false
@@ -1599,12 +1604,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - if: inputs.sdkRecoveryOnly != true
+      - if: inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification
         uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
-        if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.tooling_required == 'true'
+        if: (inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification) && needs.plan.outputs.tooling_required == 'true'
         shell: bash
         run: |
           source ci/select_caller_java.sh
@@ -1613,7 +1618,7 @@ jobs:
           test -f "$selected_java_home/bin/$java_binary"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
-        if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.tooling_required == 'true'
+        if: (inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification) && needs.plan.outputs.tooling_required == 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
           plan-id: ${{ needs.plan.outputs.plan_id }}
@@ -1656,7 +1661,7 @@ jobs:
                   output.write(f'{name}={value}\n')
           PY
       - id: captured
-        if: inputs.sdkRecoveryOnly != true
+        if: inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification
         uses: ./.github/actions/capture-runtime-state
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
@@ -1669,7 +1674,7 @@ jobs:
           state-wave: ${{ steps.parent.outputs.state_wave }}
           continuation: selected
       - id: routed
-        if: inputs.sdkRecoveryOnly
+        if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification
         uses: ./.github/actions/capture-runtime-state/route
         with:
           family: runtime
@@ -1682,7 +1687,7 @@ jobs:
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
       - name: Require the completed immutable Runtime aggregate for SDK continuation
-        if: inputs.sdkRecoveryOnly
+        if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification
         env:
           AGGREGATE_STATE: ${{ steps.routed.outputs.aggregate_state || steps.captured.outputs.aggregate_state }}
           AGGREGATE_PAYLOAD_COMPLETE: ${{ steps.routed.outputs.aggregate_payload_complete || steps.captured.outputs.aggregate_payload_complete }}
@@ -1690,7 +1695,7 @@ jobs:
           test "$AGGREGATE_STATE" = completed
           test "$AGGREGATE_PAYLOAD_COMPLETE" = true
       - id: retained
-        if: '!inputs.sdkRecoveryOnly && steps.captured.outputs.aggregate_required == ''true'' && inputs.runtimeNativeHandoffRecovery != '''''
+        if: '(!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) && steps.captured.outputs.aggregate_required == ''true'' && inputs.runtimeNativeHandoffRecovery != '''''
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.runtimeNativeHandoffRecovery }}
@@ -1718,7 +1723,7 @@ jobs:
     name: runtime-signing-prepare-${{ matrix.target }}
     needs: [workflow-lint, plan, runtime-continuation, contract-validation]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -1783,7 +1788,7 @@ jobs:
     name: runtime-native-attestation-${{ matrix.target }}
     needs: [workflow-lint, plan, runtime-continuation, runtime-signing-prepare-native]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -1874,7 +1879,7 @@ jobs:
     name: runtime-runtime-aggregate-metadata-aggregate
     needs: [plan, runtime-continuation, runtime-native-attestation, contract-validation]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -1893,6 +1898,9 @@ jobs:
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1982,6 +1990,9 @@ jobs:
           tooling=()
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
           python3 -B ci/product_reuse.py execute-runtime-aggregate ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
             --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
@@ -2002,7 +2013,7 @@ jobs:
     name: runtime-collect-5
     needs: [plan, runtime-continuation, runtime-aggregate, contract-validation]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success' &&
@@ -2025,6 +2036,9 @@ jobs:
           ref: ${{ needs.plan.outputs.validation_commit }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -2181,7 +2195,7 @@ jobs:
     name: runtime-signing-prepare-aggregate
     needs: [workflow-lint, plan, runtime-aggregate-continuation, contract-validation]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -2242,7 +2256,7 @@ jobs:
     name: runtime-aggregate-attestation
     needs: [workflow-lint, plan, runtime-continuation, runtime-native-attestation, runtime-aggregate-continuation, runtime-signing-prepare-aggregate]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' &&
@@ -2469,7 +2483,7 @@ jobs:
           ARTIFACT_SHA256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
           AGGREGATE_KEY: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.aggregate_key || (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_key || needs.runtime-aggregate-attestation.outputs.aggregate_key) }}
           AGGREGATE_RECEIPT: ${{ needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.aggregate_receipt_sha256 || (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.outputs.aggregate_receipt_sha256 || needs.runtime-aggregate-attestation.outputs.aggregate_receipt_sha256) }}
-          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification }}
           ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}

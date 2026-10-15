@@ -38,7 +38,9 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         self.assertIn("--variant-trust-root build/runtime-variant-trust", aggregate)
         self.assertIn("codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-${{ steps.identity.outputs.key_hex }}", aggregate)
         self.assertIn("path: build/runtime-aggregate-worker", aggregate)
-        self.assertNotRegex(aggregate, r"secrets\.|PRIVATE_KEY|runtime_release.py|ssh-keygen")
+        self.assertEqual(["REUSE_AUTHORITY_READ_TOKEN"], re.findall(r"secrets\.([A-Z_]+)", aggregate))
+        self.assertNotRegex(aggregate.replace("secrets.REUSE_AUTHORITY_READ_TOKEN", ""),
+                            r"secrets\.|PRIVATE_KEY|runtime_release.py|ssh-keygen")
         self.assertIn("always()", collector)
         self.assertIn("needs: [plan, runtime-continuation, runtime-aggregate, contract-validation]", collector)
         self.assertNotIn("needs.runtime-aggregate.result == 'success'", collector)
@@ -170,8 +172,8 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
                          {name.strip() for name in needs.group(1).split(",")})
 
     def test_capture_precedes_full_replay_without_setup_signing_or_product_build(self):
-        self.assertIn("if: inputs.sdkRecoveryOnly != true\n        uses: ./.github/actions/capture-runtime-state", self.job)
-        self.assertIn("if: inputs.sdkRecoveryOnly\n        uses: ./.github/actions/capture-runtime-state/route", self.job)
+        self.assertIn("if: inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification\n        uses: ./.github/actions/capture-runtime-state", self.job)
+        self.assertIn("if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification\n        uses: ./.github/actions/capture-runtime-state/route", self.job)
         self.assertLess(self.job.index("id: parent"), self.job.index("id: captured"))
         for forwarding in ("artifact-id: ${{ steps.parent.outputs.artifact_id }}",
                            "artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}",

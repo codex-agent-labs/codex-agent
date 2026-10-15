@@ -269,7 +269,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.event["pull_request"]["head"]["sha"] = self.activation
         self.environment["GITHUB_SHA"] = self.merge
 
-    def sdk_mode(self, *, product_change=False, sdk_change=False, executable_mode=None):
+    def sdk_mode(self, *, product_change=False, sdk_change=False, executable_mode=None, aggregate_correction=None):
         # Real Git trees exercise the shared inventory policy; API identities
         # remain explicit fixtures, never genuine hosted acceptance evidence.
         self.git(self.trusted, "checkout", "--quiet", "--detach", self.reviewed)
@@ -278,7 +278,17 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         if executable_mode is not None:
             self.write(self.trusted, "ci/run-lane.sh", "#!/bin/sh\n# original tooling producer\n")
             (self.trusted / "ci/run-lane.sh").chmod(0o755)
+        if aggregate_correction is not None:
+            self.write(self.trusted, "ci/products/sdk_maven.py", "original Maven writer\n")
         frozen = self.commit(self.trusted, "frozen SDK registry and product inputs")
+        if aggregate_correction is not None:
+            self.write(self.trusted, "ci/products/sdk_maven.py", "reviewed canonical Maven writer\n")
+            correction = self.commit(self.trusted, "independently reviewed aggregate correction")
+            patcher = mock.patch.object(recovery, "SDK_AGGREGATE_CORRECTION", correction)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            if aggregate_correction == "unreviewed":
+                self.write(self.trusted, "ci/products/sdk_maven.py", "another unreviewed writer\n")
         if executable_mode is not None:
             self.write(self.trusted, "ci/run-lane.sh", "#!/bin/sh\n# reviewed tooling producer\n")
             (self.trusted / "ci/run-lane.sh").chmod(executable_mode)
@@ -320,6 +330,23 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_sdk_reviewed_product_input_change_is_rejected(self):
         self.sdk_mode(product_change=True)
+        with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_reviewed_aggregate_correction_preserves_historical_only_acceptance(self):
+        self.sdk_mode(aggregate_correction="reviewed")
+        result = self.verify()
+        self.assertTrue(result["recovery_control_admitted"])
+        self.assertFalse(result["full_acceptance_current"])
+        self.assertEqual(self.producer, result["historical_acceptance_producer"])
+
+    def test_aggregate_exception_rejects_unreviewed_writer(self):
+        self.sdk_mode(aggregate_correction="unreviewed")
+        with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_aggregate_exception_does_not_admit_other_product_changes(self):
+        self.sdk_mode(aggregate_correction="reviewed", product_change=True)
         with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
             self.verify()
 

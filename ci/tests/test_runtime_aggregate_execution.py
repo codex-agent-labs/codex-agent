@@ -16,6 +16,33 @@ from products.registry import NATIVE_TARGETS, PhaseInstanceId
 
 
 class RuntimeAggregateExecutionTest(unittest.TestCase):
+    def test_completed_native_capability_reaches_aggregate_state_verification(self):
+        capability = object()  # composition only; the real state verifier rejects forged capabilities
+        with mock.patch.object(products, "_verified_product_state", side_effect=ValueError("stop at verification")) as verify:
+            with self.assertRaisesRegex(ValueError, "stop at verification"):
+                products.execute_runtime_aggregate(self.root / "plan", self.state_root, self.state_root,
+                    self.destination, expected_build_key=self.key, variant_trust_root=self.trust_root,
+                    repository_root=self.root, environ={}, completed_frozen=capability)
+            self.assertIs(capability, verify.call_args.kwargs["completed_frozen"])
+            self.assertFalse(self.destination.exists())
+
+    def test_cli_passes_authenticated_native_policy_to_aggregate_executor(self):
+        from contextlib import contextmanager
+        import reuse_qualification
+        capability = object()
+        @contextmanager
+        def authenticated(arguments):
+            self.assertEqual(self.root / "native-policy.json", arguments.completed_frozen_policy)
+            yield {"completed_frozen": capability}
+        with mock.patch.object(reuse_qualification, "completed_frozen_options", authenticated), \
+                mock.patch.object(products, "execute_runtime_aggregate") as execute:
+            self.assertEqual(0, products.main(["execute-runtime-aggregate",
+                "--plan", str(self.root / "plan"), "--discovery-root", str(self.state_root),
+                "--destination", str(self.destination), "--expected-build-key", self.key,
+                "--variant-trust-root", str(self.trust_root),
+                "--completed-frozen-policy", str(self.root / "native-policy.json")]))
+            self.assertIs(capability, execute.call_args.kwargs["completed_frozen"])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

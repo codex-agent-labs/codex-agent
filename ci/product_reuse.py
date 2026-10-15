@@ -6129,7 +6129,7 @@ def execute_runtime_aggregate(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Produce deterministic metadata from originals; never sign or rebuild inputs."""
     from runtime_aggregate_phase import collect_inputs, collect_maven_outputs
@@ -6146,6 +6146,7 @@ def execute_runtime_aggregate(
     environment = dict(os.environ if environ is None else environ)
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     ready = state.prior_ready_plans.get(instance)
@@ -10186,7 +10187,7 @@ def parser() -> argparse.ArgumentParser:
     from reuse_qualification import add_completed_frozen_argument
     for name in ("discover", "capture-product-resume-inputs", "resume-products", "advance-products", "collect-runtime-workers",
                  "capture-runtime-resume-upload", "runtime-worker-matrix",
-                 "materialize-product-predecessors", "prepare-contract-resume-controls"):
+                 "materialize-product-predecessors", "prepare-contract-resume-controls", "execute-runtime-aggregate"):
         add_completed_frozen_argument(commands.choices[name])
     return result
 
@@ -10369,7 +10370,7 @@ def main(argv: list[str] | None = None) -> int:
                     arguments.plan, arguments.discovery_root, arguments.state_root,
                     arguments.destination, expected_build_key=arguments.expected_build_key,
                     variant_trust_root=arguments.variant_trust_root, sdk_validation_tooling=tooling,
-                    sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options)
+                    sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options, **semantic)
             elif arguments.command in {"materialize-product-predecessors", "prepare-runtime-phase", "execute-runtime-phase"}:
                 operation = {"materialize-product-predecessors": materialize_product_predecessors,
                              "prepare-runtime-phase": prepare_runtime_phase,
