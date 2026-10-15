@@ -289,6 +289,37 @@ class ProductRestoreTest(unittest.TestCase):
         with mock.patch.object(os, "open", side_effect=replace_root), self.assertRaises(ValueError):
             product_restore._stage_fingerprint(self.stage)
 
+    def test_windows_fingerprint_uses_held_directories_and_rejects_unsafe_walk(self):
+        import ci.products.index as index
+        with mock.patch.object(product_restore, "_is_windows", return_value=True), \
+                mock.patch.object(product_restore, "_open_directory", side_effect=AssertionError("POSIX directory open")), \
+                mock.patch.object(index, "_held_output_parent", wraps=index._held_output_parent) as held:
+            before = product_restore._stage_fingerprint(self.stage)
+            self.assertEqual(before, product_restore._stage_fingerprint(self.stage))
+            self.assertGreater(held.call_count, 2)
+            self.assertIn(str(self.stage / "outputs/artifact.bin"), dict(before))
+            (self.stage / "outputs/artifact.bin").write_bytes(b"changed")
+            self.assertNotEqual(before, product_restore._stage_fingerprint(self.stage))
+            def unreadable(*args, **kwargs):
+                kwargs["onerror"](PermissionError("unreadable directory"))
+                return iter(())
+            with mock.patch.object(product_restore.os, "walk", side_effect=unreadable), \
+                    self.assertRaises(PermissionError):
+                product_restore._stage_fingerprint(self.stage)
+            if os.name != "nt":
+                for target in (self.stage / "outputs", self.receipt_path):
+                    unsafe = self.stage / "unsafe"
+                    unsafe.symlink_to(target, target_is_directory=target.is_dir())
+                    try:
+                        with self.assertRaises((ValueError, OSError)):
+                            product_restore._stage_fingerprint(self.stage)
+                    finally:
+                        unsafe.unlink()
+                alias = self.root / "alias"
+                alias.symlink_to(self.stage, target_is_directory=True)
+                with self.assertRaises((ValueError, OSError)):
+                    product_restore._stage_fingerprint(alias / "outputs")
+
     def test_object_zip_fsync_uses_writable_descriptor(self) -> None:
         output = self.root / "object.zip"
         original_open = os.open

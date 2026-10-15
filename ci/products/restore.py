@@ -1128,20 +1128,27 @@ def _stage_fingerprint(root):
         finally:
             walk.close()
             os.close(anchor)
+    from .index import _held_output_parent, _require_parent_identity
+    def fail(error):
+        raise error
     result = []
-    for current, directories, files in os.walk(root, followlinks=False):
-        directories.sort()
-        for path in (Path(current), *(Path(current) / name for name in sorted(directories))):
-            descriptor = _open_directory(path, "Verified stage directory")
-            try:
-                result.append((str(path), _stat_identity(os.fstat(descriptor))))
-            finally:
+    # Windows directory handles need CreateFileW, not POSIX os.open on a drive.
+    with _held_output_parent(Path(root)) as (anchor, absolute):
+        before = _stat_identity(os.fstat(anchor))
+        for current, directories, files in os.walk(absolute, onerror=fail, followlinks=False):
+            directories.sort()
+            for path in (Path(current), *(Path(current) / name for name in directories)):
+                with _held_output_parent(path) as (descriptor, parent):
+                    result.append((str(path), _stat_identity(os.fstat(descriptor))))
+                    _require_parent_identity(descriptor, parent)
+            for name in sorted(files):
+                path = Path(current) / name
+                descriptor, metadata = _open_safe_regular(path, "Verified stage file")
                 os.close(descriptor)
-        for name in sorted(files):
-            path = Path(current) / name
-            descriptor, metadata = _open_safe_regular(path, "Verified stage file")
-            os.close(descriptor)
-            result.append((str(path), _stat_identity(metadata)))
+                result.append((str(path), _stat_identity(metadata)))
+        _require_parent_identity(anchor, absolute)
+        if _stat_identity(os.fstat(anchor)) != before:
+            raise ValueError("Verified stage directory changed during fingerprint")
     return tuple(result)
 
 
