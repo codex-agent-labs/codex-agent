@@ -156,15 +156,16 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''", action)
         block = action.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
         script = "\n".join(line[8:] for line in block.splitlines())
-        for selector, expected in (("", "provision"), ("77", "setup")):
-            with self.subTest(selector=selector):
+        for selector, expected, nested in (("", "provision", ""), ("77", "setup", ""), ("", "provision", "/trusted source")):
+            with self.subTest(selector=selector, nested=nested):
                 env = {**os.environ, "REUSE_AUTHORITY_READ_TOKEN": "test-only", "APPROVED_ARTIFACT_ID": selector,
                     "GITHUB_ACTION_PATH": str(root / ".github/actions/restore-reuse-qualification"),
-                    "GITHUB_WORKSPACE": "/consumer with spaces", "RUNNER_TEMP": "/runner temp"}
+                    "GITHUB_WORKSPACE": "/consumer with spaces", "CONSUMER_ROOT": nested, "RUNNER_TEMP": "/runner temp"}
                 result = subprocess.run(["bash", "-euc", 'uname() { if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi; }; '
                     'python3() { printf "%s\\n" "$@"; }; bash() { :; };\n' + script],
                     env=env, capture_output=True, text=True, check=True)
                 self.assertEqual(result.stdout.splitlines()[2], expected)
+                self.assertEqual(result.stdout.splitlines()[4], nested or env["GITHUB_WORKSPACE"])
 
     def test_warm_proof_protects_frozen_scope_and_retains_legacy_zero_change_check(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/approved-reuse.yml").read_text()

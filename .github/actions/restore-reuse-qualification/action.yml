@@ -1,6 +1,10 @@
 name: Provision owner-approved reuse verification
 description: Resolve fresh owner-only caller pins; consumers authenticate native completion before reuse.
 inputs:
+  repository-root:
+    required: false
+    default: ''
+    description: Explicit trusted checkout root; defaults to the workspace.
   authority-read-token:
     required: true
     description: Repository-scoped Administration and Contents read credential; never a writer token.
@@ -29,6 +33,7 @@ runs:
       id: native
       shell: bash
       env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
         REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
         GITHUB_TOKEN: ${{ github.token }}
         APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
@@ -47,12 +52,13 @@ runs:
         source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
         operation=provision
         if [ -n "$APPROVED_ARTIFACT_ID" ]; then operation=setup; fi
-        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse"
-        bash "$GITHUB_WORKSPACE/.github/actions/restore-reuse-qualification/install-gh.sh"
+        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse"
+        bash "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}/.github/actions/restore-reuse-qualification/install-gh.sh"
     - name: Provision independent completion pins or authenticate an explicitly selected body qualification
       if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''
       shell: bash
       env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
         REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
         APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
         REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
@@ -66,4 +72,4 @@ runs:
         source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
         selected=()
         if [ -n "$APPROVED_ARTIFACT_ID" ]; then selected=(--artifact-id "$APPROVED_ARTIFACT_ID"); fi
-        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/approved-reuse" ${selected[@]+"${selected[@]}"}
+        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${selected[@]+"${selected[@]}"}

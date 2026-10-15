@@ -52,3 +52,5 @@ This branch owns zero product phases and starts no SDK campaign.
 
 
 Explicit requalification may pin `policy.requalificationBaseline` to an already approved immutable revision in `gitHistory`. The consumer authenticates the original native completion at that revision, then removes every phase whose current owning inventory changed and every dependent phase. Current public trust, versions and phase authorities must still match; Contract must remain complete. Changed phases receive no completion authority and require ordinary admission. Originals and native certificates remain immutable. The old SDK input binding is withheld until a new native checkpoint proves the replacement Runtime aggregate. Omitting this field keeps the existing exact-completion path.
+
+Protected nested-checkout consumers pass `repository-root` explicitly (for example `trusted-source`). Provisioning and pinned gh installation use that same root; candidate checkout code is never executed by the signer. Native completion remains independently authenticated inside each consumer invocation.
