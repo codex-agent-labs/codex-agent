@@ -333,6 +333,21 @@ class SdkWorkflowTest(unittest.TestCase):
     def upload_for_capture(self):
         return {key: self.upload[key] for key in ("artifact_id", "artifact_sha256", "trusted_workflow_sha")}
 
+    def test_maven_capture_scopes_workers_but_preserves_full_collector_state(self):
+        for family, component, target in (("core-binary", "sdk-core", "common"),
+                                           ("android-binary", "sdk-android", "android")):
+            for scoped in (False, True):
+                with self.subTest(family=family, scoped=scoped), \
+                        patch.object(workflow.product_reuse, "capture_runtime_resume_upload") as captured, \
+                        patch.object(workflow, "matrix", return_value={"include": []}):
+                    workflow.capture(self.plan, self.repository / "capture", self.repository / "capture-output",
+                        **self.upload_for_capture(), token="fixture", family=family, scope_inputs=scoped)
+                    if scoped:
+                        self.assertEqual((workflow.PhaseInstanceId("sdk", component, "binary", target),),
+                                         captured.call_args.kwargs["requested_scope"])
+                    else:
+                        self.assertNotIn("requested_scope", captured.call_args.kwargs)
+
     def test_matrix_forwards_exact_caller_workflow_pin_only_when_supplied(self):
         pin = "c" * 40
         self.inspect.return_value = {"readyPlans": []}

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -20,6 +21,18 @@ class SdkWorkflowWiringTest(unittest.TestCase):
 
     def job(self, name):
         return re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", self.workflow)[0]
+
+    def test_maven_capture_scopes_only_worker_inputs(self):
+        action = (ROOT / '.github/actions/capture-runtime-state/action.yml').read_text()
+        start = action.index('if [ "$STATE_PRODUCT" = sdk ] && [ -z "$PREFLIGHT_WAVE" ]; then')
+        script = action[start:action.index('\n            if [', start + 1)]
+        for family in ('core-binary', 'android-binary'):
+            for product, wave, expected in (('sdk', '', '--scope-inputs'), ('sdk', '11', ''), ('runtime', '', '')):
+                with self.subTest(family=family, product=product, wave=wave):
+                    result = subprocess.run(['bash', '-c', 'selected=();\n' + script + '\nprintf "%s" "${selected[*]}"'],
+                        env={**os.environ, 'SDK_FAMILY': family, 'STATE_PRODUCT': product, 'PREFLIGHT_WAVE': wave},
+                        check=True, capture_output=True, text=True)
+                    self.assertEqual(expected, result.stdout)
 
     def test_result_routing_stops_on_cancellation_but_still_handles_failures(self):
         for name in ('sdk-javascript-metadata-result', 'sdk-csharp-binary-result',

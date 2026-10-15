@@ -870,7 +870,8 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         if ios_binary:
             raise ValueError("SDK family and binary projection are mutually exclusive")
     if type(scope_inputs) is not bool or scope_inputs and (ios_binary or family not in
-            {None, 'javascript-metadata', 'native-package', 'native-validation', 'native-metadata', 'csharp-binary'}):
+            {None, 'javascript-metadata', 'native-package', 'native-validation', 'native-metadata',
+             'csharp-binary', 'core-binary', 'android-binary'}):
         raise ValueError('SDK capture scope requires a worker with independent scoped admission')
     product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,

@@ -176,7 +176,7 @@ runs:
             esac
             if [ "$STATE_PRODUCT" = sdk ] && [ -z "$PREFLIGHT_WAVE" ]; then
               case "$SDK_FAMILY" in
-                ''|javascript-metadata|native-package|native-validation|native-metadata|csharp-binary)
+                ''|javascript-metadata|native-package|native-validation|native-metadata|csharp-binary|core-binary|android-binary)
                   selected+=(--scope-inputs) ;;
               esac
             fi

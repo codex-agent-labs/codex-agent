@@ -89,7 +89,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
         verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
-            sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha,
+            sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha, requested_scope=(instance,),
             **sdk_workflow._caller_policies(None, sdk_apple_validation_policy), **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         elected = verified.prior_ready_plans.get(instance)

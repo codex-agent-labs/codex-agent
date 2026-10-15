@@ -160,7 +160,8 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
             "inputs/contract-input/execution-closure/original.json").read_bytes())
         self.assertEqual(workflow.required_contract_components(self.instance),
                          self.projection.call_args.kwargs["required_components"])
-        self.assertEqual({"sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
+        self.assertEqual({"sdk_original_workflow_sha": "e" * 40,
+                          "requested_scope": (self.instance,)}, self.state.call_args.kwargs)
         self.assertIsNone(self.state.call_args.args[-1])
         self.finalize.assert_called_once()
 
@@ -168,6 +169,7 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         self.configure("sdk-android")
         result = self.invoke()
         self.assertEqual("sdk-android", result["receipt"]["component"])
+        self.assertEqual((self.instance,), self.state.call_args.kwargs["requested_scope"])
         self.assertEqual(("android",), self.projection.call_args.kwargs["required_components"])
         self.assertEqual(self.archive.read_bytes(), (self.destination / "android-original" / self.archive.name).read_bytes())
 
@@ -176,7 +178,8 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
         self.invoke(sdk_validation_tooling=tooling, sdk_apple_validation_policy=apple)
         self.assertIs(tooling, self.state.call_args.args[-1])
         self.assertEqual({"sdk_apple_validation_policy": apple,
-                          "sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
+                          "sdk_original_workflow_sha": "e" * 40,
+                          "requested_scope": (self.instance,)}, self.state.call_args.kwargs)
         self.assertEqual({"impact-plan.json", "phase-plan.json", "producer.json",
                           "original-context.json", "original-contract-locator.json"},
                          {path.name for path in (self.destination / "selection").iterdir()})
@@ -201,7 +204,8 @@ class MavenBinaryWorkflowTest(unittest.TestCase):
     def test_metadata_admission_objects_forward_only_to_state_replay(self):
         admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
         self.invoke(**admissions)
-        self.assertEqual({**admissions, "sdk_original_workflow_sha": "e" * 40}, self.state.call_args.kwargs)
+        self.assertEqual({**admissions, "sdk_original_workflow_sha": "e" * 40,
+                          "requested_scope": (self.instance,)}, self.state.call_args.kwargs)
         for name, value in admissions.items():
             self.assertIs(value, self.state.call_args.kwargs[name])
             self.assertNotIn(name, self.worker.call_args.kwargs)

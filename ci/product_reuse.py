@@ -6378,7 +6378,7 @@ def collect_runtime_workers(
     for instance, _ready in selected:
         name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
                 and sdk_worker_job_name is not None else sdk_worker_job_name or _worker_job_name(product, instance))
-        matrix_key = _ready["buildKey"] if product == "sdk" and sdk_worker_job_name is None else None
+        matrix_key = _ready["buildKey"] if product == "sdk" else None
         if any(job.get("status") != "completed" for job in
                _matching_ci_jobs(current_jobs, name, expected_build_key=matrix_key)):
             raise ValueError("An elected Runtime worker is still running; collect after all siblings finish")
@@ -6437,11 +6437,10 @@ def collect_runtime_workers(
                             retained_validation["workflow_sha"] if retained_validation else trusted_workflow_sha})
                     original_observed = _observe_ci_producer_jobs({"worker": original_producer},
                         jobs_by_phase={"worker": job_name}, token=token, **workflow_policy,
-                        **({"build_keys_by_phase": {"worker": ready["buildKey"]}}
-                           if sdk_worker_job_name is None else {}))
+                        build_keys_by_phase={"worker": ready["buildKey"]})
                     original_jobs = original_observed[0]["jobs"]
                     row["originalObservation"] = original_observed
-                matrix_key = ready["buildKey"] if product == "sdk" and sdk_worker_job_name is None else None
+                matrix_key = ready["buildKey"] if product == "sdk" else None
                 matching_jobs = _matching_ci_jobs(original_jobs, job_name, expected_build_key=matrix_key)
                 if len(matching_jobs) != 1:
                     raise ValueError("Runtime worker job is missing or ambiguous")

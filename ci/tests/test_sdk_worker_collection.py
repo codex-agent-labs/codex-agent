@@ -326,6 +326,65 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                         repository_root=self.repository, environ=self.environment, token="synthetic-token",
                         **({"sdk_family": "core-binary"} | route))
 
+    def test_child_matrix_job_keeps_key_ambiguity_live_and_retry_guards(self):
+        from products.inventory import write_canonical_json
+        for case in ("valid", "truncated", "retry", "wrong-key", "ambiguous", "running"):
+            with self.subTest(case=case):
+                instance, ready, _, expected, files = self.shard("binary", component="sdk-core", target="common")
+                state = self.state({instance: ready})
+                write_canonical_json(self.discovery / "producer.json", self.producer)
+                if case == "retry":
+                    state.producer = {**self.producer, "runAttempt": 3}
+                names = self.names
+                with patch.object(self, "names", side_effect=lambda row, key: (self.child_job, names(row, key)[1])), \
+                        patch.object(adapter, "_verified_product_state", return_value=state), \
+                        self.official_api({instance: ready}, {instance: archive(files)}) as (query, listed, downloaded):
+                    original_query, original_listing = query.side_effect, listed.side_effect
+                    def child_run(url, token):
+                        result = original_query(url, token)
+                        if url.endswith(f"/attempts/{self.producer['runAttempt']}"):
+                            return {**result, "referenced_workflows": [*result["referenced_workflows"], {
+                                "path": f"{self.producer['repository']}/{self.child_path}@{PIN}", "sha": PIN}]}
+                        return result
+                    def matrix_jobs(url, field, token):
+                        if "/attempts/3/jobs" in url:
+                            return []
+                        rows = original_listing(url, field, token)
+                        if field != "jobs":
+                            return rows
+                        key = "sha256:" + "f" * 64 if case == "wrong-key" else ready["buildKey"]
+                        name = f"{self.child_job} ({key}, ..."
+                        if case == "truncated":
+                            name = name[:118] + "..."
+                        jobs = [{**row, "name": name,
+                                 "status": "in_progress" if case == "running" else "completed"}
+                                if row["name"] == self.child_job else row for row in rows]
+                        if case == "ambiguous":
+                            jobs.extend(row for row in rows if row["name"] == self.child_job)
+                        return jobs
+                    query.side_effect, listed.side_effect = child_run, matrix_jobs
+                    destination = self.repository / ("child-matrix-" + case)
+                    def collect():
+                        return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                            destination, trusted_workflow_sha=PIN, repository_root=self.repository,
+                            environ={**self.environment, "GITHUB_RUN_ATTEMPT": str(state.producer["runAttempt"])},
+                            token="synthetic-token", sdk_family="core-binary",
+                            sdk_worker_workflow_path=self.child_path, sdk_worker_job_name=self.child_job)
+                    if case == "running":
+                        with self.assertRaisesRegex(ValueError, "still running"):
+                            collect()
+                        downloaded.assert_not_called()
+                        continue
+                    row = collect()["rows"][0]
+                    if case in ("wrong-key", "ambiguous"):
+                        self.assertEqual("failure", row["result"])
+                        downloaded.assert_not_called()
+                    else:
+                        self.assertEqual("success", row["result"], row["reason"])
+                        actual = adapter.verify_phase_shard(destination / row["shardDirectory"], instance)
+                        self.assertEqual(expected["receiptSha256"], actual["receiptSha256"])
+                        self.assertEqual(expected["objectSha256"], actual["objectSha256"])
+
     def test_core_validation_child_binds_each_target_job(self):
         child_path = ".github/workflows/sdk-core-validation.yml"
         job_template = "product-validation / sdk-core-validation-wave / sdk-core-validation-{target}"
