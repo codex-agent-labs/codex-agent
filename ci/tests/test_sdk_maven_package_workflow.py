@@ -233,6 +233,12 @@ class MavenPackageWorkflowTest(unittest.TestCase):
                     fixture.publish.assert_called_once()
                     self.assertNotIn("sdk_validation_tooling", fixture.verified.call_args.kwargs)
                     self.assertNotIn("sdk_apple_validation_policy", fixture.materialized.call_args.kwargs)
+                    self.assertEqual({workflow.PhaseInstanceId("contract", "contract", phase, "common")
+                        for phase in ("binary", "package", "validation", "metadata")} |
+                        {workflow.PhaseInstanceId("sdk", component, "binary", fixture.target)},
+                        set(fixture.materialized.call_args.kwargs["materialized_scope"]))
+                    self.assertEqual((workflow.PhaseInstanceId("sdk", component, "package", fixture.target),),
+                        fixture.verified.call_args.kwargs["requested_scope"])
                     for call in (fixture.verified.call_args, fixture.materialized.call_args):
                         for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
                             self.assertNotIn(name, call.kwargs)

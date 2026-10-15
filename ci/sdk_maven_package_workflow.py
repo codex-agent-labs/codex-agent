@@ -161,6 +161,11 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 prepared = destination / "inputs"
                 ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                     expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                    # Keep the complete Runtime dependency authentication above;
+                    # Maven packaging and its retained reader consume only these stages.
+                    materialized_scope=tuple(PhaseInstanceId("contract", "contract", phase, "common")
+                        for phase in ("binary", "package", "validation", "metadata")) +
+                        (PhaseInstanceId("sdk", component, "binary", target),),
                     sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                 retained[prepared] = _inventory(prepared, allow_empty=True)
