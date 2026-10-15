@@ -349,7 +349,11 @@ runs:
             values['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'core-validation']
         command.extend(part for flag, value in values.items() for part in (flag, value))
-        subprocess.run(command, cwd=root, check=True)
+        java_home = Path(os.environ['JAVA_HOME'])
+        if not java_home.is_absolute():
+            raise ValueError('Core caller JAVA_HOME must be absolute')
+        environment = dict(os.environ, JAVA_HOME=str(java_home.resolve(strict=True)))
+        subprocess.run(command, cwd=root, env=environment, check=True)
         require_no_signing_secret(os.environ)
         PY
     - id: upload

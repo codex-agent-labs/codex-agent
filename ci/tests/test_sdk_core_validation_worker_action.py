@@ -220,6 +220,35 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
                     controller.assert_not_called()
                 path.write_bytes(original)
 
+    def test_execute_normalizes_selected_java_home_before_strict_observation(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            actual = root / 'selected-jdk'
+            actual.mkdir()
+            alias = root / 'toolcache-alias'
+            alias.symlink_to(actual, target_is_directory=True)
+            with patch.dict(os.environ, values, clear=True):
+                exec(self.script('policy'), {})
+            pin = (root / 'output').read_text().splitlines()[0].split('=', 1)[1]
+            values.update(POLICY_SHA256=pin, JAVA_HOME=str(alias), PLAN='plan',
+                DISCOVERY='discovery', STATE='state', BUILD_KEY=KEY,
+                POLICY_REVISION='c' * 40, TRUSTED_WORKFLOW_SHA='d' * 40,
+                GITHUB_TOKEN='caller-token')
+            with patch.dict(os.environ, values, clear=True), patch.object(subprocess, 'run') as run:
+                exec(self.script('execute'), {})
+                self.assertEqual(str(actual), run.call_args.kwargs['env']['JAVA_HOME'])
+                self.assertEqual('caller-token', run.call_args.kwargs['env']['GITHUB_TOKEN'])
+                self.assertTrue(run.call_args.kwargs['check'])
+                self.assertEqual(str(alias), os.environ['JAVA_HOME'])
+                for invalid in ('relative-java', str(root / 'missing-jdk')):
+                    os.environ['JAVA_HOME'] = invalid
+                    run.reset_mock()
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        exec(self.script('execute'), {})
+                    run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
