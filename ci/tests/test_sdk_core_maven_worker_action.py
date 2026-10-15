@@ -32,6 +32,32 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
         compile(script, "core-maven-" + step, "exec")
         return script
 
+    def test_retained_original_skips_production_and_keeps_original_context(self):
+        from ci import sdk_campaign_original_locator as locator
+        source = self.source("retained")
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))
+        self.assertLess(self.action.index("- id: retained"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("if: steps.retained.outputs.reused != 'true'", self.action)
+        self.assertIn("steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'", self.action)
+        origin = {"artifact_id": 77, "artifact_sha256": KEY,
+            "context": {"repositoryRoot": "/original/root", "workerRoot": "/original/root/build/worker"}}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            for selected in (origin, None):
+                output.write_text("")
+                with patch.dict(os.environ, {"PLAN": "/current/plan", "BUILD_KEY": KEY,
+                        "GITHUB_TOKEN": "synthetic-token", "GITHUB_WORKSPACE": str(ROOT),
+                        "GITHUB_OUTPUT": str(output)}, clear=True), \
+                        patch.object(locator, "locate_retained_core_binary_upload", return_value=selected):
+                    exec(compile(source, "retained-core", "exec"), {})
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual("true" if selected else "false", values["reused"])
+                if selected:
+                    self.assertEqual(origin["context"], json.loads(values["original_context"]))
+                    self.assertEqual("77", values["artifact_id"])
+                else:
+                    self.assertEqual({"reused": "false"}, values)
+
     def environment(self, root, phase):
         values = {name: "" for name in (
             "SDK_INPUTS_ID", "SDK_INPUTS_SHA256", "BINARY_ARTIFACT_ID",

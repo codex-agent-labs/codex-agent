@@ -67,17 +67,21 @@ inputs:
 outputs:
   binary-original-context:
     description: Binary only; caller-owned canonical original checkout and worker paths.
-    value: ${{ steps.context.outputs.value }}
+    value: ${{ steps.retained.outputs.original_context || steps.context.outputs.value }}
   binary-artifact-id:
     description: Binary only; official original upload ID, usable only after successful phase collection.
     value: >-
-      ${{ inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.artifact_id ||
+          inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
           steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
           steps.upload.outputs.artifact-digest != '' && steps.upload.outputs.artifact-id || '' }}
   binary-artifact-sha256:
     description: Binary only; official original upload digest, usable only after successful phase collection.
     value: >-
-      ${{ inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.artifact_sha256 ||
+          inputs.phase == 'binary' && steps.execute.outcome == 'success' &&
           steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id != '' &&
           steps.upload.outputs.artifact-digest != '' &&
           format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
@@ -214,8 +218,32 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
-    - id: context
+    - id: retained
       if: inputs.phase == 'binary'
+      name: Locate exact successful Core original before production
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+        from ci.products.inventory import canonical_json_bytes
+        from ci.reuse import github_output
+        origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
+            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'])
+        values = {'reused': 'false'}
+        if origin is not None:
+            values.update(reused='true', artifact_id=str(origin['artifact_id']),
+                artifact_sha256=origin['artifact_sha256'],
+                original_context=canonical_json_bytes(origin['context']).decode().strip())
+        github_output(Path(os.environ['GITHUB_OUTPUT']), values)
+        PY
+    - id: context
+      if: inputs.phase == 'binary' && steps.retained.outputs.reused != 'true'
       name: Record caller-owned original binary invocation context
       shell: bash
       run: |
@@ -236,10 +264,12 @@ runs:
             output.write('value=' + value + '\n')
         PY
     - uses: ./.github/actions/setup-kmp
+      if: steps.retained.outputs.reused != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
     - id: execute
+      if: steps.retained.outputs.reused != 'true'
       name: Execute exact Core Maven controller with held original inputs
       shell: bash
       env:
@@ -319,7 +349,7 @@ runs:
         require_no_signing_secret(os.environ)
         PY
     - id: upload
-      if: always() && steps.identity.outcome == 'success'
+      if: always() && steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-core-${{ inputs.phase }}-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}

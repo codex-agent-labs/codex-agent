@@ -27,6 +27,55 @@ from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
 
 
+def retained_core_binary_origin(build_key, consumer):
+    """Select one successful original; collection still authenticates/adopts it."""
+    producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+        "commit": "91993201e0421db2ae419f183fc84a99318fbd3b", "tree": "b5c395d2de21c9c21ca800470635579266bcb4c9",
+        "event": "pull_request", "runId": 38687858579, "runAttempt": 1, "pullRequest": 31}
+    if (build_key != "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
+            or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+            or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+            or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+        return None
+    return {"producer": producer, "artifact_id": 11951616809,
+        "artifact_sha256": "sha256:86563e64953aafc96835c1ce849b8aee7ce55520d1f53466a70f08c43517ab74",
+        "job_id": 116269992538, "workflow_sha": "128c9dda322497674ba9d2cbef9963010f26e2dc",
+        "workflow_path": ".github/workflows/sdk-core-binary-validation.yml",
+        "job_name": "product-validation / sdk-core-binary-wave / sdk-core-binary-common",
+        "context": {"repositoryRoot": "/Users/runner/work/codex-agent/codex-agent",
+            "workerRoot": "/Users/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker"}}
+
+
+def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_build_key, token, environ=None):
+    """Avoid production for an exact retained success; this grants no admission."""
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_sha256(expected_build_key, "Elected Core binary build key")
+    raw = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    plan = products._validate_plan(Path(plan_path), Path(candidate_root).resolve(strict=True))
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] not in ("pull_request", "merge_group"):
+        raise ValueError("Retained Core lookup requires an authorized PR or merge-group plan")
+    before = canonical_json_bytes(plan)
+    consumer = products.validate_producer(products._consumer(plan, environment)["producer"])
+    origin = retained_core_binary_origin(expected_build_key, consumer)
+    if origin is not None:
+        producer = origin["producer"]
+        name = (f"codex-agent-sdk-worker-sdk-core-binary-common-{expected_build_key[7:]}-"
+                f"{producer['tree']}-attempt-{producer['runAttempt']}")
+        located = _locate(producer, phase="binary", job=origin["job_name"], name=name, token=token,
+            trusted_workflows_by_phase={"binary": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+            expected_build_key=expected_build_key, expected_job_id=origin["job_id"])
+        if located != {key: origin[key] for key in ("artifact_id", "artifact_sha256")}:
+            raise ValueError("Retained Core upload differs from its reviewed successful original")
+    require_no_signing_secret(environment)
+    if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
+            or canonical_json_bytes(plan) != before
+            or products.validate_producer(products._consumer(plan, environment)["producer"]) != consumer
+            or origin != retained_core_binary_origin(expected_build_key, consumer)):
+        raise ValueError("Retained Core election or original changed during lookup")
+    return origin
+
+
 def fresh_sdk_worker_route(instance, receipt):
     """Return the fixed original workflow job and upload name for one phase."""
     if instance.component == "sdk-android":

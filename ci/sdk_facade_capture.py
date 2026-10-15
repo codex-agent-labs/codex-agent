@@ -201,6 +201,16 @@ def _capture_sdk_upload(
         if plan["remoteBuildAuthorized"] is not True or plan["event"] not in {"pull_request", "merge_group"}:
             raise ValueError("Core worker capture requires an authorized PR or merge-group plan")
         plan_value = canonical_json_bytes(plan)
+        retained_core = None
+        if instance == PhaseInstanceId("sdk", "sdk-core", "binary", "common"):
+            from sdk_campaign_original_locator import retained_core_binary_origin
+            origin = retained_core_binary_origin(receipt["buildKey"], products._consumer(plan, environment)["producer"])
+            if origin is not None and producer == origin["producer"]:
+                if (artifact_id, artifact_sha256, trusted_workflow_path, job) != (
+                        origin["artifact_id"], origin["artifact_sha256"], origin["workflow_path"], origin["job_name"]):
+                    raise ValueError("Retained Core capture differs from its reviewed original route/upload")
+                retained_core = origin
+                trusted_workflow_sha = origin["workflow_sha"]
 
         def unchanged():
             require_no_signing_secret(environment)
@@ -208,6 +218,9 @@ def _capture_sdk_upload(
                     or _read(captured_plan) != plan_bytes or canonical_json_bytes(receipt) != receipt_bytes
                     or canonical_json_bytes(plan) != plan_value):
                 raise ValueError("Core capture original receipt or caller plan changed")
+            if retained_core is not None and retained_core != retained_core_binary_origin(
+                    receipt["buildKey"], products._consumer(plan, environment)["producer"]):
+                raise ValueError("Retained Core capture original or current consumer changed")
 
         unchanged()
         workflow_path = (_VALIDATION_WORKFLOW_PATH if family == "facade-validation" else
@@ -216,11 +229,15 @@ def _capture_sdk_upload(
             if workflow_path is None else {"trusted_workflows_by_phase": {family: {
                 "path": workflow_path, "sha": trusted_workflow_sha}}})
         observed = products._observe_ci_producer_jobs({family: producer},
-            jobs_by_phase={family: job}, token=token, **workflow_policy)
-        jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]
+            jobs_by_phase={family: job}, build_keys_by_phase={family: receipt["buildKey"]},
+            token=token, **workflow_policy)
+        jobs = products._matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=receipt["buildKey"])
         if len(jobs) != 1:
             raise ValueError("Core original worker job is missing or ambiguous")
         official_job = jobs[0]
+        if retained_core is not None and official_job.get("id") != retained_core["job_id"]:
+            raise ValueError("Retained Core capture differs from its reviewed original job")
+        job = official_job["name"]
         labels = official_job.get("labels")
         if (type(labels) is not list or any(type(label) is not str for label in labels)
                 or runner not in labels):

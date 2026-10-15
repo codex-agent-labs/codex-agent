@@ -18,7 +18,7 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, git_regular_blob_bytes,
     load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
-    require_integer, require_semver, require_sha256, sha256_file, snapshot_regular_tree,
+    require_integer, require_regular_directory, require_semver, require_sha256, sha256_file, snapshot_regular_tree,
 )
 from products.plan import _contract_projection_from_request
 from products.receipt import validate_phase_receipt
@@ -295,6 +295,11 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
             names = {"inputs", "selection", "worker", "shard"}
             names.update({"sdk-inputs-original", "binary-contract-original", "binary-original"} if phase == "package" else
                          {"android-original"} if component == "sdk-android" else set())
+            # Authenticated diagnostic transport; never execution or admission authority.
+            seed = original / "worker-dependency-seed"
+            if seed.exists():
+                require_regular_directory(seed, "Original Maven dependency seed")
+                names.add("worker-dependency-seed")
             _layout(original, names)
             instance = PhaseInstanceId("sdk", component, phase, target)
             shard = verify_phase_shard(original / "shard", instance)

@@ -18,6 +18,47 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class SdkCampaignOriginalLocatorTest(TestCase):
+    def test_retained_core_lookup_binds_election_original_and_lifetime(self):
+        key = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
+        consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
+        origin = locator.retained_core_binary_origin(key, consumer)
+        self.assertEqual(11951616809, origin["artifact_id"])
+        for change in ({"repository": "other/repository"}, {"workflowPath": "other.yml"},
+                       {"pullRequest": 32}, {"event": "merge_group"}, {"runId": True},
+                       {"runAttempt": 0}, {"runId": 38687858579}, {"runId": 38687858578}):
+            self.assertIsNone(locator.retained_core_binary_origin(key, {**consumer, **change}))
+        self.assertIsNone(locator.retained_core_binary_origin("sha256:" + "0" * 64, consumer))
+        plan = {"event": "pull_request", "remoteBuildAuthorized": True}
+        path = self.fixture.plan_path
+        before = path.read_bytes()
+        def call():
+            return locator.locate_retained_core_binary_upload(path, self.fixture.repository,
+                expected_build_key=key, token="synthetic-token", environ={})
+        with patch.object(locator.products, "_validate_plan", return_value=plan), \
+                patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                patch.object(locator, "_locate", return_value={field: origin[field] for field in
+                    ("artifact_id", "artifact_sha256")}) as observe:
+            self.assertEqual(origin, call())
+            self.assertEqual(origin["job_id"], observe.call_args.kwargs["expected_job_id"])
+            self.assertEqual(key, observe.call_args.kwargs["expected_build_key"])
+            self.assertEqual({"binary": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+                             observe.call_args.kwargs["trusted_workflows_by_phase"])
+            observe.return_value = {"artifact_id": 999, "artifact_sha256": origin["artifact_sha256"]}
+            with self.assertRaisesRegex(ValueError, "reviewed successful original"): call()
+            observe.return_value = {field: origin[field] for field in ("artifact_id", "artifact_sha256")}
+            for mutation in (lambda *a, **k: path.write_bytes(b"changed"),
+                             lambda producer, **k: producer.update(tree="f" * 40)):
+                def changed(*args, **kwargs):
+                    mutation(*args, **kwargs)
+                    return observe.return_value
+                observe.side_effect = changed
+                with self.assertRaisesRegex(ValueError, "changed during lookup"): call()
+                path.write_bytes(before)
+            observe.reset_mock(side_effect=True)
+            plan["remoteBuildAuthorized"] = False
+            with self.assertRaisesRegex(ValueError, "authorized"): call()
+            observe.assert_not_called()
+
     def setUp(self):
         self.fixture = fixture_module.SdkWorkerCollectionTest()
         self.fixture.setUp()

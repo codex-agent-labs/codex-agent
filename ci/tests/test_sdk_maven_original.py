@@ -314,6 +314,21 @@ class MavenOriginalTest(unittest.TestCase):
         self.assertIs(self.package_gate.call_args.kwargs["binary_contract_evidence"], self.evidence)
         self.assertNotEqual(self.producer["runId"], 999)
 
+    def test_dependency_seed_remains_opaque_immutable_diagnostic(self):
+        self.prepare(component="sdk-core", phase="binary")
+        seed = self.original / "worker-dependency-seed"
+        seed.mkdir()
+        (seed / "diagnostic.json").write_bytes(b"opaque dependency cache")
+        with self.call() as result:
+            self.assertEqual(self.receipt, result["receipt"])
+        self.binary_gate.assert_called_once()
+        with self.assertRaisesRegex(ValueError, "changed"):
+            with self.call(retained=True):
+                (seed / "diagnostic.json").write_bytes(b"changed")
+        (self.original / "unreviewed-extra").mkdir()
+        with self.assertRaisesRegex(ValueError, "unexpected layout"):
+            with self.call(): pass
+
     def test_fixed_command_requires_independent_original_context(self):
         self.prepare()
         with self.assertRaisesRegex(ValueError, "producer record"), self.call(

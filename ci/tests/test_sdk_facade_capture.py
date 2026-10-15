@@ -257,6 +257,42 @@ class CoreBinaryCaptureTest(FacadeCaptureTest):
     targets = ("common",)
     required_directories = ("inputs", "worker", "selection")
 
+    def test_matrix_job_requires_exact_key_and_unique_original(self):
+        base = self.jobs[0]["name"]
+        for case in ("full", "truncated", "wrong-key", "ambiguous"):
+            with self.subTest(case=case):
+                key = "sha256:" + "f" * 64 if case == "wrong-key" else self.receipt["buildKey"]
+                name = f"{base} ({key}, ..."
+                if case == "truncated": name = name[:118] + "..." if len(name) > 121 else name
+                self.jobs[0]["name"] = name
+                if case == "ambiguous": self.jobs.append({**self.jobs[0], "id": 20})
+                if case in ("full", "truncated"):
+                    self.call()
+                    shutil.rmtree(self.output)
+                else:
+                    with self.assertRaisesRegex(ValueError, "missing or ambiguous"): self.call()
+
+    def test_retained_core_binary_keeps_original_publisher_and_exact_locator(self):
+        if (self.component, self.phase) != ("sdk-core", "binary"):
+            self.skipTest("Exact retained Core binary only")
+        path = ".github/workflows/sdk-core-binary-validation.yml"
+        job = "product-validation / sdk-core-binary-wave / sdk-core-binary-common"
+        origin = {"producer": self.producer, "artifact_id": 701, "artifact_sha256": self.artifact["digest"],
+            "workflow_path": path, "workflow_sha": self.pin, "job_name": job, "job_id": self.jobs[0]["id"]}
+        self.run["referenced_workflows"][0]["path"] = f"codex-agent-labs/codex-agent/{path}@{self.pin}"
+        self.jobs[0]["name"] = f"{job} ({self.receipt['buildKey']}, ..."[:118] + "..."
+        with patch("sdk_campaign_original_locator.retained_core_binary_origin", return_value=origin):
+            arguments = dict(trusted_workflow_path=path, trusted_job_name=job, trusted_workflow_sha="f" * 40)
+            self.call(**arguments)
+            shutil.rmtree(self.output)
+            for changes in ({"artifact_id": 702}, {"trusted_job_name": job + "-wrong"},
+                            {"trusted_workflow_path": ".github/workflows/product-validation.yml"}):
+                with self.assertRaisesRegex(ValueError, "reviewed original route/upload"):
+                    self.call(**{**arguments, **changes})
+            origin["job_id"] += 1
+            with self.assertRaisesRegex(ValueError, "reviewed original job"):
+                self.call(**arguments)
+
     def test_paired_caller_pinned_child_route(self):
         if self.component != "sdk-core" or self.phase not in ("binary", "package"):
             self.skipTest("Only Core binary/package use child workflows")

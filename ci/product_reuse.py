@@ -6283,10 +6283,13 @@ def _collected_sdk_identity(shard, verified, producer, workflow_sha):
 
 def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
     from sdk_apple_upload_locator import retained_validation_origin
+    from sdk_campaign_original_locator import retained_core_binary_origin
     receipt = verified["receipt"]
     origin = (retained_validation_origin(receipt["target"], receipt["buildKey"], consumer["producer"])
               if (receipt["product"], receipt["component"], receipt["phase"]) ==
                  ("sdk", "sdk-ios", "validation") else None)
+    if _identity(receipt) == PhaseInstanceId("sdk", "sdk-core", "binary", "common"):
+        origin = retained_core_binary_origin(receipt["buildKey"], consumer["producer"])
     original = (origin["producer"] if origin is not None and receipt["producer"] == origin["producer"] else
                 _same_run_state_consumer(consumer, receipt["producer"])["producer"])
     if verified["receipt"]["product"] != "sdk":
@@ -6410,21 +6413,29 @@ def collect_runtime_workers(
                 original_producer, original_observed, original_jobs = producer, observed, jobs
                 candidates = [item for item in artifacts if isinstance(item, dict) and item.get("name") == artifact_name]
                 retained_validation = retained_attestation = None
+                retained_core = None
                 if sdk_family == "ios-validation":
                     from sdk_apple_upload_locator import retained_validation_origin, observe_retained_validation_attestation
                     retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
                     retained_attestation = observe_retained_validation_attestation(
                         instance.target, ready["buildKey"], producer, token=token)
-                    if retained_validation is not None:
-                        original_producer = retained_validation["producer"]
-                        artifact_name = (_worker_artifact_prefix(product, instance) + ready["buildKey"][7:] + "-"
-                            + original_producer["tree"] + f"-attempt-{original_producer['runAttempt']}")
-                        candidates = [api_json(f"https://api.github.com/repos/{original_producer['repository']}/actions/artifacts/"
-                            + str(retained_validation["artifact_id"]), token)]
-                        if (candidates[0].get("id"), candidates[0].get("digest")) != (
-                                retained_validation["artifact_id"], retained_validation["artifact_sha256"]):
-                            raise ValueError("Retained Apple worker differs from its reviewed successful upload")
-                        row["artifactName"] = artifact_name
+                elif sdk_family == "core-binary":
+                    from sdk_campaign_original_locator import retained_core_binary_origin
+                    retained_core = retained_core_binary_origin(ready["buildKey"], producer)
+                    if retained_core is not None and (sdk_worker_workflow_path, job_name) != (
+                            retained_core["workflow_path"], retained_core["job_name"]):
+                        raise ValueError("Retained Core worker requires its exact child workflow route")
+                retained_worker = retained_validation or retained_core
+                if retained_worker is not None:
+                    original_producer = retained_worker["producer"]
+                    artifact_name = (_worker_artifact_prefix(product, instance) + ready["buildKey"][7:] + "-"
+                        + original_producer["tree"] + f"-attempt-{original_producer['runAttempt']}")
+                    candidates = [api_json(f"https://api.github.com/repos/{original_producer['repository']}/actions/artifacts/"
+                        + str(retained_worker["artifact_id"]), token)]
+                    if (candidates[0].get("id"), candidates[0].get("digest")) != (
+                            retained_worker["artifact_id"], retained_worker["artifact_sha256"]):
+                        raise ValueError("Retained SDK worker differs from its reviewed successful upload")
+                    row["artifactName"] = artifact_name
                 if not candidates and product == "sdk":
                     prefix = artifact_name.rsplit("-attempt-", 1)[0]
                     for attempt in range(producer["runAttempt"] - 1, 0, -1):
@@ -6436,10 +6447,11 @@ def collect_runtime_workers(
                             row["artifactName"] = artifact_name
                             break
                 if product == "sdk" and (original_producer != producer or resume_producer != producer):
+                    original_workflow_sha = retained_worker["workflow_sha"] if retained_worker else trusted_workflow_sha
                     workflow_policy = ({"trusted_workflows_by_phase": {"worker": {
-                        "path": sdk_worker_workflow_path, "sha": trusted_workflow_sha}}}
+                        "path": sdk_worker_workflow_path, "sha": original_workflow_sha}}}
                         if sdk_worker_workflow_path is not None else {"trusted_workflow_sha":
-                            retained_validation["workflow_sha"] if retained_validation else trusted_workflow_sha})
+                            original_workflow_sha})
                     original_observed = _observe_ci_producer_jobs({"worker": original_producer},
                         jobs_by_phase={"worker": job_name}, token=token, **workflow_policy,
                         build_keys_by_phase={"worker": ready["buildKey"]})
@@ -6450,8 +6462,8 @@ def collect_runtime_workers(
                 if len(matching_jobs) != 1:
                     raise ValueError("Runtime worker job is missing or ambiguous")
                 job = matching_jobs[0]
-                if retained_validation is not None and job.get("id") != retained_validation["job_id"]:
-                    raise ValueError("Retained Apple worker differs from its reviewed successful job")
+                if retained_worker is not None and job.get("id") != retained_worker["job_id"]:
+                    raise ValueError("Retained SDK worker differs from its reviewed successful job")
                 job_name = job["name"]
                 row["jobName"] = job_name
                 require_integer(job.get("id"), "Runtime worker job ID", 1)
@@ -6478,7 +6490,7 @@ def collect_runtime_workers(
                 retained.mkdir(parents=True)
                 archive = retained / "transport.zip"
                 if job.get("conclusion") == "success" and not signer_failed:
-                    if retained_validation is not None:
+                    if retained_worker is not None:
                         from sdk_handoff import _ensure_observed_sdk_commit
                         _ensure_observed_sdk_commit(root, original_producer, token)
                     artifact, _ = _download_contract_ci_upload(

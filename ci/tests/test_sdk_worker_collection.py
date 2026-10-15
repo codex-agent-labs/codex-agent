@@ -278,6 +278,69 @@ class SdkWorkerCollectionTest(unittest.TestCase):
             self.assertEqual("success", result["rows"][0]["result"])
             self.assertEqual(self.child_job, result["rows"][0]["jobName"])
 
+    def test_retained_core_original_needs_fresh_collection_session_and_exact_child(self):
+        instance, ready, _, _, files = self.shard("binary", component="sdk-core", target="common")
+        raw = archive(files)
+        original = dict(self.producer)
+        artifact_name = self.names(instance, ready["buildKey"])[1]
+        self.producer = {**original, "runId": 8, "runAttempt": 1, "commit": "d" * 40, "tree": "e" * 40}
+        self.environment.update(GITHUB_RUN_ID="8", GITHUB_RUN_ATTEMPT="1")
+        origin = {"producer": original, "artifact_id": 901, "artifact_sha256": sha256_bytes(raw),
+            "job_id": 901, "workflow_sha": "f" * 40, "workflow_path": self.child_path, "job_name": self.child_job}
+        original_job = {"id": 901, "name": f"{self.child_job} ({ready['buildKey']}, ..."[:118] + "...",
+            "run_id": original["runId"], "head_sha": original["commit"], "status": "completed", "conclusion": "success",
+            "started_at": "2026-09-08T10:00:00Z", "completed_at": "2026-09-08T10:10:00Z"}
+        observe = adapter._observe_ci_producer_jobs
+        def observed(producers, **kwargs):
+            if "worker" not in producers: return observe(producers, **kwargs)
+            self.assertEqual(original, producers["worker"])
+            self.assertEqual({"worker": {"path": self.child_path, "sha": origin["workflow_sha"]}},
+                             kwargs["trusted_workflows_by_phase"])
+            self.assertEqual({"worker": ready["buildKey"]}, kwargs["build_keys_by_phase"])
+            return [{"run": {"head_sha": original["commit"]}, "jobs": [original_job]}]
+        destination = self.repository / "build/retained-core"
+        with adapter.verification_session(), \
+                patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
+                self.official_api({instance: ready}, {instance: raw}) as (query, _, downloaded), \
+                patch("sdk_campaign_original_locator.retained_core_binary_origin", return_value=origin), \
+                patch.object(adapter, "_observe_ci_producer_jobs", side_effect=observed), \
+                patch("sdk_handoff._ensure_observed_sdk_commit") as source:
+            old_query = query.side_effect
+            def original_metadata(url, token):
+                value = old_query(url, token)
+                if "/actions/artifacts/" in url:
+                    return {**value, "name": artifact_name,
+                            "workflow_run": {"id": original["runId"], "head_sha": original["commit"]}}
+                if url.endswith("/attempts/1"):
+                    return {**value, "referenced_workflows": [*value["referenced_workflows"],
+                        {"path": f"{self.producer['repository']}/{self.child_path}@{PIN}", "sha": PIN}]}
+                return value
+            query.side_effect = original_metadata
+            def collect(path, child=self.child_path):
+                return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
+                    path, trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
+                    token="synthetic-token", sdk_family="core-binary",
+                    sdk_worker_workflow_path=child, sdk_worker_job_name=self.child_job)
+            result = collect(destination)
+            row, = result["rows"]
+            self.assertEqual("success", row["result"], row["reason"])
+            source.assert_called_once_with(self.repository, original, "synthetic-token")
+            downloaded.assert_called_once()
+            shard = destination / row["shardDirectory"]
+            verified = adapter.verify_phase_shard(shard, instance)
+            self.assertEqual(original, verified["receipt"]["producer"])
+            self.assertEqual(original, adapter._require_collected_sdk_original(
+                shard, verified, {"producer": self.producer}, PIN))
+            with self.assertRaisesRegex(ValueError, "fresh authenticated"):
+                adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, "d" * 40)
+            original_job["id"] = 902
+            failed = collect(self.repository / "build/wrong-original-job")
+            self.assertIn("reviewed successful job", failed["rows"][0]["reason"])
+            downloaded.assert_called_once()
+        with patch("sdk_campaign_original_locator.retained_core_binary_origin", return_value=origin), \
+                self.assertRaisesRegex(ValueError, "fresh authenticated"):
+            adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, PIN)
+
             for mutation in ("missing", "duplicate", "sha"):
                 def wrong_run(url, token):
                     result = child_run(url, token)
