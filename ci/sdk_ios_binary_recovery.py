@@ -442,7 +442,7 @@ def capture_completed_ios_binary(destination, artifact_root, *, completed_frozen
     if type(completed_frozen) is not CompletedFrozenReuse:
         raise ValueError("Completed SDK capture requires concrete native authority")
     sdk = completed_frozen.sdk_original()
-    if sdk is None:
+    if sdk is None or products._identity(sdk["spec"]["completedPhase"]) not in completed_frozen.completed_phases():
         return []
     _, artifact, observed = completed_frozen.observe_sdk(plan=plan, producer=producer, token=token)
     record = sdk["spec"]["completedPhase"]
@@ -493,7 +493,8 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
                 component=instance.component, target=instance.target, completed_frozen=completed_frozen))
     from products.restore import bounded_verify
     with products._ci_observation_batch():
-        return bounded_verify(capture_one, extension["spec"]["completedPhases"])
+        return bounded_verify(capture_one, [row for row in extension["spec"]["completedPhases"]
+            if products._identity(row) in completed_frozen.completed_phases()])
 
 
 def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, destination,

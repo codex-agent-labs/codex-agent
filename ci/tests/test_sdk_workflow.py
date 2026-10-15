@@ -242,6 +242,27 @@ class SdkWorkflowTest(unittest.TestCase):
             self.assertEqual(7, workflow.main(["native-metadata", "--plan", "original plan"]))
             execute.assert_called_once_with(["--plan", "original plan"])
 
+    def test_changed_aggregate_requires_full_input_admission_until_requalified(self):
+        aggregate = workflow.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        for complete in (False, True):
+            cap = SimpleNamespace(completed_phases=lambda: (aggregate,) if complete else ())
+            def capture(plan, destination, **kwargs):
+                destination.mkdir()
+                self.assertEqual(cap if complete else None, kwargs.get("completed_frozen"))
+            with self.subTest(complete=complete), \
+                    patch.object(workflow, "_selection", return_value=(
+                        {"validationCommit": self.revision},
+                        {"source": "current-runtime", "contractPayloadSha256": "sha256:" + "a" * 64},
+                        self.plan.read_bytes())), \
+                    patch.object(workflow.product_reuse, "capture_sdk_inputs_upload", side_effect=capture), \
+                    patch.object(workflow, "verified_apple_original_inputs", side_effect=lambda *a, **k: nullcontext({})) as full, \
+                    patch.object(workflow, "_completed_sdk_inputs", side_effect=lambda *a, **k: nullcontext({})) as native:
+                with workflow.verified_inputs(self.plan, self.discovery, self.state, **self.arguments,
+                        **self.upload_for_capture(), completed_frozen=cap):
+                    pass
+                self.assertEqual(int(complete), native.call_count)
+                self.assertEqual(int(not complete), full.call_count)
+
     def test_verified_inputs_forwards_identical_caller_tooling_to_selection_not_imported_policy(self):
         caller_policy = {"evidence": self.root / "caller-tooling", "policyRevision": self.revision}
         imported_policy = {"evidence": self.root / "untrusted-transported-tooling", "policyRevision": "f" * 40}

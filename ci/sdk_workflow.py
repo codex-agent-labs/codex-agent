@@ -618,10 +618,17 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                                                     sdk_android_metadata_admission=sdk_android_metadata_admission))
     with tempfile.TemporaryDirectory(prefix="sdk-consumer-inputs-") as temporary:
         capture = Path(temporary).resolve() / "capture"
+        # A requalified aggregate needs ordinary admission until a new native
+        # checkpoint proves it; unchanged predecessor proofs cannot replace it.
+        input_completion = completed_frozen
+        if (input_completion is not None and PhaseInstanceId(
+                "runtime", "runtime-aggregate", "metadata", "aggregate")
+                not in input_completion.completed_phases()):
+            input_completion = None
         product_reuse.capture_sdk_inputs_upload(plan, capture, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             expected_source=selection["source"], repository_root=repository_root, environ=environ, token=token,
-            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+            **({"completed_frozen": input_completion} if input_completion is not None else {}),
             **({'retained_sdk_inputs_source': retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}))
         inventory = regular_file_inventory(capture, allow_empty=True)
 
@@ -630,9 +637,9 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                     or read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes):
                 raise ValueError("SDK consumer original plan or captured upload changed during use")
 
-        verifier = verified_apple_original_inputs if completed_frozen is None else _completed_sdk_inputs
-        options = ({"expected_source": selection["source"]} if completed_frozen is None else
-                   {"completed_frozen": completed_frozen})
+        verifier = verified_apple_original_inputs if input_completion is None else _completed_sdk_inputs
+        options = ({"expected_source": selection["source"]} if input_completion is None else
+                   {"completed_frozen": input_completion})
         with verifier(capture, **options,
                 keyring=keyring, keys_directory=keys_directory,
                 selection_repository_root=repository_root, selection_revision=validated["validationCommit"],

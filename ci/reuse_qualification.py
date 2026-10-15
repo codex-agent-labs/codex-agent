@@ -754,7 +754,7 @@ class CompletedFrozenReuse:
     private product state. Bodies remain digest-checked when actually consumed.
     Only fetch_completed_frozen can create it after fresh native authentication.
     """
-    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_bodies", "_sdk", "_contract", "_body_cache")
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible")
 
     def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None):
         if verified is not _COMPLETED_FROZEN:
@@ -764,6 +764,7 @@ class CompletedFrozenReuse:
                                for row in receipts)
         self._verified = verified
         self._revision = revision
+        self._eligible = None
         self._sdk = None if sdk is None else canonical_json_bytes(sdk)
         self._body_cache = None if body_cache is None else str(Path(body_cache))
         self._originals = frozenset((canonical_json_bytes(record["identity"]["locator"]),
@@ -786,7 +787,12 @@ class CompletedFrozenReuse:
         if self._verified is not _COMPLETED_FROZEN:
             raise TypeError("Completed reuse has no semantic authority")
         spec = load_canonical_json_bytes(self._spec)
-        return spec, _phase_records(spec["expectedResult"]["phases"], "Frozen phases")
+        phases = _phase_records(spec["expectedResult"]["phases"], "Frozen phases")
+        return spec, {identity: row for identity, row in phases.items()
+                      if self._eligible is None or identity in self._eligible}
+
+    def completed_phases(self):
+        return tuple(sorted(self._values()[1]))
 
     def check_request(self, request):
         """Require exact current candidates; additions never disappear into a hit."""
@@ -1278,7 +1284,8 @@ class CompletedFrozenReuse:
 
 @measured
 def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha256,
-                           repository_root, revision, sdk_completion=None, **original):
+                           repository_root, revision, sdk_completion=None,
+                           requalification_baseline=None, **original):
     """Use an independently approved frozen semantic issuer for an approved consumer.
 
     All pins are caller policy. In particular the old verifier policy cannot be
@@ -1297,6 +1304,9 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     if not _compatible_verifier(consumer_commit):
         raise QualificationIncompatible("Completed reuse consumer differs from its independent approval")
     root = Path(repository_root).resolve(strict=True)
+    current_revision = revision
+    if requalification_baseline is not None:
+        revision = _commit(requalification_baseline)
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root, original["signer_commit"],
         "ci/tests/data/hosted-frozen-reuse.json", max_bytes=LIMIT))
 
@@ -1360,8 +1370,46 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
             receipts.extend(added_receipts)
     count = int(sdk is not None) + (len(sdk["extension"]["spec"]["completedPhases"]) if sdk and "extension" in sdk else 0)
     report.update(completedFrozenPhases=len(phases), completedSdkPhases=count, productBodiesDownloaded=0)
-    return CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
-        originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies"), report
+    cap = CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
+        originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies")
+    if requalification_baseline is not None:
+        invalidated = _restrict_completed_reuse(cap, root, current_revision)
+        report.update(requalificationBaseline=revision,
+            invalidatedPhases=[products._identity_record(instance) for instance in invalidated],
+            completedFrozenPhases=sum(instance.product != "sdk" for instance in cap.completed_phases()),
+            completedSdkPhases=sum(instance.product == "sdk" for instance in cap.completed_phases()))
+    return cap, report
+
+
+def _restrict_completed_reuse(cap, root, revision):
+    """Remove changed phases and descendants from an already authenticated capability."""
+    import product_reuse as products
+    from products.inventory import tree_entries
+    from products.registry import phase_instance_dependencies
+    from products.selection import phase_inventory_paths
+    _commit(revision)
+    spec, phases = cap._values()
+    before, after = (dict(tree_entries(root, commit)) for commit in (cap._revision, revision))
+    changed = _changed_inventory_paths(before, after)
+    if any(path == "gradle/release/product-signing-keys.json" or path.startswith("gradle/release/keys/")
+           for path in changed):
+        raise QualificationIncompatible("Requalification changes public trust")
+    authorities, unavailable = products._authorities(root, revision, tuple(sorted(phases)))
+    expected = _phase_records(spec["request"]["phaseAuthorities"], "Native predecessor authorities")
+    if (unavailable or authorities != [expected[instance] for instance in sorted(phases)]
+            or products._versions(root, revision) != spec["request"]["versions"]):
+        raise QualificationIncompatible("Requalification changes current authorities or versions")
+    eligible = {instance for instance in phases if not phase_inventory_paths(changed, instance)}
+    while True:
+        retained = {instance for instance in eligible if set(phase_instance_dependencies(instance)) <= eligible}
+        if retained == eligible:
+            break
+        eligible = retained
+    if any(instance.product == "contract" and instance not in eligible for instance in phases):
+        raise QualificationIncompatible("Requalification requires unchanged complete Contract evidence")
+    cap._eligible = frozenset(eligible)
+    cap._revision = revision
+    return tuple(sorted(set(phases) - eligible))
 
 
 def _native_pin_arguments(value):
@@ -1480,7 +1528,8 @@ def completed_frozen_options(arguments, *, defer=False):
     original_plan = read_regular_file_bytes(plan_path, max_bytes=LIMIT, reject_symlink_parents=True)
     original_policy = read_regular_file_bytes(path, max_bytes=4096, reject_symlink_parents=True)
     policy = load_canonical_json_bytes(original_policy)
-    extra = {"sdkCompletion"} if type(policy) is dict and "sdkCompletion" in policy else set()
+    extra = {name for name in ("sdkCompletion", "requalificationBaseline")
+             if type(policy) is dict and name in policy}
     require_exact_keys(policy, {
         "schemaVersion", "kind", "consumerCommit", "verifierPolicySha256", "artifactId", "artifactSha256",
         "runId", "runAttempt", "signerCommit", "sourceCommit"} | extra, "Caller completed reuse policy")
@@ -1496,7 +1545,9 @@ def completed_frozen_options(arguments, *, defer=False):
         def authenticate():
             cap, _ = fetch_completed_frozen(Path(temporary).resolve() / "native", repository_root=root,
                 revision=plan["validationCommit"], token=os.environ.get("GITHUB_TOKEN", ""),
-                **({"sdk_completion": policy["sdkCompletion"]} if extra else {}),
+                **({"sdk_completion": policy["sdkCompletion"]} if "sdkCompletion" in extra else {}),
+                **({"requalification_baseline": policy["requalificationBaseline"]}
+                   if "requalificationBaseline" in extra else {}),
                 **{argument: policy[field] for argument, field in (
                     ("consumer_commit", "consumerCommit"), ("verifier_policy_sha256", "verifierPolicySha256"),
                     ("artifact_id", "artifactId"), ("artifact_sha256", "artifactSha256"), ("run_id", "runId"),

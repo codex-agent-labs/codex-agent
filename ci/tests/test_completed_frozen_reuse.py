@@ -334,6 +334,24 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exact proved identity"):
                 cap.envelope({**records[0], "objectSha256": POLICY})
 
+    def test_invalidated_sdk_originals_are_not_captured_or_admitted(self):
+        import sdk_ios_binary_recovery as recovery
+        sdk, phase, _, _ = self.sdk_fixture()
+        sdk["extension"] = {"spec": {"completedPhases": [phase]}}
+        cap = qualification.CompletedFrozenReuse(self.spec, self.receipts.values(),
+            qualification._COMPLETED_FROZEN, revision="d" * 40,
+            originals=self.qualified["originals"], sdk=sdk)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(cap.__class__, "observe_sdk", side_effect=AssertionError("stale SDK captured")), \
+                patch.object(cap.__class__, "observe_extended_sdk", side_effect=AssertionError("stale SDK captured")):
+            root = Path(temporary).resolve()
+            self.assertEqual([], recovery.capture_completed_ios_binary(root / "binary", root,
+                completed_frozen=cap, plan={}, producer={}, token="fixture"))
+            self.assertEqual([], recovery.capture_completed_javascript(root / "extension", root,
+                completed_frozen=cap, producer={}, token="fixture"))
+            self.assertEqual([], list(root.iterdir()))
+            self.assertIsNone(cap.envelope(phase))
+
     def test_completed_sdk_issuer_hashes_original_transport_and_object_before_claim(self):
         sdk, _, _, body = self.sdk_fixture()
         controls, member = sdk["proof"]["controls"], sdk["proof"]["member"]["relativePath"]
@@ -445,7 +463,8 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             "freshOriginalPhases": [{field: row[field] for field in (*FIELDS, "receiptSha256")}
                                     for row in rows if row["product"] == "runtime"]}
 
-    def fetched(self, root, *, proof=None, authentication_error=None, sdk_completion=None):
+    def fetched(self, root, *, proof=None, authentication_error=None, sdk_completion=None,
+                requalification_baseline=None):
         captured = {"qualification.json": b"synthetic native subject", "bundle.jsonl": b"synthetic native bundle",
                     "proof.json": canonical_json_bytes(self.proof if proof is None else proof)}
         with ExitStack() as stack:
@@ -462,11 +481,87 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             result = qualification.fetch_completed_frozen(root / "capture", consumer_commit="c" * 40,
                 verifier_policy_sha256=POLICY, repository_root=root, revision="d" * 40,
                 sdk_completion=sdk_completion,
+                requalification_baseline=requalification_baseline,
                 signer_commit="b" * 40, source_commit="a" * 40, artifact_id=71,
                 artifact_sha256="sha256:" + "e" * 64, run_id=72, run_attempt=1, token="fixture")
             self.assertEqual(POLICY, native.call_args.kwargs["policy_sha256"])
             self.assertNotIn("compatible", native.call_args.kwargs)
             return result
+
+    def test_requalification_retains_only_unchanged_dependency_closures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+            original = copy.deepcopy(self.spec)
+            trees = ({"ci/products/sdk_maven.py": "100644 blob old"},
+                     {"ci/products/sdk_maven.py": "100644 blob new"})
+            with patch.object(inventory, "tree_entries", side_effect=trees), \
+                    patch.object(product_reuse, "_authorities", return_value=(self.spec["request"]["phaseAuthorities"], None)), \
+                    patch.object(product_reuse, "_versions", return_value=self.spec["request"]["versions"]):
+                self.assertEqual((aggregate,), qualification._restrict_completed_reuse(cap, root, "e" * 40))
+            self.assertEqual(49, len(cap.completed_phases()))
+            row = next(row for row in original["expectedResult"]["phases"]
+                       if product_reuse._identity(row) == aggregate)
+            self.assertIsNone(cap.envelope(row))
+            self.assertIsNone(cap.phase_plan(aggregate, {}, {}, []))
+            self.assertNotIn(row["objectSha256"], cap.deferred_objects())
+            self.assertEqual(original, load_canonical_json_bytes(cap._spec))
+            self.assertEqual(45, len(cap.runtime_sources()))
+            request = {**self.spec["request"], "repositoryRevision": "e" * 40}
+            self.assertEqual(49, len(cap.check_request(request)))
+            with self.assertRaisesRegex(ValueError, "checked Git revision"):
+                cap.check_request(self.spec["request"])
+
+    def test_requalification_also_removes_indirect_dependency_consumers(self):
+        changed = PhaseInstanceId("runtime", "linux-x64", "binary", "linux-x64")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            with patch.object(inventory, "tree_entries", side_effect=({}, {"input": "100644 blob new"})), \
+                    patch("products.selection.phase_inventory_paths", side_effect=lambda paths, instance:
+                        ("input",) if instance == changed else ()), \
+                    patch.object(product_reuse, "_authorities", return_value=(self.spec["request"]["phaseAuthorities"], None)), \
+                    patch.object(product_reuse, "_versions", return_value=self.spec["request"]["versions"]):
+                removed = qualification._restrict_completed_reuse(cap, root, "e" * 40)
+            for identity in (changed,
+                    PhaseInstanceId("runtime", "linux-x64", "package", "linux-x64"),
+                    PhaseInstanceId("runtime", "linux-x64", "metadata", "linux-x64"),
+                    PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")):
+                self.assertIn(identity, removed)
+            for identity in cap.completed_phases():
+                self.assertLessEqual(set(phase_instance_dependencies(identity)), set(cap.completed_phases()))
+
+    def test_requalification_rejects_trust_version_authority_and_contract_changes(self):
+        cases = (
+            ({"gradle/release/keys/new.pub": "100644 blob new"}, False, False, "public trust"),
+            ({}, True, False, "authorities or versions"),
+            ({}, False, True, "authorities or versions"),
+            ({"unclassified-product-input": "100644 blob new"}, False, False, "complete Contract"),
+        )
+        for changed, versions_changed, authorities_changed, error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                cap, _ = self.fetched(root)
+                with patch.object(inventory, "tree_entries", side_effect=({}, changed)), \
+                        patch.object(product_reuse, "_authorities", return_value=(
+                            [] if authorities_changed else self.spec["request"]["phaseAuthorities"], None)), \
+                        patch.object(product_reuse, "_versions", return_value=(
+                            {} if versions_changed else self.spec["request"]["versions"])), \
+                        self.assertRaisesRegex(ValueError, error):
+                    qualification._restrict_completed_reuse(cap, root, "e" * 40)
+                self.assertEqual(50, len(cap.completed_phases()))
+                self.assertEqual("d" * 40, cap._revision)
+
+    def test_requalification_authenticates_baseline_then_restricts_before_return(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.object(qualification, "_restrict_completed_reuse", wraps=qualification._restrict_completed_reuse) as restrict:
+                cap, report = self.fetched(root, requalification_baseline="f" * 40)
+            self.assertEqual("f" * 40, report["requalificationBaseline"])
+            self.assertEqual([], report["invalidatedPhases"])
+            self.assertEqual("d" * 40, cap._revision)
+            self.assertEqual("d" * 40, restrict.call_args.args[2])
 
     def test_independent_native_authorities_overlap_and_both_must_finish_before_capability(self):
         import threading
@@ -858,6 +953,11 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual("c" * 40, fetch.call_args.kwargs["consumer_commit"])
                 self.assertEqual(POLICY, fetch.call_args.kwargs["verifier_policy_sha256"])
                 self.assertEqual("d" * 40, fetch.call_args.kwargs["revision"])
+                policy["requalificationBaseline"] = "f" * 40
+                inventory.write_canonical_json(policy_path, policy)
+                with qualification.completed_frozen_options({**values, "completed_frozen_policy": policy_path}):
+                    pass
+                self.assertEqual("f" * 40, fetch.call_args.kwargs["requalification_baseline"])
                 with self.assertRaisesRegex(ValueError, "changed during use"):
                     with qualification.completed_frozen_options({**values, "completed_frozen_policy": policy_path}):
                         policy_path.write_bytes(b"changed caller policy")
