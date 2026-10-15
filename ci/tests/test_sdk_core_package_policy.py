@@ -1,6 +1,7 @@
 """Same-campaign Core policy must not recover caller authority from binary bytes."""
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -65,6 +66,7 @@ class CorePackagePolicyTests(unittest.TestCase):
             prior_carrier_phases={policy._CONTRACT: {"buildKey": _DIGEST,
                 "receiptSha256": _DIGEST, "objectSha256": _DIGEST}},
             rebased_request={"contractEvidence": self.source},
+            completed_frozen=None,
         )
 
     def args(self, **changes):
@@ -85,20 +87,89 @@ class CorePackagePolicyTests(unittest.TestCase):
         return {"receiptBytes": self.receipt_bytes}
 
     def invoke(self, **changes):
-        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=self.verified),
-              patch.object(policy, "restore_object", side_effect=self.fake_restore),
+        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=self.verified) as replay,
+              patch.object(policy.product_reuse, "restore_object", side_effect=self.fake_restore),
               patch.object(policy, "validate_phase_receipt", return_value=self.receipt),
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": self.receipt["outputs"]}),
               patch.object(policy, "verify_contract_attestation") as attestation):
             result = policy.prepare(**self.args(**changes))
+            self.assertEqual((policy._PACKAGE,), replay.call_args.kwargs['requested_scope'])
+            if changes.get('completed_frozen') is not None:
+                self.assertIs(changes['completed_frozen'], replay.call_args.kwargs['completed_frozen'])
             attestation.assert_called_once()
             return result
+
+    def test_native_checkpoint_resolves_reviewed_original_without_current_upload(self):
+        import reuse_qualification as native
+        from ci.tests.test_products import phase_receipt
+        from products.receipt import compute_build_key
+        from products.inventory import sha256_bytes
+        receipt = {**phase_receipt(), 'product': 'sdk', 'component': 'sdk-core',
+                   'phase': 'binary', 'target': 'common'}
+        receipt['buildKey'] = compute_build_key(**{name: receipt[name] for name in
+            ('product', 'component', 'phase', 'target', 'inputs')})
+        record = {**{name: receipt[name] for name in ('product', 'component', 'phase', 'target', 'buildKey')},
+                  'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': _DIGEST}
+        cap = native.CompletedFrozenReuse({'expectedResult': {'phases': [record]}}, [receipt],
+            native._COMPLETED_FROZEN, revision=receipt['producer']['commit'])
+        self.verified.prior_by_instance[policy._BINARY]['buildKey'] = receipt['buildKey']
+        self.verified.prior_carrier_phases[policy._BINARY] = record
+        origin = dict(producer=receipt['producer'], artifact_id=27,
+                      artifact_sha256=_DIGEST, context=self.context)
+        with patch.object(policy, 'locate_retained_core_binary_upload', return_value=origin) as locate:
+            result = self.invoke(binary_artifact_id=None, binary_artifact_sha256=None,
+                                 binary_original_context=None, completed_frozen=cap)
+        self.assertEqual('27', result['binary-artifact-id'])
+        self.assertEqual(_DIGEST, result['binary-artifact-sha256'])
+        locate.assert_called_once_with(self.plan, self.root,
+            expected_build_key=receipt['buildKey'], token='', environ={})
+
+    def test_partial_original_and_unqualified_native_state_fail_before_replay(self):
+        for arguments in ({'binary_artifact_id': None},
+                          {'binary_artifact_sha256': None},
+                          {'binary_artifact_id': None, 'binary_artifact_sha256': None,
+                           'binary_original_context': None, 'completed_frozen': object()}):
+            with self.subTest(arguments=arguments), \
+                    patch.object(policy.product_reuse, '_verified_product_state') as replay, \
+                    self.assertRaises(ValueError):
+                policy.prepare(**self.args(**arguments))
+            replay.assert_not_called()
+
+    def test_plan_mutation_rejects_policy_publication(self):
+        with (patch.object(policy.product_reuse, '_verified_product_state', return_value=self.verified),
+              patch.object(policy.product_reuse, 'restore_object', side_effect=self.fake_restore),
+              patch.object(policy, 'validate_phase_receipt', return_value=self.receipt),
+              patch.object(policy, 'verify_output_manifest_identity', return_value={'outputs': self.receipt['outputs']}),
+              patch.object(policy, 'verify_contract_attestation', side_effect=lambda *a, **k: self.plan.write_bytes(b'changed')),
+              self.assertRaisesRegex(ValueError, 'plan or authenticated state changed')):
+            policy.prepare(**self.args())
+        self.assertFalse(self.destination.exists())
+
+    def test_cli_keeps_plan_for_native_authentication_and_forwards_capability(self):
+        capability = object()
+        @contextmanager
+        def native(arguments):
+            self.assertEqual(self.plan, arguments['plan'])
+            self.assertEqual(self.root / 'policy.json', arguments.pop('completed_frozen_policy'))
+            yield {'completed_frozen': capability}
+        arguments = []
+        for name, value in self.args().items():
+            if name == 'environ':
+                continue
+            name = {'discovery': 'discovery-root', 'state': 'state-root'}.get(name, name.replace('_', '-'))
+            arguments.extend(('--' + name, str(value)))
+        arguments.extend(('--completed-frozen-policy', str(self.root / 'policy.json')))
+        with patch.object(policy, 'completed_frozen_options', side_effect=native), \
+                patch.object(policy, 'prepare', return_value={}) as prepare:
+            self.assertEqual(0, policy.main(arguments))
+        self.assertIs(capability, prepare.call_args.kwargs['completed_frozen'])
+        self.assertEqual(self.plan, prepare.call_args.kwargs['plan'])
 
     def test_original_contract_policy_is_external_and_independent_of_binary_object(self):
         result = self.invoke()
         evidence = load_canonical_json_bytes(Path(result["binary-contract-evidence"]).read_bytes())
-        self.assertEqual(str(self.destination / "contract-metadata/stage"), evidence["stageRoot"])
-        self.assertEqual(str(self.destination / "contract-metadata/phase-receipt.json"), evidence["phaseReceipt"])
+        self.assertEqual(str(self.destination / "contract-contract-metadata-common/stage"), evidence["stageRoot"])
+        self.assertEqual(str(self.destination / "contract-contract-metadata-common/phase-receipt.json"), evidence["phaseReceipt"])
         self.assertEqual(self.context, load_canonical_json_bytes(
             Path(result["binary-original-context"]).read_bytes()))
         self.assertFalse((self.root / "binary-object.zip").exists())
