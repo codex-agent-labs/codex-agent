@@ -175,7 +175,8 @@ def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destina
         target, expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
         keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None, completed_frozen=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None, completed_frozen=None,
+        validation_archive=None):
     """Preserve fully replayed originals on a non-secret runner, without signing.
 
     This unsigned preparation is not authority. A protected consumer must
@@ -221,6 +222,7 @@ def prepare_ios_validation_signing_inputs(plan, validation_receipt_path, destina
         prepared = Path(temporary).resolve() / "prepared"
         captured = prepared / "capture"
         with verified_original_ios_validation(plan, receipt_path, artifact_id=artifact_id,
+                **({"validation_archive": validation_archive} if validation_archive is not None else {}),
                 artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
                 keyring=keyring, keys_directory=keys_directory, repository_root=repository_root,
                 environ=environ, token=token, tooling_evidence=tooling_evidence,
@@ -327,8 +329,10 @@ def _worker(original, receipt, context, contract_version):
 def verified_original_ios_validation(plan, validation_receipt_path, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None, completed_frozen=None):
+        tooling_keyring=None, tooling_keys_directory=None, retained_sdk_inputs_source=None, completed_frozen=None,
+        validation_archive=None):
     with _verified_ios_validation(plan, validation_receipt_path, validation_capture=None,
+            validation_archive=validation_archive,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             keyring=keyring, keys_directory=keys_directory, repository_root=repository_root, environ=environ, token=token,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key, java_executable=java_executable,
@@ -368,7 +372,7 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
         artifact_id=None, artifact_sha256=None, trusted_workflow_sha=None, environ=None, token=None,
-        retained_sdk_inputs_source=None, completed_frozen=None):
+        retained_sdk_inputs_source=None, completed_frozen=None, validation_archive=None):
     """Yield privately restored originals only inside all authenticated input lifetimes."""
     root = Path(repository_root).resolve(strict=True)
     plan, receipt_path = Path(plan), Path(validation_receipt_path)
@@ -412,7 +416,8 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
             if validation_capture is None:
                 product_reuse.capture_sdk_ios_validation_upload(plan, capture, validation_receipt_path=selected_receipt,
                     artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-                    repository_root=root, environ=environ, token=token)
+                    repository_root=root, environ=environ, token=token,
+                    **({"transport_archive": validation_archive} if validation_archive is not None else {}))
             else:
                 snapshot_regular_tree(validation_capture, capture, allow_empty=True)
                 if _input_inventory(capture, allow_empty=True) != before_dirs["retained-validation"]:
@@ -438,6 +443,12 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                     original / "execution": {"apple-validation-evidence.zip"},
                     original / "context": {"execution-context.json"}}),
             }
+            # The producer can retain a dependency seed as diagnostic transport.
+            # It remains hashed/immutable and is never executed or replay authority.
+            seed = original / "worker-dependency-seed"
+            if seed.exists():
+                require_regular_directory(seed, "Original Apple dependency seed")
+                layouts[original].add("worker-dependency-seed")
             for directory, names in layouts.items():
                 require_regular_directory(directory, "Original Apple validation directory")
                 if {path.name for path in directory.iterdir()} != names:

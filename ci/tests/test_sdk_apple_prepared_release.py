@@ -105,6 +105,7 @@ class ApplePreparedReleaseTest(unittest.TestCase):
     def capture_original(self, plan, destination, **kwargs):
         self.assertEqual(self.fixture.plan.read_bytes(), Path(plan).read_bytes())
         self.assertEqual(self.fixture.raw, Path(kwargs.pop("validation_receipt_path")).read_bytes())
+        self.assertEqual(self.arguments.get("validation_archive"), kwargs.pop("transport_archive", None))
         self.assertEqual(dict(artifact_id=91, artifact_sha256=self.arguments["artifact_sha256"],
             trusted_workflow_sha="f" * 40, repository_root=self.candidate, environ=self.invocation_environment,
             token="fixture-token"), kwargs)
@@ -118,6 +119,10 @@ class ApplePreparedReleaseTest(unittest.TestCase):
         self.invocation_environment = changes.get("environment", self.environment)
         return release.attest_prepared_apple_validation_ci(self.trusted, self.candidate,
             self.fixture.plan, self.fixture.receipt, self.destination, **{**self.arguments, **changes})
+
+    def test_local_archive_hint_still_uses_independent_capture_and_real_signature(self):
+        self.arguments["validation_archive"] = self.fixture.original / "transport.zip"
+        self.test_real_release_signature_preserves_prepared_capture_receipt_and_both_transports()
 
     def test_real_release_signature_preserves_prepared_capture_receipt_and_both_transports(self):
         before = regular_file_inventory(self.fixture.capture, allow_empty=True)

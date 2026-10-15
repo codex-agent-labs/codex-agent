@@ -18,21 +18,23 @@ from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
 
 
+RETAINED_VALIDATION_UPLOADS = {
+    "ios-arm64": (
+        "sha256:1bbea1cdeb61cbd908f49480fb89fffa58c3da28de34cc42a7d0e58559ecad16",
+        11934933559, "sha256:4f1ce4fc26eeb622978509d5e1a937d1f6729041694393dc8667befb6ccf14d0", 116144183690),
+    "ios-simulator-arm64": (
+        "sha256:e7958fc10f983e5ddc41714a80587eacf8cd9ccd715b1829873113fd606917b7",
+        11935475988, "sha256:1b4e95d83b250735dd0892127b89769cff1800d54993394bc89f2ffe03d67de8", 116144183702),
+}
+
+
 def retained_validation_origin(target, build_key, consumer):
     """Select two reviewed successful uploads; selection grants no admission.
 
     Each consumer still observes the original job/upload and authenticates its
     complete bytes. Keep the original producer and receipt when signing later.
     """
-    rows = {
-        "ios-arm64": (
-            "sha256:1bbea1cdeb61cbd908f49480fb89fffa58c3da28de34cc42a7d0e58559ecad16",
-            11934933559, "sha256:4f1ce4fc26eeb622978509d5e1a937d1f6729041694393dc8667befb6ccf14d0", 116144183690),
-        "ios-simulator-arm64": (
-            "sha256:e7958fc10f983e5ddc41714a80587eacf8cd9ccd715b1829873113fd606917b7",
-            11935475988, "sha256:1b4e95d83b250735dd0892127b89769cff1800d54993394bc89f2ffe03d67de8", 116144183702),
-    }
-    row = rows.get(target)
+    row = RETAINED_VALIDATION_UPLOADS.get(target)
     producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
         "commit": "1f8c236eca5e2651bbfc18afb8b8232526445537", "tree": "6ba89c3ff4c8cb9b30f7216641ac3461c0d94206",
         "event": "pull_request", "runId": 38649218072, "runAttempt": 1, "pullRequest": 31}

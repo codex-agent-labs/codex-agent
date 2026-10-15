@@ -124,6 +124,10 @@ class AppleSigningPreparationTest(unittest.TestCase):
         self.arguments.update(target="ios-simulator-arm64", expected_receipt_sha256=sha256_bytes(self.raw))
         self.test_exact_forwarding_full_capture_preservation_and_publication_only_after_context_exit()
 
+    def test_local_archive_hint_keeps_full_replay_and_preparation_binding(self):
+        self.arguments["validation_archive"] = self.capture / "transport.zip"
+        self.test_exact_forwarding_full_capture_preservation_and_publication_only_after_context_exit()
+
     def test_exit_failure_capture_plan_receipt_mutation_and_late_secret_prevent_publication(self):
         originals = {path: path.read_bytes() for path in (self.plan, self.receipt_path, self.capture / "original/empty.log")}
         for mutation in ("exit-error", "private-capture", "plan", "receipt", "caller-secret", "live-secret"):

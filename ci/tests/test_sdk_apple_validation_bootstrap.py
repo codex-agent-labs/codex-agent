@@ -88,12 +88,60 @@ class SdkAppleValidationBootstrapTest(unittest.TestCase):
         )
         self.assertEqual(source_before, regular_file_inventory(self.source.root, allow_empty=True))
 
+    def test_same_job_archive_saves_download_but_reobserves_and_authenticates_every_byte(self):
+        local = self.source.output.parent / "bootstrap-original.zip"
+        local.write_bytes(self.source.raw)
+        with patch.object(capture, "_reuse_contract_ci_upload", side_effect=AssertionError("second download")), \
+                patch.object(capture, "_contract_ci_upload_metadata", wraps=capture._contract_ci_upload_metadata) as metadata:
+            result = self.source.call(transport_archive=local,
+                environ=self.environment)
+        metadata.assert_called_once()
+        self.assertEqual(self.source.producer, result["captureProducer"])
+        self.assertEqual(self.original_receipt,
+            (self.source.output / "original/shard/phase-receipt.json").read_bytes())
+        self.assertEqual(local.read_bytes(), (self.source.output / "transport.zip").read_bytes())
+
+    def test_local_archive_corruption_symlink_and_failed_original_never_publish(self):
+        local = self.source.output.parent / "bootstrap-original.zip"
+        for failure in ("corrupt", "truncated", "symlink", "failed-job", "late-archive"):
+            with self.subTest(failure=failure):
+                if local.exists() or local.is_symlink():
+                    local.unlink()
+                local.write_bytes(self.source.raw)
+                if failure == "corrupt":
+                    local.write_bytes(bytes([self.source.raw[0] ^ 1]) + self.source.raw[1:])
+                elif failure == "truncated":
+                    local.write_bytes(self.source.raw[:-1])
+                elif failure == "symlink":
+                    original = local.with_suffix(".original")
+                    original.write_bytes(self.source.raw)
+                    local.unlink()
+                    local.symlink_to(original)
+                elif failure == "failed-job":
+                    self.source.jobs[0]["conclusion"] = "failure"
+                real_extract = capture.safe_extract
+                def extract(archive, destination, **kwargs):
+                    result = real_extract(archive, destination, **kwargs)
+                    if failure == "late-archive":
+                        Path(archive).write_bytes(b"changed private archive")
+                    return result
+                try:
+                    with patch.object(capture, "_reuse_contract_ci_upload", side_effect=AssertionError("download")), \
+                            patch.object(capture, "safe_extract", side_effect=extract), \
+                            self.assertRaises((ValueError, OSError)):
+                        self.source.call(transport_archive=local, environ=self.environment)
+                    self.assertFalse(self.source.output.exists())
+                finally:
+                    self.source.jobs[0]["conclusion"] = "success"
+
     def test_retained_success_keeps_original_receipt_under_later_consumer(self):
         self.environment.update(GITHUB_RUN_ID="72", GITHUB_RUN_ATTEMPT="1")
         origin = {"producer": self.source.producer, "artifact_id": 701,
             "artifact_sha256": self.source.artifact["digest"], "job_id": self.source.jobs[0]["id"],
             "workflow_sha": self.source.pin}
-        with patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
+        with patch("sdk_apple_upload_locator.RETAINED_VALIDATION_UPLOADS",
+                   {self.source.target: (json.loads(self.original_receipt)["buildKey"],)}), \
+                patch("sdk_apple_upload_locator.retained_validation_origin", return_value=origin), \
                 patch("sdk_handoff._ensure_observed_sdk_commit") as source:
             result = self.call()
         source.assert_called_once_with(self.source.root, self.source.producer, "synthetic-token")

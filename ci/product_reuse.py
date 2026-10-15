@@ -8274,11 +8274,12 @@ def capture_sdk_ios_binary_upload(plan_path, destination, *, binary_receipt_path
 
 
 def capture_sdk_ios_validation_upload(plan_path, destination, *, validation_receipt_path,
-        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token):
+        artifact_id, artifact_sha256, trusted_workflow_sha, repository_root=None, environ=None, token,
+        transport_archive=None):
     """Retain an observed original validation upload; full semantic replay is separate."""
     return _capture_sdk_ios_upload(plan_path, destination, phase="validation", receipt_path=validation_receipt_path,
         artifact_id=artifact_id, artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-        repository_root=repository_root, environ=environ, token=token)
+        repository_root=repository_root, environ=environ, token=token, transport_archive=transport_archive)
 
 
 def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target, expected_build_key,
@@ -8357,10 +8358,13 @@ def captured_sdk_ios_package_for_admission(plan_path, destination, *, package_re
 def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         artifact_id, artifact_sha256, trusted_workflow_sha, repository_root, environ, token,
         elected_target=None, elected_build_key=None, compact_recovery=False, qualify_original=False,
-        expected_plan_revision=None):
+        expected_plan_revision=None, transport_archive=None):
     from products.sdk_package import _require_capability_output_separate
     from products.signing_isolation import require_no_signing_secret
     bootstrap = receipt_path is None
+    if transport_archive is not None and (phase != "validation" or bootstrap):
+        raise ValueError("Local Apple transport requires a selected original validation receipt")
+    transport_archive = Path(transport_archive).absolute() if transport_archive is not None else None
     if type(compact_recovery) is not bool or compact_recovery and (phase not in {"binary", "package"} or bootstrap):
         raise ValueError("Compact Apple capture requires an exact original binary or package receipt")
     if type(qualify_original) is not bool or qualify_original and (not compact_recovery or phase != "binary"):
@@ -8384,7 +8388,7 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     receipt_path = Path(receipt_path).absolute() if receipt_path is not None else None
 
     def output_safe():
-        _require_capability_output_separate(destination, [root, plan_path, receipt_path])
+        _require_capability_output_separate(destination, [root, plan_path, receipt_path, transport_archive])
         if destination.exists() or destination.is_symlink():
             raise ValueError(f"Apple {phase} capture destination must not exist")
 
@@ -8424,8 +8428,10 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         build_key = elected_build_key if bootstrap else receipt["buildKey"]
         retained_validation = None
         if phase == "validation":
-            from sdk_apple_upload_locator import retained_validation_origin
-            origin = retained_validation_origin(target, build_key, _consumer(plan, environment)["producer"])
+            from sdk_apple_upload_locator import RETAINED_VALIDATION_UPLOADS, retained_validation_origin
+            reviewed = RETAINED_VALIDATION_UPLOADS.get(target)
+            origin = (retained_validation_origin(target, build_key, _consumer(plan, environment)["producer"])
+                      if reviewed is not None and reviewed[0] == build_key else None)
             if origin is not None and (bootstrap or producer == origin["producer"]):
                 if (artifact_id, artifact_sha256) != (origin["artifact_id"], origin["artifact_sha256"]):
                     raise ValueError("Apple retained validation differs from its reviewed successful upload")
@@ -8462,9 +8468,16 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         else:
             if phase == "package" and compact_recovery:
                 _prepare_cold_apple_workspace(prepared.parent, environment, artifact["size_in_bytes"])
-            _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
-                destination=archive, limit=_ios_upload_zip_limits(phase)["max_archive_bytes"], artifact_sha256=artifact_sha256,
-                size=artifact["size_in_bytes"])
+            if transport_archive is None:
+                _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
+                    destination=archive, limit=_ios_upload_zip_limits(phase)["max_archive_bytes"], artifact_sha256=artifact_sha256,
+                    size=artifact["size_in_bytes"])
+            else:
+                # Untrusted same-job bytes save only the transfer. Fresh official
+                # observations above and complete private archive verification remain.
+                from runtime_reference_transport import _copy_exact
+                _copy_exact(transport_archive, archive,
+                    {"bytes": artifact["size_in_bytes"], "sha256": artifact_sha256})
             zipped, _, identity = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                 **_ios_upload_zip_limits(phase))
             if identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact_sha256}:

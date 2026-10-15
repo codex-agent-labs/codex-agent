@@ -30,7 +30,8 @@ from products.signatures import load_keyring, private_key_bytes, require_active_
 def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_path,
         validation_receipt_path, destination, *, target, expected_receipt_sha256,
         artifact_id, artifact_sha256, preparation_artifact_id, preparation_artifact_sha256,
-        trusted_source_sha, trusted_workflow_sha, transport_producer, event_payload, environment, token):
+        trusted_source_sha, trusted_workflow_sha, transport_producer, event_payload, environment, token,
+        validation_archive=None):
     """Sign exact prepared capture bytes; never build, replay, or reissue receipts."""
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("Protected Apple signing requires an exact validation target")
@@ -69,7 +70,8 @@ def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_pa
             trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate, environ=environment, token=token)
         capture_sdk_ios_validation_upload(plan_path, original, validation_receipt_path=receipt_path,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256,
-            trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate, environ=environment, token=token)
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate, environ=environment, token=token,
+            **({"transport_archive": validation_archive} if validation_archive is not None else {}))
         baselines = {path: regular_file_inventory(path, allow_empty=True) for path in (prepared, original)}
 
         def unchanged():

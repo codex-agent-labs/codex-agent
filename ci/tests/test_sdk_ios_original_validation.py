@@ -389,6 +389,21 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
         self.assertFalse(private.exists())
         self.assertEqual(before, self.receipt_path.read_bytes())
 
+    def test_dependency_seed_is_retained_but_never_authority_and_remains_immutable(self):
+        seed = self.template / "original/worker-dependency-seed/resolve-dependencies.gradle"
+        seed.parent.mkdir()
+        seed.write_bytes(b"throw new AssertionError('diagnostic seed must never run')\n")
+        archive = self.root / "same-job.zip"
+        with patch.object(self, "capture", wraps=self.capture) as capture:
+            with self.context(validation_archive=archive) as value:
+                retained = value["capture"] / "original/worker-dependency-seed/resolve-dependencies.gradle"
+                self.assertEqual(seed.read_bytes(), retained.read_bytes())
+                self.assertIn("replay", self.events)
+            self.assertEqual(archive, capture.call_args.kwargs["transport_archive"])
+        with self.assertRaisesRegex(ValueError, "changed"), self.context() as value:
+            (value["capture"] / "original/worker-dependency-seed/resolve-dependencies.gradle").write_bytes(b"changed")
+
+
     def test_causal_wrong_originals_controls_worker_and_original_plan_reject(self):
         for mutation in ("phase-plan", "unauthorized", "extra", "worker-key", "worker-exit", "worker-command",
                          "worker-producer", "package-zip", "sdk-original", "binary-zip", "native-original",

@@ -133,8 +133,9 @@ class SdkAppleAttestationActionTest(unittest.TestCase):
         preparation = self.source.index("ci/sdk_apple_upload_locator.py preparation")
         signing = self.source.index("ci/sdk_apple_release_cli.py sign")
         upload = self.source.index("uses: actions/upload-artifact@")
-        self.assertLess(capture, preparation)
-        self.assertLess(preparation, signing)
+        self.assertLess(preparation, capture)
+        self.assertLess(capture, signing)
+        self.assertNotIn("always()", self.source[:self.source.index("    - id: sign")])
         self.assertLess(signing, upload)
         self.assertEqual(1, self.source.count("${{ inputs.private-key }}"))
         self.assertEqual(1, self.source.count(SECRET))
@@ -143,6 +144,7 @@ class SdkAppleAttestationActionTest(unittest.TestCase):
         self.assertNotIn("${{ inputs.private-key }}", before_sign)
         for value in (
             "--validation-receipt \"$VALIDATION_RECEIPT\"",
+            "--validation-archive \"$VALIDATION_ARCHIVE\"",
             "--expected-receipt-sha256 \"$RECEIPT_SHA256\"",
             "--artifact-id \"$VALIDATION_ARTIFACT_ID\"",
             "--artifact-sha256 \"$VALIDATION_ARTIFACT_SHA256\"",

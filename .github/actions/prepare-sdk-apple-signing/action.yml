@@ -107,6 +107,7 @@ runs:
             raise ValueError('Recovered Apple receipt differs from the exact captured bytes')
         fields = {
             '--plan': str(plan_path), '--validation-receipt': str(receipt), '--destination': str(prepared),
+            '--validation-archive': str(worker / 'transport.zip'),
             '--repository-root': str(repository), '--target': target,
             '--expected-receipt-sha256': selected['receipt_sha256'], '--artifact-id': str(selected['artifact_id']),
             '--artifact-sha256': selected['artifact_sha256'], '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],

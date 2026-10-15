@@ -81,6 +81,7 @@ class AppleSigningPrepareActionTest(unittest.TestCase):
         self.assertEqual(self.worker.parent, prepared.parent)
         self.assertFalse(prepared.exists())
         self.assertEqual({"--plan": str(self.plan),
+            "--validation-archive": str(self.worker / "transport.zip"),
             "--validation-receipt": str(self.worker / "original/shard/phase-receipt.json"),
             "--repository-root": str(self.repository), "--target": self.environment["TARGET"],
             "--expected-receipt-sha256": self.digest, "--artifact-id": "91", "--artifact-sha256": self.upload_digest,

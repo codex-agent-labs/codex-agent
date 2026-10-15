@@ -80,6 +80,20 @@ class AppleReleaseCliTest(unittest.TestCase):
             self.assertEqual(0, command.main(self.arguments("prepare", fields)))
         self.assertEqual(["native-enter", "prepare", "native-exit"], events)
 
+    def test_optional_local_original_archive_is_forwarded_in_both_modes(self):
+        for mode in ("prepare", "sign"):
+            fields = {**self.fields(mode), "validation-archive": "/work/bootstrap/transport.zip"}
+            prepare, sign = Mock(), Mock()
+            environment = {"GITHUB_EVENT_PATH": "/work/event.json", "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REPOSITORY": "owner/repository", "GITHUB_SHA": "e" * 40,
+                "GITHUB_RUN_ID": "81", "GITHUB_RUN_ATTEMPT": "2"}
+            with self.subTest(mode=mode), self.modules(prepare, sign), \
+                    patch.dict(os.environ, environment, clear=True), \
+                    patch.object(command, "read_regular_file_bytes", return_value=b'{"number":31}'):
+                self.assertEqual(0, command.main(self.arguments(mode, fields)))
+            invoked = prepare if mode == "prepare" else sign
+            self.assertEqual(Path(fields["validation-archive"]), invoked.call_args.kwargs["validation_archive"])
+
     def test_sign_exact_producer_event_routing_and_no_replay_import(self):
         actual_import = builtins.__import__
         def guarded_import(name, *args, **kwargs):

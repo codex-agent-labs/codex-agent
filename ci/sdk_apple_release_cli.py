@@ -44,6 +44,8 @@ def main(argv=None):
         for name in ("expected-receipt-sha256", "artifact-sha256"):
             command.add_argument(f"--{name}", type=_digest, required=True)
         command.add_argument("--artifact-id", type=_artifact_id, required=True)
+        command.add_argument("--validation-archive", type=Path,
+            help="Untrusted same-job original ZIP; fresh metadata and full digest verification still apply")
         command.add_argument("--trusted-workflow-sha", type=_revision, required=True)
         if mode == "prepare":
             add_completed_frozen_argument(command)
@@ -61,6 +63,8 @@ def main(argv=None):
     common = dict(target=args.target, expected_receipt_sha256=args.expected_receipt_sha256,
         artifact_id=args.artifact_id, artifact_sha256=args.artifact_sha256,
         trusted_workflow_sha=args.trusted_workflow_sha, token=os.environ.get("GITHUB_TOKEN", ""))
+    if args.validation_archive is not None:
+        common["validation_archive"] = args.validation_archive
     try:
         if args.mode == "prepare":
             # Import replay code only after confirming this process has no signing secret.
