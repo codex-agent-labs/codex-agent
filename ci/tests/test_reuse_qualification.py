@@ -82,7 +82,7 @@ class ReuseQualificationTest(unittest.TestCase):
                 proof.verify_frozen_inventories("a" * 40, frozen)
 
     def test_windows_native_installer_verifies_before_extracting(self):
-        # Shell composition only; this fake executable is not native evidence.
+        # Real byte hashing with a fixture pin; the fake binary is not native evidence.
         installer = Path(__file__).resolve().parents[2] / ".github/actions/restore-reuse-qualification/install-gh.sh"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -91,12 +91,17 @@ class ReuseQualificationTest(unittest.TestCase):
             archive = root / "fixture.zip"
             with zipfile.ZipFile(archive, "w") as output:
                 output.writestr("bin/gh.exe", b"fixture, not a genuine executable")
+            pinned = "ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4"
+            source = installer.read_text()
+            self.assertEqual(1, source.count(pinned))
+            installer = root / "install-fixture.sh"
+            installer.write_text(source.replace(pinned, sha256_bytes(archive.read_bytes()).removeprefix("sha256:")))
+            corrupted = root / "corrupted.zip"
+            corrupted.write_bytes(archive.read_bytes() + b"tampered")
             scripts = {
                 "uname": 'if [ "$1" = -s ]; then echo "$TEST_OS"; else echo x86_64; fi',
                 "curl": 'for argument; do destination="$argument"; done; cp "$TEST_ARCHIVE" "$destination"',
-                "shasum": 'test "$*" = "-a 256 --check --status"; read -r digest file; '
-                          'test "$digest" = ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4; '
-                          'test -f "$file"; test "$TEST_HASH_OK" = true',
+                "shasum": 'echo "shasum unavailable" >&2; exit 127',
             }
             for name, body in scripts.items():
                 command = commands / name
@@ -109,7 +114,7 @@ class ReuseQualificationTest(unittest.TestCase):
                     work = root / name
                     work.mkdir()
                     environment = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
-                        "TEST_OS": os_name, "TEST_ARCHIVE": str(archive), "TEST_HASH_OK": hash_ok,
+                        "TEST_OS": os_name, "TEST_ARCHIVE": str(archive if hash_ok == "true" else corrupted),
                         "RUNNER_TEMP": str(work), "GITHUB_PATH": str(work / "path"),
                         "GITHUB_OUTPUT": str(work / "output")}
                     result = subprocess.run(["bash", str(installer)], env=environment,
@@ -125,6 +130,7 @@ class ReuseQualificationTest(unittest.TestCase):
                         self.assertFalse((work / "reuse-qualification-gh").exists())
                     else:
                         self.assertFalse((work / "output").exists())
+                        self.assertIn("differs from its pinned SHA-256", result.stderr)
 
     def test_portable_benchmark_metrics_are_canonical_json(self):
         import ast

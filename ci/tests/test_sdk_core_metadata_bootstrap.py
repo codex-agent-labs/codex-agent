@@ -47,8 +47,10 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
 
     def invoke(self, *, bad_target=None):
         native = object()
+        source = {"independent-source": "fixture"}
         def request(_plan, _discovery, _state, output, **kwargs):
             self.assertIs(native, kwargs["completed_frozen"])
+            self.assertIs(source, kwargs["retained_sdk_inputs_source"])
             target = kwargs["target"]
             self.assertEqual(_KEY, kwargs["expected_metadata_build_key"])
             self.assertEqual(_KEY, kwargs["expected_build_key"])
@@ -80,7 +82,8 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
                 sdk_inputs_artifact_sha256=_KEY, trusted_workflow_sha="e" * 40,
                 sdk_validation_tooling=self.tooling, native_compiler_archives={},
                 keyring=self.root / "keyring", keys_directory=self.root / "keys",
-                repository_root=self.root, environ={}, token="local-token", completed_frozen=native)
+                repository_root=self.root, environ={}, token="local-token", completed_frozen=native,
+                retained_sdk_inputs_source=source)
         self.assertIs(native, replay.call_args.kwargs["completed_frozen"])
         self.assertEqual((bootstrap._METADATA,), replay.call_args.kwargs["requested_scope"])
         return value, prepared

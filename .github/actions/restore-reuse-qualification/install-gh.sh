@@ -34,7 +34,12 @@ directory="$RUNNER_TEMP/reuse-qualification-gh"
 mkdir "$directory"
 curl --fail --location --silent --show-error \
   "https://github.com/cli/cli/releases/download/v2.102.0/$asset" -o "$directory/$asset"
-printf '%s  %s\n' "$digest" "$directory/$asset" | shasum -a 256 --check --status
+python3 - "$directory/$asset" "$digest" <<'PY'
+import hashlib, sys
+with open(sys.argv[1], 'rb') as archive:
+    if hashlib.file_digest(archive, 'sha256').hexdigest() != sys.argv[2]:
+        raise SystemExit('Native gh archive differs from its pinned SHA-256')
+PY
 if [[ "$asset" == *.zip ]]; then
   unzip -q "$directory/$asset" "*bin/$executable" -d "$directory"
 else

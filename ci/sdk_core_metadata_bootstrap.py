@@ -67,7 +67,8 @@ def _native_archives(root, revision, values):
 def prepare(plan, discovery, state, requests_root, destination, *, expected_build_key,
         sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
         sdk_validation_tooling, native_compiler_archives, keyring, keys_directory,
-        repository_root, environ, token, sdk_apple_validation_policy=None, completed_frozen=None):
+        repository_root, environ, token, sdk_apple_validation_policy=None, completed_frozen=None,
+        retained_sdk_inputs_source=None):
     """Create one external bootstrap policy using exact retained wave-13 originals."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -139,6 +140,7 @@ def prepare(plan, discovery, state, requests_root, destination, *, expected_buil
             keys_directory=keys_directory, repository_root=root, environ=environ, token=token,
             native_compiler_archive=archives.get(target), sdk_validation_tooling=tooling,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
             sdk_apple_validation_policy=sdk_apple_validation_policy)
         request = Path(prepared["facadeRequest"])
         receipt_path = output / f"predecessors/sdk-sdk-core-validation-{target}/phase-receipt.json"
@@ -197,8 +199,12 @@ def main(argv=None):
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--native-compiler-archive", action="append", default=[], metavar="TARGET=PATH")
     add_completed_frozen_argument(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = vars(parser.parse_args(argv))
     try:
+        if "retained_sdk_inputs_source" in args:
+            args["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                args["retained_sdk_inputs_source"], "Core metadata retained SDK input source")
         pairs = [value.split("=", 1) for value in args.pop("native_compiler_archive")]
         if (any(len(pair) != 2 or not pair[0] or not pair[1] for pair in pairs)
                 or len({pair[0] for pair in pairs}) != len(pairs)):

@@ -46,6 +46,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         self.assertIn("sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}", capture)
         bootstrap = self.action.split("- id: bootstrap", 1)[1].split("- id: policy", 1)[0]
         self.assertIn('options+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', bootstrap)
+        self.assertIn('options+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")', bootstrap)
         self.assertIn("--plan \"$PLAN\" --discovery \"$DISCOVERY\" --state \"$STATE\"", bootstrap)
         self.assertIn("--sdk-inputs-artifact-id \"$SDK_INPUTS_ID\"", bootstrap)
         self.assertIn("--sdk-inputs-artifact-sha256 \"$SDK_INPUTS_SHA256\"", bootstrap)
