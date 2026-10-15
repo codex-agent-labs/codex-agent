@@ -221,9 +221,11 @@ def _base(frozen, sdk):
 def _spec(spec):
     import reuse_qualification as native
     collected = collected_validation(spec)
+    reuse = collected and "reuseCompletion" in spec
     require_exact_keys(spec, {"schemaVersion", "parent", "parentProofSha256", "source", "stateRoot",
         "controls", "completedPhases", "originals", "contractControls", "contractFiles"}
-        | ({"sourcePlan"} if collected else set()), "Incremental SDK spec")
+        | ({"sourcePlan"} if collected else set())
+        | ({"reuseCompletion", "reuseCompletionProofSha256"} if reuse else set()), "Incremental SDK spec")
     if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3):
         raise ValueError("Unsupported incremental SDK spec")
     native._native_pin_arguments(spec["parent"])
@@ -261,6 +263,13 @@ def _spec(spec):
         expected = {"relativePath": SOURCE_PLAN, "bytes": len(raw), "sha256": sha256_bytes(raw)}
         if len(raw) > LIMIT or [row for row in spec["controls"] if row["relativePath"] == SOURCE_PLAN] != [expected]:
             raise ValueError("Collector source plan lacks its exact bounded control pin")
+    if reuse:
+        native._native_pin_arguments(spec["reuseCompletion"])
+        native.require_sha256(spec["reuseCompletionProofSha256"], "Approved earlier native completion subject")
+        earlier = spec["reuseCompletion"]
+        producer = spec["source"]["producer"]
+        if (earlier["runId"], earlier["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
+            raise ValueError("Reused native completion must precede its collected source")
     native._commit(spec["source"]["inventoryCommit"])
     for row in originals.values():
         require_exact_keys(row, set(IDENTITY) | {"artifactId", "artifactSha256", "jobId", "workflowSha"},
@@ -360,6 +369,35 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
             raise ValueError("Incremental SDK consumed object changed")
     sdk["extension"] = {"spec": spec, "proof": proof}
     return sdk
+
+
+def _qualified_members(spec, prior, phases, receipts):
+    """Join only after _fetch_completed_sdk freshly authenticates the native subject.
+
+    The new issuer reuses exact byte qualification; current source admission,
+    owning inputs, receipts and fresh original locators remain mandatory.
+    """
+    extension = prior.get("extension")
+    if extension is None:
+        raise ValueError("Object reuse requires an earlier incremental native completion")
+    old, proof = extension["spec"], extension["proof"]
+    if (old["schemaVersion"] != 3 or old["parent"] != spec["parent"]
+            or sha256_bytes(canonical_json_bytes(prior["proof"])) != spec["parentProofSha256"]
+            or sha256_bytes(canonical_json_bytes(proof)) != spec["reuseCompletionProofSha256"]):
+        raise ValueError("Reused native completion differs from its pinned subject or parent")
+    selected = _records(phases, "Current admitted SDK phases")
+    earlier = _records(old["completedPhases"], "Previously native-qualified SDK phases")
+    current_receipts = {_identity(receipt): canonical_json_bytes(receipt) for receipt in receipts}
+    if not set(earlier) <= set(selected):
+        raise ValueError("Reused native completion drops a previously admitted SDK phase")
+    qualified = {}
+    for instance, member, locator in zip(sorted(earlier), proof["members"], proof["originals"], strict=True):
+        phase = earlier[instance]
+        if (any(phase[field] != selected[instance][field] for field in OBJECT)
+                or canonical_json_bytes(proof["controls"][phase["receiptPath"]]) != current_receipts[instance]):
+            raise ValueError("Reused native completion changes an original SDK object or receipt")
+        qualified[instance] = member, locator
+    return qualified
 
 
 def issue_extension(spec, work, *, root, revision, frozen, token):
@@ -471,11 +509,23 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         request, phases, receipts = validate_controls(spec, controls, _base(frozen, sdk))
         validate_current(request, phases, receipts, root=root, revision=revision,
                          original_revision=_inventory_revision(spec, root))
+        qualified = {}
+        if "reuseCompletion" in spec:
+            prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
+                root=root, revision=revision, frozen=frozen, token=token)
+            qualified = _qualified_members(spec, prior, phases, receipts)
         available = _records(request["availableObjects"], "Incremental original objects")
-        members, locators, transferred = [], [], 0
+        members, locators, transferred, reused_bytes = [], [], 0, 0
         for number, phase in enumerate(phases):
             artifact, _, locator = observe_original(originals[_identity(phase)], receipts[number], token)
             locators.append(locator)
+            if _identity(phase) in qualified:
+                member, previous_locator = qualified[_identity(phase)]
+                if locator != previous_locator:
+                    raise ValueError("Reused native object changes its freshly observed original locator")
+                members.append(member)
+                reused_bytes += member["bytes"]
+                continue
             obj = work / f"object-{number}.zip"
             if original_worker_member(spec):
                 name = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
@@ -514,7 +564,8 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
     report = {"downloadedOriginalBytes": spec["contractControls"]["artifactBytes"] + (
         0 if collected_validation(spec) else spec["source"]["artifactBytes"]),
         "sourceControlRangeBytes": source_range_bytes, "originalMemberRangeBytes": transferred,
-        "verifiedObjectBytes": sum(row["bytes"] for row in members), "completedSdkPhases": len(phases) + 1,
+        "verifiedObjectBytes": sum(row["bytes"] for row in members) - reused_bytes,
+        "reusedObjectBytes": reused_bytes, "completedSdkPhases": len(phases) + 1,
         "seconds": str(time.perf_counter() - started), "productPhasesExecuted": 0}
     import json
     print(json.dumps(report), flush=True)

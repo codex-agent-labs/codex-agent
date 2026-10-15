@@ -179,6 +179,16 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec['controls'].append({'relativePath': 'product-resume-inputs/plan/impact-plan.json',
                                 'bytes': len(raw), 'sha256': sha256_bytes(raw)})
         completed._spec(spec)
+        reuse = {**deepcopy(spec), 'reuseCompletion': deepcopy(spec['parent']),
+                 'reuseCompletionProofSha256': 'sha256:' + 'b' * 64}
+        completed._spec(reuse)
+        for change in (lambda value: value.pop('reuseCompletionProofSha256'),
+                       lambda value: value.update(reuseCompletionProofSha256='unqualified'),
+                       lambda value: value['reuseCompletion'].update(runId=producer['runId'],
+                                                                     runAttempt=producer['runAttempt'])):
+            altered = deepcopy(reuse)
+            change(altered)
+            with self.assertRaises(ValueError): completed._spec(altered)
         for change in (
             lambda value: value['source'].pop('referenceControlSha256'),
             lambda value: value['source'].update(referenceControlSha256='unqualified'),
@@ -486,7 +496,36 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.setUp()
                 self.check_v3_issuer_original_member('sdk-ios', phase, target, collected=True)
 
-    def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False):
+    def test_collected_issuer_reuses_native_object_without_any_object_transfer(self):
+        self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', collected=True, reused=True)
+
+    def test_reused_members_require_exact_native_subject_parent_and_original_identity(self):
+        parent = {'schemaVersion': 1}
+        phase = self.spec['completedPhases'][0]
+        member = {'relativePath': 'synthetic member', 'bytes': 8, 'sha256': phase['objectSha256']}
+        spec = {'parent': {'artifactId': 7}, 'parentProofSha256': sha256_bytes(canonical_json_bytes(parent))}
+        prior = {'proof': parent, 'extension': {'spec': {'schemaVersion': 3, 'parent': spec['parent'],
+            'completedPhases': [deepcopy(phase)]}, 'proof': {'members': [member],
+            'originals': [{'original': 71}], 'controls': deepcopy(self.controls)}}}
+        spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(prior['extension']['proof']))
+        self.assertEqual({completed._identity(phase): (member, {'original': 71})},
+            completed._qualified_members(spec, prior, [phase], [self.receipt]))
+        for case in ('subject', 'parent', 'base', 'object', 'receipt', 'dropped', 'omitted-member', 'no-native'):
+            candidate, pins, selected = deepcopy(prior), deepcopy(spec), [phase]
+            if case == 'subject': pins['reuseCompletionProofSha256'] = sha256_bytes(b'wrong subject')
+            elif case == 'parent': candidate['extension']['spec']['parent'] = {'artifactId': 8}
+            elif case == 'base': candidate['proof'] = {'schemaVersion': 2}
+            elif case == 'object': candidate['extension']['spec']['completedPhases'][0]['objectSha256'] = sha256_bytes(b'other')
+            elif case == 'receipt': candidate['extension']['proof']['controls'][self.receipt_path]['productVersion'] = '9.0.0'
+            elif case == 'dropped': selected = []
+            elif case == 'omitted-member': candidate['extension']['proof']['members'] = []
+            elif case == 'no-native': candidate.pop('extension')
+            if case not in ('subject', 'no-native'):
+                pins['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(candidate['extension']['proof']))
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                completed._qualified_members(pins, candidate, selected, [self.receipt])
+
+    def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -561,8 +600,23 @@ class CompletedSdkControlsTest(unittest.TestCase):
             spec['source']['artifactBytes'] = 6_500_000_000
         name = 'shard/' + verified['objectPath']
         body = (shard / verified['objectPath']).read_bytes()
+        previous = None
+        if reused:
+            spec['reuseCompletion'] = {'artifactId': 8, 'artifactSha256': 'sha256:' + 'c' * 64,
+                'runId': 2, 'runAttempt': 1, 'signerCommit': 'b' * 40, 'sourceCommit': 'b' * 40}
+            previous = {'proof': parent, 'extension': {'spec': {'schemaVersion': 3,
+                'parent': spec['parent'], 'completedPhases': [phase]}, 'proof': {
+                'controls': deepcopy(self.controls), 'originals': [{'original': 71}],
+                'members': [{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}]}}}
+            spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(previous['extension']['proof']))
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
-            stack.enter_context(patch.object(native, '_fetch_completed_sdk', return_value={'proof': parent}))
+            def native_completion(destination, pins, **arguments):
+                if reused and pins == spec['reuseCompletion']:
+                    self.assertEqual('previous', destination.name)
+                    return previous
+                self.assertEqual(spec['parent'], pins)
+                return {'proof': parent}
+            fetched = stack.enter_context(patch.object(native, '_fetch_completed_sdk', side_effect=native_completion))
             stack.enter_context(patch.object(completed, '_base', return_value=self.base))
             stack.enter_context(patch.object(completed, 'validate_current'))
             stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
@@ -596,9 +650,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.assertEqual((sha256_bytes(raw), len(raw)), (digest, max_bytes))
                 destination.write_bytes(raw)
             downloads = stack.enter_context(patch.object(products, '_download_contract_ci_upload', side_effect=download))
-            for tampered in (False, True):
+            for tampered in ((False,) if reused else (False, True)):
                 @contextmanager
                 def opened(artifact, token, **bounds):
+                    self.assertFalse(reused, 'Native-qualified objects must not be downloaded again')
                     self.assertEqual({'id': 71}, artifact)
                     self.assertEqual({'max_bytes': 32 * 1024**3} if package else {}, bounds)
                     with zipfile.ZipFile(io.BytesIO(zipped({name: b'x' * len(body) if tampered else body}))) as archive:
@@ -617,7 +672,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertEqual([{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}], result['members'])
                         self.assertEqual(len(contract) + (0 if collected else len(source)), report['downloadedOriginalBytes'])
                         self.assertEqual(700 if collected else 0, report['sourceControlRangeBytes'])
-                        self.assertEqual(len(body), report['originalMemberRangeBytes'])
+                        self.assertEqual(0 if reused else len(body), report['originalMemberRangeBytes'])
+                        self.assertEqual(len(body) if reused else 0, report['reusedObjectBytes'])
+                        self.assertEqual(0 if reused else len(body), report['verifiedObjectBytes'])
                         self.assertEqual(0, report['productPhasesExecuted'])
                         self.assertEqual(1 if collected else 2, downloads.call_count)
                         if collected:
@@ -625,6 +682,27 @@ class CompletedSdkControlsTest(unittest.TestCase):
                             self.assertEqual(spec['source']['producer']['commit'],
                                              validate_plan.call_args.kwargs['expected_revision'])
                             self.assertEqual(1, capture_controls.call_count)
+            if reused:
+                for case in ('native-signature', 'locator'):
+                    work = Path(temporary).resolve() / case
+                    work.mkdir()
+                    observe_original.reset_mock()
+                    downloads.reset_mock()
+                    def rejected(destination, pins, **arguments):
+                        if pins == spec['reuseCompletion'] and case == 'native-signature':
+                            raise ValueError('bad native signature')
+                        return native_completion(destination, pins, **arguments)
+                    fetched.side_effect = rejected
+                    if case == 'locator': observe_original.return_value = {'id': 71}, [], {'original': 72}
+                    with patch('runtime_reference_archive.open_reference_archive', side_effect=AssertionError('body read')), \
+                            self.assertRaisesRegex(ValueError, 'native signature|freshly observed original locator'):
+                        completed.issue_extension(spec, work, root=fixture.repository,
+                            revision='a' * 40, frozen={}, token='synthetic')
+                    if case == 'native-signature': observe_original.assert_not_called()
+                    downloads.assert_not_called()
+                    self.assertFalse((work / 'completion.json').exists())
+                fetched.side_effect = native_completion
+                observe_original.return_value = {'id': 71}, [], {'original': 71}
             if collected:
                 self.controls[prefix + 'reuse-wave-result.json']['phases'][-1]['state'] = 'failed'
                 self.bind_controls()
