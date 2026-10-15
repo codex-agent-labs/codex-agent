@@ -316,9 +316,12 @@ def _spec(spec):
     return originals
 
 
-def _inventory_revision(spec, root):
+def _inventory_revision(spec, root, *, token=None):
     from products.inventory import run_git
     revision = spec["source"]["inventoryCommit"]
+    if token is not None:
+        from sdk_handoff import _ensure_pinned_git_commit
+        _ensure_pinned_git_commit(root, revision, spec["source"]["producer"]["tree"], token)
     if run_git(root, "rev-parse", revision + "^{tree}").strip() != spec["source"]["producer"]["tree"]:
         raise ValueError("Incremental inventory revision differs from the admitted producer tree")
     return revision
@@ -367,8 +370,6 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     sdk = native._validate_completed_sdk(proof["parentProof"], native._native_pin_arguments(spec["parent"]),
         root=root, revision=revision, frozen=frozen, token=token)
     request, phases, receipts = validate_controls(spec, proof["controls"], _base(frozen, sdk))
-    validate_current(request, phases, receipts, root=root, revision=revision,
-                     original_revision=_inventory_revision(spec, root))
     import product_reuse as products
     from products.restore import bounded_verify
     _contract_files(spec, proof["contractFiles"], sdk)
@@ -387,6 +388,10 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
         raise ValueError("Incremental Contract source changed")
     if expected_locators != proof["originals"]:
         raise ValueError("Incremental SDK original native observations changed")
+    # A fresh runner may lack the original PR merge even with full branch history.
+    # Acquire only the exact native-pinned tree after its live source checks pass.
+    validate_current(request, phases, receipts, root=root, revision=revision,
+                     original_revision=_inventory_revision(spec, root, token=token))
     available = _records(request["availableObjects"], "Incremental original objects")
     if type(proof["members"]) is not list or len(proof["members"]) != len(phases):
         raise ValueError("Incremental SDK object members changed")
@@ -557,7 +562,7 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
                         for row in spec["controls"]}
         request, phases, receipts = validate_controls(spec, controls, _base(frozen, sdk))
         validate_current(request, phases, receipts, root=root, revision=revision,
-                         original_revision=_inventory_revision(spec, root))
+                         original_revision=_inventory_revision(spec, root, token=token))
         qualified = {}
         if "reuseCompletion" in spec:
             prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],

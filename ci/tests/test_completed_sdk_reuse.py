@@ -146,6 +146,20 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 completed.validate_extension(spec, proof, {'signer_commit': 'a' * 40},
                     root=Path.cwd(), revision='a' * 40, frozen={}, token='synthetic')
             inherit.assert_not_called()
+
+    def test_collected_inventory_acquires_only_exact_native_commit_and_tree(self):
+        spec = ordinary_spec()
+        with patch('sdk_handoff._ensure_pinned_git_commit') as acquire, \
+                patch('products.inventory.run_git', return_value=spec['source']['producer']['tree']):
+            self.assertEqual(spec['source']['inventoryCommit'],
+                             completed._inventory_revision(spec, Path.cwd(), token='synthetic'))
+            acquire.assert_called_once_with(Path.cwd(), spec['source']['inventoryCommit'],
+                                            spec['source']['producer']['tree'], 'synthetic')
+        with patch('sdk_handoff._ensure_pinned_git_commit', side_effect=ValueError('wrong tree')), \
+                patch('products.inventory.run_git') as git:
+            with self.assertRaisesRegex(ValueError, 'wrong tree'):
+                completed._inventory_revision(spec, Path.cwd(), token='synthetic')
+            git.assert_not_called()
         altered = deepcopy(spec)
         altered['source']['artifactBytes'] = completed.LIMIT + 1
         with self.assertRaisesRegex(ValueError, 'bounded original upload'):
@@ -487,14 +501,21 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(completed, 'validate_controls', return_value=(
                 {'availableObjects': [available]}, [phase], [phase])))
             stack.enter_context(patch.object(completed, 'validate_current'))
-            stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
-            stack.enter_context(patch.object(completed, 'observe_source', return_value=({}, [], {'source': 1})))
+            inventory = stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
+            observed_source = stack.enter_context(patch.object(completed, 'observe_source', return_value=({}, [], {'source': 1})))
             stack.enter_context(patch.object(completed, 'observe_original', return_value=({}, [], {'original': 1})))
             stack.enter_context(patch.object(completed, '_contract_files'))
             def validate(value):
                 return completed.validate_extension(spec, value, {'signer_commit': 'a' * 40},
                     root=Path.cwd(), revision='a' * 40, frozen={}, token='synthetic')
             self.assertEqual(spec, validate(proof)['extension']['spec'])
+            inventory.assert_called_once_with(spec, Path.cwd(), token='synthetic')
+            inventory.reset_mock()
+            observed_source.side_effect = ValueError('source no longer successful')
+            with self.assertRaisesRegex(ValueError, 'source no longer successful'):
+                validate(proof)
+            inventory.assert_not_called()
+            observed_source.side_effect = None
             for altered in ({**member, 'bytes': 0}, {**member, 'bytes': 8 * 1024**3 + 1},
                             {**member, 'relativePath': 'another/' + member['relativePath']},
                             {**member, 'sha256': sha256_bytes(b'wrong')}):
