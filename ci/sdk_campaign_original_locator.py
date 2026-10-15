@@ -27,12 +27,15 @@ from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
 
 
+RETAINED_CORE_BINARY_KEY = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
+
+
 def retained_core_binary_origin(build_key, consumer):
     """Select one successful original; collection still authenticates/adopts it."""
     producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
         "commit": "91993201e0421db2ae419f183fc84a99318fbd3b", "tree": "b5c395d2de21c9c21ca800470635579266bcb4c9",
         "event": "pull_request", "runId": 38687858579, "runAttempt": 1, "pullRequest": 31}
-    if (build_key != "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
+    if (build_key != RETAINED_CORE_BINARY_KEY
             or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
             or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
             or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
@@ -91,6 +94,8 @@ def fresh_sdk_worker_route(instance, receipt):
         routed, _, _, job, name, _ = _capture_route(receipt)
         if routed != instance:
             raise ValueError("SDK Core original route differs from selected phase")
+        if instance.phase in ("binary", "package"):
+            job = f"product-validation / sdk-core-{instance.phase}-wave / sdk-core-{instance.phase}-common"
         return job, name
     stem = f"{instance.component}-{instance.phase}-{instance.target}"
     producer = receipt["producer"]

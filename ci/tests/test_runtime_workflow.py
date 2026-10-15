@@ -832,6 +832,36 @@ class RuntimeWorkflowTest(unittest.TestCase):
 
 
 class WorkerUploadPreflightTest(unittest.TestCase):
+    def test_retained_core_presence_reaches_collection_without_current_upload(self):
+        from ci.tests import test_runtime_resume_capture as fixtures
+        from sdk_campaign_original_locator import RETAINED_CORE_BINARY_KEY
+        fixture = fixtures.RuntimeResumeCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        products = workflow.products
+        with mock.patch.object(products, '_validate_plan', return_value=json.loads(fixture.plan_path.read_bytes())), \
+                mock.patch.object(products, '_consumer', return_value={'producer': fixture.producer}), \
+                mock.patch.object(products, 'paginated_items', return_value=[]), \
+                mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('expensive replay')), \
+                mock.patch('sdk_campaign_original_locator.locate_retained_core_binary_upload') as locate:
+            def preflight(family='core-binary', wave=11):
+                products.preflight_worker_uploads(fixture.plan_path, product='sdk', family=family, wave=wave,
+                    trusted_workflow_sha=fixture.pin, token='fixture', repository_root=fixture.root,
+                    environ=fixture.environment)
+            locate.return_value = {'artifact_id': 71}
+            preflight()
+            locate.assert_called_once_with(fixture.plan_path, fixture.root,
+                expected_build_key=RETAINED_CORE_BINARY_KEY, token='fixture', environ=fixture.environment)
+            locate.reset_mock()
+            for family, wave in (('core-package', 12), ('core-binary', 12)):
+                with self.subTest(family=family, wave=wave), self.assertRaisesRegex(ValueError, 'parent recovery'):
+                    preflight(family, wave)
+            locate.assert_not_called()
+            locate.return_value = None
+            with self.assertRaisesRegex(ValueError, 'parent recovery'): preflight()
+            locate.side_effect = ValueError('expired original')
+            with self.assertRaisesRegex(ValueError, 'expired original'): preflight()
+
     def test_apple_outcome_keeps_successful_siblings_and_rejects_uncertain_originals(self):
         from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest, PIN as original_pin
         fixture = SdkWorkerCollectionTest()

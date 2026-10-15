@@ -4547,9 +4547,9 @@ def _verified_product_state(
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                      ("javascript", "metadata", "node"), ("csharp", "binary", "desktop"),
                                      ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64"),
-                                     ("sdk-ios", "metadata", "ios")):
+                                     ("sdk-ios", "metadata", "ios"), ("sdk-core", "binary", "common")):
         instance = PhaseInstanceId("sdk", component, phase, target)
-        capture = discovery_root / (f"prior-completed-sdk-ios-{phase}-{target}" if component == "sdk-ios" else
+        capture = discovery_root / (f"prior-completed-{component}-{phase}-{target}" if component in {"sdk-ios", "sdk-core"} else
             "prior-failed-sdk-csharp" if component == "csharp" else
             "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
         if (requested_scope is None or instance in closure) and (capture.exists() or capture.is_symlink()):
@@ -4560,7 +4560,7 @@ def _verified_product_state(
                 plan=plan, consumer_producer=consumer["producer"],
                 **({"phase": phase} if phase != "package" else {}),
                 **({"component": component} if component != "javascript" else {}),
-                **({"target": target} if component == "sdk-ios" else {}),
+                **({"target": target} if component in {"sdk-ios", "sdk-core"} else {}),
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 trusted_workflow_sha=sdk_original_workflow_sha,
                 token=environment["GITHUB_TOKEN"], environ=environment))
@@ -6270,6 +6270,13 @@ def preflight_worker_uploads(plan_path, *, product, wave, family=None,
            and item["name"].startswith(prefixes) and item["name"].endswith(suffixes)
            for item in artifacts):
         return
+    if (product, family, wave) == ("sdk", "core-binary", 11):
+        from sdk_campaign_original_locator import RETAINED_CORE_BINARY_KEY, locate_retained_core_binary_upload
+        # Retained workers deliberately upload nothing in this run. This only
+        # establishes presence; collection still authenticates the elected key.
+        if locate_retained_core_binary_upload(plan_path, root,
+                expected_build_key=RETAINED_CORE_BINARY_KEY, token=token, environ=environment) is not None:
+            return
     write_canonical_json(root / "build/runtime-preflight.json", {
         "schemaVersion": 1, "producer": producer, "product": product,
         "wave": wave, "family": family, "result": "no-worker-uploads"})

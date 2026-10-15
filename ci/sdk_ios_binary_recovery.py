@@ -47,6 +47,8 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
 
 
 def _javascript_instance(phase, component="javascript", target=None):
+    if component == "sdk-core" and phase == "binary" and target == "common":
+        return PhaseInstanceId("sdk", component, phase, target)
     if component == "sdk-ios" and phase == "metadata" and target == "ios":
         return PhaseInstanceId("sdk", component, phase, target)
     if component == "sdk-ios" and phase == "validation" and target in {"ios-arm64", "ios-simulator-arm64"}:
@@ -236,8 +238,8 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
                 raise ValueError("Completed SDK controls changed during native readmission")
             require_no_signing_secret(environ)
             return [record]
-    if instance.component == "sdk-ios":
-        raise ValueError("Completed iOS controls require exact native authority")
+    if instance.component in {"sdk-ios", "sdk-core"}:
+        raise ValueError("Completed iOS/Core controls require exact native authority")
     prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
         f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
     _require_prior(plan, consumer_producer, prior)
@@ -481,7 +483,8 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
         envelope = completed_frozen.envelope(record)
         _, artifact, observed = completed_frozen.observe_extended_sdk(record, producer=producer, token=token)
         folder = ("prior-failed-sdk-ios-package" if ios_package else
-                  f"prior-completed-sdk-ios-{instance.phase}-{instance.target}" if instance.component == "sdk-ios" else "prior-failed-sdk-csharp"
+                  f"prior-completed-{instance.component}-{instance.phase}-{instance.target}"
+                  if instance.component in {"sdk-ios", "sdk-core"} else "prior-failed-sdk-csharp"
                   if instance.component == "csharp" else "prior-failed-sdk-javascript"
                   + ("" if instance.phase == "package" else "-" + instance.phase))
         capture = Path(destination) / folder / f"{instance.component}/{instance.phase}/{instance.target}"

@@ -20,7 +20,9 @@ OBJECT = ("buildKey", "receiptSha256", "objectSha256")
 LIMIT = 16 * 1024 * 1024
 IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 COLLECTED_VALIDATION_JOB = "product-validation / sdk-collect-9"
-_COLLECTED_WAVES = {COLLECTED_VALIDATION_JOB: 9, "product-validation / sdk-collect-10": 10}
+_CORE_COLLECTOR = "product-validation / sdk-core-binary-wave / sdk-collect-11"
+_COLLECTED_WAVES = {COLLECTED_VALIDATION_JOB: 9, "product-validation / sdk-collect-10": 10,
+                    _CORE_COLLECTOR: 11}
 SOURCE_PLAN = "product-resume-inputs/plan/impact-plan.json"
 _SOURCE_UPLOADS = {
     "product-validation / product-resume": "codex-agent-product-resume-",
@@ -173,12 +175,18 @@ def observe_original(original, receipt, token, *, native_locator=None):
     if instance.product != "sdk" or instance not in PHASE_INSTANCE_IDS:
         raise ValueError("Incremental original must be a registered SDK phase")
     base_job = f"product-validation / sdk-{instance.component}-{instance.phase}-{instance.target}"
+    workflow = {"trusted_workflow_sha": original["workflowSha"]}
+    if instance == PhaseInstanceId("sdk", "sdk-core", "binary", "common"):
+        from sdk_campaign_original_locator import fresh_sdk_worker_route
+        base_job, _ = fresh_sdk_worker_route(instance, receipt)
+        workflow = {"trusted_workflows_by_phase": {"original": {
+            "path": ".github/workflows/sdk-core-binary-validation.yml", "sha": original["workflowSha"]}}}
     if native_locator is not None and (type(native_locator) is not dict
             or type(native_locator.get("job")) is not dict or native_locator["job"].get("id") != original["jobId"]):
         raise ValueError("Native original locator changes its independently pinned job")
     observed = products._observe_ci_producer_jobs({"original": producer},
         jobs_by_phase={"original": base_job}, build_keys_by_phase={"original": receipt["buildKey"]},
-        trusted_workflow_sha=original["workflowSha"], token=token,
+        token=token, **workflow,
         **({"native_job_ids_by_phase": {"original": original["jobId"]}} if native_locator is not None else {}))
     matches = products._matching_ci_jobs(observed[0]["jobs"], base_job, expected_build_key=receipt["buildKey"])
     if len(matches) != 1 or matches[0].get("id") != original["jobId"]:
@@ -215,8 +223,11 @@ def observe_source(source, token, *, contract=False, native_locator=None):
     if native_locator is not None and (type(native_locator) is not dict
             or type(native_locator.get("job")) is not dict or native_locator["job"].get("id") != source["jobId"]):
         raise ValueError("Native source locator changes its independently pinned job")
+    workflow = ({"trusted_workflows_by_phase": {"source": {
+        "path": ".github/workflows/sdk-core-binary-validation.yml", "sha": source["workflowSha"]}}}
+        if job == _CORE_COLLECTOR else {"trusted_workflow_sha": source["workflowSha"]})
     observed = products._observe_ci_producer_jobs({"source": producer}, jobs_by_phase={"source": job},
-        trusted_workflow_sha=source["workflowSha"], token=token,
+        token=token, **workflow,
         **({"native_job_ids_by_phase": {"source": source["jobId"]}} if native_locator is not None else {}))
     selected = products._matching_ci_jobs(observed[0]["jobs"], job)
     if len(selected) != 1 or selected[0]["id"] != source["jobId"]:

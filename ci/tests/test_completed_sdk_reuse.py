@@ -73,7 +73,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         for component, phase, target in (('javascript', 'package', 'node'),
                                          ('sdk-ios', 'validation', 'ios-arm64'),
                                          ('sdk-ios', 'validation', 'ios-simulator-arm64'),
-                                         ('sdk-ios', 'metadata', 'ios')):
+                                         ('sdk-ios', 'metadata', 'ios'), ('sdk-core', 'binary', 'common')):
             with self.subTest(component=component, target=target):
                 self._check_native_capture_and_replay(component, phase, target)
 
@@ -102,7 +102,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
                 producer=consumer, token='synthetic')
-            capture = root / (f'prior-completed-sdk-ios-{phase}-{target}' if component == 'sdk-ios'
+            capture = root / (f'prior-completed-{component}-{phase}-{target}' if component in {'sdk-ios', 'sdk-core'}
                               else 'prior-failed-sdk-javascript')
             def replay(authority):
                 return recovery.replay_prior_javascript_package(capture, root,
@@ -117,7 +117,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             shard = capture / f'{component}/{phase}/{target}/original/shard'
             self.assertEqual({PHASE_SHARD_NAME, 'phase-receipt.json'}, {p.name for p in shard.iterdir()})
             with patch.object(recovery, '_capture_javascript_package', side_effect=ValueError('ordinary whole upload required')):
-                with self.assertRaisesRegex(ValueError, 'exact native authority' if component == 'sdk-ios' else 'whole upload required'):
+                with self.assertRaisesRegex(ValueError, 'exact native authority' if component in {'sdk-ios', 'sdk-core'} else 'whole upload required'):
                     replay(None)
             with self.assertRaisesRegex(ValueError, 'concrete native authority'):
                 replay(object())
@@ -172,7 +172,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
                              ('product-validation / plan', 'codex-agent-planned-product-resume-'),
                              ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-'),
-                             ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-')):
+                             ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-'),
+                             (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
@@ -185,7 +186,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 result = completed.observe_source(source, 'synthetic')
                 self.assertEqual(artifact, result[0])
                 self.assertEqual({'source': role}, observe.call_args.kwargs['jobs_by_phase'])
-                self.assertEqual(source['workflowSha'], observe.call_args.kwargs['trusted_workflow_sha'])
+                if role == completed._CORE_COLLECTOR:
+                    self.assertEqual({'source': {'path': '.github/workflows/sdk-core-binary-validation.yml',
+                        'sha': source['workflowSha']}}, observe.call_args.kwargs['trusted_workflows_by_phase'])
+                    self.assertNotIn('trusted_workflow_sha', observe.call_args.kwargs)
+                else:
+                    self.assertEqual(source['workflowSha'], observe.call_args.kwargs['trusted_workflow_sha'])
                 self.assertEqual(artifact['name'], metadata.call_args.args[2])
                 self.assertNotIn('native_job_ids_by_phase', observe.call_args.kwargs)
                 self.assertEqual(result, completed.observe_source(source, 'synthetic', native_locator=result[2]))
@@ -237,6 +243,13 @@ class CompletedSdkControlsTest(unittest.TestCase):
         phase['receiptPath'] = obj['relativePath'] + '/phase-receipt.json'
         metadata['receiptObjects'] = [obj]
         completed._spec(metadata)
+        core = deepcopy(metadata)
+        core['source']['jobName'] = completed._CORE_COLLECTOR
+        completed._spec(core)
+        for job in ('product-validation / sdk-collect-11',
+                    'product-validation / sdk-core-package-wave / sdk-collect-11'):
+            core['source']['jobName'] = job
+            with self.assertRaises(ValueError): completed._spec(core)
         for mutate in (
                 lambda value: value['receiptObjects'].append(deepcopy(obj)),
                 lambda value: value['receiptObjects'][0].update(bytes=completed.LIMIT + 1),
@@ -299,6 +312,31 @@ class CompletedSdkControlsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'independently pinned job'):
                 completed.observe_original(original, receipt, 'synthetic', native_locator=altered)
             observe.assert_not_called()
+
+    def test_core_original_requires_exact_nested_child_and_matrix_key(self):
+        import product_reuse
+        receipt = deepcopy(self.receipt)
+        receipt.update(component='sdk-core', phase='binary', target='common')
+        receipt['producer']['workflowPath'] = '.github/workflows/ci.yml'
+        receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
+        original = {'jobId': 71, 'workflowSha': 'a' * 40, 'artifactId': 72,
+                    'artifactSha256': 'sha256:' + 'b' * 64}
+        name = 'product-validation / sdk-core-binary-wave / sdk-core-binary-common'
+        job = {'id': 71, 'name': name + ' (' + receipt['buildKey'] + ', ...',
+               'started_at': '2026-01-01T01:00:00Z', 'completed_at': '2026-01-01T01:02:00Z'}
+        artifact = {'id': 72, 'created_at': '2026-01-01T01:01:00Z'}
+        with patch.object(product_reuse, '_observe_ci_producer_jobs',
+                return_value=[{'run': {}, 'jobs': [job]}]) as observe, \
+                patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact):
+            completed.observe_original(original, receipt, 'synthetic')
+            self.assertEqual({'original': name}, observe.call_args.kwargs['jobs_by_phase'])
+            self.assertEqual({'original': receipt['buildKey']}, observe.call_args.kwargs['build_keys_by_phase'])
+            self.assertEqual({'original': {'path': '.github/workflows/sdk-core-binary-validation.yml',
+                'sha': original['workflowSha']}}, observe.call_args.kwargs['trusted_workflows_by_phase'])
+            self.assertNotIn('trusted_workflow_sha', observe.call_args.kwargs)
+            for invalid in ('product-validation / sdk-core-binary-common', name + ' (sha256:' + '0' * 64 + ', ...'):
+                job['name'] = invalid
+                with self.assertRaises(ValueError): completed.observe_original(original, receipt, 'synthetic')
 
     def test_native_job_selection_cannot_run_before_subject_authentication(self):
         import reuse_qualification as native
@@ -599,11 +637,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.check_v3_issuer_original_member(component, phase, target)
 
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
-        for phase, target in (('package', 'ios'), ('validation', 'ios-arm64'), ('metadata', 'ios')):
+        for component, phase, target, wave in (('sdk-ios', 'package', 'ios', 9),
+                ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
+                ('sdk-core', 'binary', 'common', 11)):
             with self.subTest(phase=phase):
                 self.setUp()
-                self.check_v3_issuer_original_member('sdk-ios', phase, target, collected=True,
-                                                     collected_wave=10 if phase == 'metadata' else 9)
+                self.check_v3_issuer_original_member(component, phase, target, collected=True, collected_wave=wave)
 
     def test_collected_issuer_reuses_native_object_without_any_object_transfer(self):
         self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', collected=True, reused=True)
@@ -651,7 +690,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk'
         self.receipt_path = (f'product-resume-state/{folder}/{component}/{phase_name}/{target}/'
                             'original/shard/phase-receipt.json')
-        embedded = collected and phase_name == 'metadata'
+        embedded = collected and (phase_name == 'metadata' or component == 'sdk-core')
         if embedded:
             source_object = 'runtime-state/original-objects/' + verified['objectPath']
             self.receipt_path = source_object + '/phase-receipt.json'
@@ -682,7 +721,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
         if collected:
             spec.update(stateRoot='runtime-state', sourcePlan=plan_text)
-            spec['source'].update(jobName=f'product-validation / sdk-collect-{collected_wave}',
+            spec['source'].update(jobName=completed._CORE_COLLECTOR if collected_wave == 11 else
+                                  f'product-validation / sdk-collect-{collected_wave}',
                                   referenceControlSha256='sha256:' + 'a' * 64)
         if embedded:
             spec['receiptObjects'] = [{'relativePath': source_object,

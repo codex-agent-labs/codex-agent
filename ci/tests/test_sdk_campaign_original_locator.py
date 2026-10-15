@@ -178,7 +178,7 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                 instance, ready, original, raw = self.selected(core=core)
                 expected_job, expected_name = locator.fresh_sdk_worker_route(
                     instance, validate_phase_receipt(load_canonical_json_bytes(original.receipt_bytes)))
-                self.assertEqual("product-validation / sdk-core-package-common" if core
+                self.assertEqual("product-validation / sdk-core-package-wave / sdk-core-package-common" if core
                                  else "product-validation / sdk-javascript-package-node", expected_job)
                 self.assertTrue(expected_name.startswith("codex-agent-sdk-worker-"))
                 with self.fixture.official_api({instance: ready}, {instance: raw}) as (_, _, download):
