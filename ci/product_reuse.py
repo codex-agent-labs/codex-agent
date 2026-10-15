@@ -439,7 +439,6 @@ def _same_pr_run(
     return {"run": run, "testedCommit": tested_commit}
 
 
-@measured
 def _resume_recovery_artifact_prefixes(phases):
     # Blocked descendants can become ready after recovering a predecessor.
     # Keep their candidates, while completed Runtime phases need no history scan.
@@ -451,13 +450,14 @@ def _resume_recovery_artifact_prefixes(phases):
         "codex-agent-sdk-worker-sdk-ios-package-ios-",
     }
     for phase in phases:
-        if phase["state"] in {"build", "blocked"} and (
+        if phase["state"] in {"build", "waiting"} and (
                 phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
                 or _identity(phase) == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")):
             prefixes.add(f"codex-agent-{phase['product']}-worker-{phase['component']}-{phase['phase']}-{phase['target']}-")
     return tuple(sorted(prefixes))
 
 
+@measured
 def _prior_failed_pr_attempts(
     plan: Mapping[str, Any], producer: Mapping[str, Any], token: str,
     *, api: str = "https://api.github.com", required_artifact_prefixes: tuple[str, ...] = (),

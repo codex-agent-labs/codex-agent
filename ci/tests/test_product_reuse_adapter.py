@@ -448,9 +448,9 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
                 product_reuse._prior_failed_pr_attempts(self.plan, self.producer, "token",
                     required_artifact_prefixes=(prefix,), artifact_inventory=rows)
 
-    def test_native_requalification_index_preserves_blocked_recovery_and_skips_completed_runtime(self):
+    def test_native_requalification_index_preserves_waiting_recovery_and_skips_completed_runtime(self):
         phases = [dict(product="runtime", component="runtime-aggregate", phase="metadata", target="aggregate", state="build"),
-                  dict(product="sdk", component="sdk-ios", phase="binary", target="ios", state="blocked"),
+                  dict(product="sdk", component="sdk-ios", phase="binary", target="ios", state="waiting"),
                   dict(product="runtime", component="linux-x64", phase="binary", target="linux-x64", state="retained")]
         prefixes = product_reuse._resume_recovery_artifact_prefixes(phases)
         aggregate = "codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-"
