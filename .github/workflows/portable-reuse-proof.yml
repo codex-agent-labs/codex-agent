@@ -75,7 +75,8 @@ jobs:
               provider._github_https(response.geturl())
           subprocess.run([sys.executable, '-B', '-m', 'unittest',
               'ci.tests.test_sdk_android_archive_provision',
-              'ci.tests.test_sdk_core_native_archive_provision'], check=True)
+              'ci.tests.test_sdk_core_native_archive_provision',
+              'ci.tests.test_product_sdk_maven.SdkMavenPackagingTest.test_every_component_packages_its_exact_carrier_set'], check=True)
           import tempfile
           from products.sdk_facade_source import capture_facade_validation_sources
           from products.restore import _stage_fingerprint

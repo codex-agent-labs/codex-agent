@@ -30,6 +30,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             compile(textwrap.dedent(script.split("\n      - ", 1)[0]),
                     "core-validation-host-diagnostic", "exec")
         for required in ("ci.tests.test_sdk_android_archive_provision",
+                         "ci.tests.test_product_sdk_maven.SdkMavenPackagingTest.test_every_component_packages_its_exact_carrier_set",
                          "ci.tests.test_sdk_core_native_archive_provision", "packages: platform-tools",
                          "capture_facade_validation_sources", "_stage_fingerprint(captured)",
                          "GITHUB_TOKEN: ${{ github.token }}", "x-ratelimit-remaining", "report_api_error"):
