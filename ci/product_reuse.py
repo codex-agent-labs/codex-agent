@@ -4546,9 +4546,10 @@ def _verified_product_state(
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                      ("javascript", "metadata", "node"), ("csharp", "binary", "desktop"),
-                                     ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64")):
+                                     ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64"),
+                                     ("sdk-ios", "metadata", "ios")):
         instance = PhaseInstanceId("sdk", component, phase, target)
-        capture = discovery_root / ("prior-completed-sdk-ios-validation-" + target if component == "sdk-ios" else
+        capture = discovery_root / (f"prior-completed-sdk-ios-{phase}-{target}" if component == "sdk-ios" else
             "prior-failed-sdk-csharp" if component == "csharp" else
             "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
         if (requested_scope is None or instance in closure) and (capture.exists() or capture.is_symlink()):
@@ -9422,7 +9423,7 @@ def resume_products(
                 sdk_capture_root = (("prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)) if instance.component == "javascript"
                                     else "prior-failed-sdk-csharp" if instance.component == "csharp"
                                     else "prior-failed-sdk-ios-package" if instance.phase == "package"
-                                    else "prior-completed-sdk-ios-validation-" + instance.target if instance.phase == "validation"
+                                    else f"prior-completed-sdk-ios-{instance.phase}-{instance.target}" if instance.phase in {"validation", "metadata"}
                                     else "prior-failed-sdk")
                 shard = (prepared / sdk_capture_root / instance.component / instance.phase /
                          instance.target / "original/shard" if instance.product == "sdk" else

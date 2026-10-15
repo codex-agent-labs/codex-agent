@@ -47,6 +47,8 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
 
 
 def _javascript_instance(phase, component="javascript", target=None):
+    if component == "sdk-ios" and phase == "metadata" and target == "ios":
+        return PhaseInstanceId("sdk", component, phase, target)
     if component == "sdk-ios" and phase == "validation" and target in {"ios-arm64", "ios-simulator-arm64"}:
         return PhaseInstanceId("sdk", component, phase, target)
     if component == "csharp" and phase == "binary":
@@ -235,7 +237,7 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
             require_no_signing_secret(environ)
             return [record]
     if instance.component == "sdk-ios":
-        raise ValueError("Completed iOS validation controls require exact native authority")
+        raise ValueError("Completed iOS controls require exact native authority")
     prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
         f"{producer['runId']}/attempts/{producer['runAttempt']}", token)
     _require_prior(plan, consumer_producer, prior)
@@ -479,7 +481,7 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
         envelope = completed_frozen.envelope(record)
         _, artifact, observed = completed_frozen.observe_extended_sdk(record, producer=producer, token=token)
         folder = ("prior-failed-sdk-ios-package" if ios_package else
-                  "prior-completed-sdk-ios-validation-" + instance.target if instance.component == "sdk-ios" else "prior-failed-sdk-csharp"
+                  f"prior-completed-sdk-ios-{instance.phase}-{instance.target}" if instance.component == "sdk-ios" else "prior-failed-sdk-csharp"
                   if instance.component == "csharp" else "prior-failed-sdk-javascript"
                   + ("" if instance.phase == "package" else "-" + instance.phase))
         capture = Path(destination) / folder / f"{instance.component}/{instance.phase}/{instance.target}"

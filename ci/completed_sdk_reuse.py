@@ -20,11 +20,12 @@ OBJECT = ("buildKey", "receiptSha256", "objectSha256")
 LIMIT = 16 * 1024 * 1024
 IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 COLLECTED_VALIDATION_JOB = "product-validation / sdk-collect-9"
+_COLLECTED_WAVES = {COLLECTED_VALIDATION_JOB: 9, "product-validation / sdk-collect-10": 10}
 SOURCE_PLAN = "product-resume-inputs/plan/impact-plan.json"
 _SOURCE_UPLOADS = {
     "product-validation / product-resume": "codex-agent-product-resume-",
     "product-validation / plan": "codex-agent-planned-product-resume-",
-    COLLECTED_VALIDATION_JOB: "codex-agent-sdk-wave-9-state-",
+    **{job: f"codex-agent-sdk-wave-{wave}-state-" for job, wave in _COLLECTED_WAVES.items()},
 }
 
 
@@ -39,12 +40,34 @@ def original_worker_member(spec):
 
 def collected_validation(spec):
     return (type(spec) is dict and type(spec.get("source")) is dict
-            and spec["source"].get("jobName") == COLLECTED_VALIDATION_JOB)
+            and type(spec["source"].get("jobName")) is str
+            and spec["source"]["jobName"] in _COLLECTED_WAVES)
 
 
 def _records(rows, label):
     import reuse_qualification
     return reuse_qualification._phase_records(rows, label)
+
+
+def _receipt_objects(spec):
+    """Only exact collected objects may supply their embedded receipt control."""
+    from products.restore import object_relative_path
+    objects = spec.get("receiptObjects", [])
+    if type(objects) is not list or len(objects) > len(spec["completedPhases"]):
+        raise ValueError("Collected receipt objects exceed their selected scope")
+    selected = {row["receiptPath"]: row for row in spec["completedPhases"]}
+    result = {}
+    for row in objects:
+        validate_file_record(row, "Collected receipt object", with_kind=False)
+        path = row["relativePath"] + "/phase-receipt.json"
+        phase = selected.get(path)
+        if (path in result or phase is None or not 0 < row["bytes"] <= LIMIT
+                or row["sha256"] != phase["objectSha256"]
+                or row["relativePath"] != spec["stateRoot"] + "/original-objects/"
+                    + object_relative_path(phase["buildKey"], phase["receiptSha256"])):
+            raise ValueError("Collected receipt object differs from its exact selected phase")
+        result[path] = (row, phase)
+    return result
 
 
 def validate_controls(spec, controls, base):
@@ -198,7 +221,7 @@ def observe_source(source, token, *, contract=False, native_locator=None):
     selected = products._matching_ci_jobs(observed[0]["jobs"], job)
     if len(selected) != 1 or selected[0]["id"] != source["jobId"]:
         raise ValueError("Incremental source differs from its approved successful job")
-    suffix = f"-attempt-{producer['runAttempt']}" if job == COLLECTED_VALIDATION_JOB else ""
+    suffix = f"-attempt-{producer['runAttempt']}" if job in _COLLECTED_WAVES else ""
     artifact = products._contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"],
         prefix + producer["tree"] + suffix, producer, observed[0]["run"], token)
     if artifact["size_in_bytes"] != source["artifactBytes"]:
@@ -231,6 +254,7 @@ def _spec(spec):
     require_exact_keys(spec, {"schemaVersion", "parent", "parentProofSha256", "source", "stateRoot",
         "controls", "completedPhases", "originals", "contractControls", "contractFiles"}
         | ({"sourcePlan"} if collected else set())
+        | ({"receiptObjects"} if collected and "receiptObjects" in spec else set())
         | ({"reuseCompletion", "reuseCompletionProofSha256"} if reuse else set()), "Incremental SDK spec")
     if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3):
         raise ValueError("Unsupported incremental SDK spec")
@@ -258,6 +282,7 @@ def _spec(spec):
             or collected and spec["schemaVersion"] != 3):
         raise ValueError("Incremental native source changes its successful resume contract")
     if collected:
+        _receipt_objects(spec)
         native.require_sha256(spec["source"]["referenceControlSha256"], "Approved collector reference control")
         if type(spec["sourcePlan"]) is not str:
             raise ValueError("Collector source plan must preserve its original JSON text")
@@ -463,15 +488,27 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         # requested members. No whole-archive hash or body-admission claim here.
         base = {key: spec["source"][key] for key in
                 ("artifactId", "artifactSha256", "referenceControlSha256")}
-        base.update(stateWave=0, sdkStateWave=9, runAttempt=producer["runAttempt"])
+        base.update(stateWave=0, sdkStateWave=_COLLECTED_WAVES[spec["source"]["jobName"]],
+                    runAttempt=producer["runAttempt"])
+        receipt_objects = _receipt_objects(spec)
+        wanted = {row["relativePath"]: row for row in spec["controls"]
+                  if row["relativePath"] not in receipt_objects}
+        wanted.update((row["relativePath"], row) for row, _ in receipt_objects.values())
         transport = products._capture_runtime_reference_members(plan, raw_plan, producer, base, destination,
             trusted_workflow_sha=spec["source"]["workflowSha"], token=token,
-            wanted={row["relativePath"]: row for row in spec["controls"]})
+            wanted=wanted)
         if transport["artifact"] != artifact:
             raise ValueError("Collector control intake changes its observed source upload")
         controls = {}
         for row in spec["controls"]:
-            raw = read_regular_file_bytes(destination / row["relativePath"], max_bytes=LIMIT, reject_symlink_parents=True)
+            embedded = receipt_objects.get(row["relativePath"])
+            if embedded is not None:
+                obj, phase = embedded
+                verified = verify_object(destination / obj["relativePath"], build_key=phase["buildKey"],
+                    receipt_sha256=phase["receiptSha256"], object_sha256=phase["objectSha256"])
+                raw = verified["receiptBytes"]
+            else:
+                raw = read_regular_file_bytes(destination / row["relativePath"], max_bytes=LIMIT, reject_symlink_parents=True)
             controls[row["relativePath"]] = (raw.decode("utf-8") if row["relativePath"] == SOURCE_PLAN
                                              else load_canonical_json_bytes(raw))
         pending = [transport]

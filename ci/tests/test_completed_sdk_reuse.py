@@ -23,7 +23,7 @@ def ordinary_spec():
     """Keep legacy intake regressions independent of the current issuer role."""
     import json
     spec = json.loads((Path(__file__).parent / 'data/sdk-completed-resume.json').read_bytes())
-    for field in ('sourcePlan', 'reuseCompletion', 'reuseCompletionProofSha256'):
+    for field in ('sourcePlan', 'reuseCompletion', 'reuseCompletionProofSha256', 'receiptObjects'):
         spec.pop(field, None)
     spec['stateRoot'] = 'product-resume-state'
     spec['source'].pop('referenceControlSha256', None)
@@ -72,7 +72,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
     def test_native_sdk_capture_and_replay_keep_only_exact_controls(self):
         for component, phase, target in (('javascript', 'package', 'node'),
                                          ('sdk-ios', 'validation', 'ios-arm64'),
-                                         ('sdk-ios', 'validation', 'ios-simulator-arm64')):
+                                         ('sdk-ios', 'validation', 'ios-simulator-arm64'),
+                                         ('sdk-ios', 'metadata', 'ios')):
             with self.subTest(component=component, target=target):
                 self._check_native_capture_and_replay(component, phase, target)
 
@@ -101,7 +102,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
                 producer=consumer, token='synthetic')
-            capture = root / ('prior-completed-sdk-ios-validation-' + target if component == 'sdk-ios'
+            capture = root / (f'prior-completed-sdk-ios-{phase}-{target}' if component == 'sdk-ios'
                               else 'prior-failed-sdk-javascript')
             def replay(authority):
                 return recovery.replay_prior_javascript_package(capture, root,
@@ -156,11 +157,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec = ordinary_spec()
         for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
                              ('product-validation / plan', 'codex-agent-planned-product-resume-'),
-                             ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-')):
+                             ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-'),
+                             ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
-            suffix = f"-attempt-{source['producer']['runAttempt']}" if role.endswith('sdk-collect-9') else ''
+            suffix = f"-attempt-{source['producer']['runAttempt']}" if role in completed._COLLECTED_WAVES else ''
             artifact = dict(id=source['artifactId'], name=prefix + source['producer']['tree'] + suffix,
                             size_in_bytes=source['artifactBytes'], created_at='2026-01-01T01:01:00Z')
             with self.subTest(role=role), patch.object(product_reuse, '_observe_ci_producer_jobs',
@@ -211,6 +213,25 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec['controls'].append({'relativePath': 'product-resume-inputs/plan/impact-plan.json',
                                 'bytes': len(raw), 'sha256': sha256_bytes(raw)})
         completed._spec(spec)
+        metadata = deepcopy(spec)
+        metadata['source']['jobName'] = 'product-validation / sdk-collect-10'
+        completed._spec(metadata)
+        from products.restore import object_relative_path
+        phase = metadata['completedPhases'][0]
+        obj = {'relativePath': 'runtime-state/original-objects/' + object_relative_path(
+            phase['buildKey'], phase['receiptSha256']), 'bytes': 12, 'sha256': phase['objectSha256']}
+        phase['receiptPath'] = obj['relativePath'] + '/phase-receipt.json'
+        metadata['receiptObjects'] = [obj]
+        completed._spec(metadata)
+        for mutate in (
+                lambda value: value['receiptObjects'].append(deepcopy(obj)),
+                lambda value: value['receiptObjects'][0].update(bytes=completed.LIMIT + 1),
+                lambda value: value['receiptObjects'][0].update(sha256='sha256:' + '0' * 64),
+                lambda value: value['receiptObjects'][0].update(relativePath='runtime-state/unrelated.zip'),
+                lambda value: value['completedPhases'][0].update(receiptPath='runtime-state/other.json')):
+            changed = deepcopy(metadata)
+            mutate(changed)
+            with self.assertRaises(ValueError): completed._spec(changed)
         reuse = {**deepcopy(spec), 'reuseCompletion': deepcopy(spec['parent']),
                  'reuseCompletionProofSha256': 'sha256:' + 'b' * 64}
         completed._spec(reuse)
@@ -224,7 +245,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         for change in (
             lambda value: value['source'].pop('referenceControlSha256'),
             lambda value: value['source'].update(referenceControlSha256='unqualified'),
-            lambda value: value['source'].update(jobName='product-validation / sdk-collect-10'),
+            lambda value: value['source'].update(jobName='product-validation / sdk-collect-11'),
             lambda value: value.update(stateRoot='product-resume-state'),
             lambda value: value.update(schemaVersion=2),
             lambda value: value.update(sourcePlan=plan),
@@ -557,10 +578,11 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.check_v3_issuer_original_member(component, phase, target)
 
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
-        for phase, target in (('package', 'ios'), ('validation', 'ios-arm64')):
+        for phase, target in (('package', 'ios'), ('validation', 'ios-arm64'), ('metadata', 'ios')):
             with self.subTest(phase=phase):
                 self.setUp()
-                self.check_v3_issuer_original_member('sdk-ios', phase, target, collected=True)
+                self.check_v3_issuer_original_member('sdk-ios', phase, target, collected=True,
+                                                     collected_wave=10 if phase == 'metadata' else 9)
 
     def test_collected_issuer_reuses_native_object_without_any_object_transfer(self):
         self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', collected=True, reused=True)
@@ -591,7 +613,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 completed._qualified_members(pins, candidate, selected, [self.receipt])
 
-    def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False):
+    def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
+                                      collected_wave=9):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -607,6 +630,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
         folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk'
         self.receipt_path = (f'product-resume-state/{folder}/{component}/{phase_name}/{target}/'
                             'original/shard/phase-receipt.json')
+        embedded = collected and phase_name == 'metadata'
+        if embedded:
+            source_object = 'runtime-state/original-objects/' + verified['objectPath']
+            self.receipt_path = source_object + '/phase-receipt.json'
         if collected and phase_name == 'validation':
             self.receipt_path = self.receipt_path.replace('product-resume-state/', 'runtime-state/', 1)
         phase = {**{key: receipt[key] for key in completed.IDENTITY},
@@ -634,8 +661,11 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
         if collected:
             spec.update(stateRoot='runtime-state', sourcePlan=plan_text)
-            spec['source'].update(jobName=completed.COLLECTED_VALIDATION_JOB,
+            spec['source'].update(jobName=f'product-validation / sdk-collect-{collected_wave}',
                                   referenceControlSha256='sha256:' + 'a' * 64)
+        if embedded:
+            spec['receiptObjects'] = [{'relativePath': source_object,
+                'bytes': (shard / verified['objectPath']).stat().st_size, 'sha256': verified['objectSha256']}]
         spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
         parent = {'schemaVersion': 1}
         spec['parentProofSha256'] = sha256_bytes(canonical_json_bytes(parent))
@@ -699,12 +729,20 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     self.assertEqual((plan, plan_text.encode('utf-8'), spec['source']['producer']),
                                      (actual_plan, raw_plan, producer))
                     self.assertEqual({'artifactId': spec['source']['artifactId'],
-                        'artifactSha256': spec['source']['artifactSha256'], 'stateWave': 0, 'sdkStateWave': 9,
+                        'artifactSha256': spec['source']['artifactSha256'], 'stateWave': 0, 'sdkStateWave': collected_wave,
                         'referenceControlSha256': spec['source']['referenceControlSha256'],
                         'runAttempt': producer['runAttempt']}, base)
-                    self.assertEqual({row['relativePath']: row for row in spec['controls']}, wanted)
+                    expected = {row['relativePath']: row for row in spec['controls']
+                                if not embedded or row['relativePath'] != self.receipt_path}
+                    expected.update({row['relativePath']: row for row in spec.get('receiptObjects', [])})
+                    self.assertEqual(expected, wanted)
                     self.assertEqual(spec['source']['workflowSha'], trusted_workflow_sha)
                     for path, value in self.controls.items():
+                        if embedded and path == self.receipt_path:
+                            target = destination / source_object
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_bytes(body)
+                            continue
                         target = destination / path
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_bytes(control_bytes(path, value))
