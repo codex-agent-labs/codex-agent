@@ -21,6 +21,10 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.runner }}
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,16 +62,17 @@ jobs:
                       'actualSha256': hashlib.sha256(actual).hexdigest(), 'crlfOnly': actual.replace(b'\r\n', b'\n') == expected})
           print(json.dumps({'changedControlCount': len(changed), 'changedControls': changed}), flush=True)
           import sdk_core_native_archive_provision as provider
-          class ObservedRedirect(provider._MavenRedirect):
+          class ObservedRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, request, response, code, message, headers, new_url):
                   value = urllib.parse.urlsplit(new_url)
                   print(json.dumps({'redirectCode': code, 'scheme': value.scheme, 'host': value.hostname, 'port': value.port}), flush=True)
+                  provider._github_https(new_url)
                   return super().redirect_request(request, response, code, message, headers, new_url)
-          url = provider._MAVEN_ROOT + '/2.3.10/kotlin-native-prebuilt-2.3.10-macos-aarch64.tar.gz'
+          url = provider._RELEASE_ROOT + '/v2.3.10/kotlin-native-prebuilt-2.3.10-macos-aarch64.tar.gz'
           with urllib.request.build_opener(ObservedRedirect()).open(urllib.request.Request(url), timeout=30) as response:
-              print(json.dumps({'status': response.status, 'finalUrl': response.geturl(),
+              print(json.dumps({'status': response.status, 'finalHost': urllib.parse.urlsplit(response.geturl()).hostname,
                   'declaredBytes': response.headers.get('Content-Length'), 'archiveBodyBytesRead': 0}), flush=True)
-              provider._maven_https(response.geturl())
+              provider._github_https(response.geturl())
   recovery-diagnostics:
     if: >-
       github.event.label.name == 'ci:reuse-recovery-diagnostics' &&

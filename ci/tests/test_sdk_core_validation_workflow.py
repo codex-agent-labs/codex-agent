@@ -21,7 +21,8 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = source.split("  core-validation-diagnostics:\n", 1)[1].split("  recovery-diagnostics:\n", 1)[0]
         for required in ("ci:core-validation-diagnostics", "pull_request.number == 31",
-                         "head.repo.fork == false", "persist-credentials: false", "'archiveBodyBytesRead': 0"):
+                         "head.repo.fork == false", "persist-credentials: false", "'archiveBodyBytesRead': 0",
+                         "GIT_CONFIG_KEY_0: core.autocrlf", "GIT_CONFIG_VALUE_0: 'false'"):
             self.assertIn(required, block)
         for forbidden in ("secrets.", "id-token: write", "attestations: write", "gradlew", "response.read("):
             self.assertNotIn(forbidden, block)
@@ -29,6 +30,8 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         compile(script, "core-validation-headers-diagnostic", "exec")
     def test_wave_thirteen_uses_original_inputs_and_fails_after_collection(self):
         source = CHILD.read_text()
+        self.assertIn("GIT_CONFIG_KEY_0: core.autocrlf", source)
+        self.assertIn("GIT_CONFIG_VALUE_0: 'false'", source)
 
         def job(name):
             found = re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", source)

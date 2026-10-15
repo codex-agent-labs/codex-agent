@@ -7,7 +7,6 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.request import Request
 
 from ci import sdk_core_native_archive_provision as provider
 
@@ -16,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "a" * 40
 VERSION = "2.3.10"
 NAME = f"kotlin-native-prebuilt-{VERSION}-macos-aarch64.tar.gz"
-URL = f"https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-native-prebuilt/{VERSION}/{NAME}"
+URL = f"https://github.com/JetBrains/kotlin/releases/download/v{VERSION}/{NAME}"
 
 
 class Response(io.BytesIO):
@@ -94,7 +93,7 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
                 result = self.run_provider(target=target, sources=self.sources(target=target))
                 extension = "zip" if target == "windows-x64" else "tar.gz"
                 name = f"kotlin-native-prebuilt-{VERSION}-{provider._SUFFIXES[target]}.{extension}"
-                self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/{name}"], self.download_urls)
+                self.assertEqual([f"{provider._RELEASE_ROOT}/v{VERSION}/{name}"], self.download_urls)
                 self.assertEqual(self.payload, result.read_bytes())
                 result.unlink()
 
@@ -108,7 +107,7 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
 
     def test_linux_arm64_target_uses_the_pinned_linux_x64_host_archive(self):
         result = self.run_provider(target="linux-arm64", sources=self.sources(target="linux-x64"))
-        self.assertEqual([f"{provider._MAVEN_ROOT}/{VERSION}/"
+        self.assertEqual([f"{provider._RELEASE_ROOT}/v{VERSION}/"
                           f"kotlin-native-prebuilt-{VERSION}-linux-x86_64.tar.gz"], self.download_urls)
         self.assertEqual(self.payload, result.read_bytes())
 
@@ -170,12 +169,12 @@ class CoreNativeArchiveProvisionTest(unittest.TestCase):
                                repository_root=self.repository)
         self.assertFalse(self.destination.exists())
 
-    def test_redirects_cannot_leave_maven_central_https(self):
-        redirect = provider._MavenRedirect()
-        for url in ("http://repo.maven.apache.org/archive", "https://example.com/archive",
-                    "https://repo.maven.apache.org:8443/archive"):
+    def test_redirects_use_existing_github_https_policy(self):
+        for url in ("http://github.com/archive", "https://example.com/archive",
+                    "https://github.com:8443/archive"):
             with self.subTest(url=url), self.assertRaises(ValueError):
-                redirect.redirect_request(Request(URL), None, 302, "moved", {}, url)
+                provider._github_https(url)
+        provider._github_https("https://release-assets.githubusercontent.com/exact-asset")
 
 
 if __name__ == "__main__":
