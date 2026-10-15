@@ -284,8 +284,9 @@ def completed_descriptor(raw, value):
     if type(document["schemaVersion"]) is not int or document["schemaVersion"] != 1:
         raise ValueError("Unsupported protected completed reuse descriptor")
     policy = document["policy"]
+    extra = {"requalificationBaseline"} if type(policy) is dict and "requalificationBaseline" in policy else set()
     require_exact_keys(policy, {"schemaVersion", "kind", "consumerCommit", "verifierPolicySha256",
-        "artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit", "sdkCompletion"},
+        "artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit", "sdkCompletion"} | extra,
         "Protected completed reuse policy")
     if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
             or policy["kind"] != "completed-frozen-reuse"
@@ -319,6 +320,10 @@ def completed_descriptor(raw, value):
             raise ValueError("Conflicting completed reuse Git history")
         authority.commit(record["tree"])
         seen.add(record["commit"])
+    if extra:
+        baseline = authority.commit(policy["requalificationBaseline"])
+        if baseline not in value["approvedVerifiers"] or baseline not in seen:
+            raise ValueError("Requalification baseline lacks independent approval and exact Git custody")
     return document
 
 
@@ -366,7 +371,8 @@ def completed_environment(root, work, value):
               "originalGit": acquired, "productArtifactDownloads": 0,
               "nativeAuthentication": "required by each explicit consumer"}
     return result, {"CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
-                    "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": paths["retainedSdkInputsSource"]}
+                    "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": (
+                        "" if "requalificationBaseline" in document["policy"] else paths["retainedSdkInputsSource"])}
 
 
 def verify_completed(root, work, value, token):
@@ -379,10 +385,17 @@ def verify_completed(root, work, value, token):
     cap, report = qualification.fetch_completed_frozen(work / "verification-authority",
         consumer_commit=value["activeVerifier"], verifier_policy_sha256=policy["verifierPolicySha256"],
         sdk_completion=policy["sdkCompletion"], repository_root=root,
+        **({"requalification_baseline": policy["requalificationBaseline"]}
+           if "requalificationBaseline" in policy else {}),
         revision=git(root, "rev-parse", "HEAD").decode().strip(), token=token,
         **qualification._native_pin_arguments(pins))
     _, expected_sdk = completed_sdk_spec(root, document, value)
-    if report["completedFrozenPhases"] != 50 or report["completedSdkPhases"] != expected_sdk or report["productBodiesDownloaded"] != 0:
+    invalidated = report.get("invalidatedPhases", [])
+    if (report["productBodiesDownloaded"] != 0
+            or report["completedFrozenPhases"] + report["completedSdkPhases"] + len(invalidated) != 50 + expected_sdk
+            or report.get("requalificationBaseline") != policy.get("requalificationBaseline")
+            or ("requalificationBaseline" not in policy and (
+                report["completedFrozenPhases"] != 50 or report["completedSdkPhases"] != expected_sdk or invalidated))):
         raise ValueError("Completed reuse verifier differs from its exact retained coverage")
     return {"kind": "completed-reuse-verification", "approvedConsumerCommit": value["activeVerifier"],
             "nativeCompletion": report, "selectedProductPhases": 0}

@@ -22,6 +22,7 @@ class AcquisitionTests(unittest.TestCase):
         with patch.dict(consumer.sys.modules):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+            original["policy"].pop("requalificationBaseline", None)
             for count in (1, 8, 10, 16):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
@@ -39,6 +40,42 @@ class AcquisitionTests(unittest.TestCase):
                     else: rows[0][fault] = "unreviewed"
                     with self.assertRaises(ValueError):
                         consumer.completed_descriptor(canonical_json_bytes(value), APPROVAL)
+
+    def test_requalification_requires_an_approved_baseline_with_exact_git_custody(self):
+        from products.inventory import canonical_json_bytes
+        original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        baseline = original["policy"].get("requalificationBaseline", APPROVAL["activeVerifier"])
+        original["policy"]["requalificationBaseline"] = baseline
+        if not any(row["commit"] == baseline for row in original["gitHistory"]):
+            original["gitHistory"].append({"repository": consumer.authority.REPOSITORY,
+                "commit": baseline, "tree": "d" * 40})
+        self.assertEqual(original, consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL))
+        for fault in ("approval", "history", "mutable-baseline"):
+            value, approvals = copy.deepcopy(original), copy.deepcopy(APPROVAL)
+            if fault == "approval": approvals["approvedVerifiers"].remove(baseline)
+            elif fault == "history": value["gitHistory"] = [r for r in value["gitHistory"] if r["commit"] != baseline]
+            else: value["policy"]["requalificationBaseline"] = "HEAD"
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                consumer.completed_descriptor(canonical_json_bytes(value), approvals)
+
+    def test_requalification_never_exports_the_stale_sdk_input_binding(self):
+        from products.inventory import canonical_json_bytes
+        original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        for requalifying in (False, True):
+            document = copy.deepcopy(original)
+            if requalifying:
+                document["policy"]["requalificationBaseline"] = APPROVAL["activeVerifier"]
+            else:
+                document["policy"].pop("requalificationBaseline", None)
+            with self.subTest(requalifying=requalifying), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(consumer.authority, "contents", return_value=canonical_json_bytes(document)), \
+                    patch.object(consumer, "completed_descriptor", return_value=document), \
+                    patch.object(consumer, "history", return_value={}), \
+                    patch.object(consumer, "completed_sdk_spec", return_value=(
+                        {"sdkInputs": {"source": document["retainedSdkInputsSource"]}}, 11)):
+                _, environment = consumer.completed_environment(Path(temporary), Path(temporary), APPROVAL)
+                self.assertEqual(requalifying, environment["CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"] == "")
+                self.assertTrue(environment["CODEX_AGENT_COMPLETED_REUSE_POLICY"])
 
     def test_batched_blobs_keep_exact_bytes_and_reject_protocol_corruption(self):
         oid = "b" * 40

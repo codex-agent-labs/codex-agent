@@ -49,3 +49,6 @@ The protected warm proof restores existing cache bodies only; it neither saves a
 new cache generation nor issues new qualifications. Future genuine verifier
 changes require explicit owner approval and fresh compatible original evidence.
 This branch owns zero product phases and starts no SDK campaign.
+
+
+Explicit requalification may pin `policy.requalificationBaseline` to an already approved immutable revision in `gitHistory`. The consumer authenticates the original native completion at that revision, then removes every phase whose current owning inventory changed and every dependent phase. Current public trust, versions and phase authorities must still match; Contract must remain complete. Changed phases receive no completion authority and require ordinary admission. Originals and native certificates remain immutable. The old SDK input binding is withheld until a new native checkpoint proves the replacement Runtime aggregate. Omitting this field keeps the existing exact-completion path.
