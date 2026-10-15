@@ -1,6 +1,8 @@
 """The nested failed-wave locator selects only exact official collector uploads."""
 
 from pathlib import Path
+import subprocess
+import sys
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -18,6 +20,38 @@ _CURRENT = {"GITHUB_REPOSITORY": _PRODUCER["repository"],
 
 
 class NestedSdkWaveLocatorTest(TestCase):
+    def test_direct_script_reference_reader_reaches_original_authentication(self):
+        # Hosted issuers run ci/reuse_qualification.py, without the checkout
+        # root on sys.path. Exercise the actual nested transport branch.
+        script = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+import reuse_qualification
+import product_reuse as products
+from pathlib import Path
+from unittest.mock import patch
+class ReachedOriginalGate(Exception):
+    pass
+with patch.object(products, '_observe_ci_producer_jobs', side_effect=ReachedOriginalGate) as observe:
+    try:
+        products._capture_runtime_reference_members({}, b'plan',
+            {'tree': 'a' * 40, 'runAttempt': 1},
+            {'stateWave': 0, 'sdkStateWave': 11}, Path('unused'),
+            trusted_workflow_sha='b' * 40, token='fixture', wanted={})
+    except ReachedOriginalGate:
+        pass
+    else:
+        raise AssertionError('Original authentication was not reached')
+    assert observe.call_args.kwargs['jobs_by_phase'] == {
+        'resume': 'product-validation / sdk-core-binary-wave / sdk-collect-11'}
+    assert observe.call_args.kwargs['trusted_workflows_by_phase'] == {'resume': {
+        'path': '.github/workflows/sdk-core-binary-validation.yml', 'sha': 'b' * 40}}
+assert 'ci' not in sys.modules
+'''
+        subprocess.run([sys.executable, '-I', '-B', '-c', script,
+                        str(Path(__file__).resolve().parents[1])], check=True,
+                       capture_output=True, text=True)
+
     def test_all_top_level_checkpoints_retain_successful_collectors_after_cancellation(self):
         for wave in (*range(1, 11), 19):
             with self.subTest(wave=wave), \

@@ -1,11 +1,16 @@
 """Locate one failed-run nested SDK collection; never admit its state."""
 
 import os
+from pathlib import Path
+import sys
 
-from .sdk_apple_upload_locator import _locate
-from .products.receipt import validate_producer
-from .products.signing_isolation import require_no_signing_secret
-from . import product_reuse as products
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from sdk_apple_upload_locator import _locate
+from products.receipt import validate_producer
+from products.signing_isolation import require_no_signing_secret
+import product_reuse as products
 
 
 _COLLECTORS = {

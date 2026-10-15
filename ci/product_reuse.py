@@ -7250,7 +7250,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
         job = f"product-validation / sdk-collect-{sdk_wave}"
         name = f"codex-agent-sdk-wave-{sdk_wave}-state-{producer['tree']}-attempt-{producer['runAttempt']}"
         if 11 <= sdk_wave <= 18:
-            from ci.sdk_nested_wave_locator import _COLLECTORS
+            from sdk_nested_wave_locator import _COLLECTORS
             workflow_name, parent_job = _COLLECTORS[sdk_wave]
             job = f"product-validation / {parent_job} / sdk-collect-{sdk_wave}"
             workflow_policy = {"trusted_workflows_by_phase": {"resume": {
@@ -7761,7 +7761,7 @@ def capture_runtime_resume_upload(
             job_name, artifact_name = _initial_runtime_upload_source(producer, artifact_id, token)
         workflow_policy = {"trusted_workflow_sha": trusted_workflow_sha}
         if sdk_state_wave is not None and 11 <= sdk_state_wave <= 18:
-            from ci.sdk_nested_wave_locator import _COLLECTORS
+            from sdk_nested_wave_locator import _COLLECTORS
             workflow_name, parent_job = _COLLECTORS[sdk_state_wave]
             job_name = f"product-validation / {parent_job} / sdk-collect-{sdk_state_wave}"
             workflow_policy = {"trusted_workflows_by_phase": {"resume": {
