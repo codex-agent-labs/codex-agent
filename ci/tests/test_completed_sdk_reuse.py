@@ -515,6 +515,63 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     completed_frozen=cap, producer={}, token='synthetic')
             self.assertIs(seen, recovery.products._CI_OBSERVATIONS.get())
 
+    def test_full_state_overlaps_only_native_sdk_reads_and_propagates_failures(self):
+        import threading
+        import reuse_qualification as native
+        import sdk_ios_binary_recovery as recovery
+        products = recovery.products
+        instances = tuple(sorted(completed.PhaseInstanceId('sdk', 'javascript', phase, 'node')
+                                 for phase in ('package', 'validation', 'metadata')))
+        rows = [{**products._identity_record(instance), 'buildKey': 'sha256:' + 'a' * 64,
+                 'receiptSha256': 'sha256:' + 'b' * 64, 'objectSha256': 'sha256:' + 'c' * 64}
+                for instance in instances]
+        cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': rows}},
+            [], native._COMPLETED_FROZEN, revision='a' * 40, sdk={
+                'spec': {'completedPhase': {'product': 'sdk', 'component': 'sdk-ios', 'phase': 'binary', 'target': 'ios'}},
+                'extension': {'spec': {'completedPhases': rows}, 'proof': {}}})
+        producer = self.receipt['producer']
+        plan = {'remoteBuildAuthorized': True, 'event': 'pull_request', 'validationCommit': producer['commit']}
+        request = {'requested': [products._identity_record(i) for i in instances], 'sdkRuntimeSource': None,
+                   'availableObjects': [{**row, 'objectPath': row['phase'] + '.zip'} for row in rows]}
+        class AfterReplay(Exception): pass
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            (root / 'producer.json').write_bytes(canonical_json_bytes(producer))
+            for phase in ('package', 'validation', 'metadata'):
+                (root / ('prior-failed-sdk-javascript' + ('' if phase == 'package' else '-' + phase))).mkdir()
+            stack.enter_context(patch.object(native.CompletedFrozenReuse, 'check_request'))
+            stack.enter_context(patch.object(products, '_validate_plan', return_value=plan))
+            stack.enter_context(patch.object(products, '_consumer', return_value={'kind': 'ci', 'producer': producer}))
+            stack.enter_context(patch.object(products, '_relocated_wave_control', return_value=request))
+            stack.enter_context(patch.object(products, '_requested', return_value=instances))
+            stack.enter_context(patch.object(products, '_versions', return_value={'sdk': '0.2.0', 'runtime-release': '0.2.0'}))
+            stack.enter_context(patch.object(products, 'sdk_runtime_source', return_value=None))
+            stack.enter_context(patch.object(products, '_dependency_closure', side_effect=lambda selected, **_:
+                () if selected[0].product == 'contract' else instances))
+            stack.enter_context(patch.object(products, '_authorities', return_value=([], None)))
+            after = stack.enter_context(patch.object(products, '_capture_completed_contract_handoff', side_effect=AfterReplay))
+            barrier = threading.Barrier(3)
+            seen = []
+            def replay(*args, phase='package', **kwargs):
+                self.assertIsNotNone(products._CI_OBSERVATIONS.get())
+                if kwargs.get('completed_frozen') is not None: barrier.wait(timeout=5)
+                seen.append(phase)
+                return [next(row for row in request['availableObjects'] if row['phase'] == phase)]
+            def run(authority):
+                products._verified_product_state(root / 'plan.json', root, root, root,
+                    {'GITHUB_TOKEN': 'synthetic'}, None, sdk_original_workflow_sha='a' * 40, completed_frozen=authority)
+            with patch.object(recovery, 'replay_prior_javascript_package', side_effect=replay):
+                with self.assertRaises(AfterReplay): run(cap)
+                self.assertEqual({'package', 'validation', 'metadata'}, set(seen))
+                seen.clear()
+                with patch('products.restore.bounded_verify', side_effect=AssertionError('ordinary parallel recovery')):
+                    with self.assertRaises(AfterReplay): run(None)
+                self.assertEqual(['package', 'validation', 'metadata'], seen)
+            after.reset_mock()
+            with patch.object(recovery, 'replay_prior_javascript_package', side_effect=ValueError('changed original')):
+                with self.assertRaisesRegex(ValueError, 'changed original'): run(cap)
+            after.assert_not_called()
+
     def test_large_native_package_member_is_bound_to_its_original_only_in_v3(self):
         import json
         import reuse_qualification as native

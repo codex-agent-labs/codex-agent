@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import wraps
+from functools import partial, wraps
 import errno
 from inspect import signature
 import os
@@ -4522,28 +4522,29 @@ def _verified_product_state(
             prior_capture, discovery_root, trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment.get("GITHUB_TOKEN"), plan=plan, consumer_producer=consumer["producer"],
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+    sdk_replays = []
     sdk_capture = discovery_root / "prior-failed-sdk"
     if (requested_scope is None or PhaseInstanceId("sdk", "sdk-ios", "binary", "ios") in closure) and (sdk_capture.exists() or sdk_capture.is_symlink()):
         if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
             raise ValueError("Prior SDK replay requires caller-pinned workflow authority and token")
         from sdk_ios_binary_recovery import replay_prior_ios_binary
-        prior_records.extend(replay_prior_ios_binary(sdk_capture, discovery_root,
+        sdk_replays.append((PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"), partial(replay_prior_ios_binary, sdk_capture, discovery_root,
             plan=plan, plan_path=plan_path, repository_root=root,
             consumer_producer=consumer["producer"],
             trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment,
-            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))))
     package_capture = discovery_root / "prior-failed-sdk-ios-package"
     if (requested_scope is None or PhaseInstanceId("sdk", "sdk-ios", "package", "ios") in closure) and (
             package_capture.exists() or package_capture.is_symlink()):
         if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
             raise ValueError("Prior iOS package replay requires original workflow authority and token")
         from sdk_ios_binary_recovery import replay_prior_ios_binary
-        prior_records.extend(replay_prior_ios_binary(package_capture, discovery_root,
+        sdk_replays.append((PhaseInstanceId("sdk", "sdk-ios", "package", "ios"), partial(replay_prior_ios_binary, package_capture, discovery_root,
             plan=plan, plan_path=plan_path, repository_root=root,
             consumer_producer=consumer["producer"], trusted_workflow_sha=sdk_original_workflow_sha,
             token=environment["GITHUB_TOKEN"], environ=environment, phase="package",
-            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))))
     for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
                                      ("javascript", "metadata", "node"), ("csharp", "binary", "desktop"),
                                      ("sdk-ios", "validation", "ios-arm64"), ("sdk-ios", "validation", "ios-simulator-arm64"),
@@ -4556,14 +4557,30 @@ def _verified_product_state(
             if not sdk_original_workflow_sha or not environment.get("GITHUB_TOKEN"):
                 raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
             from sdk_ios_binary_recovery import replay_prior_javascript_package
-            prior_records.extend(replay_prior_javascript_package(capture, discovery_root,
+            sdk_replays.append((instance, partial(replay_prior_javascript_package, capture, discovery_root,
                 plan=plan, consumer_producer=consumer["producer"],
                 **({"phase": phase} if phase != "package" else {}),
                 **({"component": component} if component != "javascript" else {}),
                 **({"target": target} if component in {"sdk-ios", "sdk-core"} else {}),
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 trusted_workflow_sha=sdk_original_workflow_sha,
-                token=environment["GITHUB_TOKEN"], environ=environment))
+                token=environment["GITHUB_TOKEN"], environ=environment)))
+    native_sdk = completed_frozen.sdk_original() if completed_frozen is not None else None
+    native_ids = set()
+    if native_sdk is not None:
+        native_ids.add(_identity(native_sdk["spec"]["completedPhase"]))
+        extension = native_sdk.get("extension")
+        if extension is not None:
+            native_ids.update(_identity(row) for row in extension["spec"]["completedPhases"])
+    if sdk_replays and all(instance in native_ids for instance, _ in sdk_replays):
+        from products.restore import bounded_verify
+        # Only compact, independently qualified controls run concurrently.
+        # Ordinary recovery may materialize bodies and keeps its existing order.
+        replayed = bounded_verify(lambda item: item[1](), sdk_replays)
+    else:
+        replayed = [replay() for _, replay in sdk_replays]
+    for records in replayed:
+        prior_records.extend(records)
     if requested_scope is not None:
         prior_records = [record for record in prior_records if _identity(record) in closure]
     initial_objects = []
