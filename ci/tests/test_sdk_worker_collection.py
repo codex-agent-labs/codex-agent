@@ -284,10 +284,14 @@ class SdkWorkerCollectionTest(unittest.TestCase):
     def test_retained_core_package_needs_fresh_collection_session_and_exact_child(self):
         self.check_retained_core_original("package")
 
-    def check_retained_core_original(self, phase):
-        self.child_path = f".github/workflows/sdk-core-{phase}-validation.yml"
-        self.child_job = f"product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-common"
-        instance, ready, _, _, files = self.shard(phase, component="sdk-core", target="common")
+    def test_retained_core_validation_needs_fresh_collection_session_and_exact_child(self):
+        self.check_retained_core_original("validation", "android")
+
+    def check_retained_core_original(self, phase, target="common"):
+        self.child_path = (".github/workflows/sdk-core-validation.yml" if phase == "validation" else
+                           f".github/workflows/sdk-core-{phase}-validation.yml")
+        self.child_job = f"product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-{target}"
+        instance, ready, _, _, files = self.shard(phase, component="sdk-core", target=target)
         raw = archive(files)
         original = dict(self.producer)
         artifact_name = self.names(instance, ready["buildKey"])[1]
@@ -328,7 +332,8 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
                     path, trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
                     token="synthetic-token", sdk_family="core-" + phase,
-                    sdk_worker_workflow_path=child, sdk_worker_job_name=self.child_job)
+                    sdk_worker_workflow_path=child, sdk_worker_job_name=(self.child_job.removesuffix(target) + "{target}"
+                        if phase == "validation" else self.child_job))
             result = collect(destination)
             row, = result["rows"]
             self.assertEqual("success", row["result"], row["reason"])

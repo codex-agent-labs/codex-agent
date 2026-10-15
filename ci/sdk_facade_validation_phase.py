@@ -29,7 +29,7 @@ from products.registry import PHASE_INSTANCE_IDS, SDK_FACADE_TARGETS, PhaseInsta
 from products.restore import PHASE_PLAN_KEYS
 from products.sdk_facade_inputs import OUTPUT_KIND, OUTPUT_PATH, _request, _sources
 from products.sdk_facade_source import capture_facade_validation_sources
-from products.sdk_facade_execution_observation import capture_facade_execution_observation
+from products.sdk_facade_execution_observation import capture_facade_execution_observation, native_data_directory
 from products.sdk_facade_validation import _FILES, _inventory, validate_facade_validation_content
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
@@ -103,6 +103,11 @@ def execute(plan: Mapping, *, producer: Mapping, repository_root: Path,
 
     originals_unchanged()
     environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
+    if target not in {"android", "jvm", "node-js", "node-wasm"}:
+        # KGP leaves this optional provider unset for its default directory.
+        # Bind the caller's existing directory so capture observes the actual
+        # selection; compiler arguments and every native pin remain verified.
+        environment["ORG_GRADLE_PROJECT_konan.data.dir"] = native_data_directory(environment)
     destination = _prepare_destination(destination, root)
     retained_request = destination / "facade-request.json"
     with retained_request.open("xb") as stream:

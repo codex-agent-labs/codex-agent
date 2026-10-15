@@ -50,6 +50,26 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             "SDK_ANDROID_METADATA_POLICY": "", "NATIVE_COMPILER_ARCHIVE": "",
             "GITHUB_OUTPUT": str(root / "output")}
 
+    def test_retained_original_skips_only_production_after_exact_lookup(self):
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))
+        steps = re.split(r"(?m)^    - ", self.action.split("    - id: request", 1)[1])
+        self.assertEqual(6, len(steps))
+        for step in steps:
+            self.assertIn("steps.retained.outputs.reused != 'true'", step)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            values = {"PLAN": str(root / "plan"), "BUILD_KEY": KEY, "TARGET": "android",
+                "GITHUB_TOKEN": "synthetic", "GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(root / "output")}
+            with patch.dict(os.environ, values, clear=True), \
+                    patch("ci.sdk_campaign_original_locator.locate_retained_core_binary_upload") as locate:
+                for origin in (None, {"artifact_id": 123}):
+                    locate.return_value = origin
+                    exec(self.script("retained"), {})
+                    self.assertEqual("validation", locate.call_args.kwargs["phase"])
+                    self.assertEqual("android", locate.call_args.kwargs["target"])
+                    self.assertEqual(KEY, locate.call_args.kwargs["expected_build_key"])
+                self.assertEqual(["reused=false", "reused=true"], (root / "output").read_text().splitlines())
+
     def test_independent_inputs_are_pinned_before_capture_and_host_checked_before_setup(self):
         for first, second in (("- id: policy", "- id: captured"),
                               ("- id: captured", "- id: identity"),
@@ -240,11 +260,13 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             values.update(POLICY_SHA256=pin, JAVA_HOME=str(alias), PLAN='plan',
                 DISCOVERY='discovery', STATE='state', BUILD_KEY=KEY,
                 POLICY_REVISION='c' * 40, TRUSTED_WORKFLOW_SHA='d' * 40,
-                GITHUB_TOKEN='caller-token')
+                GITHUB_TOKEN='caller-token', ANDROID_HOME=str(root / 'caller-android-sdk'))
             with patch.dict(os.environ, values, clear=True), patch.object(subprocess, 'run') as run:
                 exec(self.script('execute'), {})
                 self.assertEqual(str(actual), run.call_args.kwargs['env']['JAVA_HOME'])
                 self.assertEqual('caller-token', run.call_args.kwargs['env']['GITHUB_TOKEN'])
+                command = run.call_args.args[0]
+                self.assertEqual(values['ANDROID_HOME'], command[command.index('--android-sdk-directory') + 1])
                 self.assertTrue(run.call_args.kwargs['check'])
                 self.assertEqual(str(alias), os.environ['JAVA_HOME'])
                 for invalid in ('relative-java', str(root / 'missing-jdk')):

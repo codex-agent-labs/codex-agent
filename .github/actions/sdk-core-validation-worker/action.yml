@@ -203,7 +203,27 @@ runs:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
             output.write('policy_revision=' + plan['validationCommit'] + '\n')
         PY
+    - id: retained
+      name: Locate exact successful Core validation original before production
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TARGET: ${{ inputs.target }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+        from ci.reuse import github_output
+        origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
+            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'],
+            phase='validation', target=os.environ['TARGET'])
+        github_output(Path(os.environ['GITHUB_OUTPUT']), {'reused': str(origin is not None).lower()})
+        PY
     - id: request
+      if: steps.retained.outputs.reused != 'true'
       name: Materialize selected package, Contract and signed SDK inputs before setup
       shell: bash
       env:
@@ -267,14 +287,16 @@ runs:
           --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
           ${optional[@]+"${optional[@]}"}
     - uses: ./.github/actions/setup-kmp
+      if: steps.retained.outputs.reused != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
-    - if: inputs.target == 'android'
+    - if: inputs.target == 'android' && steps.retained.outputs.reused != 'true'
       uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
       with:
         packages: platform-tools
     - name: Prepare pinned dependencies for the elected offline consumer
+      if: steps.retained.outputs.reused != 'true'
       shell: bash
       env:
         TARGET: ${{ inputs.target }}
@@ -291,6 +313,7 @@ runs:
           --destination "$RUNNER_TEMP/sdk-core-consumer-dependencies" \
           ${optional[@]+"${optional[@]}"}
     - id: execute
+      if: steps.retained.outputs.reused != 'true'
       name: Run existing Core installed-consumer and complete original replay
       shell: bash
       env:
@@ -339,7 +362,7 @@ runs:
             '--repository-root': str(root), '--target': os.environ['TARGET'],
             '--expected-build-key': os.environ['BUILD_KEY'],
             '--facade-request': str(root / 'build/sdk-core-validation-policy/facade-request.json'),
-            '--android-sdk-directory': os.environ.get('ANDROID_HOME', '') if os.environ['TARGET'] == 'android' else '',
+            '--android-sdk-directory': os.environ.get('ANDROID_HOME', ''),
             '--tooling-evidence': tooling['evidence'], '--tooling-public-key': tooling['publicKey'],
             '--java-executable': tooling['javaExecutable'], '--required-trust-domain': tooling['requiredTrustDomain'],
             '--policy-revision': os.environ['POLICY_REVISION'],
@@ -373,7 +396,7 @@ runs:
         require_no_signing_secret(os.environ)
         PY
     - id: upload
-      if: always() && steps.identity.outcome == 'success'
+      if: always() && steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-core-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}

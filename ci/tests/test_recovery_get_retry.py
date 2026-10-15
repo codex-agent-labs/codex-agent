@@ -1,5 +1,6 @@
 """Recovery retries transport failures, never failed content authentication."""
 import hashlib
+from http.client import IncompleteRead
 import io
 import socket
 import ssl
@@ -77,6 +78,7 @@ class RecoveryGetRetryTest(unittest.TestCase):
 
     def test_timeout_retries_are_bounded_and_authentication_errors_do_not_retry(self):
         for error, calls in ((TimeoutError("read timed out"), 4),
+                             (IncompleteRead(b"", 105405), 4),
                              (ConnectionResetError(104, "Connection reset by peer"), 4),
                              (urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")), 4),
                              (urllib.error.URLError(TimeoutError("read timed out")), 4),
@@ -104,7 +106,7 @@ class RecoveryGetRetryTest(unittest.TestCase):
                     "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/71/zip"}
         response = mock.MagicMock()
         response.__enter__.return_value = response
-        response.read.side_effect = [contents[:2], TimeoutError("read timed out")]
+        response.read.side_effect = [contents[:2], IncompleteRead(b"", len(contents) - 2)]
         opener = mock.Mock()
         opener.open.side_effect = [response, io.BytesIO(contents)]
         with tempfile.TemporaryDirectory() as temporary, \

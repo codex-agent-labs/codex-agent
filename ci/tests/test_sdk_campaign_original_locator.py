@@ -18,6 +18,28 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class SdkCampaignOriginalLocatorTest(TestCase):
+    def test_retained_android_validation_binds_exact_target_original_and_later_pr(self):
+        key = locator.RETAINED_CORE_ANDROID_VALIDATION_KEY
+        consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
+        origin = locator.retained_core_origin("validation", key, consumer, target="android")
+        self.assertEqual(11990927907, origin["artifact_id"])
+        for target, changed_key, change in (("jvm", key, {}), ("common", key, {}),
+                ("android", "sha256:" + "0" * 64, {}), ("android", key, {"pullRequest": 32}),
+                ("android", key, {"event": "merge_group"}), ("android", key, {"runId": 38768220181}),
+                ("android", key, {"runId": True}), ("android", key, {"runAttempt": 0})):
+            self.assertIsNone(locator.retained_core_origin("validation", changed_key, {**consumer, **change}, target=target))
+        with patch.object(locator.products, "_validate_plan", return_value={"event": "pull_request", "remoteBuildAuthorized": True}), \
+                patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                patch.object(locator, "_locate", return_value={name: origin[name] for name in
+                    ("artifact_id", "artifact_sha256")}) as observe:
+            result = locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                expected_build_key=key, token="synthetic", environ={}, phase="validation", target="android")
+            self.assertEqual(origin, result)
+            self.assertEqual(origin["job_id"], observe.call_args.kwargs["expected_job_id"])
+            self.assertIn("-validation-android-" + key[7:], observe.call_args.kwargs["name"])
+            self.assertEqual({"validation": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+                observe.call_args.kwargs["trusted_workflows_by_phase"])
+
     def test_retained_package_lookup_binds_exact_original_and_later_consumer(self):
         key = locator.RETAINED_CORE_PACKAGE_KEY
         consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}

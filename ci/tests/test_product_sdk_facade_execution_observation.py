@@ -93,6 +93,23 @@ class FacadeExecutionObservationTest(unittest.TestCase):
         self.process.assert_not_called()
         self.assertFalse(self.output.exists())
 
+    def test_native_property_must_match_independent_directory_and_other_options_still_reject(self):
+        data = self.root / "konan"
+        data.mkdir()
+        key = "ORG_GRADLE_PROJECT_konan.data.dir"
+        self.environment.update(KONAN_DATA_DIR=str(data))
+        for target, options in (("jvm", {key: str(data)}),
+                                ("linux-x64", {key: str(self.root)}),
+                                ("linux-x64", {key: str(data), "ORG_GRADLE_PROJECT_other": "bad"})):
+            with self.subTest(target=target, options=options), self.assertRaisesRegex(ValueError, "injected"), \
+                    self.call(target=target, environment={**self.environment, **options}):
+                self.fail("untrusted options must not reach probes")
+        self.process.assert_not_called()
+        self.environment[key] = str(data)
+        with self.call(target="linux-x64"):
+            pass
+        self.assertEqual(2, self.process.call_count)
+
     def test_all_eleven_routes_use_actual_platform_not_caller_runner_labels(self):
         for index, target in enumerate(SDK_FACADE_TARGETS):
             topology = route({"product": "sdk", "component": "sdk-core", "phase": "validation", "target": target})

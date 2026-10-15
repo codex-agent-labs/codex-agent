@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial, wraps
 import errno
+from http.client import IncompleteRead
 from inspect import signature
 import os
 import ntpath
@@ -75,9 +76,9 @@ def _retry_github_get(operation):
         for attempt in range(4):
             try:
                 return operation(*args, **kwargs)
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
                 delay = None if waited_for_reset else _primary_rate_limit_delay(error)
-                transient = (isinstance(error, (TimeoutError, ConnectionError))
+                transient = (isinstance(error, (TimeoutError, ConnectionError, IncompleteRead))
                     or isinstance(error, urllib.error.HTTPError) and error.code in {500, 502, 503, 504}
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (socket.gaierror, TimeoutError, ConnectionError)))
@@ -6326,9 +6327,8 @@ def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
     origin = (retained_validation_origin(receipt["target"], receipt["buildKey"], consumer["producer"])
               if (receipt["product"], receipt["component"], receipt["phase"]) ==
                  ("sdk", "sdk-ios", "validation") else None)
-    if _identity(receipt) in (PhaseInstanceId("sdk", "sdk-core", "binary", "common"),
-                             PhaseInstanceId("sdk", "sdk-core", "package", "common")):
-        origin = retained_core_origin(receipt["phase"], receipt["buildKey"], consumer["producer"])
+    if receipt["product"] == "sdk" and receipt["component"] == "sdk-core":
+        origin = retained_core_origin(receipt["phase"], receipt["buildKey"], consumer["producer"], target=receipt["target"])
     original = (origin["producer"] if origin is not None and receipt["producer"] == origin["producer"] else
                 _same_run_state_consumer(consumer, receipt["producer"])["producer"])
     if verified["receipt"]["product"] != "sdk":
@@ -6458,9 +6458,9 @@ def collect_runtime_workers(
                     retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
                     retained_attestation = observe_retained_validation_attestation(
                         instance.target, ready["buildKey"], producer, token=token)
-                elif sdk_family in ("core-binary", "core-package"):
+                elif sdk_family in ("core-binary", "core-package", "core-validation"):
                     from sdk_campaign_original_locator import retained_core_origin
-                    retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer)
+                    retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer, target=instance.target)
                     if retained_core is not None and (sdk_worker_workflow_path, job_name) != (
                             retained_core["workflow_path"], retained_core["job_name"]):
                         raise ValueError("Retained Core worker requires its exact child workflow route")

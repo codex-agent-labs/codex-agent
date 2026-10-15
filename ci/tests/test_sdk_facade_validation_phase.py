@@ -30,7 +30,8 @@ class FacadeValidationPhaseTest(unittest.TestCase):
         self.plan = {"schemaVersion": 1, "product": "sdk", "component": "sdk-core",
                      "phase": "validation", "target": "jvm", "buildKey": "sha256:" + "f" * 64, "inputs": {}}
         self.destination = self.root / "build/worker-diagnostics"
-        self.environment = {"PATH": "/mock/bin"}
+        (self.root / "konan").mkdir()
+        self.environment = {"PATH": "/mock/bin", "KONAN_DATA_DIR": str(self.root / "konan")}
         self.host = self.enterContext(patch.object(phase, "host_classifier", return_value="linux-x64"))
         self.checkout = self.enterContext(patch.object(phase, "_runtime_worker_checkout"))
         self.environment_gate = self.enterContext(patch.object(phase, "_runtime_worker_environment",
@@ -49,7 +50,7 @@ class FacadeValidationPhaseTest(unittest.TestCase):
         self.assertEqual(self.root, kwargs["repository"])
         self.assertEqual(self.producer, kwargs["producer"])
         self.assertEqual(self.plan["target"], kwargs["target"])
-        self.assertEqual(self.environment, kwargs["environment"])
+        self.assertEqual(self.expected_environment, kwargs["environment"])
         self.assertEqual(self.destination / "host-observation", kwargs["destination"])
         kwargs["destination"].mkdir()
         (kwargs["destination"] / "observation.json").write_bytes(b"mocked fixed-probe boundary\n")
@@ -74,6 +75,12 @@ class FacadeValidationPhaseTest(unittest.TestCase):
             destination=self.destination, facade_request=self.request, environ=self.environment), **changes})
 
     @property
+    def expected_environment(self):
+        if self.plan["target"] in {"android", "jvm", "node-js", "node-wasm"}:
+            return self.environment
+        return {**self.environment, "ORG_GRADLE_PROJECT_konan.data.dir": self.environment["KONAN_DATA_DIR"]}
+
+    @property
     def work(self):
         return self.root / f"build/imported-sdk-facade-validation/{self.producer['tree']}/{self.plan['target']}"
 
@@ -84,7 +91,7 @@ class FacadeValidationPhaseTest(unittest.TestCase):
     def run_producer(self, command, **kwargs):
         self.assertTrue(self.observation_active)
         self.assertEqual(self.root, kwargs["cwd"])
-        self.assertEqual(self.environment, kwargs["env"])
+        self.assertEqual(self.expected_environment, kwargs["env"])
         self.assertIs(False, kwargs["check"])
         self.assertEqual(subprocess.STDOUT, kwargs["stderr"])
         kwargs["stdout"].write(b"retained compiler diagnostics\xff\n")
@@ -160,6 +167,19 @@ class FacadeValidationPhaseTest(unittest.TestCase):
             self.execute()
         self.assertFalse(self.observation_active)
         self.assertTrue((self.destination / "execution.json").is_file())
+
+    def test_native_directory_alias_or_relative_override_stops_before_compilation(self):
+        self.plan["target"] = self.f.value["target"] = "linux-arm64"
+        topology = phase.route(self.plan)
+        self.host.return_value = next(host for host, values in phase._HOSTS.items()
+            if values[1:] == (topology["runnerOs"], topology["runnerArch"]))
+        self.request.write_bytes(canonical_json_bytes(self.f.value))
+        alias = self.root / "konan-alias"
+        alias.symlink_to(self.root / "konan", target_is_directory=True)
+        for value in (str(alias), "relative-directory"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Core native consumer data directory"):
+                self.execute(environ={**self.environment, "KONAN_DATA_DIR": value})
+            self.process.assert_not_called()
 
     def test_wrong_identity_request_host_or_secret_rejects_before_execution(self):
         for field, value in (("phase", "metadata"), ("target", "desktop"), ("schemaVersion", True)):
