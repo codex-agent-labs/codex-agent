@@ -391,7 +391,8 @@ class SdkWorkerCollectionTest(unittest.TestCase):
 
     def test_child_matrix_job_keeps_key_ambiguity_live_and_retry_guards(self):
         from products.inventory import write_canonical_json
-        for case in ("valid", "truncated", "retry", "wrong-key", "ambiguous", "running"):
+        for case in ("valid", "compact", "truncated", "retry", "wrong-key", "wrong-key-compact",
+                     "ambiguous", "ambiguous-compact", "running"):
             with self.subTest(case=case):
                 instance, ready, _, expected, files = self.shard("binary", component="sdk-core", target="common")
                 state = self.state({instance: ready})
@@ -415,14 +416,16 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                         rows = original_listing(url, field, token)
                         if field != "jobs":
                             return rows
-                        key = "sha256:" + "f" * 64 if case == "wrong-key" else ready["buildKey"]
+                        key = "sha256:" + "f" * 64 if case.startswith("wrong-key") else ready["buildKey"]
                         name = f"{self.child_job} ({key}, ..."
+                        if case.endswith("compact"):
+                            name = name.replace(", ...", ",...")
                         if case == "truncated":
                             name = name[:118] + "..."
                         jobs = [{**row, "name": name,
                                  "status": "in_progress" if case == "running" else "completed"}
                                 if row["name"] == self.child_job else row for row in rows]
-                        if case == "ambiguous":
+                        if case.startswith("ambiguous"):
                             jobs.extend(row for row in rows if row["name"] == self.child_job)
                         return jobs
                     query.side_effect, listed.side_effect = child_run, matrix_jobs
@@ -439,7 +442,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                         downloaded.assert_not_called()
                         continue
                     row = collect()["rows"][0]
-                    if case in ("wrong-key", "ambiguous"):
+                    if case.startswith(("wrong-key", "ambiguous")):
                         self.assertEqual("failure", row["result"])
                         downloaded.assert_not_called()
                     else:
