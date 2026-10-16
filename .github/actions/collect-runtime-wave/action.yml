@@ -28,6 +28,9 @@ inputs:
   sdk-facade-metadata-policy:
     default: ''
     description: Caller-provisioned Core metadata admission descriptor, not retained-state authority.
+  core-metadata-caller:
+    default: ''
+    description: Independent successful Core metadata worker outputs for full collection admission.
   sdk-android-metadata-policy:
     default: ''
     description: Caller-provisioned Android metadata admission descriptor, not retained-state authority.
@@ -110,6 +113,7 @@ runs:
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        CORE_METADATA_CALLER: ${{ inputs.core-metadata-caller }}
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
@@ -143,6 +147,11 @@ runs:
           if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
             test "$PRODUCT" = sdk
             state+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+          fi
+          if [ -n "${CORE_METADATA_CALLER:-}" ]; then
+            test "$PRODUCT" = sdk
+            test "$SDK_FAMILY" = core-metadata
+            state+=(--core-metadata-caller "$CORE_METADATA_CALLER")
           fi
           if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
             test "$PRODUCT" = sdk

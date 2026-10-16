@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import os
 from pathlib import Path
 import stat
@@ -953,7 +953,8 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
             sdk_worker_workflow_path=None, sdk_worker_job_name=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
+    core_metadata_caller=None):
     """Advance only the exact elected SDK partition using the shared collector."""
     family_waves = {"csharp-binary": 19, "native-package": 4, "ios-package": 5, "javascript-metadata": 6,
                     "native-validation": 7, "native-metadata": 8, "ios-validation": 9, "ios-metadata": 10,
@@ -965,6 +966,8 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     allowed = (family_waves[family],) if family is not None else (3,) if ios_binary else (1, 2)
     if type(ios_binary) is not bool or (ios_binary and family is not None) or type(wave) is not int or wave not in allowed:
         raise ValueError("SDK collection requires the exact wave for its elected family")
+    if core_metadata_caller is not None and (family != "core-metadata" or sdk_facade_metadata_admission is not None):
+        raise ValueError("Core collection caller requires its exact family and one admission policy")
     scope = ({"sdk_family": family} if family is not None else
              {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True})
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
@@ -991,12 +994,22 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     apple_evidence = tuple(destination / "collection" / row["sdkAppleValidationEvidenceDirectory"]
                            for row in collection["rows"] if row["result"] == "success") if family == "ios-validation" else ()
     handoff = destination / "handoff"
-    advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
-        github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
-        routing_output=True,
-        sdk_original_workflow_sha=trusted_workflow_sha,
-        **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
-        **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
+    with ExitStack() as held:
+        if core_metadata_caller is not None and shards:
+            if len(shards) != 1 or failed:
+                raise ValueError("Core metadata collection requires one exact successful original")
+            from sdk_core_metadata_same_campaign import held_collection_admission
+            tooling["sdk_facade_metadata_admission"] = held.enter_context(held_collection_admission(
+                core_metadata_caller, plan, discovery, state, shards[0], trusted_workflow_sha=trusted_workflow_sha,
+                repository_root=root, environ=os.environ if environ is None else environ, token=token,
+                sdk_validation_tooling=sdk_validation_tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
+                completed_frozen=completed_frozen))
+        advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
+            github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
+            routing_output=True,
+            sdk_original_workflow_sha=trusted_workflow_sha,
+            **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
+            **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
     for name in ("product-resume-inputs", "product-resume-state"):
         snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
     if failed:
@@ -1243,6 +1256,7 @@ def _workflow_main(argv):
     parsers["collect"].add_argument("--wave", type=int, choices=range(1, 20), required=True)
     parsers["collect"].add_argument("--sdk-worker-workflow-path")
     parsers["collect"].add_argument("--sdk-worker-job-name")
+    parsers["collect"].add_argument("--core-metadata-caller", type=Path)
     for name in ("matrix", "capture", "collect"):
         add_completed_frozen_argument(parsers[name])
     arguments = vars(parser.parse_args(argv))

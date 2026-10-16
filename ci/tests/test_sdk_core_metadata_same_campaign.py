@@ -51,7 +51,7 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                               "javaExecutable": "/java", "toolingTrustDomain": "release",
                               "toolingKeyring": "/keyring", "toolingKeysDirectory": "/keys"}})
 
-    def invoke(self, *, selected_object=None, fresh_records=None,
+    def invoke(self, *, selected_object=None, fresh_records=None, collection=False,
                expected_artifact_id=7, expected_artifact_sha256="sha256:" + "d" * 64):
         if fresh_records is not None:
             value = selected.load_canonical_json_bytes(self.fresh.read_bytes())
@@ -101,9 +101,15 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
              mock.patch.object(selected, "verify_phase_shard", side_effect=shard), \
              mock.patch.object(selected, "write_facade_metadata_policy", side_effect=write) as writer, \
              mock.patch.object(selected, "FacadeMetadataAdmission", return_value=object()), \
+             mock.patch.object(selected.product_reuse, "_validate_plan", return_value={}), \
+             mock.patch.object(selected.product_reuse, "_consumer", return_value={"producer": self.producer}), \
              mock.patch.object(selected.product_reuse, "_verified_product_state", return_value=state) as verified:
-            with selected.held_same_campaign_core_metadata_policy(
-                    self.root / "plan.json", self.discovery, self.before, self.after,
+            held = (selected.held_core_metadata_collection_policy if collection else
+                    selected.held_same_campaign_core_metadata_policy)
+            arguments = [self.root / "plan.json", self.discovery, self.before]
+            if not collection:
+                arguments.append(self.after)
+            with held(*arguments,
                     self.receipt_path, expected_build_key=self.key,
                     expected_receipt_sha256=self.digest,
                     expected_artifact_id=expected_artifact_id,
@@ -112,6 +118,18 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                     repository_root=self.root, environ={}, token="token") as policy:
                 self.assertTrue(policy.is_file())
             return locator, captured, writer, verified
+
+    def test_collection_uses_the_full_original_descriptor_before_state_exists(self):
+        locator, captured, writer, verified = self.invoke(collection=True)
+        locator.assert_called_once()
+        captured.assert_called_once()
+        writer.assert_called_once()
+        verified.assert_not_called()  # Generic advance performs the new-state admission while held.
+
+    def test_post_collection_caller_cannot_omit_its_state(self):
+        with self.assertRaisesRegex(ValueError, "requires its collected state"):
+            with selected.held_same_campaign_core_metadata_policy(None, None, None, None, None):
+                self.fail("Post-collection checks cannot be disabled")
 
     def test_binds_official_metadata_to_all_originals_and_current_state(self):
         locator, captured, writer, verified = self.invoke()
@@ -229,6 +247,132 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                     environ={}, token="explicit-caller-token") as descriptor:
                 self.assertTrue(descriptor.is_file())
                 self.assertEqual(["enter", "exit"], fixture.events)
+
+
+class CoreMetadataCollectionBridgeTest(unittest.TestCase):
+    def test_bridge_binds_worker_pins_reuses_four_native_hosts_and_keeps_admission_held(self):
+        from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest
+        f = SdkWorkerCollectionTest()
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        _, ready, shard, verified, _ = f.shard('metadata', component='sdk-core', target='common')
+        with tempfile.TemporaryDirectory() as outside:
+            outside = Path(outside).resolve()
+            tooling = outside / 'tooling.json'
+            write_canonical_json(tooling, {'opaque': 'independent tooling seam'})
+            caller = outside / 'caller.json'
+            value = {'buildKey': ready['buildKey'], 'receiptSha256': verified['receiptSha256'],
+                'artifactId': 7, 'artifactSha256': 'sha256:' + 'a' * 64,
+                'originalContext': {'repositoryRoot': '/original', 'metadataRequest': '/original/request'},
+                'sdkInputsArtifactId': 8, 'sdkInputsArtifactSha256': 'sha256:' + 'b' * 64,
+                'toolingPolicy': str(tooling)}
+            for case in ('valid', 'wrong-receipt', 'changed-caller', 'reader-failure'):
+                write_canonical_json(caller, {**value, **({'receiptSha256': 'sha256:' + 'c' * 64}
+                                                        if case == 'wrong-receipt' else {})})
+                events = []
+                gate = object()
+                def provision(plan, target, destination, **kwargs):
+                    destination.write_bytes(b'pinned compiler fixture')
+                    return destination
+                def prepare(plan, discovery, state, requests, destination, **kwargs):
+                    self.assertEqual(7, len(kwargs['native_compiler_archives']))
+                    self.assertEqual(4, len(set(kwargs['native_compiler_archives'].values())))
+                    self.assertEqual(value['buildKey'], kwargs['expected_build_key'])
+                    write_canonical_json(destination, {'fixture': 'bootstrap'})
+                @contextmanager
+                def full(plan, discovery, state, receipt, **kwargs):
+                    self.assertEqual(shard / 'phase-receipt.json', receipt)
+                    self.assertEqual(value['artifactId'], kwargs['expected_artifact_id'])
+                    self.assertEqual(value['artifactSha256'], kwargs['expected_artifact_sha256'])
+                    self.assertEqual(value['originalContext'], kwargs['original_context'])
+                    events.append('full-enter')
+                    if case == 'reader-failure':
+                        raise ValueError('original reader rejected')
+                    try:
+                        yield outside / 'full-policy.json'
+                    finally:
+                        events.append('full-exit')
+                @contextmanager
+                def admission(options):
+                    self.assertEqual(outside / 'full-policy.json', options['sdk_facade_metadata_policy'])
+                    events.append('admission-enter')
+                    try:
+                        yield {'sdk_facade_metadata_admission': gate}
+                    finally:
+                        events.append('admission-exit')
+                with self.subTest(case=case), mock.patch.object(selected, 'provision', side_effect=provision) as native, \
+                        mock.patch.object(selected, 'prepare', side_effect=prepare) as bootstrap, \
+                        mock.patch.object(selected, 'held_core_metadata_collection_policy', side_effect=full), \
+                        mock.patch.object(selected, 'metadata_admission_options', side_effect=admission):
+                    def invoke():
+                        with selected.held_collection_admission(caller, f.plan_path, f.discovery, f.discovery, shard,
+                                trusted_workflow_sha='d' * 40, repository_root=f.repository, environ={}, token='fixture',
+                                sdk_validation_tooling={'opaque': 'independent tooling seam'}) as actual:
+                            self.assertIs(gate, actual)
+                            events.append('advance')
+                            if case == 'changed-caller':
+                                caller.write_bytes(caller.read_bytes() + b' ')
+                    if case == 'valid':
+                        invoke()
+                        self.assertEqual(['full-enter', 'admission-enter', 'advance', 'admission-exit', 'full-exit'], events)
+                    else:
+                        with self.assertRaises(ValueError):
+                            invoke()
+                    if case == 'wrong-receipt':
+                        native.assert_not_called()
+                        bootstrap.assert_not_called()
+                    else:
+                        self.assertEqual(4, native.call_count)
+                        bootstrap.assert_called_once()
+
+    def test_generic_collection_holds_full_gate_and_keeps_failed_worker_fast_path(self):
+        from ci import sdk_workflow as workflow
+        import sdk_core_metadata_same_campaign as bridge
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original = root / 'original'
+            for name in ('product-resume-inputs', 'product-resume-state', 'runtime-state'):
+                (original / name).mkdir(parents=True)
+                (original / name / 'record').write_bytes(b'unchanged original')
+            for failed in (False, True):
+                events = []
+                gate = object()
+                row = {'product': 'sdk', 'component': 'sdk-core', 'phase': 'metadata', 'target': 'common',
+                    'result': 'failure' if failed else 'success',
+                    'shardDirectory': None if failed else 'rows/core-metadata/original/shard'}
+                @contextmanager
+                def full(*args, **kwargs):
+                    events.append('enter')
+                    try:
+                        yield gate
+                    finally:
+                        events.append('exit')
+                def advance(*args, **kwargs):
+                    self.assertEqual((selected._METADATA,) if failed else (), kwargs['failed_instances'])
+                    if failed:
+                        self.assertNotIn('sdk_facade_metadata_admission', kwargs)
+                        self.assertEqual([], events)
+                    else:
+                        self.assertIs(gate, kwargs['sdk_facade_metadata_admission'])
+                        self.assertEqual(['enter'], events)
+                    events.append('advance')
+                    args[4].mkdir(parents=True)
+                    return {'matrices': {'sdk': []}}
+                with self.subTest(failed=failed), \
+                        mock.patch.object(workflow.product_reuse, 'collect_runtime_workers', return_value={'rows': [row]}), \
+                        mock.patch.object(workflow.product_reuse, 'advance_products', side_effect=advance), \
+                        mock.patch.object(bridge, 'held_collection_admission', side_effect=full) as held:
+                    workflow.collect(original, root / str(failed), root / ('output-' + str(failed)),
+                        wave=14, family='core-metadata', trusted_workflow_sha='a' * 40,
+                        repository_root=root, environ={}, token='fixture', core_metadata_caller=root / 'caller')
+                self.assertEqual(['advance'] if failed else ['enter', 'advance', 'exit'], events)
+                self.assertEqual(0 if failed else 1, held.call_count)
+            with mock.patch.object(workflow.product_reuse, 'collect_runtime_workers') as collect, \
+                    self.assertRaisesRegex(ValueError, 'exact family'):
+                workflow.collect(original, root / 'wrong', root / 'wrong-output', wave=11,
+                    family='core-binary', trusted_workflow_sha='a' * 40, repository_root=root,
+                    environ={}, token='fixture', core_metadata_caller=root / 'caller')
+            collect.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -17,6 +17,35 @@ CHILD = WORKFLOW.with_name("sdk-core-metadata-validation.yml")
 
 
 class CoreMetadataWorkflowTest(unittest.TestCase):
+    def test_collection_caller_uses_successful_worker_outputs_and_external_policy(self):
+        source = CHILD.read_text().split("  sdk-collect-14:\n", 1)[1].split("  sdk-core-metadata-result:\n", 1)[0]
+        caller = source.split("      - id: caller\n", 1)[1].split("      - id: collect\n", 1)[0]
+        self.assertIn("if: needs.sdk-core-metadata.result == 'success'", caller)
+        for name in ('metadata_build_key', 'metadata_receipt_sha256', 'metadata_artifact_id',
+                     'metadata_artifact_sha256', 'metadata_original_context'):
+            self.assertIn('needs.sdk-core-metadata.outputs.' + name, caller)
+        self.assertIn('core-metadata-caller: ${{ steps.caller.outputs.policy }}', source)
+        script = textwrap.dedent(caller.split("          python3 -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            environment = {'BUILD_KEY': 'sha256:' + 'a' * 64, 'RECEIPT_SHA256': 'sha256:' + 'b' * 64,
+                'ARTIFACT_ID': '7', 'ARTIFACT_SHA256': 'sha256:' + 'c' * 64,
+                'ORIGINAL_CONTEXT': '{"repositoryRoot":"/original","metadataRequest":"/temporary/request"}',
+                'SDK_INPUTS_ID': '8', 'SDK_INPUTS_SHA256': 'sha256:' + 'd' * 64,
+                'TOOLING_POLICY': str(root / 'tooling.json'), 'RUNNER_TEMP': str(root),
+                'GITHUB_OUTPUT': str(root / 'outputs'), 'GITHUB_ENV': str(root / 'environment')}
+            with patch.dict(os.environ, environment):
+                exec(compile(script, 'core-collection-caller', 'exec'), {})
+            policy = Path((root / 'outputs').read_text().strip().split('=', 1)[1])
+            self.assertEqual(root, policy.parent)
+            value = json.loads(policy.read_bytes())
+            self.assertEqual(7, value['artifactId'])
+            self.assertEqual(8, value['sdkInputsArtifactId'])
+            self.assertEqual(environment['RECEIPT_SHA256'], value['receiptSha256'])
+            self.assertEqual(json.loads(environment['ORIGINAL_CONTEXT']), value['originalContext'])
+            self.assertEqual('CODEX_SDK_ARCHIVE_CACHE=' + str(root / 'sdk-archive-cache-v1') + '\n',
+                             (root / 'environment').read_text())
+
     def test_wave_fourteen_waits_for_original_validation_and_fails_after_collection(self):
         source = CHILD.read_text()
 
