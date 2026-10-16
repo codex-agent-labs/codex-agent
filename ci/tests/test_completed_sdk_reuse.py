@@ -170,6 +170,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec = ordinary_spec()
         for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
                              ('product-validation / plan', 'codex-agent-planned-product-resume-'),
+                             ('product-validation / sdk-collect-1', 'codex-agent-sdk-wave-1-state-'),
                              ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-'),
                              ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-'),
                              (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-'),
@@ -700,7 +701,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.check_v3_issuer_original_member(component, phase, target)
 
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
-        for component, phase, target, wave in (('sdk-ios', 'package', 'ios', 9),
+        for component, phase, target, wave in (('javascript', 'package', 'node', 1),
+                ('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
                 ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12)):
             with self.subTest(phase=phase):

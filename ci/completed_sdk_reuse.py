@@ -23,7 +23,10 @@ IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
 COLLECTED_VALIDATION_JOB = "product-validation / sdk-collect-9"
 _CORE_COLLECTOR = "product-validation / sdk-core-binary-wave / sdk-collect-11"
 _CORE_PACKAGE_COLLECTOR = "product-validation / sdk-core-package-wave / sdk-collect-12"
-_COLLECTED_WAVES = {job: row.wave for job, row in CHECKPOINT_ROUTES.items()}
+# The legacy JavaScript frontend precedes family continuation routing, but its
+# successful collector uses the same bounded, independently verified format.
+_COLLECTED_WAVES = {"product-validation / sdk-collect-1": 1,
+                    **{job: row.wave for job, row in CHECKPOINT_ROUTES.items()}}
 SOURCE_PLAN = "product-resume-inputs/plan/impact-plan.json"
 _SOURCE_UPLOADS = {
     "product-validation / product-resume": "codex-agent-product-resume-",
