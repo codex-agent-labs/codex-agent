@@ -1109,8 +1109,7 @@ class CompletedFrozenReuse:
                 artifact, original, _ = self.observe_extended_sdk(record, producer=producer, token=token)
                 if original_worker_member(extension["spec"]):
                     artifact = original
-                    if products._identity(record) == IOS_PACKAGE:
-                        limits = {"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT}
+                    limits = products._worker_upload_reference_limits(products._identity(record))
                 members = [row for row in extension["proof"]["members"] if row["sha256"] == record["objectSha256"]]
                 if len(members) != 1:
                     raise ValueError("Incremental SDK object member is missing or ambiguous")

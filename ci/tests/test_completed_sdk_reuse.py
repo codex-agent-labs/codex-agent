@@ -346,8 +346,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
         artifact = {'id': 72, 'created_at': '2026-01-01T01:01:00Z'}
         with patch.object(product_reuse, '_observe_ci_producer_jobs',
                 return_value=[{'run': {}, 'jobs': [job]}]) as observe, \
-                patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact):
+                patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact) as metadata:
             completed.observe_original(original, receipt, 'synthetic')
+            self.assertEqual({'upload_limit': 32 * 1024**3} if phase == 'metadata' else {},
+                             metadata.call_args.kwargs)
             self.assertEqual({'original': name}, observe.call_args.kwargs['jobs_by_phase'])
             self.assertEqual({'original': receipt['buildKey']}, observe.call_args.kwargs['build_keys_by_phase'])
             child = 'sdk-core-validation' if phase == 'validation' else f'sdk-core-{phase}-validation'
@@ -644,7 +646,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_consumption_fetches_only_native_package_member_from_its_original_upload(self):
         for component, phase, target in (('sdk-ios', 'package', 'ios'),
-                ('javascript', 'package', 'node'), ('csharp', 'binary', 'desktop')):
+                ('javascript', 'package', 'node'), ('csharp', 'binary', 'desktop'),
+                ('sdk-core', 'metadata', 'common')):
             with self.subTest(component=component):
                 self.check_consumption_from_original(component, phase, target)
 
@@ -673,7 +676,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
         @contextmanager
         def opened(artifact, token, **bounds):
             self.assertEqual(original, artifact)
-            self.assertEqual({'max_bytes': 32 * 1024**3} if component == 'sdk-ios' else {}, bounds)
+            self.assertEqual({'max_bytes': 32 * 1024**3, 'max_members': 65_536}
+                             if (component, phase_name) == ('sdk-core', 'metadata') else
+                             {'max_bytes': 32 * 1024**3} if component == 'sdk-ios' else {}, bounds)
             with zipfile.ZipFile(raw) as archive:
                 yield archive, None
         with tempfile.TemporaryDirectory() as temporary, \
@@ -708,7 +713,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_v3_issuer_verifies_original_package_member_without_embedding_or_downloading_outer_upload(self):
         for component, phase, target in (('sdk-ios', 'package', 'ios'),
-                ('javascript', 'package', 'node'), ('csharp', 'binary', 'desktop')):
+                ('javascript', 'package', 'node'), ('csharp', 'binary', 'desktop'),
+                ('sdk-core', 'metadata', 'common')):
             with self.subTest(component=component):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target)
@@ -719,7 +725,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 ('sdk-ios', 'package', 'ios', 5),
                 ('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
-                ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12)):
+                ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12),
+                ('sdk-core', 'metadata', 'common', 14)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target, collected=True, collected_wave=wave)
@@ -822,9 +829,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
         if collected:
             spec.update(stateRoot='runtime-state', sourcePlan=plan_text)
-            spec['source'].update(jobName=completed._CORE_COLLECTOR if collected_wave == 11 else
-                                  completed._CORE_PACKAGE_COLLECTOR if collected_wave == 12 else
-                                  f'product-validation / sdk-collect-{collected_wave}',
+            spec['source'].update(jobName=next(job for job, wave in completed._COLLECTED_WAVES.items()
+                                              if wave == collected_wave),
                                   referenceControlSha256='sha256:' + 'a' * 64)
         if embedded:
             spec['receiptObjects'] = [{'relativePath': source_object,
@@ -923,7 +929,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 def opened(artifact, token, **bounds):
                     self.assertFalse(reused, 'Native-qualified objects must not be downloaded again')
                     self.assertEqual({'id': 71}, artifact)
-                    self.assertEqual({'max_bytes': 32 * 1024**3} if package else {}, bounds)
+                    self.assertEqual({'max_bytes': 32 * 1024**3, 'max_members': 65_536}
+                                     if (component, phase_name) == ('sdk-core', 'metadata') else
+                                     {'max_bytes': 32 * 1024**3} if package else {}, bounds)
                     with zipfile.ZipFile(io.BytesIO(zipped({name: b'x' * len(body) if tampered else body}))) as archive:
                         yield archive, SimpleNamespace(transferred=len(body))
                 work = Path(temporary).resolve() / str(tampered)

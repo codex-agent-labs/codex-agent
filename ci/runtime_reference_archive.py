@@ -183,7 +183,9 @@ def download_archive(artifact, token, destination, *, max_bytes):
 
 
 @contextmanager
-def open_reference_archive(artifact, token, *, max_bytes=16 * 1024**3):
+def open_reference_archive(artifact, token, *, max_bytes=16 * 1024**3, max_members=16_384):
+    if type(max_members) is not int or max_members not in (16_384, 65_536):
+        raise ValueError('Unsupported caller-owned reference ZIP member bound')
     stream = _Archive(artifact, token, max_bytes=max_bytes)
     try:
         tail_size = min(stream.size, 22 + 65535)
@@ -198,7 +200,7 @@ def open_reference_archive(artifact, token, *, max_bytes=16 * 1024**3):
             raise ValueError('Reference ZIP cannot span multiple disks')
         count, size = verify_zip64_end_record(stream, stream.size, tail, end, tail_size,
             int.from_bytes(tail[end+10:end+12], 'little'), int.from_bytes(tail[end+12:end+16], 'little'))
-        if count > 16384 or size > 32 * 1024**2:
+        if count > max_members or size > 32 * 1024**2:
             raise ValueError('Reference ZIP directory exceeds the fixed bounds')
         stream.seek(0)
         with zipfile.ZipFile(stream) as archive:

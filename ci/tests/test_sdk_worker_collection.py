@@ -535,6 +535,25 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 sdk_worker_job_name=child_job)
         self.assertEqual("success", result["rows"][0]["result"])
         self.assertEqual(child_job, result["rows"][0]["jobName"])
+        retained = self.repository / "build/metadata-child" / result["rows"][0]["originalDirectory"]
+        self.assertFalse((retained.parent / "transport.zip").exists())
+        self.assertEqual({"shard"}, {path.name for path in retained.iterdir()})
+        self.assertEqual({"schemaVersion": 1, "files": [
+            {"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+            for name, raw in sorted(files.items())]}, load_canonical_json(retained.parent / "original-inventory.json"))
+
+    def test_core_metadata_projection_still_authenticates_unconsumed_original_bytes(self):
+        instance, ready, _, _, files = self.shard("metadata", component="sdk-core", target="common")
+        raw = archive(files)
+        original = files["inputs/original.bin"]
+        self.assertEqual(1, raw.count(original))
+        corrupt = raw.replace(original, b"X" + original[1:])
+        with patch.object(adapter, "_extract_runtime_original_projection") as extract:
+            result = self.collect({instance: ready}, {instance: corrupt},
+                self.repository / "build/corrupt-core-metadata", family="core-metadata")
+        self.assertEqual("failure", result["rows"][0]["result"])
+        self.assertIsNone(result["rows"][0]["shardDirectory"])
+        extract.assert_not_called()
 
     def test_android_binary_child_binds_original_workflow_and_job(self):
         instance, ready, _, _, files = self.shard("binary", component="sdk-android", target="android")

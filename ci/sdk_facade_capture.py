@@ -141,7 +141,7 @@ def verify_retained_sdk_phase_upload(capture, receipt_bytes):
     if (transport["captureProducer"] != receipt["producer"]
             or transport[receipt["phase"] + "ReceiptSha256"] != sha256_bytes(receipt_bytes)):
         raise ValueError("Retained SDK transport differs from the exact original receipt")
-    products._verify_retained_sdk_upload_archive(capture, transport["artifact"])
+    products._verify_retained_sdk_upload_archive(capture, transport["artifact"], worker_instance=instance)
     if transport["artifact"].get("name") != name:
         raise ValueError("Retained SDK artifact differs from its original phase identity")
     for directory in directories:
@@ -246,13 +246,13 @@ def _capture_sdk_upload(
         require_integer(official_job.get("runner_id"), "Core original worker runner ID", 1)
         observed_bytes = canonical_json_bytes(observed)
         unchanged()
-        artifact, raw = products._download_contract_ci_upload(
-            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        products._require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
-        archive.write_bytes(raw)
+        artifact, _ = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token, destination=archive,
+            **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if instance in products._LARGE_SDK_UPLOADS else {}))
+        products._require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-                                            **products._CATALOG_ZIP_LIMITS)
+                                            **products._worker_upload_zip_limits(instance))
         original = prepared / "original"
         products.safe_extract(archive, original)
         if regular_file_inventory(original, allow_empty=True) != zipped:

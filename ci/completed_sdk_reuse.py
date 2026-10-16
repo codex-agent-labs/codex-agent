@@ -207,7 +207,7 @@ def observe_original(original, receipt, token, *, native_locator=None):
             f"{receipt['buildKey'][7:]}-{producer['tree']}-attempt-{producer['runAttempt']}")
     artifact = products._contract_ci_upload_metadata(original["artifactId"], original["artifactSha256"],
         name, producer, observed[0]["run"], token,
-        **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if instance == IOS_PACKAGE else {}))
+        **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if instance in products._LARGE_SDK_UPLOADS else {}))
     products._require_artifact_job_window(observed[0], matches[0]["name"], artifact)
     locator = products._runtime_original_locator(
         artifact, original["workflowSha"], instance, matches[0])
@@ -609,7 +609,7 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             if original_worker_member(spec):
                 name = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
                 package = _identity(phase) == IOS_PACKAGE
-                bounds = {"max_bytes": products._IOS_PACKAGE_UPLOAD_LIMIT} if package else {}
+                bounds = products._worker_upload_reference_limits(_identity(phase))
                 with open_reference_archive(artifact, token, **bounds) as (original, stream):
                     member = {"relativePath": name, "bytes": original.getinfo(name).file_size,
                               "sha256": phase["objectSha256"]}

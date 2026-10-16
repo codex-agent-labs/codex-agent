@@ -13,6 +13,35 @@ import runtime_reference_archive as transport
 
 
 class ReferenceDownloadTest(unittest.TestCase):
+    def test_large_directory_requires_explicit_bounded_policy_and_keeps_path_checks(self):
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        from products.inventory import sha256_bytes
+        for count, unsafe in ((16_385, False), (65_537, False), (1, True)):
+            data = io.BytesIO()
+            with zipfile.ZipFile(data, 'w') as archive:
+                for number in range(count):
+                    archive.writestr('../escape' if unsafe else f'evidence/{number}', b'')
+            raw = data.getvalue()
+            artifact = dict(id=1, size_in_bytes=len(raw), digest=sha256_bytes(raw),
+                archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+            with self.subTest(count=count, unsafe=unsafe), \
+                    mock.patch.object(transport.urllib.request, 'build_opener', return_value=RangeOpener({1: raw})):
+                with self.assertRaises(ValueError), transport.open_reference_archive(artifact, 'fixture'):
+                    self.fail('Default bounds and unsafe paths must still reject')
+                if count <= 65_536 and not unsafe:
+                    with transport.open_reference_archive(artifact, 'fixture', max_members=65_536) as (archive, _):
+                        self.assertEqual(count, len(archive.infolist()))
+                else:
+                    with self.assertRaises(ValueError), transport.open_reference_archive(
+                            artifact, 'fixture', max_members=65_536):
+                        self.fail('Explicit policy must retain fixed bounds and safe paths')
+        for bound in (True, 0, 65_537):
+            with self.subTest(bound=bound), mock.patch.object(transport, '_Archive') as fetch, \
+                    self.assertRaisesRegex(ValueError, 'caller-owned'):
+                with transport.open_reference_archive(artifact, 'fixture', max_members=bound):
+                    pass
+            fetch.assert_not_called()
+
     def test_primary_quota_wait_retries_only_the_same_authenticated_range(self):
         from ci.tests.test_runtime_reference_transport import RangeOpener
         from products.inventory import sha256_bytes

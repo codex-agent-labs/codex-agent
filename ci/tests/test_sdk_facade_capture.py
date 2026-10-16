@@ -75,8 +75,13 @@ class FacadeCaptureTest(unittest.TestCase):
         arguments["receipt_path" if self.capture_name == "capture_sdk_maven_upload" else
                   self.phase + "_receipt_path"] = self.receipt_path
         arguments.update(changes)
+        def download(artifact, token, destination, *, max_bytes):
+            self.assertEqual(self.artifact, artifact)
+            self.assertLessEqual(len(self.raw), max_bytes)
+            destination.write_bytes(self.api(artifact['archive_download_url'], token))
         with patch.object(facade.products, "_validate_plan", return_value=self.plan), \
-             patch("reuse.api_request", side_effect=self.api):
+             patch("reuse.api_request", side_effect=self.api), \
+             patch.object(facade.products, 'download_artifact_to_file', side_effect=download):
             capture = getattr(facade, self.capture_name)
             return capture(self.plan_path, self.output, **arguments)
 
@@ -218,6 +223,39 @@ class FacadeMetadataCaptureTest(FacadeCaptureTest):
     capture_name = "capture_sdk_facade_metadata_upload"
     targets = ("common",)
     required_directories = ("worker", "selection", "originals", "inputs")
+
+    def test_metadata_streams_beyond_inline_bound_and_checks_complete_retained_archive(self):
+        with patch.object(facade.products, '_INLINE_UPLOAD_LIMIT', 1), \
+                patch.object(facade.products, '_download_contract_ci_upload',
+                    wraps=facade.products._download_contract_ci_upload) as download:
+            self.call()
+        self.assertIsInstance(download.call_args.kwargs['destination'], Path)
+        self.assertEqual(32 * 1024**3, download.call_args.kwargs['upload_limit'])
+        facade.verify_retained_sdk_phase_upload(self.output, self.receipt_bytes)
+        (self.output / 'transport.zip').write_bytes(self.raw + b'changed')
+        with self.assertRaisesRegex(ValueError, 'original digest'):
+            facade.verify_retained_sdk_phase_upload(self.output, self.receipt_bytes)
+
+    def test_metadata_private_archive_reuses_bytes_but_reobserves_and_rejects_mutation(self):
+        from products.restore import verification_session
+        with verification_session() as session, \
+                patch.object(facade.products, '_download_contract_ci_upload_bytes',
+                    wraps=facade.products._download_contract_ci_upload_bytes) as download, \
+                patch.object(facade.products, '_contract_ci_upload_metadata',
+                    wraps=facade.products._contract_ci_upload_metadata) as observe:
+            self.call()
+            self.output = self.output.with_name('second-capture')
+            self.call()
+            self.assertEqual(1, download.call_count)
+            self.assertEqual(2, observe.call_count)
+            retained, _ = next(iter(session['coreMetadataUploads'].values()))
+            retained.write_bytes(self.raw + b'changed')
+            self.output = self.output.with_name('changed-capture')
+            with self.assertRaisesRegex(ValueError, 'Private original Core metadata archive changed'):
+                self.call()
+            self.assertEqual(1, download.call_count)
+            self.assertEqual(3, observe.call_count)
+        self.assertFalse(retained.exists())
 
 
 class AndroidValidationCaptureTest(FacadeCaptureTest):

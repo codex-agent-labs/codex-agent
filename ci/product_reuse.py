@@ -256,12 +256,25 @@ _IOS_PACKAGE_UPLOAD_ZIP_LIMITS = {
     "max_archive_bytes": _IOS_PACKAGE_UPLOAD_LIMIT,
     "max_total_bytes": _IOS_PACKAGE_UPLOAD_LIMIT,
 }
+_LARGE_SDK_UPLOADS = frozenset((
+    PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
+    PhaseInstanceId("sdk", "sdk-core", "metadata", "common"),
+))
 
 
 def _worker_upload_zip_limits(instance):
-    # Complete original Apple execution evidence accompanies the package object.
-    return (_IOS_PACKAGE_UPLOAD_ZIP_LIMITS if instance ==
-            PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else _CATALOG_ZIP_LIMITS)
+    # These exact uploads retain complete original execution evidence.
+    if instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common"):
+        # Eleven complete validation captures contain more than 39,000 files.
+        return {**_IOS_PACKAGE_UPLOAD_ZIP_LIMITS, "max_members": 65_536}
+    return (_IOS_PACKAGE_UPLOAD_ZIP_LIMITS if instance in _LARGE_SDK_UPLOADS else _CATALOG_ZIP_LIMITS)
+
+
+def _worker_upload_reference_limits(instance):
+    limits = _worker_upload_zip_limits(instance)
+    return {argument: limits[field] for argument, field in
+            (("max_bytes", "max_archive_bytes"), ("max_members", "max_members"))
+            if limits[field] != _CATALOG_ZIP_LIMITS[field]}
 
 
 def _ios_upload_zip_limits(phase):
@@ -1007,9 +1020,10 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
             "artifact": {name: artifact.get(name) for name in
                          ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
         })
-        package_files = session.setdefault("iosPackageUploads", {})
+        core_metadata = artifact["name"].startswith("codex-agent-sdk-worker-sdk-core-metadata-common-")
+        package_files = session.setdefault("coreMetadataUploads" if core_metadata else "iosPackageUploads", {})
         package_transport = (destination is not None and
-            artifact["name"].startswith("codex-agent-sdk-worker-sdk-ios-package-ios-"))
+            (core_metadata or artifact["name"].startswith("codex-agent-sdk-worker-sdk-ios-package-ios-")))
         def retain_link(source, target):
             try:
                 os.link(source, target)
@@ -1024,7 +1038,8 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
             # Hardlink creation/removal changes ctime, not authenticated bytes.
             if (_stat_identity(original.lstat())[:4] != identity
                     or sha256_file(original, reject_symlink_parents=True) != artifact_sha256):
-                raise ValueError("Private original iOS package archive changed")
+                raise ValueError("Private original Core metadata archive changed" if core_metadata else
+                                 "Private original iOS package archive changed")
             retain_link(original, destination)
             return artifact, destination
         cached = session["uploads"].get(provenance)
@@ -1042,7 +1057,8 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
         if package_transport and len(package_files) < 2:
             from products.inventory import _stat_identity
             # Only this invocation's fully hashed original bytes are retained.
-            original = session["root"] / ("ios-package-" + sha256_bytes(provenance)[7:])
+            original = session["root"] / (("core-metadata-" if core_metadata else "ios-package-") +
+                                           sha256_bytes(provenance)[7:])
             retain_link(destination, original)
             package_files[provenance] = original, _stat_identity(original.lstat())[:4]
         # ponytail: small immutable uploads only; larger transport stays streamed.
@@ -6566,14 +6582,12 @@ def collect_runtime_workers(
                     artifact, _ = _download_contract_ci_upload(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token, destination=archive,
-                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance ==
-                           PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
+                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance in _LARGE_SDK_UPLOADS else {}))
                 else:
                     artifact = _contract_ci_upload_metadata(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token,
-                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance ==
-                           PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
+                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance in _LARGE_SDK_UPLOADS else {}))
                 timestamps = [datetime.fromisoformat(require_string(value, "Runtime worker timestamp").replace("Z", "+00:00"))
                               for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
                 if (any(value.utcoffset() != timedelta(0) for value in timestamps)
@@ -6590,11 +6604,11 @@ def collect_runtime_workers(
                     archive, retained_paths=(), allow_empty_members=True,
                     **_worker_upload_zip_limits(instance))
                 original = retained / "original"
-                if instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"):
+                if instance in _LARGE_SDK_UPLOADS:
                     if upload_identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
-                        raise ValueError("Collected Apple package archive changed during authentication")
-                    # Collection consumes the shard. The following full Apple gate
-                    # reuses the independently hashed private session archive.
+                        raise ValueError("Collected SDK archive changed during authentication")
+                    # Collection consumes the shard. Following full semantic gates
+                    # reuse the independently hashed private session archive.
                     _extract_runtime_original_projection(archive,
                         [record for record in zipped if record["relativePath"].startswith("shard/")], original)
                     write_canonical_json(retained / "original-inventory.json", {"schemaVersion": 1, "files": zipped})
@@ -8124,7 +8138,8 @@ def _sdk_binding_controls(physical, retained, reference, binding, current_plan):
     return physical, rebound, retained[controls[0]]
 
 
-def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), apple=False, apple_phase=None):
+def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), apple=False, apple_phase=None,
+                                        worker_instance=None):
     """Check preserved upload bytes; stored transport metadata is not authority."""
     capture = Path(capture)
     regular_file_inventory(capture, allow_empty=True)
@@ -8138,7 +8153,8 @@ def _verify_retained_sdk_upload_archive(capture, artifact, *, extra_roots=(), ap
     if sha256_file(archive) != digest:
         raise ValueError("Retained SDK upload archive differs from its original digest")
     zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-        **(_ios_upload_zip_limits(apple_phase) if apple_phase is not None else
+        **(_worker_upload_zip_limits(worker_instance) if worker_instance is not None else
+           _ios_upload_zip_limits(apple_phase) if apple_phase is not None else
            _APPLE_UPLOAD_ZIP_LIMITS if apple else _CATALOG_ZIP_LIMITS))
     expected_plan_files = {'impact-plan.json'}
     if not apple:
