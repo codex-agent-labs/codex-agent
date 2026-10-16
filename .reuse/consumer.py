@@ -311,7 +311,7 @@ def completed_descriptor(raw, value):
         raise ValueError("Completed frozen proof differs from preserved qualification identity")
     validate_sdk_input_source(document["retainedSdkInputsSource"])
     records = document["gitHistory"]
-    if not isinstance(records, list) or not 1 <= len(records) <= 16:
+    if not isinstance(records, list) or not 1 <= len(records) <= 32:
         raise ValueError("Completed reuse Git history is missing or excessive")
     seen = set()
     for record in records:
@@ -330,8 +330,10 @@ def completed_descriptor(raw, value):
 def completed_sdk_spec(root, document, value):
     """Resolve the retained source through the approved native issuer's fixed parent."""
     from products.inventory import git_regular_blob_bytes, load_canonical_json_bytes
+    from reuse_qualification import _sdk_completed_spec_path
+    issuer = document["policy"]["sdkCompletion"]["signerCommit"]
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
-        document["policy"]["sdkCompletion"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+        issuer, _sdk_completed_spec_path(root, issuer), max_bytes=16 * 1024 * 1024))
     count = 1
     if spec.get("schemaVersion") in (2, 3):
         from completed_sdk_reuse import _spec
@@ -339,8 +341,9 @@ def completed_sdk_spec(root, document, value):
         if any(spec["parent"][field] not in value["approvedVerifiers"] for field in ("signerCommit", "sourceCommit")):
             raise ValueError("Incremental native parent is not independently approved")
         count += len(spec["completedPhases"])
+        parent = spec["parent"]["signerCommit"]
         spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
-            spec["parent"]["signerCommit"], "ci/tests/data/sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+            parent, _sdk_completed_spec_path(root, parent), max_bytes=16 * 1024 * 1024))
     if type(spec.get("schemaVersion")) is not int or spec["schemaVersion"] != 1:
         raise ValueError("Completed reuse requires the fixed original native SDK source")
     return spec, count

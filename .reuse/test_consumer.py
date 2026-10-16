@@ -23,7 +23,7 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            for count in (1, 8, 10, 16):
+            for count in (1, 8, 10, 16, 17, 32):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -34,12 +34,36 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(17)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(33)]
                     elif fault == "duplicate": rows.append(dict(rows[0]))
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
                     with self.assertRaises(ValueError):
                         consumer.completed_descriptor(canonical_json_bytes(value), APPROVAL)
+
+    def test_completed_source_and_parent_use_their_independently_pinned_recipe(self):
+        from products.inventory import canonical_json_bytes
+        issuer, parent = "a" * 40, "b" * 40
+        document = {"policy": {"sdkCompletion": {"signerCommit": issuer}}}
+        value = {"approvedVerifiers": [issuer, parent]}
+        root = Path("unused")
+        original = {"schemaVersion": 1, "sdkInputs": {"source": "exact original"}}
+        extension = {"schemaVersion": 3, "parent": {"signerCommit": parent, "sourceCommit": parent},
+                     "completedPhases": [{"phase": "package"}]}
+        for inherited in (False, True):
+            rows = [canonical_json_bytes(extension), canonical_json_bytes(original)] if inherited else [canonical_json_bytes(original)]
+            with self.subTest(inherited=inherited), \
+                    patch("reuse_qualification._sdk_completed_spec_path", side_effect=lambda root, commit: commit + ".json") as select, \
+                    patch("products.inventory.git_regular_blob_bytes", side_effect=rows) as read, \
+                    patch("completed_sdk_reuse._spec"):
+                self.assertEqual((original, 2 if inherited else 1), consumer.completed_sdk_spec(root, document, value))
+                self.assertEqual([issuer, parent] if inherited else [issuer], [call.args[1] for call in select.call_args_list])
+                self.assertEqual([call.args[1] + ".json" for call in read.call_args_list], [call.args[2] for call in read.call_args_list])
+        with patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
+                patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(extension)) as read, \
+                patch("completed_sdk_reuse._spec"), self.assertRaisesRegex(ValueError, "independently approved"):
+            consumer.completed_sdk_spec(root, document, {"approvedVerifiers": [issuer]})
+        self.assertEqual(1, read.call_count)
 
     def test_requalification_requires_an_approved_baseline_with_exact_git_custody(self):
         from products.inventory import canonical_json_bytes
