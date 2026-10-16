@@ -18,6 +18,37 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class SdkCampaignOriginalLocatorTest(TestCase):
+    def test_retained_metadata_keeps_exact_original_context_and_later_pr(self):
+        key = 'sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a'
+        consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
+        origin = locator.retained_core_origin("metadata", key, consumer)
+        self.assertEqual(12068740640, origin["artifact_id"])
+        self.assertEqual(117099192243, origin["job_id"])
+        self.assertEqual('sha256:575d0fcd155861ad1127b7c7deb01ba0298aaf74f729c4301eb1ac4c90f477e7', origin["receipt_sha256"])
+        self.assertEqual({'metadataRequest': '/tmp/core-metadata-inputs-yxs0r4ag/metadata-request.json', 'repositoryRoot': '/home/runner/work/codex-agent/codex-agent'}, origin["context"])
+        for target, changed_key, change in (("android", key, {}), ("common", "sha256:" + "0" * 64, {}),
+                ("common", key, {"runId": 38937733736}), ("common", key, {"runId": 38937733736 - 1}),
+                ("common", key, {"runId": True}), ("common", key, {"runAttempt": False}),
+                ("common", key, {"pullRequest": 32}), ("common", key, {"event": "merge_group"}),
+                ("common", key, {"workflowPath": "other.yml"}), ("common", key, {"repository": "other/repo"})):
+            self.assertIsNone(locator.retained_core_origin("metadata", changed_key,
+                {**consumer, **change}, target=target))
+        with patch.object(locator.products, "_validate_plan", return_value={"event": "pull_request", "remoteBuildAuthorized": True}), \
+                patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                patch.object(locator, "_locate", return_value={field: origin[field] for field in
+                    ("artifact_id", "artifact_sha256")}) as observe:
+            def call():
+                return locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                    expected_build_key=key, token="synthetic", environ={}, phase="metadata")
+            self.assertEqual(origin, call())
+            self.assertEqual(origin["job_id"], observe.call_args.kwargs["expected_job_id"])
+            self.assertEqual(key, observe.call_args.kwargs["expected_build_key"])
+            self.assertEqual({"metadata": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+                             observe.call_args.kwargs["trusted_workflows_by_phase"])
+            observe.return_value = {"artifact_id": origin["artifact_id"], "artifact_sha256": "sha256:" + "f" * 64}
+            with self.assertRaisesRegex(ValueError, "reviewed successful original"):
+                call()
+
     def test_retained_android_validation_binds_exact_target_original_and_later_pr(self):
         key = locator.RETAINED_CORE_ANDROID_VALIDATION_KEY
         consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}

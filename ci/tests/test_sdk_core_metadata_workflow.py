@@ -19,6 +19,10 @@ CHILD = WORKFLOW.with_name("sdk-core-metadata-validation.yml")
 class CoreMetadataWorkflowTest(unittest.TestCase):
     def test_collection_caller_uses_successful_worker_outputs_and_external_policy(self):
         source = CHILD.read_text().split("  sdk-collect-14:\n", 1)[1].split("  sdk-core-metadata-result:\n", 1)[0]
+        restore = "uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority"
+        self.assertEqual(1, source.count(restore))
+        self.assertLess(source.index(restore), source.index("- id: tooling"))
+        self.assertIn("authority-read-token: ${{ secrets.authority_read_token }}", source)
         caller = source.split("      - id: caller\n", 1)[1].split("      - id: collect\n", 1)[0]
         self.assertIn("if: needs.sdk-core-metadata.result == 'success'", caller)
         for name in ('metadata_build_key', 'metadata_receipt_sha256', 'metadata_artifact_id',

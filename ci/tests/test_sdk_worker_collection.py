@@ -167,6 +167,18 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 self.assertEqual(expected['receiptSha256'], actual['receiptSha256'])
                 self.assertEqual(expected['objectSha256'], actual['objectSha256'])
 
+    def test_full_key_ellipsis_without_comma_selects_only_exact_candidates(self):
+        name = "product-validation / sdk-core-metadata-wave / sdk-core-metadata-common"
+        key = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
+        job = {"id": 1, "name": f"{name} ({key}..."}
+        self.assertEqual([job], adapter._matching_ci_jobs([job], name, expected_build_key=key))
+        for changed in (key[:-1] + "0", "sha256:" + "f" * 64):
+            self.assertEqual([], adapter._matching_ci_jobs([job], name, expected_build_key=changed))
+        self.assertEqual([], adapter._matching_ci_jobs([job], name))
+        duplicate = {**job, "id": 2}
+        self.assertEqual([job, duplicate], adapter._matching_ci_jobs(
+            [job, duplicate], name, expected_build_key=key))
+
     def test_truncated_matrix_display_preserves_full_key_and_ambiguity_gates(self):
         for case in ("valid", "wrong-receipt-key", "wrong-display-key", "ambiguous"):
             with self.subTest(case=case):

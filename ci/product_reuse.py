@@ -694,6 +694,7 @@ def _matching_ci_jobs(jobs, name, *, expected_build_key=None):
         # GitHub may omit the space before the matrix ellipsis. Keep the full
         # caller-pinned key; the same ambiguity and original-upload gates apply.
         names.add(f"{name} ({expected_build_key},...")
+        names.add(f"{name} ({expected_build_key}...")
         # GitHub also truncates the display at 118 characters plus ellipsis.
         # This only locates candidates: callers still reject ambiguity and bind
         # the full artifact name, receipt key, producer and upload/job window.

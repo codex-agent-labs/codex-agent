@@ -104,6 +104,23 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
         return None
     if phase == "binary":
         return retained_core_binary_origin(build_key, consumer)
+    if phase == "metadata":
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "a1a45d67d3240624f8ef09042240daf56b27e310", "tree": "6f565a8b713db8615f973a05bffcbc0b079614a5",
+            "event": "pull_request", "runId": 38937733736, "runAttempt": 1, "pullRequest": 31}
+        if (build_key != "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12068740640,
+            "artifact_sha256": "sha256:db7e6d5e9866fd85349e8363172dd0965329913c3414e2c4e5de3cbeab32fd79",
+            "receipt_sha256": "sha256:575d0fcd155861ad1127b7c7deb01ba0298aaf74f729c4301eb1ac4c90f477e7",
+            "job_id": 117099192243, "workflow_sha": "70f228c99ed763ab90638475a9fd100187bb5f0f",
+            "workflow_path": ".github/workflows/sdk-core-metadata-validation.yml",
+            "job_name": "product-validation / sdk-core-metadata-wave / sdk-core-metadata-common",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/tmp/core-metadata-inputs-yxs0r4ag/metadata-request.json"}}
     producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
         "commit": "42cee47db4198cc8de71ccef1c0c01758e325482", "tree": "ce3b15db4547f0261d16db9b7efc324a436fc51e",
         "event": "pull_request", "runId": 38715748096, "runAttempt": 1, "pullRequest": 31}
