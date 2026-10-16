@@ -54,6 +54,25 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-package-result / sdk-android-package-android", collect)
         self.assertIn("select_native_state(needs, stage='android-package')", result)
 
+    def test_qualified_package_reuses_captured_inputs_and_shared_scoped_controller(self):
+        worker = job(CHILD.read_text(), 'sdk-android-package')
+        self.assertIn("fromJSON(inputs.metadataWave).outputs.metadata_build_key == '' &&", worker)
+        self.assertIn('ci.sdk_workflow maven-package', worker)
+        qualified = worker.split('      - id: qualified\n', 1)[1].split('      - id: qualified-upload\n', 1)[0]
+        self.assertIn('mode: execute', qualified)
+        self.assertIn('--state-root "${{ steps.selected.outputs.state-root }}"', qualified)
+        self.assertIn('--completed-frozen-policy', qualified)
+        self.assertIn('--retained-sdk-inputs-source', qualified)
+        self.assertIn('--binary-original-workflow-path .github/workflows/sdk-android-binary-validation.yml', qualified)
+        self.assertNotIn('capture-transport', qualified)
+        self.assertNotIn('capture-runtime-state', qualified)
+        self.assertNotIn('core14', qualified)
+        for step in ('native-archives', 'core14', 'package'):
+            block = worker.split('      - id: ' + step + '\n', 1)[1]
+            self.assertTrue(block.startswith("        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key != ''\n"))
+        outputs = worker.split('    outputs:', 1)[1].split('    steps:', 1)[0]
+        self.assertIn("steps.qualified.outcome == 'success' && steps.qualified-upload.outcome == 'success'", outputs)
+
 
 if __name__ == "__main__":
     unittest.main()

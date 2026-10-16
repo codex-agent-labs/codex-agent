@@ -18,6 +18,16 @@ def job(source, name):
 
 
 class AndroidBinaryWorkflowTest(unittest.TestCase):
+    def test_every_android_collector_restores_native_authority_before_reading_deferred_objects(self):
+        for wave, filename in ((15, 'sdk-android-binary-validation.yml'), (16, 'sdk-android-package-validation.yml'),
+                               (17, 'sdk-android-validation.yml'), (18, 'sdk-android-metadata-validation.yml')):
+            with self.subTest(wave=wave):
+                collector = job(CHILD.with_name(filename).read_text(), 'sdk-collect-' + str(wave))
+                self.assertEqual(1, collector.count('.github/actions/restore-reuse-qualification@reuse-authority'))
+                self.assertLess(collector.index('.github/actions/restore-reuse-qualification@reuse-authority'),
+                                collector.index('uses: ./.github/actions/capture-sdk-tooling'))
+                self.assertIn('authority-read-token: ${{ secrets.authority_read_token }}', collector)
+
     def test_parent_delegates_exact_predecessors_and_final_gate_waits(self):
         source = PARENT.read_text()
         caller = job(source, "sdk-android-binary-result")

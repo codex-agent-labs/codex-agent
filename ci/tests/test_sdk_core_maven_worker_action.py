@@ -53,13 +53,16 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
             "context": {"repositoryRoot": "/original/root", "workerRoot": "/original/root/build/worker"}}
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "output"
-            for selected in (origin, None):
+            for selected, component in ((origin, 'sdk-core'), (None, 'sdk-core'), (origin, 'sdk-android')):
                 output.write_text("")
                 with patch.dict(os.environ, {"PLAN": "/current/plan", "BUILD_KEY": KEY,
                         "GITHUB_TOKEN": "synthetic-token", "GITHUB_WORKSPACE": str(ROOT),
-                        "GITHUB_OUTPUT": str(output), "PHASE": "package"}, clear=True), \
-                        patch.object(locator, "locate_retained_core_binary_upload", return_value=selected):
+                        "GITHUB_OUTPUT": str(output), "PHASE": "package", "COMPONENT": component}, clear=True), \
+                        patch.object(locator, "locate_retained_core_binary_upload", return_value=selected) as lookup:
                     exec(compile(source, "retained-core", "exec"), {})
+                if component == 'sdk-android':
+                    self.assertEqual('sdk-android', lookup.call_args.kwargs['component'])
+                    self.assertEqual('android', lookup.call_args.kwargs['target'])
                 values = dict(line.split("=", 1) for line in output.read_text().splitlines())
                 self.assertEqual("true" if selected else "false", values["reused"])
                 if selected:

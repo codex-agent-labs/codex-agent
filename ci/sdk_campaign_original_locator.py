@@ -30,6 +30,7 @@ RETAINED_CORE_BINARY_KEY = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb3
 RETAINED_CORE_PACKAGE_KEY = "sha256:6179fe876ee780222026ed9aaea33369fae8a65b927555c854c11e4151df5670"
 RETAINED_CORE_METADATA_KEY = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
 RETAINED_CORE_ANDROID_VALIDATION_KEY = "sha256:671c8786babf765a4260487e0e7c0f189e32baad1f58f12be68baaf14aaddda0"
+RETAINED_ANDROID_BINARY_KEY = "sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c"
 
 
 def retained_core_binary_origin(build_key, consumer):
@@ -51,8 +52,26 @@ def retained_core_binary_origin(build_key, consumer):
             "workerRoot": "/Users/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker"}}
 
 
-def retained_core_origin(phase, build_key, consumer, *, target="common"):
-    """Keep reviewed successful Core originals separate from current admission."""
+def retained_core_origin(phase, build_key, consumer, *, target="common", component="sdk-core"):
+    """Keep reviewed Maven originals separate from current admission (legacy API name)."""
+    if component != "sdk-core":
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "47dd53e4ad943208484290515ba399423d78f53d", "tree": "bb8855454b8aba1b6ae12b60e4286c08bf3ebf49",
+            "event": "pull_request", "runId": 38977473655, "runAttempt": 1, "pullRequest": 31}
+        if (component != "sdk-android" or (phase, target) != ("binary", "android")
+                or build_key != RETAINED_ANDROID_BINARY_KEY
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12079777755,
+            "artifact_sha256": "sha256:57ab3563ec043027be009616c60285d1dcaa84c3fc18cde71919113151bdbb40",
+            "receipt_sha256": "sha256:8b88dffbf56855d08960e08e60adb8522d97f60d89601f6e1d8b8de238e8d355",
+            "job_id": 117231503731, "workflow_sha": "8b1fa9a28d9a5f951e287d07985e532a485be36e",
+            "workflow_path": ".github/workflows/sdk-android-binary-validation.yml",
+            "job_name": "product-validation / sdk-android-binary-result / sdk-android-binary-android",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "workerRoot": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-maven-worker"}}
     if phase == "validation":
         # Exact successful originals; metadata lookup never grants admission.
         selected = {
@@ -141,7 +160,7 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
 
 
 def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_build_key, token, environ=None,
-                                      phase="binary", target="common"):
+                                      phase="binary", target="common", component="sdk-core"):
     """Avoid production for an exact retained success; this grants no admission."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -152,10 +171,11 @@ def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_bu
         raise ValueError("Retained Core lookup requires an authorized PR or merge-group plan")
     before = canonical_json_bytes(plan)
     consumer = products.validate_producer(products._consumer(plan, environment)["producer"])
-    origin = retained_core_origin(phase, expected_build_key, consumer, target=target)
+    component_options = {"component": component} if component != "sdk-core" else {}
+    origin = retained_core_origin(phase, expected_build_key, consumer, target=target, **component_options)
     if origin is not None:
         producer = origin["producer"]
-        name = (f"codex-agent-sdk-worker-sdk-core-{phase}-{target}-{expected_build_key[7:]}-"
+        name = (f"codex-agent-sdk-worker-{component}-{phase}-{target}-{expected_build_key[7:]}-"
                 f"{producer['tree']}-attempt-{producer['runAttempt']}")
         located = _locate(producer, phase=phase, job=origin["job_name"], name=name, token=token,
             trusted_workflows_by_phase={phase: {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
@@ -166,7 +186,7 @@ def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_bu
     if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
             or canonical_json_bytes(plan) != before
             or products.validate_producer(products._consumer(plan, environment)["producer"]) != consumer
-            or origin != retained_core_origin(phase, expected_build_key, consumer, target=target)):
+            or origin != retained_core_origin(phase, expected_build_key, consumer, target=target, **component_options)):
         raise ValueError("Retained Core election or original changed during lookup")
     return origin
 

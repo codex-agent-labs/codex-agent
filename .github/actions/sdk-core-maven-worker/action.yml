@@ -243,13 +243,13 @@ runs:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
     - id: retained
-      if: inputs.component == 'sdk-core'
       name: Locate exact successful Core original before production
       shell: bash
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         BUILD_KEY: ${{ inputs.build-key }}
         PHASE: ${{ inputs.phase }}
+        COMPONENT: ${{ inputs.component }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         python3 -B - <<'PY'
@@ -258,8 +258,10 @@ runs:
         from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
         from ci.products.inventory import canonical_json_bytes
         from ci.reuse import github_output
+        component = os.environ.get('COMPONENT', 'sdk-core')
+        options = {'component': component, 'target': 'android'} if component == 'sdk-android' else {}
         origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
-            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'], phase=os.environ['PHASE'])
+            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'], phase=os.environ['PHASE'], **options)
         values = {'reused': 'false'}
         if origin is not None:
             values.update(reused='true', artifact_id=str(origin['artifact_id']),

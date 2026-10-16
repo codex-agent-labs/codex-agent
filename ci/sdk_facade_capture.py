@@ -202,10 +202,13 @@ def _capture_sdk_upload(
             raise ValueError("Core worker capture requires an authorized PR or merge-group plan")
         plan_value = canonical_json_bytes(plan)
         retained_core = None
-        if instance in (PhaseInstanceId("sdk", "sdk-core", "binary", "common"),
-                        PhaseInstanceId("sdk", "sdk-core", "package", "common")):
+        component_options = ({"component": instance.component, "target": instance.target}
+                             if instance.component != "sdk-core" else {})
+        if instance in tuple(PhaseInstanceId("sdk", name, step, target)
+                for name, target in (("sdk-core", "common"), ("sdk-android", "android"))
+                for step in ("binary", "package")):
             from sdk_campaign_original_locator import retained_core_origin
-            origin = retained_core_origin(phase, receipt["buildKey"], products._consumer(plan, environment)["producer"])
+            origin = retained_core_origin(phase, receipt["buildKey"], products._consumer(plan, environment)["producer"], **component_options)
             if origin is not None and producer == origin["producer"]:
                 if (artifact_id, artifact_sha256, trusted_workflow_path, job) != (
                         origin["artifact_id"], origin["artifact_sha256"], origin["workflow_path"], origin["job_name"]):
@@ -220,7 +223,7 @@ def _capture_sdk_upload(
                     or canonical_json_bytes(plan) != plan_value):
                 raise ValueError("Core capture original receipt or caller plan changed")
             if retained_core is not None and retained_core != retained_core_origin(
-                    phase, receipt["buildKey"], products._consumer(plan, environment)["producer"]):
+                    phase, receipt["buildKey"], products._consumer(plan, environment)["producer"], **component_options):
                 raise ValueError("Retained Core capture original or current consumer changed")
 
         unchanged()

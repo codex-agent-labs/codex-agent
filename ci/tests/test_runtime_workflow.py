@@ -858,6 +858,11 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                 expected_build_key=RETAINED_CORE_PACKAGE_KEY, token='fixture', environ=fixture.environment,
                 phase='package')
             locate.reset_mock()
+            preflight('android-binary', 15)
+            locate.assert_called_once_with(fixture.plan_path, fixture.root,
+                expected_build_key='sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c',
+                token='fixture', environ=fixture.environment, phase='binary', component='sdk-android', target='android')
+            locate.reset_mock()
             preflight('core-metadata', 14)
             locate.assert_called_once_with(fixture.plan_path, fixture.root,
                 expected_build_key='sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a',

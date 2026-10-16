@@ -6376,18 +6376,20 @@ def preflight_worker_uploads(plan_path, *, product, wave, family=None,
            for item in artifacts):
         return
     if (product, family, wave) in (("sdk", "core-binary", 11), ("sdk", "core-package", 12),
-                                  ("sdk", "core-metadata", 14)):
+                                  ("sdk", "core-metadata", 14), ("sdk", "android-binary", 15)):
         from sdk_campaign_original_locator import (
-            RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY, RETAINED_CORE_METADATA_KEY,
+            RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY, RETAINED_CORE_METADATA_KEY, RETAINED_ANDROID_BINARY_KEY,
             locate_retained_core_binary_upload)
         retained_keys = {"core-binary": RETAINED_CORE_BINARY_KEY, "core-package": RETAINED_CORE_PACKAGE_KEY,
-                         "core-metadata": RETAINED_CORE_METADATA_KEY}
+                         "core-metadata": RETAINED_CORE_METADATA_KEY, "android-binary": RETAINED_ANDROID_BINARY_KEY}
         # Retained workers deliberately upload nothing in this run. This only
         # establishes presence; collection still authenticates the elected key.
         if locate_retained_core_binary_upload(plan_path, root,
                 expected_build_key=retained_keys[family],
                 token=token, environ=environment,
-                **({"phase": family.removeprefix("core-")} if family != "core-binary" else {})) is not None:
+                **({"phase": "binary", "component": "sdk-android", "target": "android"}
+                   if family == "android-binary" else
+                   {"phase": family.removeprefix("core-")} if family != "core-binary" else {})) is not None:
             return
     write_canonical_json(root / "build/runtime-preflight.json", {
         "schemaVersion": 1, "producer": producer, "product": product,
@@ -6407,8 +6409,11 @@ def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
     origin = (retained_validation_origin(receipt["target"], receipt["buildKey"], consumer["producer"])
               if (receipt["product"], receipt["component"], receipt["phase"]) ==
                  ("sdk", "sdk-ios", "validation") else None)
-    if receipt["product"] == "sdk" and receipt["component"] == "sdk-core":
-        origin = retained_core_origin(receipt["phase"], receipt["buildKey"], consumer["producer"], target=receipt["target"])
+    if receipt["product"] == "sdk" and receipt["component"] in {"sdk-core", "sdk-android"}:
+        origin = retained_core_origin(receipt["phase"], receipt["buildKey"], consumer["producer"], target=receipt["target"],
+            **({"component": receipt["component"]} if receipt["component"] != "sdk-core" else {}))
+        if origin is not None and origin.get("receipt_sha256", verified["receiptSha256"]) != verified["receiptSha256"]:
+            raise ValueError("Retained Maven receipt differs from its reviewed original")
     original = (origin["producer"] if origin is not None and receipt["producer"] == origin["producer"] else
                 _same_run_state_consumer(consumer, receipt["producer"])["producer"])
     if verified["receipt"]["product"] != "sdk":
@@ -6538,9 +6543,10 @@ def collect_runtime_workers(
                     retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
                     retained_attestation = observe_retained_validation_attestation(
                         instance.target, ready["buildKey"], producer, token=token)
-                elif sdk_family in ("core-binary", "core-package", "core-validation", "core-metadata"):
+                elif sdk_family in ("core-binary", "core-package", "core-validation", "core-metadata", "android-binary"):
                     from sdk_campaign_original_locator import retained_core_origin
-                    retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer, target=instance.target)
+                    retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer, target=instance.target,
+                        **({"component": instance.component} if instance.component != "sdk-core" else {}))
                     if retained_core is not None and (sdk_worker_workflow_path, job_name) != (
                             retained_core["workflow_path"], retained_core["job_name"]):
                         raise ValueError("Retained Core worker requires its exact child workflow route")

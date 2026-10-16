@@ -311,10 +311,13 @@ class CoreBinaryCaptureTest(FacadeCaptureTest):
                     with self.assertRaisesRegex(ValueError, "missing or ambiguous"): self.call()
 
     def test_retained_core_binary_keeps_original_publisher_and_exact_locator(self):
-        if self.component != "sdk-core" or self.phase not in ("binary", "package"):
-            self.skipTest("Exact retained Core binary/package only")
-        path = f".github/workflows/sdk-core-{self.phase}-validation.yml"
-        job = f"product-validation / sdk-core-{self.phase}-wave / sdk-core-{self.phase}-common"
+        if self.component not in {"sdk-core", "sdk-android"} or self.phase not in ("binary", "package"):
+            self.skipTest("Exact retained Maven binary/package only")
+        family = self.component.removeprefix("sdk-")
+        path = f".github/workflows/sdk-{family}-{self.phase}-validation.yml"
+        job = (f"product-validation / sdk-android-{self.phase}-result / sdk-android-{self.phase}-android"
+               if self.component == "sdk-android" else
+               f"product-validation / sdk-core-{self.phase}-wave / sdk-core-{self.phase}-common")
         origin = {"producer": self.producer, "artifact_id": 701, "artifact_sha256": self.artifact["digest"],
             "workflow_path": path, "workflow_sha": self.pin, "job_name": job, "job_id": self.jobs[0]["id"]}
         self.run["referenced_workflows"][0]["path"] = f"codex-agent-labs/codex-agent/{path}@{self.pin}"

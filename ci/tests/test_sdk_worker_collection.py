@@ -302,11 +302,17 @@ class SdkWorkerCollectionTest(unittest.TestCase):
     def test_retained_core_metadata_needs_fresh_collection_session_and_exact_child(self):
         self.check_retained_core_original("metadata")
 
-    def check_retained_core_original(self, phase, target="common"):
+    def test_retained_android_binary_needs_fresh_collection_session_and_exact_child(self):
+        self.check_retained_core_original("binary", "android", component="sdk-android")
+
+    def check_retained_core_original(self, phase, target="common", component="sdk-core"):
         self.child_path = (".github/workflows/sdk-core-validation.yml" if phase == "validation" else
                            f".github/workflows/sdk-core-{phase}-validation.yml")
         self.child_job = f"product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-{target}"
-        instance, ready, _, _, files = self.shard(phase, component="sdk-core", target=target)
+        if component == "sdk-android":
+            self.child_path = f".github/workflows/sdk-android-{phase}-validation.yml"
+            self.child_job = f"product-validation / sdk-android-{phase}-result / sdk-android-{phase}-{target}"
+        instance, ready, _, _, files = self.shard(phase, component=component, target=target)
         raw = archive(files)
         original = dict(self.producer)
         artifact_name = self.names(instance, ready["buildKey"])[1]
@@ -346,7 +352,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
             def collect(path, child=self.child_path):
                 return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
                     path, trusted_workflow_sha=PIN, repository_root=self.repository, environ=self.environment,
-                    token="synthetic-token", sdk_family="core-" + phase,
+                    token="synthetic-token", sdk_family=component.removeprefix("sdk-") + "-" + phase,
                     sdk_worker_workflow_path=child, sdk_worker_job_name=(self.child_job.removesuffix(target) + "{target}"
                         if phase == "validation" else self.child_job))
             result = collect(destination)

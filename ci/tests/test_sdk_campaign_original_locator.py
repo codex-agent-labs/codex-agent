@@ -135,6 +135,33 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             self.assertEqual({"package": {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
                 observe.call_args.kwargs["trusted_workflows_by_phase"])
 
+    def test_retained_android_binary_has_exact_original_and_later_pr_lookup(self):
+        key = locator.RETAINED_ANDROID_BINARY_KEY
+        consumer = {**self.fixture.producer, 'runId': 40000000000, 'runAttempt': 1}
+        options = {'phase': 'binary', 'component': 'sdk-android', 'target': 'android'}
+        origin = locator.retained_core_origin('binary', key, consumer, component='sdk-android', target='android')
+        self.assertEqual(12079777755, origin['artifact_id'])
+        self.assertEqual(117231503731, origin['job_id'])
+        for changes in ({'pullRequest': 32}, {'runId': 38977473655}, {'runId': True}, {'event': 'merge_group'}):
+            self.assertIsNone(locator.retained_core_origin('binary', key, {**consumer, **changes},
+                component='sdk-android', target='android'))
+        self.assertIsNone(locator.retained_core_origin('package', key, consumer, component='sdk-android', target='android'))
+        self.assertIsNone(locator.retained_core_origin('binary', key, consumer, component='sdk-core', target='android'))
+        plan = {'event': 'pull_request', 'remoteBuildAuthorized': True}
+        with patch.object(locator.products, '_validate_plan', return_value=plan), \
+                patch.object(locator.products, '_consumer', return_value={'producer': consumer}), \
+                patch.object(locator, '_locate', return_value={name: origin[name] for name in
+                    ('artifact_id', 'artifact_sha256')}) as observe:
+            result = locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                expected_build_key=key, token='synthetic-token', environ={}, **options)
+            self.assertEqual(origin, result)
+            self.assertEqual(origin['job_id'], observe.call_args.kwargs['expected_job_id'])
+            self.assertIn('sdk-android-binary-android-', observe.call_args.kwargs['name'])
+            observe.return_value = {**observe.return_value, 'artifact_id': 1}
+            with self.assertRaisesRegex(ValueError, 'reviewed successful original'):
+                locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                    expected_build_key=key, token='synthetic-token', environ={}, **options)
+
     def test_retained_locator_imports_from_direct_ci_script_path(self):
         import subprocess, sys
         from pathlib import Path

@@ -42,7 +42,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             binary_artifact_id, binary_artifact_sha256, binary_original_context,
             android_runtime_archive, trusted_workflow_sha, repository_root, environ,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Write external Contract/context policy for the caller's wave 15 upload."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
@@ -80,6 +80,8 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
     verified = product_reuse._verified_product_state(
         plan, discovery, state, root, environ, sdk_validation_tooling,
         sdk_original_workflow_sha=trusted_workflow_sha,
+        requested_scope=(_PACKAGE,),
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
            if sdk_apple_validation_policy is not None else {}),
         **({"sdk_facade_metadata_admission": sdk_facade_metadata_admission}
@@ -162,6 +164,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root",
                  "android-runtime-archive"):
@@ -174,6 +177,7 @@ def main(argv=None):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     args = vars(parser.parse_args(argv))
     args["discovery"] = args.pop("discovery_root")
     args["state"] = args.pop("state_root")
@@ -183,8 +187,8 @@ def main(argv=None):
         if path is not None:
             args[name] = product_reuse._canonical_control(path, "Caller " + name)
     try:
-        with metadata_admission_options(args) as admissions:
-            result = prepare(**args, **admissions, environ=os.environ)
+        with metadata_admission_options(args) as admissions, completed_frozen_options(args) as semantic:
+            result = prepare(**args, **admissions, **semantic, environ=os.environ)
         if output is not None:
             with output.open("a", encoding="utf-8") as stream:
                 for name, path in result.items():

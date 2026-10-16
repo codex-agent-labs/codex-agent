@@ -88,13 +88,16 @@ class AndroidPackagePolicyTests(unittest.TestCase):
     def invoke(self, **changes):
         pinned = ("codexAgent.codexVersion=0.149.0\n"
                   "codexAgent.codexArchiveSha256=" + policy.sha256_file(self.archive)[7:] + "\n").encode()
-        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=self.verified),
+        with (patch.object(policy.product_reuse, "_verified_product_state", return_value=self.verified) as replay,
               patch.object(policy, "git_regular_blob_bytes", return_value=pinned),
               patch.object(policy, "restore_object", side_effect=self.fake_restore),
               patch.object(policy, "validate_phase_receipt", return_value=self.receipt),
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": self.receipt["outputs"]}),
               patch.object(policy, "verify_contract_attestation") as attestation):
             result = policy.prepare(**self.args(**changes))
+            self.assertEqual((policy._PACKAGE,), replay.call_args.kwargs['requested_scope'])
+            if changes.get('completed_frozen') is not None:
+                self.assertIs(changes['completed_frozen'], replay.call_args.kwargs['completed_frozen'])
             attestation.assert_called_once()
             return result
 
@@ -107,6 +110,11 @@ class AndroidPackagePolicyTests(unittest.TestCase):
             Path(result["binary-original-context"]).read_bytes()))
         self.assertEqual(str(self.archive), result["android-runtime-archive"])
         self.assertFalse((self.root / "binary-object.zip").exists())
+
+    def test_native_capability_is_forwarded_to_scoped_existing_replay(self):
+        # An opaque sentinel only verifies plumbing; production replay remains
+        # responsible for concrete type, signatures, originals and current keys.
+        self.invoke(completed_frozen=object())
 
     def test_reused_or_missing_current_binary_fails_closed(self):
         for value in ("reused", "missing"):
