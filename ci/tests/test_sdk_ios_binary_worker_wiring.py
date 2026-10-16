@@ -255,7 +255,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         self.assertIn("if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification", continuation)
         self.assertIn("if: inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification", continuation)
         caller = (ROOT / '.github/workflows/ci.yml').read_text()
-        self.assertIn("sdkRecoveryOnly: true\n      runtimeAggregateRequalification: true", caller)
+        self.assertIn("sdkRecoveryOnly: true\n      runtimeAggregateRequalification: false", caller)
         original = json.loads(re.search(r"(?m)^      runtimeNativeHandoffRecovery: '([^']+)'$", caller)[1])
         self.assertEqual(37081083913, original["producer"]["runId"])
         self.assertEqual("cec458a479c0556d39aa6a75b18311500ce66d71", original["trustedWorkflowSha"])
@@ -266,12 +266,11 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         caller = (ROOT / '.github/workflows/ci.yml').read_text()
         locator = json.loads(re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])
         self.assertEqual({'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, set(locator))
-        self.assertEqual(11271945915, locator['artifactId'])
-        self.assertEqual('sha256:79e7b75470ab73b2ce3b14304bde1efa9da738956a14117e611754914db3529b', locator['artifactSha256'])
-        self.assertEqual('cec458a479c0556d39aa6a75b18311500ce66d71', locator['trustedWorkflowSha'])
-        self.assertEqual((37081083913, 1, 'db38c174a2db6f02ff6b6e2091e809681d83a4d9',
-                          '9e500ae9373416a16f09fb4a264cd0c9c22513e8'),
-                         tuple(locator['originalProducer'][field] for field in ('runId', 'runAttempt', 'commit', 'tree')))
+        qualified = json.loads((ROOT / 'ci/tests/data/requalified-frozen-reuse.json').read_bytes())
+        original = qualified['requalification']['signedSource']
+        self.assertEqual({**{key: original[key] for key in ('artifactId', 'artifactSha256')},
+                          'originalProducer': original['producer'],
+                          'trustedWorkflowSha': original['workflowSha']}, locator)
         inputs = self.job('sdk-inputs')
         # Execute the real writer/strict reader with the preserved caller locator.
         block = re.search(
