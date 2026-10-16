@@ -11,6 +11,10 @@ on:
         description: Authenticate the preserved successful SDK resume once, without replaying product phases
         type: boolean
         default: false
+      requalified:
+        description: Authenticate the fixed native parent and genuinely requalified aggregate
+        type: boolean
+        default: false
     secrets:
       authority_read_token:
         required: false
@@ -70,12 +74,20 @@ jobs:
             echo "PROOF_WORK=$RUNNER_TEMP/qualification-proof"
           } >> "$GITHUB_ENV"
       - run: npm ci --ignore-scripts --no-audit --no-fund
+        if: inputs.requalified != true
         working-directory: .github/actions/hydrated-evidence-cache
       - name: Reauthenticate exact originals; verify zero selected product phases
+        if: inputs.requalified != true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 -B ci/reuse_qualification.py issue-frozen --work "$PROOF_WORK"
+      - name: Authenticate native49 and the requalified aggregate checkpoint
+        if: inputs.requalified == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/reuse_qualification.py issue-requalified-frozen --work "$PROOF_WORK"
       - uses: ./.github/actions/hydrated-evidence-cache
+        if: inputs.requalified != true
         with:
           mode: save
           root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}

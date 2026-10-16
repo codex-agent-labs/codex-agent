@@ -288,7 +288,7 @@ jobs:
 
   cold:
     if: >-
-      github.event.label.name == 'ci:reuse-refresh-proof' &&
+      (github.event.label.name == 'ci:reuse-refresh-proof' || github.event.label.name == 'ci:reuse-requalified-proof') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -301,6 +301,7 @@ jobs:
     uses: ./.github/workflows/reuse-qualification.yml
     with:
       refresh: true
+      requalified: ${{ github.event.label.name == 'ci:reuse-requalified-proof' }}
 
   completion:
     if: >-

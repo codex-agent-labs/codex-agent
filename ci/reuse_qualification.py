@@ -480,6 +480,22 @@ _PHASE_FIELDS = ("product", "component", "phase", "target")
 _OBJECT_FIELDS = ("buildKey", "receiptSha256", "objectSha256")
 
 
+def _frozen_spec_path(root, commit):
+    """Only the caller-pinned native issuer tree can select its fixed successor."""
+    successor = "ci/tests/data/requalified-frozen-reuse.json"
+    found = subprocess.run(["git", "--no-replace-objects", "-C", str(root),
+        "cat-file", "-e", _commit(commit) + ":" + successor], capture_output=True, timeout=30)
+    return successor if found.returncode == 0 else "ci/tests/data/hosted-frozen-reuse.json"
+
+
+def _sdk_original_spec_path(root, commit):
+    """Keep the original cold bootstrap's fixed SDK fixture immutable."""
+    successor = "ci/tests/data/requalified-sdk-ios-qualification.json"
+    found = subprocess.run(["git", "--no-replace-objects", "-C", str(root),
+        "cat-file", "-e", _commit(commit) + ":" + successor], capture_output=True, timeout=30)
+    return successor if found.returncode == 0 else "ci/tests/data/sdk-ios-qualification.json"
+
+
 def _phase_records(records, label):
     from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
     result = {}
@@ -505,7 +521,10 @@ def _completed_sdk_controls(spec, controls, frozen, original):
     phases = _phase_records(result["phases"], "Completed SDK result")
     available = _phase_records(request["availableObjects"], "Completed SDK originals")
     retained = [row for row in phases.values() if row["state"] == "retained"]
-    if (len(retained) != 52 or len(available) != 52 or result["matrices"]["contract"]
+    count = spec.get("retainedPhaseCount", 52)
+    if type(count) is not int or count not in (51, 52):
+        raise ValueError("Completed SDK source requires its fixed fifty-one or fifty-two phase scope")
+    if (len(retained) != count or len(available) != count or result["matrices"]["contract"]
             or result["matrices"]["runtime"] or request["catalogs"] != frozen["request"]["catalogs"]
             or request["repositoryRevision"] != spec["producer"]["commit"]
             or request["repository"] != REPOSITORY or request["pullRequest"] != 31
@@ -518,6 +537,10 @@ def _completed_sdk_controls(spec, controls, frozen, original):
             raise ValueError("Completed SDK proof changes a frozen predecessor")
     from products.registry import PhaseInstanceId
     instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
+    if count == 51 and (set(available) != set(_phase_records(frozen["expectedResult"]["phases"],
+            "Frozen phases")) | {instance} or set(available) != {key for key, row in phases.items()
+                                                               if row["state"] == "retained"}):
+        raise ValueError("Completed SDK first successor contains unrelated phases")
     phase = phases[instance]
     receipt = validate_phase_receipt(controls[
         prefix + "prior-failed-sdk/sdk-ios/binary/ios/original/shard/phase-receipt.json"])
@@ -539,13 +562,16 @@ def _completed_sdk_controls(spec, controls, frozen, original):
 def _observe_completed_sdk_resume(spec, token):
     import product_reuse as products
     from products.registry import PhaseInstanceId
-    job = "product-validation / product-resume"
+    role = spec.get("sourceRole", "resume")
+    if role not in ("resume", "plan"):
+        raise ValueError("Completed SDK source has an unsupported fixed job role")
+    job = "product-validation / " + ("plan" if role == "plan" else "product-resume")
     observed = products._observe_ci_producer_jobs({"resume": spec["producer"]},
         jobs_by_phase={"resume": job}, trusted_workflow_sha=spec["workflowSha"], token=token)
     selected = products._matching_ci_jobs(observed[0]["jobs"], job)
     if len(selected) != 1 or selected[0]["id"] != spec["jobId"]:
         raise ValueError("Completed SDK resume differs from its approved successful job")
-    name = f"codex-agent-product-resume-{spec['producer']['tree']}"
+    name = f"codex-agent-{'planned-' if role == 'plan' else ''}product-resume-{spec['producer']['tree']}"
     artifact = products._contract_ci_upload_metadata(spec["artifactId"], spec["artifactSha256"],
         name, spec["producer"], observed[0]["run"], token)
     if artifact["size_in_bytes"] != spec["artifactBytes"]:
@@ -1330,7 +1356,7 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     # Signers keep candidate Git separate from the bootstrapped trusted checkout.
     _ensure_native_issuer_commit(root, original["signer_commit"], original.get("token"))
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root, original["signer_commit"],
-        "ci/tests/data/hosted-frozen-reuse.json", max_bytes=LIMIT))
+        _frozen_spec_path(root, original["signer_commit"]), max_bytes=LIMIT))
     for historical in sorted({spec["inventoryBaseline"], revision}):
         _ensure_native_issuer_commit(root, historical, original.get("token"))
 
@@ -1357,20 +1383,26 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         if (unavailable or authorities != spec["request"]["phaseAuthorities"]
                 or products._versions(root, revision) != spec["request"]["versions"]):
             raise QualificationIncompatible("Completed reuse current Git authority or versions changed")
-        return report, qualified, phases
+        return report, qualified, phases, proof
 
     sdk = None
     if sdk_completion is None:
-        report, qualified, phases = authenticate_frozen()
+        report, qualified, phases, proof = authenticate_frozen()
     else:
         from products.restore import bounded_verify
         frozen_result, sdk = bounded_verify(lambda verify: verify(), (
             authenticate_frozen,
             lambda: _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
                 root=root, revision=revision, frozen=spec, token=original["token"])))
-        report, qualified, phases = frozen_result
+        report, qualified, phases, proof = frozen_result
 
     receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
+    if sdk is None and "contractReceipts" in proof:
+        contract = require_array(proof["contractReceipts"], "Requalified Contract receipts")
+        if (len(contract) != 4 or any(not isinstance(row, dict) or row.get("product") != "contract" for row in contract)
+                or _completed_contract_source(spec, contract, qualified["originals"]) is None):
+            raise ValueError("Requalified Contract controls lack complete native original coverage")
+        receipts.extend(contract)
     if sdk is not None:
         receipts.extend(_capture_completed_contract_receipts(spec, sdk, qualified["originals"],
             Path(destination).parent / "contract-controls", original["token"]))
@@ -1471,7 +1503,7 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
         "schemaVersion", "kind", "issuerCommit", "specSha256", "source", "original", "controls", "member", "sdkInputs"},
         "Native completed SDK proof")
     original = load_canonical_json_bytes(git_regular_blob_bytes(root, arguments["signer_commit"],
-        "ci/tests/data/sdk-ios-qualification.json", max_bytes=LIMIT))
+        _sdk_original_spec_path(root, arguments["signer_commit"]), max_bytes=LIMIT))
     if (type(proof["schemaVersion"]) is not int or proof["schemaVersion"] != 1
             or proof["kind"] != "completed-sdk-reuse" or proof["issuerCommit"] != arguments["signer_commit"]
             or proof["specSha256"] != sha256_bytes(raw)):
@@ -1690,7 +1722,7 @@ def issue_completed_sdk(work, token):
             raise ValueError("Completed SDK fixed policy differs from its native issuer source")
         return load_canonical_json_bytes(raw)
     spec, original, frozen = (source(path) for path in (
-        _SDK_COMPLETED_SPEC, "ci/tests/data/sdk-ios-qualification.json", "ci/tests/data/hosted-frozen-reuse.json"))
+        _SDK_COMPLETED_SPEC, _sdk_original_spec_path(root, commit), _frozen_spec_path(root, commit)))
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
     if spec.get("schemaVersion") in (2, 3):
@@ -1825,11 +1857,248 @@ def issue_frozen(work, token):
     return report
 
 
+# Keep this issuer in the existing native authority module: no new product-owning
+# path, and the executing functions remain bound by the existing source identity.
+from products.registry import PhaseInstanceId as _RequalifiedPhaseInstanceId
+
+_REQUALIFIED_FROZEN_SPEC = "ci/tests/data/requalified-frozen-reuse.json"
+_REQUALIFIED_AGGREGATE = _RequalifiedPhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+
+
+def _inherit_requalified_originals(parent, cap, current, *, policy):
+    """Reissue only unchanged native records; preserve every original identity."""
+    import product_reuse as products
+    if type(cap) is not CompletedFrozenReuse:
+        raise ValueError("Requalification requires concrete independently authenticated native authority")
+    parent, current = validate(parent), validate(current)
+    expected = set(cap.completed_phases())
+    if len(expected) != 49 or _REQUALIFIED_AGGREGATE in expected or any(row.product == "sdk" for row in expected):
+        raise ValueError("Requalified issuer requires exactly unchanged native49")
+    if (len(current["originals"]) != 1
+            or products._identity(current["originals"][0]["receipt"]) != _REQUALIFIED_AGGREGATE
+            or current["verifierPolicySha256"] != policy):
+        raise ValueError("Requalified issuer requires one fully authenticated current aggregate")
+    inherited = []
+    for row in parent["originals"]:
+        instance = products._identity(row["receipt"])
+        if instance not in expected:
+            continue
+        record = {**products._identity_record(instance), "buildKey": row["receipt"]["buildKey"],
+                  "receiptSha256": row["receiptSha256"], "objectSha256": row["objectSha256"]}
+        if cap.envelope(record, canonical_json_bytes(row["receipt"])) is None:
+            raise ValueError("Inherited original has no exact unchanged native completion")
+        if cap.original_files(row["identity"]["locator"], row["receipt"]) != row["originalFiles"]:
+            raise ValueError("Inherited original member inventory differs from its native parent")
+        # This is a new, independently signed delegation, never an edit to the
+        # parent's qualification. The report retains its exact native pins/hash.
+        inherited.append({**row, "identity": {**row["identity"], "policy": policy}})
+    if ({products._identity(row["receipt"]) for row in inherited}
+            != {instance for instance in expected if instance.product == "runtime"}):
+        raise ValueError("Native parent lacks the exact forty-five unchanged originals")
+    return validate({**current, "schemaVersion": 1,
+        "originals": sorted([*inherited, *current["originals"]],
+                            key=lambda row: products._identity(row["receipt"]))})
+
+
+def _requalified_signed_checkpoint(spec, work, root, token):
+    """The cold proof's signature/payload gate with an explicit signing origin."""
+    import product_reuse as products
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    from products.inventory import sha256_file
+    from products.signatures import load_keyring, public_key_for_metadata, verify_manifest_signature
+    source = spec["requalification"]["signedSource"]
+    producer, job = source["producer"], "product-validation / runtime-aggregate-attestation"
+    observed = products._observe_ci_producer_jobs({"aggregate": producer},
+        jobs_by_phase={"aggregate": job}, trusted_workflow_sha=source["workflowSha"], token=token)
+    artifact = products._contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"],
+        f"codex-agent-runtime-aggregate-release-handoff-{producer['tree']}-attempt-{producer['runAttempt']}",
+        producer, observed[0]["run"], token)
+    products._require_artifact_job_window(observed[0], job, artifact)
+    signed = work / "signed"
+    names = {row["relativePath"] for row in spec["signedCheckpoint"]}
+    version = spec["request"]["versions"]["runtime-release"]
+    prefix = f"aggregate-input/codex-agent-runtime-{version}"
+    expected = {prefix + suffix for suffix in (".attestation.json", ".attestation.sig", "-manifest.json")}
+    if (names != expected or len(spec["signedCheckpoint"]) != len(expected)
+            or sum(row["bytes"] for row in spec["signedCheckpoint"]) > LIMIT):
+        raise ValueError("Requalified checkpoint requires its exact signed control members")
+    with open_reference_archive(artifact, token) as (archive, stream):
+        for row in spec["signedCheckpoint"]:
+            copy_reference_member(archive, row["relativePath"], signed / row["relativePath"], row)
+        transferred = stream.transferred
+    attestation_path = signed / (prefix + ".attestation.json")
+    attestation = load_canonical_json_bytes(read_regular_file_bytes(attestation_path))
+    keys = root / "gradle/release/keys"
+    public = public_key_for_metadata(attestation["signing"],
+        load_keyring(root / "gradle/release/product-signing-keys.json", keys), keys, allow_retired=True)
+    verify_manifest_signature(attestation_path, signed / (prefix + ".attestation.sig"),
+                              public, attestation["signing"])
+    payload = attestation["payload"]
+    manifest = signed / "aggregate-input" / payload["fileName"]
+    phase = next(row for row in spec["expectedResult"]["phases"] if products._identity(row) == _REQUALIFIED_AGGREGATE)
+    if (manifest != signed / (prefix + "-manifest.json")
+            or manifest.stat().st_size != payload["bytes"] or sha256_file(manifest) != payload["sha256"]
+            or attestation["metadataReceiptSha256"] != phase["receiptSha256"]):
+        raise ValueError("Requalified signature changes the exact current aggregate receipt/payload")
+    return transferred
+
+
+def issue_requalified_frozen(work, token):
+    """One full changed-original gate, native49, real planner, independent signature."""
+    import copy
+    import io
+    import os
+    import zipfile
+    import product_reuse as products
+    from products.inventory import git_regular_blob_bytes, tree_entries, write_canonical_json
+    from products.restore import verification_session
+    from products.selection import phase_inventory_paths
+    from products.verified_evidence import _source_identity
+    root = Path(__file__).resolve().parents[1]
+    commit = _commit(os.environ["QUALIFICATION_ISSUER_SHA"])
+    if (os.environ["QUALIFICATION_ISSUER_REPOSITORY"] != REPOSITORY
+            or os.environ["QUALIFICATION_ISSUER_PATH"] != ISSUER_WORKFLOW
+            or subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip() != commit
+            or not _compatible_verifier(commit)):
+        raise ValueError("Requalified issuer differs from its native source")
+    raw = git_regular_blob_bytes(root, commit, _REQUALIFIED_FROZEN_SPEC, max_bytes=LIMIT)
+    if read_regular_file_bytes(root / _REQUALIFIED_FROZEN_SPEC, reject_symlink_parents=True) != raw:
+        raise ValueError("Requalified fixed fixture differs from native issuer Git")
+    spec = load_canonical_json_bytes(raw)
+    inputs = require_exact_keys(spec["requalification"], {
+        "parent", "parentQualificationSha256", "stateSource", "aggregateOriginal", "signedSource"},
+        "Fixed requalification inputs")
+    source, parent = inputs["stateSource"], inputs["parent"]
+    producer = source["producer"]
+    work = Path(work).resolve()
+    work.mkdir(exist_ok=False)
+    started = time.perf_counter()
+    candidate = work / "candidate"
+    _ensure_native_issuer_commit(root, producer["commit"], token)
+    subprocess.run(["git", "clone", "--shared", "--no-checkout", str(root), str(candidate)], check=True)
+    subprocess.run(["git", "-C", str(candidate), "checkout", "--detach", producer["commit"]], check=True)
+    if subprocess.check_output(["git", "-C", str(candidate), "rev-parse", "HEAD^{tree}"], text=True).strip() != producer["tree"]:
+        raise ValueError("Requalified state Git differs from its fixed producer")
+    with verification_session() as session:
+        if session.get("portableQualificationInputs"):
+            raise ValueError("Requalified issuer must authenticate its explicit native parent")
+        cap, native_report = fetch_completed_frozen(work / "parent",
+            consumer_commit=commit, verifier_policy_sha256=parent["verifierPolicySha256"],
+            repository_root=candidate, revision=producer["commit"],
+            sdk_completion=parent["sdkCompletion"], requalification_baseline=parent["requalificationBaseline"],
+            **_native_pin_arguments({key: parent[key] for key in (
+                "artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit")}), token=token)
+        parent_raw = read_regular_file_bytes(work / "parent/qualification.json", reject_symlink_parents=True)
+        if sha256_bytes(parent_raw) != inputs["parentQualificationSha256"]:
+            raise ValueError("Native parent qualification differs from its fixed identity")
+        parent_value = load_canonical_json_bytes(parent_raw)
+        current_source = inputs["aggregateOriginal"]
+        receipt = products.validate_phase_receipt(current_source["receipt"])
+        if products._identity(receipt) != _REQUALIFIED_AGGREGATE:
+            raise ValueError("Requalification may replace only the aggregate original")
+        expected = next(row for row in spec["expectedResult"]["phases"] if products._identity(row) == _REQUALIFIED_AGGREGATE)
+        if (receipt["buildKey"] != expected["buildKey"]
+                or sha256_bytes(canonical_json_bytes(receipt)) != expected["receiptSha256"]):
+            raise ValueError("Changed original differs from the fixed current phase")
+        receipt_path = work / "aggregate-receipt.json"
+        write_canonical_json(receipt_path, receipt)
+        # Before any reference projection exists, the ordinary capture must
+        # complete its whole-original gate and create verifier-owned custody.
+        products.capture_runtime_original_ci_phases({"metadata": receipt_path}, work / "aggregate",
+            target="runtime-aggregate", original_instance=_REQUALIFIED_AGGREGATE,
+            trusted_workflow_sha=current_source["workflowSha"], token=token, recovery_projection=True)
+        current = export_originals([{"kind": "phase", "receipt": receipt,
+            "artifactId": current_source["artifactId"], "artifactSha256": current_source["artifactSha256"]}],
+            work / "current-original.json", plan={"repository": REPOSITORY, "event": "pull_request"},
+            producer={"pullRequest": 31, "runId": int(os.environ["GITHUB_RUN_ID"]),
+                      "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"])},
+            source_commit=commit, trusted_workflow_sha=current_source["workflowSha"], token=token)
+        policy = _source_identity()
+        qualified = _inherit_requalified_originals(parent_value, cap, current, policy=policy)
+        if next(row for row in qualified["originals"]
+                if products._identity(row["receipt"]) == _REQUALIFIED_AGGREGATE)["objectSha256"] != expected["objectSha256"]:
+            raise ValueError("New aggregate original changes its fixed object")
+        job, name = "product-validation / product-resume", f"codex-agent-product-resume-{producer['tree']}"
+        observed = products._observe_ci_producer_jobs({"state": producer}, jobs_by_phase={"state": job},
+            trusted_workflow_sha=source["workflowSha"], token=token)
+        artifact, carrier = products._download_contract_ci_upload(source["artifactId"], source["artifactSha256"],
+            name, producer, observed[0]["run"], token, max_bytes=16 * 1024**2)
+        products._require_artifact_job_window(observed[0], job, artifact)
+        plan = candidate / "build/requalified-plan.json"
+        plan.parent.mkdir(exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(carrier)) as archive:
+            entry = archive.getinfo("product-resume-inputs/plan/impact-plan.json")
+            if entry.file_size > LIMIT:
+                raise ValueError("Requalified source plan exceeds its control bound")
+            plan.write_bytes(archive.read(entry))
+        environment = {**os.environ, "GITHUB_TOKEN": token, "GITHUB_RUN_ID": str(producer["runId"]),
+                       "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])}
+        captured = candidate / "build/requalified-state"
+        products.capture_runtime_resume_upload(plan, captured,
+            artifact_id=source["artifactId"], artifact_sha256=source["artifactSha256"],
+            trusted_workflow_sha=source["workflowSha"], repository_root=candidate,
+            environ=environment, token=token, completed_frozen=cap)
+        state = captured / "original/product-resume-state"
+        verified = products._verified_product_state(plan, state, state, candidate, environment, None,
+            sdk_original_workflow_sha=source["workflowSha"], completed_frozen=cap)
+        wanted = set(cap.completed_phases()) | {_REQUALIFIED_AGGREGATE}
+        if set(verified.prior_carrier_phases) != wanted:
+            raise ValueError("Requalified source must retain exactly fifty current phases")
+        request = copy.deepcopy(verified.rebased_request)
+        request["requested"] = [products._identity_record(_REQUALIFIED_AGGREGATE)]
+        for field in ("phaseAuthorities", "availableObjects", "runtimeValidationEvidence"):
+            request[field] = [row for row in request[field] if products._identity(row) in wanted]
+        normalized = {**request, "artifactRoot": ".", "repositoryRoot": "."}
+        if normalized != spec["request"]:
+            raise ValueError("Requalified request differs from its fixed original controls")
+        result = products.plan_reuse_wave(request, completed_frozen=cap)
+        if result != spec["expectedResult"] or not result["fullReuse"] or any(result["matrices"].values()):
+            raise ValueError("Requalified real planner must retain exactly fifty and elect nothing")
+        baseline = dict(tree_entries(candidate, producer["commit"]))
+        current_tree = dict(tree_entries(root, commit))
+        changed = _changed_inventory_paths(baseline, current_tree)
+        if any(phase_inventory_paths(changed, instance) for instance in wanted):
+            raise ValueError("Requalified issuer changes a completed owning inventory")
+        if any(path == "gradle/release/product-signing-keys.json" or path.startswith("gradle/release/keys/")
+               for path in changed):
+            raise ValueError("Requalified issuer changes the authenticated public trust")
+        authorities, unavailable = products._authorities(root, commit, tuple(sorted(wanted)))
+        if (unavailable or authorities != spec["request"]["phaseAuthorities"]
+                or products._versions(root, commit) != spec["request"]["versions"]):
+            raise ValueError("Requalified issuer changes the authenticated authorities or versions")
+        if spec["inventoryBaseline"] != producer["commit"]:
+            raise ValueError("Requalified inventory baseline must equal the verified source")
+        signed_range_bytes = _requalified_signed_checkpoint(spec, work, root, token)
+        receipts = [load_canonical_json_bytes(raw) for fields, raw in cap._receipts if fields[0] == "contract"]
+        if _completed_contract_source(spec, receipts, qualified["originals"]) is None:
+            raise ValueError("Requalified Contract controls lack complete inherited native coverage")
+        proof = {"frozenPhases": 50, "selectedProductPhases": 0, "changedFrozenInventories": 0,
+            "resultSha256": sha256_bytes(canonical_json_bytes(result)), "verificationPolicySha256": policy,
+            "freshOriginalPhases": [{**products._identity_record(products._identity(row["receipt"])),
+                "receiptSha256": row["receiptSha256"]} for row in qualified["originals"]],
+            "checkpoint": spec["signedCheckpoint"], "contractReceipts": receipts}
+        _completed_frozen_controls(spec, proof, qualified)
+        if _source_identity() != policy or not _compatible_verifier(commit):
+            raise ValueError("Requalified issuer changed during verification")
+        report = {"mode": "native-parent-requalification", "parent": parent,
+            "parentQualificationSha256": inputs["parentQualificationSha256"],
+            "nativeParent": native_report, "inheritedOriginals": 45, "fullyAuthenticatedNewOriginals": 1,
+            "downloadedArtifactCount": session.get("downloadedArtifactCount", 0),
+            "downloadedArtifactBytes": session.get("downloadedArtifactBytes", 0),
+            "signedCheckpointRangeBytes": signed_range_bytes,
+            "selectedProductPhases": 0, "seconds": str(time.perf_counter() - started)}
+        for name, value in (("qualification.json", qualified), ("proof.json", proof),
+                ("qualification-issue.json", report), ("prepare.json", {"source": source}),
+                ("cache-save.json", {"mode": "not-required", "uploadedProductBytes": 0})):
+            write_canonical_json(work / name, value)
+    return report
+
+
 if __name__ == "__main__":
     import argparse
     import os
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("issue-frozen", "issue-completed-sdk", "fetch"))
+    parser.add_argument("mode", choices=("issue-frozen", "issue-requalified-frozen", "issue-completed-sdk", "fetch"))
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--artifact-id", type=int)
     parser.add_argument("--artifact-sha256")
@@ -1841,6 +2110,8 @@ if __name__ == "__main__":
     import reuse_qualification
     if args.mode == "issue-frozen":
         reuse_qualification.issue_frozen(args.work, os.environ["GITHUB_TOKEN"])
+    elif args.mode == "issue-requalified-frozen":
+        reuse_qualification.issue_requalified_frozen(args.work, os.environ["GITHUB_TOKEN"])
     elif args.mode == "issue-completed-sdk":
         reuse_qualification.issue_completed_sdk(args.work, os.environ["GITHUB_TOKEN"])
     else:
