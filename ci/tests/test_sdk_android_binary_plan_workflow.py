@@ -56,6 +56,12 @@ class AndroidBinaryWorkflowTest(unittest.TestCase):
         self.assertIn("uses: ./.github/actions/sdk-android-maven-worker", worker)
         self.assertIn("phase: binary", worker)
         self.assertIn("ci.sdk_android_archive_provision", worker)
+        self.assertLess(worker.index('- id: retained'), worker.index('Restore exact pinned archive bytes'))
+        retained = worker.split('      - id: retained\n', 1)[1].split('      - name: Restore', 1)[0]
+        self.assertIn('locate_retained_core_binary_upload', retained)
+        self.assertIn("component='sdk-android', target='android'", retained)
+        self.assertIn("steps.retained.outputs.reused != 'true'", worker)
+        self.assertIn('steps.retained.outputs.artifact_id ||', worker)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-android-binary-validation.yml", collect)
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-binary-result / sdk-android-binary-android", collect)
         self.assertIn("select_native_state(needs, stage='android-binary')", result)

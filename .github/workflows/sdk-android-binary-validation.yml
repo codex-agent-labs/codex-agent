@@ -111,10 +111,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     outputs:
-      binary_build_key: ${{ (steps.binary.outputs.binary-artifact-id != '' || steps.qualified.outputs.binary-artifact-id != '') && matrix.buildKey || '' }}
-      binary_original_context: ${{ steps.qualified.outputs.binary-original-context || steps.binary.outputs.binary-original-context }}
-      binary_artifact_id: ${{ steps.qualified.outputs.binary-artifact-id || steps.binary.outputs.binary-artifact-id }}
-      binary_artifact_sha256: ${{ steps.qualified.outputs.binary-artifact-sha256 || steps.binary.outputs.binary-artifact-sha256 }}
+      binary_build_key: ${{ (steps.retained.outputs.artifact_id != '' || steps.binary.outputs.binary-artifact-id != '' || steps.qualified.outputs.binary-artifact-id != '') && matrix.buildKey || '' }}
+      binary_original_context: ${{ steps.retained.outputs.original_context || steps.qualified.outputs.binary-original-context || steps.binary.outputs.binary-original-context }}
+      binary_artifact_id: ${{ steps.retained.outputs.artifact_id || steps.qualified.outputs.binary-artifact-id || steps.binary.outputs.binary-artifact-id }}
+      binary_artifact_sha256: ${{ steps.retained.outputs.artifact_sha256 || steps.qualified.outputs.binary-artifact-sha256 || steps.binary.outputs.binary-artifact-sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -141,11 +141,39 @@ jobs:
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      # Discovery is only a hint. The collector still authenticates the exact
+      # original job/upload/receipt/object before granting any phase authority.
+      - id: retained
+        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key == ''
+        name: Locate retained Android original before archive or state transfers
+        shell: bash
+        env:
+          BUILD_KEY: ${{ matrix.buildKey }}
+          PLAN: ${{ steps.tooling.outputs.plan-directory }}/impact-plan.json
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+          from ci.products.inventory import canonical_json_bytes
+          from ci.reuse import github_output
+          origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
+              expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'],
+              phase='binary', component='sdk-android', target='android')
+          values = {'reused': 'false'}
+          if origin is not None:
+              values.update(reused='true', artifact_id=str(origin['artifact_id']),
+                  artifact_sha256=origin['artifact_sha256'],
+                  original_context=canonical_json_bytes(origin['context']).decode().strip())
+          github_output(Path(os.environ['GITHUB_OUTPUT']), values)
+          PY
       - name: Restore exact pinned archive bytes
+        if: steps.retained.outputs.reused != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/sdk-archive-cache-v1
-          key: sdk-archives-v1-all-${{ hashFiles('gradle.properties', 'gradle/libs.versions.toml', '**/verification-metadata.xml') }}
+          key: sdk-archives-v1-${{ fromJSON(inputs.metadataWave).outputs.metadata_build_key == '' && 'android' || 'all' }}-${{ hashFiles('gradle.properties', 'gradle/libs.versions.toml', '**/verification-metadata.xml') }}
       - id: native-archives
         if: fromJSON(inputs.metadataWave).outputs.metadata_build_key != ''
         env:
@@ -199,6 +227,7 @@ jobs:
           native-compiler-archive-windows-x64: ${{ steps.native-archives.outputs.windows_x86_64 }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
       - id: android-archive
+        if: steps.retained.outputs.reused != 'true'
         env:
           CODEX_SDK_ARCHIVE_CACHE: ${{ runner.temp }}/sdk-archive-cache-v1
         name: Provision Git-pinned Android Codex archive
@@ -213,7 +242,7 @@ jobs:
       # Routing is a hint only: the shared worker independently authenticates
       # the complete state/native proof and exact Android election before setup.
       - id: qualified
-        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key == ''
+        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key == '' && steps.retained.outputs.reused != 'true'
         uses: ./.github/actions/sdk-core-maven-worker
         with:
           component: sdk-android

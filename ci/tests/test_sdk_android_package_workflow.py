@@ -43,6 +43,9 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
                      "fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14'"):
             self.assertIn(text, worker)
         self.assertIn("ci.sdk_android_archive_provision", worker)
+        archive_step = worker.split('      - id: android-archive\n', 1)[1].split('      - id: policy\n', 1)[0]
+        self.assertIn('--plan "$GITHUB_WORKSPACE/${{ steps.selected.outputs.plan-path }}"', archive_step)
+        self.assertIn("metadata_build_key == '' && 'android' || 'all'", worker)
         self.assertIn("ci.sdk_android_package_policy", worker)
         self.assertIn("uses: ./.github/actions/sdk-android-core14-caller", worker)
         self.assertIn("uses: ./.github/actions/sdk-android-maven-worker", worker)
