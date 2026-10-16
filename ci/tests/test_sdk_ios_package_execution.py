@@ -133,6 +133,8 @@ class SdkIosPackageExecutionTest(unittest.TestCase):
             ("contract", "contract", "metadata", "common", "0.2.0"),
             ("sdk", "sdk-ios", "binary", "ios", "0.8.0"),
         )
+        self.assertEqual(tuple(workflow.PhaseInstanceId(*row[:4]) for row in records),
+                         kwargs.get("materialized_scope"))
         for product, component, phase, target, version in records:
             directory = prepared / "-".join((product, component, phase, target))
             output = directory / "stage/outputs/artifact.bin"

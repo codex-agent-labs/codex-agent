@@ -223,6 +223,9 @@ def execute(
             ready = product_reuse.materialize_product_predecessors(
                 plan, discovery, state, _INSTANCE, prepared,
                 expected_build_key=expected_build_key,
+                materialized_scope=(PhaseInstanceId("contract", "contract", "binary", "common"),
+                                    PhaseInstanceId("contract", "contract", "metadata", "common"),
+                                    PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")),
                 repository_root=root, environ=environ, sdk_validation_tooling=tooling,
                 sdk_original_workflow_sha=trusted_workflow_sha,
                 **apple, **admissions,
