@@ -702,6 +702,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
         for component, phase, target, wave in (('javascript', 'package', 'node', 1),
+                ('csharp', 'binary', 'desktop', 19),
                 ('sdk-ios', 'package', 'ios', 5),
                 ('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),

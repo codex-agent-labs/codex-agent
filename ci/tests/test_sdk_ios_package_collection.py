@@ -13,9 +13,9 @@ from ci import sdk_workflow as workflow
 from ci.tests import test_sdk_worker_collection as fixture
 from ci.tests.product_chain_support import write_receipt
 from ci.tests.test_product_resume_capture import archive
-from products.inventory import regular_file_inventory
+from products.inventory import load_canonical_json, regular_file_inventory, sha256_bytes
 from products.receipt import write_output_manifest
-from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
+from products.restore import PHASE_PLAN_KEYS, finalize_phase_object, verification_session
 
 
 adapter, PhaseInstanceId, PIN = fixture.adapter, fixture.PhaseInstanceId, fixture.PIN
@@ -110,9 +110,17 @@ class SdkIosPackageCollectionTest(unittest.TestCase):
         self.assertEqual(descriptor["receiptBytes"], (restored / "phase-receipt.json").read_bytes())
         self.assertEqual(regular_file_inventory(shard), regular_file_inventory(restored))
         retained = destination / row["originalDirectory"]
-        self.assertEqual(raw, (retained.parent / "transport.zip").read_bytes())
+        self.assertFalse((retained.parent / "transport.zip").exists())
+        self.assertEqual(sha256_bytes(raw), row["artifact"]["digest"])
+        inventory = load_canonical_json(retained.parent / "original-inventory.json")
+        self.assertEqual({"schemaVersion": 1, "files": [
+            {"relativePath": name, "bytes": len(contents), "sha256": sha256_bytes(contents)}
+            for name, contents in sorted(files.items())]}, inventory)
         for name, contents in files.items():
-            self.assertEqual(contents, (retained / name).read_bytes(), name)
+            if name.startswith("shard/"):
+                self.assertEqual(contents, (retained / name).read_bytes(), name)
+            else:
+                self.assertFalse((retained / name).exists(), name)
 
     def test_missing_package_upload_is_one_retained_failure_not_an_unrelated_failure(self):
         ready, _, _, _ = self.shard()
@@ -126,6 +134,51 @@ class SdkIosPackageCollectionTest(unittest.TestCase):
         self.assertEqual("failure", row["result"])
         self.assertIsNone(row["shardDirectory"])
         self.assertNotIn("javascript", row["artifactName"])
+
+    def test_unmaterialized_original_bytes_still_require_full_zip_verification(self):
+        ready, _, _, files = self.shard()
+        raw = archive(files)
+        original = files["inputs/original.bin"]
+        self.assertEqual(1, raw.count(original))
+        corrupt = raw.replace(original, b"X" + original[1:])
+        destination = self.repository / "build/corrupt-original-ios-package"
+        with patch.object(adapter, "_extract_runtime_original_projection") as extract:
+            result = self.collect({IOS_PACKAGE: ready}, {IOS_PACKAGE: corrupt}, destination)
+        row, = result["rows"]
+        self.assertEqual("failure", row["result"])
+        self.assertIsNone(row["shardDirectory"])
+        extract.assert_not_called()
+
+    def test_projection_keeps_one_private_archive_for_freshly_verified_full_replay(self):
+        ready, _, _, files = self.shard()
+        raw = archive(files)
+        destination = self.repository / "build/projected-original-ios-package"
+        with verification_session() as session, \
+                patch.object(adapter, "_verified_product_state", return_value=self.state({IOS_PACKAGE: ready})), \
+                self.official_api({IOS_PACKAGE: ready}, {IOS_PACKAGE: raw}) as (query, _, downloaded):
+            result = adapter.collect_runtime_workers(
+                self.plan_path, self.discovery, self.discovery, destination,
+                trusted_workflow_sha=PIN, repository_root=self.repository,
+                environ=self.environment, token="synthetic-token", sdk_family="ios-package")
+            row, = result["rows"]
+            private, _ = next(iter(session["iosPackageUploads"].values()))
+            self.assertEqual(raw, private.read_bytes())
+            observed_run = result["observed"][0]["run"]
+            query.reset_mock()
+            replay = self.repository / "full-replay.zip"
+            adapter._download_contract_ci_upload(row["artifact"]["id"], row["artifact"]["digest"],
+                row["artifactName"], self.producer, observed_run, "synthetic-token", destination=replay,
+                upload_limit=adapter._IOS_PACKAGE_UPLOAD_LIMIT)
+            self.assertEqual(1, downloaded.call_count)
+            self.assertEqual(1, query.call_count)
+            self.assertEqual(raw, replay.read_bytes())
+            private.write_bytes(raw + b"changed")
+            with self.assertRaisesRegex(ValueError, "Private original iOS package archive changed"):
+                adapter._download_contract_ci_upload(row["artifact"]["id"], row["artifact"]["digest"],
+                    row["artifactName"], self.producer, observed_run, "synthetic-token",
+                    destination=self.repository / "mutated-replay.zip", upload_limit=adapter._IOS_PACKAGE_UPLOAD_LIMIT)
+            self.assertEqual(1, downloaded.call_count)
+        self.assertFalse(private.exists())
 
     def test_collection_and_advancement_scopes_are_exact_and_mutually_exclusive(self):
         ready, _, _, _ = self.shard()

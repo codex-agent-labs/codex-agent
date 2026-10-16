@@ -26,6 +26,7 @@ _CORE_PACKAGE_COLLECTOR = "product-validation / sdk-core-package-wave / sdk-coll
 # The legacy JavaScript frontend precedes family continuation routing, but its
 # successful collector uses the same bounded, independently verified format.
 _COLLECTED_WAVES = {"product-validation / sdk-collect-1": 1,
+                    "product-validation / sdk-collect-19": 19,
                     # Package replay has its own reader; do not also register it
                     # as a generic compact replay through CHECKPOINT_ROUTES.
                     "product-validation / sdk-collect-5": 5,

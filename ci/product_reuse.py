@@ -6586,10 +6586,21 @@ def collect_runtime_workers(
                     raise ValueError("Runtime worker job did not succeed; original diagnostics retained in source upload")
                 if signer_failed:
                     raise ValueError("Apple signer job is missing, ambiguous or unsuccessful; original worker retained in source upload")
-                verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-                                      **_worker_upload_zip_limits(instance))
+                zipped, _, upload_identity = verified_zip_contents(
+                    archive, retained_paths=(), allow_empty_members=True,
+                    **_worker_upload_zip_limits(instance))
                 original = retained / "original"
-                safe_extract(archive, original)
+                if instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"):
+                    if upload_identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
+                        raise ValueError("Collected Apple package archive changed during authentication")
+                    # Collection consumes the shard. The following full Apple gate
+                    # reuses the independently hashed private session archive.
+                    _extract_runtime_original_projection(archive,
+                        [record for record in zipped if record["relativePath"].startswith("shard/")], original)
+                    write_canonical_json(retained / "original-inventory.json", {"schemaVersion": 1, "files": zipped})
+                    archive.unlink()
+                else:
+                    safe_extract(archive, original)
                 row["originalDirectory"] = original.relative_to(prepared).as_posix()
                 verified = verify_phase_shard(original / "shard", instance)
                 receipt = verified["receipt"]
