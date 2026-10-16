@@ -248,6 +248,9 @@ def _verified_sdk_facade_validation(
                 original / "retained-execution": {"inputs", "consumer", "consumer-inputs", "execution",
                                                      "publication-metadata.json", "report.json", "compiler-inputs.json"},
             }
+            # Newer workers retain dependency warm-up diagnostics, never authority.
+            if (original / "worker-dependency-seed").exists():
+                layouts[original].add("worker-dependency-seed")
             for directory, names in layouts.items():
                 require_regular_directory(directory, "Original Core retained directory")
                 if {path.name for path in directory.iterdir()} != names:

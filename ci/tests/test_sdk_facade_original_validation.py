@@ -333,3 +333,15 @@ class OriginalFacadeValidationTest(unittest.TestCase):
         self.full_gate.side_effect = lambda **kwargs: ({**self.f.receipt, "trustDomain": "release"}, self.f.receipt_bytes)
         with self.assertRaisesRegex(ValueError, "different original receipt"), self.context_manager():
             pass
+
+    def test_dependency_seed_diagnostics_remain_bound_without_granting_authority(self):
+        self.files["worker-dependency-seed/gradle.log"] = b"original dependency warmup\n"
+        with self.context_manager():
+            self.full_gate.assert_called_once()
+        self.prepare_retained()
+        with self.assertRaisesRegex(ValueError, "changed during recovery"):
+            with self.retained_context() as value:
+                (value["original"] / "worker-dependency-seed/gradle.log").write_bytes(b"changed\n")
+        self.full_gate.side_effect = ValueError("full semantic replay failed")
+        with self.assertRaisesRegex(ValueError, "full semantic replay failed"), self.retained_context():
+            pass
