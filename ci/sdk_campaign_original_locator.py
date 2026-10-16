@@ -28,6 +28,7 @@ from products.signing_isolation import require_no_signing_secret
 
 RETAINED_CORE_BINARY_KEY = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
 RETAINED_CORE_PACKAGE_KEY = "sha256:6179fe876ee780222026ed9aaea33369fae8a65b927555c854c11e4151df5670"
+RETAINED_CORE_METADATA_KEY = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
 RETAINED_CORE_ANDROID_VALIDATION_KEY = "sha256:671c8786babf765a4260487e0e7c0f189e32baad1f58f12be68baaf14aaddda0"
 
 
@@ -108,7 +109,7 @@ def retained_core_origin(phase, build_key, consumer, *, target="common"):
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "a1a45d67d3240624f8ef09042240daf56b27e310", "tree": "6f565a8b713db8615f973a05bffcbc0b079614a5",
             "event": "pull_request", "runId": 38937733736, "runAttempt": 1, "pullRequest": 31}
-        if (build_key != "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
+        if (build_key != RETAINED_CORE_METADATA_KEY
                 or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
                 or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
                 or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):

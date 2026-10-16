@@ -6347,15 +6347,19 @@ def preflight_worker_uploads(plan_path, *, product, wave, family=None,
            and item["name"].startswith(prefixes) and item["name"].endswith(suffixes)
            for item in artifacts):
         return
-    if (product, family, wave) in (("sdk", "core-binary", 11), ("sdk", "core-package", 12)):
+    if (product, family, wave) in (("sdk", "core-binary", 11), ("sdk", "core-package", 12),
+                                  ("sdk", "core-metadata", 14)):
         from sdk_campaign_original_locator import (
-            RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY, locate_retained_core_binary_upload)
+            RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY, RETAINED_CORE_METADATA_KEY,
+            locate_retained_core_binary_upload)
+        retained_keys = {"core-binary": RETAINED_CORE_BINARY_KEY, "core-package": RETAINED_CORE_PACKAGE_KEY,
+                         "core-metadata": RETAINED_CORE_METADATA_KEY}
         # Retained workers deliberately upload nothing in this run. This only
         # establishes presence; collection still authenticates the elected key.
         if locate_retained_core_binary_upload(plan_path, root,
-                expected_build_key=(RETAINED_CORE_BINARY_KEY if family == "core-binary" else RETAINED_CORE_PACKAGE_KEY),
+                expected_build_key=retained_keys[family],
                 token=token, environ=environment,
-                **({"phase": "package"} if family == "core-package" else {})) is not None:
+                **({"phase": family.removeprefix("core-")} if family != "core-binary" else {})) is not None:
             return
     write_canonical_json(root / "build/runtime-preflight.json", {
         "schemaVersion": 1, "producer": producer, "product": product,

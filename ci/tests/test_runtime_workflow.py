@@ -858,14 +858,21 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                 expected_build_key=RETAINED_CORE_PACKAGE_KEY, token='fixture', environ=fixture.environment,
                 phase='package')
             locate.reset_mock()
-            for family, wave in (('core-package', 11), ('core-binary', 12)):
+            preflight('core-metadata', 14)
+            locate.assert_called_once_with(fixture.plan_path, fixture.root,
+                expected_build_key='sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a',
+                token='fixture', environ=fixture.environment, phase='metadata')
+            locate.reset_mock()
+            for family, wave in (('core-package', 11), ('core-binary', 12), ('core-metadata', 13)):
                 with self.subTest(family=family, wave=wave), self.assertRaisesRegex(ValueError, 'parent recovery'):
                     preflight(family, wave)
             locate.assert_not_called()
             locate.return_value = None
             with self.assertRaisesRegex(ValueError, 'parent recovery'): preflight()
+            with self.assertRaisesRegex(ValueError, 'parent recovery'): preflight('core-metadata', 14)
             locate.side_effect = ValueError('expired original')
             with self.assertRaisesRegex(ValueError, 'expired original'): preflight()
+            with self.assertRaisesRegex(ValueError, 'expired original'): preflight('core-metadata', 14)
 
     def test_apple_outcome_keeps_successful_siblings_and_rejects_uncertain_originals(self):
         from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest, PIN as original_pin
