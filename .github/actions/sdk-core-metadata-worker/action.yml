@@ -275,7 +275,7 @@ runs:
         from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes
         from products.sdk_facade_metadata_admission import fresh_metadata_arguments
         from products.signing_isolation import require_no_signing_secret
-        from sdk_facade_original_inputs import held_fresh_facade_metadata_policy
+        from sdk_facade_original_inputs import held_captured_facade_metadata_policy
         from sdk_facade_metadata_original import _context as original_metadata_context
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         from sdk_facade_metadata_workflow import execute
@@ -297,7 +297,7 @@ runs:
         if held_policy_digest() != os.environ['POLICY_SHA256']:
             raise ValueError('Core metadata caller policy changed before execution')
         replay_policy = load_canonical_json_bytes(raw)
-        plan = Path(os.environ['PLAN'])
+        plan = Path(os.environ['PLAN']).absolute()
         current = product_reuse._validate_plan(plan, root)
         # The fresh metadata phase has no selected metadata receipt yet. Keep
         # the reuse-only Core admission out of both state capture and replay;
@@ -312,7 +312,7 @@ runs:
         if apple is not None and type(apple) is not dict:
             raise ValueError('Caller Apple validation policy must be an object')
         with metadata_admission_options(options) as admissions, completed_frozen_options(options) as semantic:
-            with held_fresh_facade_metadata_policy(plan, Path(os.environ['DISCOVERY']),
+            with held_captured_facade_metadata_policy(plan, Path(os.environ['DISCOVERY']),
                     Path(os.environ['STATE']), expected_build_key=os.environ['BUILD_KEY'],
                     replay_policy=replay_policy, trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
                     repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],

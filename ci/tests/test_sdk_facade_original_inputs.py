@@ -133,7 +133,7 @@ class OriginalFacadeInputsTest(unittest.TestCase):
         finally:
             self.paths["jvm"].write_bytes(original)
 
-    def fresh_call(self, **changes):
+    def fresh_call(self, *, capture_only=False, **changes):
         policy = {**self.policy, "plan": str(self.plan), "toolingEvidence": str(self.root),
             "toolingPublicKey": str(self.plan), "javaExecutable": str(self.plan),
             "toolingKeyring": None, "toolingKeysDirectory": None,
@@ -142,7 +142,9 @@ class OriginalFacadeInputsTest(unittest.TestCase):
         arguments = dict(expected_build_key="sha256:" + "2" * 64, replay_policy=policy,
             trusted_workflow_sha="c" * 40, repository_root=self.root, environ={}, token="synthetic-token")
         arguments.update(changes)
-        return inputs.held_fresh_facade_metadata_policy(self.plan, self.root / "discovery",
+        selected = (inputs.held_captured_facade_metadata_policy if capture_only
+                    else inputs.held_fresh_facade_metadata_policy)
+        return selected(self.plan, self.root / "discovery",
             self.root / "discovery", **arguments)
 
     def fresh_mocks(self):
@@ -214,6 +216,22 @@ class OriginalFacadeInputsTest(unittest.TestCase):
                     Path(value["evidenceRoot"]).iterdir()})
                 self.assertEqual(11, len([event for event in self.events if event[0] == "capture"]))
         self.assertFalse(descriptor.exists())
+
+    def test_controller_acquisition_holds_full_captures_without_duplicate_semantic_replay(self):
+        with ExitStack() as stack:
+            for mocked in self.fresh_mocks():
+                stack.enter_context(mocked)
+            replay = stack.enter_context(patch.object(inputs, "verified_facade_metadata_inputs",
+                side_effect=AssertionError("The controller owns the single full replay")))
+            with self.fresh_call(capture_only=True) as descriptor:
+                value = load_canonical_json_bytes(descriptor.read_bytes())
+                self.assertEqual([], value["records"])
+                self.assertEqual(11, len([event for event in self.events if event[0] == "capture"]))
+                self.assertEqual(set(SDK_FACADE_TARGETS), set(value["policy"]["validations"]))
+            replay.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "carriers or descriptor changed"):
+                with self.fresh_call(capture_only=True) as descriptor:
+                    descriptor.write_bytes(b"changed")
 
     def test_retained_android_uses_original_workflow_and_upload_in_both_metadata_paths(self):
         from sdk_campaign_original_locator import retained_core_origin, RETAINED_CORE_ANDROID_VALIDATION_KEY

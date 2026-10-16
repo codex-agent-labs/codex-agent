@@ -123,17 +123,56 @@ def _fresh_policy_sources(policy):
 
 
 @contextmanager
-def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_key,
+def held_fresh_facade_metadata_policy(plan, discovery, state, **arguments):
+    """Hold a fully replayed fresh descriptor, with no metadata reuse authority."""
+    with _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
+        descriptor, predecessors, elected = captured
+        policy = load_canonical_json_bytes(read_regular_file_bytes(
+            descriptor, reject_symlink_parents=True))["policy"]
+        root = Path(arguments["repository_root"]).resolve(strict=True)
+        environ, token = arguments["environ"], arguments["token"]
+        trusted_workflow_sha = arguments["trusted_workflow_sha"]
+        arguments = fresh_metadata_arguments(policy)
+        with verified_facade_metadata_inputs(plan=Path(plan).absolute(), validations=arguments["validations"],
+                contract_digest=arguments["contract_digest"], component_digests=arguments["component_digests"],
+                repository_root=root, environ=environ, token=token,
+                trusted_workflow_sha=trusted_workflow_sha, tooling_evidence=arguments["tooling_evidence"],
+                tooling_public_key=arguments["tooling_public_key"], java_executable=arguments["java_executable"],
+                policy_revision=elected.plan["validationCommit"],
+                required_trust_domain=arguments["required_trust_domain"],
+                tooling_keyring=arguments["tooling_keyring"],
+                tooling_keys_directory=arguments["tooling_keys_directory"]) as original:
+            package = predecessors / "sdk-sdk-core-package-common"
+            if (read_regular_file_bytes(package / "phase-receipt.json", reject_symlink_parents=True) !=
+                    original["package"]["receiptBytes"]
+                    or _inventory(package / "stage") != _inventory(original["package"]["stage"])):
+                raise ValueError("Fresh Core original package differs from elected predecessor")
+            for target in SDK_FACADE_TARGETS:
+                selected = predecessors / f"sdk-sdk-core-validation-{target}"
+                record = original["validations"][target]
+                if (read_regular_file_bytes(selected / "phase-receipt.json", reject_symlink_parents=True) !=
+                        record["receiptBytes"] or _inventory(selected / "stage") != _inventory(record["stage"])):
+                    raise ValueError("Fresh Core original validation differs from elected predecessor")
+            yield descriptor
+
+
+@contextmanager
+def held_captured_facade_metadata_policy(plan, discovery, state, **arguments):
+    """Hold official captures only; the consuming controller must fully replay them.
+
+    This records=[] descriptor grants no semantic acceptance or reuse admission.
+    Use it only around execute(), which performs the complete original replay,
+    checks elected package/validation bytes, and finalizes after clean reader exit.
+    """
+    with _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
+        yield captured[0]
+
+
+@contextmanager
+def _held_captured_facade_metadata_policy(plan, discovery, state, *, expected_build_key,
         replay_policy, trusted_workflow_sha, repository_root, environ, token,
         sdk_apple_validation_policy=None, sdk_android_metadata_admission=None, completed_frozen=None):
-    """Hold a fresh external descriptor bound to the current elected originals.
-
-    No metadata receipt exists yet. Current state selects the key and all eleven
-    predecessor receipts; the original-upload locator selects their official
-    carriers. The full original reader replays source, Contract, host and
-    compiler evidence before the descriptor is exposed. This grants neither
-    hosted hardware attestation nor reuse admission for a completed metadata.
-    """
+    """Acquire exact elected originals and hold caller inputs through consumption."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     plan = _path(str(Path(plan).absolute()), "Fresh Core plan")
@@ -215,40 +254,20 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
                 artifact_id=locator["artifact_id"], artifact_sha256=locator["artifact_sha256"],
                 trusted_workflow_sha=workflow, repository_root=root, environ=environ, token=token)
             policy["validations"][target]["captureRoot"] = str(capture)
-        arguments = fresh_metadata_arguments(policy)
+        fresh_metadata_arguments(policy)
         before = _inventory(captures, allow_empty=True)
         unchanged()
-        with verified_facade_metadata_inputs(plan=plan, validations=arguments["validations"],
-                contract_digest=arguments["contract_digest"], component_digests=arguments["component_digests"],
-                repository_root=root, environ=environ, token=token,
-                trusted_workflow_sha=trusted_workflow_sha, tooling_evidence=arguments["tooling_evidence"],
-                tooling_public_key=arguments["tooling_public_key"], java_executable=arguments["java_executable"],
-                policy_revision=elected.plan["validationCommit"],
-                required_trust_domain=arguments["required_trust_domain"],
-                tooling_keyring=arguments["tooling_keyring"],
-                tooling_keys_directory=arguments["tooling_keys_directory"]) as original:
-            package = predecessors / "sdk-sdk-core-package-common"
-            if (read_regular_file_bytes(package / "phase-receipt.json", reject_symlink_parents=True) !=
-                    original["package"]["receiptBytes"]
-                    or _inventory(package / "stage") != _inventory(original["package"]["stage"])):
-                raise ValueError("Fresh Core original package differs from elected predecessor")
-            for target in SDK_FACADE_TARGETS:
-                selected = predecessors / f"sdk-sdk-core-validation-{target}"
-                record = original["validations"][target]
-                if (read_regular_file_bytes(selected / "phase-receipt.json", reject_symlink_parents=True) !=
-                        record["receiptBytes"] or _inventory(selected / "stage") != _inventory(record["stage"])):
-                    raise ValueError("Fresh Core original validation differs from elected predecessor")
-            descriptor = outside / "policy.json"
-            write_canonical_json(descriptor, {"evidenceRoot": str(captures), "records": [], "policy": policy})
-            descriptor_bytes = read_regular_file_bytes(descriptor, reject_symlink_parents=True)
+        descriptor = outside / "policy.json"
+        write_canonical_json(descriptor, {"evidenceRoot": str(captures), "records": [], "policy": policy})
+        descriptor_bytes = read_regular_file_bytes(descriptor, reject_symlink_parents=True)
+        unchanged()
+        try:
+            yield descriptor, predecessors, elected
+        finally:
             unchanged()
-            try:
-                yield descriptor
-            finally:
-                unchanged()
-                if (_inventory(captures, allow_empty=True) != before
-                        or read_regular_file_bytes(descriptor, reject_symlink_parents=True) != descriptor_bytes):
-                    raise ValueError("Fresh Core original carriers or descriptor changed while held")
+            if (_inventory(captures, allow_empty=True) != before
+                    or read_regular_file_bytes(descriptor, reject_symlink_parents=True) != descriptor_bytes):
+                raise ValueError("Fresh Core original carriers or descriptor changed while held")
 
 
 @contextmanager

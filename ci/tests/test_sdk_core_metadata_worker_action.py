@@ -2,7 +2,7 @@
 
 import json
 import os
-from contextlib import contextmanager
+from contextlib import chdir, contextmanager
 from pathlib import Path
 import re
 import sys
@@ -157,7 +157,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
 
     def test_existing_controller_retains_full_original_replay_and_diagnostics(self):
         source = self.source("execute")
-        for required in ("metadata_admission_options(options)", "held_fresh_facade_metadata_policy(plan,", "execute(plan=plan", "validations=policy['validations']",
+        for required in ("metadata_admission_options(options)", "held_captured_facade_metadata_policy(plan,", "execute(plan=plan", "validations=policy['validations']",
                          "contract_digest=policy['contract_digest']", "component_digests=policy['component_digests']",
                          "policy_revision=current['validationCommit']", "**admissions"):
             self.assertIn(required, source)
@@ -237,16 +237,20 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
                     "ci.sdk_policy_snapshot.snapshot_policy_closure", return_value=snapshot), patch(
                     "product_reuse._validate_plan", return_value={"validationCommit": TREE}), patch(
                     "sdk_metadata_policy.metadata_admission_options", side_effect=options), patch(
-                    "sdk_facade_original_inputs.held_fresh_facade_metadata_policy", side_effect=held), patch(
+                    "sdk_facade_original_inputs.held_captured_facade_metadata_policy", side_effect=held), patch(
                     "products.sdk_facade_metadata_admission.fresh_metadata_arguments", return_value=policy), patch(
                     "sdk_facade_metadata_workflow.execute", side_effect=execute):
-                exec(compile(source, "core-metadata-success-output", "exec"), {})
-            self.assertEqual([True], exited)
-            self.assertEqual("original_context=" + canonical_json_bytes({
-                "repositoryRoot": str(workspace),
-                "metadataRequest": str(root / "private/metadata-request.json")}).decode().strip() + "\n" +
-                "receipt_sha256=" + KEY + "\n",
-                output.read_text())
+                for selected in (str(plan), plan.name):
+                    with self.subTest(plan=selected), chdir(root):
+                        exited.clear()
+                        output.unlink(missing_ok=True)
+                        os.environ['PLAN'] = selected
+                        exec(compile(source, "core-metadata-success-output", "exec"), {})
+                        self.assertEqual([True], exited)
+                        self.assertEqual("original_context=" + canonical_json_bytes({
+                            "repositoryRoot": str(workspace),
+                            "metadataRequest": str(root / "private/metadata-request.json")}).decode().strip() + "\n" +
+                            "receipt_sha256=" + KEY + "\n", output.read_text())
 
     def test_original_worker_finishes_before_later_context_authentication(self):
         # Original provenance requires a completed successful uploader. A job
@@ -297,7 +301,7 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
                     return_value={"plan": other}), patch(
                     "product_reuse._validate_plan", return_value={"validationCommit": TREE}), patch(
                     "sdk_metadata_policy.metadata_admission_options", side_effect=options), patch(
-                    "sdk_facade_original_inputs.held_fresh_facade_metadata_policy", side_effect=held), self.assertRaisesRegex(
+                    "sdk_facade_original_inputs.held_captured_facade_metadata_policy", side_effect=held), self.assertRaisesRegex(
                     ValueError, "differs from the current authenticated plan"):
                 exec(compile(source, "core-metadata-plan-binding", "exec"), {})
 
