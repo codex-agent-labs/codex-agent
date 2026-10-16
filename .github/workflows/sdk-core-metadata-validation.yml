@@ -222,12 +222,52 @@ jobs:
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+      - name: Restore exact pinned archive bytes for successful metadata admission
+        if: needs.sdk-core-metadata.result == 'success'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sdk-archive-cache-v1
+          key: sdk-archives-v1-all-${{ hashFiles('gradle.properties', 'gradle/libs.versions.toml', '**/verification-metadata.xml') }}
+      - id: caller
+        name: Bind successful metadata outputs for full original admission
+        if: needs.sdk-core-metadata.result == 'success'
+        env:
+          BUILD_KEY: ${{ needs.sdk-core-metadata.outputs.metadata_build_key }}
+          RECEIPT_SHA256: ${{ needs.sdk-core-metadata.outputs.metadata_receipt_sha256 }}
+          ARTIFACT_ID: ${{ needs.sdk-core-metadata.outputs.metadata_artifact_id }}
+          ARTIFACT_SHA256: ${{ needs.sdk-core-metadata.outputs.metadata_artifact_sha256 }}
+          ORIGINAL_CONTEXT: ${{ needs.sdk-core-metadata.outputs.metadata_original_context }}
+          SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
+          SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
+          TOOLING_POLICY: ${{ steps.tooling.outputs.tooling-policy }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, sys, tempfile
+          from pathlib import Path
+          sys.path.insert(0, str(Path.cwd() / 'ci'))
+          from products.inventory import canonical_json_bytes
+          value = {'buildKey': os.environ['BUILD_KEY'], 'receiptSha256': os.environ['RECEIPT_SHA256'],
+              'artifactId': int(os.environ['ARTIFACT_ID']), 'artifactSha256': os.environ['ARTIFACT_SHA256'],
+              'originalContext': json.loads(os.environ['ORIGINAL_CONTEXT']),
+              'sdkInputsArtifactId': int(os.environ['SDK_INPUTS_ID']),
+              'sdkInputsArtifactSha256': os.environ['SDK_INPUTS_SHA256'],
+              'toolingPolicy': os.environ['TOOLING_POLICY']}
+          with tempfile.NamedTemporaryFile(prefix='core-collection-caller-', suffix='.json',
+                  dir=os.environ['RUNNER_TEMP'], delete=False) as output:
+              output.write(canonical_json_bytes(value))
+              policy = output.name
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('policy=' + policy + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('CODEX_SDK_ARCHIVE_CACHE=' + str(Path(os.environ['RUNNER_TEMP']) / 'sdk-archive-cache-v1') + '\n')
+          PY
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: core-metadata
+          core-metadata-caller: ${{ steps.caller.outputs.policy }}
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
           artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
           artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
