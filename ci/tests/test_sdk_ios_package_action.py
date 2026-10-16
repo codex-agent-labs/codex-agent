@@ -27,10 +27,15 @@ class SdkIosPackageActionTest(unittest.TestCase):
         self.assertIsNotNone(match, step)
         return match[0]
 
+    def python_script(self, block):
+        start = re.search(r"(?m)^( +)python3 -B - <<'PY'\n", block)
+        self.assertIsNotNone(start)
+        return textwrap.dedent(block[start.end():].split("\n" + start[1] + "PY", 1)[0])
+
     def identity(self, *, rows, required="true", component="sdk-ios", host="macos-arm64",
                  apple_digest_valid=True, apple_supplied=True):
         block = self.block("identity")
-        source = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        source = self.python_script(block)
         with tempfile.TemporaryDirectory(prefix="sdk-ios-package-action-") as temporary:
             root = Path(temporary).resolve()
             plan, policy, apple, output = (root / name for name in ("plan", "policy", "apple", "output"))
@@ -114,6 +119,10 @@ class SdkIosPackageActionTest(unittest.TestCase):
         policy = self.block("policy")
         identity = self.block("identity")
         execute = self.action.split("    - name: Execute exact iOS package", 1)[1].split("\n    - ", 1)[0]
+        self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", execute)
+        self.assertIn("mode: execute", execute)
+        self.assertIn("script: |", execute)
+        self.assertNotIn("shell:", execute)
         self.assertIn("reject_symlink_parents=True", policy)
         self.assertIn("require_exact_keys", policy)
         self.assertIn("POLICY_SHA256", identity)
@@ -127,7 +136,7 @@ class SdkIosPackageActionTest(unittest.TestCase):
             self.assertIn("APPLE_POLICY_SHA256", block)
             self.assertIn("Caller Apple policy changed after pinning", block)
         for block in (policy, identity, execute):
-            source = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+            source = self.python_script(block)
             compile(source, "ios-package-action", "exec")
 
     def test_failed_execution_retains_attempt_unique_immutable_complete_worker_tree(self):
