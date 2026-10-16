@@ -40,7 +40,7 @@ class SdkJavascriptToolingForwardingTest(unittest.TestCase):
                 result, arguments, token, output = self.harness.run_action('capture', STATE_PRODUCT='sdk',
                     SDK_STATE_WAVE=wave, SDK_VALIDATION_TOOLING=tooling, SDK_APPLE_VALIDATION_POLICY=apple)
                 self.assertEqual(0, result.returncode, result.stderr)
-                selected = (['--sdk-state-wave', wave] if wave else [])
+                selected = (['--sdk-state-wave', wave] if wave else []) + ['--scope-inputs']
                 if tooling:
                     selected += ['--sdk-validation-tooling', tooling]
                 if apple:
@@ -66,7 +66,10 @@ class SdkJavascriptToolingForwardingTest(unittest.TestCase):
         block = self.action.split('    - name: Execute exact SDK phase within verified original input lifetimes\n', 1)[1].split('\n    - ', 1)[0]
         self.assertIn('SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}', block)
         self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}', block)
-        script = textwrap.dedent(block.split('      run: |\n', 1)[1])
+        self.assertIn('uses: ./.github/actions/hydrated-evidence-cache', block)
+        self.assertIn('mode: execute', block)
+        self.assertNotIn('shell:', block)
+        script = textwrap.dedent(block.split('        script: |\n', 1)[1])
         self.assertIn('${selected[@]+"${selected[@]}"}', script)
         with tempfile.TemporaryDirectory(prefix='javascript-tooling-shell-') as temporary:
             root = Path(temporary)

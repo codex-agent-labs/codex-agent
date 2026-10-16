@@ -52,8 +52,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
         source = self.capture if name == "capture" else self.collect
         block = re.search(rf"(?ms)^    - id: {name}\n(.*?)(?=^    - |\Z)", source)
         self.assertIsNotNone(block)
-        script = textwrap.dedent(block[1].split(
-            "script: |\n" if name == "capture" else "run: |\n", 1)[1])
+        script = textwrap.dedent(block[1].split("script: |\n", 1)[1])
         with tempfile.TemporaryDirectory(prefix="sdk-family-shell-") as temporary:
             root = Path(temporary)
             binary = root / "bin"
@@ -72,7 +71,8 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 "ARTIFACT_ID": "71", "ARTIFACT_SHA256": "sha256:" + "a" * 64,
                 "TRUSTED_WORKFLOW_SHA": "b" * 40, "STATE_WAVE": "0", "STATE_PRODUCT": "runtime",
                 "SDK_STATE_WAVE": "", "SDK_FAMILY": "", "COMPONENT": "", "PHASE": "", "TARGET": "",
-                "BUILD_KEY": "", "PRODUCT": "runtime", "INPUT_ROOT": "/original input/with spaces",
+                "BUILD_KEY": "", "PRODUCT": "runtime", "COLLECT_INPUT_ROOT": "/original input/with spaces",
+                "PLAN_DIRECTORY": "build/runtime-plan", "PREFLIGHT_WAVE": "",
                 "WAVE": "1", "SDK_APPLE_VALIDATION_POLICY": "", "CONTINUATION": "", **changes,
             }
             result = subprocess.run([self.shell, "--noprofile", "--norc", "-c", script], cwd=root,
@@ -108,7 +108,9 @@ class SdkFamilyActionsTest(unittest.TestCase):
                     SDK_FAMILY=family, SDK_STATE_WAVE=predecessor)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(self.capture_arguments(output,
-                    ["--sdk-state-wave", predecessor, "--family", family], sdk=True), args)
+                    ["--sdk-state-wave", predecessor, "--family", family]
+                    + (["--scope-inputs"] if family in {"native-package", "javascript-metadata",
+                                                       "native-validation", "native-metadata"} else []), sdk=True), args)
                 self.assertEqual("synthetic environment-only token", token)
                 self.assertNotIn("--token", args)
 
@@ -117,7 +119,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
             SDK_FAMILY="csharp-binary", SDK_STATE_WAVE="3")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(self.capture_arguments(output,
-            ["--sdk-state-wave", "3", "--family", "csharp-binary"], sdk=True), args)
+            ["--sdk-state-wave", "3", "--family", "csharp-binary", "--scope-inputs"], sdk=True), args)
         result, args, _, output = self.run_action("collect", PRODUCT="sdk",
             SDK_FAMILY="csharp-binary", WAVE="19")
         self.assertEqual(0, result.returncode, result.stderr)
@@ -127,7 +129,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
     def test_capture_preserves_default_javascript_ios_binary_and_runtime_selection(self):
         cases = (
             ({}, False, []),
-            ({"STATE_PRODUCT": "sdk"}, True, []),
+            ({"STATE_PRODUCT": "sdk"}, True, ["--scope-inputs"]),
             ({"STATE_PRODUCT": "sdk-ios-binary", "SDK_STATE_WAVE": "2"}, True,
              ["--sdk-state-wave", "2", "--ios-binary"]),
             ({"COMPONENT": "linux-arm64", "PHASE": "binary", "TARGET": "linux-arm64", "BUILD_KEY": "sha256:" + "c" * 64}, False,
@@ -149,7 +151,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
                     SDK_FACADE_METADATA_POLICY="/caller policy/core.json",
                     SDK_ANDROID_METADATA_POLICY="/caller policy/android.json")
                 self.assertEqual(0, result.returncode, result.stderr)
-                expected = ["--ios-binary"] if product == "sdk-ios-binary" else []
+                expected = ["--ios-binary"] if product == "sdk-ios-binary" else ["--scope-inputs"]
                 expected += ["--sdk-facade-metadata-policy", "/caller policy/core.json",
                              "--sdk-android-metadata-policy", "/caller policy/android.json"]
                 self.assertEqual(self.capture_arguments(output, expected, sdk=True), args)
@@ -170,6 +172,16 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertIsNone(args)
                 self.assertIsNone(token)
+
+    def test_binary_worker_scopes_inputs_while_preflight_keeps_full_state(self):
+        for family in ("core-binary", "android-binary"):
+            for preflight in ("", "11"):
+                with self.subTest(family=family, preflight=preflight):
+                    result, args, _, output = self.run_action("capture", STATE_PRODUCT="sdk",
+                        SDK_FAMILY=family, PREFLIGHT_WAVE=preflight)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    selected = ["--family", family] + ([] if preflight else ["--scope-inputs"])
+                    self.assertEqual(self.capture_arguments(output, selected, sdk=True), args)
 
     def test_collect_routes_exact_family_and_preserves_legacy_scopes(self):
         cases = [({"PRODUCT": "sdk", "SDK_FAMILY": family, "WAVE": str(wave)}, True,

@@ -111,7 +111,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if not root:
                     child_names.add(path.name)
                     self.assertRegex(text, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        self.assertEqual(46, restored)
+        self.assertEqual(52, restored)
         parent = (ROOT / ".github/workflows/product-validation.yml").read_text()
         for name in child_names:
             job = next(body for _, body in re.findall(

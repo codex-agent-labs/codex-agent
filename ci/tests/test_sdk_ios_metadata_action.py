@@ -29,8 +29,15 @@ class IosMetadataActionTest(unittest.TestCase):
         return match[0]
 
     def source(self, name):
-        return textwrap.dedent(self.block(name).split("        python3 -B - <<'PY'\n", 1)[1]
-                               .split("\n        PY", 1)[0])
+        block = self.block(name)
+        start = re.search(r"(?m)^( +)python3 -B - <<'PY'\n", block)
+        self.assertIsNotNone(start)
+        if name == "execute":
+            self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", block)
+            self.assertIn("mode: execute", block)
+            self.assertIn("script: |", block)
+            self.assertNotIn("shell:", block)
+        return textwrap.dedent(block[start.end():].split("\n" + start[1] + "PY", 1)[0])
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="ios-metadata-action-")

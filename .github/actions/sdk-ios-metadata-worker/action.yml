@@ -135,7 +135,7 @@ runs:
         xcode-fingerprint: none
     - id: execute
       name: Join metadata inside both complete original validation lifetimes
-      shell: bash
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         GITHUB_TOKEN: ${{ github.token }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
@@ -147,33 +147,35 @@ runs:
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
         APPLE_POLICY_SHA256: ${{ steps.policy.outputs.apple_policy_sha256 }}
-      run: |
-        python3 -B - <<'PY'
-        import os, subprocess, sys
-        from pathlib import Path
-        root = Path(os.environ['GITHUB_WORKSPACE'])
-        sys.path.insert(0, str(root / 'ci'))
-        from products.inventory import read_regular_file_bytes, sha256_bytes
-        from products.signing_isolation import require_no_signing_secret
-        require_no_signing_secret(os.environ)
-        for name, digest in (('SDK_VALIDATION_TOOLING', 'POLICY_SHA256'),
-                             ('SDK_APPLE_VALIDATION_POLICY', 'APPLE_POLICY_SHA256')):
-            if sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True)) != os.environ[digest]:
-                raise ValueError('iOS metadata caller policy changed after pinning')
-        fields = {
-            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
-            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-metadata-worker'),
-            '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
-            '--sdk-apple-validation-policy': os.environ['SDK_APPLE_VALIDATION_POLICY'],
-            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
-        }
-        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
-            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
-        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-metadata']
-        command += [part for flag, value in fields.items() for part in (flag, value)]
-        subprocess.run(command, cwd=root, check=True)
-        require_no_signing_secret(os.environ)
-        PY
+      with:
+        mode: execute
+        script: |
+          python3 -B - <<'PY'
+          import os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          sys.path.insert(0, str(root / 'ci'))
+          from products.inventory import read_regular_file_bytes, sha256_bytes
+          from products.signing_isolation import require_no_signing_secret
+          require_no_signing_secret(os.environ)
+          for name, digest in (('SDK_VALIDATION_TOOLING', 'POLICY_SHA256'),
+                               ('SDK_APPLE_VALIDATION_POLICY', 'APPLE_POLICY_SHA256')):
+              if sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True)) != os.environ[digest]:
+                  raise ValueError('iOS metadata caller policy changed after pinning')
+          fields = {
+              '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+              '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-metadata-worker'),
+              '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
+              '--sdk-apple-validation-policy': os.environ['SDK_APPLE_VALIDATION_POLICY'],
+              '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+          }
+          if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+              fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+          command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-metadata']
+          command += [part for flag, value in fields.items() for part in (flag, value)]
+          subprocess.run(command, cwd=root, check=True)
+          require_no_signing_secret(os.environ)
+          PY
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

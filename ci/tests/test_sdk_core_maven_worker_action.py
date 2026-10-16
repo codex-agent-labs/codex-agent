@@ -28,7 +28,14 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
         match = re.search(rf"(?ms)^    - id: {re.escape(step)}\n.*?(?=^    - |\Z)", self.action)
         self.assertIsNotNone(match, step)
         block = match[0]
-        script = textwrap.dedent(block.split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        start = re.search(r"(?m)^( +)python3 -B - <<'PY'\n", block)
+        self.assertIsNotNone(start)
+        script = textwrap.dedent(block[start.end():].split("\n" + start[1] + "PY", 1)[0])
+        if step == "execute":
+            self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", block)
+            self.assertIn("mode: execute", block)
+            self.assertIn("script: |", block)
+            self.assertNotIn("shell:", block)
         compile(script, "core-maven-" + step, "exec")
         return script
 

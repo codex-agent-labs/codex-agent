@@ -271,7 +271,7 @@ runs:
     - id: execute
       if: steps.retained.outputs.reused != 'true'
       name: Execute exact Core Maven controller with held original inputs
-      shell: bash
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
@@ -293,61 +293,63 @@ runs:
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        python3 -B - <<'PY'
-        import os, subprocess, sys
-        from pathlib import Path
-        from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes
-        from ci.products.signing_isolation import require_no_signing_secret
-        require_no_signing_secret(os.environ)
-        root = Path(os.environ['GITHUB_WORKSPACE'])
-        policies = {}
-        for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
-                     'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
-            if os.environ[name]:
-                policies[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
-        if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
-            policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
-            policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
-        if sha256_bytes(canonical_json_bytes(policies)) != os.environ['POLICY_SHA256']:
-            raise ValueError('Core Maven caller policy changed before execution')
-        phase = os.environ['PHASE']
-        fields = {
-            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
-            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-core-maven-worker'),
-            '--repository-root': str(root), '--component': 'sdk-core',
-            '--expected-build-key': os.environ['BUILD_KEY'],
-            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
-        }
-        for env_name, flag in (('SDK_VALIDATION_TOOLING', '--sdk-validation-tooling'),
-                               ('SDK_APPLE_VALIDATION_POLICY', '--sdk-apple-validation-policy'),
-                               ('SDK_FACADE_METADATA_POLICY', '--sdk-facade-metadata-policy'),
-                               ('SDK_ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
-            if os.environ[env_name]:
-                fields[flag] = os.environ[env_name]
-        if phase == 'package':
-            fields.update({
-                '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'],
-                '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
-                '--binary-artifact-id': os.environ['BINARY_ARTIFACT_ID'],
-                '--binary-artifact-sha256': os.environ['BINARY_ARTIFACT_SHA256'],
-                '--binary-contract-evidence': os.environ['BINARY_CONTRACT_EVIDENCE'],
-                '--binary-original-context': os.environ['BINARY_ORIGINAL_CONTEXT'],
-                '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
-                '--keys-directory': str(root / 'gradle/release/keys'),
-            })
-            if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
-                fields['--binary-original-workflow-path'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
-                fields['--binary-original-job-name'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
-        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
-            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
-        if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE') and phase == 'package':
-            fields['--retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
-        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'maven-' + phase]
-        command += [part for flag, value in fields.items() for part in (flag, value)]
-        subprocess.run(command, cwd=root, check=True)
-        require_no_signing_secret(os.environ)
-        PY
+      with:
+        mode: execute
+        script: |
+          python3 -B - <<'PY'
+          import os, subprocess, sys
+          from pathlib import Path
+          from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes
+          from ci.products.signing_isolation import require_no_signing_secret
+          require_no_signing_secret(os.environ)
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          policies = {}
+          for name in ('BINARY_CONTRACT_EVIDENCE', 'BINARY_ORIGINAL_CONTEXT', 'SDK_VALIDATION_TOOLING',
+                       'SDK_APPLE_VALIDATION_POLICY', 'SDK_FACADE_METADATA_POLICY', 'SDK_ANDROID_METADATA_POLICY'):
+              if os.environ[name]:
+                  policies[name] = sha256_bytes(read_regular_file_bytes(Path(os.environ[name]), reject_symlink_parents=True))
+          if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+              policies['BINARY_ORIGINAL_WORKFLOW_PATH'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+              policies['BINARY_ORIGINAL_JOB_NAME'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
+          if sha256_bytes(canonical_json_bytes(policies)) != os.environ['POLICY_SHA256']:
+              raise ValueError('Core Maven caller policy changed before execution')
+          phase = os.environ['PHASE']
+          fields = {
+              '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+              '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-core-maven-worker'),
+              '--repository-root': str(root), '--component': 'sdk-core',
+              '--expected-build-key': os.environ['BUILD_KEY'],
+              '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+          }
+          for env_name, flag in (('SDK_VALIDATION_TOOLING', '--sdk-validation-tooling'),
+                                 ('SDK_APPLE_VALIDATION_POLICY', '--sdk-apple-validation-policy'),
+                                 ('SDK_FACADE_METADATA_POLICY', '--sdk-facade-metadata-policy'),
+                                 ('SDK_ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
+              if os.environ[env_name]:
+                  fields[flag] = os.environ[env_name]
+          if phase == 'package':
+              fields.update({
+                  '--sdk-inputs-artifact-id': os.environ['SDK_INPUTS_ID'],
+                  '--sdk-inputs-artifact-sha256': os.environ['SDK_INPUTS_SHA256'],
+                  '--binary-artifact-id': os.environ['BINARY_ARTIFACT_ID'],
+                  '--binary-artifact-sha256': os.environ['BINARY_ARTIFACT_SHA256'],
+                  '--binary-contract-evidence': os.environ['BINARY_CONTRACT_EVIDENCE'],
+                  '--binary-original-context': os.environ['BINARY_ORIGINAL_CONTEXT'],
+                  '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
+                  '--keys-directory': str(root / 'gradle/release/keys'),
+              })
+              if os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']:
+                  fields['--binary-original-workflow-path'] = os.environ['BINARY_ORIGINAL_WORKFLOW_PATH']
+                  fields['--binary-original-job-name'] = os.environ['BINARY_ORIGINAL_JOB_NAME']
+          if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+              fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+          if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE') and phase == 'package':
+              fields['--retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
+          command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'maven-' + phase]
+          command += [part for flag, value in fields.items() for part in (flag, value)]
+          subprocess.run(command, cwd=root, check=True)
+          require_no_signing_secret(os.environ)
+          PY
     - id: upload
       if: always() && steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
