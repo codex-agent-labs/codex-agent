@@ -105,12 +105,17 @@ class RequalifiedFrozenReuseTest(unittest.TestCase):
             git("commit", "-m", "historical fixture")
             before = git("rev-parse", "HEAD")
             (root / issuer._REQUALIFIED_FROZEN_SPEC).write_text("{}\n")
+            successor = "ci/tests/data/requalified-sdk-completed-resume.json"
+            (root / successor).write_text("{}\n")
             self.assertEqual(old.relative_to(root).as_posix(), qualification._frozen_spec_path(root, before))
+            self.assertEqual(qualification._SDK_COMPLETED_SPEC, qualification._sdk_completed_spec_path(root, before))
             git("add", ".")
             git("commit", "-m", "fixed successor")
             after = git("rev-parse", "HEAD")
             self.assertEqual(issuer._REQUALIFIED_FROZEN_SPEC, qualification._frozen_spec_path(root, after))
             self.assertEqual(old.relative_to(root).as_posix(), qualification._frozen_spec_path(root, before))
+            self.assertEqual(successor, qualification._sdk_completed_spec_path(root, after))
+            self.assertEqual(qualification._SDK_COMPLETED_SPEC, qualification._sdk_completed_spec_path(root, before))
 
     def test_sdk_planner_source_requires_exact_successful_job_and_transport_size(self):
         sdk, _, _, _ = self.fixture.sdk_fixture()

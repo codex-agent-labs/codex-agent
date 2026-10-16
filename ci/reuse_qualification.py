@@ -496,6 +496,14 @@ def _sdk_original_spec_path(root, commit):
     return successor if found.returncode == 0 else "ci/tests/data/sdk-ios-qualification.json"
 
 
+def _sdk_completed_spec_path(root, commit):
+    """Historical native SDK proofs retain their original fixed recipe."""
+    successor = "ci/tests/data/requalified-sdk-completed-resume.json"
+    found = subprocess.run(["git", "--no-replace-objects", "-C", str(root),
+        "cat-file", "-e", _commit(commit) + ":" + successor], capture_output=True, timeout=30)
+    return successor if found.returncode == 0 else _SDK_COMPLETED_SPEC
+
+
 def _phase_records(records, label):
     from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
     result = {}
@@ -1494,7 +1502,8 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     from products.inventory import git_regular_blob_bytes, tree_entries
     from products.selection import phase_inventory_paths
     _ensure_native_issuer_commit(root, arguments["signer_commit"], token)
-    raw = git_regular_blob_bytes(root, arguments["signer_commit"], _SDK_COMPLETED_SPEC, max_bytes=LIMIT)
+    raw = git_regular_blob_bytes(root, arguments["signer_commit"],
+        _sdk_completed_spec_path(root, arguments["signer_commit"]), max_bytes=LIMIT)
     spec = load_canonical_json_bytes(raw)
     if spec.get("schemaVersion") in (2, 3):
         from completed_sdk_reuse import validate_extension
@@ -1722,7 +1731,7 @@ def issue_completed_sdk(work, token):
             raise ValueError("Completed SDK fixed policy differs from its native issuer source")
         return load_canonical_json_bytes(raw)
     spec, original, frozen = (source(path) for path in (
-        _SDK_COMPLETED_SPEC, _sdk_original_spec_path(root, commit), _frozen_spec_path(root, commit)))
+        _sdk_completed_spec_path(root, commit), _sdk_original_spec_path(root, commit), _frozen_spec_path(root, commit)))
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
     if spec.get("schemaVersion") in (2, 3):
