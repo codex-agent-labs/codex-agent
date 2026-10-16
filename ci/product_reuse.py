@@ -1073,6 +1073,34 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
         return result
 
 
+def _core_metadata_upload_inventory(archive, identity, instance):
+    """Memoize authenticated ZIP inventories, never semantic admission.
+
+    A hit requires the complete original SHA again. The immutable inventory
+    stays inside this invocation; callers still authenticate CI and receipts.
+    """
+    if (instance.product, instance.component) != ("sdk", "sdk-core") or instance.phase not in {"metadata", "validation"}:
+        raise ValueError("Core inventory cache requires metadata or validation")
+    key = (instance, identity["bytes"], identity["sha256"])
+    with verification_session() as session:
+        cache = session.setdefault("coreMetadataZipInventories", {})
+        if key in cache:
+            if archive.stat().st_size != identity["bytes"] or sha256_file(archive, reject_symlink_parents=True) != identity["sha256"]:
+                raise ValueError("Original Core archive changed before inventory reuse")
+            count("coreMetadataZipInventoryHits")
+            return load_canonical_json_bytes(cache[key])
+        records, _, observed = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
+                                                     **_worker_upload_zip_limits(instance))
+        if observed != identity:
+            raise ValueError("Original Core archive differs from its authenticated identity")
+        raw = canonical_json_bytes(records)
+        used = session.get("coreMetadataZipInventoryBytes", 0)
+        if used + len(raw) <= 64 * 1024 * 1024:
+            cache[key] = raw
+            session["coreMetadataZipInventoryBytes"] = used + len(raw)
+        return records
+
+
 def _download_contract_ci_upload_bytes(artifact, token, destination, limit, artifact_sha256, size):
     count('wholeUploadAttempts')
     count('wholeUploadDeclaredBytes', size)
@@ -6605,9 +6633,13 @@ def collect_runtime_workers(
                     raise ValueError("Runtime worker job did not succeed; original diagnostics retained in source upload")
                 if signer_failed:
                     raise ValueError("Apple signer job is missing, ambiguous or unsuccessful; original worker retained in source upload")
-                zipped, _, upload_identity = verified_zip_contents(
-                    archive, retained_paths=(), allow_empty_members=True,
-                    **_worker_upload_zip_limits(instance))
+                if instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common"):
+                    upload_identity = {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}
+                    zipped = _core_metadata_upload_inventory(archive, upload_identity, instance)
+                else:
+                    zipped, _, upload_identity = verified_zip_contents(
+                        archive, retained_paths=(), allow_empty_members=True,
+                        **_worker_upload_zip_limits(instance))
                 original = retained / "original"
                 if instance in _LARGE_SDK_UPLOADS:
                     if upload_identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:

@@ -262,6 +262,27 @@ def held_collection_admission(caller_path, plan, discovery, state, shard, *,
                                        if retained else None))
         bootstrap = load_canonical_json_bytes(read_regular_file_bytes(descriptor, reject_symlink_parents=True))
         unchanged()
+        if completed_frozen is not None:
+            from reuse_qualification import CompletedFrozenReuse
+            if type(completed_frozen) is not CompletedFrozenReuse:
+                raise ValueError("Core collection requires concrete native predecessor authority")
+            elected = product_reuse._verified_product_state(Path(plan), Path(discovery), Path(state), root,
+                environ, sdk_validation_tooling, requested_scope=(_METADATA,), completed_frozen=completed_frozen,
+                sdk_original_workflow_sha=trusted_workflow_sha, sdk_apple_validation_policy=sdk_apple_validation_policy)
+            predecessors = [PhaseInstanceId("sdk", "sdk-core", "package", "common"),
+                *(PhaseInstanceId("sdk", "sdk-core", "validation", target) for target in SDK_FACADE_TARGETS)]
+            if all(identity in elected.prior_by_instance and
+                   completed_frozen.envelope(elected.prior_by_instance[identity]) is not None
+                   for identity in predecessors):
+                admission = FacadeMetadataAdmission.from_completed_predecessors(completed_frozen=completed_frozen,
+                    plan=Path(plan), discovery=Path(discovery), state=Path(state), bootstrap=bootstrap, caller=caller,
+                    trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token,
+                    sdk_validation_tooling=sdk_validation_tooling, sdk_apple_validation_policy=sdk_apple_validation_policy)
+                try:
+                    yield admission
+                finally:
+                    unchanged()
+                return
         with held_core_metadata_collection_policy(plan, discovery, state, Path(shard) / "phase-receipt.json",
                 expected_build_key=caller["buildKey"], expected_receipt_sha256=caller["receiptSha256"],
                 expected_artifact_id=caller["artifactId"], expected_artifact_sha256=caller["artifactSha256"],

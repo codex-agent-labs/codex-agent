@@ -307,6 +307,7 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
 class CoreMetadataCollectionBridgeTest(unittest.TestCase):
     def test_bridge_binds_worker_pins_reuses_four_native_hosts_and_keeps_admission_held(self):
         from ci.tests.test_sdk_worker_collection import SdkWorkerCollectionTest
+        from reuse_qualification import CompletedFrozenReuse
         f = SdkWorkerCollectionTest()
         f.setUp()
         self.addCleanup(f.doCleanups)
@@ -321,11 +322,16 @@ class CoreMetadataCollectionBridgeTest(unittest.TestCase):
                 'originalContext': {'repositoryRoot': '/original', 'metadataRequest': '/original/request'},
                 'sdkInputsArtifactId': 8, 'sdkInputsArtifactSha256': 'sha256:' + 'b' * 64,
                 'toolingPolicy': str(tooling)}
-            for case in ('valid', 'wrong-receipt', 'changed-caller', 'reader-failure'):
+            for case in ('valid', 'wrong-receipt', 'changed-caller', 'reader-failure',
+                         'qualified', 'incomplete-native', 'qualified-changed-caller'):
                 write_canonical_json(caller, {**value, **({'receiptSha256': 'sha256:' + 'c' * 64}
                                                         if case == 'wrong-receipt' else {})})
                 events = []
                 gate = object()
+                qualified = case.startswith('qualified')
+                cap = object.__new__(CompletedFrozenReuse) if qualified or case == 'incomplete-native' else None
+                identities = [selected.PhaseInstanceId('sdk', 'sdk-core', 'package', 'common'),
+                    *(selected.PhaseInstanceId('sdk', 'sdk-core', 'validation', t) for t in selected.SDK_FACADE_TARGETS)]
                 def provision(plan, target, destination, **kwargs):
                     destination.write_bytes(b'pinned compiler fixture')
                     return destination
@@ -358,18 +364,23 @@ class CoreMetadataCollectionBridgeTest(unittest.TestCase):
                 with self.subTest(case=case), mock.patch.object(selected, 'provision', side_effect=provision) as native, \
                         mock.patch.object(selected, 'prepare', side_effect=prepare) as bootstrap, \
                         mock.patch.object(selected, 'held_core_metadata_collection_policy', side_effect=full), \
-                        mock.patch.object(selected, 'metadata_admission_options', side_effect=admission):
+                        mock.patch.object(selected, 'metadata_admission_options', side_effect=admission), \
+                        mock.patch.object(selected.product_reuse, '_verified_product_state',
+                            return_value=SimpleNamespace(prior_by_instance={i: {} for i in identities})), \
+                        mock.patch.object(CompletedFrozenReuse, 'envelope', return_value={} if qualified else None), \
+                        mock.patch.object(selected.FacadeMetadataAdmission, 'from_completed_predecessors', return_value=gate) as fast:
                     def invoke():
                         with selected.held_collection_admission(caller, f.plan_path, f.discovery, f.discovery, shard,
                                 trusted_workflow_sha='d' * 40, repository_root=f.repository, environ={}, token='fixture',
-                                sdk_validation_tooling={'opaque': 'independent tooling seam'}) as actual:
+                                sdk_validation_tooling={'opaque': 'independent tooling seam'}, completed_frozen=cap) as actual:
                             self.assertIs(gate, actual)
                             events.append('advance')
-                            if case == 'changed-caller':
+                            if case in ('changed-caller', 'qualified-changed-caller'):
                                 caller.write_bytes(caller.read_bytes() + b' ')
-                    if case == 'valid':
+                    if case in ('valid', 'qualified', 'incomplete-native'):
                         invoke()
-                        self.assertEqual(['full-enter', 'admission-enter', 'advance', 'admission-exit', 'full-exit'], events)
+                        self.assertEqual(['advance'] if qualified else
+                            ['full-enter', 'admission-enter', 'advance', 'admission-exit', 'full-exit'], events)
                     else:
                         with self.assertRaises(ValueError):
                             invoke()
@@ -379,6 +390,7 @@ class CoreMetadataCollectionBridgeTest(unittest.TestCase):
                     else:
                         self.assertEqual(4, native.call_count)
                         bootstrap.assert_called_once()
+                    self.assertEqual(int(qualified), fast.call_count)
 
     def test_generic_collection_holds_full_gate_and_keeps_failed_worker_fast_path(self):
         from ci import sdk_workflow as workflow

@@ -80,6 +80,18 @@ class FacadeMetadataAdmission:
     supplied by the caller. No acceptance cache or success callback exists.
     """
 
+    @classmethod
+    def from_completed_predecessors(cls, *, completed_frozen, **arguments):
+        """Use concrete native predecessor proof plus full original ZIP checks."""
+        from reuse_qualification import CompletedFrozenReuse
+        if cls is not FacadeMetadataAdmission or type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Core metadata requires the concrete native predecessor verifier")
+        result = cls.__new__(cls)
+        result._completed = {**arguments, "completed_frozen": completed_frozen}
+        for name in ("bootstrap", "caller"):
+            result._completed[name] = load_canonical_json_bytes(canonical_json_bytes(arguments[name]))
+        return result
+
     def __init__(self, root, records, *, repository, policy_revision, policy):
         if __package__.startswith("ci."):
             from ..sdk_facade_metadata_inputs import _view
@@ -108,6 +120,10 @@ class FacadeMetadataAdmission:
             raise ValueError("Core metadata receipt locators must be sorted")
 
     def verify_metadata(self, envelope, validation_envelopes):
+        if hasattr(self, "_completed"):
+            from sdk_facade_metadata_original import verify_completed_facade_metadata
+            verify_completed_facade_metadata(envelope, validation_envelopes, **self._completed)
+            return
         from .reuse import _validate_envelope
         # CI contexts import the reuse engine too; defer until module loading
         # has completed rather than creating a partially initialized cycle.

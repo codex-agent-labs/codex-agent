@@ -38,6 +38,241 @@ from sdk_facade_metadata_inputs import _records, _view, _native_archives, verifi
 _INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
 
 
+def verify_completed_facade_metadata(envelope, validation_envelopes, *, plan, discovery, state,
+        bootstrap, caller, trusted_workflow_sha, repository_root, environ, token,
+        completed_frozen, sdk_validation_tooling, sdk_apple_validation_policy=None):
+    """Join native-qualified predecessors without expanding their old carriers.
+
+    The complete metadata ZIP is still authenticated. Each embedded validation
+    ZIP is matched to its freshly observed native-qualified original and its
+    complete inventory is compared with the metadata's retained extraction.
+    Only one nested ZIP and small, independently verified stages occupy scratch.
+    No semantic success is cached: staged replay performs these checks again.
+    """
+    import zipfile
+    from reuse_qualification import CompletedFrozenReuse
+    from products.reuse import _validate_envelope
+    from products.inventory import regular_file_inventory, write_canonical_json
+    from products.sdk_platform_metadata import write_facade_metadata_content
+    from runtime_reference_archive import copy_reference_member
+    from sdk_campaign_original_locator import retained_core_origin
+    from sdk_facade_capture import _capture_route, _METADATA_WORKFLOW_PATH
+    from sdk_facade_original_inputs import _fresh_policy_sources
+
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Core metadata requires concrete native predecessor authority")
+    require_exact_keys(caller, {"buildKey", "receiptSha256", "artifactId", "artifactSha256",
+        "originalContext", "sdkInputsArtifactId", "sdkInputsArtifactSha256", "toolingPolicy"}, "Completed Core caller")
+    if not isinstance(validation_envelopes, (list, tuple)):
+        raise ValueError("Completed Core predecessors must be an explicit sequence")
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    instance, selected = _validate_envelope(envelope)
+    if instance != _INSTANCE:
+        raise ValueError("Completed Core join requires its exact metadata identity")
+    receipt, raw = selected["receipt"], selected["receiptBytes"]
+    if receipt["buildKey"] != caller["buildKey"] or selected["receiptSha256"] != caller["receiptSha256"]:
+        raise ValueError("Completed Core metadata differs from caller selection")
+    context = _context(caller["originalContext"])
+    policy_bytes, caller_bytes = canonical_json_bytes(bootstrap), canonical_json_bytes(caller)
+    files, trees = _fresh_policy_sources(bootstrap)
+    elected = product_reuse._verified_product_state(Path(plan), Path(discovery), Path(state), root,
+        environ, sdk_validation_tooling, requested_scope=(_INSTANCE,), completed_frozen=completed_frozen,
+        sdk_original_workflow_sha=trusted_workflow_sha, sdk_apple_validation_policy=sdk_apple_validation_policy)
+    ready = elected.prior_ready_plans.get(_INSTANCE)
+    if ready is None or ready["buildKey"] != receipt["buildKey"]:
+        raise ValueError("Completed Core metadata is not elected with its exact key")
+    consumer = product_reuse._consumer(elected.plan, environ)["producer"]
+    completed_frozen.check_consumer({"kind": "ci", "producer": consumer})
+    workflow, origin = trusted_workflow_sha, None
+    if receipt["producer"] != consumer:
+        origin = retained_core_origin("metadata", receipt["buildKey"], consumer)
+        if (origin is None or origin["producer"] != receipt["producer"]
+                or origin["artifact_id"] != caller["artifactId"]
+                or origin["artifact_sha256"] != caller["artifactSha256"]
+                or origin["receipt_sha256"] != selected["receiptSha256"] or origin["context"] != context):
+            raise ValueError("Completed Core metadata differs from its reviewed original")
+        workflow = origin["workflow_sha"]
+
+    supplied = {}
+    for value in validation_envelopes:
+        identity, value = _validate_envelope(value)
+        if identity in supplied:
+            raise ValueError("Completed Core validations must be unique")
+        supplied[identity] = value
+    expected_ids = {PhaseInstanceId("sdk", "sdk-core", "validation", t) for t in SDK_FACADE_TARGETS}
+    if set(supplied) != expected_ids:
+        raise ValueError("Completed Core metadata requires all eleven validations")
+    package_id = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+    native, originals = {}, {}
+    for identity in sorted(expected_ids | {package_id}):
+        row = elected.prior_by_instance[identity]
+        qualified = completed_frozen.envelope(row)
+        if qualified is None or row["state"] != "retained":
+            raise ValueError("Core predecessor lacks exact native semantic qualification")
+        if identity in supplied and supplied[identity] != qualified:
+            raise ValueError("Core predecessor differs from its native-qualified envelope")
+        native[identity] = qualified
+        _, original, _ = completed_frozen.observe_extended_sdk(row, producer=consumer, token=token)
+        originals[identity] = original
+    binding = raw, selected["receiptSha256"], selected["objectSha256"]
+    predecessor_ids = tuple(map(id, validation_envelopes))
+    stage_sources, private_stages = {}, {}
+
+    def unchanged():
+        require_no_signing_secret(environ)
+        completed_frozen.check_consumer({"kind": "ci", "producer": consumer})
+        if (canonical_json_bytes(bootstrap) != policy_bytes or canonical_json_bytes(caller) != caller_bytes
+                or (selected["receiptBytes"], selected["receiptSha256"], selected["objectSha256"]) != binding
+                or canonical_json_bytes(selected["receipt"]) != raw
+                or any(sha256_file(path, reject_symlink_parents=True) != digest for path, digest in files.items())
+                or any(_inventory(path, allow_empty=True) != before for path, before in trees.items())):
+            raise ValueError("Completed Core metadata caller or inputs changed")
+        for identity, value in native.items():
+            if completed_frozen.envelope(elected.prior_by_instance[identity]) != value:
+                raise ValueError("Completed Core predecessor authority changed")
+        if (tuple(map(id, validation_envelopes)) != predecessor_ids
+                or {_validate_envelope(v)[0]: _validate_envelope(v)[1] for v in validation_envelopes}
+                   != {identity: native[identity] for identity in expected_ids}
+                or any(regular_file_inventory(path) != before for path, before in stage_sources.items())
+                or any(regular_file_inventory(path) != before for path, before in private_stages.items())):
+            raise ValueError("Completed Core selected predecessors changed")
+
+    unchanged()
+    with tempfile.TemporaryDirectory(prefix="completed-core-metadata-") as temporary:
+        private = Path(temporary).resolve()
+        _require_capability_output_separate(private, [root, *files, *trees])
+        stages, receipt_paths = {}, {}
+        first, _ = _request(Path(bootstrap["validations"][SDK_FACADE_TARGETS[0]]["facadeRequest"]))
+        for target, identity in [("package", package_id), *((t, PhaseInstanceId("sdk", "sdk-core", "validation", t)) for t in SDK_FACADE_TARGETS)]:
+            source_receipt = Path(first["packageReceipt"] if target == "package" else bootstrap["validations"][target]["validationReceipt"])
+            source_stage = Path(first["packageStage"]) if target == "package" else source_receipt.parent / "stage"
+            stage_sources[source_stage] = regular_file_inventory(source_stage)
+            value = native[identity]
+            if _read(source_receipt) != value["receiptBytes"]:
+                raise ValueError("Completed Core stage receipt differs from native authority")
+            stage = private / "predecessors" / target / "stage"
+            snapshot_regular_tree(source_stage, stage)
+            manifest = verify_output_manifest_identity(stage, "sdk", "sdk-core", identity.phase,
+                                                       identity.target, value["receipt"]["productVersion"])
+            if manifest["outputs"] != value["receipt"]["outputs"]:
+                raise ValueError("Completed Core stage differs from native-qualified outputs")
+            receipt_path = stage.parent / "phase-receipt.json"
+            receipt_path.write_bytes(value["receiptBytes"])
+            stages[target], receipt_paths[target] = stage, receipt_path
+            private_stages[stage.parent] = regular_file_inventory(stage.parent)
+        request = private / "request.json"
+        write_canonical_json(request, {"sdkVersion": receipt["productVersion"],
+            "packageStage": str(stages["package"]), "packageReceipt": str(receipt_paths["package"]),
+            "contractDigest": bootstrap["contractDigest"], "componentDigests": bootstrap["componentDigests"],
+            "validations": {t: {"stageRoot": str(stages[t]), "phaseReceipt": str(receipt_paths[t])} for t in SDK_FACADE_TARGETS}})
+        expected_content = canonical_json_bytes(write_facade_metadata_content(request, private / "expected.json"))
+        _, runner, _, job, name, _ = _capture_route(receipt, "facade-metadata")
+        observed = product_reuse._observe_ci_producer_jobs({"facade-metadata": receipt["producer"]},
+            jobs_by_phase={"facade-metadata": job}, build_keys_by_phase={"facade-metadata": receipt["buildKey"]},
+            token=token, trusted_workflows_by_phase={"facade-metadata": {"path": _METADATA_WORKFLOW_PATH, "sha": workflow}})
+        jobs = product_reuse._matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=receipt["buildKey"])
+        labels = jobs[0].get("labels") if len(jobs) == 1 else None
+        if (type(labels) is not list or any(type(label) is not str for label in labels) or runner not in labels
+                or origin is not None and jobs[0].get("id") != origin["job_id"]):
+            raise ValueError("Completed Core original lacks its fixed successful worker route")
+        require_integer(jobs[0].get("runner_id"), "Original Core metadata runner", 1)
+        archive = private / "metadata.zip"
+        artifact, _ = product_reuse._download_contract_ci_upload(caller["artifactId"], caller["artifactSha256"],
+            name, receipt["producer"], observed[0]["run"], token, destination=archive,
+            upload_limit=product_reuse._IOS_PACKAGE_UPLOAD_LIMIT)
+        product_reuse._require_artifact_job_window(observed[0], jobs[0]["name"], artifact)
+        records = product_reuse._core_metadata_upload_inventory(archive,
+            {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}, _INSTANCE)
+        index = {r["relativePath"]: r for r in records}
+        with zipfile.ZipFile(archive) as zipped:
+            names = tuple(info.filename.rstrip("/") for info in zipped.infolist())
+
+        def inventory(prefix):
+            return [{**r, "relativePath": r["relativePath"][len(prefix):]} for r in records if r["relativePath"].startswith(prefix)]
+
+        def roots(prefix):
+            return {name[len(prefix):].split("/", 1)[0] for name in names if name.startswith(prefix) and name != prefix.rstrip("/")}
+
+        expected_roots = {"shard", "worker", "selection", "originals", "inputs"}
+        if "worker-dependency-seed" in roots(""):
+            expected_roots.add("worker-dependency-seed")
+        if (roots("") != expected_roots or any(name in index for name in expected_roots)
+                or roots("worker/") != {"execution.json", "gradle.log"}
+                or roots("selection/") != {"impact-plan.json", "phase-plan.json", "producer.json"}
+                or roots("originals/") != {"package", "validations", "metadata-request.json"}
+                or roots("originals/validations/") != set(SDK_FACADE_TARGETS)):
+            raise ValueError("Completed Core original has an unexpected retained layout")
+        projected = private / "original"
+        projection = []
+        with zipfile.ZipFile(archive) as zipped:
+            for row in records:
+                name = row["relativePath"]
+                if name.startswith(("shard/", "worker/", "selection/")) or name in {
+                        "originals/metadata-request.json", "inputs/producer.json", "inputs/phase-plan.json"}:
+                    if row["bytes"] > 512 * 1024 * 1024:
+                        raise ValueError("Core metadata control exceeds its original reader bound")
+                    copy_reference_member(zipped, name, projected / name, row)
+                    projection.append(row)
+            for target, identity in [("package", package_id), *((t, PhaseInstanceId("sdk", "sdk-core", "validation", t)) for t in SDK_FACADE_TARGETS)]:
+                prefix = "originals/package/" if target == "package" else f"originals/validations/{target}/"
+                if roots(prefix) != ({"stage", "phase-receipt.json"} if target == "package" else {"stage", "phase-receipt.json", "capture"}):
+                    raise ValueError("Completed Core retained predecessor layout differs")
+                selected_prefix = "inputs/sdk-sdk-core-package-common/" if target == "package" else f"inputs/sdk-sdk-core-validation-{target}/"
+                for parent in (prefix, selected_prefix):
+                    if (inventory(parent + "stage/") != regular_file_inventory(stages[target])
+                            or index[parent + "phase-receipt.json"]["sha256"] != native[identity]["receiptSha256"]
+                            or index[parent + "phase-receipt.json"]["bytes"] != len(native[identity]["receiptBytes"])):
+                        raise ValueError("Completed Core retained predecessor differs from native-qualified bytes")
+                if target != "package":
+                    member = index[prefix + "capture/transport.zip"]
+                    original = originals[identity]
+                    if member["sha256"] != original["digest"] or member["bytes"] != original["size_in_bytes"]:
+                        raise ValueError("Embedded Core validation differs from its native-qualified original")
+                    nested = private / "validation.zip"
+                    copy_reference_member(zipped, member["relativePath"], nested, member)
+                    try:
+                        contents = product_reuse._core_metadata_upload_inventory(nested,
+                            {"sha256": member["sha256"], "bytes": member["bytes"]}, identity)
+                        if contents != inventory(prefix + "capture/original/"):
+                            raise ValueError("Embedded Core validation extraction differs from its full original ZIP")
+                    finally:
+                        nested.unlink()
+        if regular_file_inventory(projected, allow_empty=True) != projection:
+            raise ValueError("Completed Core original controls changed during projection")
+        for parent in ("selection", "inputs"):
+            if (_json(projected / parent / "producer.json") != receipt["producer"]
+                    or _json(projected / parent / "phase-plan.json") != {n: receipt[n] for n in PHASE_PLAN_KEYS}):
+                raise ValueError("Completed Core retained election differs from its receipt")
+        shard = verify_phase_shard(projected / "shard", _INSTANCE)
+        if any(shard[n] != selected[n] for n in ("receiptBytes", "receiptSha256", "objectSha256")):
+            raise ValueError("Completed Core original shard differs from selected metadata")
+        output = private / "metadata-stage"
+        restore_object(projected / "shard" / shard["objectPath"], output, build_key=receipt["buildKey"],
+            receipt_sha256=selected["receiptSha256"], object_sha256=selected["objectSha256"])
+        manifest = verify_output_manifest_identity(output, "sdk", "sdk-core", "metadata", "common", receipt["productVersion"])
+        if (manifest["outputs"] != receipt["outputs"] or len(manifest["outputs"]) != 1
+                or manifest["outputs"][0]["kind"] != OUTPUT_KIND or manifest["outputs"][0]["relativePath"] != OUTPUT_PATH
+                or _read(output / OUTPUT_PATH) != expected_content):
+            raise ValueError("Completed Core metadata differs from the native-qualified deterministic join")
+        historical = product_reuse._validate_plan(projected / "selection/impact-plan.json", root,
+                                                 expected_revision=receipt["producer"]["commit"])
+        producer = receipt["producer"]
+        if (historical["remoteBuildAuthorized"] is not True or historical["event"] not in {"pull_request", "merge_group"}
+                or product_reuse._consumer(historical, {"GITHUB_RUN_ID": str(producer["runId"]),
+                    "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])})["producer"] != producer):
+            raise ValueError("Completed Core original historical plan is not authorized")
+        _worker(projected, receipt, context, bootstrap["contractDigest"], bootstrap["componentDigests"])
+        _replan(root, receipt, {t: native[PhaseInstanceId("sdk", "sdk-core", "validation", t)] for t in SDK_FACADE_TARGETS})
+        if archive.stat().st_size != artifact["size_in_bytes"] or sha256_file(archive) != artifact["digest"]:
+            raise ValueError("Original Core metadata archive changed while consumed")
+        if regular_file_inventory(projected, allow_empty=True) != projection:
+            raise ValueError("Completed Core original controls changed while consumed")
+        unchanged()
+    private_stages.clear()
+    unchanged()
+
+
 def _read(path):
     return read_regular_file_bytes(Path(path), max_bytes=512 * 1024 * 1024, reject_symlink_parents=True)
 
