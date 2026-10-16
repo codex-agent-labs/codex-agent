@@ -26,6 +26,9 @@ _CORE_PACKAGE_COLLECTOR = "product-validation / sdk-core-package-wave / sdk-coll
 # The legacy JavaScript frontend precedes family continuation routing, but its
 # successful collector uses the same bounded, independently verified format.
 _COLLECTED_WAVES = {"product-validation / sdk-collect-1": 1,
+                    # Package replay has its own reader; do not also register it
+                    # as a generic compact replay through CHECKPOINT_ROUTES.
+                    "product-validation / sdk-collect-5": 5,
                     **{job: row.wave for job, row in CHECKPOINT_ROUTES.items()}}
 SOURCE_PLAN = "product-resume-inputs/plan/impact-plan.json"
 _SOURCE_UPLOADS = {
@@ -67,7 +70,9 @@ def _receipt_objects(spec):
         validate_file_record(row, "Collected receipt object", with_kind=False)
         path = row["relativePath"] + "/phase-receipt.json"
         phase = selected.get(path)
-        if (path in result or phase is None or not 0 < row["bytes"] <= LIMIT
+        # Same hashed-body bound as original consumption; receipt JSON stays small.
+        limit = 8 * 1024**3 if phase is not None and _identity(phase) == IOS_PACKAGE else LIMIT
+        if (path in result or phase is None or not 0 < row["bytes"] <= limit
                 or row["sha256"] != phase["objectSha256"]
                 or row["relativePath"] != spec["stateRoot"] + "/original-objects/"
                     + object_relative_path(phase["buildKey"], phase["receiptSha256"])):

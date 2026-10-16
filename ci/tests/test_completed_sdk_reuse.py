@@ -702,12 +702,34 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
         for component, phase, target, wave in (('javascript', 'package', 'node', 1),
+                ('sdk-ios', 'package', 'ios', 5),
                 ('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
                 ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target, collected=True, collected_wave=wave)
+
+    def test_large_package_receipt_object_keeps_exact_identity_and_dedicated_replay(self):
+        from products.restore import object_relative_path
+        from sdk_phase import COMPACT_REPLAY_INSTANCES
+        self.assertNotIn(completed.IOS_PACKAGE, COMPACT_REPLAY_INSTANCES)
+        self.assertEqual(5, completed._COLLECTED_WAVES['product-validation / sdk-collect-5'])
+        phase = deepcopy(self.spec['completedPhases'][0])
+        phase.update(product='sdk', component='sdk-ios', phase='package', target='ios')
+        path = 'runtime-state/original-objects/' + object_relative_path(phase['buildKey'], phase['receiptSha256'])
+        phase['receiptPath'] = path + '/phase-receipt.json'
+        obj = {'relativePath': path, 'bytes': 8 * 1024**3, 'sha256': phase['objectSha256']}
+        spec = {'stateRoot': 'runtime-state', 'completedPhases': [phase], 'receiptObjects': [obj]}
+        self.assertEqual({phase['receiptPath']: (obj, phase)}, completed._receipt_objects(spec))
+        for change in (lambda: obj.update(bytes=8 * 1024**3 + 1),
+                       lambda: phase.update(phase='validation'),
+                       lambda: obj.update(sha256='sha256:' + '0' * 64)):
+            before_phase, before_object = deepcopy(phase), deepcopy(obj)
+            change()
+            with self.assertRaises(ValueError): completed._receipt_objects(spec)
+            phase.clear(); phase.update(before_phase)
+            obj.clear(); obj.update(before_object)
 
     def test_collected_issuer_reuses_native_object_without_any_object_transfer(self):
         self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', collected=True, reused=True)
@@ -755,7 +777,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk'
         self.receipt_path = (f'product-resume-state/{folder}/{component}/{phase_name}/{target}/'
                             'original/shard/phase-receipt.json')
-        embedded = collected and (phase_name == 'metadata' or component == 'sdk-core')
+        embedded = collected and (phase_name == 'metadata' or component == 'sdk-core' or collected_wave == 5)
         if embedded:
             source_object = 'runtime-state/original-objects/' + verified['objectPath']
             self.receipt_path = source_object + '/phase-receipt.json'
