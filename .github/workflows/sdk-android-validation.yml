@@ -167,6 +167,8 @@ jobs:
           set -euo pipefail
           policy=()
           if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
           python3 -B -m ci.sdk_android_validation_policy \
             --plan "${{ steps.selected.outputs.plan-path }}" \
             --discovery-root "${{ steps.selected.outputs.discovery-root }}" \

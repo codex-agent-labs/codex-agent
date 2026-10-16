@@ -179,6 +179,19 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         self.assertEqual([job, duplicate], adapter._matching_ci_jobs(
             [job, duplicate], name, expected_build_key=key))
 
+    def test_actual_nested_android_leaf_truncation_locates_only_candidates(self):
+        name = 'product-validation / sdk-android-binary-result / sdk-android-binary-android'
+        key = 'sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c'
+        # Actual official job117231503731; only its display name is truncated.
+        job = {'id': 117231503731, 'name': name + ' (sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e0...'}
+        self.assertEqual([job], adapter._matching_ci_jobs([job], name, expected_build_key=key))
+        self.assertEqual([], adapter._matching_ci_jobs([job], name))
+        self.assertEqual([], adapter._matching_ci_jobs([job], name, expected_build_key='sha256:' + '0' * 64))
+        duplicate = {**job, 'id': 2}
+        self.assertEqual([job, duplicate], adapter._matching_ci_jobs([job, duplicate], name, expected_build_key=key))
+        # A display cannot authenticate unseen suffix bytes. Original full-key
+        # artifact/receipt checks remain mandatory in the collection test below.
+
     def test_truncated_matrix_display_preserves_full_key_and_ambiguity_gates(self):
         for case in ("valid", "wrong-receipt-key", "wrong-display-key", "ambiguous"):
             with self.subTest(case=case):
@@ -323,6 +336,9 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         original_job = {"id": 901, "name": f"{self.child_job} ({ready['buildKey']}, ..."[:118] + "...",
             "run_id": original["runId"], "head_sha": original["commit"], "status": "completed", "conclusion": "success",
             "started_at": "2026-09-08T10:00:00Z", "completed_at": "2026-09-08T10:10:00Z"}
+        if component == 'sdk-android':
+            prefix, separator, _ = self.child_job.rpartition(' / ')
+            original_job['name'] = f"{self.child_job} ({ready['buildKey']}, ..."[:len(prefix) + len(separator) + 97] + '...'
         observe = adapter._observe_ci_producer_jobs
         def observed(producers, **kwargs):
             if "worker" not in producers: return observe(producers, **kwargs)

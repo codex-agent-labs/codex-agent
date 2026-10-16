@@ -700,6 +700,13 @@ def _matching_ci_jobs(jobs, name, *, expected_build_key=None):
         # the full artifact name, receipt key, producer and upload/job window.
         if len(rendered) > 121 and len(name) + len(" (sha256:") + 32 <= 118:
             names.add(rendered[:118] + "...")
+        # Nested reusable jobs also truncate the leaf display to 100 chars,
+        # retaining the caller prefix. This is candidate location only; require
+        # at least 32 visible key hex digits and keep full upload/receipt gates.
+        prefix, separator, _ = name.rpartition(" / ")
+        limit = len(prefix) + len(separator) + 97
+        if separator and len(rendered) > limit + 3 and len(name) + len(" (sha256:") + 32 <= limit:
+            names.add(rendered[:limit] + "...")
     matrix_name = re.compile(
         re.escape(name) + r" \(contracts, (?:true|false), (?:true|false), (?:true|false)\)"
     ) if name in {
