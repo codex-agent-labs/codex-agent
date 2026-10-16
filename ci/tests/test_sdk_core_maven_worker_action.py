@@ -117,7 +117,7 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
         self.assertLess(self.action.index("- id: policy"), self.action.index("- id: captured"))
         self.assertLess(self.action.index("- id: captured"), self.action.index("- id: identity"))
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
-        self.assertIn("sdk-family: core-${{ inputs.phase }}", self.action)
+        self.assertIn("sdk-family: ${{ inputs.component == 'sdk-android' && 'android' || 'core' }}-${{ inputs.phase }}", self.action)
         self.assertIn("cache-read-only: 'true'", self.action)
         self.assertIn("product-worker: 'true'", self.action)
         script = self.source("identity")
@@ -170,6 +170,44 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
                 "repositoryRoot": str(root),
                 "workerRoot": str(root / "build/sdk-core-maven-worker"),
             }), value.encode())
+
+    def test_android_uses_shared_authenticated_controller_without_core_original_replay(self):
+        from ci.products.inventory import sha256_file
+        policy_script, identity_script, execute_script = (self.source(step) for step in ('policy', 'identity', 'execute'))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            archive = root / 'android.tar.gz'
+            archive.write_bytes(b'caller archive; the existing producer verifies the Git pin')
+            plan = root / 'plan.json'
+            plan.write_text(json.dumps({'validationTree': TREE}))
+            values = self.environment(root, 'binary')
+            values.update(COMPONENT='sdk-android', ANDROID_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True):
+                exec(compile(policy_script, 'android-policy', 'exec'), {})
+            pinned = dict(line.split('=', 1) for line in (root / 'github-output').read_text().splitlines())['policy_sha256']
+            self.assertEqual(sha256_bytes(canonical_json_bytes({'ANDROID_ARCHIVE': sha256_file(archive)})), pinned)
+            row = dict(product='sdk', component='sdk-android', phase='binary', target='android',
+                       runner='ubuntu-24.04', runnerOs='Linux', runnerArch='X64', buildKey=KEY)
+            values.update(MATRIX=json.dumps({'include': [row]}), REQUIRED='true', PLAN=str(plan),
+                          BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=pinned, GITHUB_WORKSPACE=str(ROOT),
+                          DISCOVERY=str(root / 'discovery'), STATE=str(root / 'state'), TRUSTED_WORKFLOW_SHA='c' * 40,
+                          CODEX_AGENT_COMPLETED_REUSE_POLICY=str(root / 'native-policy.json'))
+            with patch.dict(os.environ, values, clear=True), patch('native_wrappers.host_classifier', return_value='linux-x64'):
+                exec(compile(identity_script, 'android-identity', 'exec'), {})
+                with patch('subprocess.run') as run:
+                    exec(compile(execute_script, 'android-execute', 'exec'), {})
+                command = run.call_args.args[0]
+                self.assertEqual('sdk-android', command[command.index('--component') + 1])
+                self.assertEqual(str(archive), command[command.index('--android-runtime-archive') + 1])
+                self.assertIn('--completed-frozen-policy', command)
+                self.assertNotIn('core14', ' '.join(command))
+                archive.write_bytes(b'mutated')
+                with self.assertRaisesRegex(ValueError, 'policy changed'):
+                    exec(compile(identity_script, 'android-mutated', 'exec'), {})
+            for component, selected_archive in (('unknown', str(archive)), ('sdk-android', ''), ('sdk-core', str(archive))):
+                with patch.dict(os.environ, {**values, 'COMPONENT': component, 'ANDROID_ARCHIVE': selected_archive}, clear=True):
+                    with self.assertRaisesRegex(ValueError, 'exactly its Android archive'):
+                        exec(compile(policy_script, 'android-invalid', 'exec'), {})
 
     def test_existing_controllers_receive_exact_caller_inputs_and_attempt_is_retained(self):
         source = self.source("execute")

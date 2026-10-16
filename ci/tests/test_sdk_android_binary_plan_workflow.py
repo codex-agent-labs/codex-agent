@@ -50,6 +50,24 @@ class AndroidBinaryWorkflowTest(unittest.TestCase):
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-binary-result / sdk-android-binary-android", collect)
         self.assertIn("select_native_state(needs, stage='android-binary')", result)
 
+    def test_qualified_core_routes_missing_android_without_replaying_core(self):
+        worker = job(CHILD.read_text(), 'sdk-android-binary')
+        self.assertIn("fromJSON(inputs.metadataWave).outputs.metadata_build_key == '' &&", worker)
+        self.assertIn("fromJSON(inputs.metadataWave).outputs.routing != ''", worker)
+        qualified = worker.split('      - id: qualified\n', 1)[1].split('      - id: binary\n', 1)[0]
+        self.assertIn("if: fromJSON(inputs.metadataWave).outputs.metadata_build_key == ''", qualified)
+        self.assertIn('uses: ./.github/actions/sdk-core-maven-worker', qualified)
+        self.assertIn('component: sdk-android', qualified)
+        self.assertIn('artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.artifact_id }}', qualified)
+        self.assertNotIn('core14-', qualified)
+        for step in ('native-archives', 'core14', 'binary'):
+            block = worker.split('      - id: ' + step + '\n', 1)[1]
+            self.assertTrue(block.startswith("        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key != ''\n"))
+        shared = (ROOT / '.github/actions/sdk-core-maven-worker/action.yml').read_text()
+        self.assertLess(shared.index('- id: captured'), shared.index('- id: identity'))
+        self.assertLess(shared.index('- id: identity'), shared.index('uses: ./.github/actions/setup-kmp'))
+        self.assertIn("fields['--completed-frozen-policy']", shared)
+
 
 if __name__ == "__main__":
     unittest.main()
