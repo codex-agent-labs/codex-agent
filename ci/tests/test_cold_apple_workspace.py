@@ -34,6 +34,18 @@ class ColdAppleWorkspaceTest(unittest.TestCase):
                 patch.object(capture.subprocess, "run", side_effect=AssertionError("cleanup")):
             capture._prepare_cold_apple_workspace(Path("unused"), {}, 1)
 
+    def test_composed_plan_has_the_same_explicit_capacity_preflight(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml").read_text()
+        step = workflow.split("      - id: product-reuse\n", 1)[1].split("      - id:", 1)[0]
+        self.assertIn("CODEX_AGENT_COLD_APPLE_WORKSPACE: 'true'", step)
+        self.assertIn("--native-resume-handoff", step)
+        required = 4 * 22_117_834_439 + 8 * 1024**3
+        with patch.object(capture.shutil, "disk_usage", return_value=SimpleNamespace(free=required)), \
+                patch.object(capture.subprocess, "run") as cleanup, \
+                patch("sys.stdout", new=io.StringIO()):
+            capture._prepare_cold_apple_workspace(Path("workspace"), {**HOSTED, "GITHUB_JOB": "plan"}, 22_117_834_439)
+        cleanup.assert_not_called()
+
     def test_reclaim_refuses_local_self_hosted_or_other_jobs(self):
         for field in ("GITHUB_ACTIONS", "RUNNER_OS", "RUNNER_ENVIRONMENT", "GITHUB_JOB"):
             with self.subTest(field=field), patch.object(capture.subprocess, "run") as cleanup:

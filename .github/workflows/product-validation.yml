@@ -413,6 +413,8 @@ jobs:
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Composed native resume may recover an unqualified original package here.
+          CODEX_AGENT_COLD_APPLE_WORKSPACE: 'true'
           SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |

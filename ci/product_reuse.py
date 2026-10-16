@@ -8471,9 +8471,9 @@ def _prepare_cold_apple_workspace(workspace, environ, archive_bytes):
         return
     if any(environ.get(key) != value for key, value in {
         "GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux",
-        "RUNNER_ENVIRONMENT": "github-hosted", "GITHUB_JOB": "product-resume",
-    }.items()):
-        raise ValueError("Cold Apple tool reclamation requires hosted product-resume")
+        "RUNNER_ENVIRONMENT": "github-hosted",
+    }.items()) or environ.get("GITHUB_JOB") not in {"plan", "product-resume"}:
+        raise ValueError("Cold Apple tool reclamation requires hosted product-resume or plan")
     # Reserve for the retained original, isolated inputs and frozen replay copies.
     # This is a capacity preflight, never an artifact or admission authority.
     required = 4 * archive_bytes + 8 * 1024**3
