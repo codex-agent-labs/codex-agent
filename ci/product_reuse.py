@@ -660,7 +660,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "1c0376fba5c1dc7947dffb1de3b0001ef25ee89c",
                              "cdcad0d7bb1be2633ba24ba65ca5e694f0e9222e",
                              "e07a185513acf0b73c0ab3114f7694999bab1845",
-                             "92dddb0fc4c431b9c989c0dcd09cb200c9bc7f89")):
+                             "92dddb0fc4c431b9c989c0dcd09cb200c9bc7f89",
+                             "b0947995481dec088fce8e9490a17a3399e9dc2b")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
