@@ -174,7 +174,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                              ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-'),
                              ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-'),
                              (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-'),
-                             (completed._CORE_PACKAGE_COLLECTOR, 'codex-agent-sdk-wave-12-state-')):
+                             (completed._CORE_PACKAGE_COLLECTOR, 'codex-agent-sdk-wave-12-state-'),
+                             ('product-validation / sdk-core-validation-wave / sdk-collect-13', 'codex-agent-sdk-wave-13-state-'),
+                             ('product-validation / sdk-core-metadata-wave / sdk-collect-14', 'codex-agent-sdk-wave-14-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
@@ -187,9 +189,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 result = completed.observe_source(source, 'synthetic')
                 self.assertEqual(artifact, result[0])
                 self.assertEqual({'source': role}, observe.call_args.kwargs['jobs_by_phase'])
-                if role in (completed._CORE_COLLECTOR, completed._CORE_PACKAGE_COLLECTOR):
-                    phase = 'binary' if role == completed._CORE_COLLECTOR else 'package'
-                    self.assertEqual({'source': {'path': f'.github/workflows/sdk-core-{phase}-validation.yml',
+                child = {
+                    completed._CORE_COLLECTOR: 'sdk-core-binary-validation',
+                    completed._CORE_PACKAGE_COLLECTOR: 'sdk-core-package-validation',
+                    'product-validation / sdk-core-validation-wave / sdk-collect-13': 'sdk-core-validation',
+                    'product-validation / sdk-core-metadata-wave / sdk-collect-14': 'sdk-core-metadata-validation',
+                }.get(role)
+                if child is not None:
+                    self.assertEqual({'source': {'path': f'.github/workflows/{child}.yml',
                         'sha': source['workflowSha']}}, observe.call_args.kwargs['trusted_workflows_by_phase'])
                     self.assertNotIn('trusted_workflow_sha', observe.call_args.kwargs)
                 else:
@@ -212,10 +219,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 metadata.return_value = {**artifact, 'created_at': '2026-01-01T01:03:00Z'}
                 with self.assertRaisesRegex(ValueError, 'job-attempt window'):
                     completed.observe_source(source, 'synthetic')
-                observe.reset_mock()
-                with self.assertRaisesRegex(ValueError, 'fixed native state producer'):
-                    completed.observe_source({**source, 'jobName': 'product-validation / unrelated'}, 'synthetic')
-                observe.assert_not_called()
+                for unsupported in ('product-validation / unrelated', 'product-validation / sdk-collect-13',
+                                    'product-validation / sdk-android-binary-result / sdk-collect-15'):
+                    observe.reset_mock()
+                    with self.assertRaisesRegex(ValueError, 'fixed native state producer'):
+                        completed.observe_source({**source, 'jobName': unsupported}, 'synthetic')
+                    observe.assert_not_called()
 
     def test_collected_source_requires_exact_plan_manifest_role_root_and_bounded_controls(self):
         import json
@@ -316,19 +325,22 @@ class CompletedSdkControlsTest(unittest.TestCase):
             observe.assert_not_called()
 
     def test_core_original_requires_exact_nested_child_and_matrix_key(self):
-        for phase in ('binary', 'package'):
-            with self.subTest(phase=phase):
-                self.check_core_original(phase)
+        from products.registry import SDK_FACADE_TARGETS
+        cases = [(phase, 'common') for phase in ('binary', 'package', 'metadata')]
+        cases.extend(('validation', target) for target in SDK_FACADE_TARGETS)
+        for phase, target in cases:
+            with self.subTest(phase=phase, target=target):
+                self.check_core_original(phase, target)
 
-    def check_core_original(self, phase):
+    def check_core_original(self, phase, target):
         import product_reuse
         receipt = deepcopy(self.receipt)
-        receipt.update(component='sdk-core', phase=phase, target='common')
+        receipt.update(component='sdk-core', phase=phase, target=target)
         receipt['producer']['workflowPath'] = '.github/workflows/ci.yml'
         receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
         original = {'jobId': 71, 'workflowSha': 'a' * 40, 'artifactId': 72,
                     'artifactSha256': 'sha256:' + 'b' * 64}
-        name = f'product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-common'
+        name = f'product-validation / sdk-core-{phase}-wave / sdk-core-{phase}-{target}'
         job = {'id': 71, 'name': name + ' (' + receipt['buildKey'] + ', ...',
                'started_at': '2026-01-01T01:00:00Z', 'completed_at': '2026-01-01T01:02:00Z'}
         artifact = {'id': 72, 'created_at': '2026-01-01T01:01:00Z'}
@@ -338,10 +350,11 @@ class CompletedSdkControlsTest(unittest.TestCase):
             completed.observe_original(original, receipt, 'synthetic')
             self.assertEqual({'original': name}, observe.call_args.kwargs['jobs_by_phase'])
             self.assertEqual({'original': receipt['buildKey']}, observe.call_args.kwargs['build_keys_by_phase'])
-            self.assertEqual({'original': {'path': f'.github/workflows/sdk-core-{phase}-validation.yml',
+            child = 'sdk-core-validation' if phase == 'validation' else f'sdk-core-{phase}-validation'
+            self.assertEqual({'original': {'path': f'.github/workflows/{child}.yml',
                 'sha': original['workflowSha']}}, observe.call_args.kwargs['trusted_workflows_by_phase'])
             self.assertNotIn('trusted_workflow_sha', observe.call_args.kwargs)
-            for invalid in (f'product-validation / sdk-core-{phase}-common', name + ' (sha256:' + '0' * 64 + ', ...'):
+            for invalid in (f'product-validation / sdk-core-{phase}-{target}', name + ' (sha256:' + '0' * 64 + ', ...'):
                 job['name'] = invalid
                 with self.assertRaises(ValueError): completed.observe_original(original, receipt, 'synthetic')
 

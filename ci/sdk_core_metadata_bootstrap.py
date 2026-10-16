@@ -202,6 +202,9 @@ def main(argv=None):
     parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = vars(parser.parse_args(argv))
     try:
+        if args["sdk_apple_validation_policy"] is not None:
+            args["sdk_apple_validation_policy"] = product_reuse._canonical_control(
+                args["sdk_apple_validation_policy"], "Core metadata caller Apple validation policy")
         if "retained_sdk_inputs_source" in args:
             args["retained_sdk_inputs_source"] = product_reuse._canonical_control(
                 args["retained_sdk_inputs_source"], "Core metadata retained SDK input source")

@@ -1,5 +1,7 @@
 """Core metadata bootstrap must derive all eleven requests from selected originals."""
 
+from contextlib import redirect_stderr
+import io
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -105,6 +107,39 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "selected original validation"):
             self.invoke(bad_target="linux-x64")
         self.assertFalse((self.base / "bootstrap.json").exists())
+
+    def test_cli_reads_canonical_apple_policy_before_bootstrap(self):
+        from products.sdk_apple_validation_admission import apple_validation_policy_arguments
+        policy = {name: str(self.base / name) for name in (
+            "plan", "attestationPublicKey", "keyring", "keysDirectory", "toolingEvidence",
+            "toolingPublicKey", "javaExecutable", "toolingKeyring", "toolingKeysDirectory")}
+        policy.update(attestationTrustDomain="development", toolingTrustDomain="release")
+        path = self.base / "apple-policy.json"
+        write_canonical_json(path, policy)
+        args = []
+        for name in ("plan", "discovery", "state", "requests-root", "destination",
+                     "sdk-validation-tooling", "keyring", "keys-directory", "repository-root"):
+            args.extend(("--" + name, str(self.base / name)))
+        args.extend(("--expected-build-key", _KEY, "--sdk-inputs-artifact-sha256", _KEY,
+                     "--trusted-workflow-sha", "e" * 40, "--sdk-inputs-artifact-id", "7"))
+
+        def prepare(**kwargs):
+            value = kwargs["sdk_apple_validation_policy"]
+            if value is not None:
+                apple_validation_policy_arguments(value)
+                self.assertEqual(policy, value)
+
+        with patch.object(bootstrap, "prepare", side_effect=prepare) as prepared, \
+                patch.dict(bootstrap.os.environ, {"GITHUB_TOKEN": "local-token"}):
+            self.assertEqual(0, bootstrap.main(args + ["--sdk-apple-validation-policy", str(path)]))
+            self.assertEqual(0, bootstrap.main(args))
+            self.assertIsNone(prepared.call_args.kwargs["sdk_apple_validation_policy"])
+            path.write_bytes(b" {}\n")
+            prepared.reset_mock()
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                bootstrap.main(args + ["--sdk-apple-validation-policy", str(path)])
+            self.assertEqual(2, error.exception.code)
+            prepared.assert_not_called()
 
     def test_native_hosts_require_exact_git_pinned_archive_names_without_download(self):
         archives = {}
