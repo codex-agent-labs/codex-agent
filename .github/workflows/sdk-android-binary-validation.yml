@@ -95,12 +95,14 @@ jobs:
       fromJSON(inputs.sdkInputs).result == 'success' &&
       fromJSON(inputs.validationWave).result == 'success' &&
       fromJSON(inputs.metadataWave).result == 'success' &&
-      fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14' &&
+      ((fromJSON(inputs.metadataWave).outputs.metadata_build_key == '' &&
+        fromJSON(inputs.metadataWave).outputs.routing != '') ||
+      (fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14' &&
       fromJSON(inputs.metadataWave).outputs.metadata_build_key != '' &&
       fromJSON(inputs.metadataWave).outputs.metadata_original_context != '' &&
       fromJSON(inputs.metadataWave).outputs.metadata_receipt_sha256 != '' &&
       fromJSON(inputs.metadataWave).outputs.metadata_artifact_id != '' &&
-      fromJSON(inputs.metadataWave).outputs.metadata_artifact_sha256 != '' &&
+      fromJSON(inputs.metadataWave).outputs.metadata_artifact_sha256 != '')) &&
       needs.sdk-android-binary-plan.result == 'success' &&
       needs.sdk-android-binary-plan.outputs.sdk_workers_required == 'true'
     strategy:
@@ -109,10 +111,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     outputs:
-      binary_build_key: ${{ steps.binary.outputs.binary-artifact-id != '' && matrix.buildKey || '' }}
-      binary_original_context: ${{ steps.binary.outputs.binary-original-context }}
-      binary_artifact_id: ${{ steps.binary.outputs.binary-artifact-id }}
-      binary_artifact_sha256: ${{ steps.binary.outputs.binary-artifact-sha256 }}
+      binary_build_key: ${{ (steps.binary.outputs.binary-artifact-id != '' || steps.qualified.outputs.binary-artifact-id != '') && matrix.buildKey || '' }}
+      binary_original_context: ${{ steps.qualified.outputs.binary-original-context || steps.binary.outputs.binary-original-context }}
+      binary_artifact_id: ${{ steps.qualified.outputs.binary-artifact-id || steps.binary.outputs.binary-artifact-id }}
+      binary_artifact_sha256: ${{ steps.qualified.outputs.binary-artifact-sha256 || steps.binary.outputs.binary-artifact-sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,6 +147,7 @@ jobs:
           path: ${{ runner.temp }}/sdk-archive-cache-v1
           key: sdk-archives-v1-all-${{ hashFiles('gradle.properties', 'gradle/libs.versions.toml', '**/verification-metadata.xml') }}
       - id: native-archives
+        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key != ''
         env:
           CODEX_SDK_ARCHIVE_CACHE: ${{ runner.temp }}/sdk-archive-cache-v1
         name: Provision Git-pinned Core native compiler archives
@@ -168,6 +171,7 @@ jobs:
             echo "windows_x86_64=$windows_x86_64"
           } >> "$GITHUB_OUTPUT"
       - id: core14
+        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key != ''
         uses: ./.github/actions/sdk-android-core14-caller
         with:
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
@@ -206,7 +210,27 @@ jobs:
             --destination "$RUNNER_TEMP/android15-codex.tar.gz" \
             --repository-root "$GITHUB_WORKSPACE")
           echo "path=$archive" >> "$GITHUB_OUTPUT"
+      # Routing is a hint only: the shared worker independently authenticates
+      # the complete state/native proof and exact Android election before setup.
+      - id: qualified
+        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key == ''
+        uses: ./.github/actions/sdk-core-maven-worker
+        with:
+          component: sdk-android
+          phase: binary
+          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          artifact-id: ${{ fromJSON(inputs.metadataWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.metadataWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.metadataWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.metadataWave).outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          build-key: ${{ matrix.buildKey }}
+          tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
+          android-runtime-archive: ${{ steps.android-archive.outputs.path }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
       - id: binary
+        if: fromJSON(inputs.metadataWave).outputs.metadata_build_key != ''
         uses: ./.github/actions/sdk-android-maven-worker
         with:
           phase: binary
