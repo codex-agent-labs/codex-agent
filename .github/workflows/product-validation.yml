@@ -1695,7 +1695,11 @@ jobs:
           test "$AGGREGATE_STATE" = completed
           test "$AGGREGATE_PAYLOAD_COMPLETE" = true
       - id: retained
-        if: '(!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) && steps.captured.outputs.aggregate_required == ''true'' && inputs.runtimeNativeHandoffRecovery != '''''
+        if: >-
+          (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
+          (steps.captured.outputs.aggregate_state == 'ready' || steps.captured.outputs.aggregate_state == 'completed') &&
+          steps.captured.outputs.native_attestation_matrix != '{"include":[]}' &&
+          inputs.runtimeNativeHandoffRecovery != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RECOVERY: ${{ inputs.runtimeNativeHandoffRecovery }}
