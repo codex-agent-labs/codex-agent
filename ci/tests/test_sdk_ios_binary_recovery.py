@@ -337,6 +337,53 @@ class IosBinaryRecoveryTest(unittest.TestCase):
             *("sdk-ios/binary/ios/original/" + name for name in self.files if name.startswith("shard/"))},
             {row["relativePath"] for row in before})
 
+    def test_requalified_binary_uses_original_reference_and_private_physical_custody(self):
+        from ci.tests.test_completed_frozen_reuse import CompletedFrozenReuseTest
+        native = CompletedFrozenReuseTest()
+        native.setUp()
+        proof = self.work / "native-proof"
+        proof.mkdir()
+        cap, _ = native.fetched(proof)
+        cap._eligible = frozenset()
+        # Historical SDK controls remain available for unchanged Contract input.
+        cap._sdk = canonical_json_bytes({"spec": {"completedPhase": {"product": "sdk",
+            "component": "sdk-ios", "phase": "binary", "target": "ios"}}})
+        inputs, state = self.work / "product-resume-inputs", self.work / "product-resume-state"
+        inputs.mkdir()
+        (inputs / "control").write_bytes(b"current plan")
+        self.output = state / "prior-failed-sdk"
+        with self.gates():
+            records = self.capture()
+            manifest = recovery.products._publish_runtime_original_reference_handoff(
+                inputs, state, self.work / "thin-requalified", completed_frozen=cap)
+            self.assertEqual(["sdk-binary"], [row["kind"] for row in manifest["sources"]])
+            self.assertFalse(any(path.suffix == ".zip" for path in (self.work / "thin-requalified").rglob("*")))
+            transport = load_canonical_json_bytes((self.output / "sdk-ios/binary/ios/capture-transport.json").read_bytes())
+            with verification_session() as session, patch("hydrated_evidence.root", return_value=None), \
+                    patch.object(recovery.products, "download_artifact_to_file",
+                                 side_effect=AssertionError("duplicate whole SDK upload")):
+                changed = deepcopy(transport)
+                changed["artifact"]["id"] += 1
+                with self.assertRaisesRegex(ValueError, "original authenticated provenance"):
+                    recovery.products._register_qualified_original_projections(self.work, manifest, [changed],
+                        trusted_workflow_sha=self.pin, completed_frozen=cap)
+                self.assertFalse(session.get("qualifiedOriginalProjections"))
+                recovery.products._register_qualified_original_projections(self.work, manifest, [transport],
+                    trusted_workflow_sha=self.pin, completed_frozen=cap)
+                self.assertEqual(1, len(session["qualifiedOriginalProjections"]))
+                replay = recovery.replay_prior_ios_binary(self.output, self.work, plan=self.plan,
+                    plan_path=self.plan_path, repository_root=self.root,
+                    consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
+                    token="synthetic-token", environ={}, completed_frozen=cap)
+                self.assertEqual(records, replay)
+                receipt = self.output / "sdk-ios/binary/ios/original/shard/phase-receipt.json"
+                receipt.write_bytes(b"mutated")
+                with self.assertRaisesRegex(ValueError, "custody changed"):
+                    recovery.products.capture_sdk_ios_binary_upload(self.plan_path, self.work / "changed-custody",
+                        binary_receipt_path=self.receipt_path, artifact_id=self.artifact["id"],
+                        artifact_sha256=self.artifact["digest"], trusted_workflow_sha=self.pin,
+                        repository_root=self.root, environ={}, token="synthetic-token", compact_recovery=True)
+
     def test_failed_original_job_cannot_be_recovered(self):
         with self.gates(), patch.object(recovery.products, "capture_sdk_ios_binary_upload") as capture:
             self.jobs[0]["conclusion"] = "failure"

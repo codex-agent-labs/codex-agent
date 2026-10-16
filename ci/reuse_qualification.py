@@ -835,6 +835,11 @@ class CompletedFrozenReuse:
                          or instance.product == "contract" and include_contract and self._contract is not None)
 
     def sdk_original(self):
+        """Historical source controls; use envelope/eligible phases for admission.
+
+        Requalification may invalidate SDK phases while these original controls
+        still authenticate unchanged Contract inputs.
+        """
         self._values()
         return None if self._sdk is None else load_canonical_json_bytes(self._sdk)
 

@@ -878,7 +878,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         for original in ("9be996a3269c324ad1beae37a06ff65219e69806",
                          "8a1c2a0c9a9ee1f3c5629d2d77278580f48a489c",
                          "cec458a479c0556d39aa6a75b18311500ce66d71",
-                         "e07a185513acf0b73c0ab3114f7694999bab1845"):
+                         "e07a185513acf0b73c0ab3114f7694999bab1845",
+                         "92dddb0fc4c431b9c989c0dcd09cb200c9bc7f89"):
             with self.subTest(original=original):
                 run = {"referenced_workflows": [{
                     "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",

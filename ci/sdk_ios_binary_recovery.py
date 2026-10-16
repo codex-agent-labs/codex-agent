@@ -346,11 +346,7 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Completed SDK replay requires concrete native authority")
-        extension = completed_frozen.sdk_extension()
-        admitted = (completed_frozen.sdk_original() is not None if phase == "binary" else
-                    extension is not None and instance in {
-                        products._identity(row) for row in extension["spec"]["completedPhases"]})
-        if admitted:
+        if instance in completed_frozen.completed_phases():
             if any(plan.get(field) != consumer_producer.get(field) for field in ("repository", "event", "pullRequest")):
                 raise ValueError("Completed SDK plan differs from its current consumer")
             context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})

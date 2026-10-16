@@ -659,7 +659,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "e30970c14fcdc51119b3b215bdfd70dea6ccae44",
                              "1c0376fba5c1dc7947dffb1de3b0001ef25ee89c",
                              "cdcad0d7bb1be2633ba24ba65ca5e694f0e9222e",
-                             "e07a185513acf0b73c0ab3114f7694999bab1845")):
+                             "e07a185513acf0b73c0ab3114f7694999bab1845",
+                             "92dddb0fc4c431b9c989c0dcd09cb200c9bc7f89")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -4630,6 +4631,7 @@ def _verified_product_state(
         extension = native_sdk.get("extension")
         if extension is not None:
             native_ids.update(_identity(row) for row in extension["spec"]["completedPhases"])
+        native_ids.intersection_update(completed_frozen.completed_phases())
     if sdk_replays and all(instance in native_ids for instance, _ in sdk_replays):
         from products.restore import bounded_verify
         # Only compact, independently qualified controls run concurrently.
@@ -7607,34 +7609,59 @@ def _register_qualified_original_projections(original, references, transports, *
         return
     policy = _source_identity()
     for source, transport in zip(references["sources"], transports, strict=True):
-        if source["kind"] != "phase":
+        if source["kind"] not in {"phase", "sdk-binary", "sdk-package"}:
             continue
         instance = _identity(source["receipt"])
         projected = Path(original) / source["relativePath"]
-        captured = projected.parents[2]
-        observation = _canonical_control(captured / "transport/original-ci-phases.json",
-                                         "Qualified original phase observation")
-        if "recoveryProjection" not in observation:
-            continue  # Legacy evidence retains its full cold authentication.
+        sdk = source["kind"].startswith("sdk-")
+        if sdk:
+            prefix = source["relativePath"] + "/"
+            expected = [{**row, "relativePath": row["relativePath"].removeprefix(prefix)}
+                        for row in references["inventory"] if row["relativePath"].startswith(prefix)]
+            if (not expected or any(not row["relativePath"].startswith("shard/") for row in expected)
+                    or regular_file_inventory(projected, allow_empty=True) != expected):
+                continue  # Scoped/deferred controls cannot establish physical custody.
+        else:
+            captured = projected.parents[2]
+            observation = _canonical_control(captured / "transport/original-ci-phases.json",
+                                             "Qualified original phase observation")
+            if "recoveryProjection" not in observation:
+                continue  # Legacy evidence retains its full cold authentication.
         verified = verify_phase_shard(projected / "shard", instance,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if verified["receipt"] != source["receipt"]:
             raise ValueError("Qualified original projection changes its original receipt")
         if completed_frozen is not None and completed_frozen.envelope(verified, verified["receiptBytes"]) is not None:
             continue  # Native-deferred bodies cannot create a physical projection witness.
-        fresh = {**observation, "observed": transport["observed"],
-                 "artifacts": {instance.phase: transport["artifact"]}}
-        if _runtime_capture_identity(observation, instance) != _runtime_capture_identity(fresh, instance):
-            raise ValueError("Qualified projection changes original authenticated provenance")
-        zipped = observation["recoveryProjection"]["originalFiles"][instance.phase]
-        expected = [row for row in zipped if not row["relativePath"].startswith("inputs/")]
-        if regular_file_inventory(projected, allow_empty=True) != expected:
-            raise ValueError("Qualified original projection changes its authenticated inventory")
-        job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
-        job = next(value for value in transport["observed"][0]["jobs"] if value.get("name") == job_name)
+        job_name = f"product-validation / {'sdk' if sdk else 'runtime'}-{instance.component}-{instance.phase}-{instance.target}"
+        jobs = _matching_ci_jobs(transport["observed"][0]["jobs"], job_name,
+            **({"expected_build_key": verified["receipt"]["buildKey"]} if sdk else {}))
+        if len(jobs) != 1:
+            raise ValueError("Qualified original projection has ambiguous original jobs")
+        job = jobs[0]
         run = transport["observed"][0]["run"]
         workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
         locator = _runtime_original_locator(transport["artifact"], workflow, instance, job)
+        if sdk:
+            observation = _canonical_control(projected.parent / "capture-transport.json",
+                                             "Qualified original SDK observation")
+            prior_jobs = _matching_ci_jobs(observation["observed"][0]["jobs"], job_name,
+                                           expected_build_key=verified["receipt"]["buildKey"])
+            prior_workflow = _runtime_prior_workflow_sha(observation["observed"][0]["run"], trusted_workflow_sha)
+            if (len(prior_jobs) != 1 or observation.get("captureProducer") != verified["receipt"]["producer"]
+                    or observation.get(instance.phase + "ReceiptSha256") != verified["receiptSha256"]
+                    or _runtime_original_locator(observation["artifact"], prior_workflow, instance, prior_jobs[0]) != locator):
+                raise ValueError("Qualified SDK projection changes original authenticated provenance")
+            zipped = expected
+        else:
+            fresh = {**observation, "observed": transport["observed"],
+                     "artifacts": {instance.phase: transport["artifact"]}}
+            if _runtime_capture_identity(observation, instance) != _runtime_capture_identity(fresh, instance):
+                raise ValueError("Qualified projection changes original authenticated provenance")
+            zipped = observation["recoveryProjection"]["originalFiles"][instance.phase]
+            expected = [row for row in zipped if not row["relativePath"].startswith("inputs/")]
+            if regular_file_inventory(projected, allow_empty=True) != expected:
+                raise ValueError("Qualified original projection changes its authenticated inventory")
         key = canonical_json_bytes(locator)
         record = projected, _stage_fingerprint(projected.parent), zipped, policy
         existing = session.setdefault("qualifiedOriginalProjections", {}).get(key)
@@ -7649,14 +7676,15 @@ def _publish_runtime_original_reference_handoff(inputs, state, destination, *, c
     sources = []
     sdk = Path(state) / "prior-failed-sdk/sdk-ios/binary/ios"
     if sdk.exists() or sdk.is_symlink():
-        receipt = verify_phase_shard(sdk / "original/shard", PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
-            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))["receipt"]
+        verified = verify_phase_shard(sdk / "original/shard", PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+        receipt = verified["receipt"]
         captured = _canonical_control(sdk / "capture-transport.json", "Original SDK binary reference observation")
         if (captured.get("captureProducer") != receipt["producer"]
                 or captured.get("binaryReceiptSha256") != sha256_bytes(canonical_json_bytes(receipt))):
             raise ValueError("SDK original reference changes the captured receipt or producer")
         artifact = captured["artifact"]
-        if completed_frozen is None or completed_frozen.sdk_original() is None:
+        if completed_frozen is None or completed_frozen.envelope(verified) is None:
             sources.append({"relativePath": "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original",
                 "kind": "sdk-binary", "receipt": receipt,
                 "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
