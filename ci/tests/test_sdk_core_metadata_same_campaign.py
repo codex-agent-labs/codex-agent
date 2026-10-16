@@ -94,7 +94,8 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
              mock.patch.object(selected, "validate_phase_receipt", return_value=self.receipt), \
              mock.patch.object(selected, "_context", return_value={"repositoryRoot": "/original",
                                                                   "metadataRequest": "/original/request"}), \
-             mock.patch.object(selected, "held_fresh_facade_metadata_policy", side_effect=fresh), \
+             mock.patch.object(selected, "held_fresh_facade_metadata_policy", side_effect=fresh) as full_fresh, \
+             mock.patch.object(selected, "held_captured_facade_metadata_policy", side_effect=fresh) as capture_only, \
              mock.patch.object(selected, "locate_original_facade_upload", return_value={
                  "artifact_id": 7, "artifact_sha256": "sha256:" + "d" * 64}) as locator, \
              mock.patch.object(selected, "capture_sdk_facade_metadata_upload", side_effect=capture) as captured, \
@@ -117,13 +118,18 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                     original_context={}, trusted_workflow_sha="e" * 40,
                     repository_root=self.root, environ={}, token="token") as policy:
                 self.assertTrue(policy.is_file())
+                descriptor = selected.load_canonical_json_bytes(policy.read_bytes())
+                self.assertEqual(12, len(descriptor["records"]))
+                self.assertIn({"receiptSha256": self.digest, "captureRoot": "common"}, descriptor["records"])
+                self.assertEqual(0 if collection else 1, full_fresh.call_count)
+                self.assertEqual(1 if collection else 0, capture_only.call_count)
             return locator, captured, writer, verified
 
     def test_collection_uses_the_full_original_descriptor_before_state_exists(self):
         locator, captured, writer, verified = self.invoke(collection=True)
         locator.assert_called_once()
         captured.assert_called_once()
-        writer.assert_called_once()
+        writer.assert_not_called()  # The generic collector owns the mandatory full admission.
         verified.assert_not_called()  # Generic advance performs the new-state admission while held.
 
     def test_reviewed_retained_metadata_keeps_original_pins_and_full_admission(self):
@@ -140,7 +146,7 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                     locator, capture, writer, verified = self.invoke(collection=collection)
                     self.assertEqual("f" * 40, locator.call_args.kwargs["trusted_workflow_sha"])
                     self.assertEqual("f" * 40, capture.call_args.kwargs["trusted_workflow_sha"])
-                    writer.assert_called_once()
+                    self.assertEqual(0 if collection else 1, writer.call_count)
                     self.assertEqual(0 if collection else 1, verified.call_count)
                     (self.outside / "common/record").unlink()
                     (self.outside / "common").rmdir()
@@ -198,6 +204,15 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
         self.assertEqual(["enter", "exit"], fixture.events)
 
     def test_helper_uses_real_shards_writer_and_concrete_admission(self):
+        self.check_real_helper()
+
+    def test_collection_descriptor_waits_for_the_concrete_full_admission(self):
+        self.check_real_helper(collection=True)
+
+    def test_collection_descriptor_does_not_bypass_full_reader_exit_failure(self):
+        self.check_real_helper(collection=True, replay_failure=True)
+
+    def check_real_helper(self, *, collection=False, replay_failure=False):
         from ci.tests.test_sdk_facade_metadata_admission import FacadeMetadataAdmissionTest
         fixture = FacadeMetadataAdmissionTest(methodName="runTest")
         fixture.setUp()
@@ -241,12 +256,15 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
             self.assertEqual(receipt["producer"]["commit"], kwargs["policy_revision"])
             with fixture.replay(**{**kwargs, "policy_revision": "c" * 40}) as value:
                 yield value
+                if replay_failure:
+                    raise ValueError("full reader exit rejected")
 
         writer = sys.modules[selected.write_facade_metadata_policy.__module__]
         original = sys.modules["sdk_facade_metadata_original"]
         with mock.patch.object(selected.product_reuse, "_product_materialization_paths",
                                return_value=(self.discovery, self.after, self.root / "unused")), \
              mock.patch.object(selected, "held_fresh_facade_metadata_policy", side_effect=held), \
+             mock.patch.object(selected, "held_captured_facade_metadata_policy", side_effect=held), \
              mock.patch.object(selected, "locate_original_facade_upload", return_value={
                  "artifact_id": 123, "artifact_sha256": "sha256:" + "d" * 64}), \
              mock.patch.object(selected, "capture_sdk_facade_metadata_upload", side_effect=captured), \
@@ -260,9 +278,12 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                  "remoteBuildAuthorized": True, "event": "pull_request",
                  "validationCommit": receipt["producer"]["commit"],
                  "validationTree": receipt["producer"]["tree"]}):
-            with selected.held_same_campaign_core_metadata_policy(
-                    Path(fresh_policy["plan"]), self.discovery, self.before, self.after,
-                    receipt_path, expected_build_key=receipt["buildKey"],
+            hold = (selected.held_core_metadata_collection_policy if collection
+                    else selected.held_same_campaign_core_metadata_policy)
+            arguments = [Path(fresh_policy["plan"]), self.discovery, self.before]
+            if not collection:
+                arguments.append(self.after)
+            with hold(*arguments, receipt_path, expected_build_key=receipt["buildKey"],
                     expected_receipt_sha256=fixture.envelope["receiptSha256"],
                     expected_artifact_id=123,
                     expected_artifact_sha256="sha256:" + "d" * 64,
@@ -270,7 +291,17 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
                     trusted_workflow_sha="e" * 40, repository_root=fixture.root,
                     environ={}, token="explicit-caller-token") as descriptor:
                 self.assertTrue(descriptor.is_file())
-                self.assertEqual(["enter", "exit"], fixture.events)
+                if collection:
+                    self.assertEqual([], fixture.events)
+                    raw = selected.load_canonical_json_bytes(descriptor.read_bytes())
+                    gate = selected.FacadeMetadataAdmission(Path(raw["evidenceRoot"]), raw["records"],
+                        repository=fixture.root, policy_revision=receipt["producer"]["commit"], policy=raw["policy"])
+                    if replay_failure:
+                        with self.assertRaisesRegex(ValueError, "full reader exit rejected"):
+                            gate.verify_metadata(fixture.envelope, fixture.predecessors)
+                    else:
+                        gate.verify_metadata(fixture.envelope, fixture.predecessors)
+                self.assertEqual(["enter"] if replay_failure else ["enter", "exit"], fixture.events)
 
 
 class CoreMetadataCollectionBridgeTest(unittest.TestCase):

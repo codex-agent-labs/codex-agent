@@ -16,7 +16,8 @@ if __package__:
 
 import product_reuse
 from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, require_exact_keys, require_integer, require_sha256, sha256_bytes)
+    regular_file_inventory, require_exact_keys, require_integer, require_sha256, sha256_bytes,
+    write_canonical_json)
 from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
 from products.restore import verify_phase_shard
@@ -29,7 +30,7 @@ from sdk_metadata_policy import metadata_admission_options
 from sdk_facade_capture import capture_sdk_facade_metadata_upload
 from sdk_facade_metadata_original import _context
 from sdk_facade_metadata_policy import write_facade_metadata_policy
-from sdk_facade_original_inputs import held_fresh_facade_metadata_policy
+from sdk_facade_original_inputs import held_captured_facade_metadata_policy, held_fresh_facade_metadata_policy
 from sdk_facade_upload_locator import locate_original_facade_upload
 
 
@@ -86,7 +87,9 @@ def _held_core_metadata_policy(plan, discovery, before_state, after_state,
     state_inventory = (regular_file_inventory(after_state, allow_empty=True)
                        if after_state is not None else None)
 
-    with held_fresh_facade_metadata_policy(plan, discovery, before_state,
+    capture_policy = (held_captured_facade_metadata_policy if after_state is None
+                      else held_fresh_facade_metadata_policy)
+    with capture_policy(plan, discovery, before_state,
             expected_build_key=expected_build_key, replay_policy=replay_policy,
             trusted_workflow_sha=trusted_workflow_sha, repository_root=root,
             environ=environ, token=token,
@@ -134,12 +137,18 @@ def _held_core_metadata_policy(plan, discovery, before_state, after_state,
         policy = {**fresh["policy"], "originalContext": context}
         with tempfile.TemporaryDirectory(prefix="same-campaign-core-metadata-") as temporary:
             descriptor = Path(temporary).resolve() / "policy.json"
-            write_facade_metadata_policy(plan, descriptor, evidence_root=evidence,
-                records=records, policy=policy, metadata_envelope={key: metadata_envelope[key]
-                    for key in ("receipt", "receiptBytes", "receiptSha256", "objectSha256")},
-                validation_envelopes=[{key: envelope[key] for key in
-                    ("receipt", "receiptBytes", "receiptSha256", "objectSha256")}
-                    for envelope in validations], repository_root=root)
+            if after_state is None:
+                # Raw caller policy grants no acceptance. Generic collection
+                # must run the concrete full verifier before advancing state.
+                write_canonical_json(descriptor, {"evidenceRoot": str(evidence),
+                    "records": records, "policy": policy})
+            else:
+                write_facade_metadata_policy(plan, descriptor, evidence_root=evidence,
+                    records=records, policy=policy, metadata_envelope={key: metadata_envelope[key]
+                        for key in ("receipt", "receiptBytes", "receiptSha256", "objectSha256")},
+                    validation_envelopes=[{key: envelope[key] for key in
+                        ("receipt", "receiptBytes", "receiptSha256", "objectSha256")}
+                        for envelope in validations], repository_root=root)
             if after_state is not None:
                 admission = FacadeMetadataAdmission(evidence, records, repository=root,
                     policy_revision=receipt["producer"]["commit"], policy=policy)
@@ -189,7 +198,7 @@ def held_same_campaign_core_metadata_policy(plan, discovery, before_state, after
 
 @contextmanager
 def held_core_metadata_collection_policy(plan, discovery, before_state, metadata_receipt_path, **arguments):
-    """Hold full original admission before the generic collector advances state."""
+    """Hold captures for mandatory full admission inside the generic collector."""
     with _held_core_metadata_policy(plan, discovery, before_state, None,
             metadata_receipt_path, **arguments) as descriptor:
         yield descriptor
