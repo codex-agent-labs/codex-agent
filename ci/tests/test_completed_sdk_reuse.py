@@ -116,7 +116,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             shard = capture / f'{component}/{phase}/{target}/original/shard'
             self.assertEqual({PHASE_SHARD_NAME, 'phase-receipt.json'}, {p.name for p in shard.iterdir()})
             with patch.object(recovery, '_capture_javascript_package', side_effect=ValueError('ordinary whole upload required')):
-                with self.assertRaisesRegex(ValueError, 'exact native authority' if component in {'sdk-ios', 'sdk-core'} else 'whole upload required'):
+                with self.assertRaisesRegex(ValueError, 'exact native authority' if component in {'sdk-ios', 'sdk-core', 'sdk-android'} else 'whole upload required'):
                     replay(None)
             with self.assertRaisesRegex(ValueError, 'concrete native authority'):
                 replay(object())
@@ -176,7 +176,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                              (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-'),
                              (completed._CORE_PACKAGE_COLLECTOR, 'codex-agent-sdk-wave-12-state-'),
                              ('product-validation / sdk-core-validation-wave / sdk-collect-13', 'codex-agent-sdk-wave-13-state-'),
-                             ('product-validation / sdk-core-metadata-wave / sdk-collect-14', 'codex-agent-sdk-wave-14-state-')):
+                             ('product-validation / sdk-core-metadata-wave / sdk-collect-14', 'codex-agent-sdk-wave-14-state-'),
+                             ('product-validation / sdk-android-binary-result / sdk-collect-15', 'codex-agent-sdk-wave-15-state-'),
+                             ('product-validation / sdk-android-package-result / sdk-collect-16', 'codex-agent-sdk-wave-16-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
@@ -194,6 +196,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     completed._CORE_PACKAGE_COLLECTOR: 'sdk-core-package-validation',
                     'product-validation / sdk-core-validation-wave / sdk-collect-13': 'sdk-core-validation',
                     'product-validation / sdk-core-metadata-wave / sdk-collect-14': 'sdk-core-metadata-validation',
+                    'product-validation / sdk-android-binary-result / sdk-collect-15': 'sdk-android-binary-validation',
+                    'product-validation / sdk-android-package-result / sdk-collect-16': 'sdk-android-package-validation',
                 }.get(role)
                 if child is not None:
                     self.assertEqual({'source': {'path': f'.github/workflows/{child}.yml',
@@ -220,7 +224,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'job-attempt window'):
                     completed.observe_source(source, 'synthetic')
                 for unsupported in ('product-validation / unrelated', 'product-validation / sdk-collect-13',
-                                    'product-validation / sdk-android-binary-result / sdk-collect-15'):
+                                    'product-validation / sdk-android-binary-result / sdk-collect-16'):
                     observe.reset_mock()
                     with self.assertRaisesRegex(ValueError, 'fixed native state producer'):
                         completed.observe_source({**source, 'jobName': unsupported}, 'synthetic')
@@ -726,7 +730,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 ('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
                 ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12),
-                ('sdk-core', 'metadata', 'common', 14)):
+                ('sdk-core', 'metadata', 'common', 14),
+                ('sdk-android', 'binary', 'android', 15), ('sdk-android', 'package', 'android', 16)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target, collected=True, collected_wave=wave)
@@ -754,6 +759,35 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_collected_issuer_reuses_native_object_without_any_object_transfer(self):
         self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', collected=True, reused=True)
+        for phase, wave in (('binary', 15), ('package', 16)):
+            self.setUp()
+            self.check_v3_issuer_original_member('sdk-android', phase, 'android',
+                collected=True, collected_wave=wave, reused=True)
+
+    def test_android_maven_object_bound_is_scoped_not_a_json_limit_change(self):
+        from products.registry import PhaseInstanceId
+        from products.restore import object_relative_path
+        for phase in ('binary', 'package'):
+            selected = deepcopy(self.spec['completedPhases'][0])
+            selected.update(product='sdk', component='sdk-android', phase=phase, target='android')
+            path = 'runtime-state/original-objects/' + object_relative_path(selected['buildKey'], selected['receiptSha256'])
+            selected['receiptPath'] = path + '/phase-receipt.json'
+            obj = {'relativePath': path, 'bytes': 512 * 1024 * 1024, 'sha256': selected['objectSha256']}
+            spec = {'stateRoot': 'runtime-state', 'completedPhases': [selected], 'receiptObjects': [obj]}
+            self.assertEqual({selected['receiptPath']: (obj, selected)}, completed._receipt_objects(spec))
+            obj['bytes'] += 1
+            with self.assertRaises(ValueError):
+                completed._receipt_objects(spec)
+            obj['bytes'] -= 1
+            for field, value in (('phase', 'validation'), ('target', 'common'), ('component', 'sdk-core')):
+                original = selected[field]
+                selected[field] = value
+                with self.assertRaises(ValueError):
+                    completed._receipt_objects(spec)
+                selected[field] = original
+        self.assertEqual(16 * 1024 * 1024, completed.LIMIT)
+        self.assertEqual(completed.LIMIT, completed._object_limit(
+            PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android')))
 
     def test_reused_members_require_exact_native_subject_parent_and_original_identity(self):
         parent = {'schemaVersion': 1}

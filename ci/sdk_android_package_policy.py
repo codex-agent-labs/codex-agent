@@ -25,7 +25,6 @@ from products.inventory import (
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
-from products.restore import restore_object
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS
 from products.signing_isolation import require_no_signing_secret
 from products.toolchain import _properties
@@ -119,14 +118,11 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
     with tempfile.TemporaryDirectory(prefix="sdk-android-package-policy-", dir=destination.parent) as temporary:
         prepared = Path(temporary).resolve(strict=True) / "policy"
         prepared.mkdir()
-        contract_root = prepared / "contract-metadata"
-        contract_root.mkdir()
-        carrier = verified.prior_carrier_phases[_CONTRACT]
-        restored = restore_object(verified.sources[_CONTRACT], contract_root / "stage",
-            build_key=carrier["buildKey"], receipt_sha256=carrier["receiptSha256"],
-            object_sha256=carrier["objectSha256"])
+        # Use the shared scoped reader: native-qualified Contract bytes may be
+        # deferred, and only this consumed object should be fetched/restored.
+        restored = product_reuse._restore_product_objects(verified, (_CONTRACT,), prepared)[_CONTRACT]
+        contract_root = prepared / "contract-contract-metadata-common"
         receipt_path = contract_root / "phase-receipt.json"
-        receipt_path.write_bytes(restored["receiptBytes"])
         receipt = validate_phase_receipt(load_canonical_json_bytes(restored["receiptBytes"]))
         if tuple(receipt[name] for name in ("product", "component", "phase", "target")) != (
                 "contract", "contract", "metadata", "common"):
@@ -147,8 +143,8 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             required_trust_domain="release", keyring=evidence_paths["keyring"],
             keys_directory=evidence_paths["keysDirectory"])
         evidence = {**{name: str(path) for name, path in evidence_paths.items()},
-            "stageRoot": str(destination / "contract-metadata/stage"),
-            "phaseReceipt": str(destination / "contract-metadata/phase-receipt.json"),
+            "stageRoot": str(destination / "contract-contract-metadata-common/stage"),
+            "phaseReceipt": str(destination / "contract-contract-metadata-common/phase-receipt.json"),
             "expectedTrustDomain": "release"}
         write_canonical_json(prepared / "binary-contract-evidence.json", evidence)
         write_canonical_json(prepared / "binary-original-context.json", context)

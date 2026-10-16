@@ -57,6 +57,8 @@ class AndroidPackagePolicyTests(unittest.TestCase):
         self.receipt_bytes = policy.canonical_json_bytes(self.receipt)
         (closure / "metadata.json").write_bytes(self.receipt_bytes)
         self.verified = SimpleNamespace(
+            producer={"runId": 1, "runAttempt": 1}, completed_frozen=None,
+            capture_deferred_object=None, ensure_original_source=None,
             plan={"validationCommit": "b" * 40},
             prior_ready_plans={policy._PACKAGE: {"buildKey": _DIGEST}},
             prior_by_instance={policy._BINARY: {"state": "retained"}},
@@ -78,7 +80,8 @@ class AndroidPackagePolicyTests(unittest.TestCase):
         return result
 
     def fake_restore(self, archive, destination, **kwargs):
-        self.assertEqual(self.verified.sources[policy._CONTRACT], archive)
+        if self.verified.completed_frozen is None:
+            self.assertEqual(self.verified.sources[policy._CONTRACT], archive)
         self.assertEqual(_DIGEST, kwargs["object_sha256"])
         target = destination / "outputs/contract.zip"
         target.parent.mkdir(parents=True)
@@ -90,7 +93,7 @@ class AndroidPackagePolicyTests(unittest.TestCase):
                   "codexAgent.codexArchiveSha256=" + policy.sha256_file(self.archive)[7:] + "\n").encode()
         with (patch.object(policy.product_reuse, "_verified_product_state", return_value=self.verified) as replay,
               patch.object(policy, "git_regular_blob_bytes", return_value=pinned),
-              patch.object(policy, "restore_object", side_effect=self.fake_restore),
+              patch.object(policy.product_reuse, "restore_object", side_effect=self.fake_restore),
               patch.object(policy, "validate_phase_receipt", return_value=self.receipt),
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": self.receipt["outputs"]}),
               patch.object(policy, "verify_contract_attestation") as attestation):
@@ -104,8 +107,8 @@ class AndroidPackagePolicyTests(unittest.TestCase):
     def test_policy_binds_original_contract_archive_and_context_without_binary_object(self):
         result = self.invoke()
         evidence = policy.load_canonical_json_bytes(Path(result["binary-contract-evidence"]).read_bytes())
-        self.assertEqual(str(self.destination / "contract-metadata/stage"), evidence["stageRoot"])
-        self.assertEqual(str(self.destination / "contract-metadata/phase-receipt.json"), evidence["phaseReceipt"])
+        self.assertEqual(str(self.destination / "contract-contract-metadata-common/stage"), evidence["stageRoot"])
+        self.assertEqual(str(self.destination / "contract-contract-metadata-common/phase-receipt.json"), evidence["phaseReceipt"])
         self.assertEqual(self.context, policy.load_canonical_json_bytes(
             Path(result["binary-original-context"]).read_bytes()))
         self.assertEqual(str(self.archive), result["android-runtime-archive"])
@@ -115,6 +118,17 @@ class AndroidPackagePolicyTests(unittest.TestCase):
         # An opaque sentinel only verifies plumbing; production replay remains
         # responsible for concrete type, signatures, originals and current keys.
         self.invoke(completed_frozen=object())
+
+    def test_deferred_contract_uses_shared_reader_without_fetching_binary(self):
+        from unittest.mock import Mock
+        def capture(record, destination):
+            self.assertEqual(self.verified.prior_carrier_phases[policy._CONTRACT], record)
+            destination.write_bytes(b'authenticated deferred Contract object')
+        self.verified.completed_frozen = object()
+        self.verified.capture_deferred_object = Mock(side_effect=capture)
+        self.invoke(completed_frozen=self.verified.completed_frozen)
+        self.verified.capture_deferred_object.assert_called_once()
+        self.assertFalse(self.verified.sources[policy._BINARY].exists())
 
     def test_reused_or_missing_current_binary_fails_closed(self):
         for value in ("reused", "missing"):

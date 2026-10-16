@@ -156,6 +156,7 @@ jobs:
           TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           policy=()

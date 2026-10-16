@@ -47,6 +47,8 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         self.assertIn('--plan "$GITHUB_WORKSPACE/${{ steps.selected.outputs.plan-path }}"', archive_step)
         self.assertIn("metadata_build_key == '' && 'android' || 'all'", worker)
         self.assertIn("ci.sdk_android_package_policy", worker)
+        policy = worker.split('      - id: policy\n', 1)[1].split('      - id: native-archives\n', 1)[0]
+        self.assertIn('GITHUB_TOKEN: ${{ github.token }}', policy.split('        run:', 1)[0])
         self.assertIn("uses: ./.github/actions/sdk-android-core14-caller", worker)
         self.assertIn("uses: ./.github/actions/sdk-android-maven-worker", worker)
         self.assertIn("phase: package", worker)

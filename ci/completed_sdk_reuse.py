@@ -59,6 +59,15 @@ def _records(rows, label):
     return reuse_qualification._phase_records(rows, label)
 
 
+def _object_limit(instance):
+    if instance == IOS_PACKAGE:
+        return 8 * 1024**3
+    if instance in SDK_FAMILY_INSTANCES['android-binary'] | SDK_FAMILY_INSTANCES['android-package']:
+        # Same bounded Maven-body size as the original Android reader, not JSON.
+        return 512 * 1024 * 1024
+    return LIMIT
+
+
 def _receipt_objects(spec):
     """Only exact collected objects may supply their embedded receipt control."""
     from products.restore import object_relative_path
@@ -72,7 +81,7 @@ def _receipt_objects(spec):
         path = row["relativePath"] + "/phase-receipt.json"
         phase = selected.get(path)
         # Same hashed-body bound as original consumption; receipt JSON stays small.
-        limit = 8 * 1024**3 if phase is not None and _identity(phase) == IOS_PACKAGE else LIMIT
+        limit = _object_limit(_identity(phase)) if phase is not None else LIMIT
         if (path in result or phase is None or not 0 < row["bytes"] <= limit
                 or row["sha256"] != phase["objectSha256"]
                 or row["relativePath"] != spec["stateRoot"] + "/original-objects/"
@@ -427,8 +436,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
         if original_worker_member(spec):
             from products.restore import object_relative_path
             expected = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
-            if _identity(phase) == IOS_PACKAGE:
-                limit = 8 * 1024**3
+            limit = _object_limit(_identity(phase))
         if (member["relativePath"] != expected or member["sha256"] != phase["objectSha256"]
                 or not 0 < member["bytes"] <= limit):
             raise ValueError("Incremental SDK consumed object changed")
@@ -608,12 +616,11 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             obj = work / f"object-{number}.zip"
             if original_worker_member(spec):
                 name = "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
-                package = _identity(phase) == IOS_PACKAGE
                 bounds = products._worker_upload_reference_limits(_identity(phase))
                 with open_reference_archive(artifact, token, **bounds) as (original, stream):
                     member = {"relativePath": name, "bytes": original.getinfo(name).file_size,
                               "sha256": phase["objectSha256"]}
-                    if not 0 < member["bytes"] <= (8 * 1024**3 if package else LIMIT):
+                    if not 0 < member["bytes"] <= _object_limit(_identity(phase)):
                         raise ValueError("Incremental original member exceeds its fixed bound")
                     copy_reference_member(original, name, obj, member)
                     transferred += stream.transferred
