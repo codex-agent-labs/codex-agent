@@ -23,6 +23,7 @@ from products.sdk_inputs import REQUEST_NAME
 
 
 CONTRACT = PhaseInstanceId("contract", "contract", "metadata", "common")
+CONTRACT_BINARY = PhaseInstanceId("contract", "contract", "binary", "common")
 NODE_PACKAGE = PhaseInstanceId("runtime", "node-js", "package", "node-js")
 NODE_VALIDATION = PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding")
 SDK_PACKAGE = PhaseInstanceId("sdk", "javascript", "package", "node")
@@ -44,7 +45,7 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         self.producer = deepcopy(PRODUCER)
         self.originals = self.root / "originals"
         self.receipts, self.original_paths = {}, {}
-        for identity in (CONTRACT, NODE_PACKAGE, NODE_VALIDATION, SDK_PACKAGE):
+        for identity in (CONTRACT, CONTRACT_BINARY, NODE_PACKAGE, NODE_VALIDATION, SDK_PACKAGE):
             directory = self.originals / self.name(identity)
             stage = directory / "stage"
             (stage / "outputs").mkdir(parents=True)
@@ -105,12 +106,16 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         self.events.append("materialize")
         self.assertEqual((self.plan, self.discovery, self.state), (plan, discovery, state))
         self.assertEqual(self.destination / "inputs", destination)
+        consumed = (CONTRACT_BINARY, CONTRACT, NODE_PACKAGE) if identity.phase == "package" else (
+            CONTRACT_BINARY, CONTRACT, NODE_VALIDATION, SDK_PACKAGE)
         self.assertEqual({"expected_build_key": self.arguments["expected_build_key"],
             "repository_root": self.repository, "environ": self.arguments["environ"],
-            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, arguments)
+            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"],
+            "materialized_scope": consumed}, arguments)
         # This is the explicit original-object materialization seam. No claim
         # is made that these representative stages satisfy the whole planner.
-        snapshot_regular_tree(self.originals, destination)
+        for selected in consumed:
+            snapshot_regular_tree(self.originals / self.name(selected), destination / self.name(selected))
         write_canonical_json(destination / "producer.json", self.producer)
         self.ready = {"schemaVersion": 1, "product": identity.product, "component": identity.component,
                       "phase": identity.phase, "target": identity.target,
@@ -128,6 +133,12 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
                          arguments["trust_domain"])
         self.assertEqual(self.sdk / REQUEST_NAME if ready["phase"] == "package" else None,
                          arguments["compatibility_request"])
+        # The real property mapper must work with only the declared stages.
+        properties = worker.properties(ready, predecessor=arguments["predecessor"],
+                                       compatibility_request=arguments["compatibility_request"])
+        self.assertEqual(str(self.destination / "inputs" / self.name(CONTRACT_BINARY) / "stage"),
+                         properties["codexAgent.contractBinaryStage"])
+        self.assertEqual(4, len(properties))
         runtime = NODE_PACKAGE if ready["phase"] == "package" else NODE_VALIDATION
         value = arguments["predecessor"](runtime.product, runtime.component, runtime.phase, runtime.target)
         self.assertEqual(self.receipts[runtime], value["receiptPath"].read_bytes())

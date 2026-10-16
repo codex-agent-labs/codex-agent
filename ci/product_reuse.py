@@ -661,7 +661,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "cdcad0d7bb1be2633ba24ba65ca5e694f0e9222e",
                              "e07a185513acf0b73c0ab3114f7694999bab1845",
                              "92dddb0fc4c431b9c989c0dcd09cb200c9bc7f89",
-                             "b0947995481dec088fce8e9490a17a3399e9dc2b")):
+                             "b0947995481dec088fce8e9490a17a3399e9dc2b",
+                             "dcf647126e955c37f7b3c89b44cbb8497792d72f")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -5065,29 +5066,31 @@ def _product_materialization_paths(root, discovery_root, state_root, destination
 
 def _restore_product_objects(state, instances, destination):
     restored_objects = {}
-    for dependency in instances:
-        record = state.prior_carrier_phases[dependency]
-        name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
-        predecessor = destination / name
-        predecessor.mkdir()
-        source = state.sources[dependency]
-        with tempfile.TemporaryDirectory(prefix="product-object-") as temporary:
-            if not source.exists() and not source.is_symlink() and state.completed_frozen is not None:
-                source = Path(temporary).resolve() / "object.zip"
-                if state.capture_deferred_object is None:
-                    raise ValueError("Completed predecessor lacks its authenticated original materializer")
-                state.capture_deferred_object(record, source)
-            restored = restore_object(
-                source, predecessor / "stage",
-                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
-                object_sha256=record["objectSha256"],
-            )
-        (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
-        if dependency.product == "sdk" and state.ensure_original_source is not None:
-            # Hosted checkouts lack historical merge commits. Provision only
-            # after the original object/receipt and complete state were verified.
-            state.ensure_original_source(restored["receipt"]["producer"])
-        restored_objects[dependency] = restored
+    current = tuple(str(state.producer[field]) for field in ("runId", "runAttempt"))
+    with _ci_observation_batch(current):
+        for dependency in instances:
+            record = state.prior_carrier_phases[dependency]
+            name = "-".join((dependency.product, dependency.component, dependency.phase, dependency.target))
+            predecessor = destination / name
+            predecessor.mkdir()
+            source = state.sources[dependency]
+            with tempfile.TemporaryDirectory(prefix="product-object-") as temporary:
+                if not source.exists() and not source.is_symlink() and state.completed_frozen is not None:
+                    source = Path(temporary).resolve() / "object.zip"
+                    if state.capture_deferred_object is None:
+                        raise ValueError("Completed predecessor lacks its authenticated original materializer")
+                    state.capture_deferred_object(record, source)
+                restored = restore_object(
+                    source, predecessor / "stage",
+                    build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                    object_sha256=record["objectSha256"],
+                )
+            (predecessor / "phase-receipt.json").write_bytes(restored["receiptBytes"])
+            if dependency.product == "sdk" and state.ensure_original_source is not None:
+                # Hosted checkouts lack historical merge commits. Provision only
+                # after the original object/receipt and complete state were verified.
+                state.ensure_original_source(restored["receipt"]["producer"])
+            restored_objects[dependency] = restored
     return restored_objects
 
 

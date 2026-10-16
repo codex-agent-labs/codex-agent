@@ -1153,6 +1153,11 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK JavaScript worker destination must not exist")
     instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+    consumed = [PhaseInstanceId("contract", "contract", item, "common") for item in ("binary", "metadata")]
+    consumed.append(PhaseInstanceId("runtime", "node-js", phase,
+                                   "node-js" if phase == "package" else "node-js-binding"))
+    if phase == "validation":
+        consumed.append(PhaseInstanceId("sdk", "javascript", "package", "node"))
     fields = {"product": "sdk", "component": "javascript", "phase": phase, "target": "node"}
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -1169,6 +1174,7 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
+            materialized_scope=tuple(consumed),
             sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(

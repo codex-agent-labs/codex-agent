@@ -264,6 +264,53 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 token='not-a-real-token')
             self.assertEqual(2 * first, http.call_count)
 
+    def test_predecessor_restoration_batches_only_historical_reads_and_rechecks_each_operation(self):
+        """Real object restoration; synthetic acquisition uses the real HTTP observer."""
+        from types import SimpleNamespace
+        records, objects = {}, {}
+        for phase in fixture.PHASES:
+            raw = self.receipts[phase].read_bytes()
+            receipt = fixture.load_canonical_json_bytes(raw)
+            identity = adapter._identity(receipt)
+            path = self.receipts[phase].parent / adapter.object_relative_path(
+                receipt['buildKey'], fixture.sha256_bytes(raw))
+            objects[identity] = path.read_bytes()
+            records[identity] = {**adapter._identity_record(identity), 'buildKey': receipt['buildKey'],
+                'receiptSha256': fixture.sha256_bytes(raw), 'objectSha256': fixture.sha256_bytes(objects[identity])}
+        for current, status in ((False, 'completed'), (True, 'completed'), (False, 'in_progress')):
+            state = SimpleNamespace(producer={**self.producer, 'runId': 71 if current else 100},
+                prior_carrier_phases=records, sources={key: self.root / 'missing' for key in records},
+                completed_frozen=object(), ensure_original_source=None)
+            corrupt = False
+
+            def capture(record, destination):
+                identity = adapter._identity(record)
+                adapter._observe_ci_producer_jobs({identity.phase: self.producer},
+                    jobs_by_phase={identity.phase: f'product-validation / runtime-{TARGET}-{identity.phase}-{TARGET}'},
+                    trusted_workflow_sha=self.pin, token='not-a-real-token')
+                destination.write_bytes(objects[identity] + (b'changed' if corrupt else b''))
+
+            state.capture_deferred_object = capture
+            with self.subTest(current=current, status=status), mock.patch('reuse.api_request',
+                    side_effect=self.api(run={**self.run, 'status': status})) as http:
+                for attempt in range(2):
+                    destination = self.root / f'restored-{current}-{status}-{attempt}'
+                    destination.mkdir()
+                    restored = adapter._restore_product_objects(state, tuple(records), destination)
+                    self.assertEqual(set(records), set(restored))
+                    for identity in restored:
+                        self.assertEqual(self.receipts[identity.phase].read_bytes(), restored[identity]['receiptBytes'])
+                    reads = [call for call in http.call_args_list
+                             if call.args[0].endswith('/actions/runs/71/attempts/2')]
+                    self.assertEqual((attempt + 1) * (4 if current or status != 'completed' else 1), len(reads))
+                    self.assertIsNone(adapter._CI_OBSERVATIONS.get())
+                corrupt = True
+                destination = self.root / f'corrupt-{current}-{status}'
+                destination.mkdir()
+                with self.assertRaises(ValueError):
+                    adapter._restore_product_objects(state, tuple(records), destination)
+                self.assertIsNone(adapter._CI_OBSERVATIONS.get())
+
     def test_raw_run_selection_and_full_observation_share_only_completed_historical_reads(self):
         for current, status, expected_reads in ((None, 'completed', 1),
                 (('71', '2'), 'completed', 2), (None, 'in_progress', 2)):
@@ -880,7 +927,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                          "cec458a479c0556d39aa6a75b18311500ce66d71",
                          "e07a185513acf0b73c0ab3114f7694999bab1845",
                          "92dddb0fc4c431b9c989c0dcd09cb200c9bc7f89",
-                         "b0947995481dec088fce8e9490a17a3399e9dc2b"):
+                         "b0947995481dec088fce8e9490a17a3399e9dc2b",
+                         "dcf647126e955c37f7b3c89b44cbb8497792d72f"):
             with self.subTest(original=original):
                 run = {"referenced_workflows": [{
                     "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",
