@@ -126,6 +126,30 @@ class SameCampaignCoreMetadataTest(unittest.TestCase):
         writer.assert_called_once()
         verified.assert_not_called()  # Generic advance performs the new-state admission while held.
 
+    def test_reviewed_retained_metadata_keeps_original_pins_and_full_admission(self):
+        self.receipt["producer"] = {"commit": "f" * 40}
+        write_canonical_json(self.receipt_path, self.receipt)
+        self.digest = sha256_bytes(self.receipt_path.read_bytes())
+        origin = {"producer": self.receipt["producer"], "artifact_id": 7,
+            "artifact_sha256": "sha256:" + "d" * 64, "receipt_sha256": self.digest,
+            "workflow_sha": "f" * 40,
+            "context": {"repositoryRoot": "/original", "metadataRequest": "/original/request"}}
+        with mock.patch.object(selected, "retained_core_origin", return_value=origin):
+            for collection in (True, False):
+                with self.subTest(collection=collection):
+                    locator, capture, writer, verified = self.invoke(collection=collection)
+                    self.assertEqual("f" * 40, locator.call_args.kwargs["trusted_workflow_sha"])
+                    self.assertEqual("f" * 40, capture.call_args.kwargs["trusted_workflow_sha"])
+                    writer.assert_called_once()
+                    self.assertEqual(0 if collection else 1, verified.call_count)
+                    (self.outside / "common/record").unlink()
+                    (self.outside / "common").rmdir()
+        for field in (None, "producer", "artifact_id", "artifact_sha256", "receipt_sha256", "context"):
+            wrong = None if field is None else {**origin, field: None}
+            with self.subTest(field=field), mock.patch.object(selected, "retained_core_origin", return_value=wrong), \
+                    self.assertRaisesRegex(ValueError, "reviewed original"):
+                self.invoke(collection=True)
+
     def test_post_collection_caller_cannot_omit_its_state(self):
         with self.assertRaisesRegex(ValueError, "requires its collected state"):
             with selected.held_same_campaign_core_metadata_policy(None, None, None, None, None):

@@ -6505,7 +6505,7 @@ def collect_runtime_workers(
                     retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
                     retained_attestation = observe_retained_validation_attestation(
                         instance.target, ready["buildKey"], producer, token=token)
-                elif sdk_family in ("core-binary", "core-package", "core-validation"):
+                elif sdk_family in ("core-binary", "core-package", "core-validation", "core-metadata"):
                     from sdk_campaign_original_locator import retained_core_origin
                     retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer, target=instance.target)
                     if retained_core is not None and (sdk_worker_workflow_path, job_name) != (

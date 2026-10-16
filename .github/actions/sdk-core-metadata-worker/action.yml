@@ -77,25 +77,29 @@ outputs:
   metadata-original-context:
     description: Successful original Core metadata invocation context, captured by the caller before upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.original_context || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.execute.outputs.original_context != '' && steps.execute.outputs.original_context || '' }}
   metadata-receipt-sha256:
     description: Verified original metadata phase receipt digest, exposed only after successful execution and upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.receipt_sha256 || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.receipt_sha256 || '' }}
   metadata-artifact-id:
     description: Official original metadata upload ID, exposed only after successful execution and upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.artifact_id || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.upload.outputs.artifact-id || '' }}
   metadata-artifact-sha256:
     description: Official original metadata upload digest, exposed only after successful execution and upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.artifact_sha256 || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
 runs:
@@ -248,11 +252,38 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
+    - id: retained
+      name: Locate exact successful Core metadata before production
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+        from ci.products.inventory import canonical_json_bytes, require_sha256
+        from ci.sdk_facade_metadata_original import _context
+        from ci.reuse import github_output
+        origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
+            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'], phase='metadata')
+        values = {'reused': 'false'}
+        if origin is not None:
+            values.update(reused='true', artifact_id=str(origin['artifact_id']),
+                artifact_sha256=require_sha256(origin['artifact_sha256'], 'Retained metadata original upload'),
+                receipt_sha256=require_sha256(origin['receipt_sha256'], 'Retained metadata receipt'),
+                original_context=canonical_json_bytes(_context(origin['context'])).decode().strip())
+        github_output(Path(os.environ['GITHUB_OUTPUT']), values)
+        PY
     - uses: ./.github/actions/setup-kmp
+      if: steps.retained.outputs.reused != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
     - id: execute
+      if: steps.retained.outputs.reused != 'true'
       name: Execute exact Core metadata controller
       shell: bash
       env:
@@ -358,7 +389,7 @@ runs:
             output.write('receipt_sha256=' + receipt_sha256 + '\n')
         PY
     - id: upload
-      if: always() && steps.identity.outcome == 'success'
+      if: always() && steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-core-metadata-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
@@ -374,12 +405,12 @@ runs:
       if: always() && steps.identity.outcome == 'success'
       shell: bash
       env:
-        PHASE_RESULT: ${{ steps.execute.outcome }}
-        PHASE_UPLOAD_RESULT: ${{ steps.upload.outcome }}
-        PHASE_RECEIPT: ${{ steps.execute.outputs.receipt_sha256 }}
-        PHASE_CONTEXT: ${{ steps.execute.outputs.original_context }}
-        PHASE_UPLOAD_ID: ${{ steps.upload.outputs.artifact-id }}
-        PHASE_UPLOAD_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        PHASE_RESULT: ${{ steps.retained.outputs.reused == 'true' && steps.retained.outcome || steps.execute.outcome }}
+        PHASE_UPLOAD_RESULT: ${{ steps.retained.outputs.reused == 'true' && steps.retained.outcome || steps.upload.outcome }}
+        PHASE_RECEIPT: ${{ steps.retained.outputs.receipt_sha256 || steps.execute.outputs.receipt_sha256 }}
+        PHASE_CONTEXT: ${{ steps.retained.outputs.original_context || steps.execute.outputs.original_context }}
+        PHASE_UPLOAD_ID: ${{ steps.retained.outputs.artifact_id || steps.upload.outputs.artifact-id }}
+        PHASE_UPLOAD_DIGEST: ${{ steps.retained.outputs.artifact_sha256 || steps.upload.outputs.artifact-digest }}
       run: |
         set -euo pipefail
         test "$PHASE_RESULT" = success

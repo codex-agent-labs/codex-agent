@@ -287,6 +287,9 @@ class SdkWorkerCollectionTest(unittest.TestCase):
     def test_retained_core_validation_needs_fresh_collection_session_and_exact_child(self):
         self.check_retained_core_original("validation", "android")
 
+    def test_retained_core_metadata_needs_fresh_collection_session_and_exact_child(self):
+        self.check_retained_core_original("metadata")
+
     def check_retained_core_original(self, phase, target="common"):
         self.child_path = (".github/workflows/sdk-core-validation.yml" if phase == "validation" else
                            f".github/workflows/sdk-core-{phase}-validation.yml")

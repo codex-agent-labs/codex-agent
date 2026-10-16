@@ -269,6 +269,37 @@ class CoreMetadataWorkerActionTest(unittest.TestCase):
         self.assertIn("prepare_original_core_caller_policy(", handoff)
         self.assertIn("prepare_protected_core_context(", handoff)
 
+    def test_reviewed_retained_original_skips_production_and_preserves_its_pins(self):
+        source = self.source("retained")
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))
+        self.assertLess(self.action.index("- id: retained"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("- id: execute\n      if: steps.retained.outputs.reused != 'true'", self.action)
+        upload = self.action.split("- id: upload", 1)[1].split("with:", 1)[0]
+        self.assertIn("steps.retained.outputs.reused != 'true'", upload)
+        for field in ("artifact_id", "artifact_sha256", "receipt_sha256", "original_context"):
+            self.assertIn("steps.retained.outputs." + field, self.action)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "output"
+            values = {"PLAN": str(root / "plan.json"), "BUILD_KEY": KEY,
+                "GITHUB_WORKSPACE": str(root), "GITHUB_TOKEN": "explicit-token", "GITHUB_OUTPUT": str(output)}
+            origin = {"artifact_id": 123, "artifact_sha256": KEY, "receipt_sha256": "sha256:" + "c" * 64,
+                "context": {"repositoryRoot": "/original/checkout", "metadataRequest": "/original/request.json"}}
+            with patch.dict(os.environ, values, clear=True), patch(
+                    "ci.sdk_campaign_original_locator.locate_retained_core_binary_upload") as locate:
+                for retained in (None, origin):
+                    locate.return_value = retained
+                    output.unlink(missing_ok=True)
+                    exec(compile(source, "core-retained-original", "exec"), {})
+                    self.assertEqual("metadata", locate.call_args.kwargs["phase"])
+                    self.assertEqual(KEY, locate.call_args.kwargs["expected_build_key"])
+                    text = output.read_text()
+                    self.assertIn("reused=" + ("false" if retained is None else "true"), text)
+                    if retained is not None:
+                        self.assertIn("artifact_id=123", text)
+                        self.assertIn("receipt_sha256=" + origin["receipt_sha256"], text)
+                        self.assertIn(canonical_json_bytes(origin["context"]).decode().strip(), text)
+
     def test_fresh_policy_must_bind_exact_current_plan_before_controller(self):
         source = self.source("execute")
         with tempfile.TemporaryDirectory() as temporary:
