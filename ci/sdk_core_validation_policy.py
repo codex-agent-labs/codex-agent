@@ -48,11 +48,15 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
             native_compiler_archive=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None, sdk_facade_metadata_admission=None,
             sdk_android_metadata_admission=None, expected_metadata_build_key=None, retained_sdk_inputs_source=None,
-            completed_frozen=None):
+            completed_frozen=None, metadata_targets=()):
     """Write an exact facade request; never read authority from a retained request."""
     require_no_signing_secret(environ)
     if target not in SDK_FACADE_TARGETS:
         raise ValueError("Core validation requires a supported target")
+    if metadata_targets and (expected_metadata_build_key is None
+                             or metadata_targets != SDK_FACADE_TARGETS):
+        raise ValueError("Shared Core inputs require the complete metadata target set")
+    input_targets = metadata_targets or (target,)
     archive = _native_archive_path(target, native_compiler_archive)
     require_sha256(expected_build_key, "Core validation elected key")
     require_sha256(sdk_inputs_artifact_sha256, "Original S858 upload digest")
@@ -168,15 +172,16 @@ def prepare(plan, discovery, state, destination, *, target, expected_build_key,
 
         unchanged()
         with sdk_workflow.verified_inputs(plan, discovery, state,
-                requested_scope=(instance,),
+                requested_scope=tuple(PhaseInstanceId("sdk", "sdk-core", "validation", value)
+                                      for value in input_targets),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
                 token=token, **policies,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as sdk_inputs:
-            if {"product": "sdk", "component": "sdk-core", "phase": "validation", "target": target} not in \
-                    sdk_inputs["selection"]["consumers"]:
+            if any({"product": "sdk", "component": "sdk-core", "phase": "validation", "target": value}
+                   not in sdk_inputs["selection"]["consumers"] for value in input_targets):
                 raise ValueError("Original S858 selection does not include Core validation target")
             compatibility = sdk_inputs["sdk"]["compatibility"]
             if (compatibility["sdkVersion"] != verified.expected_fixed["versions"]["sdk"] or

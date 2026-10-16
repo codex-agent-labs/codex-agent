@@ -15,7 +15,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ci import product_reuse
-from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+from ci.products.inventory import (canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
     require_sha256, sha256_bytes, sha256_file, write_canonical_json)
 from ci.products.receipt import validate_phase_receipt
@@ -42,8 +42,38 @@ def _retained_validation_origin(raw, consumer):
     receipt = load_canonical_json_bytes(raw)
     if tuple(receipt.get(name) for name in ("product", "component", "phase")) != ("sdk", "sdk-core", "validation"):
         return None
+    if receipt["producer"] == consumer:
+        return None
     origin = retained_core_origin("validation", receipt["buildKey"], consumer, target=receipt["target"])
-    return origin if origin is not None and origin["producer"] == receipt["producer"] else None
+    if origin is not None and origin["producer"] == receipt["producer"]:
+        return origin
+    producer = receipt["producer"]
+    if (any(producer[name] != consumer[name] for name in
+            ("repository", "workflowPath", "event", "pullRequest"))
+            or (producer["runId"], producer["runAttempt"]) >= (consumer["runId"], consumer["runAttempt"])):
+        return None
+    # Reviewed selection only: use the consumer's immutable Git recipe, never
+    # an uploaded workflow claim. Official capture and full replay still follow.
+    spec = load_canonical_json_bytes(git_regular_blob_bytes(
+        Path(__file__).resolve().parents[1], consumer["commit"],
+        "ci/tests/data/requalified-sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+    if spec.get("schemaVersion") not in (2, 3):
+        return None
+    fields = ("product", "component", "phase", "target")
+    matches = [row for row in spec["completedPhases"]
+               if all(row[name] == receipt[name] for name in fields)
+               and row["buildKey"] == receipt["buildKey"]]
+    if not matches:
+        return None
+    if len(matches) != 1 or matches[0]["receiptSha256"] != sha256_bytes(raw):
+        raise ValueError("Reviewed Core original differs from the exact selected receipt")
+    pins = [row for row in spec["originals"] if all(row[name] == receipt[name] for name in fields)]
+    if len(pins) != 1:
+        raise ValueError("Reviewed Core original upload is missing or ambiguous")
+    pin = pins[0]
+    return {"producer": producer, "artifact_id": pin["artifactId"],
+            "artifact_sha256": pin["artifactSha256"], "job_id": pin["jobId"],
+            "workflow_sha": pin["workflowSha"]}
 
 
 def _require_retained_upload(locator, origin):

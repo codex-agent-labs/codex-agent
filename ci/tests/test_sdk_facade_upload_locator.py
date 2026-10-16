@@ -88,6 +88,17 @@ class CoreUploadLocatorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.call_maven()
 
+    def test_metadata_matrix_job_requires_exact_selected_build_key(self):
+        self.select("metadata", "common")
+        receipt = locator.load_canonical_json_bytes(self.receipt_path.read_bytes())
+        job = self.f.jobs[-1]
+        original_name = job["name"]
+        job["name"] = original_name + " (" + receipt["buildKey"] + ", ..."
+        self.assertEqual(701, self.call()["artifact_id"])
+        job["name"] = original_name + " (sha256:" + "0" * 64 + ", ..."
+        with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+            self.call()
+
     def test_maven_cli_selects_only_the_maven_locator(self):
         self.select("binary", "common")
         output = io.StringIO()

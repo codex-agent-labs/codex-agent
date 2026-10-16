@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from ci import sdk_core_validation_policy as policy
-from ci.products.inventory import regular_file_inventory
+from ci.products.inventory import canonical_json_bytes, regular_file_inventory
 
 
 _KEY = "sha256:" + "a" * 64
@@ -45,6 +45,10 @@ class CoreValidationPolicyTests(unittest.TestCase):
         with patch.object(policy.product_reuse, "_verified_product_state") as verified:
             with self.assertRaises(ValueError):
                 policy.prepare(**self.args(target="unknown", native_compiler_archive=archive))
+            for targets, metadata_key in ((("jvm",), _KEY), (policy.SDK_FACADE_TARGETS, None)):
+                with self.assertRaisesRegex(ValueError, "complete metadata target set"):
+                    policy.prepare(**self.args(metadata_targets=targets,
+                                               expected_metadata_build_key=metadata_key))
             for target in ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64",
                            "ios-arm64", "ios-simulator-arm64"):
                 with self.subTest(target=target), self.assertRaises(ValueError):
@@ -83,6 +87,7 @@ class CoreValidationPolicyTests(unittest.TestCase):
 
     def test_request_uses_selected_objects_and_official_sdk_input_capture(self):
         native = object()
+        metadata_mode = False
         selected = policy.PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
         phases = {phase: {"state": "retained"} for phase in
                   (policy._BINARY, policy._PACKAGE, policy._CONTRACT)}
@@ -107,11 +112,12 @@ class CoreValidationPolicyTests(unittest.TestCase):
 
         def materialize(state, instance, destination, expected_key, root, *, materialized_scope):
             self.assertIs(state, verified)
-            self.assertEqual(selected, instance)
+            self.assertEqual(policy._METADATA if metadata_mode else selected, instance)
             self.assertEqual(_KEY, expected_key)
             self.assertEqual({policy.PhaseInstanceId("contract", "contract", phase, "common")
                 for phase in ("binary", "package", "validation", "metadata")} |
-                {policy._BINARY, policy._PACKAGE}, set(materialized_scope))
+                {policy._BINARY, policy._PACKAGE} | ({selected} if metadata_mode else set()),
+                set(materialized_scope))
             for product, component, phase, target in (
                     ("sdk", "sdk-core", "binary", "common"),
                     ("sdk", "sdk-core", "package", "common"),
@@ -123,6 +129,10 @@ class CoreValidationPolicyTests(unittest.TestCase):
                     "product": product, "component": component, "phase": phase,
                     "target": target, "productVersion": "0.8.0", "outputs": [],
                 })
+            if metadata_mode:
+                path = destination / "sdk-sdk-core-validation-jvm/phase-receipt.json"
+                path.parent.mkdir()
+                path.write_bytes(validation_raw)
             return ready
 
         def capture(root, evidence, original, one_output, prepared, trust):
@@ -157,6 +167,17 @@ class CoreValidationPolicyTests(unittest.TestCase):
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": []}),
               patch.object(policy.sdk_workflow, "verified_inputs", side_effect=original_inputs)):
             result = policy.prepare(**self.args(completed_frozen=native))
+            metadata_mode = True
+            validation_raw = canonical_json_bytes({"product": "sdk", "component": "sdk-core",
+                "phase": "validation", "target": "jvm", "buildKey": _KEY})
+            phases[selected] = {"state": "retained", "buildKey": _KEY,
+                                "receiptSha256": policy.sha256_bytes(validation_raw)}
+            verified.sources[selected] = self.root / "unused"
+            verified.prior_ready_plans[policy._METADATA] = ready
+            with self.assertRaisesRegex(ValueError, "selection does not include"):
+                policy.prepare(**self.args(destination=self.root / "build/shared-core-policy",
+                    completed_frozen=native, expected_metadata_build_key=_KEY,
+                    metadata_targets=policy.SDK_FACADE_TARGETS))
         self.assertIs(native, replay.call_args.kwargs["completed_frozen"])
         request, _ = policy._request(Path(result["facadeRequest"]))
         self.assertEqual(self.root / "build/core-validation-policy/sdk-inputs/sdk-compatibility-request.json",

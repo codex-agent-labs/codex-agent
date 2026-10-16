@@ -117,10 +117,29 @@ class CoreContextPolicyTest(unittest.TestCase):
             self.invoke(locator=lambda path, **options: {"artifact_id": 98,
                 "artifact_sha256": self.kwargs["metadata_artifact_sha256"]})
         self.assertFalse(self.destination.exists())
+
         self.by_instance.pop(next(iter(self.by_instance)))
         with self.assertRaisesRegex(ValueError, "authenticated wave13 state"):
             self.invoke()
         self.assertFalse(self.destination.exists())
+
+    def test_prior_validation_pin_is_shared_with_later_context_preparation(self):
+        origin = {"artifact_id": 73, "artifact_sha256": "sha256:" + "7" * 64,
+                  "workflow_sha": "e" * 40}
+        def selected(raw, consumer):
+            self.assertEqual(self.producer, consumer)
+            return origin if load_canonical_json_bytes(raw)["target"] == "jvm" else None
+        def locate(path, **options):
+            prior = Path(path) == Path(self.records["jvm"]["validationReceipt"])
+            self.assertEqual(origin["workflow_sha"] if prior else self.kwargs["trusted_workflow_sha"],
+                             options["trusted_workflow_sha"])
+            return ({name: origin[name] for name in ("artifact_id", "artifact_sha256")} if prior else
+                    {"artifact_id": 99 if Path(path) == self.metadata_receipt else 42,
+                     "artifact_sha256": self.kwargs["metadata_artifact_sha256"]})
+        with patch.object(policy, "_retained_validation_origin", side_effect=selected):
+            result, calls = self.invoke(locator=locate)
+        self.assertEqual(12, calls)
+        self.assertEqual(73, load_canonical_json_bytes(result.read_bytes())["validations"]["jvm"]["artifactId"])
 
     def test_source_mutation_between_official_calls_never_publishes(self):
         called = 0

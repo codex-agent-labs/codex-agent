@@ -59,6 +59,7 @@ def _locate_selected(receipt_path, allowed, expected_receipt_sha256,
     child_path = (_VALIDATION_WORKFLOW_PATH if identity[1:3] == ("sdk-core", "validation") else
                   _METADATA_WORKFLOW_PATH if identity[1:3] == ("sdk-core", "metadata") else None)
     result = _locate(receipt["producer"], phase=phase, job=job, name=name, token=token,
+        expected_build_key=receipt["buildKey"],
         **({"trusted_workflows_by_phase": {phase: {"path": child_path,
             "sha": trusted_workflow_sha}}} if child_path is not None else
             {"trusted_workflow_sha": trusted_workflow_sha}))

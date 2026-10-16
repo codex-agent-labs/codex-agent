@@ -47,7 +47,7 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
             prior_by_instance=retained, sources={phase: object() for phase in retained},
             plan={"validationCommit": "b" * 40})
 
-    def invoke(self, *, bad_target=None):
+    def invoke(self, *, bad_target=None, mutate_common=False):
         native = object()
         source = {"independent-source": "fixture"}
         def request(_plan, _discovery, _state, output, **kwargs):
@@ -56,13 +56,31 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
             target = kwargs["target"]
             self.assertEqual(_KEY, kwargs["expected_metadata_build_key"])
             self.assertEqual(_KEY, kwargs["expected_build_key"])
+            self.assertEqual(bootstrap.SDK_FACADE_TARGETS, kwargs["metadata_targets"])
             self.assertNotIn("facade_request", kwargs)
             receipt = output / f"predecessors/sdk-sdk-core-validation-{target}/phase-receipt.json"
             receipt.parent.mkdir(parents=True)
             receipt.write_bytes(self.receipts["jvm" if target == bad_target else target])
             path = output / "facade-request.json"
-            path.write_bytes(b"{}\n")
+            write_canonical_json(path, {"target": target, "contractVersion": "0.8.0",
+                                       "validationContractEvidence": {}, "packageStage": str(output / "shared")})
             return {"facadeRequest": str(path)}
+
+        def materialize(state, instance, destination, expected_key, root, *, materialized_scope):
+            self.assertIs(self.verified, state)
+            self.assertEqual(bootstrap._METADATA, instance)
+            self.assertEqual(_KEY, expected_key)
+            self.assertEqual(1, len(materialized_scope))
+            phase = materialized_scope[0]
+            self.assertEqual(("sdk", "sdk-core", "validation"),
+                             (phase.product, phase.component, phase.phase))
+            receipt = destination / f"sdk-sdk-core-validation-{phase.target}/phase-receipt.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_bytes(self.receipts["jvm" if phase.target == bad_target else phase.target])
+            if mutate_common:
+                (self.root / "build/metadata-requests" / bootstrap.SDK_FACADE_TARGETS[0] /
+                 "facade-request.json").write_bytes(b"changed\n")
+            return self.verified.prior_ready_plans[bootstrap._METADATA]
 
         def projection(instance, _versions, _evidence):
             return SimpleNamespace(receipt_value=lambda: {
@@ -74,9 +92,10 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
         with (patch.object(bootstrap.product_reuse, "_verified_product_state", return_value=self.verified) as replay,
               patch.object(bootstrap, "_native_archives", return_value=(archives, {})),
               patch.object(bootstrap, "prepare_validation_request", side_effect=request) as prepared,
+              patch.object(bootstrap.product_reuse, "_materialize_product_predecessors", side_effect=materialize) as restored,
               patch.object(bootstrap, "validate_phase_receipt", side_effect=lambda value: value),
-              patch.object(bootstrap, "_request", return_value=(
-                  {"contractVersion": "0.8.0", "validationContractEvidence": {}}, b"{}\n")),
+              patch.object(bootstrap, "_request", side_effect=lambda path: (
+                  bootstrap.load_canonical_json_bytes(path.read_bytes()), path.read_bytes())),
               patch.object(bootstrap, "_contract_projection_from_request", side_effect=projection)):
             value = bootstrap.prepare(self.plan, self.discovery, self.state,
                 self.root / "build/metadata-requests", self.base / "bootstrap.json",
@@ -88,11 +107,12 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
                 retained_sdk_inputs_source=source)
         self.assertIs(native, replay.call_args.kwargs["completed_frozen"])
         self.assertEqual((bootstrap._METADATA,), replay.call_args.kwargs["requested_scope"])
+        self.assertEqual(10, restored.call_count)
         return value, prepared
 
     def test_projects_all_elected_originals_without_uploaded_request_authority(self):
         output, prepared = self.invoke()
-        self.assertEqual(11, prepared.call_count)
+        self.assertEqual(1, prepared.call_count)
         policy = bootstrap.load_canonical_json_bytes(output.read_bytes())
         self.assertEqual(set(bootstrap.SDK_FACADE_TARGETS), set(policy["validations"]))
         self.assertEqual("sha256:" + "c" * 64, policy["contractDigest"])
@@ -102,6 +122,15 @@ class CoreMetadataBootstrapTest(unittest.TestCase):
                             for target in bootstrap._NATIVE))
         self.assertTrue(all("nativeCompilerArchive" not in policy["validations"][target]
                             for target in bootstrap._NON_NATIVE_TARGETS))
+        requests = {target: bootstrap.load_canonical_json_bytes(
+            Path(record["facadeRequest"]).read_bytes()) for target, record in policy["validations"].items()}
+        self.assertEqual(set(requests), {value["target"] for value in requests.values()})
+        self.assertEqual(1, len({value["packageStage"] for value in requests.values()}))
+
+    def test_shared_inputs_mutation_fails_before_policy_publication(self):
+        with self.assertRaisesRegex(ValueError, "common inputs changed"):
+            self.invoke(mutate_common=True)
+        self.assertFalse((self.base / "bootstrap.json").exists())
 
     def test_cross_paired_original_fails_before_policy_publication(self):
         with self.assertRaisesRegex(ValueError, "selected original validation"):

@@ -128,21 +128,35 @@ def prepare(plan, discovery, state, requests_root, destination, *, expected_buil
 
     requests_root.mkdir(parents=True)
     records, projections = {}, {}
+    common_request = common_root = common_inventory = None
     for target in SDK_FACADE_TARGETS:
         unchanged()
         key, digest = originals[target]
         output = requests_root / target
-        prepared = prepare_validation_request(plan, discovery, state, output,
-            target=target, expected_build_key=key, expected_metadata_build_key=expected_build_key,
-            sdk_inputs_artifact_id=sdk_inputs_artifact_id,
-            sdk_inputs_artifact_sha256=sdk_inputs_artifact_sha256,
-            trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
-            keys_directory=keys_directory, repository_root=root, environ=environ, token=token,
-            native_compiler_archive=archives.get(target), sdk_validation_tooling=tooling,
-            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
-            **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
-            sdk_apple_validation_policy=sdk_apple_validation_policy)
-        request = Path(prepared["facadeRequest"])
+        if common_request is None:
+            prepared = prepare_validation_request(plan, discovery, state, output,
+                target=target, expected_build_key=key, expected_metadata_build_key=expected_build_key,
+                sdk_inputs_artifact_id=sdk_inputs_artifact_id,
+                sdk_inputs_artifact_sha256=sdk_inputs_artifact_sha256,
+                trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
+                keys_directory=keys_directory, repository_root=root, environ=environ, token=token,
+                native_compiler_archive=archives.get(target), sdk_validation_tooling=tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                sdk_apple_validation_policy=sdk_apple_validation_policy,
+                metadata_targets=SDK_FACADE_TARGETS)
+            request = Path(prepared["facadeRequest"])
+            common_request, _ = _request(request)
+            common_root, common_inventory = output, regular_file_inventory(output)
+        else:
+            output.mkdir()
+            ready_again = product_reuse._materialize_product_predecessors(
+                verified, _METADATA, output / "predecessors", expected_build_key, root,
+                materialized_scope=(PhaseInstanceId("sdk", "sdk-core", "validation", target),))
+            if ready_again != ready:
+                raise ValueError("Core metadata predecessor election changed")
+            request = output / "facade-request.json"
+            write_canonical_json(request, {**common_request, "target": target})
         receipt_path = output / f"predecessors/sdk-sdk-core-validation-{target}/phase-receipt.json"
         receipt_raw = read_regular_file_bytes(receipt_path, reject_symlink_parents=True)
         receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_raw))
@@ -161,6 +175,8 @@ def prepare(plan, discovery, state, requests_root, destination, *, expected_buil
         projections[target] = projection
         records[target] = {"validationReceipt": str(receipt_path), "facadeRequest": str(request),
                            **({"nativeCompilerArchive": str(archives[target])} if target in archives else {})}
+    if regular_file_inventory(common_root) != common_inventory:
+        raise ValueError("Core metadata common inputs changed during bootstrap")
     digests = {projection["contractDigest"] for projection in projections.values()}
     if len(digests) != 1 or len({projection["contractVersion"] for projection in projections.values()}) != 1:
         raise ValueError("Core metadata validations disagree on authenticated Contract identity")

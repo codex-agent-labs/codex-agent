@@ -258,6 +258,52 @@ class OriginalFacadeInputsTest(unittest.TestCase):
                     pass
         self.assertFalse(self.events)
 
+    def test_reviewed_checkpoint_selects_exact_prior_receipt_in_both_metadata_paths(self):
+        receipt = load_canonical_json_bytes(self.paths["android"].read_bytes())
+        receipt["producer"] = {**self.producer, "runId": self.producer["runId"] - 1, "commit": "d" * 40}
+        raw = canonical_json_bytes(receipt)
+        self.paths["android"].write_bytes(raw)
+        self.expected["android"] = sha256_bytes(raw)
+        identity = {name: receipt[name] for name in ("product", "component", "phase", "target")}
+        pin = {**identity, "artifactId": 123, "artifactSha256": "sha256:" + "7" * 64,
+               "jobId": 456, "workflowSha": "e" * 40}
+        spec = {"schemaVersion": 3, "completedPhases": [{**identity,
+            "buildKey": receipt["buildKey"], "receiptSha256": sha256_bytes(raw)}], "originals": [pin]}
+
+        def recipe(root, revision, path, **kwargs):
+            self.assertEqual(self.producer["commit"], revision)
+            self.assertEqual("ci/tests/data/requalified-sdk-completed-resume.json", path)
+            return canonical_json_bytes(spec)
+
+        def locate(path, **kwargs):
+            if path != self.paths["android"]:
+                return self.locator(path, **kwargs)
+            self.assertEqual("e" * 40, kwargs["trusted_workflow_sha"])
+            self.assertEqual(sha256_bytes(raw), kwargs["expected_receipt_sha256"])
+            return {"artifact_id": 123, "artifact_sha256": pin["artifactSha256"]}
+
+        def capture(plan, destination, **kwargs):
+            self.assertEqual("e" * 40 if destination.name == "android" else "c" * 40,
+                             kwargs["trusted_workflow_sha"])
+            self.capture(plan, destination, **kwargs)
+
+        with patch.object(inputs, "git_regular_blob_bytes", side_effect=recipe):
+            for fresh in (False, True):
+                with self.subTest(fresh=fresh), ExitStack() as stack:
+                    for mocked in (self.fresh_mocks() if fresh else self.mocks()):
+                        stack.enter_context(mocked)
+                    stack.enter_context(patch.object(inputs, "locate_original_facade_upload", side_effect=locate))
+                    stack.enter_context(patch.object(inputs, "capture_sdk_facade_validation_upload", side_effect=capture))
+                    with (self.fresh_call() if fresh else self.call()):
+                        pass
+            spec["completedPhases"][0]["receiptSha256"] = "sha256:" + "0" * 64
+            with self.assertRaisesRegex(ValueError, "exact selected receipt"):
+                inputs._retained_validation_origin(raw, self.producer)
+            spec["completedPhases"][0]["receiptSha256"] = sha256_bytes(raw)
+            spec["originals"].append(pin)
+            with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                inputs._retained_validation_origin(raw, self.producer)
+
     def test_fresh_receipt_mutation_after_official_location_fails_before_capture(self):
         original = self.paths["jvm"].read_bytes()
         def mutate(path, **arguments):
