@@ -263,7 +263,11 @@ def _verified_sdk_facade_metadata(plan, metadata_receipt_path, *, capture_root,
                 raise ValueError("Original metadata capture differs from the selected receipt")
             retained[capture] = _inventory(capture, allow_empty=True)
             original = capture / "original"
-            _layout(original, {"shard", "worker", "selection", "originals", "inputs"})
+            roots = {"shard", "worker", "selection", "originals", "inputs"}
+            if (original / "worker-dependency-seed").exists():
+                require_regular_directory(original / "worker-dependency-seed", "SDK dependency seed diagnostics")
+                roots.add("worker-dependency-seed")
+            _layout(original, roots)
             _layout(original / "worker", {"execution.json", "gradle.log"})
             _layout(original / "selection", {"impact-plan.json", "phase-plan.json", "producer.json"})
             shard = verify_phase_shard(original / "shard", _INSTANCE)

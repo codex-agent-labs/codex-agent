@@ -136,6 +136,21 @@ class FacadeMetadataOriginalTest(unittest.TestCase):
         self.capture.assert_not_called()
         self.no_network.assert_not_called()
 
+    def test_known_dependency_seed_is_diagnostic_and_remains_mutation_checked(self):
+        seed = self.f.destination / "worker-dependency-seed"
+        seed.mkdir()
+        (seed / "gradle.log").write_bytes(b"verified dependency seed diagnostics\n")
+        with self.call() as value:
+            self.assertEqual(set(SDK_FACADE_TARGETS), self.f.f.active)
+            self.assertEqual(self.receipt_path.read_bytes(), value["receiptBytes"])
+        with self.assertRaisesRegex(ValueError, "changed"), self.call() as value:
+            (value["original"] / "worker-dependency-seed/gradle.log").write_bytes(b"changed")
+        unknown = self.f.destination / "unexpected-inputs"
+        unknown.mkdir()
+        (unknown / "payload").write_bytes(b"unknown")
+        with self.assertRaisesRegex(ValueError, "retained layout"), self.call():
+            self.fail("Unknown roots must remain rejected")
+
     def test_retained_metadata_rejects_live_predecessors_or_transport_substitution(self):
         self.prepare_retained()
         records = deepcopy(self.f.f.records)
