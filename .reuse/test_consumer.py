@@ -102,16 +102,18 @@ class AcquisitionTests(unittest.TestCase):
                 self.assertEqual(requalifying, environment["CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"] == "")
                 self.assertTrue(environment["CODEX_AGENT_COMPLETED_REUSE_POLICY"])
 
-    def test_android_only_requalification_retains_the_input_locator_not_authority(self):
-        from products.registry import PhaseInstanceId
+    def test_adapter_only_requalification_retains_the_input_locator_not_authority(self):
+        from products import selection
+        from products.registry import NATIVE_BINDINGS, PhaseInstanceId
         document = {"policy": {"consumerCommit": "a" * 40, "requalificationBaseline": "b" * 40}}
-        for component, expected in (("sdk-android", True), ("contract", False),
-                                    ("runtime-aggregate", False), ("sdk-core", False)):
+        for component, expected in (("sdk-android", True), *((name, True) for name in NATIVE_BINDINGS),
+                                    ("contract", False), ("runtime-aggregate", False),
+                                    ("sdk-core", False), ("sdk-ios", False), ("javascript", False)):
             phase = PhaseInstanceId("sdk", component, "binary", "test")
             with self.subTest(component=component), \
                     patch("products.inventory.tree_entries", side_effect=[[("p", "old")], [("p", "new")]]) as trees, \
                     patch("products.registry.PHASE_INSTANCE_IDS", (phase,)), \
-                    patch("products.selection.phase_inventory_paths", return_value=("p",)):
+                    patch.object(selection, "phase_inventory_paths", return_value=("p",)):
                 self.assertEqual(expected, consumer.retained_sdk_binding_current(Path("unused"), document))
                 self.assertEqual(["b" * 40, "a" * 40], [call.args[1] for call in trees.call_args_list])
         with patch("products.inventory.tree_entries", side_effect=ValueError("missing Git")), \
@@ -120,6 +122,17 @@ class AcquisitionTests(unittest.TestCase):
         with patch("products.inventory.tree_entries") as trees:
             self.assertTrue(consumer.retained_sdk_binding_current(Path("unused"), {"policy": {}}))
             trees.assert_not_called()
+
+    def test_input_locator_uses_real_shared_product_ownership(self):
+        document = {"policy": {"consumerCommit": "a" * 40, "requalificationBaseline": "b" * 40}}
+        for path, expected in (("ci/native_wrappers.py", True), ("ci/products/sdk_native.py", True),
+                ("ci/products/sdk_inputs.py", False), ("ci/products/sdk_compatibility.py", False),
+                ("gradle/release/versions/sdk.txt", False),
+                ("gradle/release/keys/sdk-runtime-root.pub", False),
+                ("ci/products/contract.py", False), ("ci/products/runtime_aggregate.py", False),
+                ("unknown/input", False)):
+            with self.subTest(path=path), patch("products.inventory.tree_entries", side_effect=[[(path,"old")],[(path,"new")]]):
+                self.assertEqual(expected, consumer.retained_sdk_binding_current(Path("unused"), document))
 
     def test_batched_blobs_keep_exact_bytes_and_reject_protocol_corruption(self):
         oid = "b" * 40

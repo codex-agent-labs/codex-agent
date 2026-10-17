@@ -354,16 +354,20 @@ def retained_sdk_binding_current(root, document):
     if baseline is None:
         return True
     from products.inventory import tree_entries
-    from products.registry import PHASE_INSTANCE_IDS
+    from products.registry import NATIVE_BINDINGS, PHASE_INSTANCE_IDS
     from products.selection import phase_inventory_paths
     from reuse_qualification import _changed_inventory_paths
     before, after = (dict(tree_entries(root, revision)) for revision in
                      (baseline, document["policy"]["consumerCommit"]))
     changed = _changed_inventory_paths(before, after)
-    # Android implementation does not produce the Contract/Desktop input bundle.
+    # The transport producer and public trust are inputs even where their
+    # product inventory is owned only by native SDK consumers.
+    if "ci/products/sdk_inputs.py" in changed or any(path.startswith("gradle/release/keys/") for path in changed):
+        return False
+    # Android and native SDK adapters do not produce the shared input bundle.
     # This exports only a locator; consumers still authenticate exact inputs.
     return not any(phase_inventory_paths(changed, phase) for phase in PHASE_INSTANCE_IDS
-                   if phase.component != "sdk-android")
+                   if phase.component not in {"sdk-android", *NATIVE_BINDINGS})
 
 
 def completed_environment(root, work, value):
