@@ -1,8 +1,22 @@
 # Releasing
 
-Version `0.2.0` has not yet been tagged or published. The release process is
-designed to validate before merge, promote the exact validated bytes, and never
-rebuild them during candidate assembly or publication.
+The planned initial Contract, Desktop Runtime, and SDK versions are `0.8.0`.
+This document does not establish that any product has been published. The
+product-specific candidate and publish workflow cutover is still in progress.
+The combined workflow sections below describe the existing migration baseline,
+not an executable `0.8.0` release procedure. The target policy validates
+before merge, promotes exact validated bytes, and never rebuilds them during
+candidate assembly or publication.
+
+The planned product tags are `candidate/contract/v0.8.0-rc.N`,
+`candidate/runtime/v0.8.0-rc.N`, and `candidate/sdk/v0.8.0-rc.N`, followed by
+`contract/v0.8.0`, `runtime/v0.8.0`, and `sdk/v0.8.0`. Contract, Runtime, then
+SDK publication is dependency-ordered and resumable. All three candidates
+must validate before the first irreversible publication. Phase 11 may verify,
+sign external publication-context evidence, forward, and upload exact Phase-10
+bytes; it may not compile, link, run product tests, or repackage reusable
+product payloads. The six product-specific candidate/publish entry workflows
+and their local/hosted acceptance are still pending.
 
 No API key or stored ChatGPT credential is used by automated verification. A
 real-model check uses interactive ChatGPT sign-in in the iOS Simulator test app.
@@ -10,11 +24,12 @@ real-model check uses interactive ChatGPT sign-in in the iOS Simulator test app.
 ## Merge gate and promotion
 
 An unlabeled pull request is cheap: it runs workflow lint and impact planning,
-but no product build or platform test. A non-draft pull request labeled
-`merge-ready` validates its prospective merge tree and runs only the affected
-lanes. Successful same-PR lanes and artifacts may be reused after a later
-commit. The `ci:full` label only expands execution; it cannot narrow or skip a
-required lane. Unknown impact fails closed to full validation.
+but no product build or platform test. A non-draft pull request needs both
+`merge-ready` and explicit `ci:remote-final` authorization before affected
+product jobs may run. Successful same-PR lanes and artifacts may be reused
+after a later commit. The `ci:full` label only expands an already authorized
+campaign; it neither authorizes product jobs by itself nor skips a required
+lane. Unknown impact fails closed to full validation after authorization.
 
 The required `CI / merge-gate` check accepts an exact, complete receipt set. A
 merge group whose Git tree is identical to the validated PR tree reuses that
@@ -41,15 +56,29 @@ follows:
 - Protect `main` with required pull requests, merge queue, the merge-commit
   method rather than squash/rebase, a maximum merge-group size of one PR, and
   required check `CI / merge-gate`. Allow enough status-check time for full
-  Apple validation, and protect `candidate/v*-rc.*` tags.
-- Protect `merge-validation`, `release-candidate`, and `release-publication`.
-  Keep Firebase OIDC configuration in `merge-validation`; keep signing and
-  Maven Central credentials only in the candidate/publication environments,
-  with required reviewers.
+  Apple validation, and protect `candidate/contract/v*-rc.*`,
+  `candidate/runtime/v*-rc.*`, and `candidate/sdk/v*-rc.*` tags.
+- Protect `merge-validation`, `product-attestation`, `release-candidate`, and
+  `release-publication`. Keep Firebase OIDC configuration in
+  `merge-validation`; keep product signing credentials in
+  `product-attestation` and Maven Central credentials in the protected
+  publication environment, with required reviewers.
+- Set `CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA` as a `product-attestation`
+  environment variable to the full, independently reviewed commit SHA that
+  contains the Contract Phase-10 verifier and signer. The Contract output-record
+  workflow rejects an absent or different pin before checking out signer code;
+  its carrier remains uninvoked until this pin, the active release key, exact
+  Phase-10 sidecars, and independently selected caller inputs exist.
+- Before invoking that carrier, set environment variables
+  `CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256`,
+  `CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256`, and
+  `CODEX_AGENT_CONTRACT_PHASE10_UPLOAD_JOB` from independently reviewed exact
+  inputs. The protected record job requires each value to match the caller and
+  fails closed when any is absent; it does not discover or approve those inputs.
 - Set `CI_MERGE_QUEUE_ENABLED=true` when the merge-queue rules and trusted
   workflow are configured.
 
-## Candidate identity
+## Existing combined candidate identity (migration baseline)
 
 A candidate tag must match `candidate/v<version>-rc.N`. It must identify an
 exact commit on `main` whose Git tree has a complete promoted validation. The
@@ -57,11 +86,12 @@ workflow derives the release version from the tag instead of accepting an
 unrelated version input, and fails if the promoted and candidate trees differ.
 
 The protected `release-candidate` environment contains only the signing
-material needed to assemble the payload. Its configured reviewers approve
-access to those credentials. `release-publication` separately controls Maven
-Central publication credentials and approval. `GRADLE_ENCRYPTION_KEY` is a CI
-secret used only to encrypt reusable Gradle configuration-cache entries; it is
-not publication authority.
+material needed to attest or sign already promoted inputs. For the Contract
+product, that material never assembles, rebuilds, or repacks the content ZIP.
+Its configured reviewers approve access to those credentials.
+`release-publication` separately controls Maven Central publication credentials
+and approval. `GRADLE_ENCRYPTION_KEY` is a CI secret used only to encrypt
+reusable Gradle configuration-cache entries; it is not publication authority.
 
 ## Evidence is produced once
 
@@ -69,23 +99,61 @@ not publication authority.
    Node, and Apple slice and records its Git inputs, toolchain identity,
    artifacts, tests, and evidence in a lane receipt.
 2. Desktop runtime evidence covers macOS Arm64/x64, Linux Arm64/x64, and
-   Windows x64. Apple host, device, simulator, framework, Swift, privacy, and
-   package stages remain independently reusable.
+   Windows x64. Each matching host also consumes the installed Python, C#,
+   Rust, C++, and Dart package for that host and contributes its exact
+   package/native/toolchain hashes to the M11 receipts. Apple host, device,
+   simulator, framework, Swift, privacy, and package stages remain
+   independently reusable.
 3. Firebase Test Lab evidence runs before merge against the exact Android APKs
    and AAR through the trusted workflow pinned to `main`; a candidate never
    repeats it and no connected physical phone is required.
-4. Main promotion forwards equal-tree receipts and the exact bytes uploaded by
-   the producing jobs. Candidate assembly verifies those promoted inputs,
-   signs the unsigned Maven primaries, generates mandated sidecars, and
-   assembles the Central bundle and release manifest without compiling,
-   linking, or running platform tests.
+4. Phase 10 signs and inventories the verified release primaries, including
+   Maven sidecars, without rebuilding product bytes. Main promotion forwards
+   equal-tree receipts and those exact bytes, including native-wrapper
+   packages. Candidate assembly verifies each wrapper filename and SHA-256
+   against its schema-4 M11 receipt and forwards the Phase-10 signatures,
+   sidecars, and inventories without regenerating them or running product tests.
 
-Git commit, tree, blob, and explicit toolchain identity decide reuse. Checksums
-remain for SwiftPM, Maven Central, signatures, pinned external inputs, GitHub
-transport, and security-sensitive archive integrity. They never decide whether
-source changed, key a lane, or compare independently rebuilt ZIP files.
+## Contract handoff in Phases 10 and 11
 
-## Protected candidate
+`codex-agent-contract-<version>.zip` is a deterministic content-only artifact.
+The ZIP and its embedded Contract manifest contain no producer identity,
+signature, or signing material. Complete producer provenance lives outside the
+ZIP in the immutable Contract metadata receipt.
+
+Phase 10 verifies the exact previously built ZIP bytes, embedded manifest
+bytes, and immutable metadata receipt. It then creates the detached files
+`codex-agent-contract-<version>.attestation.json` and
+`codex-agent-contract-<version>.attestation.sig`. This step does not rebuild,
+repack, or modify the ZIP, and it does not rewrite the receipt.
+
+Phase 11 publishes the exact Phase 10 ZIP, metadata receipt, attestation, and
+signature bytes. It may verify and forward them, but it may not rebuild or
+repackage the Contract payload.
+
+## Native-wrapper release assets
+
+The candidate contains exactly 14 wrapper packages: five Python wheels and one
+sdist, one `CodexAgent.0.8.0.nupkg`, one `codex-agent-0.8.0.crate`, one
+`codex-agent-dart-0.8.0.tar.gz`, and five target-specific
+`codex-agent-cpp-0.8.0-<classifier>.zip` files. Five package-toolchain TSVs stay
+as candidate evidence rather than public SDK packages.
+
+The publication workflow uploads those 14 packages as GitHub release assets
+and verifies GitHub's recorded digest for each one. It does not upload them to
+PyPI, NuGet.org, crates.io, a CMake registry, or pub.dev. Adding a registry is a
+separate release-policy and credentials change, not an implication of the
+language-support matrix.
+
+Product-phase reuse uses content-addressed keys over phase-owned input
+inventories, compatible upstream artifacts, toolchains, flags, and any
+byte-affecting version. Git commit, tree, and blob identities authenticate
+source and preserve producer provenance; commit/run identity does not by itself
+invalidate an otherwise identical product key. Exact artifact digests also
+protect signatures, packages, and transport. Independent builds are never
+assumed byte-equivalent without comparing their verified output inventories.
+
+## Existing combined protected candidate (migration baseline)
 
 Run the Release Candidate workflow from the candidate tag. Candidate assembly
 uses a clean checkout and produces one immutable commit-scoped payload under:
@@ -96,9 +164,12 @@ build/protected-candidate/<candidate-commit>/payload/
 
 The aggregate verifies the imported evidence, iOS runtime, Swift package,
 privacy declarations, Maven inventories, pre-merge consumer receipts, Central
-bundle, and canonical candidate manifest. Candidate tasks may inspect,
-inventory, sign, and assemble promoted files; they may not compile, link, run
-Xcode, boot a simulator, or execute a platform test.
+bundle, and canonical candidate manifest. Its current signing steps are a
+migration gap: Phase 10 must finalize detached product attestations, Maven PGP
+signatures, and publication sidecars before any `0.8.0` product candidate runs.
+A product candidate may only verify and forward those exact bytes; it may not
+rebuild or repackage payloads, compile, link, run Xcode, boot a simulator, or
+execute a platform test.
 
 Candidate output is immutable. A rerun reuses an already successful candidate;
 it never silently deletes or replaces one with the same identity.
@@ -108,14 +179,21 @@ Useful local gates while developing are:
 ```shell
 actionlint
 ./gradlew -p gradle/build-logic test
-./gradlew verifyReleaseMetadata -PcodexAgent.releaseTag=v0.2.0
+./gradlew verifyReleaseMetadata -PcodexAgent.releaseTag=v0.8.0
 export DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
 ./gradlew :codex-agent-runtime-ios:preflightIosRuntime
 ./gradlew verifyIosRuntime
-./gradlew verifyRepository
+./gradlew verifyRepository \
+  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
+  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
 ```
 
 None of these commands requires a connected Android phone.
+For `verifyRepository`, set the four variables to existing imported Contract,
+Runtime, and SDK evidence directories and their `development` or `release`
+trust domain; the earlier commands do not create that full evidence set.
 Follow the [iOS development verification order](RUNTIME_IOS.md#verification)
 before starting the expensive Apple gate; it includes the scoped clean,
 simulator-only Swift typecheck, source freeze, disk budget, and exact-evidence
@@ -164,7 +242,7 @@ Identity Federation. It needs no stored Google service-account key. Creating or
 authorizing the Google identity, generating Maven Central credentials, and
 approving protected environments remain external account-owner actions.
 
-## Protected publication
+## Existing combined protected publication (migration baseline)
 
 The Publish Verified Release workflow consumes the exact successful candidate
 bytes and never rebuilds Maven, native, or runtime artifacts. It:
@@ -176,12 +254,16 @@ bytes and never rebuilds Maven, native, or runtime artifacts. It:
 3. Waits for protected release-environment approval, then uses an Ubuntu job to
    create or reuse the matching Maven Central deployment and GitHub draft
    release.
-4. Promotes only the recorded Central bundle and exact Swift package/candidate
-   assets, comparing the official GitHub asset digest with the manifest-bound
-   artifact without downloading it again.
-5. Runs one downstream macOS job whose only public asset download is the clean
+4. Promotes only the recorded Central bundle, exact Swift package/candidate
+   assets, and 14 receipt-bound native-wrapper packages, comparing every
+   official GitHub asset digest with the manifest-bound artifact without
+   downloading it again.
+5. Publishes the exact Phase 10 Contract ZIP, metadata receipt, detached
+   attestation, and detached signature bytes without rebuilding or repacking
+   the ZIP.
+6. Runs one downstream macOS job whose only public asset download is the clean
    Swift Package resolution check.
-6. On rerun, reuses matching validated or published records and fails closed on
+7. On rerun, reuses matching validated or published records and fails closed on
    identity mismatches. It does not compare a new rebuild with the old one.
 
 Do not store `OPENAI_API_KEY`, ChatGPT credentials, generated tokens, or Google

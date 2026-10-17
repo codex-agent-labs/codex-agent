@@ -1,0 +1,221 @@
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import javax.inject.Inject
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.Optional
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import org.gradle.process.ExecOperations
+import org.gradle.work.DisableCachingByDefault
+
+private val nativeWrapperInstalledConsumerLanguages =
+    setOf("python", "csharp", "rust", "cpp", "dart")
+private val nativeWrapperInstalledConsumerClassifiers =
+    setOf("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")
+
+/**
+ * Runs one matching-host installed consumer and retains its raw local evidence.
+ * Authenticates the exact imported package receipt/source before starting the consumer;
+ * this task does not mint a product-phase manifest, receipt, or parity claim.
+ */
+@DisableCachingByDefault(because = "Installed consumers must execute on the current host and toolchain")
+abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
+    private val processes: ExecOperations,
+) : DefaultTask() {
+    @get:Input abstract val language: Property<String>
+    @get:Input abstract val expectedClassifier: Property<String>
+    @get:Input abstract val offlineMode: Property<Boolean>
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val packageStageDirectory: DirectoryProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val runtimeStageDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val packageReceipt: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val compatibilityRequest: RegularFileProperty
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val verifierSources: ConfigurableFileCollection
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val stagedSdkDirectory: DirectoryProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sdkVersionFile: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val consumerScript: RegularFileProperty
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val consumerSources: ConfigurableFileCollection
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val capabilityInputsDirectory: DirectoryProperty
+    @get:Optional @get:OutputDirectory abstract val packageNegativeEvidenceDirectory: DirectoryProperty
+    @get:Internal abstract val ownedBuildDirectory: DirectoryProperty
+    @get:Input abstract val pythonExecutable: Property<String>
+    @get:Internal abstract val repositoryRoot: DirectoryProperty
+
+    init {
+        offlineMode.convention(project.gradle.startParameter.isOffline)
+        pythonExecutable.convention("python3")
+        ownedBuildDirectory.convention(project.layout.buildDirectory)
+        outputs.upToDateWhen { false }
+    }
+
+    @TaskAction
+    fun consume() {
+        val output = outputDirectory.get().asFile
+        val capabilityInputs = capabilityInputsDirectory.get().asFile
+        val negatives = packageNegativeEvidenceDirectory.orNull?.asFile
+        check((language.get() == "cpp") == (negatives != null)) {
+            "C++ requires separate package negative evidence"
+        }
+        val owned = ownedBuildDirectory.get().asFile.toPath().toAbsolutePath().normalize()
+        val destinations = listOfNotNull(output, capabilityInputs, negatives).map { file ->
+            generateSequence(file.toPath().toAbsolutePath()) { it.parent }.forEach { path ->
+                check(!Files.isSymbolicLink(path) && (!Files.exists(path, LinkOption.NOFOLLOW_LINKS) ||
+                    Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))) { "Unsafe native validation output: $path" }
+            }
+            file.toPath().toAbsolutePath().normalize().also { path ->
+                check(path != owned && path.startsWith(owned)) { "Unowned native validation output: $path" }
+            }
+        }
+        check(destinations.indices.all { first -> destinations.indices.all { second ->
+            first == second || !destinations[first].startsWith(destinations[second])
+        } }) {
+            "Native validation outputs overlap"
+        }
+        listOf(packageStageDirectory.get().asFile, runtimeStageDirectory.get().asFile,
+            packageReceipt.get().asFile, compatibilityRequest.get().asFile, stagedSdkDirectory.get().asFile,
+            sdkVersionFile.get().asFile, consumerScript.get().asFile).plus(consumerSources.files)
+            .plus(verifierSources.files).forEach { input ->
+            val path = input.canonicalFile.toPath()
+            check(destinations.none { it.startsWith(path) || path.startsWith(it) }) {
+                "Native validation output overlaps an input: $input"
+            }
+        }
+        output.deleteRecursively()
+        capabilityInputs.deleteRecursively()
+        negatives?.deleteRecursively()
+        try {
+            val languageValue = language.get()
+            check(languageValue in nativeWrapperInstalledConsumerLanguages) {
+                "Unsupported native wrapper language: $languageValue"
+            }
+            val classifier = expectedClassifier.get()
+            check(classifier in nativeWrapperInstalledConsumerClassifiers) {
+                "Unsupported native wrapper target: $classifier"
+            }
+            processes.exec {
+                workingDir(repositoryRoot.get().asFile)
+                environment("PYTHONDONTWRITEBYTECODE", "1")
+                commandLine(
+                    pythonExecutable.get(), "-m", "ci.products.sdk_package", "verify-native",
+                    "--repository", repositoryRoot.get().asFile.absolutePath,
+                    "--stage", packageStageDirectory.get().asFile.absolutePath,
+                    "--receipt", packageReceipt.get().asFile.absolutePath,
+                    "--compatibility-request", compatibilityRequest.get().asFile.absolutePath,
+                    "--runtime-stages", runtimeStageDirectory.get().asFile.absolutePath,
+                    "--staged-sdks", stagedSdkDirectory.get().asFile.absolutePath,
+                    "--component", languageValue,
+                    "--validation-inputs-output", capabilityInputs.absolutePath,
+                )
+            }
+            val command = mutableListOf(
+                pythonExecutable.get(), consumerScript.get().asFile.absolutePath, "consume-language",
+                "--repository", repositoryRoot.get().asFile.absolutePath,
+                "--packages", packageStageDirectory.get().asFile.resolve("outputs").absolutePath,
+                "--sdks", stagedSdkDirectory.get().asFile.absolutePath,
+                "--output", output.absolutePath,
+                "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
+                "--language", languageValue,
+                "--expected-classifier", classifier,
+            )
+            if (offlineMode.get()) command += "--offline"
+            if (negatives != null) command += listOf("--package-negative-evidence", negatives.absolutePath)
+            processes.exec {
+                workingDir(repositoryRoot.get().asFile)
+                environment("PYTHONDONTWRITEBYTECODE", "1")
+                commandLine(command)
+            }
+            requireExactNativeWrapperInstalledConsumerEvidence(output, languageValue, classifier)
+        } catch (error: Exception) {
+            output.deleteRecursively()
+            capabilityInputs.deleteRecursively()
+            negatives?.deleteRecursively()
+            throw error
+        }
+    }
+}
+
+internal fun requireExactNativeWrapperInstalledConsumerEvidence(
+    output: File, language: String, expectedClassifier: String? = null,
+): List<String> {
+    check(language in nativeWrapperInstalledConsumerLanguages) {
+        "Unsupported native wrapper language: $language"
+    }
+    val files = verifiedRegularFiles(output)
+    val prefix = "evidence/$language/"
+    val toolchainPath = "${prefix}toolchain.tsv"
+    val hostPaths = files.keys.filter { path ->
+        path.startsWith(prefix) && path.endsWith(".tsv") && path != toolchainPath
+    }
+    check(files.keys == hostPaths.toSet() + toolchainPath && hostPaths.size == 1) {
+        "Installed native wrapper evidence inventory is not exact"
+    }
+    val classifier = hostPaths.single().removePrefix(prefix).removeSuffix(".tsv")
+    check(classifier in nativeWrapperInstalledConsumerClassifiers) {
+        "Installed native wrapper evidence classifier is invalid: $classifier"
+    }
+    check(expectedClassifier == null || classifier == expectedClassifier) {
+        "Installed native wrapper evidence does not match requested target: $expectedClassifier"
+    }
+    val hostLines = exactNativeWrapperEvidenceLines(files.getValue(hostPaths.single()))
+    check(hostLines.size == 2 && hostLines.first() ==
+        "classifier\tpackageArtifactId\tpackageSha256\tnativeLibrarySha256\ttestId\tstatus") {
+        "Installed native wrapper host evidence schema is invalid"
+    }
+    val result = hostLines.last().split('\t')
+    check(result.size == 6 && result[0] == classifier &&
+        result[1].startsWith("$language-package/") &&
+        result[2].matches(Regex("[0-9a-f]{64}")) &&
+        result[3].matches(Regex("[0-9a-f]{64}")) &&
+        result[4] == "$language-installed-host-lifecycle" && result[5] == "passed") {
+        "Installed native wrapper host evidence result is invalid"
+    }
+    val toolchainLines = exactNativeWrapperEvidenceLines(files.getValue(toolchainPath))
+    val tools = toolchainLines.drop(1)
+    val toolNames = tools.map { it.substringBefore('\t') }
+    val expectedTools = when (language) {
+        "python" -> setOf("python")
+        "csharp" -> setOf("dotnet")
+        "rust" -> setOf("cargo", "rustc") +
+            if (classifier == "windows-x64") emptySet() else setOf("rustFixtureCompiler")
+        "cpp" -> setOf("cmake", "cppCompiler")
+        "dart" -> setOf("dart")
+        else -> error("Unsupported native wrapper language: $language")
+    }
+    check(toolchainLines.firstOrNull() == "tool\tversion" && tools.isNotEmpty() &&
+        tools == tools.sorted() && toolNames.toSet() == expectedTools && toolNames.size == expectedTools.size &&
+        tools.all { it.split('\t').let { columns ->
+            columns.size == 2 && columns.all { column -> column.isNotBlank() }
+        } }) {
+        "Installed native wrapper toolchain evidence is invalid"
+    }
+    return result
+}
+
+private fun exactNativeWrapperEvidenceLines(file: File): List<String> {
+    val contents = file.readText()
+    check(contents.isNotEmpty() && contents.endsWith("\n") && '\r' !in contents) {
+        "Installed native wrapper evidence is not canonical LF text"
+    }
+    return contents.removeSuffix("\n").split('\n')
+}

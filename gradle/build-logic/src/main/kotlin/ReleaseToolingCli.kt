@@ -1,4 +1,5 @@
 import java.io.File
+import java.nio.file.Files
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -17,6 +18,7 @@ private class ReleaseToolingArguments(values: Array<String>) {
         ?: error("Missing release-tooling option: --$name")
 
     fun file(name: String): File = File(required(name))
+    fun supplied(name: String): String = values[name] ?: error("Missing release-tooling option: --$name")
     fun long(name: String): Long = required(name).toLong()
     fun int(name: String): Int = required(name).toInt()
     fun requireOnly(vararg names: String) {
@@ -26,37 +28,359 @@ private class ReleaseToolingArguments(values: Array<String>) {
     }
 }
 
-fun main(arguments: Array<String>) {
+fun main(arguments: Array<String>) = runReleaseTooling(arguments)
+
+internal fun runReleaseTooling(arguments: Array<String>) {
     val command = arguments.firstOrNull() ?: error("Release-tooling command is required")
     val options = ReleaseToolingArguments(arguments.drop(1).toTypedArray())
     when (command) {
+        "verify-original-firebase-android-evidence" -> {
+            options.requireOnly("evidence-directory", "protected-observation-directory", "expected-release-aar",
+                "candidate-commit", "candidate-tree", "trusted-source-commit", "trusted-source-tree",
+                "apkanalyzer-executable")
+            verifyOriginalFirebaseAndroidEvidenceWithApkanalyzer(
+                options.file("evidence-directory"), options.file("protected-observation-directory"),
+                options.file("expected-release-aar"), options.required("candidate-commit"),
+                options.required("candidate-tree"), options.required("trusted-source-commit"),
+                options.required("trusted-source-tree"), options.file("apkanalyzer-executable"),
+            )
+        }
+        "verify-original-sdk-facade-consumer-inputs" -> {
+            options.requireOnly("source-snapshot", "consumer-inputs", "package-stage", "target",
+                "contract-version", "runtime-version", "sdk-version", "kotlin-version",
+                "original-execution-directory", "android-sdk-directory", "compiler-inputs", "forbidden-path")
+            verifyOriginalSdkFacadeConsumerInputs(
+                options.file("source-snapshot"), options.file("consumer-inputs"), options.file("package-stage"),
+                options.required("target"), options.required("contract-version"), options.required("runtime-version"),
+                options.required("sdk-version"), options.required("kotlin-version"),
+                options.required("original-execution-directory"), options.supplied("android-sdk-directory"),
+                options.file("compiler-inputs"),
+                options.required("forbidden-path"),
+            )
+        }
+        "verify-imported-sdk-facade-publications" -> {
+            options.requireOnly("package-stage", "contract-version", "runtime-version", "sdk-version",
+                "kotlin-version", "forbidden-path")
+            verifyImportedSdkFacadePublicationMetadata(
+                options.file("package-stage"), options.required("contract-version"),
+                options.required("runtime-version"), options.required("sdk-version"),
+                options.required("kotlin-version"), options.required("forbidden-path"),
+            )
+        }
+        "inspect-runtime-manifest" -> {
+            options.requireOnly("manifest")
+            val manifest = readDesktopCodexManifest(options.file("manifest"))
+            println("${manifest.version} ${manifest.releaseTag} ${manifest.distributions.size}")
+        }
         "self-check" -> {
             options.requireOnly()
-            check(canonicalPromotedMavenOwners().size == expectedMavenPrimaryPaths("VERSION")
+            check(canonicalPromotedMavenOwners().size ==
+                expectedMavenPrimaryPaths(ProductVersions("CONTRACT", "RUNTIME", "SDK"))
                 .map { it.substringBefore('/') }.toSet().size)
             check(centralAuthorization("user", "password").startsWith("Bearer "))
             check(releaseJson.parseToJsonElement("{\"ready\":true}").jsonObject.releaseBoolean("ready"))
             check(requireIosFreeDiskSpace(2L * 1024 * 1024 * 1024, 1) > 0)
             check(desktopRuntimeEvidenceFileName("linuxX64") == "desktop-runtime-linuxX64.json")
+            check(crossLanguageCAbiTargetSpecs.size == 5)
+            check(productionCrossLanguageCAbiScenarioMappings().sumOf { it.testIds.size } == 231)
             println("codex-agent release tooling is ready")
         }
+        "verify-apple-binary-package", "capture-apple-binary-package-evidence" -> {
+            val captureEvidence = command == "capture-apple-binary-package-evidence"
+            val inputs = arrayOf("product-directory", "version", "binary-frameworks", "source-snapshot",
+                "sdk-compatibility", "work-directory", "developer-directory",
+                "xcode-version", "xcode-build", "swift-version")
+            options.requireOnly(*(inputs + if (captureEvidence)
+                arrayOf("execution-evidence-directory", "execution-binding-file") else emptyArray()))
+            verifyAppleBinaryPackageWithTools(
+                options.file("product-directory"), options.required("version"), options.file("binary-frameworks"),
+                options.file("source-snapshot"), options.file("sdk-compatibility"), options.file("work-directory"),
+                options.file("developer-directory"), options.required("xcode-version"), options.required("xcode-build"),
+                options.required("swift-version"),
+                executionEvidenceDirectory = if (captureEvidence) options.file("execution-evidence-directory") else null,
+                executionBindingFile = if (captureEvidence) options.file("execution-binding-file") else null,
+            )
+        }
+        "verify-apple-validation-binding-content" -> {
+            options.requireOnly("evidence-directory", "product-directory", "version", "sdk-compatibility",
+                "canonical-api", "canonical-coverage", "consumer-source-directory", "work-directory")
+            verifyAppleValidationBindingReplay(
+                options.file("evidence-directory"), options.file("product-directory"), options.required("version"),
+                options.file("sdk-compatibility"), options.file("canonical-api"), options.file("canonical-coverage"),
+                options.file("consumer-source-directory"), options.file("work-directory"),
+            )
+        }
+        "verify-original-apple-native-evidence" -> {
+            options.requireOnly("evidence-directory", "source-snapshot", "toolchain-directory", "rust-host",
+                "xcode-version", "xcode-build", "swift-version", "device-commit", "device-tree",
+                "simulator-commit", "simulator-tree", "tests-commit", "tests-tree")
+            verifyOriginalAppleNativeEvidence(
+                options.file("evidence-directory"), options.file("source-snapshot"), options.file("toolchain-directory"),
+                mapOf(
+                    "ios-rust-device" to (options.required("device-commit") to options.required("device-tree")),
+                    "ios-rust-simulator" to (options.required("simulator-commit") to options.required("simulator-tree")),
+                    "ios-native-tests" to (options.required("tests-commit") to options.required("tests-tree")),
+                ),
+                options.required("rust-host"), options.required("xcode-version"), options.required("xcode-build"),
+                options.required("swift-version"),
+            )
+        }
+        "verify-original-apple-execution" -> {
+            options.requireOnly("distribution-directory", "execution-directory",
+                "expected-distribution-proof", "expected-sdk-compatibility")
+            verifyOriginalAppleExecution(
+                options.file("distribution-directory"), options.file("execution-directory"),
+                options.file("expected-distribution-proof"), options.file("expected-sdk-compatibility"),
+            )
+        }
+        "verify-original-apple-package-execution" -> {
+            options.requireOnly("evidence-directory", "product-directory", "version", "binary-frameworks",
+                "source-snapshot", "sdk-compatibility", "work-directory", "execution-binding-file",
+                "expected-binding-sha256", "expected-execution-files", "xcode-version", "xcode-build", "swift-version")
+            verifyBoundOriginalApplePackageExecution(
+                options.file("evidence-directory"), options.file("product-directory"), options.required("version"),
+                options.file("binary-frameworks"), options.file("source-snapshot"), options.file("sdk-compatibility"),
+                options.file("work-directory"), options.file("execution-binding-file"),
+                options.required("expected-binding-sha256"), options.file("expected-execution-files"),
+                options.required("xcode-version"), options.required("xcode-build"), options.required("swift-version"),
+            )
+        }
+        "verify-original-apple-simulator-execution" -> {
+            options.requireOnly("evidence-directory", "expected-runtime-name",
+                "expected-device-type-identifier", "original-working-directory")
+            verifyOriginalAppleSimulatorExecution(
+                options.file("evidence-directory"), options.required("expected-runtime-name"),
+                options.required("expected-device-type-identifier"), options.required("original-working-directory"),
+            )
+        }
+        "verify-transported-apple-sdk-package-closure" -> {
+            options.requireOnly(
+                "product-directory", "validation-evidence-directory", "version",
+                "owned-build-directory", "work-directory",
+                "expected-sdk-compatibility", "expected-distribution-proof",
+            )
+            verifyTransportedAppleSdkPackageClosure(
+                options.file("product-directory"),
+                options.file("validation-evidence-directory"),
+                options.required("version"),
+                options.file("owned-build-directory"),
+                options.file("work-directory"),
+                options.file("expected-sdk-compatibility"),
+                options.file("expected-distribution-proof"),
+            )
+        }
+        "assemble-c-abi-binding-receipt" -> {
+            options.requireOnly(
+                "repository", "bootstrap", "scenario-proof", "packages", "proofs",
+                "version", "commit", "tree", "output",
+            )
+            val output = options.file("output")
+            Files.deleteIfExists(output.toPath())
+            val repository = options.file("repository").canonicalFile
+            val bootstrap = options.file("bootstrap")
+            val scenarioFile = options.file("scenario-proof")
+            val packages = options.file("packages")
+            val proofs = options.file("proofs")
+            val version = options.required("version")
+            val commit = options.required("commit")
+            val tree = options.required("tree")
+            val archiveNames = crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
+                crossLanguageCAbiArchiveFileName(version, target)
+            }
+            val proofNames = crossLanguageCAbiTargetSpecs.keys.associateWith(::crossLanguageCAbiPackageEvidenceFileName)
+            requireExactReleaseToolingDirectory(packages, archiveNames.values.toSet(), "C ABI packages")
+            requireExactReleaseToolingDirectory(proofs, proofNames.values.toSet(), "C ABI package proofs")
+            val header = repository.resolve("codex-agent-runtime-desktop/native/c-api/include/codex_agent.h")
+            val license = repository.resolve("LICENSE")
+            val notice = repository.resolve("THIRD_PARTY_NOTICES.md")
+            val consumers = repository.resolve("codex-agent-runtime-desktop/native/c-api/consumer")
+                .listFiles().orEmpty().filter { it.extension in setOf("c", "cpp") }
+            crossLanguageCAbiTargetSpecs.keys.sorted().forEach { target ->
+                val exportPolicy = repository.resolve(
+                    "codex-agent-runtime-desktop/native/c-api/exports/" + when {
+                        target.startsWith("macos") -> "macos.exports"
+                        target.startsWith("linux") -> "linux.map"
+                        else -> "windows.def"
+                    },
+                )
+                portableVerifyCrossLanguageCAbiPackageEvidence(
+                    target, version, commit, tree,
+                    packages.resolve(archiveNames.getValue(target)),
+                    proofs.resolve(proofNames.getValue(target)),
+                    header, license, notice, exportPolicy, consumers,
+                )
+            }
+            val scenario = readCrossLanguageCAbiScenarioProof(scenarioFile, bootstrap)
+            val artifacts = buildList {
+                add(CrossLanguageBindingArtifactIdentity("c-abi-bootstrap", bootstrap.releaseDigest()))
+                add(CrossLanguageBindingArtifactIdentity(C_ABI_SCENARIO_PROOF_ARTIFACT_ID, scenarioFile.releaseDigest()))
+                crossLanguageCAbiTargetSpecs.keys.sorted().forEach { target ->
+                    add(CrossLanguageBindingArtifactIdentity(
+                        crossLanguageCAbiPackageProofIds.getValue(target),
+                        proofs.resolve(proofNames.getValue(target)).releaseDigest(),
+                    ))
+                }
+            }
+            writeCrossLanguageCAbiBindingReceipt(
+                output,
+                CrossLanguageCAbiBindingEvidenceInput(
+                    bootstrapEvidence = bootstrap,
+                    scenarioMappings = scenario.mappings,
+                    artifactIdentities = artifacts,
+                    testProgramSha256 = scenario.testProgramSha256,
+                    testResultsSha256 = scenario.testResultsSha256,
+                ),
+            )
+        }
+        "verify-native-wrapper-capability-evidence" -> {
+            options.requireOnly(
+                "language", "api-report", "coverage-receipt", "c-abi-bootstrap",
+                "claims", "compiler-evidence", "test-program", "test-results",
+            )
+            val languageName = options.required("language")
+            val language = CrossLanguageBinding.entries.singleOrNull { it.id == languageName }
+                ?: error("Unknown native wrapper binding language: $languageName")
+            verifyCrossLanguageNativeWrapperCapabilityEvidence(
+                language = language,
+                apiReport = options.file("api-report"),
+                canonicalCoverageReceipt = options.file("coverage-receipt"),
+                cAbiBootstrapEvidence = options.file("c-abi-bootstrap"),
+                claimsFile = options.file("claims"),
+                compilerEvidenceFile = options.file("compiler-evidence"),
+                testProgram = options.file("test-program"),
+                testResultsFile = options.file("test-results"),
+            )
+        }
+        "verify-native-wrapper-validation-evidence" -> {
+            options.requireOnly("language", "target", "capability-inputs", "installed-evidence", "capability-evidence", "claims")
+            val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
+                ?: error("Unsupported native wrapper validation language")
+            verifyCrossLanguageNativeWrapperValidationEvidence(
+                language, options.required("target"), options.file("capability-inputs"),
+                options.file("installed-evidence"), options.file("capability-evidence"), options.file("claims"),
+            )
+        }
+        "verify-imported-native-wrapper-validation", "write-native-wrapper-validation-content" -> {
+            val names = arrayOf("repository", "language", "target", "package-stage", "package-receipt",
+                "compatibility-request", "runtime-stages", "staged-sdks", "validation-stage", "validation-receipt")
+            val contentOutput = if (command == "write-native-wrapper-validation-content") options.file("content-output") else null
+            options.requireOnly(*(names + if (contentOutput != null) arrayOf("content-output") else emptyArray()))
+            val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
+                ?: error("Unsupported imported native wrapper language")
+            verifyImportedNativeWrapperValidation(options.file("repository"), language, options.required("target"),
+                options.file("package-stage"), options.file("package-receipt"), options.file("compatibility-request"),
+                options.file("runtime-stages"), options.file("staged-sdks"),
+                options.file("validation-stage"), options.file("validation-receipt"), contentOutput)
+        }
+        "write-native-wrapper-metadata-content" -> {
+            options.requireOnly("repository", "language", "package-stage", "package-receipt", "compatibility-request",
+                "runtime-stages", "staged-sdks", "validation-stages", "validation-receipts", "content-output", "sdk-version")
+            val language = nativeWrapperBindings.singleOrNull { it.id == options.required("language") }
+                ?: error("Unsupported native metadata language")
+            writeImportedNativeWrapperMetadataContent(options.file("repository"), language,
+                options.file("package-stage"), options.file("package-receipt"), options.file("compatibility-request"),
+                options.file("runtime-stages"), options.file("staged-sdks"), options.file("validation-stages"),
+                options.file("validation-receipts"), options.file("content-output"), options.required("sdk-version"))
+        }
+        "write-javascript-metadata-content" -> {
+            options.requireOnly("contract-stage", "package-stage", "validation-stage", "runtime-validation-stage",
+                "original-consumer-directory", "contract-version", "sdk-version", "runtime-version", "content-output")
+            writeImportedJavaScriptMetadataContent(
+                options.file("contract-stage"), options.file("package-stage"), options.file("validation-stage"),
+                options.file("runtime-validation-stage"), options.file("original-consumer-directory"),
+                options.required("contract-version"), options.required("sdk-version"), options.required("runtime-version"),
+                options.file("content-output"),
+            )
+        }
+        "assemble-native-wrapper-binding-receipt" -> {
+            options.requireOnly(
+                "phase", "language", "api-report", "coverage-receipt", "c-abi-bootstrap",
+                "claims", "compiler-evidence", "test-program", "test-results", "packages",
+                "host-evidence", "staged-c-abi-sdks", "output",
+            )
+            val output = options.file("output")
+            Files.deleteIfExists(output.toPath())
+            val phaseName = options.required("phase")
+            val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
+                ?: error("Unknown native wrapper binding phase: $phaseName")
+            val languageName = options.required("language")
+            val language = CrossLanguageBinding.entries.singleOrNull { it.id == languageName }
+                ?: error("Unknown native wrapper binding language: $languageName")
+            val expected = deriveCrossLanguageNativeWrapperBindingReceipt(
+                CrossLanguageNativeWrapperEvidenceInput(
+                    phase = phase,
+                    language = language,
+                    apiReport = options.file("api-report"),
+                    canonicalCoverageReceipt = options.file("coverage-receipt"),
+                    cAbiBootstrapEvidence = options.file("c-abi-bootstrap"),
+                    claims = options.file("claims"),
+                    compilerEvidence = options.file("compiler-evidence"),
+                    testProgram = options.file("test-program"),
+                    testResults = options.file("test-results"),
+                    packageArtifacts = nativeWrapperPackageArtifacts(language, options.file("packages")),
+                    hostEvidenceDirectory = options.file("host-evidence"),
+                    stagedCAbiSdks = options.file("staged-c-abi-sdks"),
+                ),
+            )
+            writeCrossLanguageBindingReceipt(output, expected)
+            check(readCrossLanguageBindingReceipt(output).toJson() == expected.toJson()) {
+                "Native wrapper binding receipt does not match freshly recomputed evidence"
+            }
+        }
+        "advance-cross-language-binding-receipt" -> {
+            options.requireOnly("phase", "source", "output")
+            val phaseName = options.required("phase")
+            val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
+                ?: error("Unknown carried binding phase: $phaseName")
+            advanceCrossLanguageBindingReceiptPhase(
+                options.file("source"),
+                phase,
+                options.file("output"),
+            )
+        }
+        "audit-cross-language-bindings" -> {
+            options.requireOnly("phase", "api-report", "coverage-receipt", "receipts", "output")
+            val output = options.file("output")
+            Files.deleteIfExists(output.toPath())
+            val phaseName = options.required("phase")
+            val phase = CrossLanguageBindingPhase.entries.singleOrNull { it.name == phaseName }
+                ?: error("Unknown cross-language binding phase: $phaseName")
+            writeCompleteCrossLanguageBindingAudit(
+                phase = phase,
+                apiReport = options.file("api-report"),
+                canonicalCoverageReceipt = options.file("coverage-receipt"),
+                receiptDirectory = options.file("receipts"),
+                auditFile = output,
+            )
+        }
         "stage-promoted-maven" -> {
-            options.requireOnly("promoted", "commit", "version", "output")
+            options.requireOnly(
+                "promoted", "commit", "contract-version", "runtime-version", "sdk-version", "output",
+            )
             stageCanonicalPromotedMavenPrimaries(
-                options.file("promoted"), options.required("commit"), options.required("version"),
+                options.file("promoted"), options.required("commit"), ProductVersions(
+                    options.required("contract-version"),
+                    options.required("runtime-version"),
+                    options.required("sdk-version"),
+                ),
                 options.file("output"),
             )
         }
         "assemble-promoted-candidate" -> {
             options.requireOnly(
-                "repository", "promoted", "signed-maven", "version", "tag", "commit", "tree",
+                "repository", "promoted", "signed-maven", "contract-version", "runtime-version", "sdk-version",
+                "tag", "commit", "tree",
                 "promotion-run-id", "promotion-run-attempt", "release-tool", "payload",
             )
             val repository = options.file("repository").canonicalFile
             assemblePromotedCandidate(PromotedCandidateInputs(
                 promotedArtifacts = options.file("promoted"),
                 signedMavenRepository = options.file("signed-maven"),
-                version = options.required("version"),
+                versions = ProductVersions(
+                    options.required("contract-version"),
+                    options.required("runtime-version"),
+                    options.required("sdk-version"),
+                ),
                 releaseTag = options.required("tag"),
                 commit = options.required("commit"),
                 tree = options.required("tree"),
@@ -75,10 +399,10 @@ fun main(arguments: Array<String>) {
                     "codex-agent-runtime-desktop/codex-app-server-distributions.json",
                 ),
                 desktopBundledLicense = repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+                    "legal/openai-codex/openai-codex-LICENSE.txt",
                 ),
                 desktopBundledNotice = repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+                    "legal/openai-codex/openai-codex-NOTICE.txt",
                 ),
                 releaseTooling = options.file("release-tool"),
                 repository = repository,
@@ -87,7 +411,8 @@ fun main(arguments: Array<String>) {
         }
         "verify-candidate" -> {
             options.requireOnly(
-                "repository", "manifest", "payload", "version", "tag", "commit",
+                "repository", "manifest", "payload", "contract-version", "runtime-version", "sdk-version",
+                "tag", "commit",
                 "verification-output", "github-output",
             )
             val repository = options.file("repository").canonicalFile
@@ -117,14 +442,18 @@ fun main(arguments: Array<String>) {
                     "codex-agent-runtime-desktop/codex-app-server-distributions.json",
                 ),
                 "desktopBundledLicense" to repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+                    "legal/openai-codex/openai-codex-LICENSE.txt",
                 ),
                 "desktopBundledNotice" to repository.resolve(
-                    "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+                    "legal/openai-codex/openai-codex-NOTICE.txt",
                 ),
             )
             val result = verifyCandidatePayload(
-                manifestFile, payload, options.required("version"), options.required("tag"),
+                manifestFile, payload, ProductVersions(
+                    options.required("contract-version"),
+                    options.required("runtime-version"),
+                    options.required("sdk-version"),
+                ), options.required("tag"),
                 options.required("commit"), policies,
             )
             verifyPublicationReadiness(
@@ -162,5 +491,15 @@ fun main(arguments: Array<String>) {
             }
         }
         else -> error("Unknown release-tooling command: $command")
+    }
+}
+
+private fun requireExactReleaseToolingDirectory(directory: File, expected: Set<String>, label: String) {
+    check(directory.isDirectory && !Files.isSymbolicLink(directory.toPath())) {
+        "$label directory is missing or symbolic: $directory"
+    }
+    val actual = directory.listFiles().orEmpty().map(File::getName).toSet()
+    check(actual == expected && directory.listFiles().orEmpty().size == expected.size) {
+        "$label inventory mismatch: expected=${expected.sorted()} actual=${actual.sorted()}"
     }
 }

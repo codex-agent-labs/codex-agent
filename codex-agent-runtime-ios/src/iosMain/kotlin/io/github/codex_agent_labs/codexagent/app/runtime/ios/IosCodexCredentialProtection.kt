@@ -38,19 +38,25 @@ internal fun applyIosCredentialProtection(configuration: IosCodexRuntimeConfigur
 
     val protection = iosFileProtectionValue(configuration.credentialProtection)
     paths.forEach { path ->
-        check(
+        val attributesApplied =
             fileManager.setAttributes(
                 mapOf(NSFileProtectionKey to protection),
                 ofItemAtPath = path,
                 error = null,
-            ),
-        ) { "Could not apply iOS file protection to Codex state" }
+            )
         check(
+            attributesApplied || !fileManager.fileExistsAtPath(path),
+        ) { "Could not apply iOS file protection to Codex state" }
+        if (!attributesApplied) return@forEach
+
+        val excludedFromBackup =
             NSURL.fileURLWithPath(path).setResourceValue(
                 true,
                 forKey = NSURLIsExcludedFromBackupKey,
                 error = null,
-            ),
+            )
+        check(
+            excludedFromBackup || !fileManager.fileExistsAtPath(path),
         ) { "Could not exclude Codex state from backups" }
     }
 }

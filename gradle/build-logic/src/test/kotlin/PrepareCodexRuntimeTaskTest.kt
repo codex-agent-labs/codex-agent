@@ -34,6 +34,23 @@ class PrepareCodexRuntimeTaskTest {
     }
 
     @Test
+    fun `accepts the absolute archive path supplied by the SDK worker`() {
+        val project = fixture()
+        try {
+            val binary = "runtime-binary".toByteArray()
+            val archive = project.resolve("runtime.tar.gz")
+            writeTarGz(archive, mapOf(ASSET to binary))
+            writeBuild(project, archive.sha256(), binary.sha256(), archive.absolutePath)
+
+            assertEquals(TaskOutcome.SUCCESS, run(project).task(":prepareCodexRuntime")?.outcome)
+            assertTrue(project.resolve("build/generated/codex-runtime/main/arm64-v8a/libcodex_app_server.so")
+                .readBytes().contentEquals(binary))
+        } finally {
+            project.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `rejects archive and binary hash failures without temporary residue`() {
         val project = fixture()
         try {
@@ -67,7 +84,7 @@ class PrepareCodexRuntimeTaskTest {
         resolve("settings.gradle.kts").writeText("rootProject.name = \"test\"\n")
     }
 
-    private fun writeBuild(project: File, archiveHash: String, binaryHash: String) {
+    private fun writeBuild(project: File, archiveHash: String, binaryHash: String, archivePath: String = "runtime.tar.gz") {
         project.resolve("build.gradle.kts").writeText(
             """
             plugins {
@@ -80,7 +97,7 @@ class PrepareCodexRuntimeTaskTest {
             codexAgent.codexVersion=1.2.3
             codexAgent.codexArchiveSha256=$archiveHash
             codexAgent.codexBinarySha256=$binaryHash
-            codexAgent.codexArchiveFile=runtime.tar.gz
+            codexAgent.codexArchiveFile=$archivePath
             """.trimIndent(),
         )
     }

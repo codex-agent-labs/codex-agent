@@ -35,6 +35,12 @@ let package = Package(
             name: "CodexAgentSwiftSupport",
             dependencies: ["CodexAgent"]
         ),
+        .target(
+            name: "CodexAgentObjectiveCConsumer",
+            dependencies: ["CodexAgent"],
+            path: "Tests/CodexAgentObjectiveCConsumer",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "CodexAgentAuthenticationTests",
             dependencies: [
@@ -47,6 +53,7 @@ let package = Package(
             dependencies: [
                 "CodexAgent",
                 "CodexAgentObservation",
+                "CodexAgentObjectiveCConsumer",
                 "CodexAgentSwiftSupport",
             ]
         ),

@@ -1,0 +1,16 @@
+gradle.beforeProject { project ->
+    if (project.path != ':' && project.path != ':codex-agent-runtime-desktop') return
+    // Commonizer enum identity hashes otherwise reorder serialized declarations.
+    project.extensions.extraProperties.set('kotlin.mpp.commonizerJvmArgs',
+        '-XX:+UnlockExperimentalVMOptions -XX:hashCode=2')
+    if (project.path == ':') return
+    project.afterEvaluate {
+        def home = System.getenv('KONAN_DATA_DIR')
+        if (!home) throw new GradleException('KONAN_DATA_DIR is required for macOS x64 linking')
+        [linkReleaseSharedMacosX64: 'release', linkDebugTestMacosX64: 'test'].each { name, suffix ->
+            def task = project.tasks.findByName(name)
+            if (task == null) throw new GradleException("Missing macOS x64 link task: ${name}")
+            task.toolOptions.freeCompilerArgs.add("-Xtemporary-files-dir=${home}/link-${suffix}")
+        }
+    }
+}

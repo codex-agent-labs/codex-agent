@@ -1,6 +1,13 @@
-.github/workflows/release-candidate.yml
-.github/workflows/publish.yml
-.github/workflows/promote.yml
 .github/dependabot.yml
-gradle/release/**
+.github/workflows/contract-phase10-later-record.yml
+.github/workflows/sdk-phase10-later-authority.yml
+.github/workflows/sdk-phase10-later-record.yml
+ci/sdk_phase10_original_plan.py
+ci/sdk_phase10_protected_inputs.py
+ci/sdk_phase11_bytes.py
+ci/sdk_phase11_objects.py
+.github/workflows/promote.yml
+.github/workflows/publish.yml
+.github/workflows/release-candidate.yml
 Package.swift
+gradle/release/**

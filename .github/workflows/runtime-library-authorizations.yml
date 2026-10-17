@@ -1,0 +1,389 @@
+name: Runtime Phase-10 Library Authorizations
+
+on:
+  workflow_call:
+    inputs:
+      attestationJson:
+        required: true
+        type: string
+    outputs:
+      delegationArtifactId:
+        value: ${{ jobs.delegate.outputs.artifact_id }}
+      delegationArtifactSha256:
+        value: ${{ jobs.delegate.outputs.artifact_sha256 }}
+      captureArtifactId:
+        value: ${{ jobs.capture.outputs.artifact_id }}
+      captureArtifactSha256:
+        value: ${{ jobs.capture.outputs.artifact_sha256 }}
+      authorizationsArtifactId:
+        value: ${{ jobs.authorize.outputs.artifact_id }}
+      authorizationsArtifactSha256:
+        value: ${{ jobs.authorize.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  delegate:
+    name: runtime-library-root-delegation
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'runtime-library-authorizations'
+    runs-on: ubuntu-24.04
+    environment: sdk-runtime-root-attestation
+    outputs:
+      source_sha: ${{ steps.approval.outputs.source_sha }}
+      control_sha256: ${{ steps.approval.outputs.control_sha256 }}
+      original_run_id: ${{ steps.approval.outputs.originalRunId }}
+      original_run_attempt: ${{ steps.approval.outputs.originalRunAttempt }}
+      validation_commit: ${{ steps.approval.outputs.validationCommit }}
+      validation_tree: ${{ steps.approval.outputs.validationTree }}
+      plan_id: ${{ steps.approval.outputs.planArtifactId }}
+      plan_sha256: ${{ steps.approval.outputs.planArtifactSha256 }}
+      aggregate_id: ${{ steps.approval.outputs.aggregateArtifactId }}
+      aggregate_sha256: ${{ steps.approval.outputs.aggregateArtifactSha256 }}
+      aggregate_key: ${{ steps.approval.outputs.aggregateBuildKey }}
+      receipt_sha256: ${{ steps.approval.outputs.metadataReceiptSha256 }}
+      workflow_sha: ${{ steps.approval.outputs.aggregateWorkflowSha }}
+      root_sha256: ${{ steps.approval.outputs.root_sha256 }}
+      root_fingerprint: ${{ steps.issue.outputs.root_fingerprint }}
+      inventory_sha256: ${{ steps.issue.outputs.inventory_sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require exact protected authority before checkout
+        id: approval
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PHASE10_CONTROL_APPROVED_SHA256 }}
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          ROOT_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_ROOT_PUBLIC_KEY_SHA256 }}
+          KEYRING_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_KEYRING_SHA256 }}
+          KEYS_INVENTORY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_KEYS_INVENTORY_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          for pin in "$CONTROL_SHA256" "$ROOT_SHA256" "$KEYRING_SHA256" "$KEYS_INVENTORY_SHA256"; do
+            [[ "$pin" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          done
+          test -n "$CONTROL_JSON"
+          printf '%s\n' "$CONTROL_JSON" > "$RUNNER_TEMP/runtime-library-control.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-library-control.json" | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+          python3 - "$RUNNER_TEMP/runtime-library-control.json" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate Runtime control key")
+                  result[key] = value
+              return result
+          def no_float(_):
+              raise ValueError("Runtime control cannot contain a float")
+          raw = Path(sys.argv[1]).read_bytes()
+          value = json.loads(raw, object_pairs_hook=unique, parse_float=no_float,
+                             parse_constant=no_float)
+          if type(value) is not dict or raw != (json.dumps(
+                  value, sort_keys=True, separators=(",", ":"),
+                  ensure_ascii=False, allow_nan=False) + "\n").encode():
+              raise ValueError("Runtime control is not canonical JSON")
+          names = {"schemaVersion", "originalRunId", "originalRunAttempt",
+                   "validationCommit", "validationTree", "planArtifactId",
+                   "planArtifactSha256", "aggregateArtifactId",
+                   "aggregateArtifactSha256", "aggregateBuildKey",
+                   "metadataReceiptSha256", "aggregateWorkflowSha",
+                   "sidecarArtifactId", "sidecarArtifactSha256", "sidecarWorkflowSha",
+                   "trustedSourceCommit", "pgpKeySha256"}
+          if set(value) != names or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1:
+              raise ValueError("Runtime control schema differs from the protected record")
+          if value["trustedSourceCommit"] != sys.argv[2]:
+              raise ValueError("Runtime control source differs from protected source")
+          sha_fields = {"planArtifactSha256", "aggregateArtifactSha256", "aggregateBuildKey",
+                        "metadataReceiptSha256", "sidecarArtifactSha256", "pgpKeySha256"}
+          commit_fields = {"validationCommit", "validationTree", "aggregateWorkflowSha",
+                           "sidecarWorkflowSha", "trustedSourceCommit"}
+          number_fields = {"originalRunId", "originalRunAttempt", "planArtifactId",
+                           "aggregateArtifactId", "sidecarArtifactId"}
+          for name in sha_fields:
+              if type(value[name]) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", value[name]):
+                  raise ValueError(f"invalid Runtime control {name}")
+          for name in commit_fields:
+              if type(value[name]) is not str or not re.fullmatch(r"[0-9a-f]{40}", value[name]):
+                  raise ValueError(f"invalid Runtime control {name}")
+          for name in number_fields:
+              if type(value[name]) is not int or value[name] < 1:
+                  raise ValueError(f"invalid Runtime control {name}")
+          with Path(sys.argv[3]).open("a", encoding="utf-8") as output:
+              for name in sorted(names - {"schemaVersion"}):
+                  output.write(f"{name}={value[name]}\n")
+          PY
+          {
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'control_sha256=%s\n' "$CONTROL_SHA256"
+            printf 'root_sha256=%s\n' "$ROOT_SHA256"
+            printf 'keyring_sha256=%s\n' "$KEYRING_SHA256"
+            printf 'keys_inventory_sha256=%s\n' "$KEYS_INVENTORY_SHA256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed Runtime delegate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Issue independently pinned root delegation without observation token
+        id: issue
+        env:
+          ROOT_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_SDK_RUNTIME_ROOT_ED25519_PRIVATE_KEY }}
+          ROOT_SHA256: ${{ steps.approval.outputs.root_sha256 }}
+          KEYRING_SHA256: ${{ steps.approval.outputs.keyring_sha256 }}
+          KEYS_INVENTORY_SHA256: ${{ steps.approval.outputs.keys_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          test -n "$ROOT_PRIVATE_KEY"
+          umask 077
+          printf '%s\n' "$ROOT_PRIVATE_KEY" > "$RUNNER_TEMP/sdk-runtime-root-key"
+          python3 -B trusted-source/ci/runtime_phase10_library_caller.py delegate \
+            --destination "$RUNNER_TEMP/runtime-root-delegation" \
+            --keyring trusted-source/gradle/release/product-signing-keys.json \
+            --keys-directory trusted-source/gradle/release/keys \
+            --root-public-key trusted-source/gradle/release/keys/sdk-runtime-root.pub \
+            --expected-root-public-key-sha256 "$ROOT_SHA256" \
+            --expected-keyring-sha256 "$KEYRING_SHA256" \
+            --expected-keys-inventory-sha256 "$KEYS_INVENTORY_SHA256" \
+            --root-private-key "$RUNNER_TEMP/sdk-runtime-root-key" > "$RUNNER_TEMP/runtime-root-result.json"
+          printf 'inventory_sha256=%s\n' "$(jq -er '.inventorySha256' "$RUNNER_TEMP/runtime-root-result.json")" >> "$GITHUB_OUTPUT"
+          printf 'root_fingerprint=%s\n' "$(jq -er '.rootFingerprint' "$RUNNER_TEMP/runtime-root-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Preserve detached root delegation
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-root-delegation-${{ steps.approval.outputs.validationTree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-root-delegation
+          compression-level: 0
+          retention-days: 90
+
+  capture:
+    name: runtime-library-original-capture
+    needs: delegate
+    runs-on: ubuntu-24.04
+    outputs:
+      inventory_sha256: ${{ steps.capture.outputs.inventory_sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require root-approved control digest before checkout
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ needs.delegate.outputs.control_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test -n "$CONTROL_JSON"
+          test "sha256:$(printf '%s\n' "$CONTROL_JSON" | sha256sum | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+      - name: Check out reviewed no-secret Runtime observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ needs.delegate.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact validated source tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ needs.delegate.outputs.validation_commit }}
+          path: validation-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download, hash, and safely extract independently pinned original plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLAN_ID: ${{ needs.delegate.outputs.plan_id }}
+          PLAN_SHA256: ${{ needs.delegate.outputs.plan_sha256 }}
+          ORIGINAL_RUN_ID: ${{ needs.delegate.outputs.original_run_id }}
+          VALIDATION_COMMIT: ${{ needs.delegate.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.delegate.outputs.validation_tree }}
+        run: |
+          set -euo pipefail
+          test "$(git -C validation-source rev-parse 'HEAD^{tree}')" = "$VALIDATION_TREE"
+          python3 -B - "$RUNNER_TEMP/runtime-original-plan.zip" <<'PY'
+          from pathlib import Path
+          import os
+          import sys
+          sys.path.insert(0, 'trusted-source/ci')
+          import product_reuse as products
+          from receipt import safe_extract
+          from products.inventory import regular_file_inventory, verified_zip_contents
+          artifact, archive = products._download_contract_ci_upload(
+              int(os.environ['PLAN_ID']), os.environ['PLAN_SHA256'],
+              'codex-agent-ci-plan-' + os.environ['VALIDATION_TREE'],
+              {'runId': int(os.environ['ORIGINAL_RUN_ID'])},
+              {'head_sha': os.environ['VALIDATION_COMMIT']},
+              os.environ['GITHUB_TOKEN'], destination=Path(sys.argv[1]),
+              max_bytes=128 * 1024 * 1024)
+          files, _, _ = verified_zip_contents(
+              archive, require_sorted=False, allow_empty_members=True,
+              max_archive_bytes=128 * 1024 * 1024,
+              max_central_directory_bytes=8 * 1024 * 1024,
+              max_members=512, max_entry_bytes=16 * 1024 * 1024,
+              max_total_bytes=256 * 1024 * 1024,
+              max_compression_ratio=200)
+          safe_extract(archive, Path('plan'))
+          if (regular_file_inventory(Path('plan'), allow_empty=True) != files
+                  or 'impact-plan.json' not in {row['relativePath'] for row in files}):
+              raise ValueError('Original plan extraction differs from approved ZIP')
+          PY
+      - name: Observe and capture exact original aggregate without signing keys
+        id: capture
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ needs.delegate.outputs.workflow_sha }}
+          ORIGINAL_RUN_ID: ${{ needs.delegate.outputs.original_run_id }}
+          ORIGINAL_RUN_ATTEMPT: ${{ needs.delegate.outputs.original_run_attempt }}
+          AGGREGATE_ID: ${{ needs.delegate.outputs.aggregate_id }}
+          AGGREGATE_SHA256: ${{ needs.delegate.outputs.aggregate_sha256 }}
+          AGGREGATE_KEY: ${{ needs.delegate.outputs.aggregate_key }}
+          RECEIPT_SHA256: ${{ needs.delegate.outputs.receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_upload_locator.py \
+            --plan plan/impact-plan.json --candidate-root validation-source \
+            --trusted-workflow-sha "$WORKFLOW_SHA" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --destination "$RUNNER_TEMP/runtime-phase10-capture" \
+            --expected-build-key "$AGGREGATE_KEY" \
+            --expected-metadata-receipt-sha256 "$RECEIPT_SHA256" \
+            --github-output "$RUNNER_TEMP/runtime-observed-upload"
+          test "$(sed -n 's/^artifact_id=//p' "$RUNNER_TEMP/runtime-observed-upload")" = "$AGGREGATE_ID"
+          test "$(sed -n 's/^artifact_sha256=//p' "$RUNNER_TEMP/runtime-observed-upload")" = "$AGGREGATE_SHA256"
+          python3 -B - "$RUNNER_TEMP/runtime-phase10-capture" "$GITHUB_OUTPUT" <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'trusted-source')
+          from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+          inventory = regular_file_inventory(Path(sys.argv[1]), allow_empty=True)
+          with Path(sys.argv[2]).open('a', encoding='utf-8') as output:
+              output.write('inventory_sha256=' + sha256_bytes(canonical_json_bytes(inventory)) + '\n')
+          PY
+      - name: Preserve exact captured original transport
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-library-original-${{ needs.delegate.outputs.validation_commit }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-phase10-capture
+          compression-level: 0
+          retention-days: 90
+
+  authorize:
+    name: runtime-library-release-authorizations
+    needs: [delegate, capture]
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require independent release authority before checkout
+        id: approval
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PHASE10_CONTROL_APPROVED_SHA256 }}
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          ROOT_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_ROOT_PUBLIC_KEY_SHA256 }}
+          DELEGATED_CONTROL_SHA256: ${{ needs.delegate.outputs.control_sha256 }}
+          DELEGATED_SOURCE_SHA: ${{ needs.delegate.outputs.source_sha }}
+          DELEGATED_ROOT_SHA256: ${{ needs.delegate.outputs.root_sha256 }}
+          DELEGATION_INVENTORY_SHA256: ${{ needs.delegate.outputs.inventory_sha256 }}
+          CAPTURE_INVENTORY_SHA256: ${{ needs.capture.outputs.inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          for pin in "$CONTROL_SHA256" "$ROOT_SHA256" "$DELEGATION_INVENTORY_SHA256" "$CAPTURE_INVENTORY_SHA256"; do
+            [[ "$pin" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          done
+          test "$SOURCE_SHA" = "$DELEGATED_SOURCE_SHA"
+          test "$CONTROL_SHA256" = "$DELEGATED_CONTROL_SHA256"
+          test "$ROOT_SHA256" = "$DELEGATED_ROOT_SHA256"
+          test "sha256:$(printf '%s\n' "$CONTROL_JSON" | sha256sum | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+          {
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'root_sha256=%s\n' "$ROOT_SHA256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed Runtime release verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download exact same-run root delegation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.delegate.outputs.artifact_id }}
+          merge-multiple: true
+          path: delegation
+      - name: Download exact same-run captured original
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.capture.outputs.artifact_id }}
+          merge-multiple: true
+          path: capture
+      - name: Check transport inventories and sign only five release claims
+        env:
+          DELEGATION_INVENTORY_SHA256: ${{ needs.delegate.outputs.inventory_sha256 }}
+          CAPTURE_INVENTORY_SHA256: ${{ needs.capture.outputs.inventory_sha256 }}
+          RECEIPT_SHA256: ${{ needs.delegate.outputs.receipt_sha256 }}
+          AGGREGATE_KEY: ${{ needs.delegate.outputs.aggregate_key }}
+          ROOT_SHA256: ${{ steps.approval.outputs.root_sha256 }}
+          ROOT_FINGERPRINT: ${{ needs.delegate.outputs.root_fingerprint }}
+          RELEASE_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_PRIVATE_KEY"
+          python3 -B - capture "$CAPTURE_INVENTORY_SHA256" <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'trusted-source')
+          from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
+          if sha256_bytes(canonical_json_bytes(regular_file_inventory(Path(sys.argv[1]), allow_empty=True))) != sys.argv[2]:
+              raise ValueError('Runtime original capture differs from token-only job')
+          PY
+          umask 077
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$RUNNER_TEMP/runtime-release-key"
+          python3 -B trusted-source/ci/runtime_phase10_library_caller.py authorize \
+            --protected-output capture/original \
+            --destination "$RUNNER_TEMP/runtime-library-authorizations" \
+            --expected-metadata-receipt-sha256 "$RECEIPT_SHA256" \
+            --expected-build-key "$AGGREGATE_KEY" \
+            --keyring trusted-source/gradle/release/product-signing-keys.json \
+            --keys-directory trusted-source/gradle/release/keys \
+            --root-public-key trusted-source/gradle/release/keys/sdk-runtime-root.pub \
+            --expected-root-fingerprint "$ROOT_FINGERPRINT" \
+            --expected-root-public-key-sha256 "$ROOT_SHA256" \
+            --root-delegation delegation \
+            --expected-delegation-inventory-sha256 "$DELEGATION_INVENTORY_SHA256" \
+            --release-private-key "$RUNNER_TEMP/runtime-release-key" > "$RUNNER_TEMP/runtime-library-result.json"
+          test "$(jq -er '.delegationInventorySha256' "$RUNNER_TEMP/runtime-library-result.json")" = "$DELEGATION_INVENTORY_SHA256"
+      - name: Preserve exact external five-library authorization evidence
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-library-authorizations-${{ needs.delegate.outputs.validation_commit }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-library-authorizations
+          compression-level: 0
+          retention-days: 90
