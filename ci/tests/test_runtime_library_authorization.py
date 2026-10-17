@@ -136,6 +136,22 @@ class RuntimeLibraryAuthorizationTest(unittest.TestCase):
             gate.assert_called_once()
             self.assertEqual(fingerprint, result["rootFingerprint"])
             self.assertEqual(delegated["inventorySha256"], result["delegationInventorySha256"])
+            sidecars = work / "validation-sidecars"
+            with patch.object(caller, "verified_runtime_aggregate_handoff",
+                              wraps=caller.verified_runtime_aggregate_handoff) as gate, \
+                    patch.object(caller, "_original_carrier", wraps=caller._original_carrier) as pins, \
+                    patch.object(caller, "snapshot_regular_tree",
+                                 wraps=caller.snapshot_regular_tree) as snapshots:
+                sidecar_result = caller.produce_authenticated_runtime_libraries(
+                    self.source.carrier, sidecars, sidecars_only=True, **arguments)
+            gate.assert_called_once()
+            self.assertEqual(2, pins.call_count)
+            self.assertNotEqual(pins.call_args_list[0].args[0], pins.call_args_list[1].args[0])
+            self.assertEqual(pins.call_args_list[0].args[1:], pins.call_args_list[1].args[1:])
+            self.assertNotIn(self.source.carrier, [call.args[0] for call in snapshots.call_args_list])
+            self.assertTrue(all(".evidence/" in row["relativePath"] for row in sidecar_result["files"]))
+            self.assertEqual([row for row in result["files"] if ".evidence/" in row["relativePath"]],
+                             sidecar_result["files"])
             compatibility = load_canonical_json_bytes(self.source.source.chain["compatibility"].read_bytes())
             for target in NATIVE_TARGETS:
                 paths = list((destination / target).glob("libcodex_agent.*")) + \
@@ -149,6 +165,10 @@ class RuntimeLibraryAuthorizationTest(unittest.TestCase):
                     sdk_compatibility=compatibility, target=target, library_snapshot=library,
                 )
                 self.assertEqual(sha256_bytes(library.read_bytes()), claim["runtimeLibrarySha256"])
+                self.assertEqual(claim, verify_external_library_authorization(
+                    sidecars / target / (library.name + ".evidence"),
+                    sdk_pinned_root_public_key=root_public.read_bytes(),
+                    sdk_compatibility=compatibility, target=target, library_snapshot=library))
             with patch.object(caller, "verified_runtime_aggregate_handoff") as gate, \
                     self.assertRaisesRegex(ValueError, "caller pin"):
                 caller.produce_authenticated_runtime_libraries(

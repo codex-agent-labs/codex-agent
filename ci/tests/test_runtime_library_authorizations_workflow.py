@@ -1,14 +1,18 @@
 """Static custody checks only; protected approvals and hosted bytes are not simulated."""
 
 from pathlib import Path
+import os
+import re
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 import zipfile
 
 from ci import product_reuse
 from ci.tests.test_contract_attestation_workflow import workflow_job
-from ci.products.inventory import sha256_file
+from ci.products.inventory import canonical_json_bytes, sha256_bytes, sha256_file
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/runtime-library-authorizations.yml"
@@ -22,7 +26,7 @@ class RuntimeLibraryAuthorizationsWorkflowTest(unittest.TestCase):
         cls.capture = workflow_job(cls.source, "capture")
         cls.authorize = workflow_job(cls.source, "authorize")
 
-    def test_uncalled_protected_jobs_have_distinct_private_keys(self):
+    def test_protected_jobs_have_distinct_private_keys(self):
         self.assertIn("  workflow_call:", self.source)
         self.assertNotIn("  workflow_dispatch:", self.source)
         self.assertIn("environment: sdk-runtime-root-attestation", self.delegate)
@@ -40,6 +44,7 @@ class RuntimeLibraryAuthorizationsWorkflowTest(unittest.TestCase):
     def test_control_is_independently_approved_in_both_protected_environments(self):
         for job in (self.delegate, self.authorize):
             self.assertIn("vars.CODEX_AGENT_RUNTIME_PHASE10_CONTROL_APPROVED_SHA256", job)
+            self.assertIn("vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_CONTROL_SHA256", job)
             self.assertIn("vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA", job)
             self.assertIn("vars.CODEX_AGENT_SDK_RUNTIME_ROOT_PUBLIC_KEY_SHA256", job)
             self.assertIn("sha256sum", job)
@@ -49,6 +54,77 @@ class RuntimeLibraryAuthorizationsWorkflowTest(unittest.TestCase):
         self.assertIn("runtime_phase10_library_caller.py delegate", self.delegate)
         self.assertIn("runtime_phase10_library_caller.py authorize", self.authorize)
         self.assertIn("--expected-delegation-inventory-sha256", self.authorize)
+
+    def test_validation_control_has_separate_exact_schema_and_no_pin_fallback(self):
+        control = dict(schemaVersion=1, originalRunId=23, originalRunAttempt=1,
+            validationCommit="b" * 40, validationTree="c" * 40, planArtifactId=17,
+            aggregateArtifactId=19, trustedSourceCommit="a" * 40,
+            aggregateWorkflowSha="d" * 40)
+        control.update({name: "sha256:" + "e" * 64 for name in (
+            "planArtifactSha256", "aggregateArtifactSha256", "aggregateBuildKey",
+            "metadataReceiptSha256")})
+        legacy = {**control, "sidecarArtifactId": 21, "sidecarWorkflowSha": "f" * 40,
+                  "sidecarArtifactSha256": "sha256:" + "1" * 64,
+                  "pgpKeySha256": "sha256:" + "2" * 64}
+        validation = {**control, "kind": "sdk-runtime-library-validation"}
+        scripts = [textwrap.dedent(job.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+                   for job in (self.delegate, self.authorize)]
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {**os.environ, "RUNNER_TEMP": temporary,
+                "GITHUB_OUTPUT": str(Path(temporary) / "output"), "SOURCE_SHA": "a" * 40,
+                "ROOT_SHA256": "sha256:" + "3" * 64, "KEYRING_SHA256": "sha256:" + "4" * 64,
+                "KEYS_INVENTORY_SHA256": "sha256:" + "5" * 64,
+                "DELEGATED_SOURCE_SHA": "a" * 40, "DELEGATED_ROOT_SHA256": "sha256:" + "3" * 64,
+                "DELEGATION_INVENTORY_SHA256": "sha256:" + "6" * 64,
+                "CAPTURE_INVENTORY_SHA256": "sha256:" + "7" * 64}
+            cases = [(False, legacy, True), (True, validation, True), (True, legacy, False),
+                     (False, validation, False), (True, {**validation, "extra": 1}, False),
+                     (True, {**validation, "kind": "runtime-library-authorizations"}, False),
+                     (True, {**validation, "originalRunId": True}, False)]
+            for mode, value, accepted in cases:
+                raw = canonical_json_bytes(value)
+                env = {**environment, "VALIDATION_ONLY": str(mode).lower(),
+                    "CONTROL_JSON": raw.decode().rstrip("\n"),
+                    "CONTROL_SHA256": sha256_bytes(raw), "VALIDATION_CONTROL_SHA256": sha256_bytes(raw),
+                    "DELEGATED_CONTROL_SHA256": sha256_bytes(raw)}
+                with self.subTest(mode=mode, value=value):
+                    result = subprocess.run(["bash", "-e", "-c", scripts[0]], env=env,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(0 if accepted else 1, result.returncode, result.stderr)
+                if accepted:
+                    for script in scripts:
+                        result = subprocess.run(["bash", "-e", "-c", script], env=env,
+                                                capture_output=True, text=True, timeout=10)
+                        self.assertEqual(0, result.returncode, result.stderr)
+                        if mode:
+                            result = subprocess.run(["bash", "-e", "-c", script],
+                                env={**env, "VALIDATION_CONTROL_SHA256": ""},
+                                capture_output=True, text=True, timeout=10)
+                            self.assertNotEqual(0, result.returncode, "Phase-9 pin fell back to Phase 10")
+
+    def test_validation_dispatch_signs_only_sidecars_and_is_not_full_acceptance(self):
+        caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
+        child = workflow_job(caller, "sdk-runtime-library-validation")
+        self.assertIn("inputs.purpose == 'sdk-runtime-library-validation'", child)
+        self.assertIn("runtime-library-authorizations.yml@reuse-authority", child)
+        self.assertIn("validation-only: true", child)
+        self.assertIn("inputs.validation-only && github.event.inputs.purpose == 'sdk-runtime-library-validation'", self.delegate)
+        self.assertIn("true) projection+=(--sidecars-only)", self.authorize)
+        self.assertIn('"${projection[@]}"', self.authorize)
+        self.assertNotRegex(self.source, r"(?:\./gradlew|cargo build|cmake --build|xcodebuild)")
+        gate = workflow_job(caller, "merge-gate")
+        self.assertIn("'SDK Runtime trust / complete'", gate)
+        script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        env = {**os.environ, **{name: "skipped" for name in re.findall(r"\b([A-Z_]+_RESULT):", gate)},
+            "EVENT": "workflow_dispatch", "PURPOSE": "sdk-runtime-library-validation",
+            "SDK_RUNTIME_TRUST_RESULT": "success", "SDK_RUNTIME_TRUST_ID": "123",
+            "SDK_RUNTIME_TRUST_SHA256": "sha256:" + "a" * 64}
+        for change in ({}, {"SDK_RUNTIME_TRUST_RESULT": "failure"}, {"SDK_RUNTIME_TRUST_ID": ""},
+                       {"SDK_RUNTIME_TRUST_SHA256": "sha256:bad"}, {"PRODUCT_VALIDATION_RESULT": "success"},
+                       {"RUNTIME_RECORD_RESULT": "success"}, {"SDK_MAVEN_RESULT": "success"}):
+            result = subprocess.run(["bash", "-e", "-c", script], env={**env, **change},
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(0 if not change else 1, result.returncode, (change, result.stderr))
 
     def test_original_capture_is_token_only_and_pinned_before_release_signing(self):
         self.assertIn("needs: delegate", self.capture)

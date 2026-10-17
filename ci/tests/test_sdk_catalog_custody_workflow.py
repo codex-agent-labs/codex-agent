@@ -10,6 +10,7 @@ import unittest
 
 from ci.products.inventory import sha256_bytes
 from ci.tests.test_contract_attestation_workflow import workflow_job
+from ci.tests.test_reviewed_workflow_publication import publication
 
 
 WORKFLOW = (Path(__file__).resolve().parents[2] /
@@ -21,7 +22,7 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
         caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
         dispatch = caller.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertIn("default: validation", dispatch)
-        self.assertIn("options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", dispatch)
+        self.assertIn("options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]", dispatch)
         self.assertEqual(10, len(re.findall(r"^      [A-Za-z][A-Za-z0-9]*:\s*$", dispatch, re.MULTILINE)))
         validation = workflow_job(caller, "product-validation")
         custody = workflow_job(caller, "sdk-failed-catalog-custody")
@@ -30,7 +31,7 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody'", custody)
         self.assertIn("'SDK custody / complete' ||", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", gate)
+        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]", gate)
         gate_script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         for event, purpose, product, custody_result, accepted in (
                 ("pull_request", "", "success", "skipped", True),
@@ -40,20 +41,21 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
                 ("workflow_dispatch", "other", "skipped", "skipped", False)):
             environment = {**os.environ, "EVENT": event, "PURPOSE": purpose,
                 "PRODUCT_VALIDATION_RESULT": product, "SDK_CUSTODY_RESULT": custody_result,
+                "FULL_ACCEPTANCE_CURRENT": "true",
                 "TOOLCHAIN_CAPTURE_RESULT": "skipped", "DIAGNOSTICS_RESULT": "skipped",
                 "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped",
                 "SDK_AUTHORITY_RESULT": "skipped", "SDK_RECORD_RESULT": "skipped",
-                "SDK_MAVEN_RESULT": "skipped"}
+                "SDK_MAVEN_RESULT": "skipped", "SDK_RUNTIME_TRUST_RESULT": "skipped"}
             result = subprocess.run(["bash", "-e", "-c", gate_script], env=environment,
                 capture_output=True, text=True, timeout=10)
             self.assertEqual(0 if accepted else 1, result.returncode,
                 (event, purpose, product, custody_result, result.stderr))
         self.assertIn("secrets: inherit", custody)
-        pin = re.search(r"sdk-failed-catalog-custody\.yml@([0-9a-f]{40})", custody)
-        self.assertIsNotNone(pin)
-        selected = subprocess.run(["git", "show", f"{pin.group(1)}:.github/workflows/sdk-failed-catalog-custody.yml"],
-            cwd=WORKFLOW.parents[2], capture_output=True, text=True, check=True)
-        self.assertEqual(WORKFLOW.read_text(encoding="utf-8"), selected.stdout)
+        self.assertIn("sdk-failed-catalog-custody.yml@reuse-authority", custody)
+        root = WORKFLOW.parents[2]
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        closure = publication.reviewed_workflow_closure(root, head, entrypoints=(".github/workflows/ci.yml",))
+        self.assertEqual(WORKFLOW.read_bytes(), closure[WORKFLOW.relative_to(root).as_posix()])
 
     def test_protected_selection_precedes_checkout_and_rejects_substitution(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

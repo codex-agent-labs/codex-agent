@@ -60,6 +60,7 @@ class SdkPhase10RecordWorkflowTest(unittest.TestCase):
             "TOOLCHAIN_CAPTURE_RESULT": "skipped", "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped",
             "SDK_AUTHORITY_RESULT": "skipped", "SDK_RECORD_RESULT": "success",
             "SDK_MAVEN_RESULT": "skipped",
+            "SDK_RUNTIME_TRUST_RESULT": "skipped",
             "SDK_RECORD_ARTIFACT_ID": "123", "SDK_RECORD_ARTIFACT_SHA256": "sha256:" + "a" * 64}
         for changed in ({}, {"SDK_RECORD_RESULT": "failure"},
                         {"SDK_RECORD_ARTIFACT_ID": ""},

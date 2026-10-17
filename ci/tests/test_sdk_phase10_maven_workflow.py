@@ -170,7 +170,8 @@ class SdkPhase10MavenWorkflowTest(unittest.TestCase):
                "PRODUCT_VALIDATION_RESULT": "skipped", "SDK_CUSTODY_RESULT": "skipped",
                "TOOLCHAIN_CAPTURE_RESULT": "skipped", "RUNTIME_RECORD_RESULT": "skipped",
                "CONTRACT_RECORD_RESULT": "skipped", "SDK_AUTHORITY_RESULT": "skipped",
-               "SDK_RECORD_RESULT": "skipped", "SDK_MAVEN_RESULT": "success"}
+               "SDK_RECORD_RESULT": "skipped", "SDK_MAVEN_RESULT": "success",
+               "SDK_RUNTIME_TRUST_RESULT": "skipped"}
         for label in ("CORE", "ANDROID", "IOS", "RECORD", "INDEX"):
             env["SDK_MAVEN_" + label + "_ID"] = "123"
             env["SDK_MAVEN_" + label + "_SHA256"] = "sha256:" + "a" * 64

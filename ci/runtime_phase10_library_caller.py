@@ -139,8 +139,11 @@ def produce_authenticated_runtime_libraries(
     root_delegation: Path,
     expected_delegation_inventory_sha256: str,
     release_private_key: Path,
+    sidecars_only: bool = False,
 ) -> dict:
     """Sign five claims from a pinned root delegation and signed original handoff."""
+    if type(sidecars_only) is not bool:
+        raise ValueError("Runtime sidecar-only projection must be boolean")
     _no_token()
     if _ROOT_SECRET in os.environ:
         raise ValueError("Runtime release signer must not receive the SDK root secret")
@@ -179,15 +182,14 @@ def produce_authenticated_runtime_libraries(
         delegated_keyring, delegated_inventory = _verify_pinned_delegation(
             delegation, root_bytes=root_bytes,
             expected_inventory_sha256=expected_delegation_inventory_sha256)
-        captured = private / "protected-output"
-        snapshot_regular_tree(protected_output, captured, allow_empty=True)
-        if regular_file_inventory(captured, allow_empty=True) != before:
-            raise ValueError("Runtime protected output changed during capture")
-        carrier = _original_carrier(captured, expected_metadata_receipt_sha256, expected_build_key)
+        # The full handoff gate owns its private snapshot and lifetime checks.
+        # Do not copy the multi-GB original a second time before entering it.
+        carrier = _original_carrier(protected_output, expected_metadata_receipt_sha256, expected_build_key)
         output = private / "libraries"
         with verified_runtime_aggregate_handoff(
             carrier, keyring=keyring, keys_directory=keys_directory,
         ) as verified:
+            _original_carrier(verified["directory"], expected_metadata_receipt_sha256, expected_build_key)
             captured_keyring = verified["indexInputs"]["keyring"]
             captured_keys = verified["indexInputs"]["keys_directory"]
             policy = load_keyring(captured_keyring, captured_keys)
@@ -210,9 +212,12 @@ def produce_authenticated_runtime_libraries(
             for target, item in libraries.items():
                 library = output / target / item["fileName"]
                 library.parent.mkdir(parents=True)
-                library.write_bytes(item["library"])
-                if sha256_bytes(library.read_bytes()) != item["claim"]["runtimeLibrarySha256"]:
+                if sha256_bytes(item["library"]) != item["claim"]["runtimeLibrarySha256"]:
                     raise ValueError(f"Runtime library bytes changed during release staging: {target}")
+                if not sidecars_only:
+                    library.write_bytes(item["library"])
+                    if sha256_bytes(library.read_bytes()) != item["claim"]["runtimeLibrarySha256"]:
+                        raise ValueError(f"Runtime library bytes changed during release staging: {target}")
                 evidence = library.with_name(library.name + ".evidence")
                 snapshot_regular_tree(delegation, evidence)
                 claim = evidence / "runtime-library-authorization.json"
@@ -234,7 +239,6 @@ def produce_authenticated_runtime_libraries(
                                namespace=NAMESPACE, principal=PRODUCT_PRINCIPAL)
                 generated.replace(signature)
         if (regular_file_inventory(protected_output, allow_empty=True) != before
-                or regular_file_inventory(captured, allow_empty=True) != before
                 or read_regular_file_bytes(root_public_key, max_bytes=4096, reject_symlink_parents=True) != root_bytes
                 or regular_file_inventory(root_delegation) != delegation_before
                 or regular_file_inventory(delegation) != delegated_inventory):
@@ -259,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
                  "expected-keys-inventory-sha256", "root-private-key"):
         delegate.add_argument(f"--{name}", required=True)
     authorize = modes.add_parser("authorize")
+    authorize.add_argument("--sidecars-only", action="store_true",
+        help="Phase9 validation evidence only; omit already-preserved library bodies")
     for name in ("protected-output", "destination", "expected-metadata-receipt-sha256",
                  "expected-build-key", "keyring", "keys-directory", "root-public-key",
                  "expected-root-fingerprint", "expected-root-public-key-sha256",
@@ -286,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
             root_delegation=Path(args.root_delegation),
             expected_delegation_inventory_sha256=args.expected_delegation_inventory_sha256,
             release_private_key=Path(args.release_private_key),
+            sidecars_only=args.sidecars_only,
         )
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
