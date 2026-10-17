@@ -48,12 +48,12 @@ class NativeConsumerAuthorizationTest(TestCase):
             "files": regular_file_inventory(sidecars), "rangeBytes": 0, "elapsedNs": 0})
         return root
 
-    def consume(self, consumer, run):
+    def consume(self, consumer, run, language="python"):
         with patch.object(native_wrappers, "_consume", consumer), \
                 patch.object(native_wrappers, "host_classifier", return_value="macos-arm64"), \
                 patch.object(native_wrappers, "run", run):
             consume_authorized_native(self.repository, self.packages, self.sdks, self.output,
-                "0.8.0", "python", runtime_authorization=self.evidence,
+                "0.8.0", language, runtime_authorization=self.evidence,
                 expected_classifier="macos-arm64", offline=True)
 
     @staticmethod
@@ -133,3 +133,20 @@ class NativeConsumerAuthorizationTest(TestCase):
         with self.assertRaisesRegex(ValueError, "overlaps"):
             self.consume(self.consumer, lambda *args, **kwargs: None)
         self.assertEqual(before, regular_file_inventory(self.evidence))
+
+    def test_only_rust_mock_invocation_routes_to_the_test_only_loader(self):
+        def consumer(repository, packages, sdks, plan, output, version, **kwargs):
+            library = require_matching_native(packages, "installed.dylib",
+                sdks / "macos-arm64/lib/libcodex_agent.dylib", "unit fixture")
+            run("external-positive", library)
+            run("cargo", "run", "--manifest-path", output.parent / "rust-consumer/Cargo.toml",
+                "--release", "--locked", "--offline", "--bin", "codex-agent-rust-lifecycle-smoke", "--",
+                output.parent / "mock.dylib", cwd=output.parent, env={"CARGO_TARGET_DIR": str(output.parent / "rust-target")})
+            output.mkdir()
+        calls = []
+        with patch("ci.products.sdk_package.run_rust_fixture_consumer") as fixture:
+            self.consume(consumer, lambda *command, **options: calls.append(command), language="rust")
+        self.assertEqual([("external-positive", self.installed)], calls)
+        fixture.assert_called_once_with(self.installed.parents[2],
+            self.output.parent / "rust-consumer/src/bin/lifecycle_smoke.rs", self.output.parent / "mock.dylib",
+            environ={"CARGO_TARGET_DIR": str(self.output.parent / "rust-target")})

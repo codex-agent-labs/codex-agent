@@ -815,6 +815,15 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
             external_calls = []
 
             def run(*command, **options):
+                if language == "rust" and "codex-agent-rust-lifecycle-smoke" in command:
+                    if (len(matches) != 1 or tuple(command[:-1]) != (
+                            "cargo", "run", "--manifest-path", options["cwd"] / "rust-consumer/Cargo.toml",
+                            "--release", "--locked", "--offline", "--bin",
+                            "codex-agent-rust-lifecycle-smoke", "--")):
+                        raise ValueError("Rust fixture consumer invocation differs from the fixed test path")
+                    return run_rust_fixture_consumer(matches[0].parents[2],
+                        options["cwd"] / "rust-consumer/src/bin/lifecycle_smoke.rs",
+                        Path(command[-1]), environ=options["env"])
                 if not matches or not any(str(value) == str(matches[0]) for value in command):
                     return native_wrappers.run(*command, **options)
                 # Only the explicit external-positive invocation sees sidecars.
@@ -841,6 +850,66 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
     bind("consume_language")(repository, packages, sdks, output, sdk_version, language,
         expected_classifier=expected_classifier, offline=offline,
         package_negative_evidence=package_negative_evidence)
+
+
+def run_rust_fixture_consumer(package: Path, program: Path, fixture: Path, *, environ):
+    """Compile the existing smoke as a unit test using the shipped cfg(test) seam.
+
+    Public embedded/external consumers run unchanged first. This private source
+    overlay tests the unsigned mock; it neither changes nor republishes the crate.
+    """
+    program_raw = read_regular_file_bytes(program, reject_symlink_parents=True)
+    source = program_raw.decode("utf-8")
+    replacements = (
+        ("use codex_agent::{", "use crate::{"),
+        ("fn main() -> Result<(), CodexError> {", "#[test]\nfn main() -> Result<(), CodexError> {"),
+        ('std::env::args_os()\n            .nth(1)', 'std::env::var_os("CODEX_AGENT_INSTALLED_TEST_FIXTURE")'),
+        ("CodexNativeLibrary::load(&library)?", "CodexNativeLibrary::load_fixture_for_test(&library)?"),
+    )
+    for old, new in replacements:
+        if source.count(old) != 1:
+            raise ValueError("Rust fixture consumer source differs from the reviewed test-only overlay")
+        source = source.replace(old, new)
+    original_sources = regular_file_inventory(package / "src")
+    originals = {name: read_regular_file_bytes(package / name, reject_symlink_parents=True) for name in (
+        "Cargo.toml", "Cargo.lock", "build.rs", "native/sdk-compatibility.json", "native/sdk-runtime-root.pub")}
+    with tempfile.TemporaryDirectory(prefix="rust-installed-fixture-") as temporary:
+        root = Path(temporary).resolve()
+        snapshot_regular_tree(package / "src", root / "src")
+        if regular_file_inventory(root / "src") != original_sources:
+            raise ValueError("Installed Rust sources changed during fixture capture")
+        for name, raw in originals.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        # No Cargo.toml.orig or native bodies: this is a source unit harness,
+        # not another package build or public-loader authentication test.
+        unit = root / "src/codex_installed_fixture.rs"
+        if unit.exists():
+            raise ValueError("Rust fixture overlay collides with an installed source")
+        unit.write_text(source, encoding="utf-8", newline="\n")
+        library = root / "src/lib.rs"
+        library.write_bytes(library.read_bytes() + b"\n#[cfg(test)]\nmod codex_installed_fixture;\n")
+        # Reuse the caller's already-built dependencies, never a second cold
+        # Cargo target tree. The normal consumer owns and removes this scratch.
+        target = Path(environ.get("CARGO_TARGET_DIR", root / "target"))
+        if not target.is_absolute():
+            raise ValueError("Rust fixture Cargo target must be an explicit private path")
+        _require_capability_output_separate(target, [package, program, fixture])
+        result = subprocess.run(["cargo", "test", "--manifest-path", str(root / "Cargo.toml"),
+            "--lib", "--release", "--locked", "--offline", "codex_installed_fixture::main", "--", "--exact"],
+            cwd=root, env={**environ, "CARGO_TARGET_DIR": str(target),
+                "CODEX_AGENT_INSTALLED_TEST_FIXTURE": str(fixture)}, capture_output=True, check=False)
+        sys.stdout.buffer.write(result.stdout)
+        sys.stderr.buffer.write(result.stderr)
+        if (result.returncode != 0 or b"test codex_installed_fixture::main ... ok" not in result.stdout
+                or b"test result: ok. 1 passed; 0 failed;" not in result.stdout):
+            raise ValueError("Rust test-only installed lifecycle did not execute successfully")
+        if (regular_file_inventory(package / "src") != original_sources
+                or read_regular_file_bytes(program, reject_symlink_parents=True) != program_raw
+                or any(read_regular_file_bytes(package / name, reject_symlink_parents=True) != raw
+                       for name, raw in originals.items())):
+            raise ValueError("Installed Rust fixture inputs changed during execution")
 
 
 def main(argv: list[str] | None = None) -> int:
