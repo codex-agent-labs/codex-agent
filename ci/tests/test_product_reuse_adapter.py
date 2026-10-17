@@ -223,7 +223,11 @@ class ContractProducerRunTest(unittest.TestCase):
                     mock.patch.object(product_reuse, "paginated_items") as listing, \
                     self.assertRaises(ValueError):
                 product_reuse._observe_ci_producer_jobs(**arguments)
-            listing.assert_not_called()
+            # Source and job observations are parallel; rejection still waits
+            # for the exact fixed job endpoint, without admitting its result.
+            listing.assert_called_once_with(
+                "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2/jobs",
+                "jobs", "unused")
         with mock.patch.object(product_reuse, "api_json") as query:
             for invalid in ({"binary": policy["binary"]},
                             {**policy, "package": {"path": "../untrusted.yml", "sha": new_pin}},
@@ -262,7 +266,9 @@ class ContractProducerRunTest(unittest.TestCase):
                 mock.patch.object(product_reuse, "paginated_items") as listing:
             with self.assertRaises(ValueError):
                 product_reuse._observe_ci_producer_jobs(**arguments, allow_protected_dispatch=True)
-            listing.assert_not_called()
+            listing.assert_called_once_with(
+                "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2/jobs",
+                "jobs", "unused")
 
     def test_fixed_protected_child_may_skip_only_the_validation_dispatch_job(self):
         child = ".github/workflows/sdk-phase10-later-authority.yml"
@@ -328,7 +334,9 @@ class ContractProducerRunTest(unittest.TestCase):
                     mock.patch.object(product_reuse, "paginated_items") as listing:
                 with self.assertRaises(ValueError):
                     self.verify()
-                listing.assert_not_called()
+                listing.assert_called_once_with(
+                    "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2/jobs",
+                    "jobs", "not-a-real-token")
         bad_jobs = [[], self.jobs[:1], [*self.jobs, self.jobs[0]], [*self.jobs, None]]
         for change in ({"conclusion": "failure"}, {"conclusion": "cancelled"}, {"status": "in_progress"},
                        {"run_id": 9}, {"run_id": True}, {"head_sha": COMMIT}, {"id": None}):
@@ -348,7 +356,9 @@ class ContractProducerRunTest(unittest.TestCase):
                     mock.patch.object(product_reuse, "paginated_items") as listing:
                 with self.assertRaises(ValueError):
                     self.verify()
-                listing.assert_not_called()
+                listing.assert_called_once_with(
+                    "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/7/attempts/2/jobs",
+                    "jobs", "not-a-real-token")
         run = {**self.run, "head_sha": COMMIT}
         jobs = [{**job, "head_sha": COMMIT} for job in self.jobs]
         with mock.patch.object(product_reuse, "api_json", side_effect=[run, self.commit]), \
