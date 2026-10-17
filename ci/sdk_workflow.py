@@ -995,6 +995,15 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
                            for row in collection["rows"] if row["result"] == "success") if family == "ios-validation" else ()
     handoff = destination / "handoff"
     with ExitStack() as held:
+        if family == "android-metadata" and shards and sdk_android_metadata_admission is None:
+            if len(shards) != 1 or failed:
+                raise ValueError("Android metadata collection requires one exact successful original")
+            from products.sdk_android_metadata_admission import AndroidMetadataAdmission
+            tooling["sdk_android_metadata_admission"] = AndroidMetadataAdmission.from_completed_predecessors(
+                completed_frozen=completed_frozen, plan=plan, discovery=discovery, state=state,
+                artifact=collection["rows"][0]["artifact"], trusted_workflow_sha=trusted_workflow_sha,
+                repository_root=root, environ=os.environ if environ is None else environ, token=token,
+                sdk_validation_tooling=sdk_validation_tooling, sdk_apple_validation_policy=sdk_apple_validation_policy)
         if core_metadata_caller is not None and shards:
             if len(shards) != 1 or failed:
                 raise ValueError("Core metadata collection requires one exact successful original")

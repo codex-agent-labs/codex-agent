@@ -31,6 +31,7 @@ RETAINED_CORE_PACKAGE_KEY = "sha256:6179fe876ee780222026ed9aaea33369fae8a65b9275
 RETAINED_CORE_METADATA_KEY = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
 RETAINED_CORE_ANDROID_VALIDATION_KEY = "sha256:671c8786babf765a4260487e0e7c0f189e32baad1f58f12be68baaf14aaddda0"
 RETAINED_ANDROID_BINARY_KEY = "sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c"
+RETAINED_ANDROID_METADATA_KEY = "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"
 
 
 def retained_core_binary_origin(build_key, consumer):
@@ -54,6 +55,23 @@ def retained_core_binary_origin(build_key, consumer):
 
 def retained_core_origin(phase, build_key, consumer, *, target="common", component="sdk-core"):
     """Keep reviewed Maven originals separate from current admission (legacy API name)."""
+    if (component, phase, target) == ("sdk-android", "metadata", "android"):
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "22a3757ec0156876701fc8aaab5692efdb917f01", "tree": "7af47631319572430e83f7e1765797f8956a2773",
+            "event": "pull_request", "runId": 39024902373, "runAttempt": 1, "pullRequest": 31}
+        if (build_key != RETAINED_ANDROID_METADATA_KEY
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12098433883,
+            "artifact_sha256": "sha256:8c8ef55c460caa91a50ba6cec1a0c59dde9cf6f6dd1832bcb6a78092777400f9",
+            "receipt_sha256": "sha256:882f4cbd2fa6b3ff34a9494c0d913b5f37b0908e1f5461d9b1cb7a83e11d0453",
+            "job_id": 117374782553, "workflow_sha": "d5315cb1d80b966f871052d9ff6f991d2c7eb72e",
+            "workflow_path": ".github/workflows/sdk-android-metadata-validation.yml",
+            "job_name": "product-validation / sdk-android-metadata-result / sdk-android-metadata-android",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json"}}
     if (component, phase, target) == ("sdk-android", "validation", "android"):
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "1aee0e6db7a6ad288141a2a6bd31f156fff4a529", "tree": "c9ba57df3d1ce11ea53003a9529990d38a483426",

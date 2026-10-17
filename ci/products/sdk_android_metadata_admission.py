@@ -97,6 +97,16 @@ def _returned_view(value):
 class AndroidMetadataAdmission:
     """Replay one receipt-bound retained carrier without caching acceptance."""
 
+    @classmethod
+    def from_completed_predecessors(cls, *, completed_frozen, **arguments):
+        from reuse_qualification import CompletedFrozenReuse
+        if cls is not AndroidMetadataAdmission or type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Android metadata requires concrete native predecessor authority")
+        result = cls.__new__(cls)
+        result._completed = {**arguments, "completed_frozen": completed_frozen}
+        result._completed["artifact"] = load_canonical_json_bytes(canonical_json_bytes(arguments["artifact"]))
+        return result
+
     def __init__(self, root, records, *, repository, policy_revision, policy):
         require_no_signing_secret(os.environ)
         if type(policy_revision) is not str or _OID.fullmatch(policy_revision) is None:
@@ -145,6 +155,10 @@ class AndroidMetadataAdmission:
 
     def verify_metadata(self, envelope, validation_envelopes):
         """Verify the exact metadata and its one selected validation receipt."""
+        if hasattr(self, "_completed"):
+            from sdk_android_metadata_original import verify_completed_android_metadata
+            verify_completed_android_metadata(envelope, validation_envelopes, **self._completed)
+            return
         from .reuse import _validate_envelope
         if __package__ == "products":
             from sdk_android_metadata_original import verified_retained_sdk_android_metadata

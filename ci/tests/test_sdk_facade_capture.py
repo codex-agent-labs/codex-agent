@@ -287,6 +287,9 @@ class AndroidValidationCaptureTest(FacadeCaptureTest):
 
 
 class AndroidMetadataCaptureTest(AndroidValidationCaptureTest):
+    def test_android_metadata_shares_private_archive_cache_and_mutation_guards(self):
+        FacadeMetadataCaptureTest.test_metadata_private_archive_reuses_bytes_but_reobserves_and_rejects_mutation(self)
+
     phase = "metadata"
     capture_name = "capture_sdk_android_metadata_upload"
     required_directories = ("worker", "selection", "originals", "inputs")

@@ -259,6 +259,7 @@ _IOS_PACKAGE_UPLOAD_ZIP_LIMITS = {
 _LARGE_SDK_UPLOADS = frozenset((
     PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
     PhaseInstanceId("sdk", "sdk-core", "metadata", "common"),
+    PhaseInstanceId("sdk", "sdk-android", "metadata", "android"),
 ))
 
 
@@ -1028,7 +1029,8 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
             "artifact": {name: artifact.get(name) for name in
                          ("id", "name", "digest", "size_in_bytes", "created_at", "workflow_run")},
         })
-        core_metadata = artifact["name"].startswith("codex-agent-sdk-worker-sdk-core-metadata-common-")
+        core_metadata = artifact["name"].startswith(("codex-agent-sdk-worker-sdk-core-metadata-common-",
+                                                    "codex-agent-sdk-worker-sdk-android-metadata-android-"))
         package_files = session.setdefault("coreMetadataUploads" if core_metadata else "iosPackageUploads", {})
         package_transport = (destination is not None and
             (core_metadata or artifact["name"].startswith("codex-agent-sdk-worker-sdk-ios-package-ios-")))
@@ -1086,8 +1088,9 @@ def _core_metadata_upload_inventory(archive, identity, instance):
     A hit requires the complete original SHA again. The immutable inventory
     stays inside this invocation; callers still authenticate CI and receipts.
     """
-    if (instance.product, instance.component) != ("sdk", "sdk-core") or instance.phase not in {"metadata", "validation"}:
-        raise ValueError("Core inventory cache requires metadata or validation")
+    if (instance.product != "sdk" or instance.component not in {"sdk-core", "sdk-android"}
+            or instance.phase not in {"metadata", "validation"}):
+        raise ValueError("Platform inventory cache requires metadata or validation")
     key = (instance, identity["bytes"], identity["sha256"])
     with verification_session() as session:
         cache = session.setdefault("coreMetadataZipInventories", {})
@@ -6383,19 +6386,22 @@ def preflight_worker_uploads(plan_path, *, product, wave, family=None,
            for item in artifacts):
         return
     if (product, family, wave) in (("sdk", "core-binary", 11), ("sdk", "core-package", 12),
-                                  ("sdk", "core-metadata", 14), ("sdk", "android-binary", 15)):
+                                  ("sdk", "core-metadata", 14), ("sdk", "android-binary", 15),
+                                  ("sdk", "android-metadata", 18)):
         from sdk_campaign_original_locator import (
             RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY, RETAINED_CORE_METADATA_KEY, RETAINED_ANDROID_BINARY_KEY,
+            RETAINED_ANDROID_METADATA_KEY,
             locate_retained_core_binary_upload)
         retained_keys = {"core-binary": RETAINED_CORE_BINARY_KEY, "core-package": RETAINED_CORE_PACKAGE_KEY,
-                         "core-metadata": RETAINED_CORE_METADATA_KEY, "android-binary": RETAINED_ANDROID_BINARY_KEY}
+                         "core-metadata": RETAINED_CORE_METADATA_KEY, "android-binary": RETAINED_ANDROID_BINARY_KEY,
+                         "android-metadata": RETAINED_ANDROID_METADATA_KEY}
         # Retained workers deliberately upload nothing in this run. This only
         # establishes presence; collection still authenticates the elected key.
         if locate_retained_core_binary_upload(plan_path, root,
                 expected_build_key=retained_keys[family],
                 token=token, environ=environment,
-                **({"phase": "binary", "component": "sdk-android", "target": "android"}
-                   if family == "android-binary" else
+                **({"phase": family.removeprefix("android-"), "component": "sdk-android", "target": "android"}
+                   if family.startswith("android-") else
                    {"phase": family.removeprefix("core-")} if family != "core-binary" else {})) is not None:
             return
     write_canonical_json(root / "build/runtime-preflight.json", {
@@ -6550,7 +6556,8 @@ def collect_runtime_workers(
                     retained_validation = retained_validation_origin(instance.target, ready["buildKey"], producer)
                     retained_attestation = observe_retained_validation_attestation(
                         instance.target, ready["buildKey"], producer, token=token)
-                elif sdk_family in ("core-binary", "core-package", "core-validation", "core-metadata", "android-binary"):
+                elif sdk_family in ("core-binary", "core-package", "core-validation", "core-metadata",
+                                    "android-binary", "android-metadata"):
                     from sdk_campaign_original_locator import retained_core_origin
                     retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer, target=instance.target,
                         **({"component": instance.component} if instance.component != "sdk-core" else {}))
@@ -6646,7 +6653,8 @@ def collect_runtime_workers(
                     raise ValueError("Runtime worker job did not succeed; original diagnostics retained in source upload")
                 if signer_failed:
                     raise ValueError("Apple signer job is missing, ambiguous or unsuccessful; original worker retained in source upload")
-                if instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common"):
+                if instance in {PhaseInstanceId("sdk", "sdk-core", "metadata", "common"),
+                                PhaseInstanceId("sdk", "sdk-android", "metadata", "android")}:
                     upload_identity = {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}
                     zipped = _core_metadata_upload_inventory(archive, upload_identity, instance)
                 else:

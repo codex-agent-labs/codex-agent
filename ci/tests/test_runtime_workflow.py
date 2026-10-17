@@ -868,6 +868,11 @@ class WorkerUploadPreflightTest(unittest.TestCase):
                 expected_build_key='sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a',
                 token='fixture', environ=fixture.environment, phase='metadata')
             locate.reset_mock()
+            preflight('android-metadata', 18)
+            locate.assert_called_once_with(fixture.plan_path, fixture.root,
+                expected_build_key='sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d',
+                token='fixture', environ=fixture.environment, phase='metadata', component='sdk-android', target='android')
+            locate.reset_mock()
             for family, wave in (('core-package', 11), ('core-binary', 12), ('core-metadata', 13)):
                 with self.subTest(family=family, wave=wave), self.assertRaisesRegex(ValueError, 'parent recovery'):
                     preflight(family, wave)

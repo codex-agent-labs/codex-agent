@@ -4,8 +4,10 @@ from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from ci import sdk_android_metadata_original as original
 from ci.tests import test_sdk_android_metadata_workflow as fixtures
@@ -18,6 +20,125 @@ from ci.products.restore import finalize_phase_object
 
 
 class AndroidMetadataOriginalTest(unittest.TestCase):
+    @contextmanager
+    def completed_fixture(self):
+        """Real archive/join checks; native qualification and official API mocked."""
+        from reuse_qualification import CompletedFrozenReuse
+        from products.registry import PhaseInstanceId
+        from products.restore import verification_session, verify_phase_shard
+        from products.inventory import sha256_file
+        from sdk_campaign_original_locator import fresh_sdk_worker_route
+        native, rows = {}, {}
+        for phase, path in (("package", self.f.package_receipt), ("validation", self.f.validation_receipt)):
+            identity = PhaseInstanceId("sdk", "sdk-android", phase, "android")
+            raw = path.read_bytes()
+            receipt = original.load_canonical_json_bytes(raw)
+            native[identity] = {"receipt": receipt, "receiptBytes": raw, "receiptSha256": sha256_bytes(raw),
+                                "objectSha256": "sha256:" + "9" * 64}
+            rows[identity] = {**{n: receipt[n] for n in ("product", "component", "phase", "target", "buildKey")},
+                "receiptSha256": sha256_bytes(raw), "objectSha256": "sha256:" + "9" * 64, "state": "retained"}
+        context = {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+            "metadataRequest": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json"}
+        execution_path = self.worker / "worker/execution.json"
+        execution = original._json(execution_path)
+        execution["workingDirectory"] = context["repositoryRoot"]
+        execution["command"] = [v.replace(self.context["metadataRequest"], context["metadataRequest"])
+            .replace(self.context["repositoryRoot"], context["repositoryRoot"]) for v in execution["command"]]
+        write_canonical_json(execution_path, execution)
+        seed = self.worker / "worker-dependency-seed/dependency.bin"
+        seed.parent.mkdir()
+        seed.write_bytes(b"original dependency seed, authenticated but never expanded" * 1024)
+        capture = self.worker / "originals/validation"
+        with zipfile.ZipFile(capture / "transport.zip", "w") as zipped:
+            for row in regular_file_inventory(capture / "original", allow_empty=True):
+                zipped.write(capture / "original" / row["relativePath"], row["relativePath"])
+        validation_artifact = {"digest": sha256_file(capture / "transport.zip"),
+                               "size_in_bytes": (capture / "transport.zip").stat().st_size}
+        archive = self.root / "completed-metadata.zip"
+        artifact = {"id": 123}
+        def rebuild():
+            with zipfile.ZipFile(archive, "w") as zipped:
+                for row in regular_file_inventory(self.worker, allow_empty=True):
+                    zipped.write(self.worker / row["relativePath"], row["relativePath"])
+            artifact.update(digest=sha256_file(archive), size_in_bytes=archive.stat().st_size)
+        rebuild()
+        shard = verify_phase_shard(self.worker / "shard", original._INSTANCE)
+        envelope = {k: shard[k] for k in ("receipt", "receiptBytes", "receiptSha256", "objectSha256")}
+        validation_id = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
+        cap = object.__new__(CompletedFrozenReuse)
+        job, _ = fresh_sdk_worker_route(original._INSTANCE, self.receipt)
+        observed = [{"run": {}, "jobs": [{"name": job, "labels": ["ubuntu-24.04"], "runner_id": 1}]}]
+        def qualified(row):
+            return deepcopy(native.get(PhaseInstanceId(*(row[n] for n in ("product", "component", "phase", "target")))))
+        def download(*args, destination, **kwargs):
+            destination.write_bytes(archive.read_bytes())
+            return dict(artifact), destination
+        state = SimpleNamespace(prior_ready_plans={original._INSTANCE: self.plan_value},
+            prior_by_instance=rows, plan=self.plan.return_value)
+        arguments = {"plan": self.recovery_plan, "discovery": self.f.discovery, "state": self.f.state,
+            "artifact": artifact, "trusted_workflow_sha": "f" * 40, "repository_root": self.root,
+            "environ": {}, "token": "fixture", "completed_frozen": cap, "sdk_validation_tooling": {}}
+        with patch.object(CompletedFrozenReuse, "check_consumer"), \
+                patch.object(CompletedFrozenReuse, "envelope", side_effect=qualified), \
+                patch.object(CompletedFrozenReuse, "observe_extended_sdk", return_value=({}, validation_artifact, [])), \
+                patch.object(original.product_reuse, "_verified_product_state", return_value=state), \
+                patch.object(original.product_reuse, "_observe_ci_producer_jobs", return_value=observed), \
+                patch.object(original.product_reuse, "_require_artifact_job_window"), \
+                patch.object(original.product_reuse, "_download_contract_ci_upload", side_effect=download), \
+                verification_session():
+            yield SimpleNamespace(envelope=envelope, validations=[deepcopy(native[validation_id])],
+                arguments=arguments, rebuild=rebuild, native=native, validation_artifact=validation_artifact,
+                archive=archive)
+
+    def test_completed_join_uses_original_bytes_without_replaying_or_expanding_predecessors(self):
+        from products.sdk_android_metadata_admission import AndroidMetadataAdmission
+        from runtime_reference_archive import copy_reference_member
+        sizes = []
+        def copy(*args, **kwargs):
+            result = copy_reference_member(*args, **kwargs)
+            root = next(p for p in Path(args[2]).parents if p.name.startswith("completed-android-metadata-"))
+            sizes.append(sum(p.stat().st_size for p in root.rglob("*") if p.is_file()))
+            self.assertFalse((root / "original/originals/validation/original").exists())
+            self.assertFalse((root / "original/inputs/sdk-sdk-android-package-android").exists())
+            return result
+        with self.completed_fixture() as f, patch("runtime_reference_archive.copy_reference_member", side_effect=copy):
+            admission = AndroidMetadataAdmission.from_completed_predecessors(**f.arguments)
+            self.assertIs(type(admission), AndroidMetadataAdmission)
+            with patch("sdk_android_metadata_original.verify_completed_android_metadata", wraps=original.verify_completed_android_metadata):
+                admission.verify_metadata(f.envelope, f.validations)
+                admission.verify_metadata(f.envelope, f.validations)
+            self.held.assert_not_called()
+            self.assertLess(max(sizes), f.archive.stat().st_size * 2)
+
+    def test_completed_join_keeps_authority_byte_and_lifetime_guards(self):
+        with self.completed_fixture() as f:
+            def call(**changes):
+                original.verify_completed_android_metadata(f.envelope, f.validations, **{**f.arguments, **changes})
+            with self.assertRaisesRegex(ValueError, "concrete native"):
+                call(completed_frozen=object())
+            before = f.validation_artifact["digest"]
+            f.validation_artifact["digest"] = "sha256:" + "0" * 64
+            with self.assertRaisesRegex(ValueError, "native-qualified original"):
+                call()
+            f.validation_artifact["digest"] = before
+            for path in ("originals/validation/original/shard/phase-receipt.json",
+                         "inputs/sdk-sdk-android-package-android/stage/outputs/payload.bin", "worker/execution.json"):
+                with self.subTest(path=path):
+                    file = self.worker / path
+                    raw = file.read_bytes()
+                    file.write_bytes(b"changed")
+                    f.rebuild()
+                    with self.assertRaises(ValueError):
+                        call()
+                    file.write_bytes(raw)
+                    f.rebuild()
+            real = original._worker
+            def changed(*args):
+                real(*args)
+                f.validations[0]["objectSha256"] = "sha256:" + "0" * 64
+            with patch.object(original, "_worker", side_effect=changed), self.assertRaisesRegex(ValueError, "changed"):
+                call()
+
     def setUp(self):
         # Reuse the real package/validation/Contract fixture without importing
         # its TestCase into this module's discovery namespace.

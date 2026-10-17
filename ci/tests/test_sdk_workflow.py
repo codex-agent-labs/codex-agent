@@ -400,6 +400,28 @@ class SdkWorkflowTest(unittest.TestCase):
         self.assertEqual(path, collect.call_args.kwargs["sdk_worker_workflow_path"])
         self.assertEqual(job, collect.call_args.kwargs["sdk_worker_job_name"])
 
+    def test_android_metadata_collection_constructs_concrete_admission_before_advancing(self):
+        from reuse_qualification import CompletedFrozenReuse
+        from products.sdk_android_metadata_admission import AndroidMetadataAdmission
+        original = self.repository / "android-metadata-input"
+        for name in ("product-resume-inputs", "product-resume-state", "runtime-state"):
+            (original / name).mkdir(parents=True)
+        row = {"result": "success", "shardDirectory": "rows/android/original/shard", "artifact": {"id": 123}}
+        destination = self.repository / "android-metadata-collected"
+        cap = object.__new__(CompletedFrozenReuse)
+        def advance(*args, **kwargs):
+            admission = kwargs["sdk_android_metadata_admission"]
+            self.assertIs(type(admission), AndroidMetadataAdmission)
+            self.assertIs(cap, admission._completed["completed_frozen"])
+            self.assertEqual(row["artifact"], admission._completed["artifact"])
+            args[4].mkdir(parents=True)
+            return {"matrices": {"sdk": []}}
+        with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}), \
+                patch.object(workflow.product_reuse, "advance_products", side_effect=advance):
+            workflow.collect(original, destination, self.repository / "android-metadata-output", wave=18,
+                family="android-metadata", trusted_workflow_sha="c" * 40, repository_root=self.repository,
+                environ={}, token="fixture", completed_frozen=cap)
+
     def test_collection_preserves_original_roots_and_uses_exact_sdk_partition(self):
         original = self.repository / "original"
         for name in ("product-resume-inputs", "product-resume-state", "runtime-state"):

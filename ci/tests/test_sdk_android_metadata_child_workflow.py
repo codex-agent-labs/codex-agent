@@ -23,6 +23,15 @@ def job(source, name):
 
 
 class AndroidMetadataChildWorkflowTest(unittest.TestCase):
+    def test_recovered_original_skips_all_fresh_preparation_and_execution(self):
+        worker = job(WORKFLOW.read_text(), "sdk-android-metadata")
+        retained = worker.split("      - id: retained\n", 1)[1].split("      - id: policy\n", 1)[0]
+        self.assertLess(worker.index("- id: validation-state"), worker.index("- id: retained"))
+        self.assertIn("locate_retained_core_binary_upload", retained)
+        self.assertIn("phase='metadata', component='sdk-android', target='android'", retained)
+        for name in ("policy", "apkanalyzer", "base", "validation-handoff", "control", "original", "metadata"):
+            self.assertIn(f"- id: {name}\n        if: steps.retained.outputs.reused != 'true'", worker)
+
     def test_both_policy_callers_forward_only_explicit_retained_sdk_source(self):
         callers = (WORKFLOW, WORKFLOW.parents[1] /
                    "actions/sdk-android-validation-worker/prepare/action.yml")

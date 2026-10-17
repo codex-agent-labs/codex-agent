@@ -74,7 +74,8 @@ class CoreAndroidFamilySelectionTest(unittest.TestCase):
                     SDK_FAMILY=family, SDK_STATE_WAVE=str(wave - 1))
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(harness.capture_arguments(output,
-                    ["--sdk-state-wave", str(wave - 1), "--family", family], sdk=True), args)
+                    ["--sdk-state-wave", str(wave - 1), "--family", family], sdk=True)
+                    + (["--scope-inputs"] if family in {"core-binary", "android-binary"} else []), args)
                 result, args, _, output = harness.run_action("collect", PRODUCT="sdk",
                     SDK_FAMILY=family, WAVE=str(wave))
                 self.assertEqual(0, result.returncode, result.stderr)
