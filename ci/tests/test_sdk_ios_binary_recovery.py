@@ -555,10 +555,34 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
             self.key, self.output, self.work, trusted_workflow_sha=self.pin,
             token="synthetic-token", environ={}, attempts=(self.run,), phase=self.javascript_phase, component=self.recovery_component)
 
-    def replay(self):
+    def replay(self, **options):
         return recovery.replay_prior_javascript_package(self.output, self.work, plan=self.plan,
             consumer_producer={**self.producer, "runId": 72}, trusted_workflow_sha=self.pin,
-            token="synthetic-token", environ={}, phase=self.javascript_phase, component=self.recovery_component)
+            token="synthetic-token", environ={}, phase=self.javascript_phase, component=self.recovery_component, **options)
+
+    def test_invalidated_historical_completion_replays_the_full_original(self):
+        import reuse_qualification as native
+        receipt = load_canonical_json_bytes(self.receipt_bytes)
+        with self.gates(), verification_session(), \
+                patch.object(recovery.products, "download_artifact", wraps=recovery.products.download_artifact) as download:
+            records = self.capture()
+            inventory = regular_file_inventory(self.output, allow_empty=True)
+            cap = native.CompletedFrozenReuse(
+                {"request": {}, "expectedResult": {"phases": []}}, [], native._COMPLETED_FROZEN,
+                revision=receipt["producer"]["commit"],
+                sdk={"extension": {"spec": {"completedPhases": records}, "proof": {}}})
+            with patch.object(native.CompletedFrozenReuse, "observe_extended_sdk",
+                              side_effect=AssertionError("invalidated native completion")), \
+                    patch.object(recovery, "_capture_javascript_package",
+                                 wraps=recovery._capture_javascript_package) as authenticate:
+                self.assertEqual(records, self.replay(completed_frozen=cap))
+                authenticate.assert_called_once()
+                self.assertEqual(inventory, regular_file_inventory(self.output, allow_empty=True))
+                self.assertEqual(1, download.call_count)
+                # An invalidated native phase still requires the ordinary whole-upload gate.
+                self.jobs[0]["conclusion"] = "failure"
+                with self.assertRaises(ValueError):
+                    self.replay(completed_frozen=cap)
 
     def test_original_successful_package_from_failed_parent_is_preserved_and_replayed(self):
         with self.gates(), verification_session(), \

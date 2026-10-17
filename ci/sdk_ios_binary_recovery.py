@@ -220,7 +220,8 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Completed SDK replay requires concrete native authority")
         extension = completed_frozen.sdk_extension()
-        if extension is not None and instance in {products._identity(row) for row in extension["spec"]["completedPhases"]}:
+        if (extension is not None and instance in completed_frozen.completed_phases()
+                and instance in {products._identity(row) for row in extension["spec"]["completedPhases"]}):
             record = _javascript_package_record(parent, Path(artifact_root), phase,
                 component=component, target=target, completed_frozen=completed_frozen)
             completed_frozen.envelope(record, raw)
