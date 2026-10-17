@@ -5561,14 +5561,33 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: parent
         env:
-          RESULTS: ${{ toJSON(needs) }}
+          PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
+          RUNTIME_CONTINUATION: ${{ toJSON(needs.runtime-continuation) }}
+          RUNTIME_AGGREGATE_CONTINUATION: ${{ toJSON(needs.runtime-aggregate-continuation) }}
+          SDK_IOS_BINARY_PLAN: ${{ toJSON(needs.sdk-ios-binary-plan) }}
+          SDK_IOS_BINARY: ${{ toJSON(needs.sdk-ios-binary) }}
+          SDK_COLLECT_3: ${{ toJSON(needs.sdk-collect-3) }}
+          SDK_PLAN: ${{ toJSON(needs.sdk-plan) }}
+          SDK_NATIVE_RESULT: ${{ toJSON(needs.sdk-native-result) }}
+          SDK_IOS_VALIDATION_RESULT: ${{ toJSON(needs.sdk-ios-validation-result) }}
+          SDK_IOS_METADATA_RESULT: ${{ toJSON(needs.sdk-ios-metadata-result) }}
+          SDK_CORE_BINARY_WAVE: ${{ toJSON(needs.sdk-core-binary-wave) }}
+          SDK_CORE_PACKAGE_WAVE: ${{ toJSON(needs.sdk-core-package-wave) }}
+          SDK_CORE_VALIDATION_WAVE: ${{ toJSON(needs.sdk-core-validation-wave) }}
+          SDK_CORE_METADATA_WAVE: ${{ toJSON(needs.sdk-core-metadata-wave) }}
+          SDK_ANDROID_BINARY_RESULT: ${{ toJSON(needs.sdk-android-binary-result) }}
+          SDK_ANDROID_PACKAGE_RESULT: ${{ toJSON(needs.sdk-android-package-result) }}
+          SDK_ANDROID_VALIDATION_RESULT: ${{ toJSON(needs.sdk-android-validation-result) }}
+          SDK_ANDROID_METADATA_RESULT: ${{ toJSON(needs.sdk-android-metadata-result) }}
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          from ci.sdk_completion_state import select_sdk_completion_state
+          from ci.sdk_completion_state import _JOBS, select_sdk_completion_state
           from ci.reuse import github_output
-          state = select_sdk_completion_state(json.loads(os.environ['RESULTS']))
+          # Separate job controls avoid Linux's per-environment-string size limit.
+          needs = {name: json.loads(os.environ[name.upper().replace('-', '_')]) for name in _JOBS}
+          state = select_sdk_completion_state(needs)
           github_output(Path(os.environ['GITHUB_OUTPUT']), state)
           PY
       - name: Select installed caller Java for SDK tooling
