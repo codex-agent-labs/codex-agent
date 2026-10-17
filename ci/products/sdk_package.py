@@ -2,10 +2,12 @@
 
 import argparse
 import base64
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import subprocess
 import sys
 import tempfile
+from types import FunctionType
 from typing import Any
 from zipfile import ZipFile
 
@@ -713,9 +715,124 @@ def native_metadata_content(contents: Path, package_receipt: Path, component: st
             "packageOutputsDigest": package_digest, "hosts": hosts}
 
 
+@contextmanager
+def verified_native_consumer_authorization(evidence: Path, sdks: Path, target: str):
+    """Private host-only sidecars; never part of deterministic package/phase bytes."""
+    from .c_abi import TARGET_SPECS
+    from .sdk_runtime_root import verify_external_library_authorization
+    if target not in NATIVE_TARGETS:
+        raise ValueError("Native consumer authorization requires an exact host")
+    evidence, sdks = Path(evidence), Path(sdks)
+    library_path = next(spec.library_path for spec in TARGET_SPECS.values()
+                        if spec.classifier == "c-abi-" + target)
+    library = sdks / target / library_path
+    compatibility_path, root_path = sdks / COMPATIBILITY_NAME, sdks / "sdk-runtime-root.pub"
+    compatibility_raw = read_regular_file_bytes(compatibility_path, max_bytes=65536, reject_symlink_parents=True)
+    root_raw = read_regular_file_bytes(root_path, max_bytes=4096, reject_symlink_parents=True)
+    before = regular_file_inventory(evidence)
+    if len(before) > 128 or sum(row["bytes"] for row in before) > _LIMIT:
+        raise ValueError("Native consumer authorization exceeds its small evidence bound")
+    with tempfile.TemporaryDirectory(prefix="native-consumer-authorization-") as temporary:
+        captured = Path(temporary).resolve() / "evidence"
+        snapshot_regular_tree(evidence, captured)
+        if regular_file_inventory(captured) != before:
+            raise ValueError("Native authorization changed during capture")
+        compatibility = load_canonical_json_bytes(compatibility_raw)
+        claim = verify_external_library_authorization(captured,
+            sdk_pinned_root_public_key=root_raw, sdk_compatibility=compatibility,
+            target=target, library_snapshot=library)
+        runtime = compatibility["runtime"]
+        variant = next(item for item in runtime["embeddedVariants"] if item["target"] == target)
+        if (claim["runtimeVersion"] != runtime["defaultRuntimeVersion"]
+                or claim["aggregateManifestSha256"] != runtime["defaultManifestSha256"]
+                or claim["runtimeIdentity"]["componentId"] != variant["componentId"]
+                or any(claim[left] != variant[right] for left, right in (
+                    ("runtimeLibrarySha256", "runtimeLibrarySha256"),
+                    ("variantBundleSha256", "bundleSha256"), ("variantManifestSha256", "manifestSha256")))):
+            raise ValueError("Native consumer authorization differs from the selected SDK Runtime")
+        yield captured
+        if (regular_file_inventory(evidence) != before or regular_file_inventory(captured) != before
+                or read_regular_file_bytes(compatibility_path, reject_symlink_parents=True) != compatibility_raw
+                or read_regular_file_bytes(root_path, reject_symlink_parents=True) != root_raw):
+            raise ValueError("Native consumer authorization or SDK policy changed during use")
+
+
+def consume_authorized_native(repository, packages, sdks, output, sdk_version, language, *,
+                              runtime_authorization, expected_classifier, offline=False,
+                              package_negative_evidence=None):
+    """Reuse the unchanged installed consumer with one additional staging seam.
+
+    A private function namespace keeps the package-producing module and its
+    globals untouched. All original path, package, equality and consumer gates
+    execute; each installed loader still verifies its own signed sidecars.
+    """
+    from ci import native_wrappers
+    for destination in (output, package_negative_evidence):
+        if destination is not None:
+            _require_capability_output_separate(destination, Path(runtime_authorization))
+    namespace = dict(vars(native_wrappers))
+
+    def bind(name):
+        original = getattr(native_wrappers, name)
+        bound = FunctionType(original.__code__, namespace, original.__name__,
+                             original.__defaults__, original.__closure__)
+        bound.__kwdefaults__ = original.__kwdefaults__
+        return bound
+
+    original_consumer = bind("_consume")
+
+    def authorized_consumer(*args, **kwargs):
+        matches = []
+
+        def matching_native(root, pattern, sdk_library, label):
+            native = native_wrappers.require_matching_native(root, pattern, sdk_library, label)
+            if matches:
+                raise ValueError("Native consumer must select exactly one installed library")
+            matches.append(native)
+            return native
+
+        with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence:
+            external_calls = []
+
+            def run(*command, **options):
+                if not matches or not any(str(value) == str(matches[0]) for value in command):
+                    return native_wrappers.run(*command, **options)
+                # Only the explicit external-positive invocation sees sidecars.
+                # Package-negative fixtures and deterministic evidence never copy them.
+                sidecar = matches[0].with_name(matches[0].name + ".evidence")
+                inventory = regular_file_inventory(evidence)
+                publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
+                try:
+                    result = native_wrappers.run(*command, **options)
+                    if regular_file_inventory(sidecar) != inventory:
+                        raise ValueError("Installed consumer changed its Runtime authorization")
+                    external_calls.append(True)
+                    return result
+                finally:
+                    native_wrappers.invalidate_output(sidecar)
+
+            namespace.update(require_matching_native=matching_native, run=run)
+            original_consumer(*args, **kwargs)
+            if len(matches) != 1 or len(external_calls) != 1:
+                raise ValueError("Native consumer must authenticate exactly one external-positive invocation")
+
+    namespace["_consume"] = authorized_consumer
+    # Keep the original output guards and exception cleanup around authorization too.
+    bind("consume_language")(repository, packages, sdks, output, sdk_version, language,
+        expected_classifier=expected_classifier, offline=offline,
+        package_negative_evidence=package_negative_evidence)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
+    consumer = commands.add_parser("consume-native", allow_abbrev=False)
+    for name in ("repository", "packages", "sdks", "output", "sdk-version-file", "runtime-authorization"):
+        consumer.add_argument(f"--{name}", type=Path, required=True)
+    consumer.add_argument("--language", choices=NATIVE_BINDINGS, required=True)
+    consumer.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
+    consumer.add_argument("--offline", action="store_true")
+    consumer.add_argument("--package-negative-evidence", type=Path)
     native = commands.add_parser("verify-native", allow_abbrev=False)
     for name in ("repository", "stage", "receipt", "compatibility-request", "runtime-stages", "staged-sdks"):
         native.add_argument(f"--{name}", type=Path, required=True)
@@ -736,6 +853,13 @@ def main(argv: list[str] | None = None) -> int:
     metadata.add_argument("--package-receipt", type=Path, required=True)
     metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
+    if args.command == "consume-native":
+        from ci.native_wrappers import require_sdk_version_file
+        consume_authorized_native(args.repository.resolve(), args.packages.resolve(), args.sdks,
+            args.output.absolute(), require_sdk_version_file(args.sdk_version_file.resolve()), args.language,
+            runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier,
+            offline=args.offline, package_negative_evidence=args.package_negative_evidence)
+        return 0
     if args.command == "native-metadata":
         sys.stdout.buffer.write(canonical_json_bytes(native_metadata_content(args.contents, args.package_receipt, args.component)))
         return 0

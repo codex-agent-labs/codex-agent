@@ -14,6 +14,9 @@ import org.gradle.testfixtures.ProjectBuilder
 import org.gradle.work.DisableCachingByDefault
 
 class NativeWrapperInstalledConsumerTaskTest {
+    private fun pythonStringLiteral(value: String) =
+        "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
     @Test
     fun `Python installer bytecode is private disposable and separate from verifier inputs`() {
         for (fail in listOf(false, true)) fixture().use { fixture ->
@@ -61,6 +64,19 @@ class NativeWrapperInstalledConsumerTaskTest {
         val task = fixture.task("csharp", offline = true).apply {
             packageReceipt.set(receipt)
             outputDirectory.set(context.resolve("stage"))
+        }
+        assertFailsWith<IllegalStateException> { task.consume() }
+        assertEquals("preserve", sentinel.readText())
+        assertFalse(fixture.project.projectDir.resolve("authenticated").exists())
+    }
+
+    @Test
+    fun `external authorization context is protected before output cleanup`() = fixture().use { fixture ->
+        val context = fixture.root.resolve("work/runtime-authorization").apply { mkdirs() }
+        val sentinel = context.resolve("original.sig").apply { writeText("preserve") }
+        val task = fixture.task("python", offline = true).apply {
+            runtimeAuthorization.set(context)
+            outputDirectory.set(context)
         }
         assertFailsWith<IllegalStateException> { task.consume() }
         assertEquals("preserve", sentinel.readText())
@@ -248,6 +264,7 @@ class NativeWrapperInstalledConsumerTaskTest {
         project.layout.buildDirectory.set(root.resolve("work"))
         val packages = root.resolve("packages").also(File::mkdirs)
         val sdks = root.resolve("sdks").also(File::mkdirs)
+        root.resolve("runtime-authorization").mkdir()
         val version = root.resolve("sdk.txt").apply { writeText("0.2.0\n") }
         val script = root.resolve("consumer.py").apply { writeText(fakeConsumerScript(malformed = false)) }
         val verifier = project.projectDir.resolve("ci/products/sdk_package.py")
@@ -255,8 +272,12 @@ class NativeWrapperInstalledConsumerTaskTest {
         project.projectDir.resolve("ci/__init__.py").writeText("")
         verifier.parentFile.resolve("__init__.py").writeText("")
         verifier.writeText("""
-            import pathlib, sys
+            import pathlib, runpy, sys
             args = sys.argv[1:]
+            if args[0] == 'consume-native':
+                assert pathlib.Path(args[args.index('--runtime-authorization') + 1]) == pathlib.Path(${pythonStringLiteral(root.resolve("runtime-authorization").absolutePath)})
+                runpy.run_path(${pythonStringLiteral(script.absolutePath)}, run_name='__main__')
+                raise SystemExit(0)
             assert args[0] == 'verify-native'
             for option in ('--repository', '--stage', '--receipt', '--compatibility-request',
                            '--runtime-stages', '--staged-sdks', '--component', '--validation-inputs-output'):
@@ -275,7 +296,7 @@ class NativeWrapperInstalledConsumerTaskTest {
         import pathlib, sys
         assert pathlib.Path('authenticated').is_file()
         args = sys.argv[1:]
-        assert args[0] == "consume-language"
+        assert args[0] == "consume-native"
         assert "--plan" not in args
         assert args[args.index("--expected-classifier") + 1] in {"linux-x64", "macos-arm64"}
         language = args[args.index("--language") + 1]

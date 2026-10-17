@@ -43,6 +43,8 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
     abstract val runtimeStageDirectory: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val packageReceipt: RegularFileProperty
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val runtimeAuthorization: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
     abstract val compatibilityRequest: RegularFileProperty
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -66,6 +68,9 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
         offlineMode.convention(project.gradle.startParameter.isOffline)
         pythonExecutable.convention("python3")
         ownedBuildDirectory.convention(project.layout.buildDirectory)
+        runtimeAuthorization.convention(project.layout.dir(packageReceipt.map {
+            it.asFile.parentFile.resolve("runtime-authorization")
+        }))
         outputs.upToDateWhen { false }
     }
 
@@ -94,7 +99,8 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
         }
         listOf(packageStageDirectory.get().asFile, runtimeStageDirectory.get().asFile,
             packageReceipt.get().asFile, compatibilityRequest.get().asFile, stagedSdkDirectory.get().asFile,
-            sdkVersionFile.get().asFile, consumerScript.get().asFile).plus(consumerSources.files)
+            sdkVersionFile.get().asFile, consumerScript.get().asFile,
+            runtimeAuthorization.get().asFile).plus(consumerSources.files)
             .plus(verifierSources.files)
             .plus(nativeWrapperBinaryContext(language.get(), packageReceipt.get().asFile)).forEach { input ->
             val path = input.canonicalFile.toPath()
@@ -130,7 +136,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                 )
             }
             val command = mutableListOf(
-                pythonExecutable.get(), consumerScript.get().asFile.absolutePath, "consume-language",
+                pythonExecutable.get(), "-m", "ci.products.sdk_package", "consume-native",
                 "--repository", repositoryRoot.get().asFile.absolutePath,
                 "--packages", packageStageDirectory.get().asFile.resolve("outputs").absolutePath,
                 "--sdks", stagedSdkDirectory.get().asFile.absolutePath,
@@ -138,6 +144,7 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
                 "--sdk-version-file", sdkVersionFile.get().asFile.absolutePath,
                 "--language", languageValue,
                 "--expected-classifier", classifier,
+                "--runtime-authorization", runtimeAuthorization.get().asFile.absolutePath,
             )
             if (offlineMode.get()) command += "--offline"
             if (negatives != null) command += listOf("--package-negative-evidence", negatives.absolutePath)
