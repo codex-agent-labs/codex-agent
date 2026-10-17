@@ -26,6 +26,13 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
     def job(self, name):
         return self.harness.job(name)
 
+    def test_caller_java_selection_explicitly_uses_bash_on_every_host(self):
+        steps = self.harness.workflow.split("      - name: Select installed caller Java for SDK tooling\n")[1:]
+        self.assertTrue(steps)
+        for step in steps:
+            configuration = step.split("        run: |\n", 1)[0]
+            self.assertIn("        shell: bash\n", configuration)
+
     def test_native_checkout_preserves_git_bytes_before_qualification_on_windows(self):
         worker = self.job('sdk-native-validation')
         environment = worker.split('    env:\n', 1)[1].split('    steps:\n', 1)[0]

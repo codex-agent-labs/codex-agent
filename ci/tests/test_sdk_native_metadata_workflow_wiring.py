@@ -53,6 +53,7 @@ class SdkNativeMetadataWorkflowWiringTest(unittest.TestCase):
 
     def needs(self, *, required="true", worker="success", collector="success", failed="false"):
         return {
+            "sdk-plan": {"result": "success", "outputs": {"ios_validation_direct": "false"}},
             "sdk-native-validation-result": {"result": "success", "outputs": self.locator()},
             "sdk-native-metadata-plan": {"result": "success", "outputs": {"sdk_workers_required": required}},
             "sdk-native-metadata": {"result": worker, "outputs": {}},
@@ -142,7 +143,7 @@ class SdkNativeMetadataWorkflowWiringTest(unittest.TestCase):
         for dependency in ("sdk-native-validation-result", "sdk-native-metadata-plan",
                            "sdk-native-metadata", "sdk-collect-8"):
             self.assertIn(dependency, result.split("    runs-on:", 1)[0])
-        self.assertIn("select_native_state(json.loads(os.environ['RESULTS']), stage='metadata')", result)
+        self.assertIn("select_ios_ready_prefix(needs)", result)
         for output in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):
             self.assertIn(f"{output}: ${{{{ steps.result.outputs.{output} }}}}", result)
         gate = self.job("merge-gate").split("    runs-on:", 1)[0]
