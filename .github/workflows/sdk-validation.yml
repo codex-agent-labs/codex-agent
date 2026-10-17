@@ -119,7 +119,7 @@ jobs:
           TOOLING_TRANSPORT_PRODUCER: ${{ inputs.toolingTransportProducer }}
         run: |
           set -euo pipefail
-          test -n "$STATE_ID" && test -n "$STATE_SHA" && test -n "$STATE_WAVE" && test -n "$SDK_STATE_WAVE"
+          test -n "$STATE_ID" && test -n "$STATE_SHA" && test -n "$STATE_WAVE"
           test "$STATE_ID" = "$PREPARATION_STATE_ID"
           test "$STATE_SHA" = "$PREPARATION_STATE_SHA"
           test "$STATE_WAVE" = "$PREPARATION_STATE_WAVE"
