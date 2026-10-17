@@ -282,7 +282,7 @@ runs:
         import os, subprocess, sys
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
-        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file
         from products.sdk_validation_inputs import _request_inventory
         from products.sdk_android_validation_phase import _contract_sources
         from products.signing_isolation import require_no_signing_secret
@@ -321,7 +321,7 @@ runs:
         fields = {'--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
             '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-android-metadata-worker'),
             '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
-            '--policy-revision': load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))['validationCommit'],
+            '--policy-revision': load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))['validationCommit'],
             '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
             '--package-stage': original['packageStage'], '--package-receipt': original['packageReceipt'],
             '--binary-stage': original['binaryStage'], '--binary-receipt': original['binaryReceipt'],
@@ -360,7 +360,7 @@ runs:
         shard = verify_phase_shard(root / 'build/sdk-android-metadata-worker/shard',
             PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android'))
         producer = validate_producer(shard['receipt']['producer'], 'Android metadata producer')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))
         if (shard['buildKey'] != os.environ['BUILD_KEY'] or
                 producer['tree'] != os.environ['TREE'] or
                 producer['commit'] != plan['validationCommit'] or

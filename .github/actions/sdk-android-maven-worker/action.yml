@@ -592,7 +592,7 @@ runs:
                 not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or
                 not re.fullmatch(r'[0-9a-f]{40}', tree)):
             raise ValueError('Android Maven worker differs from its exact replay election')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree:
             raise ValueError('Android Maven source tree differs from the authenticated plan')
         state = Path(os.environ['STATE']).resolve(strict=True)

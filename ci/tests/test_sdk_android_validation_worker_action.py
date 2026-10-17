@@ -1,5 +1,6 @@
 """Android validation composite authority checks; no hosted Firebase claim."""
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -75,7 +76,7 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
                 exec(compile(self.script("policy"), "android-policy", "exec"), {})
             pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
             plan = root / "plan"
-            plan.write_bytes(canonical_json_bytes({"validationTree": TREE}))
+            plan.write_text(json.dumps({"validationTree": TREE}, indent=2) + "\n")
             state = root / "state"
             state.mkdir()
             row = {"product": "sdk", "component": "sdk-android", "phase": "validation",
@@ -93,6 +94,13 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
                     patch("native_wrappers.host_classifier", return_value="linux-x64"), \
                     patch.dict(os.environ, values, clear=True):
                 exec(compile(self.script("identity"), "android-identity", "exec"), {})
+                plan.write_text('{"validationTree":"' + TREE + '","validationTree":"' + TREE + '"}')
+                with self.assertRaisesRegex(ValueError, "duplicate key"):
+                    exec(compile(self.script("identity"), "android-identity", "exec"), {})
+                plan.write_text(json.dumps({"validationTree": "0" * 40}, indent=2))
+                with self.assertRaisesRegex(ValueError, "source tree"):
+                    exec(compile(self.script("identity"), "android-identity", "exec"), {})
+                plan.write_text(json.dumps({"validationTree": TREE}, indent=2) + "\n")
                 os.environ["MATRIX"] = json.dumps({"include": [{**row, "runner": "other"}]})
                 with self.assertRaisesRegex(ValueError, "elected phase"):
                     exec(compile(self.script("identity"), "android-identity", "exec"), {})
@@ -100,6 +108,32 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
                 (root / "binary-receipt").write_bytes(b"mutated\n")
                 with self.assertRaisesRegex(ValueError, "changed during state capture"):
                     exec(compile(self.script("identity"), "android-identity", "exec"), {})
+
+    def test_all_android_plan_readers_accept_ordinary_json_but_reject_duplicates(self):
+        from products.inventory import load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = Path(temporary).resolve() / "plan.json"
+            value = {"validationTree": TREE, "validationCommit": "c" * 40}
+            reads = 0
+            for action in ("validation", "metadata", "maven"):
+                text = (ROOT / f".github/actions/sdk-android-{action}-worker/action.yml").read_text()
+                for body in re.findall(r"        python3 -B - <<'PY'\n(.*?)\n        PY", text, re.S):
+                    for node in ast.walk(ast.parse(textwrap.dedent(body))):
+                        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                                and node.func.id in {"load_canonical_json_bytes", "load_json_bytes"}
+                                and "os.environ['PLAN']" in ast.unparse(node)):
+                            continue
+                        reads += 1
+                        expression = compile(ast.Expression(node), "android-plan-reader", "eval")
+                        scope = {"Path": Path, "os": os, "read_regular_file_bytes": read_regular_file_bytes,
+                                 "load_json_bytes": load_json_bytes, "load_canonical_json_bytes": load_canonical_json_bytes}
+                        with self.subTest(action=action, line=node.lineno), patch.dict(os.environ, PLAN=str(plan)):
+                            plan.write_text(json.dumps(value, indent=2) + "\n")
+                            self.assertEqual(eval(expression, scope), value)
+                            plan.write_text('{"validationTree":"x","validationTree":"x"}')
+                            with self.assertRaisesRegex(ValueError, "duplicate key"):
+                                eval(expression, scope)
+            self.assertEqual(reads, 4)
 
     def test_optional_apple_and_metadata_transitive_evidence_is_pinned(self):
         from ci.products import sdk_android_validation_phase as phase

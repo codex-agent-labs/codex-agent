@@ -241,7 +241,7 @@ runs:
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import host_classifier
-        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
             read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
         from products.sdk_android_validation_phase import _contract_sources
         from products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
@@ -264,7 +264,7 @@ runs:
                        ('POLICY_REVISION', 'TRUSTED_WORKFLOW_SHA', 'TRUSTED_ANDROID_WORKFLOW_SHA',
                         'TRUSTED_SOURCE_COMMIT', 'TRUSTED_SOURCE_TREE'))):
             raise ValueError('Android validation differs from its exact elected phase or host')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree:
             raise ValueError('Android validation source tree differs from the authenticated plan')
         state = Path(os.environ['STATE']).resolve(strict=True)
