@@ -136,7 +136,7 @@ def verify_completed_android_metadata(envelope, validation_envelopes, *, plan, d
         archive = private / "metadata.zip"
         actual, _ = product_reuse._download_contract_ci_upload(artifact["id"], artifact["digest"], name,
             receipt["producer"], observed[0]["run"], token, destination=archive,
-            upload_limit=product_reuse._IOS_PACKAGE_UPLOAD_LIMIT)
+            upload_limit=product_reuse._worker_upload_zip_limits(_INSTANCE)["max_archive_bytes"])
         product_reuse._require_artifact_job_window(observed[0], jobs[0]["name"], actual)
         records = product_reuse._core_metadata_upload_inventory(archive,
             {"bytes": actual["size_in_bytes"], "sha256": actual["digest"]}, _INSTANCE)
@@ -172,7 +172,8 @@ def verify_completed_android_metadata(envelope, validation_envelopes, *, plan, d
                     projection.append(row)
             for predecessor in (package_id, validation_id):
                 value = native[predecessor]
-                prefix = f"inputs/sdk-sdk-android-{predecessor.phase}-android/"
+                prefix = ("originals/validation/original/" if predecessor == package_id else "")
+                prefix += f"inputs/sdk-sdk-android-{predecessor.phase}-android/"
                 manifest = canonical_json_bytes({"schemaVersion": 1, **{n: value["receipt"][n] for n in
                     ("product", "component", "phase", "target", "productVersion", "outputs")}})
                 expected = sorted([{"relativePath": "output-manifest.json", "bytes": len(manifest), "sha256": sha256_bytes(manifest)},
@@ -592,7 +593,7 @@ def _verified_sdk_android_metadata(
                     validation_capture=trees["validationCapture"], **common) as validation:
                 _same_stage(validation_directory, validation["stage"],
                             validation["receiptBytes"], "validation")
-                package_directory = inputs / "sdk-sdk-android-package-android"
+                package_directory = original / "originals/validation/original/inputs/sdk-sdk-android-package-android"
                 _same_stage(package_directory, trees["package"],
                             before_files["packageReceipt"], "package")
                 if (validation["receiptBytes"] != validation_raw

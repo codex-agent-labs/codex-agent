@@ -319,6 +319,8 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         self.check_retained_core_original("binary", "android", component="sdk-android")
 
     def test_retained_android_metadata_needs_fresh_collection_session_and_exact_child(self):
+        instance = PhaseInstanceId("sdk", "sdk-android", "metadata", "android")
+        self.assertEqual(adapter._CATALOG_ZIP_LIMITS, adapter._worker_upload_zip_limits(instance))
         self.check_retained_core_original("metadata", "android", component="sdk-android")
 
     def check_retained_core_original(self, phase, target="common", component="sdk-core"):

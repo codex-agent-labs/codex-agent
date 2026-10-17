@@ -265,6 +265,8 @@ _LARGE_SDK_UPLOADS = frozenset((
 
 def _worker_upload_zip_limits(instance):
     # These exact uploads retain complete original execution evidence.
+    if instance == PhaseInstanceId("sdk", "sdk-android", "metadata", "android"):
+        return _CATALOG_ZIP_LIMITS  # Projection does not enlarge Android's original archive bounds.
     if instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common"):
         # Eleven complete validation captures contain more than 39,000 files.
         return {**_IOS_PACKAGE_UPLOAD_ZIP_LIMITS, "max_members": 65_536}
@@ -6635,12 +6637,14 @@ def collect_runtime_workers(
                     artifact, _ = _download_contract_ci_upload(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token, destination=archive,
-                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance in _LARGE_SDK_UPLOADS else {}))
+                        **({"upload_limit": _worker_upload_zip_limits(instance)["max_archive_bytes"]}
+                           if instance in _LARGE_SDK_UPLOADS else {}))
                 else:
                     artifact = _contract_ci_upload_metadata(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token,
-                        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if instance in _LARGE_SDK_UPLOADS else {}))
+                        **({"upload_limit": _worker_upload_zip_limits(instance)["max_archive_bytes"]}
+                           if instance in _LARGE_SDK_UPLOADS else {}))
                 timestamps = [datetime.fromisoformat(require_string(value, "Runtime worker timestamp").replace("Z", "+00:00"))
                               for value in (job.get("started_at"), artifact.get("created_at"), job.get("completed_at"))]
                 if (any(value.utcoffset() != timedelta(0) for value in timestamps)

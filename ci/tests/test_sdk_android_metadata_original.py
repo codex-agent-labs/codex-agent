@@ -94,6 +94,8 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
         from products.sdk_android_metadata_admission import AndroidMetadataAdmission
         from runtime_reference_archive import copy_reference_member
         sizes = []
+        self.assertFalse((self.worker / "inputs/sdk-sdk-android-package-android").exists())
+        self.assertTrue((self.worker / "originals/validation/original/inputs/sdk-sdk-android-package-android").is_dir())
         def copy(*args, **kwargs):
             result = copy_reference_member(*args, **kwargs)
             root = next(p for p in Path(args[2]).parents if p.name.startswith("completed-android-metadata-"))
@@ -122,7 +124,7 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
                 call()
             f.validation_artifact["digest"] = before
             for path in ("originals/validation/original/shard/phase-receipt.json",
-                         "inputs/sdk-sdk-android-package-android/stage/outputs/payload.bin", "worker/execution.json"):
+                         "originals/validation/original/inputs/sdk-sdk-android-package-android/stage/outputs/payload.bin", "worker/execution.json"):
                 with self.subTest(path=path):
                     file = self.worker / path
                     raw = file.read_bytes()
@@ -237,9 +239,8 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
         write_canonical_json(selection / "phase-plan.json", self.plan_value)
         write_canonical_json(selection / "producer.json", self.producer)
         for name, selected_stage, receipt in (
-                ("sdk-sdk-android-package-android", self.f.package_stage, self.f.package_receipt),
                 ("sdk-sdk-android-validation-android", self.f.validation_stage,
-                 self.f.validation_receipt)):
+                 self.f.validation_receipt),):
             selected = inputs / name
             shutil.copytree(selected_stage, selected / "stage")
             (selected / "phase-receipt.json").write_bytes(receipt.read_bytes())
@@ -401,7 +402,7 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
         mutations = {
             "validation-capture": lambda root: (root / "originals/validation/original/stage/extra").write_bytes(b"x"),
             "validation-stage": lambda root: (root / "inputs/sdk-sdk-android-validation-android/stage/extra").write_bytes(b"x"),
-            "package-receipt": lambda root: (root / "inputs/sdk-sdk-android-package-android/phase-receipt.json").write_bytes(b"{}\n"),
+            "package-receipt": lambda root: (root / "originals/validation/original/inputs/sdk-sdk-android-package-android/phase-receipt.json").write_bytes(b"{}\n"),
             "metadata-request": change_request,
             "selection": lambda root: (root / "selection/phase-plan.json").write_bytes(b"{}\n"),
             "missing-selection": lambda root: shutil.rmtree(root / "selection"),
