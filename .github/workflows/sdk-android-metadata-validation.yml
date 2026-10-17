@@ -169,6 +169,9 @@ jobs:
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
             policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
           fi
+          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then
+            policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")
+          fi
           python3 -B -m ci.sdk_android_validation_policy \
             --phase metadata \
             --plan "${{ steps.validation-state.outputs.plan-path }}" \

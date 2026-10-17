@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import re
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -22,6 +23,24 @@ def job(source, name):
 
 
 class AndroidMetadataChildWorkflowTest(unittest.TestCase):
+    def test_both_policy_callers_forward_only_explicit_retained_sdk_source(self):
+        callers = (WORKFLOW, WORKFLOW.parents[1] /
+                   "actions/sdk-android-validation-worker/prepare/action.yml")
+        for caller in callers:
+            source = caller.read_text().split("python3 -B -m ci.sdk_android_validation_policy", 1)[0]
+            options = textwrap.dedent("policy=()" + source.rsplit("policy=()", 1)[1])
+            for retained in (None, "/caller/retained SDK source.json"):
+                with self.subTest(caller=caller.name, retained=retained):
+                    env = {"APPLE_POLICY": "", "CODEX_AGENT_COMPLETED_REUSE_POLICY": "/caller/native.json"}
+                    if retained is not None:
+                        env["CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"] = retained
+                    result = subprocess.check_output(
+                        ["bash", "-eu", "-c", options + '\nprintf "%s\\0" "${policy[@]}"'], env=env)
+                    expected = ["--completed-frozen-policy", "/caller/native.json"]
+                    if retained is not None:
+                        expected += ["--retained-sdk-inputs-source", retained]
+                    self.assertEqual(expected, result.decode().split("\0")[:-1])
+
     def test_protected_authority_is_exact_canonical_json(self):
         worker = job(WORKFLOW.read_text(), "sdk-android-metadata")
         script = worker.split("          python3 -I -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
