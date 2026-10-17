@@ -108,6 +108,7 @@ class NativePackageToolingActionTest(unittest.TestCase):
             environment = {"PATH": str(binary), "RECORDED_ARGS": str(recorded), "GITHUB_WORKSPACE": str(root),
                 "GITHUB_OUTPUT": str(root / "output"), "PLAN": "original-plan", "DISCOVERY": "original-discovery",
                 "STATE": "current-state", "PREPARATION_STATE": "original-preparation", "ARTIFACT_ID": "7",
+                "CURRENT_ARTIFACT_ID": "6",  # Exercise recapture, not identical-state forwarding.
                 "ARTIFACT_SHA256": "sha256:" + "a" * 64, "STATE_WAVE": "0", "SDK_STATE_WAVE": "",
                 "COMPONENT": "python", "BUILD_KEY": "sha256:" + "b" * 64, "PREPARATION_COMPONENT": "rust",
                 "PREPARATION_BUILD_KEY": "sha256:" + "c" * 64, "PREPARED_ARTIFACT_ID": "8",

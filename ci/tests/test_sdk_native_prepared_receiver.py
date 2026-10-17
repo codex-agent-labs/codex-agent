@@ -76,6 +76,8 @@ class NativePreparedReceiverTest(unittest.TestCase):
 
     def captured(self, plan, path, **kwargs):
         self.events.append("capture")
+        # Keep the real capture boundary even though remote authority is mocked.
+        receiver._require_capability_output_separate(path, [self.root, plan])
         self.assertEqual(self.anchor, kwargs["expected_phase_plan"])
         source = path / "original/prepared-sources"
         for language in NATIVE_BINDINGS:
@@ -93,7 +95,7 @@ class NativePreparedReceiverTest(unittest.TestCase):
               for target in NATIVE_TARGETS for phase in ("package", "validation"))},
             set(kwargs["materialized_scope"]))
         path = args[4]
-        path.mkdir()
+        receiver.product_reuse._prepare_destination(path, self.root)
         (path / "producer.json").write_bytes(canonical_json_bytes(self.producer))
         receipt = path / "contract-contract-metadata-common/phase-receipt.json"
         receipt.parent.mkdir()

@@ -145,10 +145,11 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                         ("sdk_android_metadata_admission", sdk_android_metadata_admission)):
         if value is not None:
             tooling[name] = value
-    with tempfile.TemporaryDirectory(prefix="sdk-native-receiver-", dir=root / "build") as temporary:
+    with tempfile.TemporaryDirectory(prefix="sdk-native-receiver-", dir=root / "build") as temporary, \
+            tempfile.TemporaryDirectory(prefix="sdk-native-receiver-capture-") as capture_temporary:
         private = Path(temporary).resolve()
-        capture, predecessors, runtime = (private / name for name in
-                                          ("prepared-upload", "predecessors", "runtime-stages"))
+        capture = Path(capture_temporary).resolve() / "prepared-upload"
+        predecessors, runtime = (private / name for name in ("predecessors", "runtime-stages"))
         upload = private / "upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 requested_scope=(PhaseInstanceId("sdk", preparation_component, preparation_phase, preparation_target),),
