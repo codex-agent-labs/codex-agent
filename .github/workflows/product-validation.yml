@@ -4222,6 +4222,7 @@ jobs:
           revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-validation-worker
         with:
+          runtime-authorization-policy: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}

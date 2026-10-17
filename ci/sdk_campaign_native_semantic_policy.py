@@ -17,7 +17,7 @@ from products.inventory import (
 )
 
 
-_PATHS = {"repository", "compatibility_request", "runtime_stages", "staged_sdks",
+_PATHS = {"repository", "compatibility_request", "runtime_stages", "staged_sdks", "runtime_authorizations",
           "tooling_evidence", "tooling_public_key", "java_executable"}
 _OPTIONAL_PATHS = {"tooling_keyring", "tooling_keys_directory"}
 _TEXT = {"policy_revision", "required_trust_domain"}

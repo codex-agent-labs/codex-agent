@@ -84,6 +84,7 @@ class SdkNativeMetadataAdmissionTest(unittest.TestCase):
                         "compatibility_request", "runtime_stages", "staged_sdks", "tooling_evidence", "tooling_public_key",
                         "java_executable", "policy_revision", "required_trust_domain")}, target=target,
                     validation_stage=arguments["validation_stages"] / target,
+                    runtime_authorization=self.root / "runtime-authorization" / target,
                     validation_receipt=arguments["validation_receipts"] / f"{target}.json"))
         return tuple(proofs)
 

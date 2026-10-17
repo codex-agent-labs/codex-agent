@@ -92,7 +92,7 @@ class SdkWorkflowTest(unittest.TestCase):
         stage.mkdir()
         (stage / "evidence").write_bytes(b"synthetic original stage\n")
         receipt.write_bytes(b"synthetic original receipt\n")
-        record = {name: stage for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage")}
+        record = {name: stage for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "runtimeAuthorization")}
         record.update({name: receipt for name in ("packageReceipt", "validationReceipt", "compatibilityRequest")})
         inputs = {"java": original, "files": files, "phases": {}, "native": {
             language: {target: record for target in workflow.NATIVE_TARGETS} for language in workflow.NATIVE_BINDINGS}}

@@ -44,7 +44,8 @@ def verify_sdk_native_metadata_admission(
     repository = Path(repository)
     trees = {"metadata_stage": Path(metadata_stage), "package_stage": Path(package_stage),
              "runtime_stages": Path(runtime_stages), "staged_sdks": Path(staged_sdks),
-             "validation_stages": Path(validation_stages), "validation_receipts": Path(validation_receipts)}
+             "validation_stages": Path(validation_stages), "validation_receipts": Path(validation_receipts),
+             "runtime-authorization": Path(package_receipt).parent / "runtime-authorization"}
     if component == "csharp":
         trees["csharp-binary"] = csharp_binary_inputs(package_receipt)["binary_stage_root"].parent
     before = {name: _inventory(path) for name, path in trees.items()}
@@ -97,7 +98,7 @@ def verify_sdk_native_metadata_admission(
             raise ValueError("Native SDK metadata inputs/build key differ from its original authenticated plan")
         verified, verified_bytes = verify_sdk_native_metadata_content(
             repository=repository, component=component,
-            **{name: path for name, path in captured.items() if name != "csharp-binary"},
+            **{name: path for name, path in captured.items() if name not in {"csharp-binary", "runtime-authorization"}},
             compatibility_request=compatibility_request, tooling_evidence=tooling_evidence,
             tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,

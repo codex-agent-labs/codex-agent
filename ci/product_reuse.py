@@ -6166,7 +6166,7 @@ def execute_sdk_metadata(
 ) -> dict[str, Any]:
     """Execute only an exact metadata election after replaying its original SDK hosts."""
     from sdk_metadata_phase import execute
-    from products.sdk_validation import sdk_validation_provider
+    from products.sdk_validation import decode_sdk_validation_records, sdk_validation_provider
 
     if component not in NATIVE_BINDINGS:
         raise ValueError("SDK metadata worker requires an exact native language")
@@ -6214,10 +6214,13 @@ def execute_sdk_metadata(
         policy_revision=state.producer["commit"], tooling=sdk_validation_tooling)
     if provider is None:
         raise ValueError("SDK metadata requires authenticated original host evidence")
-    projections = []
+    original_records = decode_sdk_validation_records(root, request.get("sdkValidationEvidence", []))
+    projections, authorizations = [], {}
     for dependency in sdk_validation_dependencies(instance):
         value = original(dependency.product, dependency.component, dependency.phase, dependency.target)
-        projections.append(provider({**value["receipt"], "receiptSha256": sha256_file(value["receiptPath"])}))
+        digest = sha256_file(value["receiptPath"])
+        projections.append(provider({**value["receipt"], "receiptSha256": digest}))
+        authorizations[dependency.target] = original_records[digest]["runtimeAuthorization"]
     policy = require_exact_keys(dict(sdk_validation_tooling),
         {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain", "keyring", "keysDirectory"},
         "SDK metadata caller tooling policy")
@@ -6225,7 +6228,8 @@ def execute_sdk_metadata(
         trust_domain="development" if state.plan["event"] == "pull_request" else "release",
         repository_root=root, destination=destination / "worker", predecessor=original,
         compatibility_request=Path(compatibility_request), runtime_stages=Path(runtime_stages), staged_sdks=Path(staged_sdks),
-        sdk_validation_projections=tuple(projections), tooling_evidence=Path(policy["evidence"]),
+        sdk_validation_projections=tuple(projections), runtime_authorizations=authorizations,
+        tooling_evidence=Path(policy["evidence"]),
         tooling_public_key=Path(policy["publicKey"]), java_executable=Path(policy["javaExecutable"]),
         policy_revision=state.producer["commit"], required_trust_domain=policy["requiredTrustDomain"], environ=environment,
         tooling_keyring=Path(policy["keyring"]) if policy["keyring"] is not None else None,

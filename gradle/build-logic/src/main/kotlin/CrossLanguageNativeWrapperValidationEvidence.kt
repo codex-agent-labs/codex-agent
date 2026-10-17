@@ -9,6 +9,7 @@ internal val nativeWrapperPythonResources = productPythonResources.getValue("sdk
     "ci/products/runtime_validation_projection.py",
     "ci/products/sdk_csharp_binary.py",
     "ci/products/sdk_dotnet_toolchain.py",
+    "ci/products/sdk_runtime_root.py",
 )
 
 /** Use the scoped release-tooling init script to package this native-only closure. */
@@ -66,6 +67,7 @@ internal fun verifyImportedNativeWrapperValidation(
         it.classifier == "c-abi-$classifier"
     }) { "Unsupported imported native validation language/host" }
     val sources = listOf(packageStage, packageReceipt, compatibilityRequest, runtimeStages, stagedSdks,
+        packageReceipt.parentFile.resolve("runtime-authorization/$classifier"),
         validationStage, validationReceipt, repository.resolve("ci")) +
         nativeWrapperBinaryContext(language.id, packageReceipt) +
         if (language.id == "cpp") listOf(repository.resolve(
@@ -200,6 +202,7 @@ internal fun writeImportedNativeWrapperMetadataContent(
     check(language in nativeWrapperBindings) { "Unsupported native metadata language" }
     val targets = crossLanguageCAbiTargetSpecs.values.map { it.classifier.removePrefix("c-abi-") }.sorted()
     val sources = listOf(packageStage, packageReceipt, compatibilityRequest, runtimeStages, stagedSdks,
+        packageReceipt.parentFile.resolve("runtime-authorization"),
         validationStages, validationReceipts, repository.resolve("ci")) +
         nativeWrapperBinaryContext(language.id, packageReceipt) + if (language.id == "cpp")
         listOf(repository.resolve("codex-agent-bindings/cpp/tools/verify_imported_package.py")) else emptyList()

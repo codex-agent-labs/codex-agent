@@ -55,6 +55,9 @@ inputs:
   sdk-validation-tooling:
     required: true
     description: Absolute caller-owned canonical six-field tooling policy path; evidence, public key and Java must already exist. Never sourced from downloaded worker/state content.
+  runtime-authorization-policy:
+    required: true
+    description: Independently pinned protected original upload, producer, workflow and host member inventories. Never obtained from worker/state downloads.
   sdk-apple-validation-policy:
     default: ''
     description: Optional caller-owned local Apple policy for replaying retained validation state.
@@ -212,6 +215,24 @@ runs:
             output.write('key_hex=' + os.environ['BUILD_KEY'].removeprefix('sha256:') + '\n')
             output.write('policy_revision=' + plan['validationCommit'] + '\n')
         PY
+    - id: runtime-authorization
+      name: Capture only this host's original signed Runtime authorization
+      shell: bash
+      env:
+        AUTHORIZATION_POLICY: ${{ inputs.runtime-authorization-policy }}
+        TARGET: ${{ inputs.target }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os
+        from pathlib import Path
+        from ci.sdk_native_validation_workflow import capture_runtime_authorization
+        destination = Path(os.environ['RUNNER_TEMP']).resolve(strict=True) / 'sdk-runtime-authorization'
+        path = capture_runtime_authorization(json.loads(os.environ['AUTHORIZATION_POLICY']),
+            os.environ['TARGET'], destination, token=os.environ['GITHUB_TOKEN'])
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('path=' + str(path) + '\n')
+        PY
     - uses: ./.github/actions/setup-kmp
       with:
         cache-read-only: 'true'
@@ -259,6 +280,7 @@ runs:
         SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        RUNTIME_AUTHORIZATION: ${{ steps.runtime-authorization.outputs.path }}
         POLICY_SHA256: ${{ steps.policy.outputs.sha256 }}
         POLICY_REVISION: ${{ steps.identity.outputs.policy_revision }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
@@ -289,6 +311,7 @@ runs:
             'keyring': str(Path(os.environ['GITHUB_WORKSPACE']) / 'gradle/release/product-signing-keys.json'),
             'keys-directory': str(Path(os.environ['GITHUB_WORKSPACE']) / 'gradle/release/keys'),
             'tooling-evidence': policy['evidence'], 'tooling-public-key': policy['publicKey'],
+            'runtime-authorization': os.environ['RUNTIME_AUTHORIZATION'],
             'java-executable': policy['javaExecutable'], 'required-trust-domain': policy['requiredTrustDomain']}
         if policy['keyring'] is not None:
             fields.update({'tooling-keyring': policy['keyring'], 'tooling-keys-directory': policy['keysDirectory']})

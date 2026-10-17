@@ -60,7 +60,8 @@ def verify_sdk_native_metadata_content(
                                          reject_symlink_parents=True)
     trees = {"metadata": Path(metadata_stage), "package": Path(package_stage),
              "runtime": Path(runtime_stages), "sdks": Path(staged_sdks),
-             "validations": Path(validation_stages), "validation-receipts": Path(validation_receipts)}
+             "validations": Path(validation_stages), "validation-receipts": Path(validation_receipts),
+             "runtime-authorization": Path(package_receipt).parent / "runtime-authorization"}
     if component == "csharp":
         trees["csharp-binary"] = csharp_binary_inputs(package_receipt)["binary_stage_root"].parent
     before = {name: _inventory(path) for name, path in trees.items()}

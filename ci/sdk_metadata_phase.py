@@ -36,6 +36,7 @@ def execute(
     trust_domain: str, repository_root: Path, destination: Path,
     predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
     compatibility_request: Path, runtime_stages: Path, staged_sdks: Path,
+    runtime_authorizations: Mapping[str, Path],
     sdk_validation_projections: tuple[VerifiedSdkValidationProjection, ...],
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, required_trust_domain: str, environ: Mapping[str, str],
@@ -56,6 +57,8 @@ def execute(
     require_sha256(plan["buildKey"], "Elected metadata build key")
     validate_producer(producer, "Elected metadata producer")
     require_semver(sdk_version, "Elected SDK version")
+    if set(runtime_authorizations) != set(NATIVE_TARGETS):
+        raise ValueError("Native metadata requires exactly five original host authorizations")
     if trust_domain not in {"development", "release"}:
         raise ValueError("Invalid elected SDK trust domain")
     root = Path(repository_root).resolve(strict=True)
@@ -66,7 +69,9 @@ def execute(
     request = Path(compatibility_request)
     request_bytes = read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True)
     request_inventory = _request_inventory(request)
-    trees = {"runtime": Path(runtime_stages), "sdks": Path(staged_sdks)}
+    trees = {"runtime": Path(runtime_stages), "sdks": Path(staged_sdks),
+             **{f"receipts/runtime-authorization/{target}": Path(path)
+                for target, path in runtime_authorizations.items()}}
     receipts, raw = {}, {}
     identities = [("package", "desktop"), *(("validation", target) for target in sorted(NATIVE_TARGETS))]
     if component == "csharp":

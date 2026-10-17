@@ -2,7 +2,7 @@
 
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import subprocess
 import sys
@@ -310,7 +310,12 @@ def verify_sdk_package_inputs(
             runtime_stage_root is not None or staged_sdks is not None:
         raise ValueError("Maven SDK input verification requires its original binary and Contract evidence")
 
-    with tempfile.TemporaryDirectory(prefix="sdk-package-plan-") as temporary:
+    authorization = (Path(receipt_path).parent / "runtime-authorization" / validation_target
+                     if validation_stage_root is not None else None)
+    for output in (validation_inputs_output, validation_content_output):
+        if output is not None:
+            _require_capability_output_separate(output, authorization)
+    with tempfile.TemporaryDirectory(prefix="sdk-package-plan-") as temporary, ExitStack() as evidence_lifetime:
         root = Path(temporary).resolve()
         if validation_stage_root is not None:
             validation_inventory = regular_file_inventory(Path(validation_stage_root))
@@ -464,6 +469,11 @@ def verify_sdk_package_inputs(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
                 git_regular_blob_bytes(repository, receipt["producer"]["commit"], SDK_ROOT_PATH, max_bytes=4096),
             )
+            if authorization is not None:
+                # External evidence authenticates the selected default; its signatures
+                # never enter the deterministic capability handoff/content projection.
+                evidence_lifetime.enter_context(verified_native_consumer_authorization(
+                    authorization, staged_sdks, validation_target))
             if instance.component == "csharp":
                 archive = stage / "outputs/csharp" / f"CodexAgent.{versions['sdk']}.nupkg"
                 with ZipFile(archive) as package:
@@ -737,8 +747,18 @@ def verified_native_consumer_authorization(evidence: Path, sdks: Path, target: s
         snapshot_regular_tree(evidence, captured)
         if regular_file_inventory(captured) != before:
             raise ValueError("Native authorization changed during capture")
+        transport = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+            captured / "transport.json", max_bytes=_LIMIT, reject_symlink_parents=True)),
+            {"schemaVersion", "kind", "target", "source", "observed", "artifact", "files", "rangeBytes", "elapsedNs"},
+            "Native authorization transport")
+        # Recorded provenance is not authority: the SDK-pinned root below is.
+        if (type(transport["schemaVersion"]) is not int or transport["schemaVersion"] != 1
+                or transport["kind"] != "sdk-runtime-authorization-capture" or transport["target"] != target
+                or transport["files"] != regular_file_inventory(captured / "sidecars")
+                or {row["relativePath"].split("/")[0] for row in before} != {"sidecars", "transport.json"}):
+            raise ValueError("Native authorization transport differs from captured host sidecars")
         compatibility = load_canonical_json_bytes(compatibility_raw)
-        claim = verify_external_library_authorization(captured,
+        claim = verify_external_library_authorization(captured / "sidecars",
             sdk_pinned_root_public_key=root_raw, sdk_compatibility=compatibility,
             target=target, library_snapshot=library)
         runtime = compatibility["runtime"]
@@ -750,7 +770,7 @@ def verified_native_consumer_authorization(evidence: Path, sdks: Path, target: s
                     ("runtimeLibrarySha256", "runtimeLibrarySha256"),
                     ("variantBundleSha256", "bundleSha256"), ("variantManifestSha256", "manifestSha256")))):
             raise ValueError("Native consumer authorization differs from the selected SDK Runtime")
-        yield captured
+        yield captured / "sidecars"
         if (regular_file_inventory(evidence) != before or regular_file_inventory(captured) != before
                 or read_regular_file_bytes(compatibility_path, reject_symlink_parents=True) != compatibility_raw
                 or read_regular_file_bytes(root_path, reject_symlink_parents=True) != root_raw):

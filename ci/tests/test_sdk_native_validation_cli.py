@@ -17,7 +17,7 @@ class SdkNativeValidationCliTest(unittest.TestCase):
     def setUp(self):
         self.arguments = {name: Path("/synthetic inputs") / name for name in (
             "plan", "discovery", "state", "destination", "preparation_state", "keyring",
-            "keys_directory", "repository_root", "tooling_evidence", "tooling_public_key", "java_executable")}
+            "keys_directory", "repository_root", "tooling_evidence", "tooling_public_key", "java_executable", "runtime_authorization")}
         self.arguments.update(component="python", target="linux-x64", preparation_component="rust",
             expected_build_key="sha256:" + "a" * 64, preparation_build_key="sha256:" + "b" * 64,
             prepared_artifact_id=72, prepared_artifact_sha256="sha256:" + "c" * 64,
@@ -78,7 +78,7 @@ class SdkNativeValidationCliTest(unittest.TestCase):
     def test_mandatory_identity_policy_no_abbreviations_or_caller_command_override(self):
         invalid = []
         for flag in ("--preparation-state-root", "--target", "--tooling-evidence", "--policy-revision",
-                     "--required-trust-domain", "--expected-build-key"):
+                     "--required-trust-domain", "--expected-build-key", "--runtime-authorization"):
             args = self.argv.copy()
             index = args.index(flag)
             del args[index:index + 2]

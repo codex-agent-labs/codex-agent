@@ -9,8 +9,11 @@ from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 import subprocess
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from ci import sdk_native_validation_workflow as workflow
 from ci.tests import test_sdk_native_package_execution as fixture
@@ -59,6 +62,10 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.arguments.update(target="linux-x64", expected_build_key=self.ready["buildKey"],
             tooling_evidence=tooling, tooling_public_key=public, java_executable=java,
             policy_revision="a" * 40, required_trust_domain="development")
+        authorization = self.root / "runtime-authorization"
+        authorization.mkdir()
+        (authorization / "fixture.sig").write_bytes(b"mocked signature gate only")
+        self.arguments["runtime_authorization"] = authorization
         self.tooling = {"evidence": str(tooling), "publicKey": str(public), "javaExecutable": str(java),
                         "requiredTrustDomain": "development", "keyring": None, "keysDirectory": None}
         self.policy_bytes = self.arguments["keyring"].read_bytes()
@@ -141,6 +148,8 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertEqual(self.ready, ready)
         self.assertEqual("0.3.0", kwargs["sdk_version"])
         self.assertEqual(self.package_receipt, kwargs["package"]["receipt"])
+        self.assertEqual(regular_file_inventory(self.arguments["runtime_authorization"]),
+            regular_file_inventory(kwargs["package"]["receiptPath"].parent / "runtime-authorization/linux-x64"))
         self.assertEqual(self.capture_path / "original/staged-sdks", kwargs["staged_sdks"])
         self.assertEqual(self.sdk / workflow.REQUEST_NAME, kwargs["compatibility_request"])
         for path in (self.plan_path, self.discovery, self.state, self.preparation_state,
@@ -168,6 +177,8 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertFalse(source.is_relative_to(self.root))
         record, = records
         self.assertEqual((self.ready["component"], "linux-x64"), (record["component"], record["target"]))
+        self.assertEqual(regular_file_inventory(self.arguments["runtime_authorization"]),
+                         regular_file_inventory(source / record["runtimeAuthorization"]))
         if record["component"] == "csharp":
             self.assertEqual(regular_file_inventory(self.binary["stage"]), regular_file_inventory(source / record["binaryStage"]))
             self.assertEqual(self.binary["receiptPath"].read_bytes(), (source / record["binaryReceipt"]).read_bytes())
@@ -477,6 +488,64 @@ class SdkNativeValidationWorkerTest(unittest.TestCase):
         self.assertIsNone(trace["launchError"])
         self.assertEqual(b"raw Gradle\xff\x00\n", (self.destination / "gradle.log").read_bytes())
         self.assertFalse(self.stage.exists())
+
+
+class RuntimeAuthorizationCaptureTest(unittest.TestCase):
+    """Real scoped member hashing; official CI observation is an explicit seam."""
+
+    def test_scoped_capture_retains_original_provenance_and_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            raw = b"unit-only signed-evidence placeholder\n"
+            files = [{"relativePath": "fixture.sig", "bytes": len(raw), "sha256": sha256_bytes(raw)}]
+            policy = {"schemaVersion": 1, "artifactId": 123, "artifactSha256": "sha256:" + "a" * 64,
+                "validationCommit": "b" * 40, "workflowSha": "c" * 40,
+                "producer": {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+                    "commit": "d" * 40, "tree": "e" * 40, "event": "workflow_dispatch",
+                    "runId": 77, "runAttempt": 2, "pullRequest": None},
+                "targets": {target: files for target in NATIVE_TARGETS}}
+            archive_path = root / "unit.zip"
+            with ZipFile(archive_path, "w") as archive:
+                archive.writestr("linux-x64/libcodex_agent.so.evidence/fixture.sig", raw)
+                archive.writestr("unconsumed-target/not-read", b"not a consumed host input")
+            observed, artifact = [{"run": {"id": 77}, "jobs": [{"id": 42}]}], {"id": 123}
+            reads = []
+            @contextmanager
+            def opened(*args, **kwargs):
+                self.assertEqual((artifact, "unit-token"), args)
+                self.assertEqual(workflow._LIMIT, kwargs["max_bytes"])
+                with ZipFile(archive_path) as archive:
+                    real_open = archive.open
+                    with patch.object(archive, "open", side_effect=lambda entry, *a, **k:
+                            (reads.append(entry.filename), real_open(entry, *a, **k))[1]):
+                        yield archive, SimpleNamespace(transferred=len(raw))
+            with patch.object(workflow.product_reuse, "_observe_ci_producer_jobs", return_value=observed) as observe, \
+                    patch.object(workflow.product_reuse, "_contract_ci_upload_metadata", return_value=artifact) as metadata, \
+                    patch.object(workflow.product_reuse, "_require_artifact_job_window") as window, \
+                    patch("runtime_reference_archive.open_reference_archive", side_effect=opened):
+                output = workflow.capture_runtime_authorization(policy, "linux-x64", root / "capture", token="unit-token")
+                self.assertEqual(["linux-x64/libcodex_agent.so.evidence/fixture.sig"], reads)
+                self.assertEqual(files, regular_file_inventory(output / "sidecars"))
+                transport = load_canonical_json_bytes((output / "transport.json").read_bytes())
+                self.assertEqual(policy, transport["source"])
+                self.assertEqual(observed, transport["observed"])
+                self.assertEqual(len(raw), transport["rangeBytes"])
+                self.assertEqual(policy["workflowSha"], observe.call_args.kwargs[
+                    "trusted_workflows_by_phase"]["authorization"]["sha"])
+                self.assertIsNone(observe.call_args.kwargs["dispatch_authorization_job"])
+                self.assertEqual((123, policy["artifactSha256"]), metadata.call_args.args[:2])
+                self.assertEqual(artifact, window.call_args.args[2])
+                with self.assertRaisesRegex(ValueError, "must not exist"):
+                    workflow.capture_runtime_authorization(policy, "linux-x64", output, token="unit-token")
+                bad = deepcopy(policy)
+                bad["targets"]["linux-x64"][0]["sha256"] = "sha256:" + "f" * 64
+                with self.assertRaisesRegex(ValueError, "immutable digest"):
+                    workflow.capture_runtime_authorization(bad, "linux-x64", root / "bad", token="unit-token")
+                self.assertFalse((root / "bad").exists())
+                observe.side_effect = ValueError("original protected job failed")
+                with self.assertRaisesRegex(ValueError, "protected job failed"):
+                    workflow.capture_runtime_authorization(policy, "linux-x64", root / "failed", token="unit-token")
+                self.assertFalse((root / "failed").exists())
 
 
 if __name__ == "__main__":

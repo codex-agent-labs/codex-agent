@@ -21,7 +21,7 @@ from .signatures import load_keyring, public_key_path
 
 
 REQUEST_NAME = "sdk-validation-evidence.json"
-_TREES = ("packageStage", "runtimeStages", "stagedSdks", "validationStage")
+_TREES = ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "runtimeAuthorization")
 _FILES = ("packageReceipt", "validationReceipt")
 _LIMIT = 16 * 1024 * 1024
 
@@ -31,8 +31,9 @@ def _record_paths(record):
             _FILES + (("binaryReceipt",) if record["component"] == "csharp" else ()))
 
 
-def _retained_path(name):
-    return {"binaryStage": "csharp-binary/stage", "binaryReceipt": "csharp-binary/phase-receipt.json"}.get(name, name)
+def _retained_path(name, target):
+    return {"binaryStage": "csharp-binary/stage", "binaryReceipt": "csharp-binary/phase-receipt.json",
+            "runtimeAuthorization": f"runtime-authorization/{target}"}.get(name, name)
 
 
 def _request_inventory(request, *, within=None):
@@ -83,7 +84,7 @@ def load_sdk_validation_evidence(root: Path):
     for record in records:
         trees, files = _record_paths(record)
         prefix = Path("originals") / record["receiptSha256"].removeprefix("sha256:")
-        exact = {**{name: (prefix / _retained_path(name)).as_posix() for name in (*trees, *files)},
+        exact = {**{name: (prefix / _retained_path(name, record["target"])).as_posix() for name in (*trees, *files)},
                  "compatibilityRequest": (prefix / "inputs" / INPUT_REQUEST_NAME).as_posix()}
         if any(record[name] != path for name, path in exact.items()):
             raise ValueError("SDK retained evidence paths differ from their original receipt layout")
@@ -163,14 +164,14 @@ def stage_sdk_validation_evidence(records, source_root: Path, destination: Path,
             prefix = Path("originals") / digest.removeprefix("sha256:")
             relocated = {name: record[name] for name in ("receiptSha256", "component", "target")}
             for name in trees:
-                snapshot_regular_tree(record[name], root / prefix / _retained_path(name))
-                relocated[name] = (prefix / _retained_path(name)).as_posix()
+                snapshot_regular_tree(record[name], root / prefix / _retained_path(name, record["target"]))
+                relocated[name] = (prefix / _retained_path(name, record["target"])).as_posix()
                 if regular_file_inventory(root / relocated[name]) != before[digest][0][name]:
                     raise ValueError("SDK original tree changed during capture")
             for name in files:
-                path = root / prefix / _retained_path(name)
+                path = root / prefix / _retained_path(name, record["target"])
                 path.write_bytes(before[digest][1][name])
-                relocated[name] = (prefix / _retained_path(name)).as_posix()
+                relocated[name] = (prefix / _retained_path(name, record["target"])).as_posix()
             original_request = root / prefix / "original-compatibility-request.json"
             original_request.write_bytes(read_regular_file_bytes(source_root / prefix / original_request.name,
                 max_bytes=_LIMIT, reject_symlink_parents=True) if retained else before[digest][1]["compatibilityRequest"])

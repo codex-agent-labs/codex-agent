@@ -74,6 +74,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         self.assertIn("runs-on: ${{ matrix.runner }}", worker)
         self.assertIn("needs.sdk-native-prepare.result == 'success'", worker)
         self.assertEqual(1, worker.count("uses: ./.github/actions/sdk-native-validation-worker"))
+        self.assertIn("runtime-authorization-policy: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", worker)
         for field, value in (("component", "matrix.component"), ("target", "matrix.target"), ("build-key", "matrix.buildKey")):
             self.assertIn(field + ": ${{ " + value + " }}", worker)
         for flag, field in (("prepared-artifact-id", "artifact_id"), ("prepared-artifact-sha256", "artifact_digest"),

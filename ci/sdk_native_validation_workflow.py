@@ -8,6 +8,7 @@ admission. No receipt or retained carrier is published before both complete.
 import argparse
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,7 +24,7 @@ from native_wrappers import host_classifier
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
-    require_integer, require_semver, require_sha256, sha256_bytes,
+    require_integer, require_relative_path, require_semver, require_sha256, sha256_bytes,
     snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
@@ -37,6 +38,72 @@ from sdk_native_phase import _runtime_originals, _runtime_originals_unchanged
 
 
 _LIMIT = 16 * 1024 * 1024
+
+
+def capture_runtime_authorization(policy, target, destination, *, token):
+    """Fetch only one host's sidecars under independent caller pins and fresh CI provenance.
+
+    Member pins come from prior full-upload custody, never from this range read.
+    The installed SDK and full admission gate still verify root/signatures/library.
+    """
+    from products.c_abi import TARGET_SPECS
+    from products.receipt import validate_producer
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    policy = require_exact_keys(policy, {"schemaVersion", "artifactId", "artifactSha256", "producer",
+        "workflowSha", "validationCommit", "targets"}, "Runtime authorization caller policy")
+    if require_integer(policy["schemaVersion"], "Runtime authorization schema", 1) != 1:
+        raise ValueError("Unsupported Runtime authorization policy")
+    producer = validate_producer(policy["producer"])
+    if producer["event"] != "workflow_dispatch":
+        raise ValueError("Runtime authorization requires its protected dispatch producer")
+    for field in ("workflowSha", "validationCommit"):
+        if not isinstance(policy[field], str) or not re.fullmatch(r"[0-9a-f]{40}", policy[field]):
+            raise ValueError("Runtime authorization requires exact source/workflow pins")
+    require_integer(policy["artifactId"], "Runtime authorization upload", 1)
+    require_sha256(policy["artifactSha256"], "Runtime authorization upload digest")
+    require_exact_keys(policy["targets"], set(NATIVE_TARGETS), "Runtime authorization hosts")
+    if target not in NATIVE_TARGETS:
+        raise ValueError("Runtime authorization requires an exact host")
+    files = policy["targets"][target]
+    if not isinstance(files, list) or not 1 <= len(files) <= 128:
+        raise ValueError("Runtime authorization sidecar inventory is unbounded")
+    paths = []
+    for row in files:
+        require_exact_keys(row, {"relativePath", "bytes", "sha256"}, "Runtime authorization member")
+        paths.append(require_relative_path(row["relativePath"], "Runtime authorization member path"))
+        require_integer(row["bytes"], "Runtime authorization member size", 1)
+        require_sha256(row["sha256"], "Runtime authorization member digest")
+    if paths != sorted(set(paths)) or sum(row["bytes"] for row in files) > _LIMIT:
+        raise ValueError("Runtime authorization sidecar inventory is duplicate or oversized")
+    destination = Path(destination).absolute()
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Runtime authorization destination must not exist")
+    started = time.monotonic_ns()
+    job = "sdk-runtime-library-validation / runtime-library-release-authorizations"
+    observed = product_reuse._observe_ci_producer_jobs({"authorization": producer},
+        jobs_by_phase={"authorization": job}, token=token, allow_protected_dispatch=True,
+        dispatch_authorization_job=None, trusted_workflows_by_phase={"authorization": {
+            "path": ".github/workflows/runtime-library-authorizations.yml", "sha": policy["workflowSha"]}})
+    name = (f"codex-agent-runtime-library-authorizations-{policy['validationCommit']}"
+            f"-attestation-{producer['runId']}-attempt-{producer['runAttempt']}")
+    artifact = product_reuse._contract_ci_upload_metadata(policy["artifactId"], policy["artifactSha256"],
+        name, producer, observed[0]["run"], token, upload_limit=_LIMIT)
+    product_reuse._require_artifact_job_window(observed[0], job, artifact)
+    library = next(Path(spec.library_path).name for spec in TARGET_SPECS.values()
+                   if spec.classifier == "c-abi-" + target)
+    with tempfile.TemporaryDirectory(prefix="sdk-runtime-authorization-") as temporary:
+        prepared = Path(temporary).resolve() / "authorization"
+        with open_reference_archive(artifact, token, max_bytes=_LIMIT) as (archive, stream):
+            for row in files:
+                copy_reference_member(archive, f"{target}/{library}.evidence/{row['relativePath']}",
+                    prepared / "sidecars" / row["relativePath"], row)
+            transferred = stream.transferred
+        write_canonical_json(prepared / "transport.json", {"schemaVersion": 1,
+            "kind": "sdk-runtime-authorization-capture", "target": target,
+            "source": policy, "observed": observed, "artifact": artifact, "files": files,
+            "rangeBytes": transferred, "elapsedNs": time.monotonic_ns() - started})
+        publish_regular_tree(prepared, destination)
+    return destination
 
 
 def _execute_validation(plan, *, producer, sdk_version, repository_root, destination,
@@ -164,7 +231,7 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
 def execute(plan, discovery, state, destination, *, component, target, expected_build_key,
             preparation_component, preparation_build_key, preparation_state,
             prepared_artifact_id, prepared_artifact_sha256, sdk_inputs_artifact_id,
-            sdk_inputs_artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
+            sdk_inputs_artifact_sha256, trusted_workflow_sha, keyring, keys_directory, runtime_authorization,
             repository_root, environ, token, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, tooling_keyring=None,
             tooling_keys_directory=None, dotnet_executable=None, dart_executable=None,
@@ -193,7 +260,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
     if sdk_android_metadata_admission is not None:
         apple["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     protected = [plan, discovery, state, preparation_state, Path(keyring), Path(keys_directory),
-        Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
+        Path(tooling_evidence), Path(tooling_public_key), Path(java_executable), Path(runtime_authorization),
         *(Path(value) for value in (tooling_keyring, tooling_keys_directory,
            dotnet_executable, dart_executable, dart_package_config) if value is not None)]
     _require_capability_output_separate(destination, protected)
@@ -201,7 +268,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
     if destination.exists() or destination.is_symlink():
         raise ValueError("Native SDK validation destination must not exist")
     trees = {path: _inventory(path, allow_empty=True) for path in
-             {discovery, state, preparation_state, Path(tooling_evidence)}}
+             {discovery, state, preparation_state, Path(tooling_evidence), Path(runtime_authorization)}}
     files = {plan, Path(tooling_public_key), Path(java_executable),
              *(Path(value) for value in (dotnet_executable, dart_executable, dart_package_config) if value is not None)}
     for policy, keys in ((keyring, keys_directory), (tooling_keyring, tooling_keys_directory)):
@@ -306,17 +373,20 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             package = {"stage": package_directory / "stage", "receiptPath": package_directory / PHASE_RECEIPT_NAME}
             package_raw = read_regular_file_bytes(package["receiptPath"], reject_symlink_parents=True)
             package["receipt"] = product_reuse.validate_phase_receipt(load_canonical_json_bytes(package_raw))
-            package_context = None
+            # Small external context only; never copy/repack the accepted package.
+            context = destination / "package-inputs"
+            authorization = context / "runtime-authorization" / target
+            snapshot_regular_tree(runtime_authorization, authorization)
+            if _inventory(authorization) != trees[Path(runtime_authorization)]:
+                raise ValueError("Native Runtime authorization changed during capture")
+            package["receiptPath"] = context / PHASE_RECEIPT_NAME
+            package["receiptPath"].write_bytes(package_raw)
             if component == "csharp":
-                # Retain a small external input envelope, not a repacked package.
-                context = destination / "package-inputs"
                 binary = prepared / "sdk-csharp-binary-desktop"
                 snapshot_regular_tree(binary / "stage", context / "csharp-binary/stage")
                 (context / "csharp-binary/phase-receipt.json").write_bytes(
                     read_regular_file_bytes(binary / PHASE_RECEIPT_NAME, reject_symlink_parents=True))
-                package["receiptPath"] = context / PHASE_RECEIPT_NAME
-                package["receiptPath"].write_bytes(package_raw)
-                package_context = context, _inventory(context)
+            package_context = context, _inventory(context)
             request = inputs["sdk"]["directory"] / REQUEST_NAME
             sdks = capture / "original/staged-sdks"
 
@@ -353,7 +423,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             # verified complete SDK directory, retaining its request path layout.
             source = private / "evidence-source"
             for name, path in {"packageStage": package["stage"], "runtimeStages": runtime_stages,
-                    "stagedSdks": sdks, "validationStage": result["stage"], "inputs": inputs["sdk"]["directory"]}.items():
+                    "stagedSdks": sdks, "validationStage": result["stage"], "runtimeAuthorization": authorization,
+                    "inputs": inputs["sdk"]["directory"]}.items():
                 snapshot_regular_tree(path, source / name, allow_empty=name == "inputs")
             if (_inventory(source / "inputs", allow_empty=True) != sdk_inventory
                     or _inventory(inputs["sdk"]["directory"], allow_empty=True) != sdk_inventory):
@@ -362,7 +433,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             candidate_raw = read_regular_file_bytes(candidate / PHASE_RECEIPT_NAME, reject_symlink_parents=True)
             (source / "validationReceipt").write_bytes(candidate_raw)
             record = {"receiptSha256": sha256_bytes(candidate_raw), "component": component, "target": target,
-                **{name: name for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "packageReceipt", "validationReceipt")},
+                **{name: name for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "packageReceipt", "validationReceipt", "runtimeAuthorization")},
                 "compatibilityRequest": f"inputs/{REQUEST_NAME}"}
             if component == "csharp":
                 binary = csharp_binary_inputs(package["receiptPath"])
@@ -411,7 +482,7 @@ def main(argv=None) -> int:
     from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root",
-                 "tooling-evidence", "tooling-public-key", "java-executable"):
+                 "tooling-evidence", "tooling-public-key", "java-executable", "runtime-authorization"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     for flag, name in (("discovery-root", "discovery"), ("state-root", "state"),
                        ("preparation-state-root", "preparation_state")):

@@ -82,6 +82,7 @@ class NativeWrapperMetadataContentTaskTest {
         val build = root.resolve("build").apply { mkdir() }
         val stages = build.resolve("imported-stages").apply { mkdir() }
         val receipt = stages.resolve("package-receipt.json").apply { writeText("original package receipt\n") }
+        stages.resolve("runtime-authorization").mkdir()
         val request = stages.resolve("request.json").apply { writeText("original request\n") }
         root.resolve("ci").mkdir()
         val verifier = build.resolve("verifier.py").apply { writeText("trusted verifier fixture\n") }

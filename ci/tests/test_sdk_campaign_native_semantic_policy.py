@@ -15,6 +15,7 @@ def _policy():
         "compatibility_request": "/tmp/compatibility.json",
         "runtime_stages": "/tmp/runtime",
         "staged_sdks": "/tmp/sdks",
+        "runtime_authorizations": "/tmp/runtime-authorizations",
         "tooling_evidence": "/tmp/tooling.json",
         "tooling_public_key": "/tmp/tooling.pub",
         "java_executable": "/tmp/java",

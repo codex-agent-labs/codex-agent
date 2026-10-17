@@ -127,6 +127,7 @@ class SdkMetadataPhaseTest(unittest.TestCase):
             "compatibility_request", "runtime_stages", "staged_sdks", "tooling_evidence",
             "tooling_public_key", "java_executable", "policy_revision", "required_trust_domain")}
         arguments.update(repository_root=self.root, destination=self.destination, producer=self.producer,
+                         runtime_authorizations={target: self.root / "runtime-authorization" / target for target in NATIVE_TARGETS},
                          sdk_version="0.2.0", trust_domain="development", predecessor=self.predecessor,
                          sdk_validation_projections=self.proofs, environ={})
         with ExitStack() as stack:

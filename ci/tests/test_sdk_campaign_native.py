@@ -49,6 +49,10 @@ class NativeCampaignTest(unittest.TestCase):
                 context={"producer": producer})
             self.sources[instance] = IndexEntrySource(path.read_bytes(), "outputs/fixture/content.bin")
             self.stages[instance], self.receipts[instance] = stage, receipt
+            if instance.phase == "validation":
+                authorization = self.root / "authorizations" / instance.component / instance.target
+                authorization.mkdir(parents=True)
+                (authorization / "fixture.sig").write_bytes(b"mocked signature gate only")
 
     def _run(self, *, package=None):
         calls = {"package": [], "validation": [], "metadata": []}
@@ -76,6 +80,8 @@ class NativeCampaignTest(unittest.TestCase):
         def validation_gate(**options):
             instance = PhaseInstanceId("sdk", options["component"], "validation", options["target"])
             self.assertEqual(options["validation_receipt"].read_bytes(), self.sources[instance].receipt_bytes)
+            self.assertEqual(regular_file_inventory(options["runtime_authorization"]),
+                             regular_file_inventory(self.root / "authorizations" / instance.component / instance.target))
             self.assertEqual(options["package_receipt"].read_bytes(), self.sources[
                 PhaseInstanceId("sdk", instance.component, "package", "desktop")].receipt_bytes)
             if instance.component == "csharp":
@@ -115,7 +121,8 @@ class NativeCampaignTest(unittest.TestCase):
              patch("ci.products.sdk_campaign_native.verify_sdk_native_metadata_admission", side_effect=metadata_gate):
             result = verify_sdk_campaign_native(repository=self.root, sources=self.sources, stages=self.stages,
                 compatibility_request=self.root / "compatibility.json", runtime_stages=self.root / "runtime",
-                staged_sdks=self.root / "sdks", tooling_evidence=self.root / "tooling.json",
+                staged_sdks=self.root / "sdks", runtime_authorizations=self.root / "authorizations",
+                tooling_evidence=self.root / "tooling.json",
                 tooling_public_key=self.root / "key.pem", java_executable=self.root / "java",
                 policy_revision="test", required_trust_domain="development")
         return result, calls, proofs
@@ -138,6 +145,7 @@ class NativeCampaignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact 36"):
             verify_sdk_campaign_native(repository=self.root, sources=sources, stages=self.stages,
                 compatibility_request=self.root, runtime_stages=self.root, staged_sdks=self.root,
+                runtime_authorizations=self.root / "authorizations",
                 tooling_evidence=self.root, tooling_public_key=self.root, java_executable=self.root,
                 policy_revision="test", required_trust_domain="development")
         self.sources[first], self.sources[second] = self.sources[second], self.sources[first]

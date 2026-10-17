@@ -54,7 +54,7 @@ class SdkNativeCollectionTest(unittest.TestCase):
         source.mkdir(parents=True)
         (source / "request.json").write_bytes((self.original / "request.json").read_bytes())
         record = {"component": component, "target": target, "compatibilityRequest": "request.json"}
-        for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks"):
+        for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks", "runtimeAuthorization"):
             (source / name / "outputs").mkdir(parents=True)
             (source / name / "outputs/original.log").write_bytes(b"original synthetic SDK bytes\xff\n")
             record[name] = name

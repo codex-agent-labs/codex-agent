@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from ci import native_wrappers
 from ci.native_wrappers import require_matching_native, run
-from ci.products.inventory import load_canonical_json_bytes, regular_file_inventory, write_canonical_json
+from ci.products.inventory import load_canonical_json_bytes, regular_file_inventory, snapshot_regular_tree, write_canonical_json
 from ci.products.sdk_package import consume_authorized_native, verified_native_consumer_authorization
 from ci.tests import test_sdk_runtime_root
 
@@ -15,8 +15,9 @@ class NativeConsumerAuthorizationTest(TestCase):
         fixture = self.fixture = test_sdk_runtime_root.SdkRuntimeRootTest()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        self.evidence = fixture.evidence("consumer", runtime_version="0.8.0")
-        claim = load_canonical_json_bytes((self.evidence / "runtime-library-authorization.json").read_bytes())
+        sidecars = fixture.evidence("consumer", runtime_version="0.8.0")
+        self.evidence = self.capture(sidecars)
+        claim = load_canonical_json_bytes((sidecars / "runtime-library-authorization.json").read_bytes())
         runtime = fixture.compatibility["runtime"]
         runtime["defaultManifestSha256"] = claim["aggregateManifestSha256"]
         variant = next(row for row in runtime["embeddedVariants"] if row["target"] == "macos-arm64")
@@ -36,6 +37,16 @@ class NativeConsumerAuthorizationTest(TestCase):
         self.output = fixture.root / "output"
         self.repository = fixture.root / "repository"
         self.repository.mkdir()
+
+    def capture(self, sidecars):
+        root = sidecars.with_name(sidecars.name + "-capture")
+        snapshot_regular_tree(sidecars, root / "sidecars")
+        # Signature/consumer fixture only; no hosted capture claimed by this test.
+        write_canonical_json(root / "transport.json", {"schemaVersion": 1,
+            "kind": "sdk-runtime-authorization-capture", "target": "macos-arm64",
+            "source": {"unitFixture": True}, "observed": [], "artifact": {},
+            "files": regular_file_inventory(sidecars), "rangeBytes": 0, "elapsedNs": 0})
+        return root
 
     def consume(self, consumer, run):
         with patch.object(native_wrappers, "_consume", consumer), \
@@ -59,13 +70,13 @@ class NativeConsumerAuthorizationTest(TestCase):
 
     def test_exact_signed_default_is_private_and_rotation_does_not_change_sdk_bytes(self):
         before = regular_file_inventory(self.sdks)
-        for evidence in (self.evidence, self.fixture.evidence("rotated", runtime_version="0.8.0")):
+        for evidence in (self.evidence, self.capture(self.fixture.evidence("rotated", runtime_version="0.8.0"))):
             with verified_native_consumer_authorization(evidence, self.sdks, "macos-arm64") as captured:
                 self.assertNotEqual(captured, evidence)
-                self.assertEqual(regular_file_inventory(captured), regular_file_inventory(evidence))
+                self.assertEqual(regular_file_inventory(captured), regular_file_inventory(evidence / "sidecars"))
             self.assertFalse(captured.exists())
             self.assertEqual(before, regular_file_inventory(self.sdks))
-        newer = self.fixture.evidence("newer", runtime_version="0.8.1")
+        newer = self.capture(self.fixture.evidence("newer", runtime_version="0.8.1"))
         with self.assertRaisesRegex(ValueError, "selected SDK Runtime"):
             with verified_native_consumer_authorization(newer, self.sdks, "macos-arm64"):
                 self.fail("compatible external release is not the selected default for this test")
@@ -79,7 +90,7 @@ class NativeConsumerAuthorizationTest(TestCase):
             sidecar = self.installed.with_name(self.installed.name + ".evidence")
             self.assertEqual(sidecar.exists(), command == "external-positive")
             if sidecar.exists():
-                self.assertEqual(regular_file_inventory(sidecar), regular_file_inventory(self.evidence))
+                self.assertEqual(regular_file_inventory(sidecar), regular_file_inventory(self.evidence / "sidecars"))
         self.consume(self.consumer, run)
         self.assertEqual(calls, ["package-negative", "external-positive", "after"])
         self.assertTrue(self.output.is_dir())
@@ -90,7 +101,7 @@ class NativeConsumerAuthorizationTest(TestCase):
     def test_signature_equality_and_lifetime_failures_clear_output_without_modifying_originals(self):
         for failure in ("signature", "library", "execution", "lifetime"):
             with self.subTest(failure=failure):
-                signature = self.evidence / "runtime-library-authorization.sig"
+                signature = self.evidence / "sidecars/runtime-library-authorization.sig"
                 original = signature.read_bytes()
                 if failure == "signature":
                     signature.write_bytes(original + b"invalid")

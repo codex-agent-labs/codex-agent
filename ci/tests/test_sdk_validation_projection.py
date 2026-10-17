@@ -47,7 +47,8 @@ class SdkValidationProjectionTest(unittest.TestCase):
             "runAttempt": None, "pullRequest": None}}
         self.args = dict(repository=self.root, component="python", target="linux-x64",
             compatibility_request=self.root / "request.json", runtime_stages=self.root / "runtime",
-            staged_sdks=self.root / "sdks", tooling_evidence=self.root / "tooling",
+            staged_sdks=self.root / "sdks", runtime_authorization=self.root / "runtime-authorization/linux-x64",
+            tooling_evidence=self.root / "tooling",
             tooling_public_key=self.root / "public.pub", java_executable=self.java,
             policy_revision="a" * 40, required_trust_domain="development")
         for phase, target in (("package", "desktop"), ("validation", "linux-x64")):
@@ -67,6 +68,8 @@ class SdkValidationProjectionTest(unittest.TestCase):
             "files": [], "packageNegativeCases": []}
         self.mutate = lambda fields: None
         self.calls = []
+        self.args["runtime_authorization"].mkdir(parents=True)
+        (self.args["runtime_authorization"] / "fixture.sig").write_bytes(b"mocked full gate only")
 
     @contextmanager
     def capture(self, evidence, repository, key, **policy):
@@ -83,6 +86,8 @@ class SdkValidationProjectionTest(unittest.TestCase):
             self.assertNotEqual(fields[f"--{phase}-stage"], self.args[f"{phase}_stage"])
             self.assertNotEqual(fields[f"--{phase}-receipt"], self.args[f"{phase}_receipt"])
             self.assertEqual(fields[f"--{phase}-receipt"].read_bytes(), self.args[f"{phase}_receipt"].read_bytes())
+        self.assertEqual(regular_file_inventory(fields["--package-receipt"].parent / "runtime-authorization/linux-x64"),
+                         regular_file_inventory(self.args["runtime_authorization"]))
         self.assertNotIn("JAVA_TOOL_OPTIONS", kwargs["env"])
         self.mutate(fields)
         fields["--content-output"].write_bytes(canonical_json_bytes(self.value))
@@ -133,6 +138,22 @@ class SdkValidationProjectionTest(unittest.TestCase):
             second.receipt_value(receipt, self.package)
         # Preserve both originals: comparison does not mutate or relabel either proof.
         self.assertEqual(left, first.receipt_value(receipt, self.package))
+
+    def test_external_authorization_is_lifetime_bound_but_not_comparison_content(self):
+        first = self.verify()
+        receipt = load_canonical_json_bytes(self.args["validation_receipt"].read_bytes())
+        signature = self.args["runtime_authorization"] / "fixture.sig"
+        signature.write_bytes(b"another signature at the explicitly mocked full gate")
+        second = self.verify()
+        self.assertEqual(first.receipt_value(receipt, self.package), second.receipt_value(receipt, self.package))
+        for original in (False, True):
+            def mutate(fields):
+                path = (signature if original else fields["--package-receipt"].parent /
+                        "runtime-authorization/linux-x64/fixture.sig")
+                path.write_bytes(path.read_bytes() + b"changed during verification")
+            self.mutate = mutate
+            with self.subTest(original=original), self.assertRaisesRegex(ValueError, "authorization changed"):
+                self.verify()
 
     def test_wrong_full_gate_content_identity_never_mints_proof(self):
         original = dict(self.value)

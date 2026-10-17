@@ -1,6 +1,7 @@
 """Original-plan checks over signed synthetic products; no hosted execution claim."""
 
 import copy
+from contextlib import nullcontext
 from pathlib import Path
 import shutil
 import tempfile
@@ -553,6 +554,12 @@ class SdkPackagePlanTest(unittest.TestCase):
     def test_validation_import_captures_original_stage_receipt_and_git_claims(self):
         # Only the raw capture seam is exercised: this fixture deliberately lacks
         # full bootstrap/behavior proof and cannot satisfy the Kotlin admission CLI.
+        # Root/signature semantics are exercised by test_sdk_native_consumer_authorization;
+        # this fixture uses the real original-plan/package matcher, not a signer.
+        authorization = patch("ci.products.sdk_package.verified_native_consumer_authorization",
+                              side_effect=lambda *_args: nullcontext())
+        authorize = authorization.start()
+        self.addCleanup(authorization.stop)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             stage = root / "stage"
@@ -596,6 +603,8 @@ class SdkPackagePlanTest(unittest.TestCase):
                 source.write_bytes(b"uncommitted wrong claims\n")
                 with patch("ci.products.sdk_native._stage_native_capability_inputs", side_effect=fixture_handoff):
                     self.assertEqual(0, package_main(arguments + ["--validation-content-output", str(root / "safe-content.json")]))
+                self.assertEqual(self.native_receipt.parent / "runtime-authorization/linux-x64", authorize.call_args.args[0])
+                self.assertEqual("linux-x64", authorize.call_args.args[2])
                 self.assertEqual(original_source, (output / "validation-source/capability-claims.tsv").read_bytes())
                 self.assertEqual(b"// original synthetic program\n", (output / "validation-source/test-program-source").read_bytes())
                 self.assertEqual(original, (output / "receipts/sdk-validation.json").read_bytes())

@@ -44,6 +44,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             'PREPARATION_STATE': str(self.root / 'original-preparation/state'),
             'PREPARED_ARTIFACT_ID': '91', 'PREPARED_ARTIFACT_SHA256': 'sha256:' + 'e' * 64,
             'SDK_INPUTS_ID': '92', 'SDK_INPUTS_SHA256': 'sha256:' + 'f' * 64,
+            'RUNTIME_AUTHORIZATION': str(self.root / 'runtime-authorization'),
             'TRUSTED_WORKFLOW_SHA': '1' * 40, 'POLICY_REVISION': 'c' * 40,
             'DOTNET_EXECUTABLE': '', 'DART_EXECUTABLE': '', 'DART_PACKAGE_CONFIG': '',
             'DART_PUB_CACHE': '', 'GITHUB_TOKEN': 'caller-token'}
@@ -145,6 +146,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                 ('prepared-artifact-id', 'PREPARED_ARTIFACT_ID'), ('sdk-inputs-artifact-sha256', 'SDK_INPUTS_SHA256'),
                 ('expected-build-key', 'BUILD_KEY'), ('target', 'TARGET'), ('policy-revision', 'POLICY_REVISION')):
             self.assertEqual(self.environment[variable], arguments['--' + flag])
+        self.assertEqual(self.environment['RUNTIME_AUTHORIZATION'], arguments['--runtime-authorization'])
         for flag, field in (('tooling-evidence', 'evidence'), ('tooling-public-key', 'publicKey'),
                 ('java-executable', 'javaExecutable'), ('tooling-keyring', 'keyring'), ('tooling-keys-directory', 'keysDirectory')):
             self.assertEqual(self.policy[field], arguments['--' + flag])
@@ -157,6 +159,17 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         with patch('subprocess.run') as run, self.assertRaises(ValueError):
             self.execute('execute')
         run.assert_not_called()
+
+    def test_host_authorization_uses_independent_policy_before_platform_setup(self):
+        policy = {"unitFixture": "independent caller, not transported state"}
+        self.environment.update(AUTHORIZATION_POLICY=json.dumps(policy), RUNNER_TEMP=str(self.root))
+        path = self.root / 'sdk-runtime-authorization'
+        with patch('ci.sdk_native_validation_workflow.capture_runtime_authorization', return_value=path) as capture:
+            self.execute('runtime-authorization')
+        capture.assert_called_once_with(policy, 'linux-x64', path, token='caller-token')
+        self.assertEqual('path=' + str(path) + '\n', self.output.read_text())
+        self.assertLess(self.action.index('- id: identity'), self.action.index('- id: runtime-authorization'))
+        self.assertLess(self.action.index('- id: runtime-authorization'), self.action.index('uses: ./.github/actions/setup-kmp'))
 
     def test_paired_capture_shell_preserves_optional_wave_and_policy(self):
         action = (ROOT / '.github/actions/capture-runtime-state/action.yml').read_text()

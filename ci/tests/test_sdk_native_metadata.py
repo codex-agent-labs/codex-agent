@@ -55,6 +55,9 @@ class SdkNativeMetadataTest(unittest.TestCase):
         contents = self.root / "host-contents"
         contents.mkdir()
         for target in sorted(NATIVE_TARGETS):
+            authorization = self.root / "runtime-authorization" / target
+            authorization.mkdir(parents=True)
+            (authorization / "fixture.sig").write_bytes(b"mocked signature gate only")
             receipt_path = self.args["validation_receipts"] / f"{target}.json"
             receipt = self.phase("validation", target, self.args["validation_stages"] / target, receipt_path)
             names = {"claims.tsv", "compiler-evidence.tsv", "executed-tests.tsv", "installed.tsv", "test-program-source"}

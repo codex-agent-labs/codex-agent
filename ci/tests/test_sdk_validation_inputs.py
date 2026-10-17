@@ -49,7 +49,7 @@ class SdkValidationInputsTest(unittest.TestCase):
         context = {"producer": {"repository": "fixture/repository", "workflowPath": ".github/workflows/products.yml",
             "commit": "a" * 40, "tree": "b" * 40, "event": "pull_request", "runId": 7, "runAttempt": 1, "pullRequest": 31}}
         record = {"component": "rust", "target": "linux-x64", "compatibilityRequest": "request.json"}
-        for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks"):
+        for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks", "runtimeAuthorization"):
             stage = cls.original / name
             (stage / "outputs").mkdir(parents=True)
             (stage / "outputs/original.log").write_bytes(b"exact original raw evidence\n")

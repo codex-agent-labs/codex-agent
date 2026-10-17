@@ -13,6 +13,7 @@ from unittest.mock import patch
 from ci.tests.test_runtime_phase_execution import adapter
 from products.inventory import canonical_json_bytes, sha256_bytes
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
+from products.sdk_validation import sdk_validation_paths
 
 
 class SdkMetadataCallerTest(unittest.TestCase):
@@ -46,6 +47,12 @@ class SdkMetadataCallerTest(unittest.TestCase):
             "keyring": str(self.root / "keys.json"), "keysDirectory": str(self.root / "keys")}
         self.originals = {}
         self.proofs = {target: object() for target in NATIVE_TARGETS}
+        self.state.rebased_request["sdkValidationEvidence"] = sorted([
+            {"component": "python", "target": target,
+             "receiptSha256": sha256_bytes(canonical_json_bytes({"product": "sdk", "component": "python",
+                 "phase": "validation", "target": target})),
+             **{name: f"retained/{target}/{name}" for name in sdk_validation_paths("python")}}
+            for target in NATIVE_TARGETS], key=lambda row: row["receiptSha256"])
 
     def materialize(self, state, instance, destination, key, root):
         self.assertIs(state, self.state)
@@ -95,6 +102,8 @@ class SdkMetadataCallerTest(unittest.TestCase):
         self.assertEqual(self.producer, values["producer"])
         self.assertEqual("release", values["trust_domain"])
         self.assertEqual(tuple(self.proofs[target] for target in sorted(NATIVE_TARGETS)), values["sdk_validation_projections"])
+        self.assertEqual({target: self.root / f"retained/{target}/runtimeAuthorization" for target in NATIVE_TARGETS},
+                         values["runtime_authorizations"])
         original = values["predecessor"]("sdk", "python", "package", "desktop")
         self.assertEqual("package", original["receipt"]["phase"])
         with self.assertRaisesRegex(ValueError, "unrelated direct predecessor"):

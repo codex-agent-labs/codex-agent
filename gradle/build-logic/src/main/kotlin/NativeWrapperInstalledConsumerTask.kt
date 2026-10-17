@@ -68,8 +68,8 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
         offlineMode.convention(project.gradle.startParameter.isOffline)
         pythonExecutable.convention("python3")
         ownedBuildDirectory.convention(project.layout.buildDirectory)
-        runtimeAuthorization.convention(project.layout.dir(packageReceipt.map {
-            it.asFile.parentFile.resolve("runtime-authorization")
+        runtimeAuthorization.convention(project.layout.dir(packageReceipt.zip(expectedClassifier) { receipt, target ->
+            receipt.asFile.parentFile.resolve("runtime-authorization/$target")
         }))
         outputs.upToDateWhen { false }
     }

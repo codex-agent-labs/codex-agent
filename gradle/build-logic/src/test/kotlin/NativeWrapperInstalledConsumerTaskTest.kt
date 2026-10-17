@@ -264,7 +264,7 @@ class NativeWrapperInstalledConsumerTaskTest {
         project.layout.buildDirectory.set(root.resolve("work"))
         val packages = root.resolve("packages").also(File::mkdirs)
         val sdks = root.resolve("sdks").also(File::mkdirs)
-        root.resolve("runtime-authorization").mkdir()
+        root.resolve("runtime-authorization/linux-x64").mkdirs()
         val version = root.resolve("sdk.txt").apply { writeText("0.2.0\n") }
         val script = root.resolve("consumer.py").apply { writeText(fakeConsumerScript(malformed = false)) }
         val verifier = project.projectDir.resolve("ci/products/sdk_package.py")
@@ -275,7 +275,7 @@ class NativeWrapperInstalledConsumerTaskTest {
             import pathlib, runpy, sys
             args = sys.argv[1:]
             if args[0] == 'consume-native':
-                assert pathlib.Path(args[args.index('--runtime-authorization') + 1]) == pathlib.Path(${pythonStringLiteral(root.resolve("runtime-authorization").absolutePath)})
+                assert pathlib.Path(args[args.index('--runtime-authorization') + 1]) == pathlib.Path(${pythonStringLiteral(root.resolve("runtime-authorization").absolutePath)}) / args[args.index('--expected-classifier') + 1]
                 runpy.run_path(${pythonStringLiteral(script.absolutePath)}, run_name='__main__')
                 raise SystemExit(0)
             assert args[0] == 'verify-native'

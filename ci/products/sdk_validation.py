@@ -21,6 +21,7 @@ _EVIDENCE_PATHS = {
     "packageStage": "package_stage", "packageReceipt": "package_receipt",
     "compatibilityRequest": "compatibility_request", "runtimeStages": "runtime_stages",
     "stagedSdks": "staged_sdks", "validationStage": "validation_stage", "validationReceipt": "validation_receipt",
+    "runtimeAuthorization": "runtime_authorization",
 }
 
 
@@ -137,7 +138,7 @@ class VerifiedSdkValidationProjection:
 
 def verify_sdk_validation_projection(
     *, repository: Path, component: str, target: str, package_stage: Path, package_receipt: Path,
-    compatibility_request: Path, runtime_stages: Path, staged_sdks: Path,
+    compatibility_request: Path, runtime_stages: Path, staged_sdks: Path, runtime_authorization: Path,
     validation_stage: Path, validation_receipt: Path, tooling_evidence: Path, tooling_public_key: Path,
     java_executable: Path, policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
@@ -165,6 +166,7 @@ def verify_sdk_validation_projection(
         stages["binary"] = Path(binary_stage)
         receipt_paths["binary"] = Path(binary_receipt)
     before = {phase: regular_file_inventory(path) for phase, path in stages.items()}
+    authorization_inventory = regular_file_inventory(runtime_authorization)
     originals = {phase: read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True)
                  for phase, path in receipt_paths.items()}
     receipts = {phase: validate_phase_receipt(load_canonical_json_bytes(raw)) for phase, raw in originals.items()}
@@ -172,6 +174,10 @@ def verify_sdk_validation_projection(
         raise ValueError("SDK validation and package versions differ")
     with tempfile.TemporaryDirectory(prefix="sdk-validation-proof-") as temporary:
         root = Path(temporary).resolve()
+        authorization = root / "runtime-authorization" / target
+        snapshot_regular_tree(runtime_authorization, authorization)
+        if regular_file_inventory(authorization) != authorization_inventory:
+            raise ValueError("SDK Runtime authorization changed during capture")
         captured = {}
         for phase, source in stages.items():
             stage = root / "csharp-binary/stage" if phase == "binary" else root / phase
@@ -215,6 +221,9 @@ def verify_sdk_validation_projection(
             raise ValueError("Full SDK verifier returned a different package/language/host identity")
         for field in ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest"):
             require_sha256(value[field], f"verified SDK content {field}")
+        if (regular_file_inventory(authorization) != authorization_inventory
+                or regular_file_inventory(runtime_authorization) != authorization_inventory):
+            raise ValueError("SDK Runtime authorization changed during verification")
         for phase, source in stages.items():
             stage = root / "csharp-binary/stage" if phase == "binary" else root / phase
             if (regular_file_inventory(stage) != before[phase] or regular_file_inventory(source) != before[phase]
