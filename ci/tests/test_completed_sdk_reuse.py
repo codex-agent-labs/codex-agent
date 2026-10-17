@@ -637,7 +637,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(native, '_validate_completed_sdk', return_value={}))
             stack.enter_context(patch.object(completed, '_base', return_value={}))
             stack.enter_context(patch.object(completed, 'validate_controls', return_value=(
-                {'availableObjects': [available]}, [phase], [phase])))
+                {'availableObjects': [available]},
+                [{key: value for key, value in phase.items() if key != 'receiptPath'}], [phase])))
             stack.enter_context(patch.object(completed, 'validate_current'))
             inventory = stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
             observed_source = stack.enter_context(patch.object(completed, 'observe_source', return_value=({}, [], {'source': 1})))
@@ -881,7 +882,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
         request['availableObjects'][-1] = {**phase, 'objectPath': 'deferred-package.zip'}
         request['phaseAuthorities'][-1] = {**{key: phase[key] for key in completed.IDENTITY},
             **{key: receipt['inputs'][key] for key in ('toolchainProfileDigest', 'flagsDigest', 'outputSchemaVersion')}}
-        self.controls[prefix + 'reuse-wave-result.json']['phases'][-1] = {**phase, 'state': 'retained'}
+        self.controls[prefix + 'reuse-wave-result.json']['phases'][-1] = {
+            **{key: value for key, value in phase.items() if key != 'receiptPath'}, 'state': 'retained'}
         self.controls[self.receipt_path] = receipt
         if collected:
             producer = self.controls[prefix + 'producer.json']
@@ -1005,7 +1007,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.assertEqual((sha256_bytes(raw), len(raw)), (digest, max_bytes))
                 destination.write_bytes(raw)
             downloads = stack.enter_context(patch.object(products, '_download_contract_ci_upload', side_effect=download))
-            for tampered in ((False,) if reused else (False, True)):
+            for tampered in ((False,) if reused else (False, True)) + (('declared-size',) if embedded else ()):
+                if tampered == 'declared-size':
+                    spec['receiptObjects'][0]['bytes'] += 1
                 @contextmanager
                 def opened(artifact, token, **bounds):
                     self.assertFalse(reused, 'Native-qualified objects must not be downloaded again')
@@ -1013,13 +1017,13 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     self.assertEqual({'max_bytes': 32 * 1024**3, 'max_members': 65_536}
                                      if (component, phase_name) == ('sdk-core', 'metadata') else
                                      {'max_bytes': 32 * 1024**3} if package else {}, bounds)
-                    with zipfile.ZipFile(io.BytesIO(zipped({name: b'x' * len(body) if tampered else body}))) as archive:
+                    with zipfile.ZipFile(io.BytesIO(zipped({name: b'x' * len(body) if tampered is True else body}))) as archive:
                         yield archive, SimpleNamespace(transferred=len(body))
                 work = Path(temporary).resolve() / str(tampered)
                 work.mkdir()
                 with patch('runtime_reference_archive.open_reference_archive', opened):
                     if tampered:
-                        with self.assertRaisesRegex(ValueError, 'immutable digest'):
+                        with self.assertRaisesRegex(ValueError, 'collected declaration' if tampered == 'declared-size' else 'immutable digest'):
                             completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
                         self.assertFalse((work / 'completion.json').exists())
                     else:
@@ -1033,12 +1037,25 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertEqual(len(body) if reused else 0, report['reusedObjectBytes'])
                         self.assertEqual(0 if reused else len(body), report['verifiedObjectBytes'])
                         self.assertEqual(0, report['productPhasesExecuted'])
+                        with patch.object(native, '_validate_completed_sdk', return_value={}), \
+                                patch.object(completed, '_base', return_value=self.base):
+                            def validate(value):
+                                return completed.validate_extension(spec, value, {'signer_commit': 'a' * 40},
+                                    root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
+                            self.assertEqual(spec, validate(result)['extension']['spec'])
+                            if embedded:
+                                changed = deepcopy(result)
+                                changed['members'][0]['bytes'] += 1
+                                with self.assertRaisesRegex(ValueError, 'collected declaration'):
+                                    validate(changed)
                         self.assertEqual(1 if collected else 2, downloads.call_count)
                         if collected:
                             ensure_commit.assert_called_once_with(fixture.repository, spec['source']['producer'], 'synthetic')
                             self.assertEqual(spec['source']['producer']['commit'],
                                              validate_plan.call_args.kwargs['expected_revision'])
                             self.assertEqual(1, capture_controls.call_count)
+            if embedded:
+                spec['receiptObjects'][0]['bytes'] -= 1
             if reused:
                 for case in ('native-signature', 'locator'):
                     work = Path(temporary).resolve() / case

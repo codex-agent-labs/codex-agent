@@ -438,7 +438,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     available = _records(request["availableObjects"], "Incremental original objects")
     if type(proof["members"]) is not list or len(proof["members"]) != len(phases):
         raise ValueError("Incremental SDK object members changed")
-    embedded_objects = _receipt_objects(spec)
+    embedded_objects = {_identity(phase): row for row, phase in _receipt_objects(spec).values()}
     for phase, member in zip(phases, proof["members"]):
         validate_file_record(member, "Incremental SDK object", with_kind=False)
         expected = spec["stateRoot"] + "/" + available[_identity(phase)]["objectPath"]
@@ -450,8 +450,8 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
         if (member["relativePath"] != expected or member["sha256"] != phase["objectSha256"]
                 or not 0 < member["bytes"] <= limit):
             raise ValueError("Incremental SDK consumed object changed")
-        embedded = embedded_objects.get(phase["receiptPath"])
-        if embedded is not None and member["bytes"] != embedded[0]["bytes"]:
+        embedded = embedded_objects.get(_identity(phase))
+        if embedded is not None and member["bytes"] != embedded["bytes"]:
             raise ValueError("Incremental original size differs from its collected declaration")
     sdk["extension"] = {"spec": spec, "proof": proof}
     return sdk
@@ -662,10 +662,10 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             if verified["receiptBytes"] != canonical_json_bytes(receipts[number]):
                 raise ValueError("Incremental SDK object changes its admitted receipt")
             members.append(member)
-        embedded_objects = _receipt_objects(spec)
+        embedded_objects = {_identity(phase): row for row, phase in _receipt_objects(spec).values()}
         for phase, member in zip(phases, members, strict=True):
-            embedded = embedded_objects.get(phase["receiptPath"])
-            if embedded is not None and member["bytes"] != embedded[0]["bytes"]:
+            embedded = embedded_objects.get(_identity(phase))
+            if embedded is not None and member["bytes"] != embedded["bytes"]:
                 raise ValueError("Incremental original size differs from its collected declaration")
     contract_path = work / "contract-controls.zip"
     contract_source = download(spec["contractControls"], contract_path, contract=True)
