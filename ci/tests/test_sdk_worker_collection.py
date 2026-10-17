@@ -626,9 +626,15 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         self.assertEqual(child_job, result["rows"][0]["jobName"])
 
     def test_android_package_child_binds_original_workflow_and_job(self):
-        instance, ready, _, _, files = self.shard("package", component="sdk-android", target="android")
-        child_path = ".github/workflows/sdk-android-package-validation.yml"
-        child_job = "product-validation / sdk-android-package-result / sdk-android-package-android"
+        for phase in ("package", "validation", "metadata"):
+            with self.subTest(phase=phase):
+                self.check_android_child_binds_original_workflow_and_job(phase)
+
+    def check_android_child_binds_original_workflow_and_job(self, phase):
+        instance, ready, _, _, files = self.shard(phase, component="sdk-android", target="android")
+        workflow = "validation" if phase == "validation" else phase + "-validation"
+        child_path = f".github/workflows/sdk-android-{workflow}.yml"
+        child_job = f"product-validation / sdk-android-{phase}-result / sdk-android-{phase}-android"
         names = self.names
         with patch.object(self, "names", side_effect=lambda row, key: (child_job, names(row, key)[1])), \
                 patch.object(adapter, "_verified_product_state", return_value=self.state({instance: ready})), \
@@ -644,16 +650,16 @@ class SdkWorkerCollectionTest(unittest.TestCase):
 
             query.side_effect = child_run
             result = adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
-                self.repository / "build/android-package-child", trusted_workflow_sha=PIN,
+                self.repository / f"build/android-{phase}-child", trusted_workflow_sha=PIN,
                 repository_root=self.repository, environ=self.environment, token="synthetic-token",
-                sdk_family="android-package", sdk_worker_workflow_path=child_path,
+                sdk_family="android-" + phase, sdk_worker_workflow_path=child_path,
                 sdk_worker_job_name=child_job)
             query.side_effect = original_query
             with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
                 adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery,
-                    self.repository / "build/android-package-unpinned", trusted_workflow_sha=PIN,
+                    self.repository / f"build/android-{phase}-unpinned", trusted_workflow_sha=PIN,
                     repository_root=self.repository, environ=self.environment, token="synthetic-token",
-                    sdk_family="android-package", sdk_worker_workflow_path=child_path,
+                    sdk_family="android-" + phase, sdk_worker_workflow_path=child_path,
                     sdk_worker_job_name=child_job)
         self.assertEqual("success", result["rows"][0]["result"])
         self.assertEqual(child_job, result["rows"][0]["jobName"])

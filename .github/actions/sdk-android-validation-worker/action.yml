@@ -352,6 +352,7 @@ runs:
         DISCOVERY: ${{ inputs.discovery-root }}
         STATE: ${{ inputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
         PACKAGE_STAGE: ${{ inputs.package-stage }}
         PACKAGE_RECEIPT: ${{ inputs.package-receipt }}
         BINARY_STAGE: ${{ inputs.binary-stage }}

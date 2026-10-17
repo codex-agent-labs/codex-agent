@@ -226,6 +226,11 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
             values = {"BUILD_KEY": KEY, "TREE": TREE, "POLICY_REVISION": "d" * 40,
                       "GITHUB_RUN_ID": "23", "GITHUB_RUN_ATTEMPT": "2",
                       "GITHUB_OUTPUT": str(output)}
+            # Exercise the step's declared environment, not a richer test-only one.
+            execute = self.action.split("    - id: execute\n", 1)[1].split("      run: |", 1)[0]
+            declared = set(re.findall(r"^        ([A-Z][A-Z0-9_]*):", execute, re.M))
+            values = {name: value for name, value in values.items()
+                      if name in declared or name.startswith("GITHUB_")}
             shard = {"buildKey": KEY, "receiptSha256": "sha256:" + "c" * 64,
                      "receipt": {"producer": {"tree": TREE, "commit": "d" * 40,
                                                "runId": 23, "runAttempt": 2}}}
@@ -241,10 +246,13 @@ class AndroidValidationWorkerActionTest(unittest.TestCase):
                 exec(compile(handoff, "android-handoff", "exec"), scope)
                 self.assertEqual(output.read_text(), "receipt_sha256=sha256:" + "c" * 64 + "\n")
                 output.unlink()
-                shard["receipt"]["producer"]["runAttempt"] = 1
-                with self.assertRaisesRegex(ValueError, "current producer"):
-                    exec(compile(handoff, "android-handoff", "exec"), scope)
-                self.assertFalse(output.exists())
+                for field, wrong in (("tree", "0" * 40), ("runAttempt", 1)):
+                    previous = shard["receipt"]["producer"][field]
+                    shard["receipt"]["producer"][field] = wrong
+                    with self.subTest(field=field), self.assertRaisesRegex(ValueError, "current producer"):
+                        exec(compile(handoff, "android-handoff", "exec"), scope)
+                    self.assertFalse(output.exists())
+                    shard["receipt"]["producer"][field] = previous
 
 
 if __name__ == "__main__":
