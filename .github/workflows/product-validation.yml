@@ -5412,7 +5412,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdk-android-apk-diagnostics-${{ github.run_attempt }}
-          path: build/sdk-android-apk-diagnostics
+          path: |
+            build/sdk-android-apk-diagnostics
+            ${{ steps.upload.outcome != 'success' && 'tooling/android-runtime-evidence/build/outputs/apk/' || '' }}
           if-no-files-found: ignore
           overwrite: false
           compression-level: 0
