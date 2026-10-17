@@ -20,10 +20,12 @@ from products.inventory import (load_canonical_json_bytes, publish_regular_tree,
     snapshot_regular_tree, write_canonical_json)
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
+from products.restore import verification_scoped
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS
 from products.sdk_inputs import REQUEST_NAME
 from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
+from sdk_phase import maven_consumed_predecessors
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
 
@@ -33,6 +35,7 @@ _VALIDATION = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
 _CONTRACT = PhaseInstanceId("contract", "contract", "metadata", "common")
 
 
+@verification_scoped
 def prepare(plan, discovery, state, destination, *, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, repository_root, environ, token,
@@ -98,7 +101,8 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("Android validation lacks Git-authoritative release trust")
         predecessors = prepared / "predecessors"
         if product_reuse._materialize_product_predecessors(
-                verified, _VALIDATION, predecessors, expected_build_key, root) != elected:
+                verified, _VALIDATION, predecessors, expected_build_key, root,
+                materialized_scope=maven_consumed_predecessors(_VALIDATION)) != elected:
             raise ValueError("Android validation predecessor election changed")
 
         def original(product, component, phase, target):

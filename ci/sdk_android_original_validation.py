@@ -29,6 +29,7 @@ from products.sdk_validation_inputs import _request_inventory
 from products.signing_isolation import require_no_signing_secret
 from products import sdk_android_validation_phase as validation_phase
 from sdk_android_metadata_workflow import _compare_original_inputs, _replan
+from sdk_phase import maven_consumed_predecessors
 from sdk_facade_capture import (
     capture_sdk_android_validation_upload, verify_retained_sdk_phase_upload,
 )
@@ -225,8 +226,9 @@ def _verified_android_validation(
             if ({path.name for path in original.iterdir()} !=
                     {"inputs", "originals", "stage", "shard"}):
                 raise ValueError("Original Android validation has an unexpected retained layout")
-            dependencies = tuple(dependency for dependency in
-                product_reuse._dependency_closure((_INSTANCE,)) if dependency != _INSTANCE)
+            # Physical consumption only. The caller authenticates the complete
+            # dependency closure; this reader binds the exact consumed stages.
+            dependencies = maven_consumed_predecessors(_INSTANCE)
             dependency_names = {
                 "-".join((value.product, value.component, value.phase, value.target)): value
                 for value in dependencies

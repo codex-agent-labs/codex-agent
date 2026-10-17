@@ -140,6 +140,8 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
     def materialize(self, plan, discovery, state, instance, destination, **kwargs):
         self.events.append("materialize")
         self.assertEqual(workflow._INSTANCE, instance)
+        self.assertEqual(workflow.maven_consumed_predecessors(instance), kwargs["materialized_scope"])
+        self.assertEqual(6, len(kwargs["materialized_scope"]))
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
         self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs["sdk_original_workflow_sha"])
         self.assertIs(self.apple_policy, kwargs["sdk_apple_validation_policy"])

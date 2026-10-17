@@ -21,6 +21,7 @@ from products.inventory import (
     publish_regular_tree, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
+from products.restore import verification_scoped
 from products.sdk_apple_validation_admission import apple_validation_policy_arguments
 from products.sdk_inputs import stage_sdk_inputs
 from products.sdk_package import _require_capability_output_separate
@@ -30,6 +31,7 @@ from products.signing_isolation import require_no_signing_secret
 from sdk_android_evidence_capture import capture_android_evidence
 from sdk_android_firebase_capture import capture_android_firebase_evidence
 from products import sdk_android_validation_phase as validation_phase
+from sdk_phase import maven_consumed_predecessors
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
@@ -93,6 +95,7 @@ def _retain_original_inputs(request, evidence, destination):
     write_canonical_json(destination / "binary-contract-invocation.json", relocated)
 
 
+@verification_scoped
 def execute(
     plan: Path, discovery: Path, state: Path, destination: Path, *,
     expected_build_key: str,
@@ -213,6 +216,7 @@ def execute(
     ready = product_reuse.materialize_product_predecessors(
         plan, discovery, state, _INSTANCE, destination / "inputs",
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
+        materialized_scope=maven_consumed_predecessors(_INSTANCE),
         sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha,
         **apple, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))

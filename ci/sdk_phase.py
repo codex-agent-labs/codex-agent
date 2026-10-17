@@ -111,7 +111,8 @@ def maven_consumed_predecessors(instance, *, validation_target=None):
     """Physical inputs only; callers must authenticate the full dependency closure."""
     package = instance in {PhaseInstanceId("sdk", "sdk-core", "package", "common"),
                           PhaseInstanceId("sdk", "sdk-android", "package", "android")}
-    validation = instance in SDK_FAMILY_INSTANCES["core-validation"]
+    validation = instance in (SDK_FAMILY_INSTANCES["core-validation"] |
+                              SDK_FAMILY_INSTANCES["android-validation"])
     metadata = instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
     if (not (package or validation or metadata)
             or metadata and validation_target is not None and validation_target not in SDK_FACADE_TARGETS

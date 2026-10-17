@@ -148,6 +148,7 @@ class SdkRoutingContractTests(unittest.TestCase):
         metadata = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
         cases = [(PhaseInstanceId("sdk", "sdk-core", "package", "common"), None, 5),
                  (PhaseInstanceId("sdk", "sdk-android", "package", "android"), None, 5), (metadata, None, 17)]
+        cases.append((PhaseInstanceId("sdk", "sdk-android", "validation", "android"), None, 6))
         for validation in sorted(SDK_FAMILY_INSTANCES["core-validation"]):
             cases.extend(((validation, None, 6), (metadata, validation.target, 7)))
         for instance, target, count in cases:

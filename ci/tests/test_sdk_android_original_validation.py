@@ -19,9 +19,7 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         self.f = fixture.AndroidMetadataWorkflowTest(methodName="runTest")
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
-        for identity in original.product_reuse._dependency_closure((original._INSTANCE,)):
-            if identity == original._INSTANCE:
-                continue
+        for identity in original.maven_consumed_predecessors(original._INSTANCE):
             name = "-".join((identity.product, identity.component,
                              identity.phase, identity.target))
             directory = self.f.original / "inputs" / name

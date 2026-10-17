@@ -113,11 +113,13 @@ class AndroidValidationPolicyTests(unittest.TestCase):
             (keys / "active.pub").write_bytes(b"key")
             return SimpleNamespace(keyring=ring, keys=keys)
 
-        def materialize(state, instance, destination, expected_key, root):
+        def materialize(state, instance, destination, expected_key, root, *, materialized_scope):
             self.assertIs(state, verified)
             self.assertEqual(policy._VALIDATION, instance)
             self.assertEqual(_KEY, expected_key)
             self.assertIn(root, destination.parents)
+            self.assertEqual(policy.maven_consumed_predecessors(instance), materialized_scope)
+            self.assertEqual(6, len(materialized_scope))
             for product, component, phase, target in (
                     ("sdk", "sdk-android", "binary", "android"),
                     ("sdk", "sdk-android", "package", "android"),
