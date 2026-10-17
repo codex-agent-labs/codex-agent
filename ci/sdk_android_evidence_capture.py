@@ -377,7 +377,10 @@ def produce(root, plan, policy, destination):
     init_script = diagnostics / "contract-repository.init.gradle"
     init_script.write_text(CONTRACT_ANDROID_INIT, encoding="utf-8")
     argv += ["--init-script", str(init_script)]
-    paths = [plan, *map(Path, policy.values())]
+    # Complete receipt controls before any compiler starts, even for compact
+    # routing carriers. The shared policy projects these from authenticated Git.
+    paths = [plan, *(plan.parent / "inventories/android" / name for name in INPUT_NAMES.values()),
+             *map(Path, policy.values())]
     before = {p: regular_file_inventory(p) if p.is_dir() else read_regular_file_bytes(p, reject_symlink_parents=True)
               for p in paths}
 

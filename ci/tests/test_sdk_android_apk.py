@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from ci import sdk_android_evidence_capture as apk
 from ci import sdk_android_evidence_capture as capture
+from ci import sdk_android_validation_policy as policy_stage
 from ci.products import sdk_android_observation as observation
 from ci.tests import test_ci as fixtures
 
@@ -126,7 +127,7 @@ class AndroidApkTest(unittest.TestCase):
             return real_run(argv, **kwargs)
 
         with patch.dict(os.environ, {"GITHUB_RUN_ID": "101", "GITHUB_RUN_ATTEMPT": "2"}), \
-                patch.object(apk, "command", return_value=["fixture-gradle"]), \
+                patch.object(apk, "command", side_effect=lambda *_: ["fixture-gradle"]), \
                 patch.object(apk.subprocess, "run", side_effect=run), \
                 self.assertRaises(subprocess.CalledProcessError):
             apk.produce(root, self.plan, policy, destination)
@@ -137,6 +138,65 @@ class AndroidApkTest(unittest.TestCase):
             json.loads((diagnostics / "apk-execution.json").read_bytes())["repositoryPolicySha256"])
         self.assertFalse(destination.exists())
         self.assertFalse((diagnostics / "lane-receipt.json").exists())
+
+    def test_compact_plan_projects_exact_android_controls_and_successful_receipt(self):
+        root = self.f.root.resolve()
+        compact = root / "build/compact-plan/impact-plan.json"
+        compact.parent.mkdir(parents=True)
+        compact.write_bytes(self.plan.read_bytes())
+        projected = root / "build/projected-plan"
+        revision = self.value["validationCommit"]
+        policy_stage._stage_android_plan(root, compact, revision, projected)
+        plan = projected / "impact-plan.json"
+        self.assertEqual(self.plan.read_bytes(), plan.read_bytes())
+        for name in apk.INPUT_NAMES.values():
+            self.assertEqual((self.plan.parent / "inventories/android" / name).read_bytes(),
+                             (projected / "inventories/android" / name).read_bytes())
+        self.assertEqual([compact], list(compact.parent.iterdir()))
+        with self.assertRaisesRegex(ValueError, "authenticated candidate"):
+            policy_stage._stage_android_plan(root, compact, "f" * 40, root / "wrong-source")
+        (projected / "inventories/android/production-inputs.git-tree").write_bytes(b"wrong\n")
+        with self.assertRaisesRegex(ValueError, "authenticated Git"):
+            policy_stage._stage_android_plan(root, plan, revision, root / "wrong-inventory")
+        (projected / "inventories/android/production-inputs.git-tree").write_bytes(
+            (self.plan.parent / "inventories/android/production-inputs.git-tree").read_bytes())
+        policy = {name: str(self.lane / (name + ".json")) for name in apk.POLICY_PROPERTIES}
+        for path in policy.values():
+            Path(path).write_bytes(b'{"productVersion":"0.8.0"}\n')
+        binary = root / "binary-stage"
+        aar = binary / "outputs/maven/io/github/codex-agent-labs/codex-agent-runtime-android/0.8.0/codex-agent-runtime-android-0.8.0.aar"
+        aar.parent.mkdir(parents=True)
+        aar.write_bytes(b"original AAR")
+        policy["binaryStage"] = str(binary)
+        real_run, real_output = subprocess.run, subprocess.check_output
+        consumer_calls = []
+
+        def run(argv, **kwargs):
+            if argv[0] != "fixture-gradle":
+                return real_run(argv, **kwargs)
+            consumer_calls.append(argv)
+            for name in ("application.apk", "test.apk"):
+                output = root / apk.SUBMISSION_FILES[name].removeprefix("payload/")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(name.encode())
+            kwargs["stdout"].write(b"fixture successful consumer\n")
+            return subprocess.CompletedProcess(argv, 0)
+
+        def output(argv, **kwargs):
+            return "fixture Java" if argv[-1] == "-version" else real_output(argv, **kwargs)
+
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "101", "GITHUB_RUN_ATTEMPT": "2",
+                "JAVA_HOME": str(root), "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}), \
+                patch.object(apk, "command", side_effect=lambda *_: ["fixture-gradle"]), \
+                patch.object(apk.subprocess, "run", side_effect=run), \
+                patch.object(apk.subprocess, "check_output", side_effect=output):
+            with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                apk.produce(root, compact, policy, root / "missing-controls")
+            self.assertEqual([], consumer_calls)
+            destination = root / "successful-consumer"
+            apk.produce(root, plan, policy, destination)
+            self.assertEqual(1, len(consumer_calls))
+            self.assertEqual("build", apk.check(plan, destination)["toolchain"]["validationActions"])
 
     def test_command_only_uses_two_allowed_consumer_tasks_and_explicit_artifacts(self):
         root = self.f.root.resolve()

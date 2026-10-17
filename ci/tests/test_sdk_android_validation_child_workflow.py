@@ -61,6 +61,7 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         self.assertEqual(shared.count("uses: ./.github/actions/capture-runtime-state\n"), 1)
         self.assertNotIn("uses: ./.github/actions/capture-runtime-state\n", worker)
         self.assertIn("plan-directory: ${{ steps.tooling.outputs.plan-directory }}", shared)
+        self.assertIn("value: ${{ steps.policy.outputs.plan-path }}", shared)
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", shared)
         for name in ("plan-path", "discovery-root", "state-root", "sdk-matrix", "sdk-workers-required"):
             self.assertIn(name + ": ${{ steps.prepared.outputs." + name + " }}", worker)
@@ -81,6 +82,7 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         self.assertNotIn(".konan", apk)
         self.assertIn("overwrite: false", apk)
         self.assertIn("if: always()", apk)
+        self.assertIn("steps.upload.outcome != 'success' && 'tooling/android-runtime-evidence/build/outputs/apk/'", apk)
         self.assertIn("needs.android-sdk-apk.result == 'success'", firebase)
         self.assertIn("authority_read_token:", firebase)
 

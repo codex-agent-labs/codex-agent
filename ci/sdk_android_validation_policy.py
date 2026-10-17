@@ -15,9 +15,11 @@ if __package__:
 
 import product_reuse
 import sdk_workflow
+from impact import effective_pathspecs, inventory
+from receipt import INPUT_NAMES
 from products.inventory import (load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_sha256,
-    snapshot_regular_tree, write_canonical_json)
+    snapshot_regular_tree, write_canonical_json, run_git)
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
 from products.restore import verification_scoped
@@ -33,6 +35,31 @@ _BINARY = PhaseInstanceId("sdk", "sdk-android", "binary", "android")
 _PACKAGE = PhaseInstanceId("sdk", "sdk-android", "package", "android")
 _VALIDATION = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
 _CONTRACT = PhaseInstanceId("contract", "contract", "metadata", "common")
+
+
+def _stage_android_plan(root, plan, revision, destination):
+    """Project only Android controls from authenticated Git, not a bulk plan download."""
+    def source_unchanged():
+        if run_git(root, "rev-parse", "HEAD").strip() != revision:
+            raise ValueError("Android plan projection differs from its authenticated candidate")
+        run_git(root, "diff", "--quiet", "HEAD", "--")
+
+    source_unchanged()
+    raw = read_regular_file_bytes(plan, reject_symlink_parents=True)
+    destination.mkdir()
+    (destination / "impact-plan.json").write_bytes(raw)
+    target = destination / "inventories/android"
+    target.mkdir(parents=True)
+    for category, name in INPUT_NAMES.items():
+        contents = inventory(root, revision, effective_pathspecs(root, "android", category)).encode("utf-8")
+        original = plan.parent / "inventories/android" / name
+        if (original.exists() or original.is_symlink()) and read_regular_file_bytes(
+                original, reject_symlink_parents=True) != contents:
+            raise ValueError("Android planned inventory differs from its authenticated Git inputs")
+        (target / name).write_bytes(contents)
+    source_unchanged()
+    if read_regular_file_bytes(plan, reject_symlink_parents=True) != raw:
+        raise ValueError("Android plan changed during projection")
 
 
 @verification_scoped
@@ -169,13 +196,18 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             snapshot_regular_tree(sdk_inputs["sdk"]["directory"], prepared / "sdk-inputs")
             unchanged()
         write_canonical_json(prepared / "binary-contract-evidence.json", contract_evidence)
+        _stage_android_plan(root, plan, verified.plan["validationCommit"], prepared / "plan")
         unchanged()
-        candidate = regular_file_inventory(prepared)
-        publish_regular_tree(prepared, destination, expected_inventory=candidate)
-        if regular_file_inventory(destination) != candidate:
+        candidate = regular_file_inventory(prepared, allow_empty=True)
+        empty_inventories = {"plan/inventories/android/" + name for name in INPUT_NAMES.values()}
+        if any(row["bytes"] == 0 and row["relativePath"] not in empty_inventories for row in candidate):
+            raise ValueError("Only verified Android lane inventories may be empty")
+        publish_regular_tree(prepared, destination, expected_inventory=candidate, allow_empty=True)
+        if regular_file_inventory(destination, allow_empty=True) != candidate:
             raise ValueError("Android validation caller policy differs from its private candidate")
     unchanged()
     return {
+        "plan-path": str(destination / "plan/impact-plan.json"),
         "packageStage": str(destination / "predecessors/sdk-sdk-android-package-android/stage"),
         "packageReceipt": str(destination / "predecessors/sdk-sdk-android-package-android/phase-receipt.json"),
         "binaryStage": str(destination / "predecessors/sdk-sdk-android-binary-android/stage"),

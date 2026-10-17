@@ -165,6 +165,7 @@ class AndroidValidationPolicyTests(unittest.TestCase):
               patch.object(policy, "_record", side_effect=lambda record, *_: (record,)),
               patch.object(policy, "validate_phase_receipt", side_effect=lambda value: value),
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": []}),
+              patch.object(policy, "_stage_android_plan") as projection,
               patch.object(policy.sdk_workflow, "verified_inputs", side_effect=original_inputs)):
             with self.assertRaisesRegex(ValueError, "selection does not include"):
                 policy.prepare(**self.args(completed_frozen=native))
@@ -173,6 +174,8 @@ class AndroidValidationPolicyTests(unittest.TestCase):
             for destination in (self.destination, self.root.parent / "runner-temp/policy"):
                 with self.subTest(destination=destination):
                     result = policy.prepare(**self.args(destination=destination, completed_frozen=native))
+                    self.assertEqual(str(destination / "plan/impact-plan.json"), result["plan-path"])
+                    self.assertEqual((self.root, self.plan, "b" * 40), projection.call_args.args[:3])
                     self.assertIs(native, replay.call_args.kwargs['completed_frozen'])
                     self.assertEqual(destination / "predecessors/sdk-sdk-android-package-android/stage",
                                      Path(result["packageStage"]))
