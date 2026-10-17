@@ -21,6 +21,25 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SdkNativeWorkflowWiringTest(unittest.TestCase):
+    def test_preparation_identity_allows_base_state_without_an_sdk_wave(self):
+        child = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
+        block = child.split("      - name: Require one exact original preparation state\n", 1)[1]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+        for wave in ("", "19"):
+            fields = dict(STATE_ID="71", STATE_SHA="sha256:" + "a" * 64,
+                          STATE_WAVE="0", SDK_STATE_WAVE=wave)
+            environment = {**os.environ, **fields,
+                **{"PREPARATION_" + key: value for key, value in fields.items()},
+                "TOOLING_REQUIRED": "false", "TOOLING_ARTIFACT_ID": "",
+                "TOOLING_ARTIFACT_SHA256": "", "TOOLING_TRANSPORT_PRODUCER": ""}
+            passed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True)
+            self.assertEqual(0, passed.returncode, (wave, passed.stderr))
+            for key in fields:
+                with self.subTest(wave=wave, mismatched=key):
+                    failed = subprocess.run(["bash", "-c", script],
+                        env={**environment, "PREPARATION_" + key: "different"}, capture_output=True)
+                    self.assertNotEqual(0, failed.returncode)
+
     def test_same_preparation_transport_reuses_capture_but_every_difference_recaptures(self):
         source = (ROOT / ".github/actions/sdk-native-package-worker/action.yml").read_text()
         block = source.split("    - id: preparation\n", 1)[1].split("    - id: identity\n", 1)[0]
