@@ -1262,6 +1262,12 @@ def _workflow_main(argv):
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
     captured.add_argument("--scope-inputs", action="store_true")
+    captured.add_argument("--preparation-destination", type=Path)
+    captured.add_argument("--preparation-artifact-id", type=int)
+    captured.add_argument("--preparation-artifact-sha256")
+    captured.add_argument("--preparation-phase", choices=("package", "validation", "metadata"))
+    captured.add_argument("--preparation-state-wave", type=int)
+    captured.add_argument("--preparation-sdk-state-wave", type=int)
     parsers["collect"].add_argument("--input-root", type=Path, required=True)
     parsers["collect"].add_argument("--wave", type=int, choices=range(1, 20), required=True)
     parsers["collect"].add_argument("--sdk-worker-workflow-path")
@@ -1272,6 +1278,22 @@ def _workflow_main(argv):
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:
+        preparation = {name: arguments.pop("preparation_" + name, None) for name in
+            ("destination", "artifact_id", "artifact_sha256", "phase", "state_wave", "sdk_state_wave")}
+        paired = any(value is not None for value in preparation.values())
+        output = arguments["github_output_path"]
+        if paired:
+            if (command != "capture" or arguments.get("family") != "native-validation"
+                    or not arguments.get("scope_inputs") or any(preparation[name] is None for name in
+                        ("destination", "artifact_id", "artifact_sha256", "phase"))):
+                raise ValueError("Paired preparation requires complete scoped native validation capture controls")
+            current, previous = (arguments["destination"].resolve(), preparation["destination"].resolve())
+            if current == previous or current in previous.parents or previous in current.parents:
+                raise ValueError("Paired native capture destinations overlap")
+            preparation["family"] = "native-" + preparation.pop("phase")
+            preparation["state_wave"] = preparation["state_wave"] or 0
+            # Nothing is exposed to setup until both captures and policy exit checks pass.
+            arguments["github_output_path"] = None
         with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             policy = arguments.pop("sdk_validation_tooling")
             if policy is not None:
@@ -1279,8 +1301,18 @@ def _workflow_main(argv):
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-            return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments, **admissions, **semantic,
+            result = {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments, **admissions, **semantic,
                 environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
+            if paired:
+                prepared = capture(**{**arguments, **preparation, "plan": result["plan_path"]},
+                    **admissions, **semantic, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        if paired:
+            github_output(output, {**{name: str(value) for name, value in result.items() if name != "matrix"},
+                "sdk_matrix": canonical_json_bytes(result["matrix"]).decode().strip(),
+                "sdk_workers_required": bool(result["matrix"]["include"]),
+                "preparation_state_root": str(prepared["state_root"]),
+                "preparation_sdk_matrix": canonical_json_bytes(prepared["matrix"]).decode().strip()})
+        return result
     except (OSError, ValueError) as error:
         parser.error(str(error))
 

@@ -37,6 +37,21 @@ inputs:
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path; never obtained from the captured state.
+  preparation-artifact-id:
+    default: ''
+    description: Optional original native preparation state captured under the same in-process authentication.
+  preparation-artifact-sha256:
+    default: ''
+    description: Exact original native preparation state upload digest.
+  preparation-phase:
+    default: ''
+    description: Original native preparation consumer phase; requires scoped native-validation capture.
+  preparation-state-wave:
+    default: '0'
+    description: Original native preparation Runtime wave.
+  preparation-sdk-state-wave:
+    default: ''
+    description: Original native preparation SDK wave, when applicable.
   sdk-apple-validation-policy:
     default: ''
     description: Caller-provisioned Apple validation policy path; never obtained from the captured state.
@@ -59,6 +74,10 @@ inputs:
     default: ''
     description: Optional exact elected build key.
 outputs:
+  preparation-state-root:
+    value: ${{ steps.capture.outputs.preparation_state_root }}
+  preparation-sdk-matrix:
+    value: ${{ steps.capture.outputs.preparation_sdk_matrix }}
   native-preparation-component:
     value: ${{ steps.capture.outputs.native_preparation_component }}
   native-preparation-phase:
@@ -140,6 +159,11 @@ runs:
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        PREPARATION_ARTIFACT_ID: ${{ inputs.preparation-artifact-id }}
+        PREPARATION_ARTIFACT_SHA256: ${{ inputs.preparation-artifact-sha256 }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_STATE_WAVE: ${{ inputs.preparation-state-wave }}
+        PREPARATION_SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
@@ -205,6 +229,21 @@ runs:
             fi
             if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
               selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+            fi
+            if [ -n "${PREPARATION_ARTIFACT_ID:-}${PREPARATION_ARTIFACT_SHA256:-}${PREPARATION_PHASE:-}${PREPARATION_SDK_STATE_WAVE:-}" ] || [ "${PREPARATION_STATE_WAVE:-0}" != 0 ]; then
+              test "$STATE_PRODUCT" = sdk
+              test "$SDK_FAMILY" = native-validation
+              test -z "$PREFLIGHT_WAVE"
+              test -n "$PREPARATION_ARTIFACT_ID"
+              test -n "$PREPARATION_ARTIFACT_SHA256"
+              test -n "$PREPARATION_PHASE"
+              selected+=(--preparation-destination "$GITHUB_WORKSPACE/build/native-preparation-input"
+                --preparation-artifact-id "$PREPARATION_ARTIFACT_ID"
+                --preparation-artifact-sha256 "$PREPARATION_ARTIFACT_SHA256"
+                --preparation-phase "$PREPARATION_PHASE" --preparation-state-wave "$PREPARATION_STATE_WAVE")
+              if [ -n "$PREPARATION_SDK_STATE_WAVE" ]; then
+                selected+=(--preparation-sdk-state-wave "$PREPARATION_SDK_STATE_WAVE")
+              fi
             fi
             "${command[@]}" \
               --plan "$PLAN_DIRECTORY/impact-plan.json" --destination build/runtime-input \

@@ -158,30 +158,50 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             self.execute('execute')
         run.assert_not_called()
 
-    def test_independent_preparation_capture_shell_preserves_optional_wave_and_policy(self):
-        script = textwrap.dedent(self.block('preparation').split('      run: |\n', 1)[1])
+    def test_paired_capture_shell_preserves_optional_wave_and_policy(self):
+        action = (ROOT / '.github/actions/capture-runtime-state/action.yml').read_text()
+        script = textwrap.dedent(action.split('        script: |\n', 1)[1])
         binary = self.root / 'bin'
         binary.mkdir()
         stub = binary / 'python3'
-        stub.write_text('#!/bin/sh\nprintf \'%s\\0\' "$@" > "$RECORDED_ARGS"\n')
+        stub.write_text('#!/bin/sh\nprintf \'%s\\0\' "$@" >> "$RECORDED_ARGS"\n')
         stub.chmod(0o700)
         recorded = self.root / 'argv'
         for wave, apple_policy in ((wave, policy) for wave in ('', '4')
                                    for policy in ('', '/caller policies/apple validation.json')):
             environment = dict(self.environment, PATH=str(binary), ARTIFACT_ID='78', ARTIFACT_SHA256='sha256:' + '8' * 64,
                 STATE_WAVE='0', SDK_STATE_WAVE=wave, SDK_APPLE_VALIDATION_POLICY=apple_policy,
+                PLAN_DIRECTORY=str(self.root), STATE_PRODUCT='sdk', SDK_FAMILY='native-validation',
+                PREFLIGHT_WAVE='', CONTINUATION='', COMPONENT='', PHASE='', TARGET='', BUILD_KEY='',
+                PREPARATION_ARTIFACT_ID='71', PREPARATION_ARTIFACT_SHA256='sha256:' + '7' * 64,
+                PREPARATION_PHASE='package', PREPARATION_STATE_WAVE='0', PREPARATION_SDK_STATE_WAVE=wave,
+                CODEX_AGENT_COMPLETED_REUSE_POLICY='/caller policies/completed.json',
                 RECORDED_ARGS=str(recorded))
+            recorded.unlink(missing_ok=True)
             completed = subprocess.run([shutil.which('bash'), '-c', script], env=environment, capture_output=True, text=True)
             self.assertEqual(0, completed.returncode, completed.stderr)
             arguments = recorded.read_bytes().decode().split('\0')[:-1]
             self.assertEqual(['-B', '-m', 'ci.sdk_workflow', 'capture'], arguments[:4])
+            self.assertEqual(1, arguments.count('ci.sdk_workflow'))
+            self.assertEqual(1, arguments.count('--scope-inputs'))
+            arguments.remove('--scope-inputs')
             flags = dict(zip(arguments[4::2], arguments[5::2]))
-            self.assertEqual('native-package', flags['--family'])
+            self.assertEqual('native-validation', flags['--family'])
             self.assertEqual('78', flags['--artifact-id'])
+            self.assertEqual('71', flags['--preparation-artifact-id'])
+            self.assertEqual('sha256:' + '7' * 64, flags['--preparation-artifact-sha256'])
+            self.assertEqual('package', flags['--preparation-phase'])
             self.assertEqual(str(self.policy_path), flags['--sdk-validation-tooling'])
             self.assertEqual(wave or None, flags.get('--sdk-state-wave'))
+            self.assertEqual(wave or None, flags.get('--preparation-sdk-state-wave'))
             self.assertEqual(apple_policy or None, flags.get('--sdk-apple-validation-policy'))
-            self.assertEqual(str(self.root / 'build/native-preparation-input'), flags['--destination'])
+            self.assertEqual('/caller policies/completed.json', flags['--completed-frozen-policy'])
+            self.assertEqual(str(self.root / 'build/native-preparation-input'), flags['--preparation-destination'])
+        for invalid in ({'SDK_FAMILY': 'native-package'}, {'PREPARATION_ARTIFACT_ID': ''}, {'PREFLIGHT_WAVE': '4'}):
+            recorded.unlink(missing_ok=True)
+            completed = subprocess.run([shutil.which('bash'), '-c', script], env={**environment, **invalid}, capture_output=True)
+            self.assertNotEqual(0, completed.returncode)
+            self.assertFalse(recorded.exists())
 
     def test_dart_preflight_requires_external_existing_config_or_populated_cache(self):
         with tempfile.TemporaryDirectory(prefix='caller-dart-') as temporary:
@@ -319,7 +339,13 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertLess(action.index('- id: policy'), action.index('- id: captured'))
         self.assertLess(action.index('- id: dart-inputs'), action.index('- id: captured'))
         self.assertIn("if: inputs.component == 'dart'", self.block('dart-inputs'))
-        self.assertLess(action.index('- id: preparation'), action.index('- id: identity'))
+        self.assertLess(action.index('- id: captured'), action.index('- id: identity'))
+        self.assertNotIn('- id: preparation', action)
+        self.assertIn('PREPARATION_MATRIX: ${{ steps.captured.outputs.preparation-sdk-matrix }}', action)
+        self.assertIn('PREPARATION_STATE: ${{ steps.captured.outputs.preparation-state-root }}', action)
+        for name, original in (('artifact-id', 'state-id'), ('artifact-sha256', 'state-sha256'),
+                               ('state-wave', 'state-wave'), ('sdk-state-wave', 'sdk-state-wave'), ('phase', 'phase')):
+            self.assertIn('preparation-' + name + ': ${{ inputs.preparation-' + original + ' }}', self.block('captured'))
         self.assertLess(action.index('- id: identity'), action.index('./.github/actions/setup-kmp'))
         self.assertIn('sdk-family: native-validation', self.block('captured'))
         self.assertIn('sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}', self.block('captured'))
@@ -335,8 +361,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
 
     def test_optional_apple_policy_is_forwarded_only_when_supplied(self):
         self.assertIn("  sdk-apple-validation-policy:\n    default: ''", self.action)
-        for step in ('preparation', 'execute'):
-            self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}', self.block(step))
+        self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}', self.block('execute'))
         for policy in ('', '/caller policies/apple validation.json'):
             with self.subTest(policy=policy), patch('subprocess.run') as run:
                 self.environment['SDK_APPLE_VALIDATION_POLICY'] = policy

@@ -157,38 +157,16 @@ runs:
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
-    - id: preparation
-      name: Capture original preparation state independently
-      shell: bash
-      env:
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        ARTIFACT_ID: ${{ inputs.preparation-state-id }}
-        ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
-        STATE_WAVE: ${{ inputs.preparation-state-wave }}
-        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
-        SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
-        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
-        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
-        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
-        GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        selected=()
-        if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
-        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-        reuse=()
-        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-        python3 -B -m ci.sdk_workflow capture --family "native-$PREPARATION_PHASE" --plan "$PLAN" \
-          --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
-          --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
-          --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \
-          --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"} ${reuse[@]+"${reuse[@]}"}
+        preparation-artifact-id: ${{ inputs.preparation-state-id }}
+        preparation-artifact-sha256: ${{ inputs.preparation-state-sha256 }}
+        preparation-state-wave: ${{ inputs.preparation-state-wave }}
+        preparation-sdk-state-wave: ${{ inputs.preparation-sdk-state-wave }}
+        preparation-phase: ${{ inputs.preparation-phase }}
     - id: identity
       shell: bash
       env:
         MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
-        PREPARATION_MATRIX: ${{ steps.preparation.outputs.sdk_matrix }}
+        PREPARATION_MATRIX: ${{ steps.captured.outputs.preparation-sdk-matrix }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
         COMPONENT: ${{ inputs.component }}
         TARGET: ${{ inputs.target }}
@@ -267,7 +245,7 @@ runs:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
-        PREPARATION_STATE: ${{ steps.preparation.outputs.state_root }}
+        PREPARATION_STATE: ${{ steps.captured.outputs.preparation-state-root }}
         PREPARATION_PHASE: ${{ inputs.preparation-phase }}
         PREPARATION_TARGET: ${{ inputs.preparation-target }}
         COMPONENT: ${{ inputs.component }}

@@ -354,6 +354,75 @@ class SdkWorkflowTest(unittest.TestCase):
     def upload_for_capture(self):
         return {key: self.upload[key] for key in ("artifact_id", "artifact_sha256", "trusted_workflow_sha")}
 
+    def test_paired_capture_shares_authority_and_exposes_outputs_only_after_both_exit_checks(self):
+        import reuse_qualification
+        output = self.root / "paired-output"
+        argv = ["capture", "--family", "native-validation", "--scope-inputs", "--plan", str(self.plan),
+            "--destination", str(self.root / "current"), "--artifact-id", "42", "--artifact-sha256", "a" * 64,
+            "--trusted-workflow-sha", "b" * 40, "--github-output", str(output),
+            "--preparation-destination", str(self.root / "previous"), "--preparation-artifact-id", "41",
+            "--preparation-artifact-sha256", "c" * 64, "--preparation-phase", "package",
+            "--preparation-sdk-state-wave", "4"]
+        for failure in (None, "second", "exit"):
+            events, capability = [], object()
+            @contextmanager
+            def authority(arguments):
+                arguments.pop("completed_frozen_policy")
+                events.append("authenticate")
+                yield {"completed_frozen": capability}
+                self.assertFalse(output.exists())
+                events.append("exit-check")
+                if failure == "exit":
+                    raise ValueError("policy changed during use")
+            def capture(**arguments):
+                self.assertIs(capability, arguments["completed_frozen"])
+                self.assertTrue(arguments["scope_inputs"])
+                self.assertIsNone(arguments["github_output_path"])
+                self.assertFalse(output.exists())
+                events.append(arguments["family"])
+                if arguments["family"] == "native-package":
+                    self.assertEqual(41, arguments["artifact_id"])
+                    self.assertEqual("c" * 64, arguments["artifact_sha256"])
+                    self.assertEqual(0, arguments["state_wave"])
+                    self.assertEqual(4, arguments["sdk_state_wave"])
+                    self.assertEqual(self.root / "current/plan.json", arguments["plan"])
+                    if failure == "second":
+                        raise ValueError("preparation authentication failed")
+                root = arguments["destination"]
+                return {"plan_path": root / "plan.json", "state_root": root / "state",
+                    "matrix": {"include": [{"family": arguments["family"]}]}}
+            with self.subTest(failure=failure), \
+                    patch.object(reuse_qualification, "completed_frozen_options", side_effect=authority) as auth, \
+                    patch.object(workflow, "capture", side_effect=capture) as captured:
+                if failure:
+                    with self.assertRaises(SystemExit):
+                        workflow.main(argv)
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(0, workflow.main(argv))
+                    fields = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                    self.assertEqual(str(self.root / "previous/state"), fields["preparation_state_root"])
+                    self.assertEqual({"include": [{"family": "native-package"}]}, json.loads(fields["preparation_sdk_matrix"]))
+                    self.assertEqual({"include": [{"family": "native-validation"}]}, json.loads(fields["sdk_matrix"]))
+                    output.unlink()
+                auth.assert_called_once()
+                self.assertEqual(2, captured.call_count)
+                self.assertEqual(["authenticate", "native-validation", "native-package"] +
+                    ([] if failure == "second" else ["exit-check"]), events)
+        for flag, value in (("--family", "native-package"), ("--preparation-destination", str(self.root / "current/child"))):
+            invalid = list(argv)
+            invalid[invalid.index(flag) + 1] = value
+            with patch.object(workflow, "capture") as captured, self.assertRaises(SystemExit):
+                workflow.main(invalid)
+            captured.assert_not_called()
+        for flag in ("--scope-inputs", "--preparation-artifact-sha256"):
+            invalid = list(argv)
+            at = invalid.index(flag)
+            del invalid[at:at + (1 if flag == "--scope-inputs" else 2)]
+            with patch.object(workflow, "capture") as captured, self.assertRaises(SystemExit):
+                workflow.main(invalid)
+            captured.assert_not_called()
+
     def test_maven_capture_scopes_workers_but_preserves_full_collector_state(self):
         for family, component, target in (("core-binary", "sdk-core", "common"),
                                            ("android-binary", "sdk-android", "android")):
