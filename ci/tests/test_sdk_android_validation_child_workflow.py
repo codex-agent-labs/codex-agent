@@ -13,6 +13,7 @@ from unittest.mock import patch
 WORKFLOW = (Path(__file__).resolve().parents[2] /
             ".github/workflows/sdk-android-validation.yml")
 PARENT = WORKFLOW.with_name("product-validation.yml")
+PREPARE = WORKFLOW.parents[1] / "actions/sdk-android-validation-worker/prepare/action.yml"
 
 
 def job(source, name):
@@ -31,7 +32,8 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         self.assertIn("needs.sdk-android-package-result.result == 'success'", plan)
         self.assertIn("family: android-validation", plan)
         self.assertIn("uses: ./.github/workflows/sdk-android-validation.yml", caller)
-        self.assertIn("protectedAndroidAuthority: ''", caller)
+        self.assertIn("needs.android-runtime-evidence.result == 'success'", caller)
+        self.assertIn("needs.android-runtime-evidence.outputs.protected_android_authority || ''", caller)
         for gate in ("sdk-completion", "sdk-parity", "merge-gate"):
             self.assertIn("sdk-android-validation-result", job(source, gate).split("    needs:", 1)[1])
 
@@ -47,19 +49,39 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         self.assertLess(worker.index("id: authority"), worker.index("android-actions/setup-android"))
         self.assertLess(worker.index("id: authority"), worker.index("sdk-android-validation-worker"))
         self.assertNotIn("VALIDATION_COMMIT", worker.split("      - id: authority\n", 1)[1].split("      - name:", 1)[0])
-        authority = worker.split("- id: authority", 1)[1].split("- name: Select installed caller Java", 1)[0]
+        authority = worker.split("- id: authority", 1)[1].split("- id: prepared", 1)[0]
         self.assertIn("python3 -I -B -", authority)
         self.assertNotIn("from ci.", authority)
-        self.assertIn("ci.sdk_android_validation_policy", worker)
+        shared = PREPARE.read_text()
+        self.assertIn("ci.sdk_android_validation_policy", shared)
+        self.assertIn("uses: ./.github/actions/sdk-android-validation-worker/prepare", worker)
         # Readiness is authenticated from exact retained predecessors, not the
         # incidental wave in which a package happened to be produced.
         self.assertNotIn("sdk_state_wave == '16'", worker)
-        self.assertEqual(worker.count("uses: ./.github/actions/capture-runtime-state\n"), 1)
-        self.assertIn("plan-directory: ${{ steps.tooling.outputs.plan-directory }}", worker)
+        self.assertEqual(shared.count("uses: ./.github/actions/capture-runtime-state\n"), 1)
+        self.assertNotIn("uses: ./.github/actions/capture-runtime-state\n", worker)
+        self.assertIn("plan-directory: ${{ steps.tooling.outputs.plan-directory }}", shared)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", shared)
         for name in ("plan-path", "discovery-root", "state-root", "sdk-matrix", "sdk-workers-required"):
-            self.assertIn(name + ": ${{ steps.selected.outputs." + name + " }}", worker)
+            self.assertIn(name + ": ${{ steps.prepared.outputs." + name + " }}", worker)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-android-validation.yml", collector)
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-validation-result / sdk-android-validation-android", collector)
+
+    def test_apk_producer_uses_shared_scoped_inputs_without_enabling_product_builds(self):
+        source = PARENT.read_text()
+        apk = job(source, "android-sdk-apk")
+        firebase = job(source, "android-runtime-evidence")
+        self.assertIn("inputs.sdkRecoveryOnly", apk)
+        self.assertIn("sdk_workers_required == 'true'", apk)
+        self.assertIn("uses: ./.github/actions/sdk-android-validation-worker/prepare", apk)
+        self.assertIn("from ci.sdk_android_evidence_capture import POLICY_PROPERTIES, produce", apk)
+        self.assertNotIn("ciProductPhase", apk)
+        self.assertNotIn("setup-kmp", apk)
+        self.assertNotIn(".konan", apk)
+        self.assertIn("overwrite: false", apk)
+        self.assertIn("if: always()", apk)
+        self.assertIn("needs.android-sdk-apk.result == 'success'", firebase)
+        self.assertIn("authority_read_token:", firebase)
 
     def test_worker_decodes_only_exact_canonical_authority(self):
         worker = job(WORKFLOW.read_text(), "sdk-android-validation")

@@ -216,7 +216,7 @@ class AndroidEvidenceCaptureTest(unittest.TestCase):
 
         with patch.object(capture.subprocess, "run", side_effect=process), \
                 self.assertRaisesRegex(ValueError, "isolated bytecode namespace"):
-            capture._check_lane(self.plan_path, self.f.receipt_root, self.plan)
+            capture._check_lane(self.plan_path, self.f.receipt_root.resolve(), self.plan)
         self.assertEqual(1, len(environments))
         self.assertEqual("1", environments[0]["PYTHONDONTWRITEBYTECODE"])
         self.assertEqual("1", environments[0]["PYTHONNOUSERSITE"])

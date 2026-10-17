@@ -26,12 +26,13 @@ SUBMISSION_FILES = {
 
 def bind_submission(*, repository: Path, lane: Path, plan: Path, observation: Path,
                     candidate_commit: str, candidate_tree: str,
-                    trusted_source_commit: str, trusted_source_tree: str, create: bool) -> None:
+                    trusted_source_commit: str, trusted_source_tree: str, create: bool,
+                    apk_consumer: bool = False) -> None:
     """Create once before submission, or compare exact originals afterward.
 
-    The protected workflow selects main's immutable source identity before any
-    checkout code runs. Supplied identities are policy, not authority from data.
-    The original lane checker remains mandatory and no receipt is rewritten.
+    The protected workflow selects independently approved immutable source
+    before checkout code runs. Supplied identities and the consumer mode are
+    policy, not authority from data. No original receipt is rewritten.
     """
     identities = (candidate_commit, candidate_tree, trusted_source_commit, trusted_source_tree)
     if any(type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None for value in identities):
@@ -55,7 +56,14 @@ def bind_submission(*, repository: Path, lane: Path, plan: Path, observation: Pa
                for name, relative in SUBMISSION_FILES.items()}
         if any(not value for value in raw.values()):
             raise ValueError("Firebase submission input is empty")
-        receipt = validate_receipt(lane / "lane-receipt.json", plan, lane, "android")
+        if apk_consumer:
+            if __package__ == "products":
+                from sdk_android_evidence_capture import check
+            else:
+                from ..sdk_android_evidence_capture import check
+            receipt = check(plan, lane)
+        else:
+            receipt = validate_receipt(lane / "lane-receipt.json", plan, lane, "android")
         if receipt["validationCommit"] != candidate_commit or receipt["validationTree"] != candidate_tree:
             raise ValueError("Firebase submission differs from the selected candidate")
         return raw
@@ -94,6 +102,7 @@ def bind_submission(*, repository: Path, lane: Path, plan: Path, observation: Pa
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("create", "verify"))
+    parser.add_argument("--apk-consumer", action="store_true")
     for field in ("repository", "lane", "plan", "observation"):
         parser.add_argument("--" + field, type=Path, required=True)
     for field in ("candidate-commit", "candidate-tree", "trusted-source-commit", "trusted-source-tree"):

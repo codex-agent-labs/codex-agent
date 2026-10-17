@@ -2603,12 +2603,14 @@ jobs:
 
   android-runtime-evidence:
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
-      needs.plan.outputs.android_evidence_required == 'true'
-    needs: [plan, android]
+      needs.plan.outputs.android_evidence_required == 'true' &&
+      ((!inputs.sdkRecoveryOnly && needs.android.result == 'success') ||
+       (inputs.sdkRecoveryOnly && needs.android-sdk-apk.result == 'success'))
+    needs: [plan, android, android-sdk-apk]
     permissions:
       actions: read
       contents: read
@@ -2617,8 +2619,11 @@ jobs:
     with:
       candidateCommit: ${{ needs.plan.outputs.validation_commit }}
       ciRunId: ${{ github.run_id }}
-      artifactName: ${{ needs.android.outputs.artifact_name }}
+      artifactName: ${{ inputs.sdkRecoveryOnly && needs.android-sdk-apk.outputs.artifact_name || needs.android.outputs.artifact_name }}
       planArtifact: ${{ needs.plan.outputs.plan_artifact }}
+      apkConsumer: ${{ inputs.sdkRecoveryOnly }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   desktop:
     if: always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_desktop == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
@@ -5336,8 +5341,83 @@ jobs:
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
-  sdk-android-validation-result:
+  android-sdk-apk:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan]
+    if: >-
+      always() && inputs.sdkRecoveryOnly &&
+      needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.android_evidence_required == 'true' &&
+      needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
+      needs.sdk-android-package-result.result == 'success' &&
+      needs.sdk-android-validation-plan.result == 'success' &&
+      needs.sdk-android-validation-plan.outputs.sdk_workers_required == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sdk-android-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    outputs:
+      artifact_name: ${{ steps.upload.outcome == 'success' && format('codex-agent-sdk-android-apk-{0}', needs.plan.outputs.validation_tree) || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.validation_commit }}
+      - id: prepared
+        uses: ./.github/actions/sdk-android-validation-worker/prepare
+        with:
+          planOutputs: ${{ toJSON(needs.plan.outputs) }}
+          sdkPlan: ${{ toJSON(needs.sdk-plan) }}
+          sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
+          packageWave: ${{ toJSON(needs.sdk-android-package-result) }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          build-key: ${{ matrix.buildKey }}
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - name: Restore dependency-only Gradle cache for test consumers
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.gradle/caches/modules-2
+          key: gradle-main-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.gradle.kts', 'gradle/**/*.toml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties') }}
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: platform-tools
+      - name: Compile only APK consumers of authenticated Android artifacts
+        env:
+          POLICY: ${{ toJSON(steps.prepared.outputs) }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_android_evidence_capture import POLICY_PROPERTIES, produce
+          selected = json.loads(os.environ['POLICY'])
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          produce(root, selected['plan-path'],
+                  {name: selected[name] for name in POLICY_PROPERTIES}, root / 'build/sdk-android-apk')
+          PY
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-sdk-android-apk-${{ needs.plan.outputs.validation_tree }}
+          path: build/sdk-android-apk
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+      - name: Preserve test-consumer execution diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-android-apk-diagnostics-${{ github.run_attempt }}
+          path: build/sdk-android-apk-diagnostics
+          if-no-files-found: ignore
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+
+  sdk-android-validation-result:
+    needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan, android-runtime-evidence]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -5352,7 +5432,7 @@ jobs:
       packageWave: ${{ toJSON(needs.sdk-android-package-result) }}
       validationPlan: ${{ toJSON(needs.sdk-android-validation-plan) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
-      protectedAndroidAuthority: ''
+      protectedAndroidAuthority: ${{ needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
@@ -5390,7 +5470,7 @@ jobs:
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-android-metadata-result:
-    needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-plan]
+    needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-plan, android-runtime-evidence]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -5407,7 +5487,7 @@ jobs:
       validationWave: ${{ toJSON(needs.sdk-android-validation-result) }}
       metadataPlan: ${{ toJSON(needs.sdk-android-metadata-plan) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
-      protectedAndroidAuthority: ''
+      protectedAndroidAuthority: ${{ needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 

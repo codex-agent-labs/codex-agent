@@ -1,0 +1,134 @@
+name: Prepare authenticated Android validation inputs
+description: Shared consumed-only staging for APK compilation and final Firebase admission.
+inputs:
+  planOutputs:
+    required: true
+    description: Caller-owned planOutputs.
+  sdkPlan:
+    required: true
+    description: Caller-owned sdkPlan.
+  sdkInputs:
+    required: true
+    description: Caller-owned sdkInputs.
+  packageWave:
+    required: true
+    description: Caller-owned packageWave.
+  trusted-workflow-sha:
+    required: true
+    description: Caller-owned trusted-workflow-sha.
+  build-key:
+    required: true
+    description: Caller-owned build-key.
+  authority-read-token:
+    required: true
+    description: Caller-owned authority-read-token.
+outputs:
+  tooling-policy:
+    description: Authenticated tooling-policy from the shared capture.
+    value: ${{ steps.tooling.outputs.tooling-policy }}
+  apple-policy:
+    description: Authenticated apple-policy from the shared capture.
+    value: ${{ steps.tooling.outputs.apple-policy }}
+  plan-path:
+    description: Authenticated plan-path from the shared capture.
+    value: ${{ steps.selected.outputs.plan-path }}
+  discovery-root:
+    description: Authenticated discovery-root from the shared capture.
+    value: ${{ steps.selected.outputs.discovery-root }}
+  state-root:
+    description: Authenticated state-root from the shared capture.
+    value: ${{ steps.selected.outputs.state-root }}
+  sdk-matrix:
+    description: Authenticated sdk-matrix from the shared capture.
+    value: ${{ steps.selected.outputs.sdk-matrix }}
+  sdk-workers-required:
+    description: Authenticated sdk-workers-required from the shared capture.
+    value: ${{ steps.selected.outputs.sdk-workers-required }}
+  packageStage:
+    description: Authenticated packageStage from the shared capture.
+    value: ${{ steps.policy.outputs.packageStage }}
+  packageReceipt:
+    description: Authenticated packageReceipt from the shared capture.
+    value: ${{ steps.policy.outputs.packageReceipt }}
+  binaryStage:
+    description: Authenticated binaryStage from the shared capture.
+    value: ${{ steps.policy.outputs.binaryStage }}
+  binaryReceipt:
+    description: Authenticated binaryReceipt from the shared capture.
+    value: ${{ steps.policy.outputs.binaryReceipt }}
+  compatibilityRequest:
+    description: Authenticated compatibilityRequest from the shared capture.
+    value: ${{ steps.policy.outputs.compatibilityRequest }}
+  binaryContractEvidence:
+    description: Authenticated binaryContractEvidence from the shared capture.
+    value: ${{ steps.policy.outputs.binaryContractEvidence }}
+runs:
+  using: composite
+  steps:
+    - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+      with:
+        authority-read-token: ${{ inputs.authority-read-token }}
+    - name: Select installed caller Java
+      shell: bash
+      run: |
+        set -euo pipefail
+        source ci/select_caller_java.sh
+        test -f "$selected_java_home/bin/java"
+        echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
+    - id: tooling
+      uses: ./.github/actions/capture-sdk-tooling
+      with:
+        artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
+        artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
+        transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        trusted-workflow-path: .github/workflows/contract-validation.yml
+        trusted-job-name: product-validation / contract-validation / tooling-attestation
+        policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
+        plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+    - id: selected
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        plan-directory: ${{ steps.tooling.outputs.plan-directory }}
+        product: sdk
+        sdk-family: android-validation
+        plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+        artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
+        artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
+        state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
+        sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
+        sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+        sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+    - id: policy
+      name: Stage authenticated original Android inputs
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
+        SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
+        TOOLING_POLICY: ${{ steps.tooling.outputs.tooling-policy }}
+        APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        policy=()
+        if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+        if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
+        python3 -B -m ci.sdk_android_validation_policy \
+          --plan "${{ steps.selected.outputs.plan-path }}" \
+          --discovery-root "${{ steps.selected.outputs.discovery-root }}" \
+          --state-root "${{ steps.selected.outputs.state-root }}" \
+          --destination "$GITHUB_WORKSPACE/build/sdk-android-validation-policy" \
+          --expected-build-key "$BUILD_KEY" \
+          --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
+          --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
+          --sdk-validation-tooling "$TOOLING_POLICY" \
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
+          ${policy[@]+"${policy[@]}"}
+

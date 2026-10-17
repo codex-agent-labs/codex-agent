@@ -80,11 +80,13 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
 
         event = "needs.plan.outputs.event_authorized == 'true'"
         remote = "needs.plan.outputs.remote_build_authorized == 'true'"
-        setup = self.job.index("uses: ./.github/actions/setup-kmp")
-        provisioning = self.job.index("run: ./gradlew help")
-        execution = self.job.index("./gradlew -p gradle/build-logic test")
-        event_guards = [match.start() for match in re.finditer(re.escape(event), self.job)]
-        remote_guards = [match.start() for match in re.finditer(re.escape(remote), self.job)]
+        # YAML single-quoted conditions escape a literal quote by doubling it.
+        guarded = self.job.replace("''", "'")
+        setup = guarded.index("uses: ./.github/actions/setup-kmp")
+        provisioning = guarded.index("run: ./gradlew help")
+        execution = guarded.index("./gradlew -p gradle/build-logic test")
+        event_guards = [match.start() for match in re.finditer(re.escape(event), guarded)]
+        remote_guards = [match.start() for match in re.finditer(re.escape(remote), guarded)]
         self.assertEqual(3, len(event_guards))
         self.assertEqual(3, len(remote_guards))
         self.assertLess(event_guards[0], setup)

@@ -88,9 +88,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ fromJSON(inputs.planOutputs).validation_commit }}
-      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        with:
-          authority-read-token: ${{ secrets.authority_read_token }}
       - id: authority
         name: Check protected Android source authority before platform setup
         env:
@@ -117,72 +114,22 @@ jobs:
           for name in ('trustedAndroidWorkflowSha', 'trustedSourceCommit', 'trustedSourceTree'):
               if type(value[name]) is not str or not re.fullmatch(r'[0-9a-f]{40}', value[name]):
                   raise ValueError('Protected Android authority needs exact Git identities')
-          # Firebase executes helpers from protected main, not from the candidate checkout.
+          # Firebase executes independently approved helpers, not candidate-selected code.
           # The original evidence reader binds these separate identities to the official run.
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for name in ('trustedAndroidWorkflowSha', 'trustedSourceCommit', 'trustedSourceTree'):
                   output.write(name + '=' + value[name] + '\n')
           PY
-      - name: Select installed caller Java
-        run: |
-          set -euo pipefail
-          source ci/select_caller_java.sh
-          test -f "$selected_java_home/bin/java"
-          echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
-      - id: tooling
-        uses: ./.github/actions/capture-sdk-tooling
+      - id: prepared
+        uses: ./.github/actions/sdk-android-validation-worker/prepare
         with:
-          artifact-id: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_id }}
-          artifact-sha256: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_artifact_sha256 }}
-          transport-producer: ${{ fromJSON(inputs.sdkPlan).outputs.tooling_transport_producer }}
+          planOutputs: ${{ inputs.planOutputs }}
+          sdkPlan: ${{ inputs.sdkPlan }}
+          sdkInputs: ${{ inputs.sdkInputs }}
+          packageWave: ${{ inputs.packageWave }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
-          trusted-workflow-path: .github/workflows/contract-validation.yml
-          trusted-job-name: product-validation / contract-validation / tooling-attestation
-          policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
-          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-      - id: selected
-        uses: ./.github/actions/capture-runtime-state
-        with:
-          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
-          product: sdk
-          sdk-family: android-validation
-          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-          artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
-          artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
-          state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
-          sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
-      - id: policy
-        name: Stage authenticated original Android inputs
-        env:
-          BUILD_KEY: ${{ matrix.buildKey }}
-          SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
-          SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
-          TOOLING_POLICY: ${{ steps.tooling.outputs.tooling-policy }}
-          APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
-        run: |
-          set -euo pipefail
-          policy=()
-          if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
-          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
-          python3 -B -m ci.sdk_android_validation_policy \
-            --plan "${{ steps.selected.outputs.plan-path }}" \
-            --discovery-root "${{ steps.selected.outputs.discovery-root }}" \
-            --state-root "${{ steps.selected.outputs.state-root }}" \
-            --destination "$GITHUB_WORKSPACE/build/sdk-android-validation-policy" \
-            --expected-build-key "$BUILD_KEY" \
-            --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
-            --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
-            --sdk-validation-tooling "$TOOLING_POLICY" \
-            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-            ${policy[@]+"${policy[@]}"}
+          build-key: ${{ matrix.buildKey }}
+          authority-read-token: ${{ secrets.authority_read_token }}
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
         with:
           packages: platform-tools
@@ -196,11 +143,11 @@ jobs:
       - id: validation
         uses: ./.github/actions/sdk-android-validation-worker
         with:
-          plan-path: ${{ steps.selected.outputs.plan-path }}
-          discovery-root: ${{ steps.selected.outputs.discovery-root }}
-          state-root: ${{ steps.selected.outputs.state-root }}
-          sdk-matrix: ${{ steps.selected.outputs.sdk-matrix }}
-          sdk-workers-required: ${{ steps.selected.outputs.sdk-workers-required }}
+          plan-path: ${{ steps.prepared.outputs.plan-path }}
+          discovery-root: ${{ steps.prepared.outputs.discovery-root }}
+          state-root: ${{ steps.prepared.outputs.state-root }}
+          sdk-matrix: ${{ steps.prepared.outputs.sdk-matrix }}
+          sdk-workers-required: ${{ steps.prepared.outputs.sdk-workers-required }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-android-workflow-sha: ${{ steps.authority.outputs.trustedAndroidWorkflowSha }}
           trusted-source-commit: ${{ steps.authority.outputs.trustedSourceCommit }}
@@ -208,15 +155,15 @@ jobs:
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
-          package-stage: ${{ steps.policy.outputs.packageStage }}
-          package-receipt: ${{ steps.policy.outputs.packageReceipt }}
-          binary-stage: ${{ steps.policy.outputs.binaryStage }}
-          binary-receipt: ${{ steps.policy.outputs.binaryReceipt }}
-          compatibility-request: ${{ steps.policy.outputs.compatibilityRequest }}
-          binary-contract-evidence: ${{ steps.policy.outputs.binaryContractEvidence }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
+          package-stage: ${{ steps.prepared.outputs.packageStage }}
+          package-receipt: ${{ steps.prepared.outputs.packageReceipt }}
+          binary-stage: ${{ steps.prepared.outputs.binaryStage }}
+          binary-receipt: ${{ steps.prepared.outputs.binaryReceipt }}
+          compatibility-request: ${{ steps.prepared.outputs.compatibilityRequest }}
+          binary-contract-evidence: ${{ steps.prepared.outputs.binaryContractEvidence }}
+          sdk-validation-tooling: ${{ steps.prepared.outputs.tooling-policy }}
           apkanalyzer-executable: ${{ steps.apkanalyzer.outputs.executable }}
-          sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
+          sdk-apple-validation-policy: ${{ steps.prepared.outputs.apple-policy }}
 
   sdk-collect-17:
     needs: [sdk-android-validation]
