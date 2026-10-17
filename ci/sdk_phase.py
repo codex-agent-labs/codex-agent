@@ -72,9 +72,9 @@ SDK_FAMILY_ROUTES = (
     SdkFamilyRoute("android-package", 16, "sdk-android-binary-result", "sdk-android-package-plan", "sdk-android-package",
                    "sdk-android-package-validation", "sdk-android-package-result", True),
     SdkFamilyRoute("android-validation", 17, "sdk-android-package-result", "sdk-android-validation-plan", "sdk-android-validation",
-                   "sdk-android-validation", "sdk-android-validation-result"),
+                   "sdk-android-validation", "sdk-android-validation-result", True),
     SdkFamilyRoute("android-metadata", 18, "sdk-android-validation-result", "sdk-android-metadata-plan", "sdk-android-metadata",
-                   "sdk-android-metadata-validation", "sdk-android-metadata-result"),
+                   "sdk-android-metadata-validation", "sdk-android-metadata-result", True),
 )
 
 

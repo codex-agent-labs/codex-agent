@@ -153,8 +153,15 @@ class AndroidOriginalSelectionActionTest(unittest.TestCase):
                             "validationTree": values["TREE"], "remoteBuildAuthorized": True,
                             "validationCommit": "2" * 40}), \
                         patch("products.sdk_validation_inputs._request_inventory", return_value=set(request_paths)), \
-                        patch("product_reuse.materialize_product_predecessors", side_effect=RuntimeError("elected")):
+                        patch("product_reuse.materialize_product_predecessors", side_effect=check_scope):
                     exec(compile(source, "android-selection", "exec"), {})
+
+            def check_scope(*args, **kwargs):
+                self.assertEqual([('sdk', 'sdk-android', phase, 'android')
+                                  for phase in ('binary', 'package', 'validation')],
+                                 [tuple(getattr(item, field) for field in ('product', 'component', 'phase', 'target'))
+                                  for item in kwargs['materialized_scope']])
+                raise RuntimeError('elected')
 
             with self.assertRaisesRegex(RuntimeError, "elected"):
                 run()  # Independent sibling controls pass the path boundary.

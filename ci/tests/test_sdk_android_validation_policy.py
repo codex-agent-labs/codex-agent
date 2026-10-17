@@ -84,6 +84,13 @@ class AndroidValidationPolicyTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_selected_package_binary_contract_and_s858_are_referenced(self):
+        self.check_selected_policy("validation")
+
+    def test_metadata_policy_requires_only_metadata_election_not_fresh_validation(self):
+        self.check_selected_policy("metadata")
+
+    def check_selected_policy(self, selected_phase):
+        instance = policy.PhaseInstanceId("sdk", "sdk-android", selected_phase, "android")
         native = object()  # Opaque plumbing sentinel; mocked replay grants no real authority.
         phases = {phase: {"state": "retained"} for phase in
                   (policy._PACKAGE, policy._BINARY, policy._CONTRACT)}
@@ -94,7 +101,7 @@ class AndroidValidationPolicyTests(unittest.TestCase):
         for name in ("attestation.json", "attestation.sig", "public-key.pub"):
             (contract_root / name).write_bytes(b"fixture")
         verified = SimpleNamespace(
-            prior_ready_plans={policy._VALIDATION: ready}, prior_by_instance=phases,
+            prior_ready_plans={instance: ready}, prior_by_instance=phases,
             sources={phase: self.root / "unused" for phase in phases},
             rebased_request={"contractEvidence": {"expectedTrustDomain": "release",
                 "attestation": "contract-original/attestation.json",
@@ -113,12 +120,12 @@ class AndroidValidationPolicyTests(unittest.TestCase):
             (keys / "active.pub").write_bytes(b"key")
             return SimpleNamespace(keyring=ring, keys=keys)
 
-        def materialize(state, instance, destination, expected_key, root, *, materialized_scope):
+        def materialize(state, selected, destination, expected_key, root, *, materialized_scope):
             self.assertIs(state, verified)
-            self.assertEqual(policy._VALIDATION, instance)
+            self.assertEqual(instance, selected)
             self.assertEqual(_KEY, expected_key)
             self.assertIn(root, destination.parents)
-            self.assertEqual(policy.maven_consumed_predecessors(instance), materialized_scope)
+            self.assertEqual(policy.maven_consumed_predecessors(policy._VALIDATION), materialized_scope)
             self.assertEqual(6, len(materialized_scope))
             for product, component, phase, target in (
                     ("sdk", "sdk-android", "binary", "android"),
@@ -152,8 +159,9 @@ class AndroidValidationPolicyTests(unittest.TestCase):
             self.assertIs(native, kwargs['completed_frozen'])
             self.assertEqual(19, kwargs["artifact_id"])
             self.assertEqual(_KEY, kwargs["artifact_sha256"])
+            self.assertEqual((instance,), kwargs["requested_scope"])
             consumers = ([{"product": "sdk", "component": "sdk-android",
-                "phase": "validation", "target": "android"}] if selected else [])
+                "phase": selected_phase, "target": "android"}] if selected else [])
             yield {"selection": {"consumers": consumers}, "sdk": {"directory": sdk,
                 "compatibility": {"sdkVersion": "0.8.0", "contract": {"version": "0.8.0"},
                     "runtime": {"defaultRuntimeVersion": "0.8.0"}}}}
@@ -168,15 +176,16 @@ class AndroidValidationPolicyTests(unittest.TestCase):
               patch.object(policy, "_stage_android_plan") as projection,
               patch.object(policy.sdk_workflow, "verified_inputs", side_effect=original_inputs)):
             with self.assertRaisesRegex(ValueError, "selection does not include"):
-                policy.prepare(**self.args(completed_frozen=native))
+                policy.prepare(**self.args(completed_frozen=native, phase=selected_phase))
             self.assertFalse(self.destination.exists())
             selected = True
             for destination in (self.destination, self.root.parent / "runner-temp/policy"):
                 with self.subTest(destination=destination):
-                    result = policy.prepare(**self.args(destination=destination, completed_frozen=native))
+                    result = policy.prepare(**self.args(destination=destination, completed_frozen=native, phase=selected_phase))
                     self.assertEqual(str(destination / "plan/impact-plan.json"), result["plan-path"])
                     self.assertEqual((self.root, self.plan, "b" * 40), projection.call_args.args[:3])
                     self.assertIs(native, replay.call_args.kwargs['completed_frozen'])
+                    self.assertEqual((instance,), replay.call_args.kwargs['requested_scope'])
                     self.assertEqual(destination / "predecessors/sdk-sdk-android-package-android/stage",
                                      Path(result["packageStage"]))
                     self.assertEqual(destination / "predecessors/sdk-sdk-android-binary-android/phase-receipt.json",
@@ -196,7 +205,7 @@ class AndroidValidationPolicyTests(unittest.TestCase):
                 return original_publish(source, destination, **kwargs)
             with patch.object(policy, "publish_regular_tree", side_effect=mutate_before_publish):
                 with self.assertRaisesRegex(ValueError, "pinned inventory"):
-                    policy.prepare(**self.args(destination=tampered, completed_frozen=native))
+                    policy.prepare(**self.args(destination=tampered, completed_frozen=native, phase=selected_phase))
             self.assertFalse(tampered.exists())
 
 

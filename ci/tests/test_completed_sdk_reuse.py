@@ -178,7 +178,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                              ('product-validation / sdk-core-validation-wave / sdk-collect-13', 'codex-agent-sdk-wave-13-state-'),
                              ('product-validation / sdk-core-metadata-wave / sdk-collect-14', 'codex-agent-sdk-wave-14-state-'),
                              ('product-validation / sdk-android-binary-result / sdk-collect-15', 'codex-agent-sdk-wave-15-state-'),
-                             ('product-validation / sdk-android-package-result / sdk-collect-16', 'codex-agent-sdk-wave-16-state-')):
+                             ('product-validation / sdk-android-package-result / sdk-collect-16', 'codex-agent-sdk-wave-16-state-'),
+                             ('product-validation / sdk-android-validation-result / sdk-collect-17', 'codex-agent-sdk-wave-17-state-'),
+                             ('product-validation / sdk-android-metadata-result / sdk-collect-18', 'codex-agent-sdk-wave-18-state-')):
             source = {**spec['source'], 'jobName': role}
             job = dict(id=source['jobId'], name=role, status='completed', conclusion='success',
                        started_at='2026-01-01T01:00:00Z', completed_at='2026-01-01T01:02:00Z')
@@ -198,6 +200,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     'product-validation / sdk-core-metadata-wave / sdk-collect-14': 'sdk-core-metadata-validation',
                     'product-validation / sdk-android-binary-result / sdk-collect-15': 'sdk-android-binary-validation',
                     'product-validation / sdk-android-package-result / sdk-collect-16': 'sdk-android-package-validation',
+                    'product-validation / sdk-android-validation-result / sdk-collect-17': 'sdk-android-validation',
+                    'product-validation / sdk-android-metadata-result / sdk-collect-18': 'sdk-android-metadata-validation',
                 }.get(role)
                 if child is not None:
                     self.assertEqual({'source': {'path': f'.github/workflows/{child}.yml',
@@ -731,7 +735,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
                 ('sdk-core', 'binary', 'common', 11), ('sdk-core', 'package', 'common', 12),
                 ('sdk-core', 'metadata', 'common', 14),
-                ('sdk-android', 'binary', 'android', 15), ('sdk-android', 'package', 'android', 16)):
+                ('sdk-android', 'binary', 'android', 15), ('sdk-android', 'package', 'android', 16),
+                ('sdk-android', 'validation', 'android', 17), ('sdk-android', 'metadata', 'android', 18)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.check_v3_issuer_original_member(component, phase, target, collected=True, collected_wave=wave)
@@ -759,7 +764,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_collected_issuer_reuses_native_object_without_any_object_transfer(self):
         self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', collected=True, reused=True)
-        for phase, wave in (('binary', 15), ('package', 16)):
+        for phase, wave in (('binary', 15), ('package', 16), ('validation', 17), ('metadata', 18)):
             self.setUp()
             self.check_v3_issuer_original_member('sdk-android', phase, 'android',
                 collected=True, collected_wave=wave, reused=True)

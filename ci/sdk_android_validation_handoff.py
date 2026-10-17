@@ -20,7 +20,7 @@ from products.inventory import (canonical_json_bytes, regular_file_inventory,
 from products.plan import _upstream_record
 from products.receipt import validate_phase_receipt, validate_producer
 from products.registry import PhaseInstanceId
-from products.restore import restore_object
+from products.restore import verification_scoped
 from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
 from sdk_android_original_upload_locator import locate_sdk_android_validation_upload
@@ -43,11 +43,12 @@ def _fresh_coordinates(value):
     return value
 
 
+@verification_scoped
 def validation_handoff(plan, discovery, state, *, expected_metadata_build_key,
         trusted_workflow_sha, repository_root, environ=None, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
-        fresh_validation=None, github_output_path=None):
+        fresh_validation=None, github_output_path=None, completed_frozen=None):
     """Select one immutable validation object and observe its official upload."""
     environment = os.environ if environ is None else environ
     require_no_signing_secret(environment)
@@ -86,6 +87,8 @@ def validation_handoff(plan, discovery, state, *, expected_metadata_build_key,
     try:
         verified = product_reuse._verified_product_state(
             plan, discovery, state, root, environment, sdk_validation_tooling,
+            requested_scope=(_METADATA,),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             sdk_original_workflow_sha=trusted_workflow_sha,
             sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -106,10 +109,8 @@ def validation_handoff(plan, discovery, state, *, expected_metadata_build_key,
             raise ValueError("Android validation carrier differs from its elected object")
         with tempfile.TemporaryDirectory(prefix="android-validation-handoff-") as temporary:
             private = Path(temporary).resolve()
-            restored = restore_object(
-                verified.sources[_VALIDATION], private / "stage",
-                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
-                object_sha256=record["objectSha256"])
+            restored = product_reuse._restore_product_objects(
+                verified, (_VALIDATION,), private)[_VALIDATION]
             raw = restored["receiptBytes"]
             receipt = validate_phase_receipt(restored["receipt"])
             if (sha256_bytes(raw) != record["receiptSha256"]
@@ -151,6 +152,7 @@ def validation_handoff(plan, discovery, state, *, expected_metadata_build_key,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -162,6 +164,7 @@ def main(argv=None):
     for name in _COORDINATES:
         parser.add_argument("--expected-" + name.replace("_", "-"))
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     args = vars(parser.parse_args(argv))
     output = args.pop("github_output")
     args["github_output_path"] = output
@@ -181,9 +184,9 @@ def main(argv=None):
         if args[name] is not None:
             args[name] = product_reuse._canonical_control(args[name], "Caller Android " + name)
     try:
-        with metadata_admission_options(args) as admissions:
+        with metadata_admission_options(args) as admissions, completed_frozen_options(args) as semantic:
             validation_handoff(
-                **args, **admissions, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+                **args, **admissions, **semantic, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

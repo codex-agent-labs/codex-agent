@@ -49,31 +49,35 @@ class AndroidMetadataChildWorkflowTest(unittest.TestCase):
         worker = job(WORKFLOW.read_text(), "sdk-android-metadata")
         for required in ("remote_build_authorized == 'true'",
                          "inputs.protectedAndroidAuthority != ''",
-                         "outputs.sdk_state_wave == '16'",
-                         "outputs.sdk_state_wave == '17'"):
+                         "fromJSON(inputs.validationWave).result == 'success'",
+                         "outputs.sdk_workers_required == 'true'"):
             self.assertIn(required, worker)
         self.assertNotIn("validation_receipt_sha256 != ''", worker.split("    strategy:", 1)[0])
+        self.assertNotIn("outputs.sdk_state_wave ==", worker.split("    strategy:", 1)[0])
         self.assertLess(worker.index("- id: authority"), worker.index("android-actions/setup-android"))
         self.assertLess(worker.index("- id: authority"), worker.index("sdk-android-metadata-worker"))
 
     def test_same_job_restages_independent_inputs_before_original_replay(self):
         worker = job(WORKFLOW.read_text(), "sdk-android-metadata")
-        for required in ("sdk-family: android-validation",
+        for required in ("sdk-family: android-metadata",
                          "ci.sdk_android_validation_policy",
                          "--destination \"$RUNNER_TEMP/android18-validation-policy\"",
                          "--sdk-inputs-artifact-id \"$SDK_INPUTS_ID\"",
-                         "build/runtime-input-wave17",
-                         "--family android-metadata",
+                         "--phase metadata",
                          "ci.sdk_android_validation_handoff",
                          "sdk-android-firebase-controls",
                          "sdk-android-original-selection",
                          "sdk-android-metadata-worker"):
             self.assertIn(required, worker)
-        ordered = ("- id: authority", "- id: package-state", "- id: policy",
-                   "- id: base", "- id: validation-state", "- id: validation-handoff", "- id: control",
+        ordered = ("- id: authority", "- id: validation-state", "- id: policy",
+                   "- id: base", "- id: validation-handoff", "- id: control",
                    "- id: original", "- id: metadata")
         self.assertEqual(list(sorted(ordered, key=worker.index)), list(ordered))
-        self.assertIn("mv build/runtime-input build/runtime-input-wave16", worker)
+        self.assertEqual(1, worker.count("uses: ./.github/actions/capture-runtime-state"))
+        self.assertNotIn("inputs.packageWave", worker)
+        self.assertNotIn("steps.package-state", worker)
+        self.assertIn("rows[0].get('buildKey') != os.environ['BUILD_KEY']", worker)
+        self.assertEqual(2, worker.count('--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"'))
         self.assertIn("--expected-build-key \"$build_key\"", worker)
         self.assertNotIn("validation_build_key", worker)
         handoff = worker.split("      - id: validation-handoff\n", 1)[1].split("      - id: control\n", 1)[0]

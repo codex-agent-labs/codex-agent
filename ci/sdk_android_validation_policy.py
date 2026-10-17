@@ -68,9 +68,12 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             keyring, keys_directory, repository_root, environ, token,
             sdk_validation_tooling, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None,
-            completed_frozen=None):
+            completed_frozen=None, phase="validation"):
     """Stage exact elected predecessors, release Contract and original S858 input."""
     require_no_signing_secret(environ)
+    if phase not in ("validation", "metadata"):
+        raise ValueError("Android caller policy requires validation or metadata")
+    instance = PhaseInstanceId("sdk", "sdk-android", phase, "android")
     require_sha256(expected_build_key, "Android validation elected key")
     require_sha256(sdk_inputs_artifact_sha256, "Original S858 upload digest")
     if type(sdk_inputs_artifact_id) is not int or sdk_inputs_artifact_id < 1:
@@ -97,12 +100,12 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
-        sdk_validation_tooling, requested_scope=(_VALIDATION,), sdk_original_workflow_sha=trusted_workflow_sha,
+        sdk_validation_tooling, requested_scope=(instance,), sdk_original_workflow_sha=trusted_workflow_sha,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **{name: value for name, value in policies.items() if name != "sdk_validation_tooling"})
-    elected = verified.prior_ready_plans.get(_VALIDATION)
+    elected = verified.prior_ready_plans.get(instance)
     if elected is None or elected["buildKey"] != expected_build_key:
-        raise ValueError("Android validation is not ready with its exact elected key")
+        raise ValueError(f"Android {phase} is not ready with its exact elected key")
     if any(verified.prior_by_instance.get(phase, {}).get("state") != "retained"
            or phase not in verified.sources for phase in (_BINARY, _PACKAGE, _CONTRACT)):
         raise ValueError("Android validation requires same-campaign retained package, binary and Contract")
@@ -128,7 +131,7 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("Android validation lacks Git-authoritative release trust")
         predecessors = prepared / "predecessors"
         if product_reuse._materialize_product_predecessors(
-                verified, _VALIDATION, predecessors, expected_build_key, root,
+                verified, instance, predecessors, expected_build_key, root,
                 materialized_scope=maven_consumed_predecessors(_VALIDATION)) != elected:
             raise ValueError("Android validation predecessor election changed")
 
@@ -164,29 +167,29 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         }
         if set(contract_evidence) != _EVIDENCE_FIELDS:
             raise ValueError("Android validation Contract evidence fields changed")
-        for phase in ("binary", "package"):
-            directory = predecessors / f"sdk-sdk-android-{phase}-android"
+        for predecessor_phase in ("binary", "package"):
+            directory = predecessors / f"sdk-sdk-android-{predecessor_phase}-android"
             receipt = validate_phase_receipt(load_canonical_json_bytes(read_regular_file_bytes(
                 directory / "phase-receipt.json", reject_symlink_parents=True)))
             if tuple(receipt[name] for name in ("product", "component", "phase", "target")) != (
-                    "sdk", "sdk-android", phase, "android"):
+                    "sdk", "sdk-android", predecessor_phase, "android"):
                 raise ValueError("Android validation predecessor receipt has the wrong phase identity")
             manifest = verify_output_manifest_identity(directory / "stage", "sdk", "sdk-android",
-                                                       phase, "android", receipt["productVersion"])
+                                                       predecessor_phase, "android", receipt["productVersion"])
             if manifest["outputs"] != receipt["outputs"]:
                 raise ValueError("Android validation predecessor stage differs from its receipt")
         unchanged()
         with sdk_workflow.verified_inputs(plan, discovery, state,
-                requested_scope=(_VALIDATION,),
+                requested_scope=(instance,),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root, environ=environ,
                 token=token, **policies,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                 **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {})) as sdk_inputs:
-            if {"product": "sdk", "component": "sdk-android", "phase": "validation", "target": "android"} \
+            if {"product": "sdk", "component": "sdk-android", "phase": phase, "target": "android"} \
                     not in sdk_inputs["selection"]["consumers"]:
-                raise ValueError("Original S858 selection does not include Android validation")
+                raise ValueError(f"Original S858 selection does not include Android {phase}")
             compatibility = sdk_inputs["sdk"]["compatibility"]
             if (compatibility["sdkVersion"] != verified.expected_fixed["versions"]["sdk"] or
                     compatibility["contract"]["version"] != contract_version or
@@ -226,6 +229,7 @@ def main(argv=None):
     for name in ("expected-build-key", "sdk-inputs-artifact-sha256", "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
+    parser.add_argument("--phase", choices=("validation", "metadata"), default="validation")
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)

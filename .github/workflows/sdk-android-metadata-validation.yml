@@ -60,10 +60,7 @@ jobs:
       fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
       fromJSON(inputs.sdkPlan).result == 'success' &&
       fromJSON(inputs.sdkInputs).result == 'success' &&
-      fromJSON(inputs.packageWave).result == 'success' &&
-      fromJSON(inputs.packageWave).outputs.sdk_state_wave == '16' &&
       fromJSON(inputs.validationWave).result == 'success' &&
-      fromJSON(inputs.validationWave).outputs.sdk_state_wave == '17' &&
       fromJSON(inputs.metadataPlan).result == 'success' &&
       fromJSON(inputs.metadataPlan).outputs.sdk_workers_required == 'true' &&
       inputs.protectedAndroidAuthority != ''
@@ -128,25 +125,26 @@ jobs:
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-      - id: package-state
-        name: Re-elect original Android validation from wave 16
+      - id: validation-state
+        name: Authenticate retained Android predecessors and elect only metadata
         uses: ./.github/actions/capture-runtime-state
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
-          sdk-family: android-validation
+          sdk-family: android-metadata
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-          artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
-          artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
-          state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
-          sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
+          artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
+          artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
+          state-wave: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
+          sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
       - id: policy
         name: Rebuild independent Contract, S858 and Android predecessor policy
         env:
-          VALIDATION_MATRIX: ${{ steps.package-state.outputs.sdk-matrix }}
+          METADATA_MATRIX: ${{ steps.validation-state.outputs.sdk-matrix }}
+          BUILD_KEY: ${{ matrix.buildKey }}
           SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
           SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
           APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
@@ -156,21 +154,26 @@ jobs:
           set -euo pipefail
           build_key=$(python3 -B - <<'PY'
           import json, os, re
-          rows = json.loads(os.environ['VALIDATION_MATRIX'])['include']
+          rows = json.loads(os.environ['METADATA_MATRIX'])['include']
           if (type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict or
                   tuple(rows[0].get(name) for name in ('product', 'component', 'phase', 'target')) !=
-                  ('sdk', 'sdk-android', 'validation', 'android') or
+                  ('sdk', 'sdk-android', 'metadata', 'android') or
+                  rows[0].get('buildKey') != os.environ['BUILD_KEY'] or
                   not re.fullmatch(r'sha256:[0-9a-f]{64}', rows[0].get('buildKey', ''))):
-              raise ValueError('Wave 16 does not elect exactly one Android validation key')
+              raise ValueError('Retained state does not elect the exact Android metadata key')
           print(rows[0]['buildKey'])
           PY
           )
           policy=()
           if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
           python3 -B -m ci.sdk_android_validation_policy \
-            --plan "${{ steps.package-state.outputs.plan-path }}" \
-            --discovery-root "${{ steps.package-state.outputs.discovery-root }}" \
-            --state-root "${{ steps.package-state.outputs.state-root }}" \
+            --phase metadata \
+            --plan "${{ steps.validation-state.outputs.plan-path }}" \
+            --discovery-root "${{ steps.validation-state.outputs.discovery-root }}" \
+            --state-root "${{ steps.validation-state.outputs.state-root }}" \
             --destination "$RUNNER_TEMP/android18-validation-policy" \
             --expected-build-key "$build_key" \
             --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
@@ -181,12 +184,6 @@ jobs:
             --sdk-validation-tooling "${{ steps.tooling.outputs.tooling-policy }}" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${policy[@]+"${policy[@]}"}
-      - name: Preserve wave 16 capture and leave the worker capture destination fresh
-        run: |
-          set -euo pipefail
-          test -d build/runtime-input
-          test ! -e build/runtime-input-wave16
-          mv build/runtime-input build/runtime-input-wave16
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
         with:
           packages: platform-tools
@@ -235,32 +232,6 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as destination:
               destination.write('path=' + str(output) + '\nsha256=' + sha256_bytes(raw) + '\n')
           PY
-      - id: validation-state
-        name: Re-elect original Android metadata from wave 17
-        env:
-          ARTIFACT_ID: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
-          ARTIFACT_SHA256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
-          STATE_WAVE: ${{ fromJSON(inputs.validationWave).outputs.state_wave }}
-          SDK_STATE_WAVE: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
-          SDK_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          policy=()
-          if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
-          reuse=()
-          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-          python3 -B -m ci.sdk_workflow capture \
-            --plan build/runtime-plan/impact-plan.json \
-            --destination build/runtime-input-wave17 \
-            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
-            --state-wave "$STATE_WAVE" --sdk-state-wave "$SDK_STATE_WAVE" \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --family android-metadata --sdk-validation-tooling "$SDK_TOOLING" \
-            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-            ${policy[@]+"${policy[@]}"} ${reuse[@]+"${reuse[@]}"}
       - id: validation-handoff
         name: Recover the elected original Android validation upload
         shell: bash
@@ -289,10 +260,13 @@ jobs:
               --expected-validation-run-attempt "$FRESH_RUN_ATTEMPT")
           fi
           if [ -n "$APPLE_POLICY" ]; then selected+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
           python3 -B -m ci.sdk_android_validation_handoff \
-            --plan "${{ steps.validation-state.outputs.plan_path }}" \
-            --discovery-root "${{ steps.validation-state.outputs.discovery_root }}" \
-            --state-root "${{ steps.validation-state.outputs.state_root }}" \
+            --plan "${{ steps.validation-state.outputs.plan-path }}" \
+            --discovery-root "${{ steps.validation-state.outputs.discovery-root }}" \
+            --state-root "${{ steps.validation-state.outputs.state-root }}" \
             --repository-root "$GITHUB_WORKSPACE" \
             --expected-metadata-build-key "${{ matrix.buildKey }}" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
@@ -303,8 +277,8 @@ jobs:
         with:
           base-policy: ${{ steps.base.outputs.path }}
           base-policy-sha256: ${{ steps.base.outputs.sha256 }}
-          discovery-root: ${{ steps.validation-state.outputs.discovery_root }}
-          state-root: ${{ steps.validation-state.outputs.state_root }}
+          discovery-root: ${{ steps.validation-state.outputs.discovery-root }}
+          state-root: ${{ steps.validation-state.outputs.state-root }}
           validation-receipt-sha256: ${{ steps.validation-handoff.outputs.validation-receipt-sha256 }}
           validation-artifact-id: ${{ steps.validation-handoff.outputs.validation-artifact-id }}
           validation-artifact-sha256: ${{ steps.validation-handoff.outputs.validation-artifact-sha256 }}
@@ -314,9 +288,9 @@ jobs:
       - id: original
         uses: ./.github/actions/sdk-android-original-selection
         with:
-          plan-path: ${{ steps.validation-state.outputs.plan_path }}
-          discovery-root: ${{ steps.validation-state.outputs.discovery_root }}
-          state-root: ${{ steps.validation-state.outputs.state_root }}
+          plan-path: ${{ steps.validation-state.outputs.plan-path }}
+          discovery-root: ${{ steps.validation-state.outputs.discovery-root }}
+          state-root: ${{ steps.validation-state.outputs.state-root }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
@@ -325,10 +299,10 @@ jobs:
       - id: metadata
         uses: ./.github/actions/sdk-android-metadata-worker
         with:
-          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-          artifact-id: ${{ fromJSON(inputs.validationWave).outputs.artifact_id }}
-          artifact-sha256: ${{ fromJSON(inputs.validationWave).outputs.artifact_digest }}
-          sdk-state-wave: ${{ fromJSON(inputs.validationWave).outputs.sdk_state_wave }}
+          plan-path: ${{ steps.validation-state.outputs.plan-path }}
+          discovery-root: ${{ steps.validation-state.outputs.discovery-root }}
+          state-root: ${{ steps.validation-state.outputs.state-root }}
+          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           build-key: ${{ matrix.buildKey }}
           tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}

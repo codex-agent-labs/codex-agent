@@ -193,6 +193,7 @@ class AndroidMetadataWorkflowTest(unittest.TestCase):
 
     def materialize(self, plan, discovery, state, instance, destination, **kwargs):
         self.events.append("materialize")
+        self.assertEqual((workflow._VALIDATION,), kwargs['materialized_scope'])
         self.assertEqual(self.expected_pin, kwargs["sdk_original_workflow_sha"])
         self.assert_admissions(kwargs)
         destination.mkdir(parents=True)

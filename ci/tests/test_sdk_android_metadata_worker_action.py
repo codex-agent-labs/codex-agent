@@ -58,14 +58,18 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
         policy = root / "original-policy.json"
         policy.write_bytes(canonical_json_bytes(original))
         return {"GITHUB_WORKSPACE": str(workspace), "GITHUB_OUTPUT": str(root / "github-output"),
-            "SDK_STATE_WAVE": "17", "ORIGINAL_POLICY": str(policy), "APPLE_POLICY": "",
+            "ORIGINAL_POLICY": str(policy), "APPLE_POLICY": "",
             "CORE_METADATA_POLICY": "", "ANDROID_METADATA_POLICY": ""}
 
     def test_full_external_original_policy_rejects_missing_firebase_lineage_before_capture(self):
         self.assertLess(self.action.index("- id: policy"), self.action.index("- id: captured"))
         self.assertLess(self.action.index("- id: captured"), self.action.index("- id: identity"))
         self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
-        self.assertIn("sdk-family: android-metadata", self.action)
+        self.assertIn("--family android-metadata", self.action)
+        self.assertIn("ci.sdk_workflow matrix", self.action)
+        self.assertNotIn("capture-runtime-state", self.action)
+        self.assertNotIn("SDK_STATE_WAVE", self.action)
+        self.assertIn('--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"', self.action)
         source = self.source("policy")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -75,10 +79,6 @@ class AndroidMetadataWorkerActionTest(unittest.TestCase):
                     "products.sdk_validation_inputs._request_inventory", return_value={}), patch(
                     "products.sdk_android_validation_phase._contract_sources", return_value=({}, {})):
                 exec(compile(source, "android-policy", "exec"), {})
-            values["SDK_STATE_WAVE"] = "16"
-            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "wave 17"):
-                exec(compile(source, "android-policy", "exec"), {})
-            values["SDK_STATE_WAVE"] = "17"
             for field in ("validationArtifactId", "validationArtifactSha256", "validationReceiptSha256",
                           "trustedAndroidWorkflowSha",
                           "expectedOriginalRunId", "expectedOriginalRunAttempt", "binaryContractEvidence"):

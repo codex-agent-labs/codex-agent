@@ -30,6 +30,8 @@ class AndroidValidationHandoffTest(unittest.TestCase):
         self.record = {"state": "reused", "buildKey": shard["buildKey"],
             "receiptSha256": shard["receiptSha256"], "objectSha256": shard["objectSha256"]}
         self.verified = SimpleNamespace(
+            producer=self.f.producer, completed_frozen=None, capture_deferred_object=None,
+            ensure_original_source=None,
             plan={"validationCommit": "a" * 40, "validationTree": "b" * 40},
             prior_ready_plans={handoff._METADATA: {
                 "buildKey": self.metadata_key,
@@ -42,7 +44,7 @@ class AndroidValidationHandoffTest(unittest.TestCase):
             expected_metadata_build_key=self.metadata_key,
             trusted_workflow_sha="c" * 40, repository_root=self.root,
             environ={}, token="synthetic-token")
-        self.enterContext(patch.object(handoff.product_reuse, "_verified_product_state",
+        self.replay = self.enterContext(patch.object(handoff.product_reuse, "_verified_product_state",
                                return_value=self.verified))
         self.enterContext(patch.object(handoff.product_reuse, "_git_value",
                                side_effect=lambda root, command, revision:
@@ -81,6 +83,20 @@ class AndroidValidationHandoffTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.call()
         self.locator.assert_not_called()
+
+    def test_native_qualified_validation_materializes_only_its_original_object(self):
+        native = object()  # Plumbing sentinel, never real native authority.
+        raw = self.source.read_bytes()
+        self.verified.completed_frozen = native
+        self.verified.sources[handoff._VALIDATION] = self.root / "deferred-object.zip"
+        def capture(record, destination):
+            self.assertEqual(self.record, record)
+            destination.write_bytes(raw)
+        with patch.object(self.verified, "capture_deferred_object", side_effect=capture) as captured:
+            self.call(completed_frozen=native)
+        captured.assert_called_once()
+        self.assertIs(native, self.replay.call_args.kwargs['completed_frozen'])
+        self.assertEqual((handoff._METADATA,), self.replay.call_args.kwargs['requested_scope'])
 
     def test_late_state_mutation_rejects_official_result(self):
         def mutate(*args, **kwargs):

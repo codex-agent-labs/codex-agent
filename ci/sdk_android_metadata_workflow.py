@@ -397,6 +397,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         # failures before publication must still recheck every caller-owned input.
         verified = product_reuse._verified_product_state(
             plan, discovery, state, root, environ, tooling,
+            requested_scope=(_INSTANCE,),
             sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         ready = verified.prior_ready_plans.get(_INSTANCE)
@@ -412,6 +413,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         inputs = destination / "inputs"
         materialized = product_reuse.materialize_product_predecessors(
             plan, discovery, state, _INSTANCE, inputs, expected_build_key=expected_build_key,
+            materialized_scope=(_VALIDATION,),
             repository_root=root, environ=environ, sdk_validation_tooling=tooling,
             sdk_original_workflow_sha=trusted_workflow_sha, **apple, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
