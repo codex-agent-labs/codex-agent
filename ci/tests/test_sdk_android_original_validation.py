@@ -19,6 +19,13 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         self.f = fixture.AndroidMetadataWorkflowTest(methodName="runTest")
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
+        self.apk_producer = {**self.f.validation_producer, "runAttempt": 1}
+        receipt = deepcopy(self.apk_producer)
+        receipt["validationCommit"] = receipt.pop("commit")
+        receipt["validationTree"] = receipt.pop("tree")
+        lane = self.f.original / "originals/protected/original/lane-receipt.json"
+        lane.parent.mkdir()
+        lane.write_bytes(canonical_json_bytes(receipt))
         for identity in original.maven_consumed_predecessors(original._INSTANCE):
             name = "-".join((identity.product, identity.component,
                              identity.phase, identity.target))
@@ -99,7 +106,7 @@ class OriginalAndroidValidationTest(unittest.TestCase):
     def replay(self, **kwargs):
         self.events.append("full-replay")
         self.assertEqual(self.f.validation_producer, kwargs["expected_capture_producer"])
-        self.assertEqual(self.f.validation_producer, kwargs["expected_original_producer"])
+        self.assertEqual(self.apk_producer, kwargs["expected_original_producer"])
         self.assertEqual(self.f.binary_producer, kwargs["expected_binary_producer"])
         shutil.copytree(self.f.validation_stage, kwargs["destination"])
 
@@ -153,6 +160,12 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pinned together"), self.enter_reader(
                 trusted_workflow_path=self.expected_route[0]):
             pass
+
+    def test_missing_original_apk_receipt_never_falls_back_to_validation_producer(self):
+        (self.f.original / "originals/protected/original/lane-receipt.json").unlink()
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"), self.enter_reader():
+            pass
+        self.assertNotIn("full-replay", self.events)
 
     def test_retained_carrier_is_checked_but_never_selects_policy(self):
         retained = self.f.root / "retained-validation"

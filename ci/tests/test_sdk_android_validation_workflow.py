@@ -37,6 +37,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.plan.write_bytes(b"synthetic elected plan\n")
         self.current = self.producer(2)
         self.original = self.producer(1)
+        self.apk_producer = self.producer(1)
         self.ready = {"schemaVersion": 1, "product": "sdk", "component": "sdk-android",
                       "phase": "validation", "target": "android",
                       "buildKey": "sha256:" + "f" * 64, "inputs": {}}
@@ -182,12 +183,18 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.assertNotIn(self.root, destination.parents)
         destination.mkdir()
         (destination / "protected.bin").write_bytes(b"exact protected capture")
+        lane = destination / "original/lane-receipt.json"
+        lane.parent.mkdir()
+        receipt = deepcopy(self.apk_producer)
+        receipt["validationCommit"] = receipt.pop("commit")
+        receipt["validationTree"] = receipt.pop("tree")
+        write_canonical_json(lane, receipt)
         return {"captureProducer": deepcopy(self.current)}
 
     def produce(self, **kwargs):
         self.events.append("produce")
         self.phase_arguments = kwargs
-        self.assertEqual(self.current, kwargs["expected_original_producer"])
+        self.assertEqual(self.apk_producer, kwargs["expected_original_producer"])
         self.assertEqual(self.binary["producer"], kwargs["expected_binary_producer"])
         self.assertEqual(self.current, kwargs["expected_capture_producer"])
         self.assertEqual(b"exact final capture", (kwargs["final_capture"] / "final.bin").read_bytes())
@@ -238,7 +245,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(b"exact protected capture",
                          (result["originals"] / "protected/protected.bin").read_bytes())
         self.assertEqual(self.current, self.phase_arguments["expected_capture_producer"])
-        self.assertEqual(self.current, self.phase_arguments["expected_original_producer"])
+        self.assertEqual(self.apk_producer, self.phase_arguments["expected_original_producer"])
         self.assertEqual(self.original, self.phase_arguments["expected_binary_producer"])
         self.assertNotEqual(self.current["runAttempt"], self.original["runAttempt"])
         retained = result["originals"] / "validation-inputs"
@@ -268,6 +275,18 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         for name in self.admissions:
             self.assertNotIn(name, self.phase_arguments)
 
+    def test_missing_original_apk_receipt_never_falls_back_to_current_producer(self):
+        capture = self.capture_protected
+        def missing(*args, **kwargs):
+            result = capture(*args, **kwargs)
+            (args[3] / "original/lane-receipt.json").unlink()
+            return result
+        self.capture_protected = missing
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+            self.call()
+        self.assertNotIn("produce", self.events)
+        self.assertNotIn("finalize", self.events)
+
     def test_older_selected_binary_is_preserved_but_substituted_bytes_reject(self):
         changed = self.producer(1, commit="9" * 40)
         self.binary = self.receipt(self.binary_stage, self.binary_receipt, "binary", changed)
@@ -275,7 +294,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         raw = self.binary_receipt.read_bytes()
         self.call()
         self.assertEqual(changed, self.phase_arguments["expected_binary_producer"])
-        self.assertEqual(self.current, self.phase_arguments["expected_original_producer"])
+        self.assertEqual(self.apk_producer, self.phase_arguments["expected_original_producer"])
         self.assertEqual(raw, self.binary_receipt.read_bytes())
 
         # A caller cannot substitute different bytes for the elected binary stage.

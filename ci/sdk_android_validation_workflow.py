@@ -17,7 +17,7 @@ if __package__:
 import product_reuse
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
     publish_regular_tree, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
@@ -29,7 +29,7 @@ from products.sdk_validation_inputs import _request_inventory
 from products.signatures import load_keyring, public_key_path
 from products.signing_isolation import require_no_signing_secret
 from sdk_android_evidence_capture import capture_android_evidence
-from sdk_android_firebase_capture import capture_android_firebase_evidence
+from sdk_android_firebase_capture import capture_android_firebase_evidence, _producer_from_receipt
 from products import sdk_android_validation_phase as validation_phase
 from sdk_phase import maven_consumed_predecessors
 
@@ -297,9 +297,10 @@ def execute(
                 binary_contract_evidence=binary_contract_evidence,
                 final_capture=private_final, protected_capture=private_protected,
                 expected_capture_producer=producer,
-                # APK/Firebase jobs belong to this independently observed run;
-                # the exact selected binary may come from an older producer.
-                expected_original_producer=producer,
+                # The authenticated protected submission retains the APK's
+                # original receipt even when Firebase/capture is retried.
+                expected_original_producer=_producer_from_receipt(load_json_bytes(
+                    _read(private_protected / "original/lane-receipt.json"))),
                 expected_binary_producer=binary_producer,
                 trusted_source_commit=trusted_source_commit, trusted_source_tree=trusted_source_tree,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,

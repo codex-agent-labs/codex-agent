@@ -16,7 +16,7 @@ if __package__:
 
 import product_reuse
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree,
 )
 from products.receipt import (
@@ -30,6 +30,7 @@ from products.signing_isolation import require_no_signing_secret
 from products import sdk_android_validation_phase as validation_phase
 from sdk_android_metadata_workflow import _compare_original_inputs, _replan
 from sdk_phase import maven_consumed_predecessors
+from sdk_android_firebase_capture import _producer_from_receipt
 from sdk_facade_capture import (
     capture_sdk_android_validation_upload, verify_retained_sdk_phase_upload,
 )
@@ -295,7 +296,10 @@ def _verified_android_validation(
                 final_capture=original / "originals/final",
                 protected_capture=original / "originals/protected",
                 expected_capture_producer=producer,
-                expected_original_producer=producer,
+                # Preserve the submitted APK producer, not the later validation
+                # producer; the full nested capture gate still authenticates it.
+                expected_original_producer=_producer_from_receipt(load_json_bytes(
+                    _read(original / "originals/protected/original/lane-receipt.json"))),
                 expected_binary_producer=binary["producer"],
                 trusted_source_commit=trusted_source_commit,
                 trusted_source_tree=trusted_source_tree,
