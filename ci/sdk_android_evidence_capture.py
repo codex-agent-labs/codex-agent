@@ -259,6 +259,25 @@ def capture_android_evidence(
 SCOPE = "sdk-android-apk-consumer-v1"
 TASKS = (":tooling:android-runtime-evidence:assembleDebug",
          ":tooling:android-runtime-evidence:assembleDebugAndroidTest")
+# The evidence-only settings filter admits the KMP root but not its Android
+# available-at target. Extend that same authenticated repository for these two
+# consumers, without changing product settings/keys or permitting any fallback.
+CONTRACT_ANDROID_INIT = """gradle.settingsEvaluated { settings ->
+    if (settings.rootProject.name != 'codex-agent') return
+    def tasks = gradle.startParameter.taskNames
+    if (tasks != [':tooling:android-runtime-evidence:assembleDebug',
+                  ':tooling:android-runtime-evidence:assembleDebugAndroidTest'] ||
+        !gradle.startParameter.projectProperties['codexAgent.androidEvidencePackageStage']) {
+        throw new GradleException('Contract Android filter is reserved for artifact-only APK consumers')
+    }
+    def repositories = settings.dependencyResolutionManagement.repositories
+    def authenticated = repositories.getByName('AUTHENTICATED_SDK_CONTRACT_BUNDLE')
+    repositories.exclusiveContent {
+        forRepositories(authenticated)
+        filter { includeModule('io.github.codex-agent-labs', 'codex-agent-core-android') }
+    }
+}
+"""
 POLICY_PROPERTIES = {
     "packageStage": "androidEvidencePackageStage",
     "packageReceipt": "androidEvidencePackageReceipt",
@@ -355,12 +374,17 @@ def produce(root, plan, policy, destination):
     diagnostics = destination.with_name(destination.name + "-diagnostics")
     _require_capability_output_separate(diagnostics, (plan, destination, *map(Path, policy.values())))
     diagnostics.mkdir(parents=True, exist_ok=False)
+    init_script = diagnostics / "contract-repository.init.gradle"
+    init_script.write_text(CONTRACT_ANDROID_INIT, encoding="utf-8")
+    argv += ["--init-script", str(init_script)]
     paths = [plan, *map(Path, policy.values())]
     before = {p: regular_file_inventory(p) if p.is_dir() else read_regular_file_bytes(p, reject_symlink_parents=True)
               for p in paths}
 
     def unchanged():
         require_no_signing_secret(os.environ)
+        if read_regular_file_bytes(init_script, reject_symlink_parents=True) != CONTRACT_ANDROID_INIT.encode():
+            raise ValueError("APK consumer repository policy changed")
         if any((regular_file_inventory(p) if p.is_dir() else read_regular_file_bytes(p, reject_symlink_parents=True))
                != expected for p, expected in before.items()):
             raise ValueError("APK consumer original input changed")
@@ -376,6 +400,7 @@ def produce(root, plan, policy, destination):
             "kind": SCOPE, "tasks": list(TASKS), "command": argv, "exitCode": result.returncode,
             "candidateCommit": producer["commit"], "candidateTree": producer["tree"],
             "seconds": str(time.monotonic() - started),
+            "repositoryPolicySha256": sha256_bytes(CONTRACT_ANDROID_INIT.encode()),
             **{phase + "ReceiptSha256": sha256_bytes(raw) for phase, raw in receipts.items()},
         })
         unchanged()

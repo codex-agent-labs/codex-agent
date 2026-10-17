@@ -5343,6 +5343,8 @@ jobs:
 
   android-sdk-apk:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan]
+    env:
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     if: >-
       always() && inputs.sdkRecoveryOnly &&
       needs.plan.outputs.event_authorized == 'true' &&

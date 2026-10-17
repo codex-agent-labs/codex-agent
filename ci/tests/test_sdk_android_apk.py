@@ -118,7 +118,9 @@ class AndroidApkTest(unittest.TestCase):
         real_run = subprocess.run
 
         def run(argv, **kwargs):
-            if argv == ["fixture-gradle"]:
+            if argv[0] == "fixture-gradle":
+                self.assertEqual("--init-script", argv[1])
+                self.assertEqual(apk.CONTRACT_ANDROID_INIT, Path(argv[2]).read_text())
                 kwargs["stdout"].write(b"causal consumer failure\n")
                 return subprocess.CompletedProcess(argv, 7)
             return real_run(argv, **kwargs)
@@ -131,6 +133,8 @@ class AndroidApkTest(unittest.TestCase):
         diagnostics = destination.with_name(destination.name + "-diagnostics")
         self.assertEqual(b"causal consumer failure\n", (diagnostics / "apk-build.log").read_bytes())
         self.assertEqual(7, json.loads((diagnostics / "apk-execution.json").read_bytes())["exitCode"])
+        self.assertEqual(apk.sha256_bytes(apk.CONTRACT_ANDROID_INIT.encode()),
+            json.loads((diagnostics / "apk-execution.json").read_bytes())["repositoryPolicySha256"])
         self.assertFalse(destination.exists())
         self.assertFalse((diagnostics / "lane-receipt.json").exists())
 

@@ -74,6 +74,7 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         self.assertIn("inputs.sdkRecoveryOnly", apk)
         self.assertIn("sdk_workers_required == 'true'", apk)
         self.assertIn("uses: ./.github/actions/sdk-android-validation-worker/prepare", apk)
+        self.assertIn("CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}", apk)
         self.assertIn("from ci.sdk_android_evidence_capture import POLICY_PROPERTIES, produce", apk)
         self.assertNotIn("ciProductPhase", apk)
         self.assertNotIn("setup-kmp", apk)
