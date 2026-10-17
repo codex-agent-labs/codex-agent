@@ -502,7 +502,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 package_id: str = "CodexAgent",
                 nuspec_name: str = "CodexAgent.nuspec",
                 nested_version: bool = False,
-                namespaced: bool = False,
+                namespace_uri: str = "",
                 foreign_id: bool = False,
                 foreign_version: bool = False,
                 embedded_compatibility: bytes = compatibility,
@@ -510,7 +510,7 @@ class NativeWrapperReleaseTest(unittest.TestCase):
                 tampered_classifier: str | None = None,
             ) -> None:
                 with zipfile.ZipFile(archive, "w") as output:
-                    namespace = ' xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"' if namespaced else ""
+                    namespace = f' xmlns="{namespace_uri}"' if namespace_uri else ""
                     foreign = ' xmlns:foreign="urn:untrusted"' if foreign_id or foreign_version else ""
                     id_tag = "foreign:id" if foreign_id else "id"
                     version_tag = "foreign:version" if foreign_version else "version"
@@ -547,8 +547,10 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             before = snapshot()
             verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
             self.assertEqual(before, snapshot())
-            write_package(namespaced=True)
-            verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
+            for schema in ("2010/07", "2011/08", "2011/10", "2012/06", "2013/01", "2013/05"):
+                with self.subTest(nuget_schema=schema):
+                    write_package(namespace_uri=f"http://schemas.microsoft.com/packaging/{schema}/nuspec.xsd")
+                    verify_native_wrapper_sdk_packages(packages, sdks, version, "csharp")
             write_package()
 
             with self.assertRaisesRegex(ValueError, "unsupported native wrapper language"):
@@ -572,6 +574,8 @@ class NativeWrapperReleaseTest(unittest.TestCase):
             for kwargs in ({"package_id": "OtherPackage"},
                            {"nuspec_name": "OtherPackage.nuspec"},
                            {"nested_version": True},
+                           {"namespace_uri": "urn:untrusted"},
+                           {"namespace_uri": "http://schemas.microsoft.com/packaging/9999/99/nuspec.xsd"},
                            {"foreign_id": True},
                            {"foreign_version": True}):
                 with self.subTest(nuspec_coordinate=kwargs):

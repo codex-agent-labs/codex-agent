@@ -929,8 +929,11 @@ def require_embedded_package_versions(
             if nuspec_path != extracted / "CodexAgent.nuspec":
                 raise ValueError("C# package nuspec identity mismatch")
             nuspec = ET.parse(nuspec_path).getroot()
-            official = "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"
-            namespace = {"package": "", f"{{{official}}}package": f"{{{official}}}"}.get(nuspec.tag)
+            # NuGet selects the schema from manifest features, not SDK age.
+            # See NuGet.Packaging/PackageCreation/Authoring/ManifestSchemaUtility.cs.
+            namespaces = ("", *(f"{{http://schemas.microsoft.com/packaging/{schema}/nuspec.xsd}}"
+                              for schema in ("2010/07", "2011/08", "2011/10", "2012/06", "2013/01", "2013/05")))
+            namespace = next((prefix for prefix in namespaces if nuspec.tag == prefix + "package"), None)
             if namespace is None:
                 raise ValueError("C# package nuspec namespace mismatch")
             metadata = [item for item in nuspec if item.tag == f"{namespace}metadata"]

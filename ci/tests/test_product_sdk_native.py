@@ -3,6 +3,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -21,6 +22,30 @@ from ci.tests.test_product_native_chain import build_chain
 from ci.tests.test_product_sdk_inputs import _request
 
 SDK_ROOT = Path(__file__).resolve().parents[2] / "gradle/release/keys/sdk-runtime-root.pub"
+
+
+class NativeSdkImportTest(unittest.TestCase):
+    def test_package_gate_loads_in_both_supported_namespaces(self):
+        root = Path(__file__).resolve().parents[2]
+        script = """
+import importlib, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / 'ci'))
+verify = importlib.import_module(sys.argv[1]).verify_native_sdk_package_phase
+with tempfile.TemporaryDirectory() as temporary:
+    missing = Path(temporary).resolve() / 'missing-receipt.json'
+    try:
+        verify(missing, missing, missing, missing, missing, b'')
+    except ValueError as error:
+        assert str(error) == f'File is missing or unsafe: {missing}', error
+    else:
+        raise AssertionError('Missing receipt was accepted')
+"""
+        for namespace in ("ci.products.sdk_native", "products.sdk_native"):
+            with self.subTest(namespace=namespace):
+                result = subprocess.run([sys.executable, "-B", "-c", script, namespace],
+                                        cwd=root, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 def csharp_resource_fixture(root: Path, compatibility: bytes, root_key: bytes) -> bytes:

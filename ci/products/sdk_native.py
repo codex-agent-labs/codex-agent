@@ -241,7 +241,10 @@ def verify_native_sdk_package_phase(
     caller must separately verify the original receipt's complete planned input
     closure; the return value is ordinary data, not a caller-mintable trust token.
     """
-    from ..native_wrappers import verify_native_wrapper_sdk_packages
+    if __package__ == "products":  # Script entry points in ci/ use this namespace.
+        from native_wrappers import verify_native_wrapper_sdk_packages
+    else:
+        from ..native_wrappers import verify_native_wrapper_sdk_packages
 
     stage_root, receipt_path, staged_sdks = map(Path, (stage_root, receipt_path, staged_sdks))
     receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
