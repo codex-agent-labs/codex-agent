@@ -65,8 +65,13 @@ class RuntimeBootstrapDeviceTest {
         assertDeviceContract()
         clearRuntimeState()
         val codexHome = File(context.noBackupFilesDir, "codex")
-        val certificateBundle = File(codexHome, "system-ca.pem")
+        lateinit var certificateBundle: File
         startAndInitializeRuntime {
+            val bundles = codexHome.listFiles { file ->
+                file.isFile && file.name.startsWith("system-ca-") && file.extension == "pem"
+            }.orEmpty()
+            assertEquals("Expected one runtime-owned certificate bundle", 1, bundles.size)
+            certificateBundle = bundles.single()
             assertTrue(certificateBundle.length() > 0)
         }
         assertEventuallyDeleted(certificateBundle)
@@ -121,7 +126,10 @@ class RuntimeBootstrapDeviceTest {
             val initialized = async {
                 withTimeout(120_000) {
                     runtime.events.first { event ->
-                        event is CodexRuntimeEvent.Received && "\"id\":1" in event.line.value
+                        when (event) {
+                            is CodexRuntimeEvent.Received -> "\"id\":1" in event.line.value
+                            else -> throw AssertionError("Runtime ended before initialize response: $event")
+                        }
                     }
                 }
             }

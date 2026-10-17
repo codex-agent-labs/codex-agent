@@ -10,17 +10,9 @@ internal fun installRuntimeLogPrivacyGuard(database: SQLiteConnection) {
     database.execSQL("PRAGMA secure_delete=ON")
     database.execSQL("BEGIN IMMEDIATE")
     try {
-        database.execSQL(
-            """
-            CREATE TABLE IF NOT EXISTS logs (
-                ts INTEGER NOT NULL,
-                ts_nanos INTEGER NOT NULL,
-                level TEXT NOT NULL,
-                target TEXT NOT NULL,
-                feedback_log_body TEXT NOT NULL
-            )
-            """.trimIndent(),
-        )
+        // The runtime owns migrations, including a logs-table replacement. Wait for
+        // its final schema instead of creating a table or guarding an obsolete one.
+        database.prepare("SELECT feedback_log_body FROM logs LIMIT 0").use { it.step() }
         database.execSQL("DROP TRIGGER IF EXISTS codex_agent_drop_runtime_logs")
         database.execSQL("DELETE FROM logs")
         database.execSQL(
