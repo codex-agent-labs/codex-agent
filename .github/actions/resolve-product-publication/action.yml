@@ -35,13 +35,18 @@ runs:
       run: |
         set -euo pipefail
         test "$NATIVE_REPOSITORY" = codex-agent-labs/codex-agent
-        test "$NATIVE_PATH" = .github/workflows/product-validation.yml
+        case "$NATIVE_PATH" in
+          .github/workflows/product-validation.yml|.github/workflows/android-runtime-evidence.yml) ;;
+          *) echo "Unsupported native publication consumer" >&2; exit 1 ;;
+        esac
         test "$(git -C product-publication-authority rev-parse HEAD)" = "$NATIVE_SHA"
         python3 -B product-publication-authority/.reuse/resolve.py \
           --publication --expected-authority-commit "$NATIVE_SHA" > "$RUNNER_TEMP/product-publication.json"
         python3 - "$RUNNER_TEMP/product-publication.json" "$GITHUB_OUTPUT" <<'PY'
-        import json, sys
+        import json, os, sys
         value = json.load(open(sys.argv[1]))
+        if os.environ['NATIVE_PATH'] not in {row['path'] for row in value['workflows']}:
+            raise ValueError('Native consumer is absent from the authenticated workflow closure')
         with open(sys.argv[2], 'a') as output:
             for key, field in [('publisher-sha', 'publisherSha'), ('source-sha', 'sourceSha'),
                                ('publication-sha256', 'publicationSha256')]:
