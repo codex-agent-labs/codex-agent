@@ -1,9 +1,12 @@
 """Static custody checks only; protected approvals and hosted bytes are not simulated."""
 
 from pathlib import Path
+from contextlib import chdir
+from copy import deepcopy
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -178,6 +181,49 @@ class RuntimeLibraryAuthorizationsWorkflowTest(unittest.TestCase):
                         artifact_id, digest, name, {"runId": run_id},
                         {"head_sha": commit}, "test-observation-token",
                         destination=root / "downloaded.zip", max_bytes=1024 * 1024)
+
+    def test_original_plan_binds_trigger_head_and_tested_merge_separately(self):
+        script = textwrap.dedent(self.capture.split(
+            'python3 -B - "$RUNNER_TEMP/runtime-original-plan.zip" <<\'PY\'\n', 1)[1].split(
+                '          PY\n', 1)[0])
+        head, merge, tree, base = ('a' * 40, 'b' * 40, 'c' * 40, 'd' * 40)
+        run = {'id': 23, 'run_attempt': 1, 'event': 'pull_request', 'head_sha': head,
+               'pull_requests': [{'number': 31, 'base': {'sha': base}, 'head': {'sha': 'e' * 40}}]}
+        commit = {'sha': merge, 'tree': {'sha': tree}, 'parents': [{'sha': base}, {'sha': head}]}
+        for fault in (None, 'run-attempt', 'artifact-head', 'merge-parent'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary, chdir(temporary):
+                original = Path(temporary) / 'original.zip'
+                with zipfile.ZipFile(original, 'w') as archive:
+                    archive.writestr('impact-plan.json', b'approved plan bytes')
+                url = 'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/17'
+                detail = {'id': 17, 'digest': sha256_file(original), 'expired': False,
+                    'name': 'codex-agent-ci-plan-' + tree, 'archive_download_url': url + '/zip',
+                    'workflow_run': {'id': 23, 'head_sha': head}, 'size_in_bytes': original.stat().st_size}
+                observed, tested = deepcopy(run), deepcopy(commit)
+                if fault == 'run-attempt': observed['run_attempt'] = 2
+                if fault == 'artifact-head': detail['workflow_run']['head_sha'] = merge
+                if fault == 'merge-parent': tested['parents'][1]['sha'] = merge
+                def api(address, _token):
+                    if address.endswith('/runs/23/attempts/1'): return observed
+                    if address.endswith('/git/commits/' + merge): return tested
+                    self.assertEqual(url, address)
+                    return detail
+                environment = {'PLAN_ID': '17', 'PLAN_SHA256': detail['digest'], 'ORIGINAL_RUN_ID': '23',
+                    'ORIGINAL_RUN_ATTEMPT': '1', 'VALIDATION_COMMIT': merge, 'VALIDATION_TREE': tree,
+                    'GITHUB_TOKEN': 'fixture-observation-token'}
+                with patch.dict(os.environ, environment), patch.object(sys, 'argv', ['-', 'downloaded.zip']), \
+                        patch.dict(sys.modules, {'product_reuse': product_reuse}), \
+                        patch.object(product_reuse, 'api_json', side_effect=api), \
+                        patch.object(product_reuse, 'download_artifact_to_file', side_effect=lambda _a, _t, destination, **_k:
+                            destination.write_bytes(original.read_bytes())) as download:
+                    if fault:
+                        with self.assertRaises(ValueError): exec(compile(script, str(WORKFLOW), 'exec'), {})
+                        download.assert_not_called()
+                        self.assertFalse(Path('plan').exists())
+                    else:
+                        exec(compile(script, str(WORKFLOW), 'exec'), {})
+                        download.assert_called_once()
+                        self.assertEqual(b'approved plan bytes', Path('plan/impact-plan.json').read_bytes())
 
 
 if __name__ == "__main__":

@@ -224,6 +224,7 @@ jobs:
           PLAN_ID: ${{ needs.delegate.outputs.plan_id }}
           PLAN_SHA256: ${{ needs.delegate.outputs.plan_sha256 }}
           ORIGINAL_RUN_ID: ${{ needs.delegate.outputs.original_run_id }}
+          ORIGINAL_RUN_ATTEMPT: ${{ needs.delegate.outputs.original_run_attempt }}
           VALIDATION_COMMIT: ${{ needs.delegate.outputs.validation_commit }}
           VALIDATION_TREE: ${{ needs.delegate.outputs.validation_tree }}
         run: |
@@ -237,11 +238,24 @@ jobs:
           import product_reuse as products
           from receipt import safe_extract
           from products.inventory import regular_file_inventory, verified_zip_contents
+          producer = {'repository': 'codex-agent-labs/codex-agent',
+                      'runId': int(os.environ['ORIGINAL_RUN_ID']),
+                      'runAttempt': int(os.environ['ORIGINAL_RUN_ATTEMPT'])}
+          run = products._original_ci_run(producer, os.environ['GITHUB_TOKEN'])
+          if run.get('id') != producer['runId'] or run.get('run_attempt') != producer['runAttempt']:
+              raise ValueError('Original plan run/attempt differs from protected control')
+          requests = run.get('pull_requests', [])
+          products._observe_tested_commit(
+              run, api='https://api.github.com', repository=producer['repository'],
+              token=os.environ['GITHUB_TOKEN'], expected_commit=os.environ['VALIDATION_COMMIT'],
+              expected_tree=os.environ['VALIDATION_TREE'],
+              pull_request=requests[0]['number'] if len(requests) == 1 else None)
+          # PR transport records the triggering head, not the tested merge SHA.
+          # Bind both using the existing source verifier, never invent run metadata.
           artifact, archive = products._download_contract_ci_upload(
               int(os.environ['PLAN_ID']), os.environ['PLAN_SHA256'],
               'codex-agent-ci-plan-' + os.environ['VALIDATION_TREE'],
-              {'runId': int(os.environ['ORIGINAL_RUN_ID'])},
-              {'head_sha': os.environ['VALIDATION_COMMIT']},
+              producer, run,
               os.environ['GITHUB_TOKEN'], destination=Path(sys.argv[1]),
               max_bytes=128 * 1024 * 1024)
           files, _, _ = verified_zip_contents(
