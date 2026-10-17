@@ -51,6 +51,13 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         self.assertIn("python3 -I -B -", authority)
         self.assertNotIn("from ci.", authority)
         self.assertIn("ci.sdk_android_validation_policy", worker)
+        # Readiness is authenticated from exact retained predecessors, not the
+        # incidental wave in which a package happened to be produced.
+        self.assertNotIn("sdk_state_wave == '16'", worker)
+        self.assertEqual(worker.count("uses: ./.github/actions/capture-runtime-state\n"), 1)
+        self.assertIn("plan-directory: ${{ steps.tooling.outputs.plan-directory }}", worker)
+        for name in ("plan-path", "discovery-root", "state-root", "sdk-matrix", "sdk-workers-required"):
+            self.assertIn(name + ": ${{ steps.selected.outputs." + name + " }}", worker)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-android-validation.yml", collector)
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-validation-result / sdk-android-validation-android", collector)
 

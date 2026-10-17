@@ -23,7 +23,7 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         })
         self.f.plan_path.write_bytes(locator.canonical_json_bytes(self.f.plan))
         self.f.run["referenced_workflows"].append({
-            "path": f"{locator.REPOSITORY}/{locator.ANDROID_WORKFLOW}@main",
+            "path": f"{locator.REPOSITORY}/{locator.ANDROID_WORKFLOW}@reuse-authority",
             "sha": self.android_pin,
         })
         common = {"run_id": 71, "head_sha": self.f.run["head_sha"],
@@ -61,7 +61,7 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         caller = (Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml").read_text()
         workflow = (Path(__file__).resolve().parents[2] / locator.ANDROID_WORKFLOW).read_text()
         self.assertIn("android-runtime-evidence:", caller)
-        self.assertIn(".github/workflows/android-runtime-evidence.yml@main", caller)
+        self.assertTrue(".github/workflows/android-runtime-evidence.yml@reuse-authority" in caller)
         self.assertIn("  firebase-arm64-runtime:", workflow)
         self.assertIn("  attach-evidence:", workflow)
         self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]}, self.call())
@@ -103,12 +103,14 @@ class AndroidUploadLocatorTest(unittest.TestCase):
 
     def test_reusable_pin_artifact_listing_and_detail_are_exact(self):
         baseline = deepcopy((self.f.run, self.f.artifact))
-        for case in ("pin", "path", "missing-ref", "missing", "ambiguous", "expired",
+        for case in ("pin", "path", "old-main", "missing-ref", "missing", "ambiguous", "expired",
                      "id", "digest", "name", "run", "head", "detail", "url"):
             self.f.run, self.f.artifact = deepcopy(baseline)
             if case == "pin": self.f.run["referenced_workflows"][1]["sha"] = "e" * 40
             elif case == "path": self.f.run["referenced_workflows"][1]["path"] = (
                 f"{locator.REPOSITORY}/{locator.ANDROID_WORKFLOW}@{self.android_pin}")
+            elif case == "old-main": self.f.run["referenced_workflows"][1]["path"] = (
+                f"{locator.REPOSITORY}/{locator.ANDROID_WORKFLOW}@main")
             elif case == "missing-ref": self.f.run["referenced_workflows"].pop()
             self.listing = [deepcopy(self.f.artifact)]
             if case == "missing": self.listing = []

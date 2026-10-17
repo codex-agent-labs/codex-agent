@@ -22,7 +22,7 @@ class AndroidDispatchObserverTest(unittest.TestCase):
                           pull_requests=[])
         self.f.run["referenced_workflows"].append({
             "path": (f"{observer.upload_locator.REPOSITORY}/"
-                     f"{observer.upload_locator.ANDROID_WORKFLOW}@main"),
+                     f"{observer.upload_locator.ANDROID_WORKFLOW}@reuse-authority"),
             "sha": self.android_pin,
         })
         common = {"run_id": self.producer["runId"], "head_sha": self.producer["commit"],
@@ -94,7 +94,7 @@ class AndroidDispatchObserverTest(unittest.TestCase):
             elif case == "duplicate": self.f.run["referenced_workflows"].append(
                 deepcopy(self.f.run["referenced_workflows"][-1]))
             elif case == "path": self.f.run["referenced_workflows"][-1]["path"] = (
-                self.f.run["referenced_workflows"][-1]["path"].removesuffix("@main") +
+                self.f.run["referenced_workflows"][-1]["path"].removesuffix("@reuse-authority") +
                 "@" + self.android_pin)
             else: self.f.run["referenced_workflows"][-1]["sha"] = "e" * 40
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, "caller-pinned"):

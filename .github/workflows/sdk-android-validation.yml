@@ -68,7 +68,6 @@ jobs:
       fromJSON(inputs.sdkPlan).result == 'success' &&
       fromJSON(inputs.sdkInputs).result == 'success' &&
       fromJSON(inputs.packageWave).result == 'success' &&
-      fromJSON(inputs.packageWave).outputs.sdk_state_wave == '16' &&
       fromJSON(inputs.validationPlan).result == 'success' &&
       fromJSON(inputs.validationPlan).outputs.sdk_workers_required == 'true' &&
       inputs.protectedAndroidAuthority != ''
@@ -144,6 +143,7 @@ jobs:
       - id: selected
         uses: ./.github/actions/capture-runtime-state
         with:
+          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: android-validation
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
@@ -196,11 +196,11 @@ jobs:
       - id: validation
         uses: ./.github/actions/sdk-android-validation-worker
         with:
-          plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-          artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
-          artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
-          state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
-          sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
+          plan-path: ${{ steps.selected.outputs.plan-path }}
+          discovery-root: ${{ steps.selected.outputs.discovery-root }}
+          state-root: ${{ steps.selected.outputs.state-root }}
+          sdk-matrix: ${{ steps.selected.outputs.sdk-matrix }}
+          sdk-workers-required: ${{ steps.selected.outputs.sdk-workers-required }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           trusted-android-workflow-sha: ${{ steps.authority.outputs.trustedAndroidWorkflowSha }}
           trusted-source-commit: ${{ steps.authority.outputs.trustedSourceCommit }}

@@ -21,6 +21,7 @@ from products.signing_isolation import require_no_signing_secret
 
 REPOSITORY = "codex-agent-labs/codex-agent"
 ANDROID_WORKFLOW = ".github/workflows/android-runtime-evidence.yml"
+ANDROID_WORKFLOW_REFERENCE = f"{REPOSITORY}/{ANDROID_WORKFLOW}@reuse-authority"
 FIREBASE_JOB = "product-validation / android-runtime-evidence / firebase-arm64-runtime"
 ATTACH_JOB = "product-validation / android-runtime-evidence / attach-evidence"
 _OID = re.compile(r"[0-9a-f]{40}")
@@ -88,9 +89,9 @@ def locate_android_validation_upload(
             "Android original workflow references",
         )
         # The checked-in caller deliberately declares this reusable workflow at
-        # @main.  Its resolved `sha` is a separate official observation and is
+        # @reuse-authority. Its resolved `sha` is a separate official observation and is
         # pinned by the caller of this locator; do not conflate the two fields.
-        expected = f"{REPOSITORY}/{ANDROID_WORKFLOW}@main"
+        expected = ANDROID_WORKFLOW_REFERENCE
         selected = [value for value in references if type(value) is dict
                     and isinstance(value.get("path"), str)
                     and value["path"].split("@", 1)[0] == expected.split("@", 1)[0]]
