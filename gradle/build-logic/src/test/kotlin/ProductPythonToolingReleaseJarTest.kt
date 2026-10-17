@@ -15,7 +15,7 @@ class ProductPythonToolingReleaseJarTest {
         val root = createTempDirectory("release-tooling-python").toFile()
         try {
             val jar = releaseToolingJar.copyTo(root.resolve("release-tooling.jar"))
-            assertEquals((productPythonResources.values.flatten() +
+            assertEquals((productPythonResources.values.flatten() + nativeWrapperPythonResources +
                 listOf("ci/products/__init__.py", "ci/products/inventory.py",
                     "ci/products/zip_central_directory.py"))
                 .map { "python/$it" }.toSet(), jar.pythonProductResources())
@@ -65,7 +65,7 @@ class ProductPythonToolingReleaseJarTest {
 
     @Test
     fun `packaged native import closure and fixed cpp verifier require no checkout scripts`() {
-        assertTrue("verify-native" in runProductPythonModule("sdk_package", listOf("--help")))
+        assertTrue("verify-native" in runNativeWrapperPython(listOf("--help")))
         assertTrue("--expected-test-program" in runProductPythonModule("cpp_package", listOf("verify-evidence", "--help")))
         assertFailsWith<IllegalStateException> { runProductPythonModule("cpp_package", listOf("--help")) }
         assertFailsWith<IllegalStateException> { runProductPythonModule("arbitrary", emptyList()) }

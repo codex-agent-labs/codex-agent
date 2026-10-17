@@ -60,7 +60,7 @@ abstract class VerifyImportedCAbiBindingParityTask : DefaultTask() {
         // Existing gate authenticates Contract/Runtime signatures, all five
         // original package/validation producers, projected proofs and library
         // bytes. No current commit is substituted for an original producer.
-        runProductPythonModule("sdk_package", listOf("verify-native",
+        runNativeWrapperPython(listOf("verify-native",
             "--repository", repositoryRoot.get().asFile.absolutePath, "--component", language.get(),
             "--stage", packageStage.get().asFile.absolutePath, "--receipt", packageReceipt.get().asFile.absolutePath,
             "--compatibility-request", compatibilityRequest.get().asFile.absolutePath,

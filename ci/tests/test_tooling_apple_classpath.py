@@ -12,6 +12,24 @@ JAR = ROOT / 'gradle/build-logic/build/libs/codex-agent-release-tooling.jar'
 
 
 class AppleToolingClasspathTest(unittest.TestCase):
+    @unittest.skipUnless(JAR.is_file() and shutil.which('python3'), 'requires the emitted tooling JAR and Python')
+    def test_native_python_verifier_closure_imports_in_isolation(self):
+        with tempfile.TemporaryDirectory(prefix='native-tooling-python-') as temporary:
+            root = Path(temporary).resolve()
+            with zipfile.ZipFile(JAR) as archive:
+                for name in archive.namelist():
+                    if name.startswith('python/') and not name.endswith('/'):
+                        path = root / name.removeprefix('python/')
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(archive.read(name))
+            (root / 'ci/__init__.py').write_bytes(b'')
+            result = subprocess.run([shutil.which('python3'), '-I', '-S', '-B', '-c',
+                "import sys; sys.path.insert(0,sys.argv[1]); "
+                "from ci.products import sdk_package, sdk_native, runtime_validation_projection, "
+                "sdk_csharp_binary, sdk_dotnet_toolchain", str(root)],
+                cwd=root, capture_output=True, timeout=30)
+            self.assertEqual(0, result.returncode, result.stderr.decode())
+
     @unittest.skipUnless(JAR.is_file() and shutil.which('jdeps'), 'requires the emitted tooling JAR and JDK')
     def test_packaged_first_party_class_dependencies_are_complete(self):
         result = subprocess.run([shutil.which('jdeps'), '--ignore-missing-deps',

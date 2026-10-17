@@ -1,5 +1,13 @@
 // Tooling-only assembly: do not change shared product compiler inputs.
 allprojects {
+    tasks.withType(org.gradle.language.jvm.tasks.ProcessResources).configureEach {
+        if (name == 'processResources' && project.name == 'build-logic') {
+            from(project.layout.projectDirectory.dir('../../ci/products')) {
+                include('runtime_validation_projection.py', 'sdk_csharp_binary.py', 'sdk_dotnet_toolchain.py')
+                into('python/ci/products')
+            }
+        }
+    }
     tasks.withType(org.gradle.jvm.tasks.Jar).configureEach {
         if (name == 'releaseToolingJar') {
             def policy = project.layout.projectDirectory.file('../../.github/actions/run-ci-lane/release_tooling_classes.json').asFile

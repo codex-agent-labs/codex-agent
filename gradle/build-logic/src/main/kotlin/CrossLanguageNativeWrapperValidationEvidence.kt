@@ -5,6 +5,16 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlinx.serialization.json.jsonObject
 
+internal val nativeWrapperPythonResources = productPythonResources.getValue("sdk_package") + listOf(
+    "ci/products/runtime_validation_projection.py",
+    "ci/products/sdk_csharp_binary.py",
+    "ci/products/sdk_dotnet_toolchain.py",
+)
+
+/** Use the scoped release-tooling init script to package this native-only closure. */
+internal fun runNativeWrapperPython(arguments: List<String>): String =
+    runPackagedProductPython("sdk_package", nativeWrapperPythonResources, arguments)
+
 /** Joins exact installed-package identity to full capability proof; no phase/host trust is minted. */
 internal fun verifyCrossLanguageNativeWrapperValidationEvidence(
     language: CrossLanguageBinding, classifier: String, capabilityInputs: File,
@@ -68,7 +78,7 @@ internal fun verifyImportedNativeWrapperValidation(
     try {
         val handoff = work.resolve("inputs")
         fun runPython(vararg arguments: String, stdout: File? = null) {
-            val result = runProductPythonModule("sdk_package", arguments.toList())
+            val result = runNativeWrapperPython(arguments.toList())
             if (stdout != null) stdout.writeText(result) else print(result)
         }
         val guardedOutput = enclosingContentOutput ?: contentOutput
@@ -204,7 +214,7 @@ internal fun writeImportedNativeWrapperMetadataContent(
                 validationReceipts.resolve("$target.json"), contents.resolve("$target.json"), contentOutput)
         }
         val result = work.resolve("metadata.json")
-        result.writeText(runProductPythonModule("sdk_package", listOf("native-metadata",
+        result.writeText(runNativeWrapperPython(listOf("native-metadata",
             "--contents", contents.absolutePath, "--package-receipt", packageReceipt.absolutePath,
             "--component", language.id)))
         check(result.readReleaseObject().releaseString("sdkVersion") == expectedSdkVersion) {
