@@ -452,9 +452,24 @@ internal fun readCrossLanguageNativeWrapperSdkIndex(
             val originalTree = record.strictString("producerTree")
             checkIdentity(version, originalCommit, originalTree)
             val rawEvidence = releaseJson.parseToJsonElement(evidence.readText()).jsonObject
-            check(rawEvidence.strictString("producerCommit") == originalCommit &&
-                rawEvidence.strictString("producerTree") == originalTree) {
-                "Native wrapper SDK original producer mismatch: $target"
+            if (rawEvidence.strictInt("schemaVersion") == 2) {
+                // The original receipt authenticates index provenance upstream.
+                // Deterministic reports must not acquire synthetic producer fields.
+                check("producerCommit" !in rawEvidence && "producerTree" !in rawEvidence &&
+                    rawEvidence.strictString("target") == target &&
+                    rawEvidence.strictString("classifier") == spec.classifier &&
+                    rawEvidence.strictString("libraryVersion") == version &&
+                    rawEvidence.strictSha256("archiveSha256") == record.strictSha256("archiveSha256") &&
+                    rawEvidence.strictSha256("librarySha256") == record.strictSha256("librarySha256") &&
+                    rawEvidence.strictString("result") == "passed") {
+                    "Native wrapper SDK projected content mismatch: $target"
+                }
+            } else {
+                check(rawEvidence.strictInt("schemaVersion") == 1 &&
+                    rawEvidence.strictString("producerCommit") == originalCommit &&
+                    rawEvidence.strictString("producerTree") == originalTree) {
+                    "Native wrapper SDK original producer mismatch: $target"
+                }
             }
             val librarySha256 = record.strictSha256("librarySha256")
             check(library.releaseDigest() == librarySha256 &&

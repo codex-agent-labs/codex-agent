@@ -80,6 +80,34 @@ class ProjectedNativeSdkInputsTest(unittest.TestCase):
         self.assertEqual(before, {target: paths["validation"].read_bytes() for target, paths in receipts.items()})
         self.assertEqual(inventory, regular_file_inventory(self.sdks))
 
+    def test_staging_cli_uses_the_shared_authenticated_projection_once(self):
+        from ci.products import sdk_native
+        from ci.products.sdk_compatibility import produce_sdk_compatibility
+        destination = self.root / "produced-sdks"
+        runtime = self.chain["variants"]["stages"]
+        before = regular_file_inventory(runtime)
+        argv = ["--output", str(destination), "--request", str(self.request),
+                "--runtime-stage-root", str(runtime), "--root-key", str(SDK_ROOT),
+                "--compatibility", str(self.chain["compatibility"]),
+                "--library-version", "0.2.0", "--runtime-product-version", "0.2.7",
+                "--sdk-version", "0.2.9", "--producer-commit", "9" * 40, "--producer-tree", "8" * 40]
+        with patch.object(sdk_native, "produce_sdk_compatibility", wraps=produce_sdk_compatibility) as gate:
+            self.assertEqual(0, sdk_native.main(argv))
+            gate.assert_called_once()
+        self.assertEqual(regular_file_inventory(self.sdks), regular_file_inventory(destination))
+        self.assertEqual(before, regular_file_inventory(runtime))
+        identity = {key: load_json_bytes((self.sdks / INDEX_NAME).read_bytes())[key]
+                    for key in ("libraryVersion", "runtimeProductVersion", "sdkVersion", "producerCommit", "producerTree")}
+        for case, output, compatibility in (
+                ("overwrite", destination, self.chain["compatibility"].read_bytes()),
+                ("overlap", runtime / "new-output", self.chain["compatibility"].read_bytes()),
+                ("wrong compatibility", self.root / "wrong-output", b"{}\n")):
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                sdk_native.stage_native_sdk_inputs(output, self.request, runtime, SDK_ROOT.read_bytes(),
+                    identity=identity, expected_compatibility=compatibility)
+        self.assertFalse((self.root / "wrong-output").exists())
+        self.assertEqual(regular_file_inventory(self.sdks), regular_file_inventory(destination))
+
     def test_signed_projection_keeps_source_and_execution_checks(self):
         chain, target = self.chain, "linux-x64"
         contract = chain["contract"]

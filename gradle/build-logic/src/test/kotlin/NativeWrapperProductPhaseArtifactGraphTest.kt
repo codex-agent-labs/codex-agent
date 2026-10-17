@@ -129,16 +129,14 @@ class NativeWrapperProductPhaseArtifactGraphTest {
             "Original phase versions must come from authenticated receipts, not current aggregate")
         assertTrue("runtimeProductVersion.set(nativeWrapperRuntimeVersion)" in seam)
         assertTrue("nativeWrapperRuntimeVersion.map(::runtimeCompatibilityVersion)" in seam)
-        val privateSnapshot = nativeWrapperTasks.substringAfter("fun stage() {")
-            .substringBefore("private fun nativeWrapperSdkInput")
-        val snapshot = privateSnapshot.indexOf("snapshotWithCanonicalProducer(")
-        val verification = privateSnapshot.indexOf("verifyRuntimeStageManifests(")
-        val consumption = privateSnapshot.indexOf("stageCrossLanguageNativeWrapperSdks(")
-        assertTrue(snapshot >= 0 && snapshot < verification && verification < consumption)
-        assertTrue("\"ci.products.sdk_compatibility\"" in nativeWrapperTasks)
-        assertTrue("\"--runtime-stage-root\"" in nativeWrapperTasks)
-        assertTrue("verifiedCompatibility.readBytes().contentEquals(expectedCompatibility.readBytes())" in nativeWrapperTasks)
-        assertEquals(1, Regex("private fun verifyRuntimeStageManifests").findAll(nativeWrapperTasks).count())
+        val staging = nativeWrapperTasks.substringAfter("fun stage() {").substringBefore("@CacheableTask")
+        assertTrue(staging.indexOf("requireExactRuntimeStageTree(") < staging.indexOf("processes.exec"))
+        assertEquals(1, Regex("processes.exec").findAll(staging).count())
+        assertTrue("\"ci.products.sdk_native\"" in staging)
+        listOf("--runtime-stage-root", "--request", "--compatibility", "--root-key",
+            "--producer-commit", "--producer-tree", "--output").forEach { assertTrue(it in staging) }
+        assertFalse("stageCrossLanguageNativeWrapperSdks(" in staging)
+        assertFalse("snapshotWithCanonicalProducer(" in staging, "Shared Python gate owns the one private snapshot")
         listOf(
             "cAbiArchiveFiles",
             "importedCAbiEvidenceDirectory",

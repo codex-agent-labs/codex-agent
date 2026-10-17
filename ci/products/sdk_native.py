@@ -1,4 +1,4 @@
-"""Authenticate imported native SDK staging against original Runtime products."""
+"""Stage and authenticate native SDK inputs against original Runtime products."""
 
 from pathlib import Path
 import tempfile
@@ -13,7 +13,7 @@ from .inventory import (
     load_canonical_json_bytes, load_json_bytes, public_key_fingerprint,
     read_regular_file_bytes, regular_file_inventory,
     require_exact_keys, require_integer, require_semver, sha256_bytes,
-    snapshot_regular_tree,
+    snapshot_regular_tree, publish_regular_tree,
 )
 from .sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
 from .receipt import validate_phase_receipt, verify_output_manifest_identity
@@ -95,20 +95,51 @@ def verify_staged_native_sdk_inputs(
     The returned index is ordinary provenance-bearing data, never admission.
     Its root producer describes staging, not the original Runtime producers.
     """
+    return _native_sdk_inputs(staged_sdks, compatibility_request, runtime_stage_root, sdk_root_public_key)
+
+
+def stage_native_sdk_inputs(
+    destination: Path, compatibility_request: Path, runtime_stage_root: Path,
+    sdk_root_public_key: bytes, *, identity: dict[str, str], expected_compatibility: bytes,
+) -> dict[str, Any]:
+    """Publish the same authenticated projection the verifier derives, once.
+
+    The index is a provenance-bearing staging envelope, never package content.
+    Original reports and receipt producer identities remain unchanged.
+    """
+    require_exact_keys(identity, {"libraryVersion", "runtimeProductVersion", "sdkVersion",
+                                  "producerCommit", "producerTree"}, "Native SDK staging identity")
+    return _native_sdk_inputs(destination, compatibility_request, runtime_stage_root, sdk_root_public_key,
+                              staging_identity=dict(identity), expected_compatibility=expected_compatibility)
+
+
+def _native_sdk_inputs(
+    staged_sdks: Path, compatibility_request: Path, runtime_stage_root: Path,
+    sdk_root_public_key: bytes, *, staging_identity=None, expected_compatibility=None,
+) -> dict[str, Any]:
     source = Path(staged_sdks)
     runtime_source = Path(runtime_stage_root)
     request = Path(compatibility_request)
     request_bytes = read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True)
     root_key_bytes = sdk_root_public_key
     public_key_fingerprint(root_key_bytes)
-    before = regular_file_inventory(source)
+    producing = staging_identity is not None
+    if producing:
+        from .sdk_package import _require_capability_output_separate
+        _require_capability_output_separate(source, [request, runtime_source,
+            load_sdk_compatibility_request(request)])
+        if source.exists() or source.is_symlink():
+            raise ValueError("Native SDK staging output already exists")
+    before = None if producing else regular_file_inventory(source)
     runtime_before = regular_file_inventory(runtime_source)
     with tempfile.TemporaryDirectory(prefix="native-sdk-inputs-") as temporary:
         root = Path(temporary).resolve()
         staged, runtime, expected = root / "staged", root / "runtime", root / "expected"
-        snapshot_regular_tree(source, staged)
+        if not producing:
+            snapshot_regular_tree(source, staged)
         snapshot_regular_tree(runtime_source, runtime)
-        if regular_file_inventory(staged) != before or regular_file_inventory(runtime) != runtime_before:
+        if ((not producing and regular_file_inventory(staged) != before)
+                or regular_file_inventory(runtime) != runtime_before):
             raise ValueError("Native SDK inputs changed during snapshot")
         expected.mkdir()
         captured_request = root / "request.json"
@@ -127,7 +158,16 @@ def verify_staged_native_sdk_inputs(
             raise ValueError("Native SDK original validation receipts changed during authentication")
         compatibility_bytes = (expected / "sdk-compatibility.json").read_bytes()
         (expected / "sdk-runtime-root.pub").write_bytes(root_key_bytes)
-        index_bytes = read_regular_file_bytes(staged / INDEX_NAME, max_bytes=_LIMIT)
+        if producing:
+            if compatibility_bytes != expected_compatibility:
+                raise ValueError("Authenticated Runtime stages disagree with selected SDK compatibility")
+            index_bytes = _json_bytes({"schemaVersion": 2,
+                **{name: staging_identity[name] for name in ("libraryVersion", "runtimeProductVersion", "sdkVersion")},
+                "sdkCompatibilitySha256": sha256_bytes(compatibility_bytes).removeprefix("sha256:"),
+                **{name: staging_identity[name] for name in ("producerCommit", "producerTree")},
+                "targets": []})
+        else:
+            index_bytes = read_regular_file_bytes(staged / INDEX_NAME, max_bytes=_LIMIT)
         index = require_exact_keys(load_json_bytes(index_bytes), {
             "schemaVersion", "libraryVersion", "runtimeProductVersion", "sdkVersion",
             "sdkCompatibilitySha256", "producerCommit", "producerTree", "targets",
@@ -173,15 +213,21 @@ def verify_staged_native_sdk_inputs(
                 "manifestSha256": sha256_bytes((expected / classifier / C_ABI_PACKAGE_MANIFEST).read_bytes()).removeprefix("sha256:"),
                 "producerCommit": producer["commit"], "producerTree": producer["tree"],
             })
-        if index["targets"] != records:
+        if producing:
+            index["targets"] = records
+            (expected / INDEX_NAME).write_bytes(_json_bytes(index))
+        elif index["targets"] != records:
             raise ValueError("Native SDK index differs from original verified Runtime evidence")
-        if regular_file_inventory(staged, excluded_paths=(INDEX_NAME,)) != regular_file_inventory(expected):
+        if not producing and regular_file_inventory(staged, excluded_paths=(INDEX_NAME,)) != regular_file_inventory(expected):
             raise ValueError("Native SDK staged bytes differ from authenticated Runtime inputs")
-    if (regular_file_inventory(source) != before or regular_file_inventory(runtime_source) != runtime_before
-            or read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes
-            or any(data != read_regular_file_bytes(arguments["variant_phase_receipts"][target]["validation"],
-                max_bytes=_LIMIT, reject_symlink_parents=True) for target, data in validation_receipts.items())):
-        raise ValueError("Native SDK source inputs changed during verification")
+        if ((not producing and regular_file_inventory(source) != before)
+                or regular_file_inventory(runtime_source) != runtime_before
+                or read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes
+                or any(data != read_regular_file_bytes(arguments["variant_phase_receipts"][target]["validation"],
+                    max_bytes=_LIMIT, reject_symlink_parents=True) for target, data in validation_receipts.items())):
+            raise ValueError("Native SDK source inputs changed during verification")
+        if producing:
+            publish_regular_tree(expected, source)
     return index
 
 
@@ -236,3 +282,29 @@ def verify_native_sdk_package_phase(
             or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != receipt_bytes):
         raise ValueError("Native SDK package sources changed during verification")
     return receipt, receipt_bytes
+
+
+def main(argv=None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="Stage authenticated native SDK inputs without compilation")
+    for name in ("output", "request", "runtime-stage-root", "root-key", "compatibility"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("library-version", "runtime-product-version", "sdk-version", "producer-commit", "producer-tree"):
+        parser.add_argument("--" + name, required=True)
+    arguments = parser.parse_args(argv)
+    try:
+        stage_native_sdk_inputs(arguments.output, arguments.request, arguments.runtime_stage_root,
+            read_regular_file_bytes(arguments.root_key, max_bytes=4096, reject_symlink_parents=True),
+            identity={"libraryVersion": arguments.library_version,
+                      "runtimeProductVersion": arguments.runtime_product_version,
+                      "sdkVersion": arguments.sdk_version, "producerCommit": arguments.producer_commit,
+                      "producerTree": arguments.producer_tree},
+            expected_compatibility=read_regular_file_bytes(arguments.compatibility,
+                max_bytes=_LIMIT, reject_symlink_parents=True))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

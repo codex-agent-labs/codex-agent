@@ -130,88 +130,26 @@ abstract class StageCrossLanguageNativeWrapperSdksTask @Inject constructor(
     @TaskAction
     fun stage() {
         val sourceRoot = runtimeStageRoot.get().asFile
-        val temporary = Files.createTempDirectory(
-            outputDirectory.get().asFile.absoluteFile.parentFile.also(File::mkdirs).toPath(),
-            ".native-wrapper-input-",
-        ).toFile()
-        try {
-            val stageRoot = temporary.resolve("staged")
-            snapshotWithCanonicalProducer(
-                processes, pythonExecutable.get(), repositoryRoot.get().asFile, sourceRoot, stageRoot,
+        requireExactRuntimeStageTree(sourceRoot)
+        // One shared producer/verifier owns projected reports and external receipt provenance.
+        // It snapshots inputs, authenticates them, checks mutation, then publishes once.
+        processes.exec {
+            workingDir(repositoryRoot.get().asFile)
+            environment("PYTHONDONTWRITEBYTECODE", "1")
+            commandLine(
+                pythonExecutable.get(), "-m", "ci.products.sdk_native",
+                "--request", compatibilityRequest.get().asFile.absolutePath,
+                "--runtime-stage-root", sourceRoot.absolutePath,
+                "--compatibility", sdkCompatibility.get().asFile.absolutePath,
+                "--root-key", sdkRuntimeRootPublicKey.get().asFile.absolutePath,
+                "--library-version", libraryVersion.get(),
+                "--runtime-product-version", runtimeProductVersion.get(),
+                "--sdk-version", sdkVersion.get(),
+                "--producer-commit", producerCommit.get(),
+                "--producer-tree", producerTree.get(),
+                "--output", outputDirectory.get().asFile.absolutePath,
             )
-            requireExactRuntimeStageTree(stageRoot)
-            verifyRuntimeStageManifests(
-                processes,
-                pythonExecutable.get(),
-                repositoryRoot.get().asFile,
-                stageRoot,
-                compatibilityRequest.get().asFile,
-                sdkCompatibility.get().asFile,
-                temporary.resolve("sdk-compatibility.json"),
-            )
-            stageCrossLanguageNativeWrapperSdks(nativeWrapperSdkInput(stageRoot), outputDirectory.get().asFile)
-        } finally {
-            temporary.deleteRecursively()
         }
-    }
-
-    private fun nativeWrapperSdkInput(stageRoot: File) = CrossLanguageNativeWrapperSdkInput(
-        libraryVersion.get(), runtimeProductVersion.get(), sdkVersion.get(),
-        producerCommit.get(), producerTree.get(), sdkCompatibility.get().asFile,
-        sdkRuntimeRootPublicKey.get().asFile,
-        crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
-            val component = crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
-            stageRoot.resolve(
-                "$component/package/outputs/c-abi/${crossLanguageCAbiArchiveFileName(libraryVersion.get(), target)}",
-            )
-        },
-        crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
-            val component = crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
-            stageRoot.resolve(
-                "$component/validation/outputs/c-abi/${crossLanguageCAbiPackageEvidenceFileName(target)}",
-            )
-        },
-        crossLanguageCAbiTargetSpecs.keys.associateWith { target ->
-            val component = crossLanguageCAbiTargetSpecs.getValue(target).classifier.removePrefix("c-abi-")
-            val referenceRoot = stageRoot.resolve("$component/validation/outputs/c-abi-reference")
-            CrossLanguageNativeWrapperSdkReferenceInput(
-                referenceRoot.resolve("include/codex_agent.h"),
-                referenceRoot.resolve("legal/LICENSE"),
-                referenceRoot.resolve("legal/THIRD_PARTY_NOTICES.md"),
-                referenceRoot.resolve("export-policy/" + when (target) {
-                    "macosArm64", "macosX64" -> "macos.exports"
-                    "linuxArm64", "linuxX64" -> "linux.map"
-                    "mingwX64" -> "windows.def"
-                    else -> error("Unsupported native wrapper C ABI target: $target")
-                }),
-                referenceRoot.resolve("consumer").listFiles()?.toList().orEmpty(),
-            )
-        },
-    )
-}
-
-private fun verifyRuntimeStageManifests(
-    processes: ExecOperations,
-    pythonExecutable: String,
-    repositoryRoot: File,
-    stageRoot: File,
-    compatibilityRequest: File,
-    expectedCompatibility: File,
-    verifiedCompatibility: File,
-) {
-    processes.exec {
-        workingDir(repositoryRoot)
-        environment("PYTHONDONTWRITEBYTECODE", "1")
-        commandLine(
-            pythonExecutable, "-m", "ci.products.sdk_compatibility",
-            "--request", compatibilityRequest.absolutePath,
-            "--output", verifiedCompatibility.absolutePath,
-            "--runtime-stage-root", stageRoot.absolutePath,
-        )
-    }
-    check(regularCAbiFile(verifiedCompatibility) && regularCAbiFile(expectedCompatibility) &&
-        verifiedCompatibility.readBytes().contentEquals(expectedCompatibility.readBytes())) {
-        "Authenticated Runtime stages disagree with the selected SDK compatibility declaration"
     }
 }
 

@@ -247,6 +247,35 @@ class CrossLanguageCAbiPackageEvidenceTest {
             verifiedRegularFiles(mixedAssets).mapValues { it.value.releaseDigest() },
         )
         assertEquals(originalProofs, evidence.mapValues { it.value.readBytes().toList() })
+
+        // Reader/materializer fixture only: production authenticates the original
+        // receipts in Python before deriving this provenance-bearing staging index.
+        val projectedIndex = releaseJson.parseToJsonElement(
+            mixedStage.resolve("codex-agent-native-wrapper-sdks.json").readText(),
+        ).jsonObject
+        val projectedRecords = mixedIndex.records.map { (target, record) ->
+            val proof = mixedStage.resolve("${record.classifier}/codex-agent-c-abi-evidence.json")
+            val raw = releaseJson.parseToJsonElement(proof.readText()).jsonObject
+            proof.writeText(Json.encodeToString(JsonObject(raw.filterKeys {
+                it !in setOf("producerCommit", "producerTree")
+            } + ("schemaVersion" to JsonPrimitive(2)))) + "\n")
+            val row = projectedIndex.strictArray("targets").single { it.jsonObject.strictString("target") == target }.jsonObject
+            JsonObject(row + ("evidenceSha256" to JsonPrimitive(proof.releaseDigest())))
+        }
+        mixedStage.resolve("codex-agent-native-wrapper-sdks.json").atomicWriteJson(
+            JsonObject(projectedIndex + ("targets" to JsonArray(projectedRecords))),
+        )
+        assertEquals(mixedIndex, readCrossLanguageNativeWrapperSdkIndex(mixedStage))
+        val projectedAssets = fixture.root.resolve("projected-package-assets")
+        materializeCrossLanguageNativeWrapperPackageAssets(mixedStage, projectedAssets)
+        assertEquals(verifiedRegularFiles(packageAssets).mapValues { it.value.releaseDigest() },
+            verifiedRegularFiles(projectedAssets).mapValues { it.value.releaseDigest() })
+        val first = mixedIndex.records.values.first()
+        val wrong = mixedStage.resolve("${first.classifier}/codex-agent-c-abi-evidence.json")
+        val projected = releaseJson.parseToJsonElement(wrong.readText()).jsonObject
+        wrong.writeText(Json.encodeToString(JsonObject(projected + ("producerCommit" to JsonPrimitive(first.producerCommit)))) + "\n")
+        assertFailsWith<IllegalStateException> { readCrossLanguageNativeWrapperSdkIndex(mixedStage) }
+        Unit
     }
 
     @Test

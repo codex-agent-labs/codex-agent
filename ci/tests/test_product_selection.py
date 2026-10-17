@@ -2064,6 +2064,8 @@ class ProductSelectionTest(unittest.TestCase):
             if instance.product == "sdk" and instance.component in {"python", "csharp", "rust", "cpp", "dart"} \
                     and instance.phase == "metadata":
                 expected = paths
+            if instance.product == "sdk" and instance.component in NATIVE_BINDINGS and instance.phase == "package":
+                expected = ("ci/products/sdk_native.py",)
             with self.subTest(instance=instance):
                 self.assertEqual(tuple(sorted(expected)), phase_inventory_paths(paths, instance))
         path = "gradle/build-logic/src/main/kotlin/CrossLanguageNativeWrapperValidationEvidence.kt"

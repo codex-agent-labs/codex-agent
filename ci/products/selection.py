@@ -1518,7 +1518,11 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
                 "gradle/build-logic/src/main/kotlin/PackagedProductPython.kt"}:
         # Standalone Runtime includes only runtime/build-logic; still plan broad reuse.
         selected = {instance for instance in selected if instance.product != "runtime"}
-    if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
+    if path == "ci/products/sdk_native.py":
+        # Shared authenticated staging now also produces the five package inputs.
+        return {instance for instance in selected if instance.product == "sdk"
+                and instance.component in NATIVE_BINDINGS and instance.phase in {"package", "validation"}}
+    if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_package.py"}:
         return {instance for instance in selected if instance.product == "sdk"
                 and instance.component in NATIVE_BINDINGS and instance.phase == "validation"}
     if (
