@@ -508,7 +508,11 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
             with ZipFile(archive_path, "w") as archive:
                 archive.writestr("linux-x64/libcodex_agent.so.evidence/fixture.sig", raw)
                 archive.writestr("unconsumed-target/not-read", b"not a consumed host input")
-            observed, artifact = [{"run": {"id": 77}, "jobs": [{"id": 42}]}], {"id": 123}
+            observed = [{"run": {"id": 77, "head_sha": "d" * 40}, "jobs": [{"id": 42}]}]
+            artifact = {"id": 123, "digest": policy["artifactSha256"], "expired": False,
+                "name": f"codex-agent-runtime-library-authorizations-{policy['validationCommit']}-attestation-77-attempt-2",
+                "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/123/zip",
+                "workflow_run": {"id": 77, "head_sha": "d" * 40}, "size_in_bytes": archive_path.stat().st_size}
             reads = []
             @contextmanager
             def opened(*args, **kwargs):
@@ -520,7 +524,9 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
                             (reads.append(entry.filename), real_open(entry, *a, **k))[1]):
                         yield archive, SimpleNamespace(transferred=len(raw))
             with patch.object(workflow.product_reuse, "_observe_ci_producer_jobs", return_value=observed) as observe, \
-                    patch.object(workflow.product_reuse, "_contract_ci_upload_metadata", return_value=artifact) as metadata, \
+                    patch.object(workflow.product_reuse, "api_json", return_value=artifact), \
+                    patch.object(workflow.product_reuse, "_contract_ci_upload_metadata",
+                        wraps=workflow.product_reuse._contract_ci_upload_metadata) as metadata, \
                     patch.object(workflow.product_reuse, "_require_artifact_job_window") as window, \
                     patch("runtime_reference_archive.open_reference_archive", side_effect=opened):
                 output = workflow.capture_runtime_authorization(policy, "linux-x64", root / "capture", token="unit-token")
@@ -542,6 +548,12 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "immutable digest"):
                     workflow.capture_runtime_authorization(bad, "linux-x64", root / "bad", token="unit-token")
                 self.assertFalse((root / "bad").exists())
+                reads_before = list(reads)
+                artifact["size_in_bytes"] = workflow._LIMIT + 1
+                with self.assertRaisesRegex(ValueError, "small evidence bound"):
+                    workflow.capture_runtime_authorization(policy, "linux-x64", root / "oversized", token="unit-token")
+                self.assertEqual(reads_before, reads)
+                self.assertFalse((root / "oversized").exists())
                 observe.side_effect = ValueError("original protected job failed")
                 with self.assertRaisesRegex(ValueError, "protected job failed"):
                     workflow.capture_runtime_authorization(policy, "linux-x64", root / "failed", token="unit-token")

@@ -87,7 +87,9 @@ def capture_runtime_authorization(policy, target, destination, *, token):
     name = (f"codex-agent-runtime-library-authorizations-{policy['validationCommit']}"
             f"-attestation-{producer['runId']}-attempt-{producer['runAttempt']}")
     artifact = product_reuse._contract_ci_upload_metadata(policy["artifactId"], policy["artifactSha256"],
-        name, producer, observed[0]["run"], token, upload_limit=_LIMIT)
+        name, producer, observed[0]["run"], token)
+    if artifact["size_in_bytes"] > _LIMIT:
+        raise ValueError("Runtime authorization upload exceeds its small evidence bound")
     product_reuse._require_artifact_job_window(observed[0], job, artifact)
     library = next(Path(spec.library_path).name for spec in TARGET_SPECS.values()
                    if spec.classifier == "c-abi-" + target)
