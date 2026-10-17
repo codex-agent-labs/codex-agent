@@ -340,8 +340,15 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
                 _binary_origin(original, context, evidence, contract_version)
             archive_name = None
             if android_runtime_archive is not None and phase == "binary":
-                archive_name = Path(android_runtime_archive).name
-                _layout(original / "android-original", {archive_name})
+                # Transport filenames may differ between consumers. Bind the
+                # authenticated original member to its original command below;
+                # caller bytes and the immutable Git digest must still match.
+                archive_files = _inventory(original / "android-original")
+                if (len(archive_files) != 1 or "/" in archive_files[0]["relativePath"] or
+                        {item.name for item in (original / "android-original").iterdir()} !=
+                        {archive_files[0]["relativePath"]}):
+                    raise ValueError("Original Android archive requires one top-level file")
+                archive_name = archive_files[0]["relativePath"]
                 if _read(original / "android-original" / archive_name) != files_before["archive"]:
                     raise ValueError("Original Android archive differs from caller input")
                 properties = _properties(git_regular_blob_bytes(root, receipt["producer"]["commit"],

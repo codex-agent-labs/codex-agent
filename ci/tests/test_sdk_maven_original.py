@@ -388,6 +388,21 @@ class MavenOriginalTest(unittest.TestCase):
                 pass
         self.binary_gate.assert_not_called()
 
+    def test_android_archive_transport_name_does_not_replace_original_identity(self):
+        self.prepare(component="sdk-android", phase="binary")
+        renamed = self.base / "android16-codex.tar.gz"
+        renamed.write_bytes(self.archive.read_bytes())
+        with self.call(android_runtime_archive=renamed) as result:
+            self.assertEqual(self.receipt, result['receipt'])
+        self.binary_gate.assert_called_once()
+        renamed.write_bytes(b"changed caller archive")
+        with self.assertRaisesRegex(ValueError, "archive differs"), self.call(android_runtime_archive=renamed):
+            pass
+        renamed.write_bytes(self.archive.read_bytes())
+        (self.original / "android-original/extra.tar.gz").write_bytes(renamed.read_bytes())
+        with self.assertRaisesRegex(ValueError, "one top-level file"), self.call(android_runtime_archive=renamed):
+            pass
+
     def test_caller_contract_and_android_archive_cannot_be_replaced(self):
         self.prepare("sdk-android")
         self.archive.write_bytes(b"unrelated archive")
