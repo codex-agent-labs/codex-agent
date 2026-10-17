@@ -38,6 +38,8 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
     abstract val installedConsumerEvidence: DirectoryProperty
     @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val packageNegativeEvidenceDirectory: DirectoryProperty
+    @get:InputDirectory @get:Optional @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val runtimeAuthorization: DirectoryProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val producerScript: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val claims: RegularFileProperty
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val producerSources: ConfigurableFileCollection
@@ -48,6 +50,12 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
     init {
         pythonExecutable.convention("python3")
         ownedBuildDirectory.convention(project.layout.buildDirectory)
+        val root = project.rootProject.layout.projectDirectory
+        runtimeAuthorization.convention(project.layout.dir(
+            project.providers.gradleProperty("codexAgent.sdkPackageReceipt").zip(expectedClassifier) { receipt, target ->
+                root.file(receipt).asFile.parentFile.resolve("runtime-authorization/$target")
+            },
+        ))
         outputs.upToDateWhen { false }
     }
 
@@ -64,11 +72,12 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
         val handoff = capabilityInputsDirectory.get().asFile
         val host = installedConsumerEvidence.get().asFile
         val negatives = packageNegativeEvidenceDirectory.orNull?.asFile
+        val authorization = if (language.get() == "rust") runtimeAuthorization.get().asFile else null
         check((language.get() == "cpp") == (negatives != null)) {
             "C++ capability validation requires original package negative evidence"
         }
         val inputs = listOf(handoff, host, producerScript.get().asFile, claims.get().asFile) +
-            producerSources.files + listOfNotNull(dartPackageConfig.orNull?.asFile, negatives)
+            producerSources.files + listOfNotNull(dartPackageConfig.orNull?.asFile, negatives, authorization)
         inputs.forEach { file ->
             val path = file.canonicalFile.toPath()
             check(!destination.startsWith(path) && !path.startsWith(destination)) {
@@ -99,7 +108,10 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
             processes.exec {
                 workingDir(repositoryRoot.get().asFile)
                 environment("PYTHONDONTWRITEBYTECODE", "1")
-                commandLine(command)
+                commandLine(if (binding.id == "rust") listOf(pythonExecutable.get(), "-m",
+                    "ci.products.sdk_package", "rust-capabilities", "--repository", repositoryRoot.get().asFile.absolutePath,
+                    "--runtime-authorization", authorization!!.absolutePath, "--expected-classifier", classifier,
+                ) + command.drop(2) else command)
             }
             // Keep the complete raw directory (including language auxiliaries); the existing
             // matcher alone owns compiler/reference/executed-test/scenario semantics.

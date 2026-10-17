@@ -120,7 +120,7 @@ def _verify_reports(directory: Path) -> None:
         raise ValueError("Rust raw evidence must contain exactly 556 unique passed tests")
 
 
-def _retain_cargo_test_executables(log: Path, source: Path, evidence: Path) -> None:
+def _retain_cargo_test_executables(log: Path, source: Path, evidence: Path, *, lifecycle_as_unit: bool = False) -> None:
     target_root = source / "target"
     artifacts: dict[Path, Path] = {}
     finished = False
@@ -165,7 +165,9 @@ def _retain_cargo_test_executables(log: Path, source: Path, evidence: Path) -> N
             if executable in artifacts or original in artifacts.values():
                 raise ValueError("Cargo emitted duplicate test executable/source artifacts")
             artifacts[executable] = original
-    required_sources = {source / name for name in ("src/lib.rs", "tests/enum_parity.rs", "tests/lifecycle.rs")}
+    required_sources = {source / name for name in ("src/lib.rs", "tests/enum_parity.rs")}
+    if not lifecycle_as_unit:
+        required_sources.add(source / "tests/lifecycle.rs")
     if not finished or not required_sources.issubset(set(artifacts.values())):
         raise ValueError("Cargo test executable inventory is incomplete")
     for executable in sorted(artifacts):

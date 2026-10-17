@@ -240,6 +240,13 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             parentFile.mkdirs(); writeText("synthetic binary input; Python admission is mocked below\n")
         }
         handoff.resolve("receipts/csharp-binary/phase-receipt.json").writeText("original fixture binary receipt\n")
+        // External transport/sidecar context is required even when Python authentication
+        // is mocked below; these bytes grant no Runtime authorization.
+        crossLanguageCAbiTargetSpecs.values.forEach { spec ->
+            handoff.resolve("receipts/runtime-authorization/${spec.classifier.removePrefix("c-abi-")}/fixture").apply {
+                parentFile.mkdirs(); writeText("mocked authorization input; not a signature\n")
+            }
+        }
         val request = root.resolve("compatibility-request.json").apply { writeText("fixture request\n") }
         val inputVerifier = root.resolve("ci/products/sdk_package.py").apply {
             parentFile.mkdirs()
