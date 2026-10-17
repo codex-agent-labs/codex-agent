@@ -300,6 +300,29 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         contract = (ROOT / ".github/workflows/contract-validation.yml").read_text()
         self.assertIn("contract-tooling-only: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' && fromJSON(inputs.planOutputs).contract_next_phase != 'binary' }}", contract)
 
+    def test_completion_routes_separate_job_controls_below_linux_string_limit(self):
+        from ci.sdk_completion_state import _JOBS
+        from ci.tests.test_sdk_completion_state import direct_handoff, locator
+        job = workflow_job(self.workflow, "sdk-completion")
+        step = job.split("      - id: parent\n", 1)[1].split("      - name:", 1)[0]
+        self.assertNotIn("toJSON(needs)", step)
+        bindings = re.findall(r"([A-Z_0-9]+): \$\{\{ toJSON\(needs\.([a-z0-9-]+)\) }}", step)
+        self.assertEqual(set(_JOBS), {name for _, name in bindings})
+        self.assertEqual(len(_JOBS), len(bindings))
+        values = direct_handoff()
+        for value in values.values():
+            value["outputs"]["routing"] = "unused routing control " * 1000
+        self.assertGreater(len(json.dumps(values)), 128 * 1024)
+        env = {name: json.dumps(values[key]) for name, key in bindings}
+        self.assertLess(max(len(value.encode()) for value in env.values()), 128 * 1024)
+        script = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            with mock.patch.dict(os.environ, {**env, "GITHUB_OUTPUT": str(output)}):
+                exec(compile(script, "<sdk-completion-parent>", "exec"), {})
+            self.assertEqual(locator("99", sdk="18"), dict(
+                line.split("=", 1) for line in output.read_text().splitlines()))
+
     @classmethod
     def setUpClass(cls):
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")

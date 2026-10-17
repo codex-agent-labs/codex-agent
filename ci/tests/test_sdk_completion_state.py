@@ -53,7 +53,54 @@ def forward_android(value):
     return value
 
 
+def direct_handoff():
+    value = handoff()
+    for name in ("runtime-continuation", "runtime-aggregate-continuation",
+                 "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3"):
+        value[name] = job()
+    for name in state._JOBS[6:]:
+        value[name] = job("success", **locator())
+    value["product-resume"]["outputs"].update(native_sdk_direct="true",
+        runtime_workers_required="false", runtime_matrix='{"include":[]}',
+        aggregate_payload_complete="true", aggregate_key="sha256:" + "b" * 64,
+        aggregate_receipt_sha256="sha256:" + "c" * 64)
+    value["sdk-plan"]["outputs"].update(ios_validation_direct="true", sdk_workers_required="false")
+    value["sdk-android-metadata-result"] = job("success", **locator("99", sdk="18"))
+    return value
+
+
 class SdkCompletionStateTest(unittest.TestCase):
+    def test_direct_native_prefix_preserves_final_state_and_rejects_contradictions(self):
+        value = direct_handoff()
+        before = deepcopy(value)
+        self.assertEqual(locator("99", sdk="18"), state.select_sdk_completion_state(value))
+        self.assertEqual(before, value)
+        changes = [("product-resume", field, invalid) for field, invalid in (
+            ("native_sdk_direct", "false"), ("native_sdk_direct", "unknown"),
+            ("runtime_workers_required", "true"), ("runtime_matrix", '{"include":[{}]}'),
+            ("aggregate_payload_complete", "false"), ("aggregate_key", ""),
+            ("aggregate_receipt_sha256", ""), ("full_reuse", "true"))]
+        changes += [("sdk-plan", "ios_validation_direct", "false"),
+                    ("sdk-plan", "sdk_workers_required", "true"),
+                    ("sdk-plan", "artifact_id", "111"),
+                    ("sdk-native-result", "artifact_id", "111")]
+        for name, field, invalid in changes:
+            changed = deepcopy(value)
+            changed[name]["outputs"][field] = invalid
+            with self.subTest(name=name, field=field), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(changed)
+        for name in state._JOBS[1:6]:
+            changed = deepcopy(value)
+            changed[name]["result"] = "success"
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                state.select_sdk_completion_state(changed)
+        for name in state._JOBS[6:]:
+            for result in ("failure", "cancelled", "skipped"):
+                changed = deepcopy(value)
+                changed[name]["result"] = result
+                with self.subTest(name=name, result=result), self.assertRaises(ValueError):
+                    state.select_sdk_completion_state(changed)
+
     def test_final_native_state_is_preserved_without_mutating_any_original_outputs(self):
         for runtime, sdk in (("0", "8"), ("0", "7"), ("0", "6"), ("0", "4"), ("0", "3"), ("2", "")):
             value = handoff()
