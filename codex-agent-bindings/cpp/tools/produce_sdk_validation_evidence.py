@@ -50,6 +50,7 @@ REQUIRED_TESTS = {VALUE_TEST, "codex_agent_cpp_enum_test", "codex_agent_cpp_test
 } | LOADER_TESTS
 CLASSIFIERS = ("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")
 COMPATIBILITY_RESOURCE = Path("share/CodexAgent/native/sdk-compatibility.json")
+ROOT_RESOURCE = COMPATIBILITY_RESOURCE.with_name("sdk-runtime-root.pub")
 
 
 def _required(path: Path, *, directory: bool = False) -> Path:
@@ -165,6 +166,18 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             _required(parent, directory=True)
     if existing_compatibility.exists() and _required(existing_compatibility).read_bytes() != compatibility_bytes:
         raise ValueError("C++ C SDK compatibility differs from the explicit imported declaration")
+    # Raw Runtime SDKs carry no SDK trust root. The authenticated SDK handoff
+    # supplies it beside the declaration; already assembled C SDKs may carry it
+    # in the required CMake resource layout. CMake still rejects an absent root.
+    sdk_root = sdk_compatibility.with_name("sdk-runtime-root.pub")
+    root_bytes = None
+    if sdk_root.exists() or sdk_root.is_symlink():
+        root_bytes = _required(sdk_root).read_bytes()
+        if not root_bytes:
+            raise ValueError("Imported C++ SDK trust root is empty")
+        existing_root = c_sdk_root / ROOT_RESOURCE
+        if existing_root.exists() and _required(existing_root).read_bytes() != root_bytes:
+            raise ValueError("C++ C SDK trust root differs from the imported SDK handoff")
     relative = ("lib/libcodex_agent.dylib" if classifier.startswith("macos-") else
                 "lib/libcodex_agent.so" if classifier.startswith("linux-") else "bin/codex_agent.dll")
     if native_library != _required(c_sdk_root / relative):
@@ -174,6 +187,8 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
         _required(c_sdk_root / name)
     output = Path(os.path.abspath(output.expanduser()))
     _validate_output(output, (canonical_api, c_abi_bootstrap, c_sdk_root, native_library, sdk_compatibility))
+    if root_bytes is not None:
+        _validate_output(output, (sdk_root,))
     _sources()
     _invalidate(output)
     try:
@@ -197,6 +212,11 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                 raise ValueError("C++ C SDK compatibility changed during private capture")
             private_compatibility.parent.mkdir(parents=True, exist_ok=True)
             private_compatibility.write_bytes(compatibility_bytes)
+            if root_bytes is not None:
+                private_root = private_sdk / ROOT_RESOURCE
+                if private_root.exists() and private_root.read_bytes() != root_bytes:
+                    raise ValueError("C++ C SDK trust root changed during private capture")
+                private_root.write_bytes(root_bytes)
             environment = os.environ.copy()
             environment.update({"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
             if classifier == "windows-x64":

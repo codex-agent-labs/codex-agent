@@ -816,6 +816,11 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
             external_calls = []
 
             def run(*command, **options):
+                if language == "csharp" and command[:2] == ("dotnet", "restore"):
+                    # .NET 8 names this switch --no-cache; preserve the original
+                    # local-only source, isolated package cache and forced restore.
+                    command = tuple("--no-cache" if value == "--no-http-cache" else value
+                                    for value in command)
                 if language == "rust" and "codex-agent-rust-lifecycle-smoke" in command:
                     if (len(matches) != 1 or tuple(command[:-1]) != (
                             "cargo", "run", "--manifest-path", options["cwd"] / "rust-consumer/Cargo.toml",

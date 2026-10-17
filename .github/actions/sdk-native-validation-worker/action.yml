@@ -327,6 +327,10 @@ runs:
                 raise ValueError('Selected C# validation requires installed dotnet')
             fields['dotnet-executable'] = str(Path(executable).resolve(strict=True))
         if os.environ['COMPONENT'] == 'dart':
+            if os.environ['DART_PUB_CACHE']:
+                # Installed consumers and capability tests share the already
+                # populated locked cache; never silently use an empty default.
+                os.environ['PUB_CACHE'] = os.environ['DART_PUB_CACHE']
             executable = fields.get('dart-executable') or shutil.which('dart')
             if not executable or not Path(executable).is_absolute():
                 raise ValueError('Selected Dart validation requires installed pinned Dart')

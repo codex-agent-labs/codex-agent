@@ -262,6 +262,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             events = []
             def process(command, **kwargs):
                 events.append(command)
+                self.assertEqual(str(cache), kwargs['env']['PUB_CACHE'])
                 if command[2].endswith('provision_dependencies.py'):
                     flags = dict(zip(command[3::2], command[4::2]))
                     self.assertEqual(str(dart), flags['--dart-executable'])
@@ -308,7 +309,8 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             (cache / 'cached-package').mkdir()
             self.environment.update(COMPONENT='dart', DART_EXECUTABLE=str(dart),
                 DART_PACKAGE_CONFIG=str(config), RUNNER_TEMP=str(external), DART_PUB_CACHE=str(cache))
-            with patch('subprocess.run') as run:
+            with patch('subprocess.run', side_effect=lambda *args, **kwargs:
+                       self.assertEqual(str(cache), kwargs['env']['PUB_CACHE'])) as run:
                 self.execute('execute')
             run.assert_called_once()
             command = run.call_args.args[0]

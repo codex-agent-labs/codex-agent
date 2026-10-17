@@ -150,3 +150,18 @@ class NativeConsumerAuthorizationTest(TestCase):
         fixture.assert_called_once_with(self.installed.parents[2],
             self.output.parent / "rust-consumer/src/bin/lifecycle_smoke.rs", self.output.parent / "mock.dylib",
             environ={"CARGO_TARGET_DIR": str(self.output.parent / "rust-target")})
+
+    def test_dotnet8_restore_keeps_isolated_sources_and_cache_policy(self):
+        def consumer(repository, packages, sdks, plan, output, version, **kwargs):
+            run("dotnet", "restore", packages / "Consumer.csproj", "--force", "--no-http-cache",
+                "--packages", packages / "cache", "--configfile", packages / "NuGet.Config", cwd=packages)
+            library = require_matching_native(packages, "installed.dylib",
+                sdks / "macos-arm64/lib/libcodex_agent.dylib", "unit fixture")
+            run("external-positive", library)
+            output.mkdir()
+        calls = []
+        self.consume(consumer, lambda *command, **options: calls.append((command, options)), language="csharp")
+        self.assertEqual((("dotnet", "restore", self.packages / "Consumer.csproj", "--force", "--no-cache",
+            "--packages", self.packages / "cache", "--configfile", self.packages / "NuGet.Config"),
+            {"cwd": self.packages}), calls[0])
+        self.assertEqual(("external-positive", self.installed), calls[1][0])
