@@ -4184,6 +4184,9 @@ jobs:
     timeout-minutes: 180
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4219,6 +4222,7 @@ jobs:
           revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-validation-worker
         with:
+          runtime-authorization-policy: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
