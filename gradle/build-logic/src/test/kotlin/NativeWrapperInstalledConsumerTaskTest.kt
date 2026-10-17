@@ -15,6 +15,45 @@ import org.gradle.work.DisableCachingByDefault
 
 class NativeWrapperInstalledConsumerTaskTest {
     @Test
+    fun `Python installer bytecode is private disposable and separate from verifier inputs`() {
+        for (fail in listOf(false, true)) fixture().use { fixture ->
+            fixture.verifier.appendText("""
+
+                import os
+                pathlib.Path('verifier-cache-prefix').write_text(os.environ.get('PYTHONPYCACHEPREFIX', ''))
+            """.trimIndent() + "\n")
+            val installation = if (fail) """
+                import py_compile
+                source = pathlib.Path('consumer-fixture.py')
+                source.write_text('value = 1\n')
+                py_compile.compile(str(source), doraise=True)
+            """.trimIndent() else """
+                import subprocess
+                subprocess.run([sys.executable, '-m', 'venv', 'consumer-venv'], check=True)
+            """.trimIndent()
+            fixture.script.writeText("""
+                import os, pathlib, sys
+                assert sys.dont_write_bytecode
+                assert os.environ['PIP_NO_COMPILE'] == '1'
+                cache = pathlib.Path(sys.pycache_prefix)
+                assert cache.is_absolute() and cache.is_dir() and not any(cache.iterdir())
+                original = pathlib.Path('verifier-cache-prefix').read_text()
+                assert str(cache) != original
+                pathlib.Path('consumer-cache-prefix').write_text(str(cache))
+            """.trimIndent() + "\n" + installation + "\n" + """
+                assert any(cache.rglob('*.pyc'))
+                assert not original or not pathlib.Path(original).exists()
+            """.trimIndent() + "\n" + if (fail) "raise SystemExit('consumer failure after legitimate compilation')\n"
+                else fakeConsumerScript(malformed = false))
+            val task = fixture.task("python", offline = true)
+            if (fail) assertFailsWith<GradleException> { task.consume() } else task.consume()
+            val cache = File(fixture.project.projectDir.resolve("consumer-cache-prefix").readText())
+            assertFalse(cache.exists())
+            assertEquals(!fail, fixture.output.exists())
+        }
+    }
+
+    @Test
     fun `Csharp predecessor context is protected before output cleanup`() = fixture().use { fixture ->
         val receipt = fixture.root.resolve("work/package.json").apply { parentFile.mkdirs(); writeText("original") }
         val context = receipt.parentFile.resolve("csharp-binary").apply { mkdir() }

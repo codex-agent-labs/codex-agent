@@ -141,10 +141,24 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
             )
             if (offlineMode.get()) command += "--offline"
             if (negatives != null) command += listOf("--package-negative-evidence", negatives.absolutePath)
-            processes.exec {
-                workingDir(repositoryRoot.get().asFile)
-                environment("PYTHONDONTWRITEBYTECODE", "1")
-                commandLine(command)
+            // pip/ensurepip may explicitly compile installation bytecode despite -B.
+            // Keep it separate from the verifier's immutable, empty cache namespace.
+            val consumerBytecode = if (languageValue == "python")
+                Files.createTempDirectory("sdk-python-consumer-bytecode-").toRealPath() else null
+            try {
+                processes.exec {
+                    workingDir(repositoryRoot.get().asFile)
+                    environment("PYTHONDONTWRITEBYTECODE", "1")
+                    if (consumerBytecode != null) {
+                        environment("PYTHONPYCACHEPREFIX", consumerBytecode.toString())
+                        environment("PIP_NO_COMPILE", "1")
+                    }
+                    commandLine(command)
+                }
+            } finally {
+                consumerBytecode?.let { directory ->
+                    Files.walk(directory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+                }
             }
             requireExactNativeWrapperInstalledConsumerEvidence(output, languageValue, classifier)
         } catch (error: Exception) {
