@@ -349,6 +349,23 @@ def completed_sdk_spec(root, document, value):
     return spec, count
 
 
+def retained_sdk_binding_current(root, document):
+    baseline = document["policy"].get("requalificationBaseline")
+    if baseline is None:
+        return True
+    from products.inventory import tree_entries
+    from products.registry import PHASE_INSTANCE_IDS
+    from products.selection import phase_inventory_paths
+    from reuse_qualification import _changed_inventory_paths
+    before, after = (dict(tree_entries(root, revision)) for revision in
+                     (baseline, document["policy"]["consumerCommit"]))
+    changed = _changed_inventory_paths(before, after)
+    # Android implementation does not produce the Contract/Desktop input bundle.
+    # This exports only a locator; consumers still authenticate exact inputs.
+    return not any(phase_inventory_paths(changed, phase) for phase in PHASE_INSTANCE_IDS
+                   if phase.component != "sdk-android")
+
+
 def completed_environment(root, work, value):
     from products.inventory import canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes
     raw = authority.contents(".reuse/completed-reuse.json", value["authorityCommit"])
@@ -375,7 +392,7 @@ def completed_environment(root, work, value):
               "nativeAuthentication": "required by each explicit consumer"}
     return result, {"CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
                     "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": (
-                        "" if "requalificationBaseline" in document["policy"] else paths["retainedSdkInputsSource"])}
+                        paths["retainedSdkInputsSource"] if retained_sdk_binding_current(root, document) else "")}
 
 
 def verify_completed(root, work, value, token):

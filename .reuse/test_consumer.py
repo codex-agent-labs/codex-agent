@@ -95,11 +95,31 @@ class AcquisitionTests(unittest.TestCase):
                     patch.object(consumer.authority, "contents", return_value=canonical_json_bytes(document)), \
                     patch.object(consumer, "completed_descriptor", return_value=document), \
                     patch.object(consumer, "history", return_value={}), \
+                    patch.object(consumer, "retained_sdk_binding_current", return_value=not requalifying), \
                     patch.object(consumer, "completed_sdk_spec", return_value=(
                         {"sdkInputs": {"source": document["retainedSdkInputsSource"]}}, 11)):
                 _, environment = consumer.completed_environment(Path(temporary), Path(temporary), APPROVAL)
                 self.assertEqual(requalifying, environment["CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"] == "")
                 self.assertTrue(environment["CODEX_AGENT_COMPLETED_REUSE_POLICY"])
+
+    def test_android_only_requalification_retains_the_input_locator_not_authority(self):
+        from products.registry import PhaseInstanceId
+        document = {"policy": {"consumerCommit": "a" * 40, "requalificationBaseline": "b" * 40}}
+        for component, expected in (("sdk-android", True), ("contract", False),
+                                    ("runtime-aggregate", False), ("sdk-core", False)):
+            phase = PhaseInstanceId("sdk", component, "binary", "test")
+            with self.subTest(component=component), \
+                    patch("products.inventory.tree_entries", side_effect=[[("p", "old")], [("p", "new")]]) as trees, \
+                    patch("products.registry.PHASE_INSTANCE_IDS", (phase,)), \
+                    patch("products.selection.phase_inventory_paths", return_value=("p",)):
+                self.assertEqual(expected, consumer.retained_sdk_binding_current(Path("unused"), document))
+                self.assertEqual(["b" * 40, "a" * 40], [call.args[1] for call in trees.call_args_list])
+        with patch("products.inventory.tree_entries", side_effect=ValueError("missing Git")), \
+                self.assertRaisesRegex(ValueError, "missing Git"):
+            consumer.retained_sdk_binding_current(Path("unused"), document)
+        with patch("products.inventory.tree_entries") as trees:
+            self.assertTrue(consumer.retained_sdk_binding_current(Path("unused"), {"policy": {}}))
+            trees.assert_not_called()
 
     def test_batched_blobs_keep_exact_bytes_and_reject_protocol_corruption(self):
         oid = "b" * 40
