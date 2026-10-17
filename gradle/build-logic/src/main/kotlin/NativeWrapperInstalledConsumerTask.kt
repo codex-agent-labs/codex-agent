@@ -95,7 +95,8 @@ abstract class NativeWrapperInstalledConsumerTask @Inject constructor(
         listOf(packageStageDirectory.get().asFile, runtimeStageDirectory.get().asFile,
             packageReceipt.get().asFile, compatibilityRequest.get().asFile, stagedSdkDirectory.get().asFile,
             sdkVersionFile.get().asFile, consumerScript.get().asFile).plus(consumerSources.files)
-            .plus(verifierSources.files).forEach { input ->
+            .plus(verifierSources.files)
+            .plus(nativeWrapperBinaryContext(language.get(), packageReceipt.get().asFile)).forEach { input ->
             val path = input.canonicalFile.toPath()
             check(destinations.none { it.startsWith(path) || path.startsWith(it) }) {
                 "Native validation output overlaps an input: $input"

@@ -236,6 +236,10 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
         root.resolve("installed").copyRecursively(importedStage.resolve("outputs/installed"))
         output.copyRecursively(importedStage.resolve("outputs/capability"))
         val validationReceipt = root.resolve("validation-receipt.json").apply { writeText("original fixture receipt\n") }
+        handoff.resolve("receipts/csharp-binary/stage/original.dll").apply {
+            parentFile.mkdirs(); writeText("synthetic binary input; Python admission is mocked below\n")
+        }
+        handoff.resolve("receipts/csharp-binary/phase-receipt.json").writeText("original fixture binary receipt\n")
         val request = root.resolve("compatibility-request.json").apply { writeText("fixture request\n") }
         val inputVerifier = root.resolve("ci/products/sdk_package.py").apply {
             parentFile.mkdirs()
@@ -256,6 +260,9 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                     raise SystemExit(0)
                 destination = arg('--validation-inputs-output')
                 repository = arg('--repository')
+                context = arg('--receipt').parent / 'csharp-binary'
+                assert (context / 'stage/original.dll').is_file()
+                assert (context / 'phase-receipt.json').read_text() == 'original fixture binary receipt\n'
                 shutil.copytree(repository / 'handoff', destination)
                 shutil.copytree(arg('--validation-stage'), destination / 'validation')
                 shutil.copyfile(arg('--validation-receipt'), destination / 'receipts/sdk-validation.json')

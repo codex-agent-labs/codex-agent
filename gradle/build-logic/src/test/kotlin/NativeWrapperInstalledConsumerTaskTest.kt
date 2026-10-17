@@ -15,6 +15,20 @@ import org.gradle.work.DisableCachingByDefault
 
 class NativeWrapperInstalledConsumerTaskTest {
     @Test
+    fun `Csharp predecessor context is protected before output cleanup`() = fixture().use { fixture ->
+        val receipt = fixture.root.resolve("work/package.json").apply { parentFile.mkdirs(); writeText("original") }
+        val context = receipt.parentFile.resolve("csharp-binary").apply { mkdir() }
+        val sentinel = context.resolve("stage/original.dll").apply { parentFile.mkdirs(); writeText("preserve") }
+        val task = fixture.task("csharp", offline = true).apply {
+            packageReceipt.set(receipt)
+            outputDirectory.set(context.resolve("stage"))
+        }
+        assertFailsWith<IllegalStateException> { task.consume() }
+        assertEquals("preserve", sentinel.readText())
+        assertFalse(fixture.project.projectDir.resolve("authenticated").exists())
+    }
+
+    @Test
     fun `C++ negative output is mandatory separated forwarded and cleared on failure`() {
         fixture().use { fixture ->
             assertFailsWith<IllegalStateException> { fixture.task("cpp", offline = true).consume() }

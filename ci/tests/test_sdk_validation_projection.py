@@ -12,7 +12,7 @@ from ci.products.inventory import canonical_json_bytes, load_canonical_json_byte
 from ci.products.receipt import output_inventory_digest, write_output_manifest
 from ci.products.sdk_validation import (
     VerifiedSdkValidationProjection, verify_sdk_validation_projection, sdk_validation_provider,
-    decode_sdk_validation_records, rebase_sdk_validation_records, _EVIDENCE_PATHS,
+    decode_sdk_validation_records, rebase_sdk_validation_records, sdk_validation_paths,
 )
 from ci.products.registry import PHASE_INSTANCE_IDS
 from ci.products.selection import classify_paths, phase_inventory_paths
@@ -176,7 +176,43 @@ class SdkValidationProjectionTest(unittest.TestCase):
     def evidence_record(self):
         return {"receiptSha256": sha256_bytes(self.args["validation_receipt"].read_bytes()),
             "component": self.args["component"], "target": self.args["target"],
-            **{name: self.args[argument].relative_to(self.root).as_posix() for name, argument in _EVIDENCE_PATHS.items()}}
+            **{name: self.args[argument].relative_to(self.root).as_posix()
+               for name, argument in sdk_validation_paths(self.args["component"]).items()}}
+
+    def test_csharp_captures_original_binary_context_and_rejects_missing_or_mutated_inputs(self):
+        self.args["component"] = self.value["component"] = "csharp"
+        for phase, target in (("package", "desktop"), ("validation", "linux-x64"), ("binary", "desktop")):
+            stage, receipt = self.root / phase, self.root / f"{phase}.json"
+            (stage / "outputs").mkdir(parents=True, exist_ok=True)
+            (stage / "outputs/original.txt").write_bytes(f"original {phase} evidence\n".encode())
+            manifest = write_output_manifest(stage, "sdk", "csharp", phase, target, "0.2.0", {"evidence": "outputs"})
+            write_receipt(receipt, product="sdk", component="csharp", phase=phase, target=target,
+                version="0.2.0", version_identity="0.2.0", upstream=[], context=self.context, outputs=manifest["outputs"])
+            self.args[f"{phase}_stage"], self.args[f"{phase}_receipt"] = stage, receipt
+        self.package = load_canonical_json_bytes(self.args["package_receipt"].read_bytes())
+        self.value["packageOutputsDigest"] = output_inventory_digest(self.package["outputs"])
+        def inspect(fields):
+            context = fields["--package-receipt"].parent / "csharp-binary"
+            self.assertEqual(regular_file_inventory(self.args["binary_stage"]), regular_file_inventory(context / "stage"))
+            self.assertEqual(self.args["binary_receipt"].read_bytes(), (context / "phase-receipt.json").read_bytes())
+        self.mutate = inspect
+        before = regular_file_inventory(self.root)
+        self.verify()
+        self.assertEqual(before, regular_file_inventory(self.root))
+        record = self.evidence_record()
+        self.assertEqual(self.args["binary_stage"], decode_sdk_validation_records(self.root, [record])[record["receiptSha256"]]["binaryStage"])
+        for missing in ("binaryStage", "binaryReceipt"):
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                decode_sdk_validation_records(self.root, [{key: value for key, value in record.items() if key != missing}])
+        with self.assertRaises(ValueError):
+            self.verify(binary_receipt=None)
+        for name in ("stage/outputs/original.txt", "phase-receipt.json"):
+            def mutate(fields):
+                path = fields["--package-receipt"].parent / "csharp-binary" / name
+                path.write_bytes(path.read_bytes() + b"changed")
+            self.mutate = mutate
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "changed"):
+                self.verify()
 
     def tooling_policy(self):
         return {"evidence": str(self.args["tooling_evidence"]), "publicKey": str(self.args["tooling_public_key"]),

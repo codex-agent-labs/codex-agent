@@ -633,6 +633,31 @@ class SdkPackagePlanTest(unittest.TestCase):
                 "--component", "csharp"]
 
     @requires_dotnet
+    def test_csharp_fixed_external_context_uses_full_binary_gate_and_preserves_originals(self):
+        original = self.native_receipt.read_bytes()
+        binary = self.csharp_binary_receipt.read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            receipt = root / "package.json"
+            receipt.write_bytes(original)
+            context = root / "csharp-binary"
+            snapshot_regular_tree(self.csharp_binary_stage, context / "stage")
+            (context / "phase-receipt.json").write_bytes(binary)
+            arguments = dict(runtime_stage_root=self.chain["variants"]["stages"], staged_sdks=self.sdks)
+            result = verify_sdk_package_inputs(self.repository, self.native_stage, receipt, self.request, **arguments)
+            self.assertEqual(original, result[1])
+            self.assertEqual(original, self.native_receipt.read_bytes())
+            self.assertEqual(binary, self.csharp_binary_receipt.read_bytes())
+            value = load_canonical_json_bytes(binary)
+            value["outputs"][0]["sha256"] = "sha256:" + "f" * 64
+            (context / "phase-receipt.json").write_bytes(canonical_json_bytes(value))
+            with self.assertRaises(ValueError):
+                verify_sdk_package_inputs(self.repository, self.native_stage, receipt, self.request, **arguments)
+            (context / "phase-receipt.json").unlink()
+            with self.assertRaises((OSError, ValueError)):
+                verify_sdk_package_inputs(self.repository, self.native_stage, receipt, self.request, **arguments)
+
+    @requires_dotnet
     def test_native_cli_uses_complete_original_plan_without_rewriting_receipt(self):
         original = self.native_receipt.read_bytes()
         self.assertEqual(0, package_main(self.native_cli_arguments()))

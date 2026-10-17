@@ -69,9 +69,12 @@ def execute(
     trees = {"runtime": Path(runtime_stages), "sdks": Path(staged_sdks)}
     receipts, raw = {}, {}
     identities = [("package", "desktop"), *(("validation", target) for target in sorted(NATIVE_TARGETS))]
+    if component == "csharp":
+        identities.append(("binary", "desktop"))
     for phase, target in identities:
         original = predecessor("sdk", component, phase, target)
-        name = "package" if phase == "package" else f"validation/{target}"
+        name = ("csharp-binary/phase-receipt" if phase == "binary" else
+                "package" if phase == "package" else f"validation/{target}")
         receipt_path = Path(original["receiptPath"])
         contents = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
         receipt = validate_phase_receipt(load_canonical_json_bytes(contents))
@@ -82,7 +85,7 @@ def execute(
         manifest = verify_output_manifest_identity(original_stage, "sdk", component, phase, target, sdk_version)
         if manifest["outputs"] != receipt["outputs"]:
             raise ValueError("Native SDK predecessor stage differs from its original receipt")
-        trees[name] = original_stage
+        trees["receipts/csharp-binary/stage" if phase == "binary" else name] = original_stage
         receipts[name] = receipt_path
         raw[name] = contents
     original_inventory = {name: _inventory(path) for name, path in trees.items()}

@@ -8,7 +8,7 @@ import zipfile
 from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
-from ci.products.receipt import output_inventory_digest, write_output_manifest
+from ci.products.receipt import compute_build_key, output_inventory_digest, write_output_manifest
 from ci.products.index import IndexEntrySource, SignedProductIndex, build_product_index, verify_signed_product_index
 from ci.products.restore import object_relative_path, store_local_object
 from ci.products.signatures import generate_development_key, sign_manifest
@@ -103,6 +103,38 @@ class SdkValidationInputsTest(unittest.TestCase):
                 self.assertEqual(original_inventory, regular_file_inventory(output, allow_empty=True))
             finally:
                 hidden.rename(self.chain["root"])
+
+    def test_csharp_binary_context_survives_carrier_relocation_without_rewriting_receipts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, carrier, relocated = root / "source", root / "carrier", root / "relocated"
+            snapshot_regular_tree(self.original, source)
+            record = {**self.records[0], "component": "csharp", "binaryStage": "binaryStage", "binaryReceipt": "binaryReceipt"}
+            snapshot_regular_tree(source / "packageStage", source / "binaryStage")
+            (source / "binaryReceipt").write_bytes((source / "packageReceipt").read_bytes())
+            for phase in ("package", "validation", "binary"):
+                receipt = source / record[phase + "Receipt"]
+                value = load_canonical_json_bytes(receipt.read_bytes())
+                value.update(component="csharp", phase=phase)
+                value["buildKey"] = compute_build_key(**{name: value[name] for name in
+                    ("product", "component", "phase", "target", "inputs")})
+                receipt.write_bytes(canonical_json_bytes(value))
+            record["receiptSha256"] = sha256_bytes((source / "validationReceipt").read_bytes())
+            def proof(**arguments):
+                self.assertEqual((source / "binaryReceipt").read_bytes(), arguments["binary_receipt"].read_bytes())
+                self.assertEqual(regular_file_inventory(source / "binaryStage"), regular_file_inventory(arguments["binary_stage"]))
+                self.assertEqual(arguments["package_receipt"].parent / "csharp-binary/stage", arguments["binary_stage"])
+                return self.proof(**arguments)
+            records = self.stage([record], source, carrier, proof=proof)
+            self.assertEqual(records, self.stage(records, carrier, relocated, proof=proof))
+            self.assertEqual(regular_file_inventory(carrier), regular_file_inventory(relocated))
+            def mutate(**arguments):
+                result = proof(**arguments)
+                arguments["binary_receipt"].write_bytes(b"changed original binary receipt")
+                return result
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.stage(records, carrier, root / "rejected", proof=mutate)
+            self.assertFalse((root / "rejected").exists())
 
     def test_exact_carrier_rejects_missing_extra_escape_symlink_and_cross_receipt(self):
         for case in ("missing", "extra", "input-extra", "input-escape", "input-absolute", "escape", "symlink", "receipt", "authority"):

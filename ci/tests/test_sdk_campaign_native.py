@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from ci.products.index import IndexEntrySource
-from ci.products.inventory import sha256_bytes
+from ci.products.inventory import regular_file_inventory, sha256_bytes
 from ci.products.receipt import write_output_manifest
 from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from ci.products.sdk_campaign_native import NATIVE_CAMPAIGN_INSTANCES, verify_sdk_campaign_native
@@ -64,8 +64,7 @@ class NativeCampaignTest(unittest.TestCase):
                 binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
                 self.assertEqual(Path(options["binary_receipt_path"]).read_bytes(),
                                  self.sources[binary].receipt_bytes)
-                self.assertEqual(Path(options["binary_stage_root"]).parts[-3:],
-                                 ("csharp", "binary", "desktop"))
+                self.assertEqual(Path(receipt_path).parent / "csharp-binary/stage", options["binary_stage_root"])
                 expected.update(binary_stage_root=options["binary_stage_root"],
                                 binary_receipt_path=options["binary_receipt_path"])
             self.assertEqual(options, expected)
@@ -79,6 +78,13 @@ class NativeCampaignTest(unittest.TestCase):
             self.assertEqual(options["validation_receipt"].read_bytes(), self.sources[instance].receipt_bytes)
             self.assertEqual(options["package_receipt"].read_bytes(), self.sources[
                 PhaseInstanceId("sdk", instance.component, "package", "desktop")].receipt_bytes)
+            if instance.component == "csharp":
+                binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+                self.assertEqual(options["package_receipt"].parent / "csharp-binary/stage", options["binary_stage"])
+                self.assertEqual(self.sources[binary].receipt_bytes, options["binary_receipt"].read_bytes())
+            else:
+                self.assertNotIn("binary_stage", options)
+                self.assertNotIn("binary_receipt", options)
             calls["validation"].append(instance)
             proof = _Projection(self.receipts[instance], self.sources[instance].receipt_bytes)
             proofs[instance] = proof
@@ -88,6 +94,11 @@ class NativeCampaignTest(unittest.TestCase):
             component = options["component"]
             instance = PhaseInstanceId("sdk", component, "metadata", "desktop")
             self.assertEqual(options["metadata_receipt"].read_bytes(), self.sources[instance].receipt_bytes)
+            if component == "csharp":
+                binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+                context = options["package_receipt"].parent / "csharp-binary"
+                self.assertEqual(self.sources[binary].receipt_bytes, (context / "phase-receipt.json").read_bytes())
+                self.assertEqual(regular_file_inventory(self.stages[binary]), regular_file_inventory(context / "stage"))
             for target in sorted(NATIVE_TARGETS):
                 host = PhaseInstanceId("sdk", component, "validation", target)
                 self.assertEqual((options["validation_receipts"] / f"{target}.json").read_bytes(),

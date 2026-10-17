@@ -24,12 +24,18 @@ _EVIDENCE_PATHS = {
 }
 
 
+def sdk_validation_paths(component):
+    return {**_EVIDENCE_PATHS, **({"binaryStage": "binary_stage", "binaryReceipt": "binary_receipt"}
+                               if component == "csharp" else {})}
+
+
 def map_sdk_validation_record(record, path):
-    record = require_exact_keys(record, {"receiptSha256", "component", "target", *_EVIDENCE_PATHS}, "SDK validation evidence")
+    fields = sdk_validation_paths(record.get("component") if isinstance(record, dict) else None)
+    record = require_exact_keys(record, {"receiptSha256", "component", "target", *fields}, "SDK validation evidence")
     require_sha256(record["receiptSha256"], "SDK validation original receipt")
     if record["component"] not in NATIVE_BINDINGS or record["target"] not in NATIVE_TARGETS:
         raise ValueError("SDK validation evidence requires an exact native language/host")
-    return {**record, **{name: path(record[name]) for name in _EVIDENCE_PATHS}}
+    return {**record, **{name: path(record[name]) for name in fields}}
 
 
 def decode_sdk_validation_records(root: Path, records):
@@ -87,7 +93,7 @@ def sdk_validation_provider(root: Path, records, *, repository: Path, policy_rev
         if digest not in proofs:
             proof = verify_sdk_validation_projection(repository=repository, policy_revision=policy_revision,
                 component=record["component"], target=record["target"], required_trust_domain=trust,
-                **arguments, **{dest: record[src] for src, dest in _EVIDENCE_PATHS.items()})
+                **arguments, **{dest: record[src] for src, dest in sdk_validation_paths(record["component"]).items()})
             if type(proof) is not VerifiedSdkValidationProjection:
                 raise ValueError("SDK validation provider requires the full authenticated proof")
             proofs[digest] = proof
@@ -135,6 +141,7 @@ def verify_sdk_validation_projection(
     validation_stage: Path, validation_receipt: Path, tooling_evidence: Path, tooling_public_key: Path,
     java_executable: Path, policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+    binary_stage: Path | None = None, binary_receipt: Path | None = None,
 ) -> VerifiedSdkValidationProjection:
     """Only the existing fixed full matcher can mint this same-snapshot proof.
 
@@ -151,6 +158,12 @@ def verify_sdk_validation_projection(
     java_bytes = read_regular_file_bytes(java_executable, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
     stages = {"package": Path(package_stage), "validation": Path(validation_stage)}
     receipt_paths = {"package": Path(package_receipt), "validation": Path(validation_receipt)}
+    if ((binary_stage is None) != (binary_receipt is None)
+            or (binary_stage is not None) != (component == "csharp")):
+        raise ValueError("C# validation requires its exact original binary input pair")
+    if component == "csharp":
+        stages["binary"] = Path(binary_stage)
+        receipt_paths["binary"] = Path(binary_receipt)
     before = {phase: regular_file_inventory(path) for phase, path in stages.items()}
     originals = {phase: read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True)
                  for phase, path in receipt_paths.items()}
@@ -161,11 +174,11 @@ def verify_sdk_validation_projection(
         root = Path(temporary).resolve()
         captured = {}
         for phase, source in stages.items():
-            stage = root / phase
+            stage = root / "csharp-binary/stage" if phase == "binary" else root / phase
             snapshot_regular_tree(source, stage)
             if regular_file_inventory(stage) != before[phase]:
                 raise ValueError("SDK original stage changed during capture")
-            expected_target = "desktop" if phase == "package" else target
+            expected_target = target if phase == "validation" else "desktop"
             receipt = receipts[phase]
             if tuple(receipt[field] for field in _IDENTITY[:4]) != ("sdk", component, phase, expected_target):
                 raise ValueError("SDK original receipt differs from requested language/host/phase")
@@ -173,7 +186,8 @@ def verify_sdk_validation_projection(
                                                        expected_target, receipt["productVersion"])
             if manifest["outputs"] != receipt["outputs"]:
                 raise ValueError("SDK original receipt differs from captured stage outputs")
-            captured[phase] = root / f"{phase}-receipt.json"
+            captured[phase] = (root / "csharp-binary/phase-receipt.json" if phase == "binary"
+                               else root / f"{phase}-receipt.json")
             captured[phase].write_bytes(originals[phase])
         output = root / "content.json"
         with verified_tooling_capture(tooling_evidence, repository, tooling_public_key,
@@ -202,7 +216,8 @@ def verify_sdk_validation_projection(
         for field in ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest"):
             require_sha256(value[field], f"verified SDK content {field}")
         for phase, source in stages.items():
-            if (regular_file_inventory(root / phase) != before[phase] or regular_file_inventory(source) != before[phase]
+            stage = root / "csharp-binary/stage" if phase == "binary" else root / phase
+            if (regular_file_inventory(stage) != before[phase] or regular_file_inventory(source) != before[phase]
                     or read_regular_file_bytes(captured[phase]) != originals[phase]
                     or read_regular_file_bytes(receipt_paths[phase], reject_symlink_parents=True) != originals[phase]):
                 raise ValueError("Original or private SDK validation inputs changed during verification")

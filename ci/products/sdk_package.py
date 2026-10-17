@@ -200,6 +200,18 @@ def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, 
         raise ValueError("SDK receipt inputs/build key differ from its original authenticated plan")
 
 
+def csharp_binary_inputs(package_receipt: Path) -> dict[str, Path]:
+    """Fixed external input context; its bytes still need full binary/plan checks.
+
+    Validation/metadata callers retain the original binary beside the original
+    package receipt. This is an exact transport layout, never artifact discovery
+    or an alternative source of trust. Explicit binary arguments remain valid.
+    """
+    context = Path(package_receipt).parent / "csharp-binary"
+    return {"binary_stage_root": context / "stage",
+            "binary_receipt_path": context / "phase-receipt.json"}
+
+
 def verify_sdk_package_inputs(
     repository: Path, stage_root: Path, receipt_path: Path, compatibility_request: Path,
     *, runtime_stage_root: Path | None = None, staged_sdks: Path | None = None,
@@ -285,6 +297,9 @@ def verify_sdk_package_inputs(
         raise ValueError("Unexpected Node Runtime package inputs for this SDK family")
     elif native:
         csharp_binary = instance.component == "csharp"
+        if csharp_binary and binary_stage_root is None and binary_receipt_path is None:
+            context = csharp_binary_inputs(receipt_path)
+            binary_stage_root, binary_receipt_path = context["binary_stage_root"], context["binary_receipt_path"]
         if (runtime_stage_root is None or staged_sdks is None or binary_contract_evidence is not None
                 or (binary_stage_root is None) != (binary_receipt_path is None)
                 or (binary_stage_root is not None) != csharp_binary):

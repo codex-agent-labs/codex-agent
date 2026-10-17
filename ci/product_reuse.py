@@ -6196,7 +6196,10 @@ def execute_sdk_metadata(
 
     def original(product, name, phase, target):
         dependency = PhaseInstanceId(product, name, phase, target)
-        if dependency not in phase_instance_dependencies(instance):
+        binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+        if (dependency not in phase_instance_dependencies(instance)
+                and not (component == "csharp" and dependency == binary
+                         and binary in _dependency_closure((instance,)))):
             raise ValueError("SDK metadata requested an unrelated direct predecessor")
         directory = inputs / "-".join((product, name, phase, target))
         receipt_path = directory / "phase-receipt.json"

@@ -274,7 +274,8 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
             hosts[target] = record
             protected.update(Path(record[name]) for name in (
                 "packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages", "stagedSdks",
-                "validationStage", "validationReceipt"))
+                "validationStage", "validationReceipt",
+                *(("binaryStage", "binaryReceipt") if language == "csharp" else ())))
         selected[language] = hosts
     before = {path: (regular_file_inventory(path, allow_empty=True) if path.is_dir()
         else read_regular_file_bytes(path, reject_symlink_parents=True)) for path in protected}

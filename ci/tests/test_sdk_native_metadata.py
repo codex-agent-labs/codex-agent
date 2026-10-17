@@ -48,6 +48,9 @@ class SdkNativeMetadataTest(unittest.TestCase):
         self.request_source = self.root / "original-k-r"
         self.request_source.write_bytes(b"synthetic original K/R, not executed\n")
         self.package = self.phase("package", "desktop", self.args["package_stage"], self.args["package_receipt"])
+        if component == "csharp":
+            self.phase("binary", "desktop", self.root / "csharp-binary/stage",
+                       self.root / "csharp-binary/phase-receipt.json")
         self.upstream = [_upstream_record(self.package)]
         contents = self.root / "host-contents"
         contents.mkdir()
@@ -120,6 +123,9 @@ class SdkNativeMetadataTest(unittest.TestCase):
             self.assertNotEqual(self.args[original], fields[f"--{argument}"])
         self.assertEqual(sorted(NATIVE_TARGETS), sorted(path.name for path in fields["--validation-stages"].iterdir()))
         self.assertNotIn("JAVA_TOOL_OPTIONS", kwargs["env"])
+        if self.component == "csharp":
+            context = fields["--package-receipt"].parent / "csharp-binary"
+            self.assertEqual(regular_file_inventory(self.root / "csharp-binary"), regular_file_inventory(context))
         self.mutate(fields)
         fields["--content-output"].write_bytes(self.content)
         return subprocess.CompletedProcess(command, 0)

@@ -97,13 +97,16 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
     def materialize(self, plan, discovery, state, identity, destination, **kwargs):
         self.assertTrue(self.live)
         self.events.append("materialize")
-        self.assertEqual(PhaseInstanceId("sdk", "python", "validation", "linux-x64"), identity)
+        component = self.ready["component"]
+        self.assertEqual(PhaseInstanceId("sdk", component, "validation", "linux-x64"), identity)
         self.assertEqual(self.ready["buildKey"], kwargs["expected_build_key"])
         self.assertEqual(self.tooling, kwargs["sdk_validation_tooling"])
         self.assertEqual(self.arguments["trusted_workflow_sha"], kwargs["sdk_original_workflow_sha"])
         originals = {**self.original_paths, fixture.fixture.CONTRACT: self.contract,
-            PhaseInstanceId("sdk", "python", "package", "desktop"): {
+            PhaseInstanceId("sdk", component, "package", "desktop"): {
                 "stage": self.package_stage, "receiptPath": self.package_receipt_path}}
+        if component == "csharp":
+            originals[PhaseInstanceId("sdk", component, "binary", "desktop")] = self.binary
         for original_identity, value in originals.items():
             directory = destination / self.name(original_identity)
             snapshot_regular_tree(value["stage"], directory / "stage")
@@ -118,6 +121,11 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertEqual(self.root, repository)
         self.assertEqual(self.package_before, regular_file_inventory(stage.parent))
         self.assertEqual(self.package_receipt_path.read_bytes(), receipt.read_bytes())
+        if self.ready["component"] == "csharp":
+            self.assertEqual(regular_file_inventory(self.binary["stage"]),
+                             regular_file_inventory(receipt.parent / "csharp-binary/stage"))
+            self.assertEqual(self.binary["receiptPath"].read_bytes(),
+                             (receipt.parent / "csharp-binary/phase-receipt.json").read_bytes())
         self.assertEqual(self.sdk / workflow.REQUEST_NAME, request)
         self.assertEqual({"runtime_stage_root": self.destination / "runtime-stages",
             "staged_sdks": self.capture_path / "original/staged-sdks"}, kwargs)
@@ -148,7 +156,7 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         stage = self.destination / "synthetic-stage"
         (stage / "outputs/capability").mkdir(parents=True)
         (stage / "outputs/capability/raw.log").write_bytes(b"synthetic raw validation\xff\x00\n")
-        write_output_manifest(stage, "sdk", "python", "validation", "linux-x64", "0.3.0",
+        write_output_manifest(stage, "sdk", self.ready["component"], "validation", "linux-x64", "0.3.0",
                               {"native-wrapper-capability": "outputs/capability"})
         self.result = {"stage": stage, "diagnostics": kwargs["destination"], "outputInventory": regular_file_inventory(stage)}
         return self.result
@@ -159,7 +167,10 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertFalse((self.destination / "shard").exists())
         self.assertFalse(source.is_relative_to(self.root))
         record, = records
-        self.assertEqual(("python", "linux-x64"), (record["component"], record["target"]))
+        self.assertEqual((self.ready["component"], "linux-x64"), (record["component"], record["target"]))
+        if record["component"] == "csharp":
+            self.assertEqual(regular_file_inventory(self.binary["stage"]), regular_file_inventory(source / record["binaryStage"]))
+            self.assertEqual(self.binary["receiptPath"].read_bytes(), (source / record["binaryReceipt"]).read_bytes())
         self.assertTrue(all(not Path(record[name]).is_absolute() and ".." not in Path(record[name]).parts
             for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage",
                          "packageReceipt", "validationReceipt", "compatibilityRequest")))
@@ -222,6 +233,31 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertEqual(b"", (self.destination / "prepared-upload/original/diagnostics/gradle.log").read_bytes())
         self.assertFalse(self.capture_path.exists())
         self.assertEqual(self.package_before, regular_file_inventory(self.package_stage.parent))
+
+    def test_csharp_worker_and_retained_carrier_receive_unchanged_original_binary(self):
+        self.ready["component"] = self.arguments["component"] = "csharp"
+        self.ready["buildKey"] = compute_build_key(**{name: self.ready[name] for name in
+            ("product", "component", "phase", "target", "inputs")})
+        self.arguments["expected_build_key"] = self.ready["buildKey"]
+        self.selection["consumers"][0]["component"] = "csharp"
+        for phase in ("package", "binary"):
+            stage = self.package_stage if phase == "package" else self.root / "original-csharp-binary/stage"
+            (stage / "outputs").mkdir(parents=True, exist_ok=True)
+            if phase == "binary":
+                (stage / "outputs/original.dll").write_bytes(b"synthetic binary predecessor; never executed")
+            manifest = write_output_manifest(stage, "sdk", "csharp", phase, "desktop", "0.3.0", {phase: "outputs"})
+            receipt_path = stage.parent / "phase-receipt.json"
+            receipt = write_receipt(receipt_path, product="sdk", component="csharp", phase=phase,
+                target="desktop", version="0.3.0", version_identity="0.3.0", outputs=manifest["outputs"],
+                upstream=[], context={"producer": self.producer})
+            if phase == "package":
+                self.package_receipt = receipt
+            else:
+                self.binary = {"stage": stage, "receiptPath": receipt_path}
+        self.package_before = regular_file_inventory(self.package_stage.parent)
+        before = regular_file_inventory(self.binary["stage"].parent)
+        self.invoke()
+        self.assertEqual(before, regular_file_inventory(self.binary["stage"].parent))
 
     def test_explicit_apple_policy_reaches_current_and_preparation_replays(self):
         policy = fixture.caller_apple_policy(self.root / "caller")

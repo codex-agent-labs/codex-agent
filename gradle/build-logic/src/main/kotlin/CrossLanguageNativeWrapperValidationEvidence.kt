@@ -67,6 +67,7 @@ internal fun verifyImportedNativeWrapperValidation(
     }) { "Unsupported imported native validation language/host" }
     val sources = listOf(packageStage, packageReceipt, compatibilityRequest, runtimeStages, stagedSdks,
         validationStage, validationReceipt, repository.resolve("ci")) +
+        nativeWrapperBinaryContext(language.id, packageReceipt) +
         if (language.id == "cpp") listOf(repository.resolve(
             "codex-agent-bindings/cpp/tools/verify_imported_package.py")) else emptyList()
     listOfNotNull(contentOutput, enclosingContentOutput).forEach { output ->
@@ -150,6 +151,10 @@ private fun requireNativeValidationContentDestination(output: File, sources: Lis
     }
 }
 
+/** Fixed external C# predecessor context, authenticated by the full Python gate. */
+internal fun nativeWrapperBinaryContext(language: String, packageReceipt: File): List<File> =
+    if (language == "csharp") listOf(packageReceipt.parentFile.resolve("csharp-binary")) else emptyList()
+
 private fun nativeValidationInputInventory(sources: List<File>): Map<String, String> = buildMap {
     sources.forEach { source ->
         generateSequence(source.toPath().toAbsolutePath()) { it.parent }.forEach { path ->
@@ -195,7 +200,8 @@ internal fun writeImportedNativeWrapperMetadataContent(
     check(language in nativeWrapperBindings) { "Unsupported native metadata language" }
     val targets = crossLanguageCAbiTargetSpecs.values.map { it.classifier.removePrefix("c-abi-") }.sorted()
     val sources = listOf(packageStage, packageReceipt, compatibilityRequest, runtimeStages, stagedSdks,
-        validationStages, validationReceipts, repository.resolve("ci")) + if (language.id == "cpp")
+        validationStages, validationReceipts, repository.resolve("ci")) +
+        nativeWrapperBinaryContext(language.id, packageReceipt) + if (language.id == "cpp")
         listOf(repository.resolve("codex-agent-bindings/cpp/tools/verify_imported_package.py")) else emptyList()
     requireNativeValidationContentDestination(contentOutput, sources)
     val parent = contentOutput.toPath().parent.toRealPath()

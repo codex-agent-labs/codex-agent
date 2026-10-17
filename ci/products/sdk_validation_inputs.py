@@ -26,6 +26,15 @@ _FILES = ("packageReceipt", "validationReceipt")
 _LIMIT = 16 * 1024 * 1024
 
 
+def _record_paths(record):
+    return (_TREES + (("binaryStage",) if record["component"] == "csharp" else ()),
+            _FILES + (("binaryReceipt",) if record["component"] == "csharp" else ()))
+
+
+def _retained_path(name):
+    return {"binaryStage": "csharp-binary/stage", "binaryReceipt": "csharp-binary/phase-receipt.json"}.get(name, name)
+
+
 def _request_inventory(request, *, within=None):
     """Inventory only declared originals, never a key directory's private files."""
     arguments = load_sdk_compatibility_request(request)
@@ -72,16 +81,17 @@ def load_sdk_validation_evidence(root: Path):
     decoded = decode_sdk_validation_records(root, records)
     expected = {REQUEST_NAME}
     for record in records:
+        trees, files = _record_paths(record)
         prefix = Path("originals") / record["receiptSha256"].removeprefix("sha256:")
-        exact = {**{name: (prefix / name).as_posix() for name in (*_TREES, *_FILES)},
+        exact = {**{name: (prefix / _retained_path(name)).as_posix() for name in (*trees, *files)},
                  "compatibilityRequest": (prefix / "inputs" / INPUT_REQUEST_NAME).as_posix()}
         if any(record[name] != path for name, path in exact.items()):
             raise ValueError("SDK retained evidence paths differ from their original receipt layout")
-        for name in _TREES:
+        for name in trees:
             path = root / record[name]
             expected.update((path / item["relativePath"]).relative_to(root).as_posix()
                             for item in regular_file_inventory(path))
-        expected.update(record[name] for name in _FILES)
+        expected.update(record[name] for name in files)
         validation_bytes = read_regular_file_bytes(root / record["validationReceipt"], reject_symlink_parents=True)
         validation = validate_phase_receipt(load_canonical_json_bytes(validation_bytes))
         if (sha256_bytes(validation_bytes) != record["receiptSha256"] or
@@ -134,31 +144,33 @@ def stage_sdk_validation_evidence(records, source_root: Path, destination: Path,
     retained_inventory = regular_file_inventory(source_root, allow_empty=True) if retained else None
     before = {}
     for digest, record in originals.items():
+        trees, files = _record_paths(record)
         request = record["compatibilityRequest"]
         request_files = _request_inventory(request)
         _require_capability_output_separate(destination, [
-            *(record[name] for name in (*_TREES, *_FILES, "compatibilityRequest")),
+            *(record[name] for name in (*trees, *files, "compatibilityRequest")),
             *request_files,
         ])
-        before[digest] = ({name: regular_file_inventory(record[name]) for name in _TREES},
+        before[digest] = ({name: regular_file_inventory(record[name]) for name in trees},
                          {name: read_regular_file_bytes(record[name], max_bytes=_LIMIT, reject_symlink_parents=True)
-                          for name in (*_FILES, "compatibilityRequest")}, request_files)
+                          for name in (*files, "compatibilityRequest")}, request_files)
     with tempfile.TemporaryDirectory(prefix="sdk-validation-inputs-") as temporary:
         root = Path(temporary).resolve() / "handoff"
         root.mkdir()
         captured = []
         for digest, record in originals.items():
+            trees, files = _record_paths(record)
             prefix = Path("originals") / digest.removeprefix("sha256:")
             relocated = {name: record[name] for name in ("receiptSha256", "component", "target")}
-            for name in _TREES:
-                snapshot_regular_tree(record[name], root / prefix / name)
-                relocated[name] = (prefix / name).as_posix()
+            for name in trees:
+                snapshot_regular_tree(record[name], root / prefix / _retained_path(name))
+                relocated[name] = (prefix / _retained_path(name)).as_posix()
                 if regular_file_inventory(root / relocated[name]) != before[digest][0][name]:
                     raise ValueError("SDK original tree changed during capture")
-            for name in _FILES:
-                path = root / prefix / name
+            for name in files:
+                path = root / prefix / _retained_path(name)
                 path.write_bytes(before[digest][1][name])
-                relocated[name] = (prefix / name).as_posix()
+                relocated[name] = (prefix / _retained_path(name)).as_posix()
             original_request = root / prefix / "original-compatibility-request.json"
             original_request.write_bytes(read_regular_file_bytes(source_root / prefix / original_request.name,
                 max_bytes=_LIMIT, reject_symlink_parents=True) if retained else before[digest][1]["compatibilityRequest"])
@@ -184,7 +196,7 @@ def stage_sdk_validation_evidence(records, source_root: Path, destination: Path,
             raise ValueError("Captured SDK evidence changed during full verification")
         for digest, record in originals.items():
             trees, files, inputs = before[digest]
-            if (any(regular_file_inventory(record[name]) != trees[name] for name in _TREES) or
+            if (any(regular_file_inventory(record[name]) != trees[name] for name in trees) or
                     any(read_regular_file_bytes(record[name], reject_symlink_parents=True) != contents
                         for name, contents in files.items()) or _request_inventory(record["compatibilityRequest"]) != inputs):
                 raise ValueError("Original SDK evidence changed before publication")

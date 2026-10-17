@@ -38,10 +38,15 @@ class SdkMetadataPhaseTest(unittest.TestCase):
         self.destination = self.root / "build/worker"
         self.stage = self.root / f"codex-agent-sdk/build/product-stage/sdk/{component}/metadata"
         self.records = {}
-        for phase, target in [("package", "desktop"), *(("validation", item) for item in sorted(NATIVE_TARGETS))]:
-            path = (self.support.args["package_receipt"] if phase == "package" else
+        identities = [("package", "desktop"), *(("validation", item) for item in sorted(NATIVE_TARGETS))]
+        if component == "csharp":
+            identities.append(("binary", "desktop"))
+        for phase, target in identities:
+            path = (self.root / "csharp-binary/phase-receipt.json" if phase == "binary" else
+                    self.support.args["package_receipt"] if phase == "package" else
                     self.support.args["validation_receipts"] / f"{target}.json")
-            stage = (self.support.args["package_stage"] if phase == "package" else
+            stage = (self.root / "csharp-binary/stage" if phase == "binary" else
+                     self.support.args["package_stage"] if phase == "package" else
                      self.support.args["validation_stages"] / target)
             self.records[("sdk", component, phase, target)] = {
                 "stage": stage, "receiptPath": path, "receipt": load_canonical_json_bytes(path.read_bytes())}
@@ -83,6 +88,9 @@ class SdkMetadataPhaseTest(unittest.TestCase):
         self.assertEqual(self.component, fields["codexAgent.component"])
         self.assertEqual("metadata", fields["codexAgent.phase"])
         self.assertEqual("desktop", fields["codexAgent.target"])
+        if self.component == "csharp":
+            context = Path(fields["codexAgent.sdkPackageReceipt"]).parent / "csharp-binary"
+            self.assertEqual(regular_file_inventory(self.root / "csharp-binary"), regular_file_inventory(context))
         for key in fields:
             if key.endswith(("Root", "Receipt", "Request")):
                 self.assertTrue(Path(fields[key]).is_relative_to(self.destination / "inputs"))
@@ -142,7 +150,8 @@ class SdkMetadataPhaseTest(unittest.TestCase):
                     PhaseInstanceId("sdk", component, "metadata", "desktop")))
                 self.assertEqual(self.plan["buildKey"], result["buildKey"])
                 self.assertEqual([("sdk", component, "package", "desktop"),
-                    *(("sdk", component, "validation", target) for target in sorted(NATIVE_TARGETS))], self.predecessor_calls)
+                    *(("sdk", component, "validation", target) for target in sorted(NATIVE_TARGETS)),
+                    *([("sdk", component, "binary", "desktop")] if component == "csharp" else [])], self.predecessor_calls)
                 for name, inventory in before.items():
                     self.assertEqual(inventory, regular_file_inventory(self.support.args[name]))
                 self.assertEqual(b"original raw Gradle\xff\x00\n", (self.destination / "gradle.log").read_bytes())

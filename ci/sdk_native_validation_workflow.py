@@ -30,7 +30,7 @@ from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_ID
 from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_shard
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_native_metadata import _inventory
-from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
+from products.sdk_package import _require_capability_output_separate, csharp_binary_inputs, verify_sdk_package_inputs
 from products.sdk_validation_inputs import _request_inventory, stage_sdk_validation_evidence
 from products.signatures import load_keyring, public_key_path
 from sdk_native_phase import _runtime_originals, _runtime_originals_unchanged
@@ -306,12 +306,24 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             package = {"stage": package_directory / "stage", "receiptPath": package_directory / PHASE_RECEIPT_NAME}
             package_raw = read_regular_file_bytes(package["receiptPath"], reject_symlink_parents=True)
             package["receipt"] = product_reuse.validate_phase_receipt(load_canonical_json_bytes(package_raw))
+            package_context = None
+            if component == "csharp":
+                # Retain a small external input envelope, not a repacked package.
+                context = destination / "package-inputs"
+                binary = prepared / "sdk-csharp-binary-desktop"
+                snapshot_regular_tree(binary / "stage", context / "csharp-binary/stage")
+                (context / "csharp-binary/phase-receipt.json").write_bytes(
+                    read_regular_file_bytes(binary / PHASE_RECEIPT_NAME, reject_symlink_parents=True))
+                package["receiptPath"] = context / PHASE_RECEIPT_NAME
+                package["receiptPath"].write_bytes(package_raw)
+                package_context = context, _inventory(context)
             request = inputs["sdk"]["directory"] / REQUEST_NAME
             sdks = capture / "original/staged-sdks"
 
             def unchanged():
                 controls_unchanged()
                 if (_inventory(capture, allow_empty=True) != capture_inventory
+                        or package_context is not None and _inventory(package_context[0]) != package_context[1]
                         or _inventory(prepared, allow_empty=True) != prepared_inventory
                         or _inventory(runtime_stages) != runtime_inventory
                         or canonical_json_bytes(prep_plan) != prep_bytes
@@ -330,7 +342,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                 staged_sdks=sdks, compatibility_request=request, package=package, predecessor=original,
                 environ=environ, dotnet_executable=dotnet_executable, dart_executable=dart_executable,
                 dart_package_config=dart_package_config,
-                protected_inputs=[*protected, prepared, capture, inputs["sdk"]["directory"]])
+                protected_inputs=[*protected, prepared, capture, inputs["sdk"]["directory"],
+                                  *([package_context[0]] if package_context is not None else [])])
             unchanged()
             finalized = product_reuse.finalize_phase_object(stage_root=result["stage"], phase_plan=ready,
                 producer=producer, product_version=selection["sdkVersion"],
@@ -351,6 +364,12 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             record = {"receiptSha256": sha256_bytes(candidate_raw), "component": component, "target": target,
                 **{name: name for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "packageReceipt", "validationReceipt")},
                 "compatibilityRequest": f"inputs/{REQUEST_NAME}"}
+            if component == "csharp":
+                binary = csharp_binary_inputs(package["receiptPath"])
+                snapshot_regular_tree(binary["binary_stage_root"], source / "binaryStage")
+                (source / "binaryReceipt").write_bytes(read_regular_file_bytes(
+                    binary["binary_receipt_path"], reject_symlink_parents=True))
+                record.update(binaryStage="binaryStage", binaryReceipt="binaryReceipt")
             source_inventory = _inventory(source, allow_empty=True)
             stage_sdk_validation_evidence([record], source, evidence, repository=root,
                 policy_revision=policy_revision, tooling=tooling)

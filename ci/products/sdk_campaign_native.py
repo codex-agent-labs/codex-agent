@@ -89,10 +89,13 @@ def verify_sdk_campaign_native(
         receipt_paths = {}
         for instance in sorted(NATIVE_CAMPAIGN_INSTANCES):
             stage = private / instance.component / instance.phase / instance.target
+            receipt_path = private / "receipts" / instance.component / instance.phase / f"{instance.target}.json"
+            if instance == PhaseInstanceId("sdk", "csharp", "binary", "desktop"):
+                context = private / "receipts/csharp/package/csharp-binary"
+                stage, receipt_path = context / "stage", context / "phase-receipt.json"
             snapshot_regular_tree(source_paths[instance], stage)
             if regular_file_inventory(stage) != inventories[instance]:
                 raise ValueError("Native SDK stage changed during capture")
-            receipt_path = private / "receipts" / instance.component / instance.phase / f"{instance.target}.json"
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             receipt_path.write_bytes(originals[instance][1])
             captured[instance], receipt_paths[instance] = stage, receipt_path
@@ -121,7 +124,8 @@ def verify_sdk_campaign_native(
                 proof = verify_sdk_validation_projection(component=component, target=target,
                     package_stage=captured[package], package_receipt=receipt_paths[package],
                     validation_stage=captured[instance], validation_receipt=receipt_paths[instance],
-                    **tooling)
+                    **tooling, **({"binary_stage": captured[binary], "binary_receipt": receipt_paths[binary]}
+                                 if component == "csharp" else {}))
                 receipt, raw = originals[instance]
                 proof.output_inventory(sha256_bytes(raw), receipt["outputs"], identity=receipt)
                 projections[instance] = proof
