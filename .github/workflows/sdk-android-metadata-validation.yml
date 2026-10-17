@@ -140,7 +140,30 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - id: retained
+        name: Locate the exact successful metadata original before any preparation
+        env:
+          METADATA_MATRIX: ${{ steps.validation-state.outputs.sdk-matrix }}
+          BUILD_KEY: ${{ matrix.buildKey }}
+          PLAN: ${{ steps.validation-state.outputs.plan-path }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+          from ci.reuse import github_output
+          rows = json.loads(os.environ['METADATA_MATRIX'])['include']
+          if (len(rows) != 1 or tuple(rows[0].get(n) for n in ('product', 'component', 'phase', 'target')) !=
+                  ('sdk', 'sdk-android', 'metadata', 'android') or rows[0].get('buildKey') != os.environ['BUILD_KEY']):
+              raise ValueError('Retained state does not elect the exact Android metadata key')
+          original = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path.cwd(),
+              expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'],
+              phase='metadata', component='sdk-android', target='android')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'reused': original is not None})
+          PY
       - id: policy
+        if: steps.retained.outputs.reused != 'true'
         name: Rebuild independent Contract, S858 and Android predecessor policy
         env:
           METADATA_MATRIX: ${{ steps.validation-state.outputs.sdk-matrix }}
@@ -188,9 +211,11 @@ jobs:
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
             ${policy[@]+"${policy[@]}"}
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        if: steps.retained.outputs.reused != 'true'
         with:
           packages: platform-tools
       - id: apkanalyzer
+        if: steps.retained.outputs.reused != 'true'
         name: Select installed Android APK analyzer
         run: |
           set -euo pipefail
@@ -198,6 +223,7 @@ jobs:
           test -f "$executable"
           echo "executable=$(realpath "$executable")" >> "$GITHUB_OUTPUT"
       - id: base
+        if: steps.retained.outputs.reused != 'true'
         name: Bind external original source and authenticated local files
         env:
           TOOLING_POLICY: ${{ steps.tooling.outputs.tooling-policy }}
@@ -236,6 +262,7 @@ jobs:
               destination.write('path=' + str(output) + '\nsha256=' + sha256_bytes(raw) + '\n')
           PY
       - id: validation-handoff
+        if: steps.retained.outputs.reused != 'true'
         name: Recover the elected original Android validation upload
         shell: bash
         env:
@@ -276,6 +303,7 @@ jobs:
             --sdk-validation-tooling "$SDK_TOOLING" \
             --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}
       - id: control
+        if: steps.retained.outputs.reused != 'true'
         uses: ./.github/actions/sdk-android-firebase-controls
         with:
           base-policy: ${{ steps.base.outputs.path }}
@@ -289,6 +317,7 @@ jobs:
           validation-run-attempt: ${{ steps.validation-handoff.outputs.validation-run-attempt }}
           validation-original-mode: ${{ steps.validation-handoff.outputs.validation-original-mode }}
       - id: original
+        if: steps.retained.outputs.reused != 'true'
         uses: ./.github/actions/sdk-android-original-selection
         with:
           plan-path: ${{ steps.validation-state.outputs.plan-path }}
@@ -300,6 +329,7 @@ jobs:
           original-control: ${{ steps.control.outputs.original-control }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
       - id: metadata
+        if: steps.retained.outputs.reused != 'true'
         uses: ./.github/actions/sdk-android-metadata-worker
         with:
           plan-path: ${{ steps.validation-state.outputs.plan-path }}
