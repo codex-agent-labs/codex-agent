@@ -259,6 +259,9 @@ class FacadeMetadataCaptureTest(FacadeCaptureTest):
 
 
 class AndroidValidationCaptureTest(FacadeCaptureTest):
+    def test_retained_validation_original_keeps_publisher_after_rotation(self):
+        CoreBinaryCaptureTest.test_retained_core_binary_keeps_original_publisher_and_exact_locator(self)
+
     component = "sdk-android"
     capture_name = "capture_sdk_android_validation_upload"
     targets = ("android",)
@@ -311,17 +314,22 @@ class CoreBinaryCaptureTest(FacadeCaptureTest):
                     with self.assertRaisesRegex(ValueError, "missing or ambiguous"): self.call()
 
     def test_retained_core_binary_keeps_original_publisher_and_exact_locator(self):
-        if self.component not in {"sdk-core", "sdk-android"} or self.phase not in ("binary", "package"):
+        if self.component not in {"sdk-core", "sdk-android"} or (self.phase not in ("binary", "package")
+                and (self.component, self.phase) != ('sdk-android', 'validation')):
             self.skipTest("Exact retained Maven binary/package only")
         family = self.component.removeprefix("sdk-")
         path = f".github/workflows/sdk-{family}-{self.phase}-validation.yml"
+        if (self.component, self.phase) == ('sdk-android', 'validation'):
+            path = '.github/workflows/sdk-android-validation.yml'
         job = (f"product-validation / sdk-android-{self.phase}-result / sdk-android-{self.phase}-android"
                if self.component == "sdk-android" else
                f"product-validation / sdk-core-{self.phase}-wave / sdk-core-{self.phase}-common")
         origin = {"producer": self.producer, "artifact_id": 701, "artifact_sha256": self.artifact["digest"],
-            "workflow_path": path, "workflow_sha": self.pin, "job_name": job, "job_id": self.jobs[0]["id"]}
+            "workflow_path": path, "workflow_sha": self.pin, "job_name": job, "job_id": self.jobs[0]["id"],
+            "receipt_sha256": facade.sha256_bytes(self.receipt_bytes)}
         self.run["referenced_workflows"][0]["path"] = f"codex-agent-labs/codex-agent/{path}@{self.pin}"
-        self.jobs[0]["name"] = f"{job} ({self.receipt['buildKey']}, ..."[:118] + "..."
+        self.jobs[0]["name"] = (job if self.phase == 'validation' else
+                               f"{job} ({self.receipt['buildKey']}, ..."[:118] + "...")
         with patch("sdk_campaign_original_locator.retained_core_origin", return_value=origin):
             arguments = dict(trusted_workflow_path=path, trusted_job_name=job, trusted_workflow_sha="f" * 40)
             self.call(**arguments)

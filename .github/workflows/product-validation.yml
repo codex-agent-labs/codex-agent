@@ -5347,6 +5347,7 @@ jobs:
         env:
           MATRIX: ${{ steps.capture.outputs.sdk-matrix }}
           REQUIRED: ${{ steps.capture.outputs.sdk-workers-required }}
+          ROUTING: ${{ needs.sdk-android-package-result.outputs.routing }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
         run: |
           python3 -B - <<'PY'
@@ -5360,6 +5361,15 @@ jobs:
               'pullRequest': int(os.environ['PULL_REQUEST']) if os.environ['PULL_REQUEST'] else None}
           origin = (retained_android_evidence_origin(rows[0]['buildKey'], consumer)
                     if os.environ['REQUIRED'] == 'true' and len(rows) == 1 else None)
+          if origin is None and os.environ['REQUIRED'] == 'false' and os.environ.get('ROUTING'):
+              # The preceding route step checked this exact bound locator. This
+              # selects public pins only; the metadata worker replays all gates.
+              ready = load_json_bytes(os.environ['ROUTING'].encode())['decisions']['ready']
+              metadata = [row for row in ready if tuple(row.get(name) for name in
+                          ('product', 'component', 'phase', 'target')) ==
+                          ('sdk', 'sdk-android', 'metadata', 'android')]
+              if len(metadata) == 1:
+                  origin = retained_android_evidence_origin(metadata[0]['buildKey'], consumer, phase='metadata')
           if origin is not None:
               with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                   output.write('authority<<ANDROID_AUTHORITY\n' +

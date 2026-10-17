@@ -54,6 +54,21 @@ def retained_core_binary_origin(build_key, consumer):
 
 def retained_core_origin(phase, build_key, consumer, *, target="common", component="sdk-core"):
     """Keep reviewed Maven originals separate from current admission (legacy API name)."""
+    if (component, phase, target) == ("sdk-android", "validation", "android"):
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "1aee0e6db7a6ad288141a2a6bd31f156fff4a529", "tree": "c9ba57df3d1ce11ea53003a9529990d38a483426",
+            "event": "pull_request", "runId": 39019855381, "runAttempt": 1, "pullRequest": 31}
+        if (build_key != "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637"
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12096069461,
+            "artifact_sha256": "sha256:4a435bab0ed8b08e7d302bcfe68c4d18693a075841e011d6358c5f89c6f1f8fb",
+            "receipt_sha256": "sha256:caa9b127bf6ea1606e560cfc1804f2aa801a02c261e62e491da9702d9307a349",
+            "job_id": 117360148445, "workflow_sha": "5dc62a5b0ac0e8af4e647e6311f0dd480c89fbe2",
+            "workflow_path": ".github/workflows/sdk-android-validation.yml",
+            "job_name": "product-validation / sdk-android-validation-result / sdk-android-validation-android"}
     if component != "sdk-core":
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "47dd53e4ad943208484290515ba399423d78f53d", "tree": "bb8855454b8aba1b6ae12b60e4286c08bf3ebf49",

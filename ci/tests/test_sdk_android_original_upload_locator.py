@@ -101,6 +101,24 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.call(environ={"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "secret"})
 
+    def test_retained_original_uses_original_publisher_and_exact_receipt_job_upload(self):
+        if self.phase != 'validation':
+            self.skipTest('Only the reviewed validation original is retained')
+        workflow, job = locator._CHILD_ROUTES[self.phase]
+        origin = {'producer': self.receipt['producer'], 'receipt_sha256': sha256_bytes(self.receipt_bytes),
+            'artifact_id': self.artifact['id'], 'artifact_sha256': self.artifact['digest'],
+            'job_id': self.jobs[0]['id'], 'workflow_path': workflow, 'job_name': job, 'workflow_sha': self.pin}
+        with patch('sdk_campaign_original_locator.retained_core_origin', return_value=origin):
+            result, requested = self.call(trusted_workflow_sha='f' * 40)
+            self.assertEqual({'artifact_id': origin['artifact_id'], 'artifact_sha256': origin['artifact_sha256']}, result)
+            self.assertFalse(any(url.endswith('/zip') for url in requested))
+            for field, bad in (('receipt_sha256', 'sha256:' + '0' * 64), ('job_id', 999), ('artifact_id', 999)):
+                old = origin[field]
+                origin[field] = bad
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'reviewed'):
+                    self.call(trusted_workflow_sha='f' * 40)
+                origin[field] = old
+
     def test_job_runner_detail_window_and_ambiguity_fail_closed(self):
         original = deepcopy((self.jobs, self.artifact, self.run))
         for case in ("runner", "job", "name", "expired", "run", "window", "detail", "workflow", "workflow-path"):
@@ -130,12 +148,14 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
             self.run["referenced_workflows"][0]["path"] = (
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{self.pin}")
         with patch.object(facade.products, "_validate_plan", return_value=self.plan), patch(
-                "reuse.api_request", side_effect=self.api):
+                "reuse.api_request", side_effect=self.api), patch.object(
+                facade.products, "download_artifact_to_file",
+                side_effect=lambda artifact, token, destination, **options: Path(destination).write_bytes(self.raw)):
             getattr(facade, f"capture_sdk_android_{self.phase}_upload")(
                 self.plan_path, self.output, **{self.phase + "_receipt_path": self.receipt_path},
                 artifact_id=701, artifact_sha256=self.artifact["digest"],
                 trusted_workflow_sha=self.pin, repository_root=self.root,
-                environ={}, token="synthetic-token",
+                environ={"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "1"}, token="synthetic-token",
                 **({"trusted_workflow_path": workflow, "trusted_job_name": job}
                    if self.phase == "validation" else {}))
         selected = sha256_bytes(self.receipt_bytes)

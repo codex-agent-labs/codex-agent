@@ -204,12 +204,14 @@ def _capture_sdk_upload(
         retained_core = None
         component_options = ({"component": instance.component, "target": instance.target}
                              if instance.component != "sdk-core" else {})
-        if instance in tuple(PhaseInstanceId("sdk", name, step, target)
+        if instance == PhaseInstanceId("sdk", "sdk-android", "validation", "android") or instance in tuple(PhaseInstanceId("sdk", name, step, target)
                 for name, target in (("sdk-core", "common"), ("sdk-android", "android"))
                 for step in ("binary", "package")):
             from sdk_campaign_original_locator import retained_core_origin
             origin = retained_core_origin(phase, receipt["buildKey"], products._consumer(plan, environment)["producer"], **component_options)
             if origin is not None and producer == origin["producer"]:
+                if origin.get("receipt_sha256", sha256_bytes(receipt_bytes)) != sha256_bytes(receipt_bytes):
+                    raise ValueError("Retained Core capture differs from its reviewed original receipt")
                 if (artifact_id, artifact_sha256, trusted_workflow_path, job) != (
                         origin["artifact_id"], origin["artifact_sha256"], origin["workflow_path"], origin["job_name"]):
                     raise ValueError("Retained Core capture differs from its reviewed original route/upload")

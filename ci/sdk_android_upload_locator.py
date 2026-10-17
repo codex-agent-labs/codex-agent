@@ -27,13 +27,15 @@ ATTACH_JOB = "product-validation / android-runtime-evidence / attach-evidence"
 _OID = re.compile(r"[0-9a-f]{40}")
 
 
-def retained_android_evidence_origin(build_key, consumer):
+def retained_android_evidence_origin(build_key, consumer, *, phase="validation"):
     """Select reviewed device evidence, not a validation verdict or new producer."""
     producer = {"repository": REPOSITORY, "workflowPath": ".github/workflows/ci.yml",
         "commit": "986d173ae4c05cf3ec456bef463641376a65e6d3",
         "tree": "554dee42106c5c00e0114d166fb2c52b2a5aa1e0", "event": "pull_request",
         "runId": 39012954522, "runAttempt": 2, "pullRequest": 31}
-    if (build_key != "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637"
+    expected = {"validation": "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637",
+                "metadata": "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"}
+    if (phase not in expected or build_key != expected[phase]
             or any(consumer.get(name) != producer[name]
                    for name in ("repository", "workflowPath", "event", "pullRequest"))
             or any(type(consumer.get(name)) is not int or consumer[name] < 1

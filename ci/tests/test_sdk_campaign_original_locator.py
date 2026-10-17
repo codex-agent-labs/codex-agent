@@ -171,6 +171,18 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             'assert callable(locator.locate_retained_core_binary_upload)',
             str(Path(__file__).resolve().parents[1])], check=True, capture_output=True)
 
+    def test_retained_android_validation_keeps_exact_original_and_later_consumer(self):
+        key = 'sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637'
+        consumer = {**self.fixture.producer, 'runId': 40000000000, 'runAttempt': 1}
+        selected = lambda value, candidate: locator.retained_core_origin(
+            'validation', value, candidate, component='sdk-android', target='android')
+        origin = selected(key, consumer)
+        self.assertEqual((12096069461, 117360148445), (origin['artifact_id'], origin['job_id']))
+        self.assertEqual('5dc62a5b0ac0e8af4e647e6311f0dd480c89fbe2', origin['workflow_sha'])
+        self.assertIsNone(selected('sha256:' + '0' * 64, consumer))
+        for change in ({'pullRequest': 32}, {'runId': 39019855381}, {'runAttempt': True}, {'event': 'merge_group'}):
+            self.assertIsNone(selected(key, {**consumer, **change}))
+
     def test_retained_core_lookup_binds_election_original_and_lifetime(self):
         key = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
         consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}

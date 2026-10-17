@@ -19,14 +19,21 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         step = source.split("      - id: retained-device\n", 1)[1].split("\n  android-sdk-apk:", 1)[0]
         script = textwrap.dedent(step.split("          python3 -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
         key = "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637"
+        metadata = {'product': 'sdk', 'component': 'sdk-android', 'phase': 'metadata', 'target': 'android',
+            'buildKey': 'sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d'}
         with tempfile.TemporaryDirectory() as temporary:
-            for index, (selected, required, expected) in enumerate((
-                    (key, 'true', True), ('sha256:' + '0' * 64, 'true', False), (key, 'false', False))):
+            for index, (selected, required, ready, expected) in enumerate((
+                    (key, 'true', [], True), ('sha256:' + '0' * 64, 'true', [], False), (key, 'false', [], False),
+                    (key, 'false', [metadata], True),
+                    (key, 'false', [{**metadata, 'buildKey': 'sha256:' + '0' * 64}], False),
+                    (key, 'false', [{**metadata, 'component': 'sdk-ios'}], False),
+                    (key, 'false', [metadata, metadata], False))):
                 output = Path(temporary) / str(index)
                 environment = {'MATRIX': json.dumps({'include': [{'buildKey': selected}]}),
                     'REQUIRED': required, 'PULL_REQUEST': '31', 'GITHUB_REPOSITORY': locator.REPOSITORY,
                     'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_RUN_ID': '39012954523',
-                    'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_OUTPUT': str(output)}
+                    'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_OUTPUT': str(output),
+                    'ROUTING': json.dumps({'decisions': {'ready': ready}})}
                 with patch.dict(os.environ, environment, clear=True):
                     exec(compile(script, '<actual-retained-device-routing>', 'exec'), {})
                 self.assertEqual(expected, output.exists())
