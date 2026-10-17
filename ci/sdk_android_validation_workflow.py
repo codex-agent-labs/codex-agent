@@ -33,9 +33,6 @@ from products import sdk_android_validation_phase as validation_phase
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
-_STABLE_PRODUCER_FIELDS = (
-    "repository", "workflowPath", "commit", "tree", "event", "pullRequest",
-)
 _LIMIT = 512 * 1024 * 1024
 
 
@@ -250,9 +247,7 @@ def execute(
         raise ValueError("Android caller package or binary differs from its elected original predecessor")
     if package != selected_package or binary != selected_binary:
         raise ValueError("Android caller package or binary receipt differs from its elected original")
-    original_producer = product_reuse.validate_producer(binary["producer"], "Android binary original producer")
-    if any(producer[field] != original_producer[field] for field in _STABLE_PRODUCER_FIELDS):
-        raise ValueError("Android current capture and binary original select different candidate identities")
+    binary_producer = product_reuse.validate_producer(binary["producer"], "Android binary original producer")
     version = package["productVersion"]
     if binary["productVersion"] != version:
         raise ValueError("Android selected package and binary versions differ")
@@ -298,7 +293,10 @@ def execute(
                 binary_contract_evidence=binary_contract_evidence,
                 final_capture=private_final, protected_capture=private_protected,
                 expected_capture_producer=producer,
-                expected_original_producer=original_producer,
+                # APK/Firebase jobs belong to this independently observed run;
+                # the exact selected binary may come from an older producer.
+                expected_original_producer=producer,
+                expected_binary_producer=binary_producer,
                 trusted_source_commit=trusted_source_commit, trusted_source_tree=trusted_source_tree,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                 java_executable=java_executable, apkanalyzer_executable=apkanalyzer_executable,

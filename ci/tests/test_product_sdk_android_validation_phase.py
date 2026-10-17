@@ -111,6 +111,7 @@ class AndroidValidationPhaseTest(unittest.TestCase):
             final_capture=self.final, protected_capture=self.protected,
             expected_capture_producer=self.capture_producer,
             expected_original_producer=self.original_producer,
+            expected_binary_producer=self.original_producer,
             trusted_source_commit="c" * 40, trusted_source_tree="d" * 40,
             tooling_evidence=self.tooling, tooling_public_key=self.public_key,
             java_executable=self.java, apkanalyzer_executable=self.analyzer,
@@ -186,11 +187,22 @@ class AndroidValidationPhaseTest(unittest.TestCase):
             self.call()
         self.destination.rmdir()
         with self.assertRaisesRegex(ValueError, "original producer"):
-            self.call(expected_original_producer=self.producer(3))
+            self.call(expected_binary_producer=self.producer(3))
         with self.assertRaisesRegex(ValueError, "overlap"):
             self.call(destination=self.binary_stage / "nested")
         self.assertEqual([], self.events)
         self.assertFalse((self.binary_stage / "nested").exists())
+
+    def test_retained_binary_producer_is_separate_from_firebase_evidence(self):
+        evidence_producer = {**self.capture_producer, "commit": "9" * 40, "tree": "8" * 40}
+        def full_gate(**kwargs):
+            self.assertEqual(evidence_producer, kwargs["expected_original_producer"])
+            self.assertEqual(evidence_producer, kwargs["expected_capture_producer"])
+            self.assertEqual(self.aar.read_bytes(), kwargs["expected_binary_aar"].read_bytes())
+        raw = self.binary_receipt.read_bytes()
+        self.call(expected_original_producer=evidence_producer,
+                  expected_capture_producer=evidence_producer, validation_gate=full_gate)
+        self.assertEqual(raw, self.binary_receipt.read_bytes())
 
     def test_gate_failure_and_malformed_or_mismatched_verification_never_publish(self):
         with self.assertRaisesRegex(ValueError, "package failed"):

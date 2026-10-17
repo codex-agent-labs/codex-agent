@@ -101,7 +101,8 @@ class OriginalAndroidValidationTest(unittest.TestCase):
     def replay(self, **kwargs):
         self.events.append("full-replay")
         self.assertEqual(self.f.validation_producer, kwargs["expected_capture_producer"])
-        self.assertEqual(self.f.binary_producer, kwargs["expected_original_producer"])
+        self.assertEqual(self.f.validation_producer, kwargs["expected_original_producer"])
+        self.assertEqual(self.f.binary_producer, kwargs["expected_binary_producer"])
         shutil.copytree(self.f.validation_stage, kwargs["destination"])
 
     def context(self, *, retained=None, **changes):

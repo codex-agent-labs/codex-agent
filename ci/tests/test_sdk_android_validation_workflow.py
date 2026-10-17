@@ -185,7 +185,8 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
     def produce(self, **kwargs):
         self.events.append("produce")
         self.phase_arguments = kwargs
-        self.assertEqual(self.original, kwargs["expected_original_producer"])
+        self.assertEqual(self.current, kwargs["expected_original_producer"])
+        self.assertEqual(self.binary["producer"], kwargs["expected_binary_producer"])
         self.assertEqual(self.current, kwargs["expected_capture_producer"])
         self.assertEqual(b"exact final capture", (kwargs["final_capture"] / "final.bin").read_bytes())
         self.assertEqual(b"exact protected capture", (kwargs["protected_capture"] / "protected.bin").read_bytes())
@@ -235,7 +236,8 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(b"exact protected capture",
                          (result["originals"] / "protected/protected.bin").read_bytes())
         self.assertEqual(self.current, self.phase_arguments["expected_capture_producer"])
-        self.assertEqual(self.original, self.phase_arguments["expected_original_producer"])
+        self.assertEqual(self.current, self.phase_arguments["expected_original_producer"])
+        self.assertEqual(self.original, self.phase_arguments["expected_binary_producer"])
         self.assertNotEqual(self.current["runAttempt"], self.original["runAttempt"])
         retained = result["originals"] / "validation-inputs"
         self.assertEqual(b"synthetic compatibility\n",
@@ -264,13 +266,15 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         for name in self.admissions:
             self.assertNotIn(name, self.phase_arguments)
 
-    def test_candidate_identity_mismatch_or_selected_original_mismatch_rejects_before_capture(self):
+    def test_older_selected_binary_is_preserved_but_substituted_bytes_reject(self):
         changed = self.producer(1, commit="9" * 40)
         self.binary = self.receipt(self.binary_stage, self.binary_receipt, "binary", changed)
         self.selected_binary_bytes = self.binary_receipt.read_bytes()
-        with self.assertRaisesRegex(ValueError, "different candidate identities"):
-            self.call()
-        self.assertNotIn("final-capture", self.events)
+        raw = self.binary_receipt.read_bytes()
+        self.call()
+        self.assertEqual(changed, self.phase_arguments["expected_binary_producer"])
+        self.assertEqual(self.current, self.phase_arguments["expected_original_producer"])
+        self.assertEqual(raw, self.binary_receipt.read_bytes())
 
         # A caller cannot substitute different bytes for the elected binary stage.
         self.events.clear()
