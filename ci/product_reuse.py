@@ -3795,6 +3795,19 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
     else:
         context = nullcontext(None)
     with context as factory:
+        if (apple_package_origin is not None and kwargs.get("completed_frozen") is not None
+                and "completed_native_runtime_projection_provider" not in kwargs
+                and request.get("sdkRuntimeSource") is None):
+            from products.plan import native_runtime_validation_dependencies
+            if any(native_runtime_validation_dependencies(identity) for identity in _dependency_closure(
+                    tuple(_identity(value) for value in request["requested"]))):
+                from products.native_runtime_inputs import completed_native_runtime_provider
+                plan = _validate_plan(apple_package_origin["plan_path"], apple_package_origin["repository_root"])
+                kwargs["completed_native_runtime_projection_provider"] = completed_native_runtime_provider(
+                    kwargs["completed_frozen"], request, plan=plan,
+                    producer=_consumer(plan, apple_package_origin["environ"])["producer"],
+                    trusted_workflow_sha=apple_package_origin["trusted_workflow_sha"],
+                    token=apple_package_origin["token"])
         if "sdk_javascript_validation_projection_provider" not in kwargs:
             javascript_provider = _javascript_projection_provider(request, tooling, apple_package_origin,
                 **({"completed_frozen": kwargs["completed_frozen"]} if kwargs.get("completed_frozen") is not None else {}))

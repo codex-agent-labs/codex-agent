@@ -1136,6 +1136,7 @@ def plan_reuse_wave(
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
     sdk_javascript_validation_projection_provider=None,
+    completed_native_runtime_projection_provider=None,
     completed_frozen=None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
@@ -1497,7 +1498,8 @@ def plan_reuse_wave(
                         or native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
                         for target, envelope in zip(targets, envelopes, strict=True)]
             if any(record is None for record in selected):
-                return None
+                return (completed_native_runtime_projection_provider(instance, envelopes, projection)
+                        if not external_sdk_runtime and completed_native_runtime_projection_provider is not None else None)
             if master_projection is None or master_contract_stage is None or contract_evidence is None:
                 raise ValueError("Native Runtime reuse lacks authenticated Contract evidence")
             # Released-default records already carry their selected catalog's
