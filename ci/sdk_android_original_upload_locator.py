@@ -146,9 +146,10 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
         unchanged()
         observation = products._observe_ci_producer_jobs(
             {family: producer}, jobs_by_phase={family: job},
+            build_keys_by_phase={family: receipt["buildKey"]},
             trusted_workflows_by_phase={family: {
                 "path": workflow_path, "sha": trusted_workflow_sha}}, token=token)[0]
-        jobs = [value for value in observation["jobs"] if value.get("name") == job]
+        jobs = products._matching_ci_jobs(observation["jobs"], job, expected_build_key=receipt["buildKey"])
         if len(jobs) != 1:
             raise ValueError("Android original worker job is missing or ambiguous")
         labels = jobs[0].get("labels")
@@ -184,6 +185,6 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
                 or require_integer(detail.get("size_in_bytes"), "Android original upload bytes", 1)
                    > products._CATALOG_LIMIT):
             raise ValueError("Android original upload detail differs from official listing or run")
-        products._require_artifact_job_window(observation, job, detail)
+        products._require_artifact_job_window(observation, jobs[0]["name"], detail)
         unchanged()
         return {"artifact_id": artifact_id, "artifact_sha256": digest}

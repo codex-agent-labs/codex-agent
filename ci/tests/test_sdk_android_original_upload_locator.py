@@ -70,9 +70,29 @@ class AndroidOriginalUploadLocatorTest(unittest.TestCase):
             self.call()
         workflow, job = locator._CHILD_ROUTES[self.phase]
         self.assertEqual({"android-" + self.phase: job}, observed.call_args.kwargs["jobs_by_phase"])
+        self.assertEqual({"android-" + self.phase: self.receipt["buildKey"]},
+                         observed.call_args.kwargs["build_keys_by_phase"])
         self.assertEqual({"android-" + self.phase: {"path": workflow, "sha": self.pin}},
                          observed.call_args.kwargs["trusted_workflows_by_phase"])
         self.assertNotIn("trusted_workflow_sha", observed.call_args.kwargs)
+
+    def test_matrix_job_names_keep_exact_key_and_original_window_checks(self):
+        _, job = locator._CHILD_ROUTES[self.phase]
+        rendered = f"{job} ({self.receipt['buildKey']},..."
+        prefix = job.rpartition(" / ")[0] + " / "
+        for name in (rendered, rendered[:len(prefix) + 97] + "..."):
+            with self.subTest(name=name):
+                self.jobs[0]["name"] = name
+                result, requested = self.call()
+                self.assertEqual(self.artifact["id"], result["artifact_id"])
+                self.assertFalse(any(url.endswith("/zip") for url in requested))
+                self.jobs.append(deepcopy(self.jobs[0]))
+                with self.assertRaisesRegex(ValueError, "ambiguous"):
+                    self.call()
+                self.jobs.pop()
+                self.jobs[0]["name"] = name.replace(self.receipt["buildKey"][:40], "sha256:" + "0" * 33)
+                with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+                    self.call()
 
     def test_receipt_pin_phase_plan_and_signing_secret_fail_before_official_lookup(self):
         with self.assertRaisesRegex(ValueError, "independent caller selection"):
