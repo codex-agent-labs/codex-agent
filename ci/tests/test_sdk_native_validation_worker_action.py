@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -102,6 +103,12 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         # The online setup only fills Cargo's checksum-verified cache; the
         # imported package consumer still resolves and executes offline.
         self.assertIn('"--locked", "--offline"', (ROOT / 'ci/native_wrappers.py').read_text())
+
+    def test_rust_consumer_uses_the_existing_sdk_dependency_pins(self):
+        root = ROOT / 'codex-agent-bindings/rust'
+        sdk = tomllib.loads((root / 'Cargo.lock').read_text())['package']
+        consumer = tomllib.loads((root / 'consumer/Cargo.lock').read_text())['package']
+        self.assertEqual(sdk, [row for row in consumer if row['name'] != 'codex-agent-rust-consumer'])
 
     def test_elections_match_actual_host_for_all_five_hosts_before_output(self):
         for host, values in native_wrappers.HOSTS.items():
