@@ -578,13 +578,15 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
             self.assertEqual(contents, (capture / "original" / name).read_bytes())
 
     def test_reviewed_original_publisher_remains_selectable_after_rotation(self):
-        original = "53d6ad1e4d7cfba9267894af9b302e07f7cb6656"
-        run = {**self.run, "referenced_workflows": [{
-            "path": f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{original}",
-            "sha": original, "ref": "refs/heads/reuse-authority"}]}
-        self.assertEqual(original, recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
-        run["referenced_workflows"][0]["sha"] = "f" * 40
-        self.assertIsNone(recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
+        for original in ("53d6ad1e4d7cfba9267894af9b302e07f7cb6656",
+                         "d31b16736102f634665c351e6d0ed139250e8e48"):
+            with self.subTest(original=original):
+                run = {**self.run, "referenced_workflows": [{
+                    "path": f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{original}",
+                    "sha": original, "ref": "refs/heads/reuse-authority"}]}
+                self.assertEqual(original, recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
+                run["referenced_workflows"][0]["sha"] = "f" * 40
+                self.assertIsNone(recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
 
     def test_failed_or_live_job_is_not_admitted_and_wrong_key_is_a_miss(self):
         with self.gates():
