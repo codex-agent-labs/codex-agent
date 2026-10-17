@@ -297,7 +297,11 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
     outputDirectory: File,
 ) {
     val index = readCrossLanguageNativeWrapperSdkIndex(stagedSdkDirectory)
-    check(!outputDirectory.exists()) { "Native wrapper package asset output is immutable: $outputDirectory" }
+    fun destinationAvailable() = (!outputDirectory.exists() ||
+        (outputDirectory.isDirectory && outputDirectory.list()?.isEmpty() == true)) &&
+        generateSequence(outputDirectory.absoluteFile) { it.parentFile }
+            .none { Files.isSymbolicLink(it.toPath()) }
+    check(destinationAvailable()) { "Native wrapper package asset output is immutable: $outputDirectory" }
     val parent = outputDirectory.absoluteFile.parentFile.also(File::mkdirs)
     val temporary = Files.createTempDirectory(parent.toPath(), ".native-wrapper-package-assets-").toFile()
     try {
@@ -351,10 +355,12 @@ fun materializeCrossLanguageNativeWrapperPackageAssets(
             Files.copy(stagedSdkDirectory.resolve("sdk-runtime-root.pub").toPath(),
                 destination.parentFile.resolve("sdk-runtime-root.pub").toPath())
         }
+        check(destinationAvailable()) { "Native wrapper package asset output became occupied: $outputDirectory" }
         try {
+            // Gradle precreates @OutputDirectory; only its empty skeleton may be replaced.
             Files.move(staged.toPath(), outputDirectory.toPath(), StandardCopyOption.ATOMIC_MOVE)
         } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(staged.toPath(), outputDirectory.toPath())
+            Files.move(staged.toPath(), outputDirectory.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
     } finally {
         temporary.deleteRecursively()

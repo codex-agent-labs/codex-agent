@@ -68,6 +68,9 @@ class SdkMetadataPhaseTest(unittest.TestCase):
         self.assertEqual(".", command[command.index("-p") + 1])
         self.assertIn("ciProductPhase", command)
         self.assertIn("--offline", command)
+        self.assertEqual(1, command.count("--init-script"))
+        self.assertEqual(str(self.root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
+                         command[command.index("--init-script") + 1])
         self.assertEqual(self.root, kwargs["cwd"])
         self.assertEqual(subprocess.STDOUT, kwargs["stderr"])
         self.assertFalse(kwargs["check"])

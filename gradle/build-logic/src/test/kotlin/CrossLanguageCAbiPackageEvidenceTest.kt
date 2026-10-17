@@ -1,4 +1,5 @@
 import java.io.File
+import java.nio.file.Files
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -177,7 +178,8 @@ class CrossLanguageCAbiPackageEvidenceTest {
         assertEquals(fixture.sdkRuntimeRoot().readBytes().toList(),
             staged.resolve("sdk-runtime-root.pub").readBytes().toList())
 
-        val packageAssets = fixture.root.resolve("wrapper-package-assets")
+        // Gradle creates @OutputDirectory before invoking the materializer.
+        val packageAssets = fixture.root.resolve("wrapper-package-assets").apply { mkdirs() }
         materializeCrossLanguageNativeWrapperPackageAssets(staged, packageAssets)
         crossLanguageCAbiTargetSpecs.values.forEach { spec ->
             val classifier = spec.classifier.removePrefix("c-abi-")
@@ -225,6 +227,46 @@ class CrossLanguageCAbiPackageEvidenceTest {
             )
         }
         assertFalse(packageAssets.resolve("codex-agent-native-wrapper-sdks.json").exists())
+        val originalAssets = verifiedRegularFiles(packageAssets).mapValues { it.value.releaseDigest() }
+        assertFailsWith<IllegalStateException> {
+            materializeCrossLanguageNativeWrapperPackageAssets(staged, packageAssets)
+        }
+        assertEquals(originalAssets, verifiedRegularFiles(packageAssets).mapValues { it.value.releaseDigest() })
+        val emptyAssets = fixture.root.resolve("empty-assets").apply { mkdirs() }
+        val linkedAssets = fixture.root.resolve("linked-assets")
+        Files.createSymbolicLink(linkedAssets.toPath(), emptyAssets.toPath())
+        assertFailsWith<IllegalStateException> {
+            materializeCrossLanguageNativeWrapperPackageAssets(staged, linkedAssets)
+        }
+        assertTrue(Files.isSymbolicLink(linkedAssets.toPath()))
+        assertTrue(emptyAssets.list()!!.isEmpty())
+
+        // Exercise the actual Gradle output lifecycle and retain build-cache reuse.
+        val project = fixture.root.resolve("materializer-project").apply { mkdirs() }
+        val repository = File("../..").canonicalFile
+        project.resolve("settings.gradle.kts").writeText("rootProject.name = \"native-assets-fixture\"\n")
+        project.resolve("build.gradle.kts").writeText("""
+            plugins { id("codexagent.native-wrapper-sdk") apply false }
+            tasks.register<MaterializeCrossLanguageNativeWrapperPackageAssetsTask>("materialize") {
+                stagedSdkDirectory.from(file("${staged.invariantSeparatorsPath}"))
+                outputDirectory.set(layout.buildDirectory.dir("assets"))
+                producerSources.from(file("${repository.invariantSeparatorsPath}/ci/products"))
+                repositoryRoot.set(file("${repository.invariantSeparatorsPath}"))
+            }
+        """.trimIndent())
+        val runner = org.gradle.testkit.runner.GradleRunner.create()
+            .withProjectDir(project).withPluginClasspath()
+            .withTestKitDir(project.resolve("test-kit"))
+            .withArguments("materialize", "--offline", "--build-cache", "--configuration-cache",
+                "--configuration-cache-problems=fail", "--stacktrace")
+        val executed = runner.build()
+        assertEquals(org.gradle.testkit.runner.TaskOutcome.SUCCESS, executed.task(":materialize")?.outcome)
+        val actualAssets = project.resolve("build/assets")
+        assertEquals(originalAssets, verifiedRegularFiles(actualAssets).mapValues { it.value.releaseDigest() })
+        actualAssets.deleteRecursively()
+        val restored = runner.build()
+        assertEquals(org.gradle.testkit.runner.TaskOutcome.FROM_CACHE, restored.task(":materialize")?.outcome)
+        assertEquals(originalAssets, verifiedRegularFiles(actualAssets).mapValues { it.value.releaseDigest() })
         val originalProofs = evidence.mapValues { it.value.readBytes().toList() }
         val mixedEvidence = evidence.mapValues { (target, file) ->
             fixture.root.resolve("mixed-$target.json").apply {
@@ -359,7 +401,7 @@ class CrossLanguageCAbiPackageEvidenceTest {
     }
 
     class Fixture {
-        val root = createTempDirectory("c-abi-sdk-staging-").toFile()
+        val root = createTempDirectory("c-abi-sdk-staging-").toFile().canonicalFile
         private val symbols = (0 until CROSS_LANGUAGE_C_ABI_SYMBOL_COUNT)
             .map { "codex_agent_symbol_${it.toString().padStart(3, '0')}" }
         private val header = root.resolve("codex_agent.h").apply {

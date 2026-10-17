@@ -135,6 +135,8 @@ def execute(
     if stage.exists() or stage.is_symlink():
         raise ValueError("Native SDK product stage appeared before execution")
     command = _runtime_worker_command(wrapper, properties, environment, build_directory=".")
+    # Same reviewed packaged-Python closure as signed tooling, not checkout fallback.
+    command += ["--init-script", str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle")]
     started = time.monotonic_ns()
     with (destination / "gradle.log").open("xb") as log:
         process = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
