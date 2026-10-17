@@ -260,7 +260,7 @@ class NativeSdkInputsTest(unittest.TestCase):
         with patch("ci.products.sdk_native.load_sdk_compatibility_request", side_effect=decode):
             self.assertEqual(self.verify(self.sdks)["sdkVersion"], "0.2.9")
 
-    def package(self, root, *, tamper=False, evidence=None, kind="package"):
+    def package(self, root, *, tamper=False, evidence=None, root_evidence=None, kind="package"):
         if not hasattr(self, "csharp_dll"):
             if not shutil.which("dotnet"):
                 self.skipTest(".NET SDK unavailable for the C# resource-inspection fixture")
@@ -282,6 +282,8 @@ class NativeSdkInputsTest(unittest.TestCase):
         (package / "codex-agent-csharp-package-toolchain.tsv").write_text("tool\tversion\ndotnet\tsynthetic-fixture\n")
         (stage / "outputs/evidence").mkdir()
         (stage / "outputs/evidence/sdk-compatibility.json").write_bytes(compatibility if evidence is None else evidence)
+        (stage / "outputs/evidence/sdk-runtime-root.pub").write_bytes(
+            SDK_ROOT.read_bytes() if root_evidence is None else root_evidence)
         outputs = write_output_manifest(
             stage, "sdk", "csharp", "package", "desktop", "0.2.9",
             {kind: "outputs/csharp", "evidence": "outputs/evidence"},
@@ -306,6 +308,7 @@ class NativeSdkInputsTest(unittest.TestCase):
             self.assertEqual(result["productVersion"], "0.2.9")
             self.assertEqual(before, regular_file_inventory(root))
         for case, changes in (("archive", {"tamper": True}), ("evidence", {"evidence": b"wrong\n"}),
+                              ("root-evidence", {"root_evidence": b"wrong\n"}),
                               ("kind", {"kind": "maven"})):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()

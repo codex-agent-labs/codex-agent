@@ -266,9 +266,11 @@ def verify_native_sdk_package_phase(
         )
         if manifest["outputs"] != receipt["outputs"]:
             raise ValueError("Native SDK package receipt and stage outputs differ")
-        evidence_path = "outputs/evidence/sdk-compatibility.json"
+        evidence_names = ("sdk-compatibility.json", "sdk-runtime-root.pub")
         evidence = [record for record in receipt["outputs"] if record["kind"] == "evidence"]
-        if (len(evidence) != 1 or evidence[0]["relativePath"] != evidence_path or any(
+        if (len(evidence) != len(evidence_names)
+                or {record["relativePath"] for record in evidence} != {
+                    f"outputs/evidence/{name}" for name in evidence_names} or any(
             record["kind"] != "package" or not record["relativePath"].startswith(f"outputs/{language}/")
             for record in receipt["outputs"] if record not in evidence
         )):
@@ -278,8 +280,9 @@ def verify_native_sdk_package_phase(
         )
         if index["sdkVersion"] != receipt["productVersion"]:
             raise ValueError("Native SDK authenticated version differs from package receipt")
-        if (stage / evidence_path).read_bytes() != (sdks / "sdk-compatibility.json").read_bytes():
-            raise ValueError("Native SDK evidence differs from authenticated compatibility")
+        for name in evidence_names:
+            if (stage / "outputs/evidence" / name).read_bytes() != (sdks / name).read_bytes():
+                raise ValueError("Native SDK evidence differs from authenticated compatibility or root")
         verify_native_wrapper_sdk_packages(stage / "outputs", sdks, receipt["productVersion"], language)
     if (regular_file_inventory(stage_root) != before or regular_file_inventory(staged_sdks) != sdk_before
             or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != receipt_bytes):
