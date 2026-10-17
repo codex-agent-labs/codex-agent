@@ -5924,12 +5924,8 @@ def _allow_locked_runtime_node_fetch(instance, environment):
         environment["npm_config_registry"] = "https://registry.npmjs.org/"
 
 
-def _runtime_worker_environment(root, producer, destination, environ, *, build_directory="runtime"):
-    from products.gradle_bootstrap import require_preprovisioned_gradle, seed_sdk_gradle_dependencies
-    if build_directory not in {"runtime", "."}:
-        raise ValueError("Product worker requires the fixed Runtime or root SDK build")
-    if build_directory == "." and environ.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", ""):
-        raise ValueError("SDK product commands remain offline after verified dependency seeding")
+def _worker_process_environment(root, producer, destination, environ):
+    """Shared source and process guards, also for non-Gradle provisioning."""
     environment = dict(environ)
     _runtime_worker_checkout(root, producer)
     for name in environment:
@@ -5950,6 +5946,16 @@ def _runtime_worker_environment(root, producer, destination, environ, *, build_d
                         "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"})
     for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP"):
         environment.pop(name, None)
+    return environment
+
+
+def _runtime_worker_environment(root, producer, destination, environ, *, build_directory="runtime"):
+    from products.gradle_bootstrap import require_preprovisioned_gradle, seed_sdk_gradle_dependencies
+    if build_directory not in {"runtime", "."}:
+        raise ValueError("Product worker requires the fixed Runtime or root SDK build")
+    if build_directory == "." and environ.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", ""):
+        raise ValueError("SDK product commands remain offline after verified dependency seeding")
+    environment = _worker_process_environment(root, producer, destination, environ)
     wrapper = root / ("gradlew.bat" if os.name == "nt" else "gradlew")
     if read_regular_file_bytes(wrapper, reject_symlink_parents=True) != git_regular_blob_bytes(
             root, producer["commit"], wrapper.name, max_bytes=64 * 1024):

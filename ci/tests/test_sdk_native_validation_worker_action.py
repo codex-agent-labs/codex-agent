@@ -66,11 +66,11 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             exec(compile(textwrap.dedent(code), '<action-' + step + '>', 'exec'), {})
 
     @staticmethod
-    def worker_environment(root, producer, destination, environ, *, build_directory="runtime"):
-        # Shared checkout/wrapper/environment admission is an explicit mock seam.
+    def worker_environment(root, producer, destination, environ):
+        # Shared checkout/process environment is an explicit mock seam.
         return dict(environ, PYTHONPYCACHEPREFIX=str(destination / 'python-bytecode'),
                     PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHONSAFEPATH='1',
-                    PYTHONPATH=str(root)), root / 'gradlew'
+                    PYTHONPATH=str(root))
 
     def test_policy_is_exact_caller_input_and_rejects_missing_required_values_before_output(self):
         self.execute('policy')
@@ -228,7 +228,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                     (output / 'package_config.json').write_text('mocked provisioner output\n')
                 return subprocess.CompletedProcess(command, 0)
             with patch('shutil.which', return_value=str(dart)), \
-                    patch('ci.product_reuse._runtime_worker_environment', side_effect=self.worker_environment) as environment_guard, \
+                    patch('ci.product_reuse._worker_process_environment', side_effect=self.worker_environment) as environment_guard, \
                     patch('ci.product_reuse._runtime_worker_checkout', side_effect=lambda *args: events.append('checkout')) as checkout, \
                     patch('subprocess.run', side_effect=process) as run:
                 self.execute('execute')
@@ -279,7 +279,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                     if failure == 'bytecode':
                         Path(kwargs['env']['PYTHONPYCACHEPREFIX']).mkdir()
                 with self.subTest(failure=failure), \
-                        patch('ci.product_reuse._runtime_worker_environment', side_effect=self.worker_environment), \
+                        patch('ci.product_reuse._worker_process_environment', side_effect=self.worker_environment), \
                         patch('ci.product_reuse._runtime_worker_checkout', side_effect=([None, ValueError('source changed')] if failure == 'checkout' else None)), \
                         patch('subprocess.run', side_effect=process) as run, \
                         self.assertRaises((ValueError, subprocess.CalledProcessError)) as rejected:

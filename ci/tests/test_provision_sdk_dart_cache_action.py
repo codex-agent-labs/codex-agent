@@ -36,7 +36,8 @@ class ProvisionSdkDartCacheActionTest(unittest.TestCase):
         self.executable.write_bytes(b'synthetic Dart executable')
         self.output = self.root / 'github-output'
         self.environment = {'GITHUB_WORKSPACE': str(self.repository), 'RUNNER_TEMP': str(self.scratch),
-            'REVISION': 'a' * 40, 'GITHUB_OUTPUT': str(self.output), 'PATH': '/caller/bin'}
+            'REVISION': 'a' * 40, 'GITHUB_OUTPUT': str(self.output), 'PATH': '/caller/bin',
+            'GRADLE_USER_HOME': str(self.root / 'absent-gradle')}
         self.source = (ROOT / '.github/actions/provision-sdk-dart-cache/action.yml').read_text()
         self.status, self.mutation = 0, None
 
@@ -45,7 +46,6 @@ class ProvisionSdkDartCacheActionTest(unittest.TestCase):
         code = block.split("        python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0]
         with patch.dict(os.environ, self.environment, clear=True), \
                 patch.object(products, '_runtime_worker_checkout') as checkout, \
-                patch.object(products, '_runtime_worker_environment', side_effect=lambda root, producer, output, env: (dict(env), root / 'gradlew')), \
                 patch('products.inventory.run_git', return_value='b' * 40), \
                 patch('products.inventory.git_regular_blob_bytes', side_effect=lambda root, revision, path, **kw: self.manifests[Path(path).name]), \
                 patch('shutil.which', return_value=str(self.executable)), \
@@ -61,6 +61,9 @@ class ProvisionSdkDartCacheActionTest(unittest.TestCase):
         self.cache = Path(kwargs['env']['PUB_CACHE'])
         self.assertTrue(self.cache.is_relative_to(self.scratch))
         self.assertEqual('https://pub.dev', kwargs['env']['PUB_HOSTED_URL'])
+        for name in ('PYTHONSAFEPATH', 'PYTHONNOUSERSITE', 'PYTHONDONTWRITEBYTECODE'):
+            self.assertEqual('1', kwargs['env'][name])
+        self.assertFalse(Path(self.environment['GRADLE_USER_HOME']).exists())
         self.assertFalse(kwargs['check'])
         self.assertEqual(subprocess.STDOUT, kwargs['stderr'])
         kwargs['stdout'].write(b'raw resolution diagnostics\x00\xff')

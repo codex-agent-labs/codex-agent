@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 import json
+import os
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -23,6 +25,21 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
 
     def job(self, name):
         return self.harness.job(name)
+
+    def test_native_checkout_preserves_git_bytes_before_qualification_on_windows(self):
+        worker = self.job('sdk-native-validation')
+        environment = worker.split('    env:\n', 1)[1].split('    steps:\n', 1)[0]
+        for required in ("GIT_CONFIG_COUNT: '1'", 'GIT_CONFIG_KEY_0: core.autocrlf',
+                         "GIT_CONFIG_VALUE_0: 'false'"):
+            self.assertIn(required, environment)
+        path = 'ci/product_reuse.py'
+        raw = subprocess.check_output(['git', 'show', 'HEAD:' + path], cwd=fixture.ROOT)
+        for setting in ('true', 'false'):
+            filtered = subprocess.check_output(['git', 'cat-file', '--filters', '--path=' + path, 'HEAD:' + path],
+                cwd=fixture.ROOT, env={**os.environ, 'GIT_CONFIG_COUNT': '1',
+                    'GIT_CONFIG_KEY_0': 'core.autocrlf', 'GIT_CONFIG_VALUE_0': setting})
+            self.assertEqual(setting == 'false', filtered == raw)
+            self.assertEqual(raw, filtered.replace(b'\r\n', b'\n'))
 
     @staticmethod
     def needs():

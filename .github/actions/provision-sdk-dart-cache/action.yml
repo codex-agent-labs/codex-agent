@@ -51,7 +51,7 @@ runs:
         from pathlib import Path
         repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         sys.path.insert(0, str(repository / 'ci'))
-        from product_reuse import _runtime_worker_checkout, _runtime_worker_environment
+        from product_reuse import _runtime_worker_checkout, _worker_process_environment
         from products.inventory import git_regular_blob_bytes, read_regular_file_bytes, run_git, write_canonical_json
         revision = os.environ['REVISION']
         producer = {'commit': revision, 'tree': run_git(repository, 'rev-parse', 'HEAD^{tree}').strip()}
@@ -135,7 +135,7 @@ runs:
             hashes = cache / 'hosted-hashes/pub.dev'
             hashes.mkdir(parents=True, exist_ok=True)
             (hashes / (identity + '.sha256')).write_text(digest, encoding='ascii')
-        environment, _ = _runtime_worker_environment(repository, producer, parent, os.environ)
+        environment = _worker_process_environment(repository, producer, parent, os.environ)
         environment.update(PUB_CACHE=str(cache), PUB_HOSTED_URL='https://pub.dev')
         resolved = shutil.which('dart', path=environment.get('PATH', ''))
         if not resolved:

@@ -14,6 +14,32 @@ from ci.products import gradle_bootstrap as bootstrap
 
 
 class SdkDependencySeedTest(unittest.TestCase):
+    def test_non_gradle_process_keeps_guards_without_provisioning_gradle(self):
+        from ci import product_reuse as worker
+        root = Path(__file__).resolve().parents[2]
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(worker, '_runtime_worker_checkout') as checkout:
+            private = Path(temporary).resolve()
+            home = private / 'absent-gradle'
+            environment = {'GRADLE_USER_HOME': str(home), 'PYTHONHOME': 'untrusted',
+                'PYTHONPATH': 'untrusted'}
+            safe = worker._worker_process_environment(root, {'commit': commit}, private, environment)
+            checkout.assert_called_once_with(root, {'commit': commit})
+            self.assertNotIn('PYTHONHOME', safe)
+            self.assertEqual(os.pathsep.join((str(root), str(root / 'ci'))), safe['PYTHONPATH'])
+            self.assertEqual('1', safe['PYTHONSAFEPATH'])
+            self.assertFalse(home.exists())
+            # The real Gradle caller still requires its pinned installed distribution.
+            with self.assertRaisesRegex(ValueError, 'Preprovisioned Gradle wrapper cache'):
+                worker._runtime_worker_environment(root, {'commit': commit}, private, environment)
+            with self.assertRaisesRegex(ValueError, 'injected execution option'):
+                worker._worker_process_environment(root, {'commit': commit}, private,
+                    {**environment, 'JAVA_TOOL_OPTIONS': '-agentlib:untrusted'})
+            home.mkdir()
+            (home / 'init.gradle').write_bytes(b'untrusted initialization')
+            with self.assertRaisesRegex(ValueError, 'external Gradle initialization'):
+                worker._worker_process_environment(root, {'commit': commit}, private, environment)
+
     def test_safe_worker_python_supports_gradle_script_entrypoint_without_cwd_imports(self):
         from ci import product_reuse as worker
         root = Path(__file__).resolve().parents[2]

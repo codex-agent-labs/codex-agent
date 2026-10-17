@@ -326,7 +326,7 @@ runs:
                 raise ValueError('Selected Dart validation requires installed pinned Dart')
             fields['dart-executable'] = str(Path(executable).resolve(strict=True))
             if 'dart-package-config' not in fields:
-                from ci.product_reuse import _runtime_worker_checkout, _runtime_worker_environment
+                from ci.product_reuse import _runtime_worker_checkout, _worker_process_environment
                 checkout = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
                 plan = json.loads(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
                 original = {'commit': plan['validationCommit'], 'tree': plan['validationTree']}
@@ -339,7 +339,7 @@ runs:
                     raise ValueError('Dart provisioning scratch must be outside the checkout')
                 scratch = Path(tempfile.mkdtemp(prefix='sdk-dart-dependencies-', dir=temporary))
                 output = scratch / 'provisioned'
-                environment, _ = _runtime_worker_environment(checkout, original, scratch, os.environ)
+                environment = _worker_process_environment(checkout, original, scratch, os.environ)
                 bytecode = scratch / 'python-bytecode'
                 if bytecode.exists() or bytecode.is_symlink():
                     raise ValueError('Dart provisioning private Python bytecode namespace was modified')
