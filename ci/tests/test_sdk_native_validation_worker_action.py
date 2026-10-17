@@ -91,6 +91,17 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                 self.execute('policy')
             self.assertFalse(self.output.exists())
 
+    def test_rust_provisions_only_locked_consumer_dependencies_before_offline_execution(self):
+        block = self.block('rust-dependencies')
+        self.assertIn("if: inputs.component == 'rust'", block)
+        command = block.split('      run: ', 1)[1].strip()
+        self.assertEqual('cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/consumer/Cargo.toml" --locked', command)
+        self.assertLess(self.action.index('uses: dtolnay/rust-toolchain@'), self.action.index('- id: rust-dependencies'))
+        self.assertLess(self.action.index('- id: rust-dependencies'), self.action.index('- id: execute'))
+        # The online setup only fills Cargo's checksum-verified cache; the
+        # imported package consumer still resolves and executes offline.
+        self.assertIn('"--locked", "--offline"', (ROOT / 'ci/native_wrappers.py').read_text())
+
     def test_elections_match_actual_host_for_all_five_hosts_before_output(self):
         for host, values in native_wrappers.HOSTS.items():
             with self.subTest(host=host), patch.object(native_wrappers, 'host_classifier', return_value=host):

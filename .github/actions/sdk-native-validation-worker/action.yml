@@ -251,6 +251,11 @@ runs:
         dotnet-version: '8.0.419'
     - if: inputs.component == 'rust'
       uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+    - id: rust-dependencies
+      if: inputs.component == 'rust'
+      name: Populate locked dependency cache before offline installed-consumer validation
+      shell: bash
+      run: cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/consumer/Cargo.toml" --locked
     - if: inputs.component == 'dart'
       uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
       with:
