@@ -54,7 +54,8 @@ def _verify_prepared_sources(source, sdks, index, root, commit):
         if not path.startswith(prefix):
             continue
         language, _, relative = path[len(prefix):].partition("/")
-        if (language in NATIVE_BINDINGS and relative and not any(
+        # Gradle Sync excludes .gitignore at every depth by default.
+        if (language in NATIVE_BINDINGS and relative and Path(relative).name != ".gitignore" and not any(
                 fnmatch.fnmatchcase(relative, pattern) for pattern in _SOURCE_EXCLUDES[language])):
             tracked.append(path)
     expected = {}

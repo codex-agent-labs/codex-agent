@@ -238,9 +238,20 @@ class NativePreparedReceiverTest(unittest.TestCase):
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(original.read_bytes())
         index = {"targets": [{"classifier": "macos-arm64", "libraryPath": "lib/libcodex_agent.dylib"}]}
-        with patch.object(receiver, "tree_entries", return_value=[]), \
-             patch.object(receiver, "git_file_inventory", return_value=[]):
+        # Gradle Sync's default Ant excludes omit .gitignore at every depth.
+        tracked = [f"codex-agent-bindings/{language}/{path}"
+                   for language in receiver.NATIVE_BINDINGS for path in (".gitignore", "nested/.gitignore")]
+        def git_inventory(root, commit, paths):
+            self.assertEqual([], paths)
+            return []
+        with patch.object(receiver, "tree_entries", return_value=[(path, {}) for path in tracked]), \
+             patch.object(receiver, "git_file_inventory", side_effect=git_inventory):
             receiver._verify_prepared_sources(source, sdks, index, self.root, "a" * 40)
+            excluded = source / "rust/.gitignore"
+            excluded.write_bytes(b"unexpected default-excluded file")
+            with self.assertRaisesRegex(ValueError, "differ from producer Git"):
+                receiver._verify_prepared_sources(source, sdks, index, self.root, "a" * 40)
+            excluded.unlink()
             (source / "rust/native/osx-arm64/libcodex_agent.dylib").write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "differ from producer Git"):
                 receiver._verify_prepared_sources(source, sdks, index, self.root, "a" * 40)
