@@ -31,6 +31,8 @@ from products import sdk_android_validation_phase as validation_phase
 from sdk_android_metadata_workflow import _compare_original_inputs, _replan
 from sdk_phase import maven_consumed_predecessors
 from sdk_android_firebase_capture import _producer_from_receipt
+from sdk_android_upload_locator import (retained_android_evidence_origin,
+    require_retained_android_authority, require_retained_android_capture)
 from sdk_facade_capture import (
     capture_sdk_android_validation_upload, verify_retained_sdk_phase_upload,
 )
@@ -287,6 +289,13 @@ def _verified_android_validation(
             _replan(root, receipt, package)
             unchanged()
             replay = private / "replay-stage"
+            origin = retained_android_evidence_origin(receipt["buildKey"], producer)
+            require_retained_android_authority(origin, trusted_source_commit=trusted_source_commit,
+                trusted_source_tree=trusted_source_tree)
+            if origin is not None:
+                require_retained_android_capture(origin, *(
+                    load_canonical_json_bytes(_read(original / "originals" / name / "capture-transport.json"))
+                    for name in ("final", "protected")))
             validation_phase.produce_sdk_android_validation_phase(
                 repository=root, package_stage=trees["package"],
                 package_receipt=files["packageReceipt"],
@@ -295,7 +304,7 @@ def _verified_android_validation(
                 binary_contract_evidence=binary_contract_evidence,
                 final_capture=original / "originals/final",
                 protected_capture=original / "originals/protected",
-                expected_capture_producer=producer,
+                expected_capture_producer=producer if origin is None else origin["producer"],
                 # Preserve the submitted APK producer, not the later validation
                 # producer; the full nested capture gate still authenticates it.
                 expected_original_producer=_producer_from_receipt(load_json_bytes(

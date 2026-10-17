@@ -26,6 +26,7 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
             "event": "pull_request", "runId": 41, "runAttempt": 8,
             "pullRequest": 7,
         }
+        self.capture_producer = self.producer
         self.original = self.root / "held-original"
         self.final = self.original / "originals/final"
         self.protected = self.original / "originals/protected"
@@ -104,16 +105,17 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
                 raise self.reader_exit_failure
 
     def capture_final(self, plan, repository, destination, **kwargs):
-        self.assertEqual(self.producer["commit"], kwargs["expected_revision"])
+        self.assertEqual(self.capture_producer["commit"], kwargs["expected_revision"])
         self.events.append("official-final")
         self.assertEqual(self.final / "plan/impact-plan.json", plan)
-        self.assertEqual("41", kwargs["environ"]["GITHUB_RUN_ID"])
-        self.assertEqual("8", kwargs["environ"]["GITHUB_RUN_ATTEMPT"])
+        self.assertEqual(str(self.capture_producer["runId"]), kwargs["environ"]["GITHUB_RUN_ID"])
+        self.assertEqual(str(self.capture_producer["runAttempt"]), kwargs["environ"]["GITHUB_RUN_ATTEMPT"])
+        self.assertEqual(getattr(self, "capture_workflow", "c" * 40), kwargs["trusted_workflow_sha"])
         shutil.copytree(self.final, destination)
         return {"kind": "transport"}
 
     def capture_protected(self, plan, repository, final, destination, **kwargs):
-        self.assertEqual(self.producer["commit"], kwargs["expected_revision"])
+        self.assertEqual(self.capture_producer["commit"], kwargs["expected_revision"])
         self.events.append("official-protected")
         self.assertEqual("e" * 40, kwargs["trusted_source_commit"])
         self.assertEqual("f" * 40, kwargs["trusted_source_tree"])
@@ -132,6 +134,20 @@ class OriginalAndroidFirebaseValidationTest(unittest.TestCase):
             with self.context(**changes) as held:
                 self.events.append("caller-use")
                 return held
+
+    def test_new_validation_reobserves_exact_old_firebase_run_and_workflow(self):
+        self.producer = {**self.producer, "runId": 42, "runAttempt": 1, "commit": "9" * 40}
+        self.capture_workflow = "8" * 40
+        origin = {"producer": self.capture_producer, "workflowSha": self.capture_workflow,
+            "authority": {"trustedSourceCommit": "e" * 40, "trustedSourceTree": "f" * 40,
+                          "trustedAndroidWorkflowSha": "d" * 40},
+            **{name: load_canonical_json_bytes((path / "capture-transport.json").read_bytes())["locator"]
+               for name, path in (("final", self.final), ("protected", self.protected))}}
+        with patch.object(original, "retained_android_evidence_origin", return_value=origin):
+            held = self.call(expected_original_run_id=42, expected_original_run_attempt=1)
+        self.assertEqual(self.producer, held["receipt"]["producer"])
+        self.assertEqual("999", self.environment["GITHUB_RUN_ID"])
+        self.assertIn("official-protected", self.events)
 
     def test_exact_official_nested_artifacts_are_held_with_full_reader(self):
         self.expected_route = original._CHILD_ROUTES["validation"]

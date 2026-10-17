@@ -20,6 +20,7 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.apk_producer = {**self.f.validation_producer, "runAttempt": 1}
+        self.capture_producer = self.f.validation_producer
         receipt = deepcopy(self.apk_producer)
         receipt["validationCommit"] = receipt.pop("commit")
         receipt["validationTree"] = receipt.pop("tree")
@@ -105,7 +106,7 @@ class OriginalAndroidValidationTest(unittest.TestCase):
 
     def replay(self, **kwargs):
         self.events.append("full-replay")
-        self.assertEqual(self.f.validation_producer, kwargs["expected_capture_producer"])
+        self.assertEqual(self.capture_producer, kwargs["expected_capture_producer"])
         self.assertEqual(self.apk_producer, kwargs["expected_original_producer"])
         self.assertEqual(self.f.binary_producer, kwargs["expected_binary_producer"])
         shutil.copytree(self.f.validation_stage, kwargs["destination"])
@@ -138,6 +139,19 @@ class OriginalAndroidValidationTest(unittest.TestCase):
         stack(patch.object(original.validation_phase, "produce_sdk_android_validation_phase",
                            side_effect=self.replay if replay is None else replay))
         return self.context(retained=retained, **changes)
+
+    def test_replay_keeps_retained_device_identity_separate_from_original_validation(self):
+        self.capture_producer = {**self.f.validation_producer, "runId": 1, "commit": "9" * 40}
+        origin = {"producer": self.capture_producer,
+            "authority": {"trustedSourceCommit": "e" * 40, "trustedSourceTree": "f" * 40},
+            "final": {"artifact_id": 701}, "protected": {"artifact_id": 702}}
+        for name in ("final", "protected"):
+            (self.f.original / "originals" / name / "capture-transport.json").write_bytes(
+                canonical_json_bytes({"captureProducer": self.capture_producer, "locator": origin[name]}))
+        with patch.object(original, "retained_android_evidence_origin", return_value=origin):
+            with self.enter_reader() as value:
+                self.assertEqual(self.f.validation_producer, value["receipt"]["producer"])
+        self.assertIn("full-replay", self.events)
 
     def test_official_capture_full_replay_and_context_lifetime(self):
         with self.enter_reader() as value:

@@ -36,6 +36,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.plan = self.root / "impact-plan.json"
         self.plan.write_bytes(b"synthetic elected plan\n")
         self.current = self.producer(2)
+        self.capture_producer = self.current
         self.original = self.producer(1)
         self.apk_producer = self.producer(1)
         self.ready = {"schemaVersion": 1, "product": "sdk", "component": "sdk-android",
@@ -175,7 +176,7 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         self.assertNotIn(self.root, destination.parents)
         destination.mkdir()
         (destination / "final.bin").write_bytes(b"exact final capture")
-        return {"captureProducer": deepcopy(self.current)}
+        return {"captureProducer": deepcopy(self.capture_producer)}
 
     def capture_protected(self, plan, root, final, destination, **kwargs):
         self.events.append("protected-capture")
@@ -189,14 +190,14 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
         receipt["validationCommit"] = receipt.pop("commit")
         receipt["validationTree"] = receipt.pop("tree")
         write_canonical_json(lane, receipt)
-        return {"captureProducer": deepcopy(self.current)}
+        return {"captureProducer": deepcopy(self.capture_producer)}
 
     def produce(self, **kwargs):
         self.events.append("produce")
         self.phase_arguments = kwargs
         self.assertEqual(self.apk_producer, kwargs["expected_original_producer"])
         self.assertEqual(self.binary["producer"], kwargs["expected_binary_producer"])
-        self.assertEqual(self.current, kwargs["expected_capture_producer"])
+        self.assertEqual(self.capture_producer, kwargs["expected_capture_producer"])
         self.assertEqual(b"exact final capture", (kwargs["final_capture"] / "final.bin").read_bytes())
         self.assertEqual(b"exact protected capture", (kwargs["protected_capture"] / "protected.bin").read_bytes())
         stage = kwargs["destination"]
@@ -233,6 +234,33 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
             result = workflow.execute(self.plan, self.discovery, self.state,
                 changes.pop("destination", self.destination), **{**self.arguments, **changes})
         return result, finalize
+
+    def test_retained_device_capture_preserves_old_producer_and_finalizes_current_phase(self):
+        self.capture_producer = {**self.original, "runId": 16, "commit": "9" * 40}
+        self.apk_producer = {**self.capture_producer, "runAttempt": 1}
+        origin = {"producer": self.capture_producer, "workflowSha": "8" * 40,
+            "authority": {"trustedSourceCommit": "e" * 40, "trustedSourceTree": "1" * 40,
+                          "trustedAndroidWorkflowSha": "d" * 40},
+            "final": {"artifact_id": 701}, "protected": {"artifact_id": 702}}
+        historical = self.root / "historical-plan.json"
+        historical.write_bytes(b"original plan")
+        final, protected = self.capture_final, self.capture_protected
+        def capture(kind, callback, *args, **kwargs):
+            self.assertEqual(historical, args[0])
+            self.assertEqual("16", kwargs["environ"]["GITHUB_RUN_ID"])
+            self.assertEqual("9" * 40, kwargs["expected_revision"])
+            self.assertEqual("8" * 40, kwargs["trusted_workflow_sha"])
+            return {**callback(*args, **kwargs), "locator": origin[kind]}
+        self.capture_final = lambda *a, **k: capture("final", final, *a, **k)
+        self.capture_protected = lambda *a, **k: capture("protected", protected, *a, **k)
+        with patch.object(workflow, "retained_android_evidence_origin", return_value=origin), \
+                patch.object(workflow, "capture_retained_android_plan", return_value=historical) as plan:
+            _, finalize = self.call()
+        plan.assert_called_once()
+        self.assertEqual(self.current, finalize.call_args.kwargs["producer"])
+        self.assertEqual("17", self.environment["GITHUB_RUN_ID"])
+        self.assertEqual(self.capture_producer, self.phase_arguments["expected_capture_producer"])
+        self.assertEqual(self.apk_producer, self.phase_arguments["expected_original_producer"])
 
     def test_exact_election_private_capture_retention_full_gate_then_finalization(self):
         result, finalize = self.call()

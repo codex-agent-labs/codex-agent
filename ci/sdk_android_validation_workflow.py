@@ -30,6 +30,8 @@ from products.signatures import load_keyring, public_key_path
 from products.signing_isolation import require_no_signing_secret
 from sdk_android_evidence_capture import capture_android_evidence
 from sdk_android_firebase_capture import capture_android_firebase_evidence, _producer_from_receipt
+from sdk_android_upload_locator import (retained_android_evidence_origin, capture_retained_android_plan,
+    require_retained_android_authority, require_retained_android_capture)
 from products import sdk_android_validation_phase as validation_phase
 from sdk_phase import maven_consumed_predecessors
 
@@ -261,20 +263,33 @@ def execute(
         with tempfile.TemporaryDirectory(prefix="sdk-android-validation-captures-") as temporary:
             private = Path(temporary).resolve()
             private_final, private_protected = private / "final", private / "protected"
+            origin = retained_android_evidence_origin(ready["buildKey"], producer)
+            require_retained_android_authority(origin, trusted_source_commit=trusted_source_commit,
+                trusted_source_tree=trusted_source_tree, trusted_android_workflow_sha=trusted_android_workflow_sha)
+            capture_producer = producer if origin is None else origin["producer"]
+            capture_plan, capture_environment, revision = plan, environ, {}
+            capture_workflow = trusted_workflow_sha
+            if origin is not None:
+                capture_plan = capture_retained_android_plan(origin, root, private / "historical-plan", token=token)
+                capture_environment = {**environ, "GITHUB_RUN_ID": str(capture_producer["runId"]),
+                    "GITHUB_RUN_ATTEMPT": str(capture_producer["runAttempt"])}
+                revision = {"expected_revision": capture_producer["commit"]}
+                capture_workflow = origin["workflowSha"]
             final_transport = capture_android_evidence(
-                plan, root, private_final, trusted_workflow_sha=trusted_workflow_sha,
+                capture_plan, root, private_final, trusted_workflow_sha=capture_workflow,
                 trusted_android_workflow_sha=trusted_android_workflow_sha,
-                environ=environ, token=token)
-            if final_transport.get("captureProducer") != producer:
+                environ=capture_environment, token=token, **revision)
+            if final_transport.get("captureProducer") != capture_producer:
                 raise ValueError("Android final capture differs from the elected producer")
             protected_transport = capture_android_firebase_evidence(
-                plan, root, private_final, private_protected,
-                trusted_workflow_sha=trusted_workflow_sha,
+                capture_plan, root, private_final, private_protected,
+                trusted_workflow_sha=capture_workflow,
                 trusted_android_workflow_sha=trusted_android_workflow_sha,
                 trusted_source_commit=trusted_source_commit,
-                trusted_source_tree=trusted_source_tree, environ=environ, token=token)
-            if protected_transport.get("captureProducer") != producer:
+                trusted_source_tree=trusted_source_tree, environ=capture_environment, token=token, **revision)
+            if protected_transport.get("captureProducer") != capture_producer:
                 raise ValueError("Android protected capture differs from the elected producer")
+            require_retained_android_capture(origin, final_transport, protected_transport)
             private_inventories = {
                 "final": regular_file_inventory(private_final, allow_empty=True),
                 "protected": regular_file_inventory(private_protected, allow_empty=True),
@@ -296,7 +311,7 @@ def execute(
                 compatibility_request=compatibility_request,
                 binary_contract_evidence=binary_contract_evidence,
                 final_capture=private_final, protected_capture=private_protected,
-                expected_capture_producer=producer,
+                expected_capture_producer=capture_producer,
                 # The authenticated protected submission retains the APK's
                 # original receipt even when Firebase/capture is retried.
                 expected_original_producer=_producer_from_receipt(load_json_bytes(

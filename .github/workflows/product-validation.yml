@@ -5321,6 +5321,7 @@ jobs:
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
       sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
+      retained_android_authority: ${{ steps.retained-device.outputs.authority }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5341,6 +5342,30 @@ jobs:
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
+      - id: retained-device
+        name: Select reviewed existing device-evidence locator, without granting admission
+        env:
+          MATRIX: ${{ steps.capture.outputs.sdk-matrix }}
+          REQUIRED: ${{ steps.capture.outputs.sdk-workers-required }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          python3 -B - <<'PY'
+          import os
+          from ci.products.inventory import canonical_json_bytes, load_json_bytes
+          from ci.sdk_android_upload_locator import retained_android_evidence_origin
+          rows = load_json_bytes(os.environ['MATRIX'].encode())['include']
+          consumer = {'repository': os.environ['GITHUB_REPOSITORY'],
+              'workflowPath': '.github/workflows/ci.yml', 'event': os.environ['GITHUB_EVENT_NAME'],
+              'runId': int(os.environ['GITHUB_RUN_ID']), 'runAttempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'pullRequest': int(os.environ['PULL_REQUEST']) if os.environ['PULL_REQUEST'] else None}
+          origin = (retained_android_evidence_origin(rows[0]['buildKey'], consumer)
+                    if os.environ['REQUIRED'] == 'true' and len(rows) == 1 else None)
+          if origin is not None:
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('authority<<ANDROID_AUTHORITY\n' +
+                               canonical_json_bytes(origin['authority']).decode() + '\nANDROID_AUTHORITY\n')
+          PY
+
   android-sdk-apk:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan]
     env:
@@ -5353,7 +5378,8 @@ jobs:
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-android-package-result.result == 'success' &&
       needs.sdk-android-validation-plan.result == 'success' &&
-      needs.sdk-android-validation-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-android-validation-plan.outputs.sdk_workers_required == 'true' &&
+      needs.sdk-android-validation-plan.outputs.retained_android_authority == ''
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-android-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -5436,7 +5462,7 @@ jobs:
       packageWave: ${{ toJSON(needs.sdk-android-package-result) }}
       validationPlan: ${{ toJSON(needs.sdk-android-validation-plan) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
-      protectedAndroidAuthority: ${{ needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '' }}
+      protectedAndroidAuthority: ${{ needs.sdk-android-validation-plan.outputs.retained_android_authority || (needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '') }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
@@ -5474,7 +5500,7 @@ jobs:
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-android-metadata-result:
-    needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-plan, android-runtime-evidence]
+    needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan, sdk-android-validation-result, sdk-android-metadata-plan, android-runtime-evidence]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -5491,7 +5517,7 @@ jobs:
       validationWave: ${{ toJSON(needs.sdk-android-validation-result) }}
       metadataPlan: ${{ toJSON(needs.sdk-android-metadata-plan) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
-      protectedAndroidAuthority: ${{ needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '' }}
+      protectedAndroidAuthority: ${{ needs.sdk-android-validation-plan.outputs.retained_android_authority || (needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '') }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
