@@ -7377,7 +7377,7 @@ def _initial_runtime_upload_source(producer, artifact_id, token):
 
 @measured
 def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destination, *,
-                                       trusted_workflow_sha, token, wanted, _targets=None):
+                                       trusted_workflow_sha, token, wanted, inventory_only=None, _targets=None):
     """Resolve qualified bytes, not enclosing carriers, after fresh source auth.
 
     The top-level reference envelope has passed its complete upload SHA gate.
@@ -7388,6 +7388,11 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     from runtime_reference_archive import open_reference_archive, copy_reference_member
     from runtime_reference_transport import validate_references, validate_original_references, ORIGINAL_REFERENCE_NAME
 
+    # Declaration checks grant no body authority. The caller must separately
+    # authenticate and verify those original bytes before admitting a product.
+    if inventory_only and (base.get("referenceControlSha256") is None
+                           or base.get("sdkStateWave") is None):
+        raise ValueError("Inventory-only checks require a pinned SDK collector control")
     if "runAttempt" in base:
         attempt = require_integer(base["runAttempt"], "Reference original attempt", 1)
         if attempt > producer["runAttempt"]:
@@ -7534,6 +7539,8 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
             mappings = {record["relativePath"]: record for record in references["references"]}
             if names - {"runtime-references.json"} != set(inventory) - set(mappings):
                 raise ValueError("Original Runtime reference delta inventory differs from its declaration")
+            if any(inventory.get(path) != record for path, record in (inventory_only or {}).items()):
+                raise ValueError("Collector inventory-only declaration changes its qualified byte identity")
             for path, record in wanted.items():
                 if inventory.get(path) != record:
                     raise ValueError("Nested Runtime reference changes a qualified byte identity")

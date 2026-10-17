@@ -295,6 +295,49 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                     product_reuse._capture_runtime_reference_members(*arguments, **options)
                     self.assertEqual(plan_bytes, (destination / plan_path).read_bytes())
 
+    def test_collector_declarations_are_checked_without_copying_their_bodies(self):
+        from products.inventory import canonical_json_bytes
+        fixture = resume_fixture.RuntimeResumeCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        plan_path = 'product-resume-inputs/plan/impact-plan.json'
+        plan = fixture.contents[plan_path]
+        plan_row = dict(relativePath=plan_path, bytes=len(plan), sha256=sha256_bytes(plan))
+        body = b'x' * (4 * 1024**2)
+        body_row = dict(relativePath='runtime-state/object.zip', bytes=len(body), sha256=sha256_bytes(body))
+        # An inherited declaration needs no ancestor body for this check.
+        control = canonical_json_bytes({'schemaVersion': 1,
+            'base': {'artifactId': 102, 'artifactSha256': sha256_bytes(b'ancestor'), 'stateWave': 0},
+            'inventory': [plan_row, body_row], 'references': [{**body_row, 'sourcePath': body_row['relativePath']}]})
+        raw = archive({REFERENCE_NAME: control, plan_path: plan})
+        artifact = {**fixture.artifact, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw)}
+        base = dict(artifactId=101, artifactSha256=artifact['digest'], stateWave=0, sdkStateWave=4,
+                    referenceControlSha256=sha256_bytes(control))
+        jobs = [{**fixture.job, 'name': 'product-validation / sdk-collect-4'}]
+        observed = [{'run': fixture.run, 'jobs': jobs}]
+        for case in ('valid', 'digest', 'size', 'missing-pin'):
+            row, current = dict(body_row), dict(base)
+            if case == 'digest': row['sha256'] = sha256_bytes(b'wrong')
+            if case == 'size': row['bytes'] += 1
+            if case == 'missing-pin': current.pop('referenceControlSha256')
+            destination = fixture.root / ('declarations-' + case)
+            ranges = RangeOpener({101: raw})
+            with self.subTest(case=case), \
+                    mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observed), \
+                    mock.patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=artifact), \
+                    mock.patch.object(product_reuse, '_require_artifact_job_window'), \
+                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
+                arguments = ({}, plan, fixture.producer, current, destination)
+                options = dict(trusted_workflow_sha=fixture.pin, token='synthetic',
+                               wanted={plan_path: plan_row}, inventory_only={row['relativePath']: row})
+                if case == 'valid':
+                    product_reuse._capture_runtime_reference_members(*arguments, **options)
+                    self.assertEqual([plan_row], regular_file_inventory(destination))
+                    self.assertTrue(all(identifier == 101 for identifier, *_ in ranges.requests))
+                else:
+                    with self.assertRaisesRegex(ValueError, 'Inventory-only|inventory-only'):
+                        product_reuse._capture_runtime_reference_members(*arguments, **options)
+
     def test_range_reads_reject_changed_etags_and_unbounded_bodies(self):
         from runtime_reference_archive import _Archive
         raw = b'qualified bytes'

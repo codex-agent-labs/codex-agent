@@ -844,8 +844,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 completed._qualified_members(pins, candidate, selected, [self.receipt])
 
+    def test_collected_receipt_hint_avoids_carrier_body_but_still_verifies_original(self):
+        self.check_v3_issuer_original_member('python', 'package', 'desktop', collected=True,
+                                            collected_wave=4, receipt_hint=True)
+
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
-                                      collected_wave=9):
+                                      collected_wave=9, receipt_hint=False):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -861,7 +865,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         folder = 'prior-failed-sdk-ios-package' if component == 'sdk-ios' else 'prior-failed-sdk'
         self.receipt_path = (f'product-resume-state/{folder}/{component}/{phase_name}/{target}/'
                             'original/shard/phase-receipt.json')
-        embedded = collected and (phase_name == 'metadata' or component == 'sdk-core' or collected_wave == 5)
+        embedded = collected and (phase_name == 'metadata' or component == 'sdk-core' or collected_wave in (4, 5))
         if embedded:
             source_object = 'runtime-state/original-objects/' + verified['objectPath']
             self.receipt_path = source_object + '/phase-receipt.json'
@@ -898,6 +902,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
         if embedded:
             spec['receiptObjects'] = [{'relativePath': source_object,
                 'bytes': (shard / verified['objectPath']).stat().st_size, 'sha256': verified['objectSha256']}]
+            if receipt_hint:
+                spec['receiptObjects'][0]['receipt'] = receipt
+                changed = deepcopy(spec)
+                changed['receiptObjects'][0]['receipt']['producer']['runId'] += 1
+                with self.assertRaisesRegex(ValueError, 'pinned original'):
+                    completed._receipt_objects(changed)
+                changed['receiptObjects'][0]['receipt'] = None
+                with self.assertRaises(ValueError): completed._receipt_objects(changed)
         spec['originals'] = [{**spec['originals'][0], **{key: phase[key] for key in completed.IDENTITY}}]
         parent = {'schemaVersion': 1}
         spec['parentProofSha256'] = sha256_bytes(canonical_json_bytes(parent))
@@ -958,7 +970,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             if collected:
                 ensure_commit = stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
                 validate_plan = stack.enter_context(patch.object(products, '_validate_plan', return_value=plan))
-                def capture(actual_plan, raw_plan, producer, base, destination, *, trusted_workflow_sha, token, wanted):
+                def capture(actual_plan, raw_plan, producer, base, destination, *, trusted_workflow_sha, token, wanted,
+                            inventory_only=None):
                     self.assertEqual((plan, plan_text.encode('utf-8'), spec['source']['producer']),
                                      (actual_plan, raw_plan, producer))
                     self.assertEqual({'artifactId': spec['source']['artifactId'],
@@ -967,11 +980,15 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         'runAttempt': producer['runAttempt']}, base)
                     expected = {row['relativePath']: row for row in spec['controls']
                                 if not embedded or row['relativePath'] != self.receipt_path}
-                    expected.update({row['relativePath']: row for row in spec.get('receiptObjects', [])})
+                    objects = {row['relativePath']: {k: v for k, v in row.items() if k != 'receipt'}
+                               for row in spec.get('receiptObjects', [])}
+                    self.assertEqual(objects if receipt_hint else None, inventory_only)
+                    if not receipt_hint: expected.update(objects)
                     self.assertEqual(expected, wanted)
                     self.assertEqual(spec['source']['workflowSha'], trusted_workflow_sha)
                     for path, value in self.controls.items():
                         if embedded and path == self.receipt_path:
+                            if receipt_hint: continue
                             target = destination / source_object
                             target.parent.mkdir(parents=True, exist_ok=True)
                             target.write_bytes(body)

@@ -78,6 +78,10 @@ def _receipt_objects(spec):
     selected = {row["receiptPath"]: row for row in spec["completedPhases"]}
     result = {}
     for row in objects:
+        if type(row) is not dict:
+            raise ValueError("Collected receipt object must be a record")
+        has_hint, hint = "receipt" in row, row.get("receipt")
+        row = {key: value for key, value in row.items() if key != "receipt"}
         validate_file_record(row, "Collected receipt object", with_kind=False)
         path = row["relativePath"] + "/phase-receipt.json"
         phase = selected.get(path)
@@ -88,6 +92,10 @@ def _receipt_objects(spec):
                 or row["relativePath"] != spec["stateRoot"] + "/original-objects/"
                     + object_relative_path(phase["buildKey"], phase["receiptSha256"])):
             raise ValueError("Collected receipt object differs from its exact selected phase")
+        if has_hint:
+            raw = canonical_json_bytes(validate_phase_receipt(hint))
+            if len(raw) > LIMIT or sha256_bytes(raw) != phase["receiptSha256"]:
+                raise ValueError("Collected receipt hint differs from its pinned original")
         result[path] = (row, phase)
     return result
 
@@ -430,6 +438,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     available = _records(request["availableObjects"], "Incremental original objects")
     if type(proof["members"]) is not list or len(proof["members"]) != len(phases):
         raise ValueError("Incremental SDK object members changed")
+    embedded_objects = _receipt_objects(spec)
     for phase, member in zip(phases, proof["members"]):
         validate_file_record(member, "Incremental SDK object", with_kind=False)
         expected = spec["stateRoot"] + "/" + available[_identity(phase)]["objectPath"]
@@ -441,6 +450,9 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
         if (member["relativePath"] != expected or member["sha256"] != phase["objectSha256"]
                 or not 0 < member["bytes"] <= limit):
             raise ValueError("Incremental SDK consumed object changed")
+        embedded = embedded_objects.get(phase["receiptPath"])
+        if embedded is not None and member["bytes"] != embedded[0]["bytes"]:
+            raise ValueError("Incremental original size differs from its collected declaration")
     sdk["extension"] = {"spec": spec, "proof": proof}
     return sdk
 
@@ -534,18 +546,26 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         base.update(stateWave=0, sdkStateWave=_COLLECTED_WAVES[spec["source"]["jobName"]],
                     runAttempt=producer["runAttempt"])
         receipt_objects = _receipt_objects(spec)
+        # Reviewed Git may carry the exact small receipt, never body authority.
+        # Bind its containing object to the authenticated collector inventory;
+        # fresh original/job/upload and full object gates below remain mandatory.
+        hints = {row["relativePath"] + "/phase-receipt.json": row["receipt"]
+                 for row in spec.get("receiptObjects", []) if "receipt" in row}
+        declared = {row["relativePath"]: row for path, (row, _) in receipt_objects.items() if path in hints}
         wanted = {row["relativePath"]: row for row in spec["controls"]
                   if row["relativePath"] not in receipt_objects}
-        wanted.update((row["relativePath"], row) for row, _ in receipt_objects.values())
+        wanted.update((row["relativePath"], row) for path, (row, _) in receipt_objects.items() if path not in hints)
         transport = products._capture_runtime_reference_members(plan, raw_plan, producer, base, destination,
             trusted_workflow_sha=spec["source"]["workflowSha"], token=token,
-            wanted=wanted)
+            wanted=wanted, **({"inventory_only": declared} if declared else {}))
         if transport["artifact"] != artifact:
             raise ValueError("Collector control intake changes its observed source upload")
         controls = {}
         for row in spec["controls"]:
             embedded = receipt_objects.get(row["relativePath"])
-            if embedded is not None:
+            if row["relativePath"] in hints:
+                raw = canonical_json_bytes(validate_phase_receipt(hints[row["relativePath"]]))
+            elif embedded is not None:
                 obj, phase = embedded
                 verified = verify_object(destination / obj["relativePath"], build_key=phase["buildKey"],
                     receipt_sha256=phase["receiptSha256"], object_sha256=phase["objectSha256"])
@@ -642,6 +662,11 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             if verified["receiptBytes"] != canonical_json_bytes(receipts[number]):
                 raise ValueError("Incremental SDK object changes its admitted receipt")
             members.append(member)
+        embedded_objects = _receipt_objects(spec)
+        for phase, member in zip(phases, members, strict=True):
+            embedded = embedded_objects.get(phase["receiptPath"])
+            if embedded is not None and member["bytes"] != embedded[0]["bytes"]:
+                raise ValueError("Incremental original size differs from its collected declaration")
     contract_path = work / "contract-controls.zip"
     contract_source = download(spec["contractControls"], contract_path, contract=True)
     with zipfile.ZipFile(contract_path) as archive:
