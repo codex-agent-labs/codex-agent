@@ -31,12 +31,14 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         for gate in ("sdk-completion", "sdk-parity", "merge-gate"):
             self.assertIn("sdk-android-package-result", job(source, gate).split("    needs:", 1)[1])
 
-    def test_child_requires_fresh_binary_and_pins_nested_original(self):
+    def test_child_routes_fresh_or_native_binary_and_pins_nested_original(self):
         source = CHILD.read_text()
         worker = job(source, "sdk-android-package")
         collect = job(source, "sdk-collect-16")
         result = job(source, "sdk-android-package-result")
         for text in ("fromJSON(inputs.binaryWave).outputs.sdk_state_wave == '15'",
+                     "fromJSON(inputs.binaryWave).outputs.binary_build_key == '' &&",
+                     "fromJSON(inputs.binaryWave).outputs.routing != ''",
                      "fromJSON(inputs.binaryWave).outputs.binary_artifact_id != ''",
                      "fromJSON(inputs.binaryWave).outputs.binary_artifact_sha256 != ''",
                      "fromJSON(inputs.binaryWave).outputs.binary_original_context != ''",
@@ -52,7 +54,8 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         self.assertIn("uses: ./.github/actions/sdk-android-core14-caller", worker)
         self.assertIn("uses: ./.github/actions/sdk-android-maven-worker", worker)
         self.assertIn("phase: package", worker)
-        self.assertIn("binary-artifact-id: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_id }}", worker)
+        self.assertIn("binary-artifact-id: ${{ steps.policy.outputs.binary-artifact-id }}", worker)
+        self.assertIn('if [ -n "$BINARY_ID$BINARY_SHA256$BINARY_CONTEXT" ]; then', policy)
         self.assertIn("binary-original-workflow-path: .github/workflows/sdk-android-binary-validation.yml", worker)
         self.assertIn("binary-original-job-name: product-validation / sdk-android-binary-result / sdk-android-binary-android", worker)
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-android-package-validation.yml", collect)
@@ -68,6 +71,8 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         self.assertIn('--state-root "${{ steps.selected.outputs.state-root }}"', qualified)
         self.assertIn('--completed-frozen-policy', qualified)
         self.assertIn('--retained-sdk-inputs-source', qualified)
+        self.assertIn('BINARY_ID: ${{ steps.policy.outputs.binary-artifact-id }}', qualified)
+        self.assertIn('BINARY_SHA256: ${{ steps.policy.outputs.binary-artifact-sha256 }}', qualified)
         self.assertIn('--binary-original-workflow-path .github/workflows/sdk-android-binary-validation.yml', qualified)
         self.assertNotIn('capture-transport', qualified)
         self.assertNotIn('capture-runtime-state', qualified)

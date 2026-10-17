@@ -1,4 +1,4 @@
-"""Prepare independent Core package caller policy.
+"""Shared Core/Android package caller policy (Core CLI retained for compatibility).
 
 The caller supplies a current successful upload, or concrete native completion
 selects the independently reviewed original. Uploaded invocation data never
@@ -20,19 +20,21 @@ if __package__:
 import product_reuse
 from products.contract_attestation import verify_contract_attestation
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
-    require_integer, require_sha256, sha256_file, write_canonical_json,
+    require_integer, require_semver, require_sha256, sha256_bytes, sha256_file, write_canonical_json,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
 from products.restore import verification_scoped
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS
 from products.signing_isolation import require_no_signing_secret
+from products.toolchain import _properties
 from sdk_maven_original import _context
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from reuse_qualification import CompletedFrozenReuse, add_completed_frozen_argument, completed_frozen_options
 from sdk_campaign_original_locator import locate_retained_core_binary_upload
+from sdk_phase import SDK_FAMILY_INSTANCES
 
 
 _BINARY = PhaseInstanceId("sdk", "sdk-core", "binary", "common")
@@ -45,9 +47,16 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             binary_artifact_id=None, binary_artifact_sha256=None, binary_original_context=None,
             trusted_workflow_sha, repository_root, environ,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
+            component="sdk-core", android_runtime_archive=None):
     """Write external policy for a current or native-completed original binary."""
     require_no_signing_secret(environ)
+    if component not in {"sdk-core", "sdk-android"} or (
+            (component == "sdk-android") != (android_runtime_archive is not None)):
+        raise ValueError("Maven package policy requires an Android archive only for Android")
+    family = component.removeprefix("sdk-")
+    binary_instance, = SDK_FAMILY_INSTANCES[family + "-binary"]
+    package_instance, = SDK_FAMILY_INSTANCES[family + "-package"]
     root = Path(repository_root).resolve(strict=True)
     plan, discovery, state = Path(plan).absolute(), Path(discovery).absolute(), Path(state).absolute()
     destination = Path(destination).absolute()
@@ -56,6 +65,11 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
             destination.exists() or destination.is_symlink()):
         raise ValueError("Core package caller policy requires a fresh external destination")
     product_reuse._product_materialization_paths(root, discovery, state, root / "build/core-policy-unused")
+    archive = Path(android_runtime_archive) if android_runtime_archive is not None else None
+    if archive is not None and (not archive.is_absolute() or archive.resolve(strict=True) != archive or
+            archive == root or root in archive.parents or
+            archive == destination or destination in archive.parents):
+        raise ValueError("Android package archive must be a separate normalized caller file")
     require_sha256(expected_build_key, "Core package elected key")
     supplied = tuple(value is not None for value in
                      (binary_artifact_id, binary_artifact_sha256, binary_original_context))
@@ -75,13 +89,17 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         if canonical_json_bytes(context).decode().strip() != binary_original_context:
             raise ValueError("Core binary original context is not canonical")
         _context(context, "binary")
+        if component == "sdk-android" and (context["repositoryRoot"] != str(root) or
+                context["workerRoot"] != str(root / "build/sdk-android-maven-worker")):
+            raise ValueError("Android binary context differs from this same-campaign worker")
 
     source_inventories = {path: regular_file_inventory(path, allow_empty=True)
                           for path in (discovery, state)}
     plan_bytes = read_regular_file_bytes(plan, reject_symlink_parents=True)
+    archive_digest = sha256_file(archive, reject_symlink_parents=True) if archive is not None else None
     verified = product_reuse._verified_product_state(
         plan, discovery, state, root, environ, sdk_validation_tooling,
-        requested_scope=(_PACKAGE,),
+        requested_scope=(package_instance,),
         sdk_original_workflow_sha=trusted_workflow_sha,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
@@ -91,24 +109,34 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         **({"sdk_android_metadata_admission": sdk_android_metadata_admission}
            if sdk_android_metadata_admission is not None else {}),
     )
-    ready = verified.prior_ready_plans.get(_PACKAGE)
-    binary = verified.prior_by_instance.get(_BINARY)
+    ready = verified.prior_ready_plans.get(package_instance)
+    binary = verified.prior_by_instance.get(binary_instance)
     if (ready is None or ready["buildKey"] != expected_build_key or
             binary is None or binary["state"] != "retained" or
-            _BINARY not in verified.sources or _CONTRACT not in verified.sources or
+            binary_instance not in verified.sources or _CONTRACT not in verified.sources or
             _CONTRACT not in verified.prior_carrier_phases):
         raise ValueError("Core package requires a retained binary and authenticated Contract")
     if not any(supplied):
-        envelope = completed_frozen.envelope(verified.prior_carrier_phases[_BINARY])
+        envelope = completed_frozen.envelope(verified.prior_carrier_phases[binary_instance])
         if envelope is None:
             raise ValueError("Core binary lacks exact native completion")
         origin = locate_retained_core_binary_upload(plan, root,
-            expected_build_key=binary["buildKey"], token=environ.get("GITHUB_TOKEN", ""), environ=environ)
-        if origin is None or envelope["receipt"]["producer"] != origin["producer"]:
+            expected_build_key=binary["buildKey"], token=environ.get("GITHUB_TOKEN", ""), environ=environ,
+            **({"component": component, "target": binary_instance.target} if component != "sdk-core" else {}))
+        if (origin is None or envelope["receipt"]["producer"] != origin["producer"] or
+                component == "sdk-android" and
+                sha256_bytes(envelope["receiptBytes"]) != origin["receipt_sha256"]):
             raise ValueError("Native Core binary differs from its independently reviewed original")
         binary_artifact_id, binary_artifact_sha256 = origin["artifact_id"], origin["artifact_sha256"]
         context = origin["context"]
         _context(context, "binary")
+    if archive is not None:
+        properties = _properties(git_regular_blob_bytes(root, verified.plan["validationCommit"],
+            "gradle.properties", max_bytes=1024 * 1024), "Original Android runtime pins")
+        require_semver(properties["codexAgent.codexVersion"], "Original Android runtime version")
+        if archive_digest != require_sha256("sha256:" + properties["codexAgent.codexArchiveSha256"],
+                "Original Android archive pin"):
+            raise ValueError("Android package archive differs from immutable candidate Git pin")
     source = verified.rebased_request.get("contractEvidence")
     if source is None or source["expectedTrustDomain"] != "release":
         raise ValueError("Core package requires the authenticated release Contract")
@@ -191,16 +219,18 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
         write_canonical_json(prepared / "binary-contract-evidence.json", evidence)
         write_canonical_json(prepared / "binary-original-context.json", context)
         if (read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_bytes or
+                archive is not None and sha256_file(archive, reject_symlink_parents=True) != archive_digest or
                 any(regular_file_inventory(path, allow_empty=True) != before
                     for path, before in source_inventories.items())):
             raise ValueError("Core package current plan or authenticated state changed")
         publish_regular_tree(prepared, destination)
     return {"binary-artifact-id": str(binary_artifact_id), "binary-artifact-sha256": binary_artifact_sha256,
             "binary-contract-evidence": str(destination / "binary-contract-evidence.json"),
-            "binary-original-context": str(destination / "binary-original-context.json")}
+            "binary-original-context": str(destination / "binary-original-context.json"),
+            **({"android-runtime-archive": str(archive)} if archive is not None else {})}
 
 
-def main(argv=None):
+def main(argv=None, *, component="sdk-core"):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -209,12 +239,16 @@ def main(argv=None):
     for name in ("binary-artifact-sha256", "binary-original-context"):
         parser.add_argument("--" + name)
     parser.add_argument("--binary-artifact-id", type=int)
+    if component == "sdk-android":
+        parser.add_argument("--android-runtime-archive", type=Path, required=True)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = vars(parser.parse_args(argv))
+    if component != "sdk-core":
+        args["component"] = component
     args["plan"] = args.pop("plan")
     args["discovery"] = args.pop("discovery_root")
     args["state"] = args.pop("state_root")

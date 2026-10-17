@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from ci import sdk_android_package_policy as policy
+from ci import sdk_android_package_policy as android
+from ci import sdk_core_package_policy as policy
+from products.registry import PhaseInstanceId
+
+_BINARY = PhaseInstanceId("sdk", "sdk-android", "binary", "android")
+_PACKAGE = PhaseInstanceId("sdk", "sdk-android", "package", "android")
 
 
 _DIGEST = "sha256:" + "a" * 64
@@ -60,9 +65,9 @@ class AndroidPackagePolicyTests(unittest.TestCase):
             producer={"runId": 1, "runAttempt": 1}, completed_frozen=None,
             capture_deferred_object=None, ensure_original_source=None,
             plan={"validationCommit": "b" * 40},
-            prior_ready_plans={policy._PACKAGE: {"buildKey": _DIGEST}},
-            prior_by_instance={policy._BINARY: {"state": "retained"}},
-            sources={policy._BINARY: self.root / "binary-object.zip",
+            prior_ready_plans={_PACKAGE: {"buildKey": _DIGEST}},
+            prior_by_instance={_BINARY: {"state": "retained"}},
+            sources={_BINARY: self.root / "binary-object.zip",
                      policy._CONTRACT: self.root / "contract-object.zip"},
             prior_carrier_phases={policy._CONTRACT: {"buildKey": _DIGEST,
                 "receiptSha256": _DIGEST, "objectSha256": _DIGEST}},
@@ -97,8 +102,8 @@ class AndroidPackagePolicyTests(unittest.TestCase):
               patch.object(policy, "validate_phase_receipt", return_value=self.receipt),
               patch.object(policy, "verify_output_manifest_identity", return_value={"outputs": self.receipt["outputs"]}),
               patch.object(policy, "verify_contract_attestation") as attestation):
-            result = policy.prepare(**self.args(**changes))
-            self.assertEqual((policy._PACKAGE,), replay.call_args.kwargs['requested_scope'])
+            result = android.prepare(**self.args(**changes))
+            self.assertEqual((_PACKAGE,), replay.call_args.kwargs['requested_scope'])
             if changes.get('completed_frozen') is not None:
                 self.assertIs(changes['completed_frozen'], replay.call_args.kwargs['completed_frozen'])
             attestation.assert_called_once()
@@ -119,6 +124,68 @@ class AndroidPackagePolicyTests(unittest.TestCase):
         # responsible for concrete type, signatures, originals and current keys.
         self.invoke(completed_frozen=object())
 
+    def test_native_binary_uses_exact_reviewed_original_without_fetching_it(self):
+        from ci.tests.test_products import phase_receipt
+        from products.receipt import compute_build_key
+        receipt = {**phase_receipt(), 'product': 'sdk', 'component': 'sdk-android',
+                   'phase': 'binary', 'target': 'android'}
+        receipt['buildKey'] = compute_build_key(**{name: receipt[name] for name in
+            ('product', 'component', 'phase', 'target', 'inputs')})
+        raw = policy.canonical_json_bytes(receipt)
+        record = {**{name: receipt[name] for name in ('product', 'component', 'phase', 'target', 'buildKey')},
+                  'receiptSha256': policy.sha256_bytes(raw), 'objectSha256': _DIGEST}
+        import reuse_qualification as native
+        cap = native.CompletedFrozenReuse({'expectedResult': {'phases': [record]}}, [receipt],
+            native._COMPLETED_FROZEN, revision=receipt['producer']['commit'])
+        self.verified.prior_by_instance[_BINARY]['buildKey'] = receipt['buildKey']
+        self.verified.prior_carrier_phases[_BINARY] = record
+        # Original runner paths must survive even when today's checkout differs.
+        context = {'repositoryRoot': '/home/runner/work/codex-agent/codex-agent',
+                   'workerRoot': '/home/runner/work/codex-agent/codex-agent/build/sdk-android-maven-worker'}
+        origin = dict(producer=receipt['producer'], artifact_id=27, artifact_sha256=_DIGEST,
+                      receipt_sha256=policy.sha256_bytes(raw), context=context)
+        arguments = dict(binary_artifact_id=None, binary_artifact_sha256=None,
+                         binary_original_context=None, completed_frozen=cap)
+        with patch.object(policy, 'locate_retained_core_binary_upload', return_value=origin) as locate:
+            for wrong in (None, {**origin, 'receipt_sha256': 'sha256:' + 'f' * 64},
+                          {**origin, 'producer': {**receipt['producer'], 'runId': 99}}):
+                with self.subTest(origin=wrong):
+                    locate.return_value = wrong
+                    with self.assertRaisesRegex(ValueError, 'independently reviewed original'):
+                        self.invoke(**arguments)
+                    self.assertFalse(self.destination.exists())
+            locate.return_value = origin
+            result = self.invoke(**arguments)
+        self.assertEqual('27', result['binary-artifact-id'])
+        self.assertEqual(_DIGEST, result['binary-artifact-sha256'])
+        self.assertEqual(context, policy.load_canonical_json_bytes(
+            Path(result['binary-original-context']).read_bytes()))
+        locate.assert_called_with(self.plan, self.root, expected_build_key=receipt['buildKey'],
+            token='', environ={}, component='sdk-android', target='android')
+        self.assertFalse(self.verified.sources[_BINARY].exists())
+
+    def test_partial_origin_or_absent_native_authority_rejects_before_replay(self):
+        absent = dict(binary_artifact_id=None, binary_artifact_sha256=None, binary_original_context=None)
+        for changes in ({'binary_artifact_id': None}, {'binary_artifact_sha256': None},
+                        {'binary_original_context': None}, absent, {**absent, 'completed_frozen': object()}):
+            with self.subTest(changes=changes), patch.object(policy.product_reuse, '_verified_product_state') as replay:
+                with self.assertRaises(ValueError):
+                    android.prepare(**self.args(**changes))
+                replay.assert_not_called()
+
+    def test_android_cli_uses_shared_policy_and_optional_origin(self):
+        arguments = []
+        for name, value in self.args().items():
+            if name in {'environ', 'binary_artifact_id', 'binary_artifact_sha256', 'binary_original_context'}:
+                continue
+            name = {'discovery': 'discovery-root', 'state': 'state-root'}.get(name, name.replace('_', '-'))
+            arguments.extend(('--' + name, str(value)))
+        with patch.object(policy, 'prepare', return_value={}) as prepare:
+            self.assertEqual(0, android.main(arguments))
+        self.assertEqual('sdk-android', prepare.call_args.kwargs['component'])
+        self.assertEqual(self.archive, prepare.call_args.kwargs['android_runtime_archive'])
+        self.assertIsNone(prepare.call_args.kwargs['binary_artifact_id'])
+
     def test_deferred_contract_uses_shared_reader_without_fetching_binary(self):
         from unittest.mock import Mock
         def capture(record, destination):
@@ -128,12 +195,12 @@ class AndroidPackagePolicyTests(unittest.TestCase):
         self.verified.capture_deferred_object = Mock(side_effect=capture)
         self.invoke(completed_frozen=self.verified.completed_frozen)
         self.verified.capture_deferred_object.assert_called_once()
-        self.assertFalse(self.verified.sources[policy._BINARY].exists())
+        self.assertFalse(self.verified.sources[_BINARY].exists())
 
     def test_reused_or_missing_current_binary_fails_closed(self):
         for value in ("reused", "missing"):
             with self.subTest(value=value):
-                self.verified.prior_by_instance[policy._BINARY]["state"] = value
+                self.verified.prior_by_instance[_BINARY]["state"] = value
                 with self.assertRaisesRegex(ValueError, "retained binary"):
                     self.invoke()
         self.assertFalse(self.destination.exists())

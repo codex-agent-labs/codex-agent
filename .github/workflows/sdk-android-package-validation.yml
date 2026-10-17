@@ -68,10 +68,12 @@ jobs:
       fromJSON(inputs.binaryWave).result == 'success' &&
       fromJSON(inputs.packagePlan).result == 'success' &&
       fromJSON(inputs.packagePlan).outputs.sdk_workers_required == 'true' &&
-      fromJSON(inputs.binaryWave).outputs.sdk_state_wave == '15' &&
+      ((fromJSON(inputs.binaryWave).outputs.binary_build_key == '' &&
+        fromJSON(inputs.binaryWave).outputs.routing != '') ||
+      (fromJSON(inputs.binaryWave).outputs.sdk_state_wave == '15' &&
       fromJSON(inputs.binaryWave).outputs.binary_artifact_id != '' &&
       fromJSON(inputs.binaryWave).outputs.binary_artifact_sha256 != '' &&
-      fromJSON(inputs.binaryWave).outputs.binary_original_context != '' &&
+      fromJSON(inputs.binaryWave).outputs.binary_original_context != '')) &&
       ((fromJSON(inputs.metadataWave).outputs.metadata_build_key == '' &&
         fromJSON(inputs.metadataWave).outputs.routing != '') ||
       (fromJSON(inputs.metadataWave).outputs.sdk_state_wave == '14' &&
@@ -163,14 +165,16 @@ jobs:
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then policy+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "$BINARY_ID$BINARY_SHA256$BINARY_CONTEXT" ]; then
+            policy+=(--binary-artifact-id "$BINARY_ID" --binary-artifact-sha256 "$BINARY_SHA256"
+              --binary-original-context "$BINARY_CONTEXT")
+          fi
           python3 -B -m ci.sdk_android_package_policy \
             --plan "${{ steps.selected.outputs.plan-path }}" \
             --discovery-root "${{ steps.selected.outputs.discovery-root }}" \
             --state-root "${{ steps.selected.outputs.state-root }}" \
             --destination "$RUNNER_TEMP/android16-package-policy" \
             --expected-build-key "$BUILD_KEY" \
-            --binary-artifact-id "$BINARY_ID" --binary-artifact-sha256 "$BINARY_SHA256" \
-            --binary-original-context "$BINARY_CONTEXT" \
             --android-runtime-archive "${{ steps.android-archive.outputs.path }}" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
@@ -259,8 +263,8 @@ jobs:
           core14-original-context: ${{ steps.core14.outputs.original-context }}
           sdk-inputs-id: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
           sdk-inputs-sha256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
-          binary-artifact-id: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_id }}
-          binary-artifact-sha256: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_sha256 }}
+          binary-artifact-id: ${{ steps.policy.outputs.binary-artifact-id }}
+          binary-artifact-sha256: ${{ steps.policy.outputs.binary-artifact-sha256 }}
           binary-contract-evidence: ${{ steps.policy.outputs.binary-contract-evidence }}
           binary-original-context: ${{ steps.policy.outputs.binary-original-context }}
           binary-original-workflow-path: .github/workflows/sdk-android-binary-validation.yml
@@ -283,8 +287,8 @@ jobs:
           WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
           SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
           SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
-          BINARY_ID: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_id }}
-          BINARY_SHA256: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_sha256 }}
+          BINARY_ID: ${{ steps.policy.outputs.binary-artifact-id }}
+          BINARY_SHA256: ${{ steps.policy.outputs.binary-artifact-sha256 }}
           GITHUB_TOKEN: ${{ github.token }}
         with:
           mode: execute

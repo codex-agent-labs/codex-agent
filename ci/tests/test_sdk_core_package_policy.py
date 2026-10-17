@@ -59,6 +59,8 @@ class CorePackagePolicyTests(unittest.TestCase):
         self.receipt_bytes = canonical_json_bytes(self.receipt)
         (closure / "metadata.json").write_bytes(self.receipt_bytes)
         self.verified = SimpleNamespace(
+            producer={"runId": 1, "runAttempt": 1},
+            capture_deferred_object=None, ensure_original_source=None,
             prior_ready_plans={policy._PACKAGE: {"buildKey": _DIGEST}},
             prior_by_instance={policy._BINARY: {"state": "retained"}},
             sources={policy._BINARY: self.root / "binary-object.zip",
