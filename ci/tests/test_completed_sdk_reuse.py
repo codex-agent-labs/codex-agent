@@ -34,6 +34,18 @@ def ordinary_spec():
 
 
 class CompletedSdkControlsTest(unittest.TestCase):
+    def test_native_package_and_validation_use_shared_checkpoint_routes(self):
+        from sdk_phase import CHECKPOINT_ROUTES, COMPACT_REPLAY_INSTANCES, SDK_FAMILY_INSTANCES
+        for family, wave in (('native-package', 4), ('native-validation', 7)):
+            job = f'product-validation / sdk-collect-{wave}'
+            self.assertIn(job, CHECKPOINT_ROUTES)
+            self.assertEqual(wave, completed._COLLECTED_WAVES[job])
+            self.assertEqual(family, CHECKPOINT_ROUTES[job].family)
+            self.assertTrue(SDK_FAMILY_INSTANCES[family] <= set(COMPACT_REPLAY_INSTANCES))
+            for instance in SDK_FAMILY_INSTANCES[family]:
+                self.assertEqual(512 * 1024 * 1024 if wave == 4 else completed.LIMIT,
+                                 completed._object_limit(instance))
+
     def setUp(self):
         def record(receipt):
             return {**{field: receipt[field] for field in completed.IDENTITY},
@@ -101,8 +113,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
                 producer=consumer, token='synthetic')
-            from sdk_phase import completed_recovery_folder
-            capture = root / completed_recovery_folder(recovery._javascript_instance(phase, component, target))
+            from sdk_phase import completed_recovery_folder, LEGACY_REPLAY_INSTANCES
+            instance = recovery._javascript_instance(phase, component, target)
+            capture = root / completed_recovery_folder(instance)
             def replay(authority):
                 return recovery.replay_prior_javascript_package(capture, root,
                     plan={'repository': receipt['producer']['repository']}, consumer_producer=consumer,
@@ -116,7 +129,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             shard = capture / f'{component}/{phase}/{target}/original/shard'
             self.assertEqual({PHASE_SHARD_NAME, 'phase-receipt.json'}, {p.name for p in shard.iterdir()})
             with patch.object(recovery, '_capture_javascript_package', side_effect=ValueError('ordinary whole upload required')):
-                with self.assertRaisesRegex(ValueError, 'exact native authority' if component in {'sdk-ios', 'sdk-core', 'sdk-android'} else 'whole upload required'):
+                with self.assertRaisesRegex(ValueError, 'whole upload required' if instance in LEGACY_REPLAY_INSTANCES else 'exact native authority'):
                     replay(None)
             with self.assertRaisesRegex(ValueError, 'concrete native authority'):
                 replay(object())
@@ -730,6 +743,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
     def test_collected_issuer_reads_only_pinned_controls_and_rejects_failed_state_before_objects(self):
         for component, phase, target, wave in (('javascript', 'package', 'node', 1),
                 ('csharp', 'binary', 'desktop', 19),
+                ('python', 'package', 'desktop', 4), ('rust', 'validation', 'linux-x64', 7),
                 ('sdk-ios', 'package', 'ios', 5),
                 ('sdk-ios', 'package', 'ios', 9),
                 ('sdk-ios', 'validation', 'ios-arm64', 9), ('sdk-ios', 'metadata', 'ios', 10),
@@ -805,6 +819,16 @@ class CompletedSdkControlsTest(unittest.TestCase):
         spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(prior['extension']['proof']))
         self.assertEqual({completed._identity(phase): (member, {'original': 71})},
             completed._qualified_members(spec, prior, [phase], [self.receipt]))
+        # A replacement key gets no inherited body admission. The ordinary
+        # issuer path must fetch/verify its new object and original receipt.
+        changed = deepcopy(self.receipt)
+        changed['inputs']['phaseInputDigest'] = sha256_bytes(b'new owning input')
+        changed['buildKey'] = compute_build_key(**{field: changed[field] for field in (*completed.IDENTITY, 'inputs')})
+        replacement = {**phase, 'buildKey': changed['buildKey'],
+            'receiptSha256': sha256_bytes(canonical_json_bytes(changed)), 'objectSha256': sha256_bytes(b'new object')}
+        original = canonical_json_bytes(prior)
+        self.assertEqual({}, completed._qualified_members(spec, prior, [replacement], [changed]))
+        self.assertEqual(original, canonical_json_bytes(prior))
         for case in ('subject', 'parent', 'base', 'object', 'receipt', 'dropped', 'omitted-member', 'no-native'):
             candidate, pins, selected = deepcopy(prior), deepcopy(spec), [phase]
             if case == 'subject': pins['reuseCompletionProofSha256'] = sha256_bytes(b'wrong subject')
@@ -918,6 +942,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             def native_completion(destination, pins, **arguments):
                 if reused and pins == spec['reuseCompletion']:
                     self.assertEqual('previous', destination.name)
+                    self.assertEqual(pins['sourceCommit'], arguments['revision'])
                     return previous
                 self.assertEqual(spec['parent'], pins)
                 return {'proof': parent}

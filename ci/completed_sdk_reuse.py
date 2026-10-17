@@ -62,8 +62,9 @@ def _records(rows, label):
 def _object_limit(instance):
     if instance == IOS_PACKAGE:
         return 8 * 1024**3
-    if instance in SDK_FAMILY_INSTANCES['android-binary'] | SDK_FAMILY_INSTANCES['android-package']:
-        # Same bounded Maven-body size as the original Android reader, not JSON.
+    if instance in (SDK_FAMILY_INSTANCES['android-binary'] | SDK_FAMILY_INSTANCES['android-package']
+                    | SDK_FAMILY_INSTANCES['native-package']):
+        # Bounded package bodies (native packages embed five libraries), not JSON.
         return 512 * 1024 * 1024
     return LIMIT
 
@@ -466,6 +467,10 @@ def _qualified_members(spec, prior, phases, receipts):
     qualified = {}
     for instance, member, locator in zip(sorted(earlier), proof["members"], proof["originals"], strict=True):
         phase = earlier[instance]
+        if phase['buildKey'] != selected[instance]['buildKey']:
+            # A changed key inherits no qualification: the issuer below verifies
+            # its new successful original and complete object independently.
+            continue
         if (any(phase[field] != selected[instance][field] for field in OBJECT)
                 or canonical_json_bytes(proof["controls"][phase["receiptPath"]]) != current_receipts[instance]):
             raise ValueError("Reused native completion changes an original SDK object or receipt")
@@ -599,7 +604,10 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         qualified = {}
         if "reuseCompletion" in spec:
             prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
-                root=root, revision=revision, frozen=frozen, token=token)
+                root=root, revision=spec["reuseCompletion"]["sourceCommit"], frozen=frozen, token=token)
+            # Authenticate historical bytes at their pinned source. validate_current
+            # above still binds all selected phases to this issuer's current source;
+            # only exact matching keys/receipts/objects inherit body qualification.
             qualified = _qualified_members(spec, prior, phases, receipts)
         available = _records(request["availableObjects"], "Incremental original objects")
         members, locators, transferred, reused_bytes = [], [], 0, 0

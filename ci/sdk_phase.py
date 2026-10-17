@@ -52,10 +52,10 @@ class SdkFamilyRoute:
 # support is deliberately explicit: a routing row never enables a new verifier.
 SDK_FAMILY_ROUTES = (
     SdkFamilyRoute("csharp-binary", 19, "sdk-javascript-metadata-result", "sdk-csharp-binary-plan", "sdk-csharp-binary"),
-    SdkFamilyRoute("native-package", 4, "sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-workers"),
+    SdkFamilyRoute("native-package", 4, "sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-workers", checkpoint=True),
     SdkFamilyRoute("ios-package", 5, "sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package"),
     SdkFamilyRoute("javascript-metadata", 6, "sdk-javascript", "sdk-javascript-metadata-plan", "sdk-javascript-metadata"),
-    SdkFamilyRoute("native-validation", 7, "sdk-ios-packages", "sdk-native-validation-plan", "sdk-native-validation"),
+    SdkFamilyRoute("native-validation", 7, "sdk-ios-packages", "sdk-native-validation-plan", "sdk-native-validation", checkpoint=True),
     SdkFamilyRoute("native-metadata", 8, "sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata"),
     SdkFamilyRoute("ios-validation", 9, "sdk-native-result", "sdk-native-result", "sdk-ios-validation", checkpoint=True),
     SdkFamilyRoute("ios-metadata", 10, "sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", checkpoint=True),

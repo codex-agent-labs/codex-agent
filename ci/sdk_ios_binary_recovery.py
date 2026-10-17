@@ -49,7 +49,8 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
 
 def _javascript_instance(phase, component="javascript", target=None):
     # Keep legacy default targets; newer compact readers require exact targets.
-    target = {"javascript": "node", "csharp": "desktop"}.get(component, target)
+    if target is None:
+        target = {"javascript": "node", "csharp": "desktop"}.get(component)
     instance = PhaseInstanceId("sdk", component, phase, target)
     if instance not in COMPACT_REPLAY_INSTANCES:
         raise ValueError("Unsupported SDK original recovery phase")
