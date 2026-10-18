@@ -221,6 +221,26 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("--dotnet-profile \"$PWD/build/sdk-native-csharp-original/sdk-csharp-toolchain.json\"", job)
         self.assertNotIn("sdk_csharp_binary_workflow --expected-build-key", job)
 
+    def test_isolated_package_tool_stages_exact_csharp_inspector_sources(self):
+        workflow = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
+        staging = workflow.split("          tool=build/native-wrapper-package-tool\n", 1)[1].split(
+            '          python "$tool/ci/native_wrappers.py" package', 1)[0]
+        script = 'tool=build/native-wrapper-package-tool\n' + textwrap.dedent(staging)
+        inspector = Path("codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot")
+        inputs = [Path("ci/native_wrappers.py"), Path("ci/products/__init__.py"),
+                  inspector / "Program.cs", inspector / "VerifySdkRuntimeRoot.csproj"]
+        with tempfile.TemporaryDirectory(prefix="native-package-tool-") as temporary:
+            root = Path(temporary)
+            for path in inputs:
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_bytes((ROOT / path).read_bytes())
+            subprocess.run(["bash", "-euc", script], cwd=root, check=True, capture_output=True)
+            tool = root / "build/native-wrapper-package-tool"
+            self.assertEqual(set(inputs), {path.relative_to(tool) for path in tool.rglob("*") if path.is_file()})
+            for path in inputs:
+                self.assertEqual((ROOT / path).read_bytes(), (tool / path).read_bytes())
+            self.assertFalse((tool / "codex-agent-runtime-desktop").exists())
+
     def test_collection_waits_for_failed_workers_and_final_gate_is_required(self):
         collector = self.job("sdk-collect-4")
         self.assertIn("sdk-native-workers]", collector)
