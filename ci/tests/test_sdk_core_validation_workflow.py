@@ -44,7 +44,10 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"VCToolsVersion": "14.51.36231"}):
             scratch = Path(temporary)
             _, commands = diagnostic.commands("cpp", scratch)
-            self.assertIn("/Zs", commands[0])
+            for flag in ("/c", "/O2", "/Ob2", "/MD", "/EHsc", "/W4", "/WX", "/DNDEBUG"):
+                self.assertIn(flag, commands[0])
+            self.assertNotIn("/Zs", commands[0])
+            self.assertIn("/Fo" + str(scratch / "host_smoke.obj"), commands[0])
             self.assertIn("/std:c++20", commands[0])
             self.assertTrue(commands[0][-1].endswith("consumer/host_smoke.cpp"))
             with patch("sys.platform", "win32"):

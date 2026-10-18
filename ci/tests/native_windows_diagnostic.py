@@ -21,7 +21,10 @@ def commands(check, scratch):
         if os.environ.get("VCToolsVersion", "").rstrip("/\\") != "14.51.36231":
             raise ValueError("Diagnostic requires the failing worker's MSVC 14.51.36231")
         cpp = ROOT / "codex-agent-bindings/cpp"
-        return scratch, [["cl", "/nologo", "/Bv", "/std:c++20", "/Zs",
+        # Exercise Release code generation as well as parsing, without linking.
+        return scratch, [["cl", "/nologo", "/Bv", "/std:c++20", "/c",
+                          "/O2", "/Ob2", "/MD", "/EHsc", "/W4", "/WX", "/DNDEBUG",
+                          "/Fo" + str(scratch / "host_smoke.obj"),
                           "/I" + str(cpp / "include"), "/I" + str(include),
                           str(cpp / "consumer/host_smoke.cpp")]]
     if check == "csharp":
