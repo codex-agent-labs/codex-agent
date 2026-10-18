@@ -933,19 +933,73 @@ def rust_lifecycle_unit_source(original: bytes) -> bytes:
         "CodexNativeLibrary::load(", "CodexNativeLibrary::load_fixture_for_test(")).encode("utf-8")
 
 
+def project_dart_capability_fixtures(source: Path) -> None:
+    """Private test compilation only, analogous to Rust's cfg(test) fixture loader.
+
+    Only the four locally compiled mock fixtures register here. Genuine Runtime,
+    installed consumers and loader-security tests keep the unmodified auth path.
+    No test registration code is added to the shipped Dart library.
+    """
+    for name in ("leaf_service", "conversation", "agent", "host"):
+        path = source / f"test/{name}_parity.dart"
+        raw = path.read_text(encoding="utf-8")
+        if raw.count("Future<String> _buildFixture() async {") != 1 or raw.count("  return output;") != 1:
+            raise ValueError("Dart fixture producer differs from the reviewed projection")
+        path.write_text("import 'package:codex_agent/src/ffi.dart' show registerCapabilityFixture;\n" +
+                        raw.replace("  return output;", "  return registerCapabilityFixture(output);"), encoding="utf-8")
+    path = source / "lib/src/ffi.dart"
+    raw = path.read_text(encoding="utf-8")
+    marker = "}) {\n  final file = File(path);\n  requireAbsoluteRegularFile(file, 'Codex Agent C SDK');"
+    if raw.count(marker) != 1 or "registerCapabilityFixture" in raw:
+        raise ValueError("Dart runtime loader differs from the reviewed projection")
+    raw = raw.replace(marker, """}) {
+  final fixture = _capabilityFixtures[path];
+  if (fixture != null) {
+    if (beforeDynamicOpen != null || runtimeFileSha256(File(path)) != fixture.digest) {
+      throw StateError('Private capability fixture changed');
+    }
+    return fixture;
+  }
+  final file = File(path);
+  requireAbsoluteRegularFile(file, 'Codex Agent C SDK');""")
+    raw += """
+// Generated solely in the private capability test compilation, never packaged.
+final _capabilityFixtures = <String, _AuthenticatedRuntime>{};
+String registerCapabilityFixture(String path) {
+  final file = File(path);
+  requireAbsoluteRegularFile(file, 'Private capability fixture');
+  if (!RegExp(r'^codex_agent_dart_(leaf|conversation|agent|host)_[0-9]+\\.(dylib|dll|so)$')
+      .hasMatch(file.uri.pathSegments.last) || _capabilityFixtures.containsKey(path)) {
+    throw StateError('Unexpected private capability fixture');
+  }
+  final digest = runtimeFileSha256(file);
+  final library = DynamicLibrary.open(path);
+  RuntimeCompatibility.load().verifyRuntimeIdentity(
+      readRuntimeIdentity(library), currentClassifier(), embedded: false);
+  if (runtimeFileSha256(file) != digest) throw StateError('Private capability fixture changed');
+  _capabilityFixtures[path] = _AuthenticatedRuntime(library, digest);
+  return path;
+}
+"""
+    path.write_text(raw, encoding="utf-8")
+
+
 def produce_authorized_native_capabilities(repository: Path, *, language: str, canonical_api: Path, c_abi_bootstrap: Path,
         c_sdk_root: Path, native_library: Path, sdk_compatibility: Path, output: Path,
-        runtime_authorization: Path, expected_classifier: str) -> None:
+        runtime_authorization: Path, expected_classifier: str,
+        dart_executable: str = "dart", package_config: Path | None = None) -> None:
     """Compose the existing raw producer; no package changes or mock signatures."""
     from .c_abi import TARGET_SPECS
     from ci.native_wrappers import invalidate_output
-    if language not in {"rust", "python"}:
+    if language not in {"rust", "python", "dart"}:
         raise ValueError("Unsupported authorized capability language")
-    script = repository / f"codex-agent-bindings/{language}/tools/produce_sdk_validation_evidence.py"
+    directory = "tool" if language == "dart" else "tools"
+    script = repository / f"codex-agent-bindings/{language}/{directory}/produce_sdk_validation_evidence.py"
     script_raw = read_regular_file_bytes(script, reject_symlink_parents=True)
     spec = importlib.util.spec_from_file_location(f"{language}_capability_producer", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    dart_runner = module._resolved_runner(package_config or module.ROOT / ".dart_tool/package_config.json")[1] if language == "dart" else None
     sdks = sdk_compatibility.parent
     library_path = next(spec.library_path for spec in TARGET_SPECS.values()
                         if spec.classifier == "c-abi-" + expected_classifier)
@@ -955,16 +1009,20 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
     _require_capability_output_separate(output, [runtime_authorization, sdks])
     original_run = subprocess.run
     calls = []
+    projected_sources = {}
 
     with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence:
         def run(command, **options):
             source = options["cwd"]
             expected = (["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"]
-                if language == "rust" else [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"])
+                if language == "rust" else [dart_executable, f"--packages={source / '.dart_tool/package_config.json'}",
+                    str(dart_runner), "--reporter", "expanded", "test"] if language == "dart"
+                else [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"])
             if calls or command != expected:
                 raise ValueError("Unexpected capability producer invocation")
             calls.append(True)
-            root = source / ("native/sdk-runtime-root.pub" if language == "rust" else "src/codex_agent/native/sdk-runtime-root.pub")
+            root = source / {"rust": "native/sdk-runtime-root.pub", "python": "src/codex_agent/native/sdk-runtime-root.pub",
+                             "dart": "lib/src/native/sdk-runtime-root.pub"}[language]
             if root.exists() or root.is_symlink():
                 raise ValueError("Capability trust root collides with original sources")
             root.write_bytes(read_regular_file_bytes(sdks / "sdk-runtime-root.pub", reject_symlink_parents=True))
@@ -976,9 +1034,15 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
                 library = source / "src/lib.rs"
                 library.write_bytes(library.read_bytes() +
                     b'\n#[cfg(test)]\n#[path = "../tests/lifecycle_unit.rs"]\nmod codex_lifecycle_fixture;\n')
-            else:
+            elif language == "python":
                 # The private suite includes repository packaging-control tests.
                 options["env"] = {**options["env"], "PYTHONPATH": str(repository)}
+            elif language == "dart":
+                project_dart_capability_fixtures(source)
+                projected_sources.update({name: read_regular_file_bytes(source / name, reject_symlink_parents=True)
+                    for name in ("lib/src/ffi.dart", *(f"test/{name}_parity.dart"
+                        for name in ("leaf_service", "conversation", "agent", "host")))})
+                options["env"] = {**options["env"], "CODEX_AGENT_LIBRARY": str(native_library)}
             sidecar = native_library.with_name(native_library.name + ".evidence")
             if sidecar.exists() or sidecar.is_symlink():
                 raise ValueError("Capability sidecar destination is already occupied")
@@ -993,7 +1057,9 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
                 if language == "rust":
                     original_run(command[:2] + ["--doc"] + command[2:] + ["--test-threads=1"], **options)
                 if (regular_file_inventory(sidecar) != inventory
-                        or read_regular_file_bytes(script, reject_symlink_parents=True) != script_raw):
+                        or read_regular_file_bytes(script, reject_symlink_parents=True) != script_raw
+                        or any(read_regular_file_bytes(source / name, reject_symlink_parents=True) != raw
+                               for name, raw in projected_sources.items())):
                     raise ValueError("Capability authorization or producer changed during execution")
                 return result
             finally:
@@ -1007,21 +1073,30 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
         if language == "rust":
             namespace["_retain_cargo_test_executables"] = retain
         produce = FunctionType(module.produce.__code__, namespace, module.produce.__name__)
+        options = {"dart_executable": dart_executable, "package_config": package_config} if language == "dart" else {}
         produce(canonical_api=canonical_api, c_abi_bootstrap=c_abi_bootstrap, c_sdk_root=c_sdk_root,
-                native_library=native_library, sdk_compatibility=sdk_compatibility, output=output)
+                native_library=native_library, sdk_compatibility=sdk_compatibility, output=output, **options)
         if calls != [True]:
             raise ValueError("Capability producer did not execute its exact suite")
+        for name, raw in projected_sources.items():
+            retained = output / "test-projection" / name
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            with retained.open("xb") as stream:
+                stream.write(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    for language in ("rust", "python"):
+    for language in ("rust", "python", "dart"):
         capability = commands.add_parser(f"{language}-capabilities", allow_abbrev=False)
         for name in ("repository", "canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library",
                      "sdk-compatibility", "output", "runtime-authorization"):
             capability.add_argument(f"--{name}", type=Path, required=True)
         capability.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
+        if language == "dart":
+            capability.add_argument("--dart-executable", default="dart")
+            capability.add_argument("--package-config", type=Path)
     consumer = commands.add_parser("consume-native", allow_abbrev=False)
     for name in ("repository", "packages", "sdks", "output", "sdk-version-file", "runtime-authorization"):
         consumer.add_argument(f"--{name}", type=Path, required=True)
@@ -1049,11 +1124,12 @@ def main(argv: list[str] | None = None) -> int:
     metadata.add_argument("--package-receipt", type=Path, required=True)
     metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
-    if args.command in {"rust-capabilities", "python-capabilities"}:
+    if args.command in {"rust-capabilities", "python-capabilities", "dart-capabilities"}:
+        options = {"dart_executable": args.dart_executable, "package_config": args.package_config} if args.command == "dart-capabilities" else {}
         produce_authorized_native_capabilities(args.repository, language=args.command.removesuffix("-capabilities"), canonical_api=args.canonical_api,
             c_abi_bootstrap=args.c_abi_bootstrap, c_sdk_root=args.c_sdk_root, native_library=args.native_library,
             sdk_compatibility=args.sdk_compatibility, output=args.output,
-            runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier)
+            runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier, **options)
         return 0
     if args.command == "consume-native":
         from ci.native_wrappers import require_sdk_version_file

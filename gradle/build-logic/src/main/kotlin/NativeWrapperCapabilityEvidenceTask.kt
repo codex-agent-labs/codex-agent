@@ -72,7 +72,7 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
         val handoff = capabilityInputsDirectory.get().asFile
         val host = installedConsumerEvidence.get().asFile
         val negatives = packageNegativeEvidenceDirectory.orNull?.asFile
-        val authorization = if (language.get() in setOf("rust", "python")) runtimeAuthorization.get().asFile else null
+        val authorization = if (language.get() in setOf("rust", "python", "dart")) runtimeAuthorization.get().asFile else null
         check((language.get() == "cpp") == (negatives != null)) {
             "C++ capability validation requires original package negative evidence"
         }

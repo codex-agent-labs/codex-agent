@@ -16,6 +16,12 @@ from ci.products.sdk_package import produce_authorized_native_capabilities, rust
 
 class RustCapabilitiesTest(unittest.TestCase):
     def test_python_reuses_authenticated_sidecars_and_cleans_failed_suite(self):
+        self._check_authenticated_sidecars_and_failed_suite("python")
+
+    def test_dart_reuses_authenticated_sidecars_and_cleans_failed_suite(self):
+        self._check_authenticated_sidecars_and_failed_suite("dart")
+
+    def _check_authenticated_sidecars_and_failed_suite(self, language):
         repository = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -37,16 +43,44 @@ class RustCapabilitiesTest(unittest.TestCase):
             canonical.write_bytes(b"fixture")
             bootstrap.write_bytes(b"fixture")
             output = root / "output"
+            extra = {}
+            if language == "dart":
+                dart_runner = root / "test/bin/test.dart"
+                dart_runner.parent.mkdir(parents=True)
+                dart_runner.write_bytes(b"mocked test runner")
+                config = root / "package_config.json"
+                config.write_text(json.dumps({"configVersion": 2, "packages": [
+                    {"name": "test", "rootUri": (root / "test").as_uri() + "/", "packageUri": "lib/"},
+                    {"name": "codex_agent", "rootUri": (repository / "codex-agent-bindings/dart").as_uri() + "/", "packageUri": "lib/"},
+                ]}))
+                extra = {"dart_executable": "declared-dart", "package_config": config}
             before = regular_file_inventory(sdks)
             sidecar = library.with_name(library.name + ".evidence")
 
             def execute(command, **options):
                 source = options["cwd"]
-                self.assertEqual([sys.executable, "-m", "unittest", "discover", "-s",
-                                  str(source / "tests"), "-v"], command)
-                self.assertEqual(str(library), options["env"]["CODEX_AGENT_LIBRARY"])
-                self.assertEqual(str(repository), options["env"]["PYTHONPATH"].split(os.pathsep)[0])
-                self.assertEqual(root_public, (source / "src/codex_agent/native/sdk-runtime-root.pub").read_bytes())
+                if language == "python":
+                    self.assertEqual([sys.executable, "-m", "unittest", "discover", "-s",
+                                      str(source / "tests"), "-v"], command)
+                    self.assertEqual(str(library), options["env"]["CODEX_AGENT_LIBRARY"])
+                    self.assertEqual(str(repository), options["env"]["PYTHONPATH"].split(os.pathsep)[0])
+                    resource = "src/codex_agent/native/sdk-runtime-root.pub"
+                else:
+                    self.assertEqual(["declared-dart", f"--packages={source / '.dart_tool/package_config.json'}",
+                                      str(dart_runner), "--reporter", "expanded", "test"], command)
+                    self.assertEqual(str(library), options["env"]["CODEX_AGENT_REAL_LIBRARY"])
+                    self.assertEqual(str(library), options["env"]["CODEX_AGENT_LIBRARY"])
+                    generated = (source / "lib/src/ffi.dart").read_text()
+                    self.assertIn("final fixture = _capabilityFixtures[path];", generated)
+                    self.assertIn("RuntimeCompatibility.load().verifyRuntimeIdentity(", generated)
+                    self.assertIn("runtimeFileSha256(File(path)) != fixture.digest", generated)
+                    for name in ("leaf_service", "conversation", "agent", "host"):
+                        projected = (source / f"test/{name}_parity.dart").read_text()
+                        original = (repository / f"codex-agent-bindings/dart/test/{name}_parity.dart").read_text()
+                        self.assertEqual(original, projected.split("\n", 1)[1].replace(
+                            "return registerCapabilityFixture(output);", "return output;"))
+                    resource = "lib/src/native/sdk-runtime-root.pub"
+                self.assertEqual(root_public, (source / resource).read_bytes())
                 self.assertEqual(regular_file_inventory(authorization), regular_file_inventory(sidecar))
                 raise subprocess.CalledProcessError(1, command)
 
@@ -54,10 +88,10 @@ class RustCapabilitiesTest(unittest.TestCase):
                        return_value=nullcontext(authorization)) as authenticated, \
                     patch("ci.products.sdk_package.subprocess.run", side_effect=execute) as runner:
                 with self.assertRaises(subprocess.CalledProcessError):
-                    produce_authorized_native_capabilities(repository, language="python", canonical_api=canonical,
+                    produce_authorized_native_capabilities(repository, language=language, canonical_api=canonical,
                         c_abi_bootstrap=bootstrap, c_sdk_root=sdk, native_library=library,
                         sdk_compatibility=compatibility, output=output,
-                        runtime_authorization=authorization, expected_classifier="macos-arm64")
+                        runtime_authorization=authorization, expected_classifier="macos-arm64", **extra)
                 authenticated.assert_called_once_with(authorization, sdks, "macos-arm64")
                 runner.assert_called_once()
             self.assertFalse(output.exists())

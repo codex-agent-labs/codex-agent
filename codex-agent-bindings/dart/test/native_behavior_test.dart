@@ -80,6 +80,7 @@ void main() {
               '-r',
               'expanded',
             ],
+            includeParentEnvironment: false,
             environment: {
               ...Platform.environment,
               'CODEX_AGENT_TEST_ISOLATED': '1',

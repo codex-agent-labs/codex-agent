@@ -411,7 +411,7 @@ void main() {
       throwsA(isA<CodexException>().having(
         (error) => error.message,
         'message',
-        contains('release evidence is unavailable'),
+        contains('external Runtime evidence release-keyring.json is absent'),
       )),
     );
     expect(reachedDynamicOpen, isFalse);
@@ -420,7 +420,7 @@ void main() {
       throwsA(isA<CodexException>().having(
         (error) => error.message,
         'message',
-        contains('release evidence is unavailable'),
+        contains('external Runtime evidence release-keyring.json is absent'),
       )),
     );
   });
@@ -670,7 +670,7 @@ void main(List<String> arguments) {
     final signer = _testKey(temporary, 'cleanup-signer');
     _writeSignedEvidence(
         library, root, signer, _identity(target, componentId: _digestA));
-    final before = _runtimeSnapshots();
+    final before = _runtimeSnapshots(temporary);
     final result = await _runIsolated(temporary, root.public, '''
 import 'package:codex_agent/src/ffi.dart';
 void main(List<String> arguments) {
@@ -678,7 +678,7 @@ void main(List<String> arguments) {
 }
 ''', [library.path]);
     expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
-    expect(_runtimeSnapshots().difference(before), isEmpty);
+    expect(_runtimeSnapshots(temporary).difference(before), isEmpty);
 
     // In particular, Windows has released the source DLL handle at exit.
     final renamed = File('${library.path}.renamed');
@@ -687,17 +687,15 @@ void main(List<String> arguments) {
   });
 }
 
-Set<String> _runtimeSnapshots() => Directory(
-      Directory.systemTemp.resolveSymbolicLinksSync(),
-    )
-        .listSync()
-        .whereType<Directory>()
-        .map((entry) => entry.path)
-        .where((path) => path
-            .split(Platform.pathSeparator)
-            .last
-            .startsWith('codex-agent-runtime-snapshot-'))
-        .toSet();
+Set<String> _runtimeSnapshots(Directory ownedTemporary) => ownedTemporary
+    .listSync()
+    .whereType<Directory>()
+    .map((entry) => entry.path)
+    .where((path) => path
+        .split(Platform.pathSeparator)
+        .last
+        .startsWith('codex-agent-runtime-snapshot-'))
+    .toSet();
 
 ({String privateKey, List<int> public}) _testKey(
     Directory directory, String name) {
@@ -823,7 +821,11 @@ Future<ProcessResult> _runIsolated(
     '--packages=${configFile.path}',
     script.path,
     ...arguments,
-  ]);
+  ], environment: {
+    'TMPDIR': temporary.path,
+    'TMP': temporary.path,
+    'TEMP': temporary.path
+  });
 }
 
 RuntimeCompatibility _writeCompatibility(

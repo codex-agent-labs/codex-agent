@@ -464,7 +464,7 @@ Set<String> verifyLeafClaims(
     }
     for (final serviceCall in _serviceCalls(claim)) {
       final lookup = RegExp(
-        "lookupFunction<[^']*?>\\('${RegExp.escape(serviceCall)}'\\)",
+        "lookupFunction<[^']*?>\\('${RegExp.escape(serviceCall)}',?\\)",
       );
       if (!lookup.hasMatch(compact)) {
         throw StateError('missing exact production lookup: $serviceCall');

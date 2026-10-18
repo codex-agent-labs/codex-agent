@@ -169,7 +169,8 @@ Set<String> verifyConversationClaims(
       if (!RegExp('\\b${RegExp.escape(symbol)}\\s*\\(').hasMatch(header)) {
         throw StateError('stale C header reference: $symbol');
       }
-      if (!compact.contains("('$symbol')")) {
+      if (!RegExp("lookupFunction<[^']*?>\\('${RegExp.escape(symbol)}',?\\)")
+          .hasMatch(compact)) {
         throw StateError('missing exact production lookup: $symbol');
       }
       references.add(symbol);
