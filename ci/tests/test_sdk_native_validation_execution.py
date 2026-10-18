@@ -351,6 +351,13 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
                         self.assertIn("exit-check", self.events)
                     self.assertFalse((self.destination / "shard").exists())
                     self.assertFalse((self.destination / "sdk-validation-evidence").exists())
+                    diagnostics = self.destination / "failed-validation"
+                    self.assertEqual(failure == "validation-gate", diagnostics.exists())
+                    if diagnostics.exists():
+                        self.assertEqual(self.result["outputInventory"], regular_file_inventory(diagnostics / "stage"))
+                        self.assertEqual(self.gate_receipt, (diagnostics / "unadmitted-receipt.json").read_bytes())
+                        self.assertFalse(load_canonical_json_bytes((diagnostics / "failure.json").read_bytes())["phaseAdmitted"])
+                        self.assertFalse((diagnostics / "phase-receipt.json").exists())
                 finally:
                     self.plan_path.write_bytes(self.original_plan_bytes)
                     self.arguments["keyring"].write_bytes(self.policy_bytes)

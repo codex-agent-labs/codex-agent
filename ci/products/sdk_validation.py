@@ -208,7 +208,12 @@ def verify_sdk_validation_projection(
             command += [part for key, value in arguments.items() for part in (f"--{key}", str(value))]
             environment = {key: value for key, value in os.environ.items()
                            if key in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}}
-            subprocess.run(command, cwd=root, env=environment, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                subprocess.run(command, cwd=root, env=environment, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as error:
+                if error.stderr:
+                    error.add_note("Native validation verifier stderr:\n" + error.stderr.decode("utf-8", errors="replace"))
+                raise
         content = read_regular_file_bytes(output, max_bytes=_LIMIT, reject_symlink_parents=True)
         value = require_exact_keys(load_canonical_json_bytes(content),
             {"schemaVersion", "kind", "component", "target", "sdkVersion", "packageOutputsDigest",

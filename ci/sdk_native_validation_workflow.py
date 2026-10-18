@@ -446,8 +446,22 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                     binary["binary_receipt_path"], reject_symlink_parents=True))
                 record.update(binaryStage="binaryStage", binaryReceipt="binaryReceipt")
             source_inventory = _inventory(source, allow_empty=True)
-            stage_sdk_validation_evidence([record], source, evidence, repository=root,
-                policy_revision=policy_revision, tooling=tooling)
+            try:
+                stage_sdk_validation_evidence([record], source, evidence, repository=root,
+                    policy_revision=policy_revision, tooling=tooling)
+            except Exception:
+                # Keep the completed consumer observations, not another copy of
+                # its large predecessors. A failed gate never publishes a shard.
+                diagnostics = destination / "failed-validation"
+                snapshot_regular_tree(source / "validationStage", diagnostics / "stage")
+                if _inventory(diagnostics / "stage") != result["outputInventory"]:
+                    raise ValueError("Failed validation diagnostics changed during capture")
+                (diagnostics / "unadmitted-receipt.json").write_bytes(candidate_raw)
+                write_canonical_json(diagnostics / "failure.json", {
+                    "schemaVersion": 1, "kind": "sdk-native-validation-diagnostics",
+                    "phaseAdmitted": False, "buildKey": ready["buildKey"],
+                })
+                raise
             evidence_inventory = _inventory(evidence, allow_empty=True)
 
             def outputs_unchanged():

@@ -176,10 +176,12 @@ class SdkValidationProjectionTest(unittest.TestCase):
                 with self.subTest(phase=phase, suffix=suffix), self.assertRaises(ValueError):
                     self.verify()
         def failure(fields):
-            raise subprocess.CalledProcessError(1, "fixed verifier", b"actual failure")
+            raise subprocess.CalledProcessError(1, "fixed verifier", b"actual failure", b"exact semantic rejection\xff")
         self.mutate = failure
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
             self.verify()
+        self.assertEqual(b"exact semantic rejection\xff", caught.exception.stderr)
+        self.assertEqual(["Native validation verifier stderr:\nexact semantic rejection\ufffd"], caught.exception.__notes__)
 
     def test_original_swap_and_restore_cannot_change_captured_proof(self):
         def swap(fields):
