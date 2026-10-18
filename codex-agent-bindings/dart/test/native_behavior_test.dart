@@ -98,7 +98,9 @@ void main() {
       } finally {
         temporary.deleteSync(recursive: true);
       }
-    });
+      // This wrapper compiles a fixture and runs a whole child suite. Individual
+      // child tests and their API waits retain their existing timeouts.
+    }, timeout: const Timeout(Duration(minutes: 2)));
     return;
   }
   late String libraryPath;
