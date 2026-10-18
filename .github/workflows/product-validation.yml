@@ -726,6 +726,7 @@ jobs:
           merge-multiple: true
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.native_resume_ready != 'true' && needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -2471,6 +2472,7 @@ jobs:
           PYTHON
       - name: Select installed caller Java for SDK tooling
         if: fromJSON((needs.product-resume.outputs.native_sdk_direct == 'true' && needs.product-resume.outputs.sdk_input_selection || needs.runtime-continuation.outputs.sdk_input_selection)).source == 'released-default' && needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3002,6 +3004,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3060,6 +3063,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3122,6 +3126,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3178,6 +3183,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3341,6 +3347,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3397,6 +3404,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3534,6 +3542,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3596,6 +3605,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3662,6 +3672,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           test -f "$JAVA_HOME_17_X64/bin/java"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
@@ -3784,6 +3795,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -3881,6 +3893,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: steps.failed.outputs.wave_failed != 'true'
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -4008,6 +4021,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -4068,6 +4082,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -4197,6 +4212,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -4287,6 +4303,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -4413,6 +4430,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -4484,6 +4502,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -5596,6 +5615,7 @@ jobs:
           PY
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -5756,6 +5776,7 @@ jobs:
           PY
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
@@ -5871,6 +5892,7 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
+        shell: bash
         run: |
           set -euo pipefail
           source ci/select_caller_java.sh
