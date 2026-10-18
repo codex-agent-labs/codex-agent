@@ -120,8 +120,10 @@ class NativeFixtureCommandsTest(unittest.TestCase):
                 with patch.object(mcp, "ROOT", root), patch.object(mcp.platform, "system", return_value=system), \
                         patch.object(mcp, "c_sdk_root", return_value=sdk), \
                         patch.object(mcp, "c_include_directory", return_value=sdk), \
-                        patch.dict(os.environ, {"CC": compiler}), patch.object(mcp.subprocess, "run", side_effect=compile):
-                    mcp._compile_fixture(library)
+                        patch.dict(os.environ, {"CC": compiler}), patch.object(mcp.subprocess, "run", side_effect=compile) as run:
+                    fixture = mcp._compile_fixture(library)
+                    self.assertEqual(fixture, mcp._compile_fixture(library))
+                    run.assert_called_once()  # A loaded Windows DLL cannot be replaced.
                 evidence = root / "build/mcp-value-evidence"
                 self.assertEqual(original, (evidence / "real_mcp_value_fixture.c").read_bytes())
                 capture = json.loads((evidence / "compiler-execution.json").read_bytes())

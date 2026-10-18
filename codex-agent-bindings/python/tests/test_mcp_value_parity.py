@@ -12,6 +12,7 @@ import subprocess
 import sys
 import unittest
 from collections import defaultdict
+from functools import cache
 from pathlib import Path
 
 
@@ -236,7 +237,10 @@ def _sdk_path() -> Path:
     return real_library()
 
 
+@cache
 def _compile_fixture(sdk: Path) -> Path:
+    # The private suite's declared inputs are immutable. Compile once: Windows
+    # cannot replace this DLL after another value test has loaded it.
     directory = ROOT / "build" / "mcp-value-evidence"
     directory.mkdir(parents=True, exist_ok=True)
     system = platform.system().lower()

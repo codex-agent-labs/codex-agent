@@ -531,7 +531,7 @@ class HostReadyParityTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         path = _real_library_path()
         self.assertTrue(path.is_file(), f"real release SDK is required: {path}")
-        native = NativeLibrary(ctypes.CDLL(path))
+        native = NativeLibrary(ctypes.CDLL(str(path)))
         bootstrap, _, header = _bootstrap()
         executed: set[str] = set()
         for row in _selected_rows(ordinary_parity._claims()):
