@@ -92,7 +92,8 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
             self.live = False
 
     def inspect(self, *args, **kwargs):
-        self.assertEqual((workflow.PhaseInstanceId("sdk", self.arguments["preparation_component"], "package", "desktop"),),
+        self.assertEqual((workflow.PhaseInstanceId("sdk", self.arguments["preparation_component"],
+                         self.preparation["phase"], self.preparation["target"]),),
                          kwargs.pop("requested_scope"))
         self.assertTrue(self.live)
         self.events.append("inspect")

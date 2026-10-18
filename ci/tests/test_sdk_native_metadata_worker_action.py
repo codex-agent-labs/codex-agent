@@ -47,7 +47,11 @@ class SdkNativeMetadataWorkerActionTest(unittest.TestCase):
         self.assertLess(self.action.index("id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
         self.assertLess(self.action.index("uses: ./.github/actions/setup-kmp"), self.action.index("id: execute"))
         for text in ("cache-read-only: 'true'", "product-worker: 'true'", "GITHUB_TOKEN: ${{ github.token }}",
-                     "if: always() && steps.identity.outcome == 'success'", "path: build/sdk-worker",
+                     "if: always() && steps.identity.outcome == 'success'",
+                     "path: |\n          build/sdk-worker/shard\n"
+                     "          build/sdk-worker/worker/execution.json\n"
+                     "          build/sdk-worker/worker/gradle.log\n"
+                     "          ${{ job.status != 'success' && 'build/sdk-worker' || '' }}",
                      "overwrite: false", "include-hidden-files: true", "compression-level: 0"):
             self.assertIn(text, self.action)
         self.assertIn("name: codex-agent-sdk-worker-${{ inputs.component }}-metadata-desktop-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}", self.action)
