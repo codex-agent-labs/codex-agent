@@ -12,7 +12,8 @@ jobs:
   native-validation-diagnostics:
     if: >-
       (github.event.label.name == 'ci:native-validation-diagnostics' ||
-       github.event.label.name == 'ci:dart-validation-diagnostics') &&
+       github.event.label.name == 'ci:dart-validation-diagnostics' ||
+       github.event.label.name == 'ci:dart-lifecycle-diagnostics') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -57,6 +58,7 @@ jobs:
           PUB_CACHE: ${{ steps.dart-cache.outputs.pub-cache }}
         run: dart pub get --enforce-lockfile --offline
       - name: Exercise Windows root delegation, exact paths and tamper rejection
+        if: github.event.label.name != 'ci:dart-lifecycle-diagnostics'
         id: dart-identity
         continue-on-error: true
         shell: pwsh
@@ -93,6 +95,8 @@ jobs:
           required = ('cpp', 'csharp', 'dart-identity', 'dart-lifecycle')
           if os.environ['DIAGNOSTIC_LABEL'] == 'ci:dart-validation-diagnostics':
               required = ('dart-identity', 'dart-lifecycle')
+          elif os.environ['DIAGNOSTIC_LABEL'] == 'ci:dart-lifecycle-diagnostics':
+              required = ('dart-lifecycle',)
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:

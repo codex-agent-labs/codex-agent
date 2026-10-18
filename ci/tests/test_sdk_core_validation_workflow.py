@@ -49,6 +49,14 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             passed['dart-identity']['outcome'] = 'failure'
             with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}), self.assertRaises(AssertionError):
                 exec(compile(script, "native-host-diagnostic-result", "exec"), {})
+        self.assertIn("if: github.event.label.name != 'ci:dart-lifecycle-diagnostics'", block)
+        passed['dart-identity']['outcome'] = 'skipped'
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed),
+                                     "DIAGNOSTIC_LABEL": "ci:dart-lifecycle-diagnostics"}):
+            exec(compile(script, "native-host-diagnostic-result", "exec"), {})
+            passed['dart-lifecycle']['outcome'] = 'failure'
+            with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}), self.assertRaises(AssertionError):
+                exec(compile(script, "native-host-diagnostic-result", "exec"), {})
 
     def test_native_diagnostic_commands_preserve_exact_compiler_policy(self):
         from ci.tests import native_windows_diagnostic as diagnostic

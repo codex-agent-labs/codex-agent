@@ -144,8 +144,8 @@ void main() {
     final declaration = File.fromUri(uri);
     final original = declaration.readAsBytesSync();
     final target = currentClassifier();
-    final packaged = File(
-      '${declaration.parent.path}/$target/${libraryNameFor(target)}',
+    final packaged = File.fromUri(
+      declaration.parent.uri.resolve('$target/${libraryNameFor(target)}'),
     );
     packaged.parent.createSync(recursive: true);
     File(libraryPath).copySync(packaged.path);
