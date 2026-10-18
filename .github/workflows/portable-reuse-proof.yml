@@ -197,26 +197,16 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
-      - id: signing-acl
+      - id: signing-workspace
         continue-on-error: true
         shell: pwsh
-        run: python -B ci/tests/native_windows_diagnostic.py signing-acl "$env:RUNNER_TEMP/windows-controls/signing-acl"
-      - id: catalog-newlines
-        continue-on-error: true
-        shell: pwsh
-        run: python -B ci/tests/native_windows_diagnostic.py catalog-newlines "$env:RUNNER_TEMP/windows-controls/catalog-newlines"
-      - id: native-signature
+        run: python -B ci/tests/native_windows_diagnostic.py signing-workspace "$env:RUNNER_TEMP/windows-controls/signing-workspace"
+      - id: runtime-host-exit
         continue-on-error: true
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -B ci/tests/native_windows_diagnostic.py native-signature "$env:RUNNER_TEMP/windows-controls/native-signature"
-      - id: runtime-exit
-        continue-on-error: true
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python -B ci/tests/native_windows_diagnostic.py runtime-exit "$env:RUNNER_TEMP/windows-controls/runtime-exit"
+        run: python -B ci/tests/native_windows_diagnostic.py runtime-host-exit "$env:RUNNER_TEMP/windows-controls/runtime-host-exit"
       - name: Preserve all raw diagnostic outcomes before failing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -234,7 +224,7 @@ jobs:
         run: |
           import json, os
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
-          required = ('signing-acl', 'catalog-newlines', 'native-signature', 'runtime-exit')
+          required = ('signing-workspace', 'runtime-host-exit')
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:

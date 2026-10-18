@@ -88,16 +88,16 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         for forbidden in ("secrets.", "id-token: write", "gradlew", "setup-msvc", "dart-cache",
                           "download-artifact", "capture-sdk-tooling", "product-attestation"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(4, block.count("continue-on-error: true"))
+        self.assertEqual(2, block.count("continue-on-error: true"))
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
-        results = {name: {"outcome": "success"} for name in diagnostic.CONTROL_CHECKS}
+        results = {name: {"outcome": "success"} for name in diagnostic.FOLLOWUP_CHECKS}
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        results["runtime-exit"]["outcome"] = "failure"
+        results["runtime-host-exit"]["outcome"] = "failure"
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}), self.assertRaises(AssertionError):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        for check in diagnostic.CONTROL_CHECKS:
+        for check in (*diagnostic.CONTROL_CHECKS, *diagnostic.FOLLOWUP_CHECKS):
             cwd, commands = diagnostic.commands(check, Path("private"))
             self.assertEqual(diagnostic.ROOT, cwd)
             self.assertEqual([check, str(Path("private/probe")), "--probe"], commands[0][-3:])
@@ -152,7 +152,8 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             self.assertEqual(1, diagnostic.diagnose("cpp", output))
             report = json.loads((output / "result.json").read_text())
             self.assertTrue(report["diagnosticOnly"])
-            self.assertFalse(report["productExecuted"])
+            self.assertEqual(0, report["productPhasesProduced"])
+            self.assertFalse(report["existingRuntimeExecutionRequested"])
             self.assertFalse(report["passed"])
             self.assertEqual(1, report["commands"][0]["returnCode"])
             self.assertGreater(report["commands"][0]["elapsedNs"], 0)

@@ -17,7 +17,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
-CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS)
+FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
+CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS)
 
 
 def observed(command, *, check=True):
@@ -112,6 +113,25 @@ for name in ('codex_agent_context_create', 'codex_agent_context_destroy'):
     assert method(ctypes.byref(context)) == 0, name
 assert context.value is None
 print('Context create/destroy completed; exit mode=' + sys.argv[2], flush=True)
+if sys.argv[3] == 'host':
+    import asyncio
+    from pathlib import Path
+    sys.path.insert(0, str(Path.cwd() / 'codex-agent-bindings/python/src'))
+    from codex_agent import ClientInfo, CodexHost, HostStateKind
+    from codex_agent._ffi import NativeLibrary
+    # Original DLL authenticated by the parent; this is an ABI lifecycle probe,
+    # not Python package acceptance or external-library loader authorization.
+    async def lifecycle():
+        host = CodexHost('unused-unprepared-bundle', 'unused-host-consumer-data',
+            ClientInfo('installed-host-smoke', 'Installed Host smoke', '1.0.0'),
+            _native=NativeLibrary(library))
+        assert host.state.current.kind == HostStateKind.NEW
+        await host._void_operation('codex_agent_host_close')
+        await host._void_operation('codex_agent_host_close')
+        assert host.state.current.kind == HostStateKind.CLOSED
+        await host.aclose()
+        print('Host create/state/close twice/release/context destroy completed', flush=True)
+    asyncio.run(lifecycle())
 if sys.argv[2] == 'unload':
     free = ctypes.WinDLL('kernel32', use_last_error=True).FreeLibrary
     free.argtypes = [ctypes.c_void_p]
@@ -127,7 +147,7 @@ if sys.argv[2] == 'unload':
 def control_probe(check, scratch):
     sys.path[:0] = [str(ROOT / "ci"), str(ROOT)]
     scratch.mkdir(exist_ok=False)
-    if check == "signing-acl":
+    if check in ("signing-acl", "signing-workspace"):
         fixture = ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/fixtures/sdk-runtime-root-test-only"
         key, payload = scratch / "test-only-key", scratch / "payload"
         shutil.copyfile(fixture, key)
@@ -164,17 +184,18 @@ def control_probe(check, scratch):
             "completion.json", signer_commit=commit, source_commit=commit)
         print(json.dumps({"signatureAuthenticated": True, "downloadedBytes": report["downloadedQualificationBytes"],
                           "qualificationIssued": False, "phaseAdmissionGranted": False}), flush=True)
-    elif check == "runtime-exit":
+    elif check in ("runtime-exit", "runtime-host-exit"):
         library = pinned_windows_library(scratch)
         # Same authenticated DLL, isolated processes; preserve BOTH outcomes.
         for mode in ("retain", "unload"):
-            observed([sys.executable, "-c", RUNTIME_EXIT_PROBE, str(library), mode], check=False)
+            observed([sys.executable, "-c", RUNTIME_EXIT_PROBE, str(library), mode,
+                      "host" if check == "runtime-host-exit" else "context"], check=False)
     else:
         raise ValueError("Unknown control diagnostic")
 
 
 def commands(check, scratch):
-    if check in CONTROL_CHECKS:
+    if check in (*CONTROL_CHECKS, *FOLLOWUP_CHECKS):
         return ROOT, [[sys.executable, str(Path(__file__).resolve()), check, str(scratch / "probe"), "--probe"]]
     include = ROOT / "codex-agent-runtime-desktop/native/c-api/include"
     if check == "cpp":
@@ -206,7 +227,8 @@ def commands(check, scratch):
 
 def diagnose(check, output):
     output.mkdir(parents=True, exist_ok=False)
-    report = {"diagnosticOnly": True, "productExecuted": False, "check": check,
+    report = {"diagnosticOnly": True, "productPhasesProduced": 0,
+              "existingRuntimeExecutionRequested": check in ("runtime-exit", "runtime-host-exit"), "check": check,
               "source": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True).strip(),
               "run": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
@@ -215,7 +237,12 @@ def diagnose(check, output):
     try:
         if sys.platform != "win32":
             raise ValueError("Actual Windows execution is required")
-        with tempfile.TemporaryDirectory(prefix="native-host-diagnostic-") as temporary:
+        # Match the C# producer's workspace/build TemporaryDirectory location;
+        # user Temp has different inherited ACLs and already passed signing.
+        parent = ROOT / "build" if check == "signing-workspace" else None
+        if parent is not None:
+            parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="native-host-diagnostic-", dir=parent) as temporary:
             cwd, selected = commands(check, Path(temporary))
             for index, command in enumerate(selected):
                 log = output / f"{index}.log"
