@@ -127,7 +127,9 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
                          (plan, discovery, state, instance, destination))
         self.assertEqual({"expected_build_key": self.ready["buildKey"], "repository_root": self.root,
             "environ": self.arguments["environ"], "sdk_validation_tooling": self.tooling,
-            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"]}, kwargs)
+            "sdk_original_workflow_sha": self.arguments["trusted_workflow_sha"],
+            "materialized_scope": (PhaseInstanceId("contract", "contract", "metadata", "common"),
+                                   *self.original_paths)}, kwargs)
         for identity, original in {**self.original_paths,
                 PhaseInstanceId("contract", "contract", "metadata", "common"): self.contract}.items():
             target = destination / self.name(identity)
@@ -197,10 +199,12 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
         policy = fixture.caller_apple_policy(self.root / "caller")
         before = dict(policy)
         admissions = fixture.caller_metadata_admissions()
+        capability = object()  # Forwarding fixture; no authority is inferred.
 
         def forwarded(delegate):
             def invoke(*args, **kwargs):
                 self.assertIs(policy, kwargs.pop("sdk_apple_validation_policy"))
+                self.assertIs(capability, kwargs.pop("completed_frozen"))
                 for name, admission in admissions.items():
                     self.assertIs(admission, kwargs.pop(name))
                 return delegate(*args, **kwargs)
@@ -210,7 +214,7 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
                 patch.object(self, "inspect", side_effect=forwarded(self.inspect)) as inspect, \
                 patch.object(self, "materialize", side_effect=forwarded(self.materialize)) as materialize, \
                 patch.object(self, "metadata", side_effect=forwarded(self.metadata)) as metadata:
-            result = self.invoke(sdk_apple_validation_policy=policy, **admissions)
+            result = self.invoke(sdk_apple_validation_policy=policy, completed_frozen=capability, **admissions)
         for replay in (verified, inspect, materialize, metadata):
             replay.assert_called_once()
             self.assertIs(policy, replay.call_args.kwargs["sdk_apple_validation_policy"])

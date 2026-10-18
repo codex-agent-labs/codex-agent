@@ -17,6 +17,7 @@ if __package__:
 
 import product_reuse
 import sdk_handoff
+from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from runtime_reference_transport import measured
 
@@ -1073,6 +1074,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
+            materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
             sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(

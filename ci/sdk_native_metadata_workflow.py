@@ -11,6 +11,7 @@ if __package__:
 
 import product_reuse
 import sdk_workflow
+from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
@@ -116,6 +117,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
                 sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             ready_bytes = canonical_json_bytes(ready)
@@ -182,7 +184,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 compatibility_request=sdk_inputs / REQUEST_NAME,
                 runtime_stages=runtime_stages, staged_sdks=staged_sdks,
                 sdk_validation_tooling=tooling, repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **apple)
+                sdk_original_workflow_sha=trusted_workflow_sha, **apple,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             candidate_shard = candidate / "worker/shard"
             receipt = result["receipt"]
             trust_domain = "development" if producer["event"] == "pull_request" else "release"

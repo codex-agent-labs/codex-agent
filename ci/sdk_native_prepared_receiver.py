@@ -31,6 +31,7 @@ from products.sdk_native import (
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_compatibility import load_sdk_compatibility_request
 from sdk_native_prepare import validate_anchor
+from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 
 
 _SOURCE_EXCLUDES = {
@@ -190,9 +191,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
             product_reuse.materialize_product_predecessors(plan, discovery, state,
                 identity, predecessors, expected_build_key=preparation_build_key,
                 repository_root=root, environ=environ,
-                materialized_scope=(PhaseInstanceId("contract", "contract", "metadata", "common"),
-                    *(PhaseInstanceId("runtime", target, phase, target)
-                      for target in NATIVE_TARGETS for phase in ("package", "validation"))),
+                materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
                 sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             predecessor_files = regular_file_inventory(predecessors, allow_empty=True)

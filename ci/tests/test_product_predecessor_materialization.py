@@ -34,6 +34,7 @@ class OriginalSdkSourceProvisioningTest(unittest.TestCase):
             body.write_bytes(b'fixture-object')
             state = SimpleNamespace(prior_carrier_phases={sdk: {
                 'buildKey': 'key', 'receiptSha256': 'receipt', 'objectSha256': 'object'}},
+                producer={'runId': 1, 'runAttempt': 1},
                 sources={sdk: body}, ensure_original_source=mock.Mock())
             destination = root / 'inputs'
             destination.mkdir()

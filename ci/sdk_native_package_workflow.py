@@ -21,6 +21,7 @@ from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_s
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
 from sdk_native_phase import execute as execute_package
+from sdk_phase import native_consumed_predecessors
 
 
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
@@ -104,6 +105,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                materialized_scope=native_consumed_predecessors(instance),
                 sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             prepared_inventory = regular_file_inventory(prepared, allow_empty=True)

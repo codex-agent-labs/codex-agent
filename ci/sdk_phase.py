@@ -93,6 +93,24 @@ LEGACY_REPLAY_INSTANCES = tuple(PhaseInstanceId("sdk", "javascript", phase, "nod
 COMPACT_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(
     instance for row in SDK_FAMILY_ROUTES if row.checkpoint for instance in sorted(SDK_FAMILY_INSTANCES[row.family]))
 
+# Preparation and outer native controllers consume these stages, not the full
+# transitive closure. Dependency identity/admission still precedes materialization.
+NATIVE_RUNTIME_PREDECESSORS = (PhaseInstanceId("contract", "contract", "metadata", "common"),
+    *(PhaseInstanceId("runtime", target, phase, target)
+      for target in NATIVE_TARGETS for phase in ("package", "validation")))
+
+
+def native_consumed_predecessors(instance):
+    """Physical inputs only; metadata receives Runtime stages from its caller."""
+    if instance not in SDK_FAMILY_INSTANCES.get("native-" + instance.phase, ()):
+        raise ValueError("Unsupported native consumed-input scope")
+    runtime = () if instance.phase == "metadata" else NATIVE_RUNTIME_PREDECESSORS
+    phases = (("binary",) if instance.component == "csharp" else ()) + (
+        ("package",) if instance.phase != "package" else ())
+    return runtime + tuple(PhaseInstanceId("sdk", instance.component, phase, "desktop") for phase in phases) + tuple(
+        PhaseInstanceId("sdk", instance.component, "validation", target)
+        for target in NATIVE_TARGETS if instance.phase == "metadata")
+
 
 def completed_recovery_folder(instance):
     """Preserve existing on-disk controls and their exact recovery readers."""

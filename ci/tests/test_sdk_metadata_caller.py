@@ -54,10 +54,13 @@ class SdkMetadataCallerTest(unittest.TestCase):
              **{name: f"retained/{target}/{name}" for name in sdk_validation_paths("python")}}
             for target in NATIVE_TARGETS], key=lambda row: row["receiptSha256"])
 
-    def materialize(self, state, instance, destination, key, root):
+    def materialize(self, state, instance, destination, key, root, *, materialized_scope):
         self.assertIs(state, self.state)
         self.assertEqual(self.instance, instance)
         self.assertEqual(self.ready["buildKey"], key)
+        self.assertEqual({PhaseInstanceId("sdk", "python", phase, target)
+            for phase, target in [("package", "desktop"), *[("validation", target) for target in NATIVE_TARGETS]]},
+            set(materialized_scope))
         for phase, target in [("package", "desktop"), *[("validation", target) for target in NATIVE_TARGETS]]:
             directory = destination / f"sdk-python-{phase}-{target}"
             (directory / "stage").mkdir(parents=True)
@@ -94,8 +97,11 @@ class SdkMetadataCallerTest(unittest.TestCase):
 
     def test_exact_election_restores_originals_and_passes_existing_host_proofs(self):
         replay, materialize, execute = self.seams()
-        self.assertEqual({"result": "fixture"}, self.invoke())
+        capability = object()  # Routing sentinel, not genuine admission evidence.
+        self.assertEqual({"result": "fixture"}, self.invoke(completed_frozen=capability))
         replay.assert_called_once()
+        self.assertEqual((self.instance,), replay.call_args.kwargs["requested_scope"])
+        self.assertIs(capability, replay.call_args.kwargs["completed_frozen"])
         materialize.assert_called_once()
         args, values = execute.call_args
         self.assertEqual((self.ready,), args)

@@ -35,6 +35,7 @@ from products.sdk_package import _require_capability_output_separate, csharp_bin
 from products.sdk_validation_inputs import _request_inventory, stage_sdk_validation_evidence
 from products.signatures import load_keyring, public_key_path
 from sdk_native_phase import _runtime_originals, _runtime_originals_unchanged
+from sdk_phase import native_consumed_predecessors
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -332,6 +333,7 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             prepared = destination / "inputs"
             ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                 expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                materialized_scope=native_consumed_predecessors(instance),
                 sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             prepared_inventory = _inventory(prepared, allow_empty=True)

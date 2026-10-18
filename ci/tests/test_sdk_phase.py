@@ -118,6 +118,29 @@ class SdkPhaseTest(unittest.TestCase):
 
 
 class SdkRoutingContractTests(unittest.TestCase):
+    def test_native_consumed_scopes_keep_full_authentication_but_restore_only_read_stages(self):
+        from sdk_phase import NATIVE_RUNTIME_PREDECESSORS, native_consumed_predecessors, SDK_FAMILY_INSTANCES
+        from products.registry import PhaseInstanceId
+        from products.reuse import _dependency_closure
+        self.assertEqual(11, len(set(NATIVE_RUNTIME_PREDECESSORS)))
+        for phase, count in (("package", 11), ("validation", 12), ("metadata", 6)):
+            for instance in SDK_FAMILY_INSTANCES["native-" + phase]:
+                with self.subTest(instance=instance):
+                    consumed = native_consumed_predecessors(instance)
+                    closure = set(_dependency_closure((instance,))) - {instance}
+                    self.assertEqual(count + (instance.component == "csharp"), len(consumed))
+                    self.assertEqual(len(consumed), len(set(consumed)))
+                    self.assertTrue(set(consumed) < closure)
+                    self.assertTrue(set(NATIVE_RUNTIME_PREDECESSORS) < closure)
+                    self.assertEqual(instance.component == "csharp", PhaseInstanceId(
+                        "sdk", "csharp", "binary", "desktop") in consumed)
+                    self.assertTrue(all(item.component == instance.component
+                        for item in consumed if item.product == "sdk"))
+                    if phase == "metadata":
+                        self.assertTrue(all(item.product == "sdk" for item in consumed))
+        with self.assertRaises(ValueError):
+            native_consumed_predecessors(PhaseInstanceId("sdk", "javascript", "package", "node"))
+
     def test_registered_worker_families_partition_existing_sdk_instances(self):
         from sdk_phase import SDK_FAMILY_ROUTES, SDK_FAMILY_INSTANCES
         from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId

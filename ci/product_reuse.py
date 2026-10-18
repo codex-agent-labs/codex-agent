@@ -6163,10 +6163,11 @@ def execute_sdk_metadata(
     repository_root: Path | None = None, environ: Mapping[str, str] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Execute only an exact metadata election after replaying its original SDK hosts."""
     from sdk_metadata_phase import execute
+    from sdk_phase import native_consumed_predecessors
     from products.sdk_validation import decode_sdk_validation_records, sdk_validation_provider
 
     if component not in NATIVE_BINDINGS:
@@ -6182,6 +6183,8 @@ def execute_sdk_metadata(
     with tempfile.TemporaryDirectory(prefix="codex-agent-sdk-runtime-inputs-", dir=root) as temporary:
         originals = {}
         state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
+            requested_scope=(instance,),
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             sdk_original_workflow_sha=sdk_original_workflow_sha,
             **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
             sdk_runtime_consumer=lambda selected: originals.update(
@@ -6193,6 +6196,7 @@ def execute_sdk_metadata(
         _runtime_worker_checkout(root, state.producer)
         inputs = destination / "inputs"
         _materialize_product_predecessors(state, instance, inputs, expected_build_key, root,
+                                        materialized_scope=native_consumed_predecessors(instance),
                                         **({"sdk_runtime_originals": originals} if originals else {}))
 
     def original(product, name, phase, target):

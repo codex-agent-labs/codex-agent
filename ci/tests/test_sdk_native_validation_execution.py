@@ -114,6 +114,7 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
                 "stage": self.package_stage, "receiptPath": self.package_receipt_path}}
         if component == "csharp":
             originals[PhaseInstanceId("sdk", component, "binary", "desktop")] = self.binary
+        self.assertEqual(set(originals), set(kwargs.get("materialized_scope", ())))
         for original_identity, value in originals.items():
             directory = destination / self.name(original_identity)
             snapshot_regular_tree(value["stage"], directory / "stage")
