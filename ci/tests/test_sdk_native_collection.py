@@ -111,6 +111,8 @@ class SdkNativeCollectionTest(unittest.TestCase):
 
     def test_exact_original_shard_and_single_full_carrier_are_retained_separately(self):
         instance, ready, finalized, carrier, files = self.shard("rust", "linux-x64")
+        files["inputs/unused-predecessor"] = b"original input, not consumed during collection"
+        files["prepared-upload/transport.zip"] = b"original preparation, not consumed during collection"
         before = regular_file_inventory(carrier, allow_empty=True)
         destination = self.repository / "build/collected"
         raw = archive(files)
@@ -121,16 +123,66 @@ class SdkNativeCollectionTest(unittest.TestCase):
         self.assertEqual(finalized["receiptBytes"], (destination / row["shardDirectory"] / "phase-receipt.json").read_bytes())
         admitted = destination / row["sdkValidationEvidenceDirectory"]
         original = destination / row["originalDirectory"]
-        self.assertEqual(original.parent / "sdk-validation-evidence", admitted)
+        self.assertEqual(destination / "sdk-validation-evidence", admitted)
         self.assertFalse(admitted.is_relative_to(original))
-        self.assertEqual(before, regular_file_inventory(admitted, allow_empty=True))
         self.assertEqual(before, regular_file_inventory(carrier, allow_empty=True))
-        self.assertEqual(raw, (original.parent / "transport.zip").read_bytes())
+        self.assertFalse((original.parent / "transport.zip").exists())
+        self.assertFalse((original / "inputs").exists())
+        self.assertFalse((original / "prepared-upload").exists())
+        self.assertFalse((original / "sdk-validation-evidence").exists())
+        inventory = load_canonical_json(original.parent / "original-inventory.json")["files"]
+        self.assertEqual(set(files), {record["relativePath"] for record in inventory})
+        for record in inventory:
+            self.assertEqual(len(files[record["relativePath"]]), record["bytes"])
+            self.assertEqual(sha256_bytes(files[record["relativePath"]]), record["sha256"])
         records = evidence.load_sdk_validation_evidence(admitted)
         self.assertEqual(1, len(records))
+        original_record = evidence.load_sdk_validation_evidence(carrier)[0]
+        for name in evidence._record_paths(records[0])[0]:
+            self.assertEqual(regular_file_inventory(carrier / original_record[name]),
+                             regular_file_inventory(admitted / records[0][name]))
+        for name in evidence._record_paths(records[0])[1]:
+            self.assertEqual((carrier / original_record[name]).read_bytes(),
+                             (admitted / records[0][name]).read_bytes())
         self.assertEqual((instance.component, instance.target, sha256_bytes(finalized["receiptBytes"])),
             (records[0]["component"], records[0]["target"], records[0]["receiptSha256"]))
         self.assertEqual(b"", (original / "worker/gradle.log").read_bytes())
+
+    def test_sibling_hosts_share_categories_without_rewriting_original_receipts(self):
+        first, second = self.shard("rust", "linux-x64"), self.shard("rust", "linux-arm64")
+        destination = self.repository / "build/shared-native"
+        result = self.collect({item[0]: item[1] for item in (first, second)},
+            {item[0]: archive(item[4]) for item in (first, second)}, destination)
+        self.assertEqual(["success", "success"], [row["result"] for row in result["rows"]])
+        self.assertEqual({"sdk-validation-evidence"}, {row["sdkValidationEvidenceDirectory"] for row in result["rows"]})
+        shared = destination / "sdk-validation-evidence"
+        records = evidence.load_sdk_validation_evidence(shared)
+        for name in ("runtimeStages", "stagedSdks", "packageStage", "compatibilityRequest"):
+            self.assertEqual(1, len({row[name] for row in records}), name)
+        self.assertEqual({item[2]["receiptBytes"] for item in (first, second)},
+                         {(shared / record["validationReceipt"]).read_bytes() for record in records})
+        recaptured = self.repository / "build/shared-native-recaptured"
+        with patch.object(evidence, "_capture_validation_sources", self.sources), \
+                patch.object(projection, "verify_sdk_validation_projection", side_effect=self.runtime_proof) as verify:
+            self.assertEqual(records, evidence.stage_sdk_validation_evidence(records, shared, recaptured,
+                repository=self.repository, policy_revision=self.producer["commit"], tooling=self.tooling))
+        self.assertEqual(2, verify.call_count)
+        self.assertEqual(regular_file_inventory(shared, allow_empty=True),
+                         regular_file_inventory(recaptured, allow_empty=True))
+
+    def test_projection_still_authenticates_unconsumed_original_bytes(self):
+        instance, ready, _, _, files = self.shard("rust", "linux-x64")
+        unused = b"unconsumed original input whose CRC must still be verified"
+        files["inputs/unused-predecessor"] = unused
+        raw = archive(files)
+        self.assertEqual(1, raw.count(unused))
+        corrupt = raw.replace(unused, b"X" + unused[1:])
+        with patch.object(adapter, "_extract_runtime_original_projection") as extract:
+            result = self.collect({instance: ready}, {instance: corrupt},
+                self.repository / "build/corrupt-native-original")
+        self.assertEqual("failure", result["rows"][0]["result"])
+        self.assertIsNone(result["rows"][0]["shardDirectory"])
+        extract.assert_not_called()
 
     def test_missing_wrong_or_extra_carriers_fail_only_the_affected_sibling(self):
         bad = self.shard("rust", "linux-x64")

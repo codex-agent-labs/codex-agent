@@ -15,7 +15,9 @@ from ci.products.signatures import generate_development_key, sign_manifest
 from ci.products.registry import PHASE_INSTANCE_IDS
 from ci.products.selection import classify_paths, phase_inventory_paths
 from ci.products.sdk_validation import VerifiedSdkValidationProjection, _VERIFIED, decode_sdk_validation_records
-from ci.products.sdk_validation_inputs import REQUEST_NAME, load_sdk_validation_evidence, stage_sdk_validation_evidence
+from ci.products.sdk_validation_inputs import (
+    REQUEST_NAME, append_shared_sdk_validation_evidence, load_sdk_validation_evidence, stage_sdk_validation_evidence,
+)
 from ci.tests.product_chain_support import write_receipt
 from ci.tests.test_product_native_chain import build_chain
 from ci.tests.test_product_sdk_inputs import _request
@@ -211,6 +213,36 @@ class SdkValidationInputsTest(unittest.TestCase):
         self.assertEqual(set(PHASE_INSTANCE_IDS), set(classify_paths((path,)).instances))
         for instance in PHASE_INSTANCE_IDS:
             self.assertEqual((), phase_inventory_paths((path,), instance))
+
+    def test_shared_carrier_retains_full_admission_and_rejects_content_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            shared = root / "shared"
+            append_shared_sdk_validation_evidence(self.carrier, shared)
+            records = load_sdk_validation_evidence(shared)
+            with self.assertRaisesRegex(ValueError, "Duplicate original"):
+                append_shared_sdk_validation_evidence(self.carrier, shared)
+            for case in ("verifier", "mutation", "source"):
+                def fail(**arguments):
+                    if case == "verifier":
+                        raise ValueError("full executable gate rejected")
+                    result = self.proof(**arguments)
+                    (arguments["runtime_stages"] / "outputs/original.log").write_bytes(b"changed")
+                    return result
+                candidate = root / case
+                snapshot_regular_tree(shared, candidate)
+                if case == "source":
+                    prefix = Path("originals") / records[0]["receiptSha256"].removeprefix("sha256:")
+                    (candidate / prefix / "validation-source/test-program-source").write_bytes(b"wrong source")
+                output = root / (case + "-output")
+                with self.assertRaises(ValueError):
+                    self.stage(records, candidate, output, proof=fail if case != "source" else None)
+                self.assertFalse(output.exists())
+            original_inventory = regular_file_inventory(shared, allow_empty=True)
+            (shared / records[0]["runtimeStages"] / "outputs/original.log").write_bytes(b"changed content")
+            with self.assertRaisesRegex(ValueError, "paths differ"):
+                load_sdk_validation_evidence(shared)
+            self.assertNotEqual(original_inventory, regular_file_inventory(shared, allow_empty=True))
 
     def test_outer_capture_retains_complete_sdk_records_and_injects_only_current_authority(self):
         from ci.tests.test_product_reuse_adapter import product_reuse

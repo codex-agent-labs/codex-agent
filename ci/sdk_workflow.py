@@ -991,8 +991,8 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     shards = [destination / "collection" / row["shardDirectory"]
               for row in collection["rows"] if row["result"] == "success"]
     failed = tuple(product_reuse._identity(row) for row in collection["rows"] if row["result"] != "success")
-    evidence = tuple(destination / "collection" / row["sdkValidationEvidenceDirectory"]
-                     for row in collection["rows"] if row["result"] == "success") if family == "native-validation" else ()
+    evidence = tuple(dict.fromkeys(destination / "collection" / row["sdkValidationEvidenceDirectory"]
+                     for row in collection["rows"] if row["result"] == "success")) if family == "native-validation" else ()
     apple_evidence = tuple(destination / "collection" / row["sdkAppleValidationEvidenceDirectory"]
                            for row in collection["rows"] if row["result"] == "success") if family == "ios-validation" else ()
     handoff = destination / "handoff"

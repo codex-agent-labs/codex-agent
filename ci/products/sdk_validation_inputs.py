@@ -9,7 +9,7 @@ import tempfile
 from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_relative_path,
+    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_relative_path, require_regular_directory,
     _open_regular_file, _stat_identity, sha256_bytes, snapshot_regular_tree,
 )
 from .receipt import validate_phase_receipt
@@ -23,6 +23,7 @@ from .signatures import load_keyring, public_key_path
 REQUEST_NAME = "sdk-validation-evidence.json"
 _TREES = ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "runtimeAuthorization")
 _FILES = ("packageReceipt", "validationReceipt")
+_SHARED_TREES = frozenset({"packageStage", "binaryStage", "runtimeStages", "stagedSdks"})
 _LIMIT = 16 * 1024 * 1024
 
 
@@ -34,6 +35,10 @@ def _record_paths(record):
 def _retained_path(name, target):
     return {"binaryStage": "csharp-binary/stage", "binaryReceipt": "csharp-binary/phase-receipt.json",
             "runtimeAuthorization": f"runtime-authorization/{target}"}.get(name, name)
+
+
+def _shared_path(name, inventory):
+    return Path("shared") / name / sha256_bytes(canonical_json_bytes(inventory)).removeprefix("sha256:")
 
 
 def _request_inventory(request, *, within=None):
@@ -80,18 +85,38 @@ def load_sdk_validation_evidence(root: Path):
     records = load_canonical_json_bytes(read_regular_file_bytes(root / REQUEST_NAME,
         max_bytes=_LIMIT, reject_symlink_parents=True))
     decoded = decode_sdk_validation_records(root, records)
+    complete_inventory = regular_file_inventory(root, allow_empty=True)
     expected = {REQUEST_NAME}
+    inventories, checked_inputs = {}, set()
+
+    def inventory(path, *, allow_empty=False):
+        key = path, allow_empty
+        if key not in inventories:
+            require_regular_directory(path, "SDK retained category")
+            prefix = path.relative_to(root).as_posix() + "/"
+            inventories[key] = [{**row, "relativePath": row["relativePath"][len(prefix):]}
+                                for row in complete_inventory if row["relativePath"].startswith(prefix)]
+            if not allow_empty and any(row["bytes"] == 0 for row in inventories[key]):
+                raise ValueError("SDK retained category contains an empty file")
+        return inventories[key]
+
     for record in records:
         trees, files = _record_paths(record)
         prefix = Path("originals") / record["receiptSha256"].removeprefix("sha256:")
         exact = {**{name: (prefix / _retained_path(name, record["target"])).as_posix() for name in (*trees, *files)},
                  "compatibilityRequest": (prefix / "inputs" / INPUT_REQUEST_NAME).as_posix()}
+        for name in _SHARED_TREES & set(trees):
+            if record[name].startswith("shared/"):
+                exact[name] = _shared_path(name, inventory(root / record[name])).as_posix()
+        inputs = (root / record["compatibilityRequest"]).parent
+        if record["compatibilityRequest"].startswith("shared/"):
+            exact["compatibilityRequest"] = (_shared_path("inputs", inventory(inputs, allow_empty=True)) / INPUT_REQUEST_NAME).as_posix()
         if any(record[name] != path for name, path in exact.items()):
             raise ValueError("SDK retained evidence paths differ from their original receipt layout")
         for name in trees:
             path = root / record[name]
             expected.update((path / item["relativePath"]).relative_to(root).as_posix()
-                            for item in regular_file_inventory(path))
+                            for item in inventory(path))
         expected.update(record[name] for name in files)
         validation_bytes = read_regular_file_bytes(root / record["validationReceipt"], reject_symlink_parents=True)
         validation = validate_phase_receipt(load_canonical_json_bytes(validation_bytes))
@@ -99,34 +124,117 @@ def load_sdk_validation_evidence(root: Path):
                 (validation["product"], validation["component"], validation["phase"], validation["target"]) !=
                 ("sdk", record["component"], "validation", record["target"])):
             raise ValueError("SDK retained validation receipt differs from record identity")
-        inputs = root / prefix / "inputs"
         def relative_paths(value):
             if isinstance(value, dict):
                 for member in value.values():
                     relative_paths(member)
             elif isinstance(value, str) and Path(value).is_absolute():
                 raise ValueError("SDK retained request contains an absolute path")
-        relative_paths(load_canonical_json_bytes(read_regular_file_bytes(root / record["compatibilityRequest"], max_bytes=_LIMIT)))
-        inventory = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(inputs / INVENTORY_NAME,
-            max_bytes=_LIMIT, reject_symlink_parents=True)), {"schemaVersion", "kind", "files"}, "SDK input inventory")
-        if (type(inventory["schemaVersion"]) is not int or inventory["schemaVersion"] != 1 or
-                inventory["kind"] != "sdk-inputs" or inventory["files"] !=
-                regular_file_inventory(inputs, excluded_paths=(INVENTORY_NAME,), allow_empty=True)):
-            raise ValueError("SDK retained compatibility inventory differs from original captured files")
-        declared = _request_inventory(decoded[record["receiptSha256"]]["compatibilityRequest"], within=inputs)
-        input_paths = {path.relative_to(inputs).as_posix() for path in declared} | {
-            INPUT_REQUEST_NAME, COMPATIBILITY_NAME, INVENTORY_NAME}
-        if input_paths != {item["relativePath"] for item in regular_file_inventory(inputs, allow_empty=True)}:
-            raise ValueError("SDK retained compatibility inputs contain undeclared files")
-        expected.update((inputs / path).relative_to(root).as_posix() for path in input_paths)
+        if inputs not in checked_inputs:
+            relative_paths(load_canonical_json_bytes(read_regular_file_bytes(root / record["compatibilityRequest"], max_bytes=_LIMIT)))
+            declared_inventory = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(inputs / INVENTORY_NAME,
+                max_bytes=_LIMIT, reject_symlink_parents=True)), {"schemaVersion", "kind", "files"}, "SDK input inventory")
+            if (type(declared_inventory["schemaVersion"]) is not int or declared_inventory["schemaVersion"] != 1 or
+                    declared_inventory["kind"] != "sdk-inputs" or declared_inventory["files"] !=
+                    [row for row in inventory(inputs, allow_empty=True) if row["relativePath"] != INVENTORY_NAME]):
+                raise ValueError("SDK retained compatibility inventory differs from original captured files")
+            declared = _request_inventory(decoded[record["receiptSha256"]]["compatibilityRequest"], within=inputs)
+            input_paths = {path.relative_to(inputs).as_posix() for path in declared} | {
+                INPUT_REQUEST_NAME, COMPATIBILITY_NAME, INVENTORY_NAME}
+            if input_paths != {item["relativePath"] for item in inventory(inputs, allow_empty=True)}:
+                raise ValueError("SDK retained compatibility inputs contain undeclared files")
+            expected.update((inputs / path).relative_to(root).as_posix() for path in input_paths)
+            checked_inputs.add(inputs)
         expected.add((prefix / "original-compatibility-request.json").as_posix())
         load_sdk_compatibility_request(root / prefix / "original-compatibility-request.json")
         source_names = {"capability-claims.tsv", "test-program-source"}
         if record["component"] == "cpp":
             source_names.add("test_installed_package_tamper.py")
         expected.update((prefix / "validation-source" / name).as_posix() for name in source_names)
-    if expected != {item["relativePath"] for item in regular_file_inventory(root, allow_empty=True)}:
+    if expected != {item["relativePath"] for item in complete_inventory}:
         raise ValueError("SDK validation carrier contains missing or unexpected files")
+    if complete_inventory != regular_file_inventory(root, allow_empty=True):
+        raise ValueError("SDK validation carrier changed during inspection")
+    return records
+
+
+def append_shared_sdk_validation_evidence(source_root: Path, destination: Path):
+    """Compact private collected carriers; this grants no semantic authority.
+
+    Only identical complete category inventories share storage. The caller owns
+    the unpublished destination and must validate it before publishing it.
+    """
+    records = load_sdk_validation_evidence(source_root)
+    before = regular_file_inventory(source_root, allow_empty=True)
+    _require_capability_output_separate(destination, source_root)
+    destination.mkdir(parents=True, exist_ok=True)
+    require_regular_directory(destination, "Private shared SDK carrier")
+    request = destination / REQUEST_NAME
+    existing = load_canonical_json_bytes(read_regular_file_bytes(request, max_bytes=_LIMIT,
+        reject_symlink_parents=True)) if request.exists() else []
+    decoded = decode_sdk_validation_records(destination, existing)
+    for record in records:
+        if record["receiptSha256"] in decoded:
+            raise ValueError("Duplicate original SDK validation during collection")
+        prefix = Path("originals") / record["receiptSha256"].removeprefix("sha256:")
+        moved = dict(record)
+        trees, files = _record_paths(record)
+        for name in (*trees, "inputs"):
+            source = (source_root / record["compatibilityRequest"]).parent if name == "inputs" else source_root / record[name]
+            source_prefix = source.relative_to(source_root).as_posix() + "/"
+            expected = [{**row, "relativePath": row["relativePath"][len(source_prefix):]}
+                        for row in before if row["relativePath"].startswith(source_prefix)]
+            relative = (_shared_path(name, expected) if name in _SHARED_TREES or name == "inputs"
+                        else prefix / _retained_path(name, record["target"]))
+            target = destination / relative
+            if target.exists() or target.is_symlink():
+                # The final complete carrier check hashes each shared category
+                # once, including its content-addressed path. No cached verdict.
+                require_regular_directory(target, "Private shared SDK category")
+            else:
+                snapshot_regular_tree(source, target, allow_empty=True)
+            moved["compatibilityRequest" if name == "inputs" else name] = (
+                relative / INPUT_REQUEST_NAME if name == "inputs" else relative).as_posix()
+        for name in files:
+            target = destination / record[name]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as output:
+                output.write(read_regular_file_bytes(source_root / record[name], max_bytes=_LIMIT, reject_symlink_parents=True))
+        with (destination / prefix / "original-compatibility-request.json").open("xb") as output:
+            output.write(read_regular_file_bytes(source_root / prefix / "original-compatibility-request.json", max_bytes=_LIMIT))
+        snapshot_regular_tree(source_root / prefix / "validation-source", destination / prefix / "validation-source")
+        existing.append(moved)
+    if regular_file_inventory(source_root, allow_empty=True) != before:
+        raise ValueError("Original SDK carrier changed during compaction")
+    request.write_bytes(canonical_json_bytes(sorted(existing, key=lambda row: row["receiptSha256"])))
+
+
+def _stage_shared_sdk_validation_evidence(records, source_root, destination, *, repository, policy_revision, tooling):
+    """Snapshot the shared carrier once, retaining the full executable gate."""
+    if load_sdk_validation_evidence(source_root) != records:
+        raise ValueError("SDK source carrier differs from the requested complete originals")
+    before = regular_file_inventory(source_root, allow_empty=True)
+    with tempfile.TemporaryDirectory(prefix="sdk-shared-validation-inputs-") as temporary:
+        private = Path(temporary).resolve()
+        root = private / "handoff"
+        snapshot_regular_tree(source_root, root, allow_empty=True)
+        if regular_file_inventory(root, allow_empty=True) != before:
+            raise ValueError("Shared SDK carrier changed during capture")
+        provider = sdk_validation_provider(root, records, repository=repository, policy_revision=policy_revision, tooling=tooling)
+        for record in records:
+            receipt = validate_phase_receipt(load_canonical_json_bytes(read_regular_file_bytes(root / record["validationReceipt"])))
+            prefix = Path("originals") / record["receiptSha256"].removeprefix("sha256:")
+            sources = private / prefix
+            sources.mkdir(parents=True)
+            _capture_validation_sources(repository, receipt, root / record["validationStage"], sources)
+            if regular_file_inventory(sources / "validation-source") != regular_file_inventory(root / prefix / "validation-source"):
+                raise ValueError("Retained SDK validation source differs from its original Git evidence")
+            provider({**receipt, "receiptSha256": record["receiptSha256"]})
+        if (regular_file_inventory(root, allow_empty=True) != before or
+                regular_file_inventory(source_root, allow_empty=True) != before):
+            raise ValueError("Shared SDK evidence changed during full verification")
+        load_sdk_validation_evidence(root)
+        publish_regular_tree(root, destination, allow_empty=True)
     return records
 
 
@@ -140,6 +248,10 @@ def stage_sdk_validation_evidence(records, source_root: Path, destination: Path,
     retained = (source_root / REQUEST_NAME).exists()
     if retained:
         _require_capability_output_separate(destination, source_root)
+    if retained and any(str(record[name]).startswith("shared/")
+                        for record in records for name in (*(_SHARED_TREES & record.keys()), "compatibilityRequest")):
+        return _stage_shared_sdk_validation_evidence(records, source_root, destination,
+            repository=repository, policy_revision=policy_revision, tooling=tooling)
     if retained and load_sdk_validation_evidence(source_root) != records:
         raise ValueError("SDK source carrier differs from the requested complete originals")
     retained_inventory = regular_file_inventory(source_root, allow_empty=True) if retained else None

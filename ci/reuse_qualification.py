@@ -281,7 +281,7 @@ def _authenticate_native_subject(raw, signature, name, *, signer_commit, source_
             "--signer-digest", signer_commit, "--source-digest", source_commit,
             "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
             "--deny-self-hosted-runners", "--format", "json",
-        ], check=True, capture_output=True, timeout=120)
+        ], check=True, stdout=subprocess.PIPE, timeout=120)
         verified = json.loads(result.stdout)
         if not isinstance(verified, list) or not verified or any(
                 not isinstance(row, dict) or not row.get("verificationResult") for row in verified):

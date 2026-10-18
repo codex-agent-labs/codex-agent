@@ -6712,13 +6712,15 @@ def collect_runtime_workers(
                         archive, retained_paths=(), allow_empty_members=True,
                         **_worker_upload_zip_limits(instance))
                 original = retained / "original"
-                if instance in _LARGE_SDK_UPLOADS:
+                if instance in _LARGE_SDK_UPLOADS or sdk_family == "native-validation":
                     if upload_identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
                         raise ValueError("Collected SDK archive changed during authentication")
-                    # Collection consumes the shard. Following full semantic gates
-                    # reuse the independently hashed private session archive.
+                    # Authenticate the complete original, retain only consumed
+                    # bytes. Native SDK evidence still takes the full semantic gate.
+                    prefixes = (("shard/", "sdk-validation-evidence/", "worker/")
+                                if sdk_family == "native-validation" else ("shard/",))
                     _extract_runtime_original_projection(archive,
-                        [record for record in zipped if record["relativePath"].startswith("shard/")], original)
+                        [record for record in zipped if record["relativePath"].startswith(prefixes)], original)
                     write_canonical_json(retained / "original-inventory.json", {"schemaVersion": 1, "files": zipped})
                     archive.unlink()
                 else:
@@ -6764,7 +6766,14 @@ def collect_runtime_workers(
                         tooling=sdk_validation_tooling)
                     if verify_phase_shard(original / "shard", instance) != verified:
                         raise ValueError("SDK validation original shard changed during evidence admission")
-                    row["sdkValidationEvidenceDirectory"] = authenticated.relative_to(prepared).as_posix()
+                    from products.sdk_validation_inputs import append_shared_sdk_validation_evidence
+                    shared = prepared / "sdk-validation-evidence"
+                    append_shared_sdk_validation_evidence(authenticated, shared)
+                    # Only private duplicates go away; immutable originals and
+                    # all original receipts remain. Publication checks the pool.
+                    shutil.rmtree(carrier)
+                    shutil.rmtree(authenticated)
+                    row["sdkValidationEvidenceDirectory"] = shared.relative_to(prepared).as_posix()
                 if sdk_family == "ios-validation":
                     from sdk_apple_attestation_capture import capture_apple_validation_attestation
                     from products.sdk_apple_validation_admission import stage_collected_apple_validation
@@ -6860,6 +6869,8 @@ def collect_runtime_workers(
             except (ValueError, OSError, subprocess.CalledProcessError) as error:
                 row["reason"] = "\n".join((str(error), *getattr(error, "__notes__", ())))
         result = {"schemaVersion": 1, "producer": producer, "observed": observed, "rows": rows}
+        if sdk_family == "native-validation" and (prepared / "sdk-validation-evidence").exists():
+            load_sdk_validation_evidence(prepared / "sdk-validation-evidence")
         write_canonical_json(prepared / "collection.json", result)
         publish_regular_tree(prepared, destination, allow_empty=True)
         with verification_session() as session:

@@ -122,7 +122,7 @@ class SdkNativeFamilyOrchestrationTest(unittest.TestCase):
                     rows = [{**product_reuse._identity_record(identity),
                         "result": "failure" if failure and index else "success",
                         "shardDirectory": None if failure and index else f"rows/{index}/original/shard",
-                        "sdkValidationEvidenceDirectory": None if failure and index else f"rows/{index}/original/sdk-validation-evidence"}
+                        "sdkValidationEvidenceDirectory": None if failure and index else "sdk-validation-evidence"}
                         for index, identity in enumerate(identities)]
 
                     def collect(*args, **kwargs):
@@ -139,8 +139,8 @@ class SdkNativeFamilyOrchestrationTest(unittest.TestCase):
                         self.assertEqual([destination / "collection" / row["shardDirectory"] for row in successes], args[3])
                         self.assertEqual((identities[1],) if failure else (), kwargs["failed_instances"])
                         if family == "native-validation":
-                            self.assertEqual(tuple(destination / "collection" / row["sdkValidationEvidenceDirectory"]
-                                                   for row in successes), kwargs["sdk_evidence_roots"])
+                            self.assertEqual((destination / "collection/sdk-validation-evidence",),
+                                             kwargs["sdk_evidence_roots"])
                         else:
                             self.assertNotIn("sdk_evidence_roots", kwargs)
                         args[4].mkdir(parents=True)

@@ -240,6 +240,10 @@ class ReuseQualificationTest(unittest.TestCase):
         with patch.object(qualification.subprocess, "run", return_value=verified) as native:
             self.assertEqual(value, qualification.authenticate(path, bundle, **pins))
         command = native.call_args.args[0]
+        self.assertEqual(subprocess.PIPE, native.call_args.kwargs.get("stdout"))
+        self.assertNotIn("capture_output", native.call_args.kwargs)
+        self.assertIsNone(native.call_args.kwargs.get("stderr"))
+        self.assertTrue(native.call_args.kwargs["check"])
         for flag, expected in (("--signer-digest", pins["signer_commit"]),
                 ("--source-digest", pins["source_commit"]), ("--repo", qualification.REPOSITORY),
                 ("--signer-workflow", f"{qualification.REPOSITORY}/{qualification.ISSUER_WORKFLOW}")):

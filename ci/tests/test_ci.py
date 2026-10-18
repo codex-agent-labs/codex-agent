@@ -652,6 +652,9 @@ class RunLaneContractTest(unittest.TestCase):
         )
         self.assertIn("retention-days: 1", package)
         self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', consumers)
+        checkout_environment = consumers.split("    steps:\n", 1)[0]
+        for setting in ("GIT_CONFIG_COUNT: '1'", "GIT_CONFIG_KEY_0: core.autocrlf", "GIT_CONFIG_VALUE_0: 'false'"):
+            self.assertIn(setting, checkout_environment)
         self.assertIn("capture_runtime_authorization", consumers)
         self.assertIn("-m ci.products.sdk_package consume-native", consumers)
         self.assertNotIn("python ci/native_wrappers.py consume", consumers)
