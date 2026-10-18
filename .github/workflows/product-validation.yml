@@ -4212,7 +4212,56 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - id: retained-candidate
+        name: Select an exact reviewed native validation original
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          TARGET: ${{ matrix.target }}
+          BUILD_KEY: ${{ matrix.buildKey }}
+        run: |
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          from ci.sdk_campaign_original_locator import retained_native_validation_records
+          from ci.reuse import github_output
+          records = retained_native_validation_records()['originals']
+          selected = any((r['component'], r['target'], r['buildKey']) ==
+              (os.environ['COMPONENT'], os.environ['TARGET'], os.environ['BUILD_KEY']) for r in records)
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'candidate': str(selected).lower()})
+          PY
+      - id: retained-plan
+        if: steps.retained-candidate.outputs.candidate == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || needs.plan.outputs.plan_id }}
+          path: build/sdk-native-retained-plan
+          merge-multiple: true
+      - id: retained
+        if: steps.retained-candidate.outputs.candidate == 'true'
+        name: Authenticate the original successful native worker before skipping production
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          TARGET: ${{ matrix.target }}
+          BUILD_KEY: ${{ matrix.buildKey }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+          from ci.reuse import github_output
+          origin = locate_retained_core_binary_upload(Path('build/sdk-native-retained-plan/impact-plan.json'),
+              Path(os.environ['GITHUB_WORKSPACE']), expected_build_key=os.environ['BUILD_KEY'],
+              token=os.environ['GITHUB_TOKEN'], phase='validation', component=os.environ['COMPONENT'],
+              target=os.environ['TARGET'])
+          if origin is None:
+              raise ValueError('Reviewed native SDK original is outside this consumer scope; do not rebuild it')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'reused': 'true'})
+          PY
       - name: Select installed caller Java for SDK tooling
+        if: steps.retained.outputs.reused != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -4222,6 +4271,7 @@ jobs:
           test -f "$selected_java_home/bin/$java_binary"
           echo "JAVA_HOME=$selected_java_home" >> "$GITHUB_ENV"
       - id: tooling
+        if: steps.retained.outputs.reused != 'true'
         uses: ./.github/actions/capture-sdk-tooling
         with:
           read-app-id: ${{ vars.PRODUCT_READ_APP_ID }}
@@ -4236,11 +4286,12 @@ jobs:
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
       - id: dart-cache
-        if: matrix.component == 'dart'
+        if: matrix.component == 'dart' && steps.retained.outputs.reused != 'true'
         uses: ./.github/actions/provision-sdk-dart-cache
         with:
           revision: ${{ needs.plan.outputs.validation_commit }}
       - uses: ./.github/actions/sdk-native-validation-worker
+        if: steps.retained.outputs.reused != 'true'
         with:
           runtime-authorization-policy: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
