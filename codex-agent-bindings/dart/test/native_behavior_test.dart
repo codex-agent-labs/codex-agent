@@ -87,16 +87,18 @@ void main() {
               'CODEX_AGENT_TEST_ROOT_PRIVATE': rootKey.privateKey,
               'CODEX_AGENT_TEST_ROOT_PUBLIC': '${rootKey.privateKey}.pub',
               'CODEX_AGENT_TEST_PACKAGE_CONFIG': config.path,
+              // The parent owns cleanup after loaded Windows DLLs are released
+              // by child exit. All fixture/probe temporary files stay here.
+              'TMPDIR': temporary.path,
+              'TMP': temporary.path,
+              'TEMP': temporary.path,
             }..remove('CODEX_AGENT_LIBRARY'));
         expect(result.exitCode, 0,
             reason: '${result.stdout}\n${result.stderr}');
       } finally {
         temporary.deleteSync(recursive: true);
       }
-    },
-        skip: Platform.isWindows
-            ? 'Windows external SSHSIG verification is unavailable'
-            : false);
+    });
     return;
   }
   late String libraryPath;
@@ -107,6 +109,7 @@ void main() {
   });
 
   tearDownAll(() {
+    if (Platform.isWindows) return; // The parent removes the owned temp tree.
     final fixture = File(libraryPath);
     if (fixture.existsSync()) fixture.deleteSync();
     final evidence = Directory('$libraryPath.evidence');
