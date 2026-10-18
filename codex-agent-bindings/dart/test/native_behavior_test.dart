@@ -172,7 +172,9 @@ void main() {
       expect(() => NativeApi.loadResolved(), throwsA(isA<CodexException>()));
     } finally {
       declaration.writeAsBytesSync(original);
-      packaged.deleteSync();
+      // Windows retains the loaded DLL; the parent removes this owned package
+      // after child exit, just like the other native fixtures in this suite.
+      if (!Platform.isWindows) packaged.deleteSync();
     }
   });
 
