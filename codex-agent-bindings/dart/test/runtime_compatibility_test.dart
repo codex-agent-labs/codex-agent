@@ -597,7 +597,6 @@ void main() {
   });
 
   test('identity is authenticated before the exported ABI is called', () async {
-    if (Platform.isWindows) return;
     final target = currentClassifier();
     final library = await _compileLibrary(
       temporary,
@@ -626,7 +625,6 @@ void main(List<String> arguments) {
 
   test('dynamic open remains bound to the authenticated private file',
       () async {
-    if (Platform.isWindows) return;
     final target = currentClassifier();
     final verified = await _compileLibrary(
       temporary,
@@ -674,7 +672,6 @@ void main(List<String> arguments) {
   });
 
   test('child-process load leaves no owned Runtime snapshot behind', () async {
-    if (Platform.isWindows) return;
     final target = currentClassifier();
     final library = await _compileLibrary(
       temporary,
