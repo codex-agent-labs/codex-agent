@@ -462,6 +462,9 @@ jobs:
           mkdir -p "$tool/ci"
           cp ci/native_wrappers.py "$tool/ci/"
           cp -R ci/products "$tool/ci/"
+          inspector=codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot
+          mkdir -p "$tool/$inspector"
+          cp "$inspector/Program.cs" "$inspector/VerifySdkRuntimeRoot.csproj" "$tool/$inspector/"
           test ! -e "$tool/codex-agent-runtime-desktop"
           python "$tool/ci/native_wrappers.py" package \
             --sources "$PWD/codex-agent-sdk/build/native-wrapper-package-sources" \
