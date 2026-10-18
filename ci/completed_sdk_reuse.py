@@ -408,6 +408,11 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
             or sha256_bytes(canonical_json_bytes(proof["parentProof"])) != spec["parentProofSha256"]
             or proof["parentProof"].get("schemaVersion") != 1):
         raise ValueError("Incremental completion changes its approved native issuer or parent")
+    # Body inheritance authenticates the old subject at its own pinned product
+    # baseline, which may predate its signer. Explicit consumer revisions still
+    # pass the unchanged current-input gate below.
+    if revision is None:
+        revision = _inventory_revision(spec, root, token=token)
     # The new native issuer authenticated this exact old native subject before
     # signing it. Its immutable SHA is independently pinned in the issuer Git spec.
     sdk = native._validate_completed_sdk(proof["parentProof"], native._native_pin_arguments(spec["parent"]),
@@ -627,7 +632,7 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
         qualified = {}
         if "reuseCompletion" in spec:
             prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
-                root=root, revision=spec["reuseCompletion"]["sourceCommit"], frozen=frozen, token=token)
+                root=root, revision=None, frozen=frozen, token=token)
             # Both subjects bind their original product source; only exact
             # matching keys/receipts/objects inherit body qualification.
             qualified = _qualified_members(spec, prior, phases, receipts)

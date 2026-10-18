@@ -389,9 +389,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 return_value=({}, {'completion.json': b'{}', 'bundle.jsonl': b'{}'})), \
                 patch.object(native, '_authenticate_native_subject', side_effect=ValueError('bad signature')), \
                 patch.object(native, '_validate_completed_sdk') as validate:
-            with self.assertRaisesRegex(ValueError, 'bad signature'):
-                native._fetch_completed_sdk(Path('unused'), pins, root=Path.cwd(),
-                    revision='d' * 40, frozen={}, token='synthetic')
+            for revision in (None, 'd' * 40):
+                with self.assertRaisesRegex(ValueError, 'bad signature'):
+                    native._fetch_completed_sdk(Path('unused'), pins, root=Path.cwd(),
+                        revision=revision, frozen={}, token='synthetic')
             validate.assert_not_called()
 
     def test_native_csharp_and_ios_controls_route_without_body_or_gate_replay(self):
@@ -960,7 +961,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             def native_completion(destination, pins, **arguments):
                 if reused and pins == spec['reuseCompletion']:
                     self.assertEqual('previous', destination.name)
-                    self.assertEqual(pins['sourceCommit'], arguments['revision'])
+                    self.assertIsNone(arguments['revision'])
                     return previous
                 self.assertEqual(spec['parent'], pins)
                 self.assertEqual('a' * 40, arguments['revision'])
@@ -1047,9 +1048,13 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertEqual(0, report['productPhasesExecuted'])
                         with patch.object(native, '_validate_completed_sdk', return_value={}), \
                                 patch.object(completed, '_base', return_value=self.base):
-                            def validate(value):
+                            def validate(value, revision=issuer_revision):
                                 return completed.validate_extension(spec, value, {'signer_commit': issuer_revision},
-                                    root=fixture.repository, revision=issuer_revision, frozen={}, token='synthetic')
+                                    root=fixture.repository, revision=revision, frozen={}, token='synthetic')
+                            # Prior body qualification uses its admitted product
+                            # baseline, not the later native signing commit.
+                            self.assertEqual(spec, validate(result, revision=None)['extension']['spec'])
+                            self.assertEqual('a' * 40, current.call_args.kwargs['revision'])
                             self.assertEqual(spec, validate(result)['extension']['spec'])
                             self.assertEqual(issuer_revision, current.call_args.kwargs['revision'])
                             with patch.object(completed, 'validate_current',

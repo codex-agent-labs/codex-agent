@@ -18,6 +18,9 @@ on:
     secrets:
       authority_read_token:
         required: false
+      PRODUCT_READ_APP_PRIVATE_KEY:
+        description: Supplied by the protected product-read environment for incremental completion only
+        required: false
 
 permissions:
   contents: read
@@ -117,6 +120,7 @@ jobs:
 
   completed-sdk:
     if: inputs.completed-sdk && inputs.refresh != true && github.repository == 'codex-agent-labs/codex-agent'
+    environment: product-read
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -153,7 +157,18 @@ jobs:
       - name: Authenticate the successful resume and exact admitted SDK object
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -B ci/reuse_qualification.py issue-completed-sdk --work "$PROOF_WORK"
+          READ_APP_ID: ${{ vars.PRODUCT_READ_APP_ID }}
+          READ_INSTALLATION_ID: ${{ vars.PRODUCT_READ_INSTALLATION_ID }}
+          READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
+        run: |
+          python3 -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'ci')
+          from runtime_reference_transport import configure_read_app
+          from reuse_qualification import issue_completed_sdk
+          configure_read_app()
+          issue_completed_sdk(os.environ['PROOF_WORK'], os.environ['GITHUB_TOKEN'])
+          PY
       - id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:

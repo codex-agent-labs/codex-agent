@@ -96,6 +96,12 @@ class GitHubAppAuthTest(unittest.TestCase):
         self.assertIn('environment: product-read', proof)
         self.assertIn('forcedExpiryBoundary=True', proof)
         self.assertNotIn('gradlew', proof)
+        issuer = (root / '.github/workflows/reuse-qualification.yml').read_text().split(
+            '  completed-sdk:\n', 1)[1]
+        self.assertIn('environment: product-read', issuer)
+        self.assertIn('secrets.PRODUCT_READ_APP_PRIVATE_KEY', issuer)
+        self.assertLess(issuer.index('configure_read_app()'), issuer.index("issue_completed_sdk(os.environ"))
+        self.assertIn('GITHUB_TOKEN: ${{ github.token }}', issuer)
 
     def test_transport_reuses_existing_digest_and_redirect_checks(self):
         artifact = {'archive_download_url': self.url}
