@@ -205,6 +205,19 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             if pathlib.Path('tamper').exists():
                 (arg('--canonical-api').parent / 'injected.txt').write_text('changed input')
         """.trimIndent() + "\n") }
+        // Exercise the authenticated-category CLI route with a deliberately fake
+        // producer; this fixture still grants no signature or host acceptance.
+        root.resolve("ci/products").mkdirs()
+        root.resolve("ci/__init__.py").writeText("")
+        root.resolve("ci/products/__init__.py").writeText("")
+        root.resolve("ci/products/sdk_package.py").writeText(script.readText().replace(
+            "args = sys.argv[1:]", "args = sys.argv[1:]\nassert args[0] == 'csharp-capabilities'",
+        ) + "assert arg('--repository') == pathlib.Path.cwd()\n" +
+            "assert arg('--runtime-authorization') == pathlib.Path('authorization').absolute()\n" +
+            "assert str(arg('--expected-classifier')) == 'linux-x64'\n")
+        val capabilityDispatcher = root.resolve("ci/products/sdk_package.py").readBytes()
+        val authorization = root.resolve("authorization").also(File::mkdirs)
+        authorization.resolve("fixture").writeText("mocked sidecar input, not authority\n")
         val project = ProjectBuilder.builder().withProjectDir(root).build()
         val output = root.resolve("build/capability")
         val task = project.tasks.create("capabilities", NativeWrapperCapabilityEvidenceTask::class.java).apply {
@@ -213,6 +226,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             dotnetExecutable.set(root.resolve("fixture-dotnet").absolutePath)
             capabilityInputsDirectory.set(handoff)
             installedConsumerEvidence.set(root.resolve("installed"))
+            runtimeAuthorization.set(authorization)
             producerScript.set(script)
             claims.set(fixture.claims)
             producerSources.from(script, fixture.claims)
@@ -388,6 +402,9 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
             }
         }
         installed.resolve("linux-x64.tsv").writeText(originalHost)
+        // Fresh production executes its declared source dispatcher; imported replay
+        // above must still ignore the intentionally poisoned checkout dispatcher.
+        inputVerifier.writeBytes(capabilityDispatcher)
         root.resolve("tamper").writeText("fixture mutation")
         assertFailsWith<IllegalStateException> { task.produce() }
         assertFalse(output.exists())

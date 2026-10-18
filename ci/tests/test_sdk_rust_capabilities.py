@@ -21,6 +21,9 @@ class RustCapabilitiesTest(unittest.TestCase):
     def test_dart_reuses_authenticated_sidecars_and_cleans_failed_suite(self):
         self._check_authenticated_sidecars_and_failed_suite("dart")
 
+    def test_csharp_projection_keeps_loader_tests_and_cleans_failed_restore(self):
+        self._check_authenticated_sidecars_and_failed_suite("csharp")
+
     def _check_authenticated_sidecars_and_failed_suite(self, language):
         repository = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as temporary:
@@ -54,6 +57,11 @@ class RustCapabilitiesTest(unittest.TestCase):
                     {"name": "codex_agent", "rootUri": (repository / "codex-agent-bindings/dart").as_uri() + "/", "packageUri": "lib/"},
                 ]}))
                 extra = {"dart_executable": "declared-dart", "package_config": config}
+            elif language == "csharp":
+                compatibility.write_bytes((repository / "codex-agent-bindings/rust/native/sdk-compatibility.json").read_bytes())
+                dotnet = root / "dotnet"
+                dotnet.write_bytes(b"mocked executable, no compiler evidence")
+                extra = {"dotnet": dotnet}
             before = regular_file_inventory(sdks)
             sidecar = library.with_name(library.name + ".evidence")
 
@@ -65,7 +73,7 @@ class RustCapabilitiesTest(unittest.TestCase):
                     self.assertEqual(str(library), options["env"]["CODEX_AGENT_LIBRARY"])
                     self.assertEqual(str(repository), options["env"]["PYTHONPATH"].split(os.pathsep)[0])
                     resource = "src/codex_agent/native/sdk-runtime-root.pub"
-                else:
+                elif language == "dart":
                     self.assertEqual(["declared-dart", f"--packages={source / '.dart_tool/package_config.json'}",
                                       str(dart_runner), "--reporter", "expanded", "test"], command)
                     self.assertEqual(str(library), options["env"]["CODEX_AGENT_REAL_LIBRARY"])
@@ -80,7 +88,20 @@ class RustCapabilitiesTest(unittest.TestCase):
                         self.assertEqual(original, projected.split("\n", 1)[1].replace(
                             "return registerCapabilityFixture(output);", "return output;"))
                     resource = "lib/src/native/sdk-runtime-root.pub"
-                self.assertEqual(root_public, (source / resource).read_bytes())
+                else:
+                    self.assertEqual([str(dotnet), "restore"], command[:2])
+                    self.assertIn("--no-cache", command)
+                    projected = (source / "tests/CodexAgent.Tests/McpValueParity.cs").read_text()
+                    original = (repository / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/McpValueParity.cs").read_text()
+                    self.assertEqual(original, projected.replace("NativeLibraryLoader.LoadCapabilityProjection(sdkPath);",
+                                                                "CodexNativeLibrary.Configure(sdkPath);"))
+                    loader = (source / "src/CodexAgent/Interop/NativeLibraryLoader.CapabilityProjection.cs").read_text()
+                    self.assertEqual(2, loader.count("Digest(File.ReadAllBytes(path)) != expected"))
+                    self.assertIn("ValidateLoadedLibrary(handle, compatibility, RuntimeTarget, true);", loader)
+                    self.assertEqual((repository / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs").read_bytes(),
+                                     (source / "tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs").read_bytes())
+                if language != "csharp":
+                    self.assertEqual(root_public, (source / resource).read_bytes())
                 self.assertEqual(regular_file_inventory(authorization), regular_file_inventory(sidecar))
                 raise subprocess.CalledProcessError(1, command)
 
@@ -94,7 +115,10 @@ class RustCapabilitiesTest(unittest.TestCase):
                         runtime_authorization=authorization, expected_classifier="macos-arm64", **extra)
                 authenticated.assert_called_once_with(authorization, sdks, "macos-arm64")
                 runner.assert_called_once()
-            self.assertFalse(output.exists())
+            if language == "csharp":
+                self.assertEqual({"dotnet-restore-execution.json"}, {p.name for p in output.iterdir()})
+            else:
+                self.assertFalse(output.exists())
             self.assertFalse(sidecar.exists())
             self.assertEqual(before, regular_file_inventory(sdks))
 

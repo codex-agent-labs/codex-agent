@@ -984,14 +984,79 @@ String registerCapabilityFixture(String path) {
     path.write_text(raw, encoding="utf-8")
 
 
+def project_csharp_capability_runtime(source: Path) -> dict[str, bytes]:
+    """Private interop projection: C fixture and managed projections share one image.
+
+    The caller independently authenticates the real library and signed sidecars.
+    This does not test the public loader; unchanged installed consumers do that.
+    The separate fixture-root/security runs still execute the original loader.
+    """
+    projection = "src/CodexAgent/Interop/NativeLibraryLoader.CapabilityProjection.cs"
+    path = source / projection
+    if path.exists() or path.is_symlink():
+        raise ValueError("C# capability projection collides with original sources")
+    path.write_text("""using System.Runtime.InteropServices;
+namespace CodexAgent.Interop;
+// Generated solely for this private capability test compilation, never packaged.
+internal static partial class NativeLibraryLoader
+{
+    internal static void LoadCapabilityProjection(string path)
+    {
+        lock (Gate)
+        {
+            if (loadedHandle != 0) throw new InvalidOperationException("Projection already loaded");
+            path = ValidateAbsoluteRegularPath(path, "Authenticated capability Runtime");
+            var compatibility = ReadCompatibility();
+            var expected = compatibility.Variants[RuntimeTarget].RuntimeLibrarySha256;
+            if (Digest(File.ReadAllBytes(path)) != expected)
+                throw new InvalidDataException("Capability Runtime digest differs");
+            var handle = NativeLibrary.Load(path);
+            try
+            {
+                ValidateLoadedLibrary(handle, compatibility, RuntimeTarget, true);
+                if (Digest(File.ReadAllBytes(path)) != expected)
+                    throw new InvalidDataException("Capability Runtime changed");
+                loadedHandle = handle;
+            }
+            catch { NativeLibrary.Free(handle); throw; }
+        }
+    }
+}
+""", encoding="utf-8")
+    test = "tests/CodexAgent.Tests/McpValueParity.cs"
+    path = source / test
+    raw = path.read_text(encoding="utf-8")
+    if raw.count("CodexNativeLibrary.Configure(sdkPath);") != 1:
+        raise ValueError("C# MCP producer differs from the reviewed projection")
+    path.write_text(raw.replace("CodexNativeLibrary.Configure(sdkPath);",
+                               "NativeLibraryLoader.LoadCapabilityProjection(sdkPath);"), encoding="utf-8")
+    return {name: read_regular_file_bytes(source / name, reject_symlink_parents=True) for name in (projection, test)}
+
+
+@contextmanager
+def capability_sidecars(native_library: Path, evidence: Path):
+    """Expose only the authenticated small sidecars for the private test lifetime."""
+    from ci.native_wrappers import invalidate_output
+    sidecar = native_library.with_name(native_library.name + ".evidence")
+    if sidecar.exists() or sidecar.is_symlink():
+        raise ValueError("Capability sidecar destination is already occupied")
+    inventory = regular_file_inventory(evidence)
+    publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
+    try:
+        yield
+        if regular_file_inventory(sidecar) != inventory:
+            raise ValueError("Capability authorization changed during execution")
+    finally:
+        invalidate_output(sidecar)
+
+
 def produce_authorized_native_capabilities(repository: Path, *, language: str, canonical_api: Path, c_abi_bootstrap: Path,
         c_sdk_root: Path, native_library: Path, sdk_compatibility: Path, output: Path,
         runtime_authorization: Path, expected_classifier: str,
-        dart_executable: str = "dart", package_config: Path | None = None) -> None:
+        dart_executable: str = "dart", package_config: Path | None = None, dotnet: Path | None = None) -> None:
     """Compose the existing raw producer; no package changes or mock signatures."""
     from .c_abi import TARGET_SPECS
-    from ci.native_wrappers import invalidate_output
-    if language not in {"rust", "python", "dart"}:
+    if language not in {"rust", "python", "dart", "csharp"}:
         raise ValueError("Unsupported authorized capability language")
     directory = "tool" if language == "dart" else "tools"
     script = repository / f"codex-agent-bindings/{language}/{directory}/produce_sdk_validation_evidence.py"
@@ -1011,7 +1076,8 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
     calls = []
     projected_sources = {}
 
-    with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence:
+    with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence, \
+            capability_sidecars(native_library, evidence):
         def run(command, **options):
             source = options["cwd"]
             expected = (["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"]
@@ -1043,27 +1109,32 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
                     for name in ("lib/src/ffi.dart", *(f"test/{name}_parity.dart"
                         for name in ("leaf_service", "conversation", "agent", "host")))})
                 options["env"] = {**options["env"], "CODEX_AGENT_LIBRARY": str(native_library)}
-            sidecar = native_library.with_name(native_library.name + ".evidence")
-            if sidecar.exists() or sidecar.is_symlink():
-                raise ValueError("Capability sidecar destination is already occupied")
-            inventory = regular_file_inventory(evidence)
-            publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
-            try:
-                # Lifecycle assertions drain a process-global cleanup registry.
-                result = original_run(command[:2] + ["--lib", "--test", "enum_parity"] +
-                    command[2:] + ["--test-threads=1"] if language == "rust" else command, **options)
-                # Explicit target selection excludes doctests; retain the existing
-                # compile-fail ownership proof using the SAME Cargo target cache/log.
-                if language == "rust":
-                    original_run(command[:2] + ["--doc"] + command[2:] + ["--test-threads=1"], **options)
-                if (regular_file_inventory(sidecar) != inventory
-                        or read_regular_file_bytes(script, reject_symlink_parents=True) != script_raw
-                        or any(read_regular_file_bytes(source / name, reject_symlink_parents=True) != raw
-                               for name, raw in projected_sources.items())):
-                    raise ValueError("Capability authorization or producer changed during execution")
-                return result
-            finally:
-                invalidate_output(sidecar)
+            # Lifecycle assertions drain a process-global cleanup registry.
+            result = original_run(command[:2] + ["--lib", "--test", "enum_parity"] +
+                command[2:] + ["--test-threads=1"] if language == "rust" else command, **options)
+            # Explicit target selection excludes doctests; retain the existing
+            # compile-fail ownership proof using the SAME Cargo target cache/log.
+            if language == "rust":
+                original_run(command[:2] + ["--doc"] + command[2:] + ["--test-threads=1"], **options)
+            verify_projection(source)
+            return result
+
+        def verify_projection(source):
+            if any(read_regular_file_bytes(source / name, reject_symlink_parents=True) != raw
+                   for name, raw in projected_sources.items()):
+                raise ValueError("Capability test projection changed during execution")
+
+        def copy_csharp_sources(files, source):
+            if calls:
+                raise ValueError("C# capability producer repeated source composition")
+            module._copy_sources(files, source)
+            projected_sources.update(project_csharp_capability_runtime(source))
+            calls.append(True)
+
+        def run_csharp(command, **options):
+            verify_projection(options["cwd"])
+            module._run_logged(command, **options)
+            verify_projection(options["cwd"])
 
         def retain(log, source, evidence):
             module._retain_cargo_test_executables(log, source, evidence, lifecycle_as_unit=True)
@@ -1072,12 +1143,19 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
             CalledProcessError=subprocess.CalledProcessError)}
         if language == "rust":
             namespace["_retain_cargo_test_executables"] = retain
+        elif language == "csharp":
+            if dotnet is None or not dotnet.is_absolute():
+                raise ValueError("C# capability requires an explicit absolute dotnet executable")
+            namespace.update(_copy_sources=copy_csharp_sources, _run_logged=run_csharp)
         produce = FunctionType(module.produce.__code__, namespace, module.produce.__name__)
-        options = {"dart_executable": dart_executable, "package_config": package_config} if language == "dart" else {}
+        options = ({"dart_executable": dart_executable, "package_config": package_config} if language == "dart"
+                   else {"dotnet": dotnet} if language == "csharp" else {})
         produce(canonical_api=canonical_api, c_abi_bootstrap=c_abi_bootstrap, c_sdk_root=c_sdk_root,
                 native_library=native_library, sdk_compatibility=sdk_compatibility, output=output, **options)
         if calls != [True]:
             raise ValueError("Capability producer did not execute its exact suite")
+        if read_regular_file_bytes(script, reject_symlink_parents=True) != script_raw:
+            raise ValueError("Capability producer changed during execution")
         for name, raw in projected_sources.items():
             retained = output / "test-projection" / name
             retained.parent.mkdir(parents=True, exist_ok=True)
@@ -1088,7 +1166,7 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    for language in ("rust", "python", "dart"):
+    for language in ("rust", "python", "dart", "csharp"):
         capability = commands.add_parser(f"{language}-capabilities", allow_abbrev=False)
         for name in ("repository", "canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library",
                      "sdk-compatibility", "output", "runtime-authorization"):
@@ -1097,6 +1175,8 @@ def main(argv: list[str] | None = None) -> int:
         if language == "dart":
             capability.add_argument("--dart-executable", default="dart")
             capability.add_argument("--package-config", type=Path)
+        if language == "csharp":
+            capability.add_argument("--dotnet", type=Path, required=True)
     consumer = commands.add_parser("consume-native", allow_abbrev=False)
     for name in ("repository", "packages", "sdks", "output", "sdk-version-file", "runtime-authorization"):
         consumer.add_argument(f"--{name}", type=Path, required=True)
@@ -1124,8 +1204,9 @@ def main(argv: list[str] | None = None) -> int:
     metadata.add_argument("--package-receipt", type=Path, required=True)
     metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
-    if args.command in {"rust-capabilities", "python-capabilities", "dart-capabilities"}:
-        options = {"dart_executable": args.dart_executable, "package_config": args.package_config} if args.command == "dart-capabilities" else {}
+    if args.command in {"rust-capabilities", "python-capabilities", "dart-capabilities", "csharp-capabilities"}:
+        options = ({"dart_executable": args.dart_executable, "package_config": args.package_config} if args.command == "dart-capabilities"
+                   else {"dotnet": args.dotnet} if args.command == "csharp-capabilities" else {})
         produce_authorized_native_capabilities(args.repository, language=args.command.removesuffix("-capabilities"), canonical_api=args.canonical_api,
             c_abi_bootstrap=args.c_abi_bootstrap, c_sdk_root=args.c_sdk_root, native_library=args.native_library,
             sdk_compatibility=args.sdk_compatibility, output=args.output,

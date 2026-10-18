@@ -100,7 +100,7 @@ class NativeWrapperProductPhaseArtifactGraphTest {
         assertTrue(task.indexOf("val before = capabilityInputInventory(inputs)") < task.indexOf("\"verify-evidence\""))
         assertTrue(task.indexOf("\"verify-evidence\"") < task.indexOf("val command = nativeWrapperCapabilityCommand("))
         assertTrue("before == capabilityInputInventory(inputs)" in task)
-        assertTrue("language.get() in setOf(\"rust\", \"python\", \"dart\")" in task)
+        assertTrue("language.get() in setOf(\"rust\", \"python\", \"dart\", \"csharp\")" in task)
         assertTrue("if (authorization != null)" in task)
         assertTrue("\"${'$'}{binding.id}-capabilities\"" in task)
     }
