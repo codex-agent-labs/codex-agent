@@ -813,6 +813,7 @@ fn open_locked_snapshot(path: &Path) -> Result<File, String> {
     OpenOptions::new()
         .read(true)
         .share_mode(1)
+        .custom_flags(0x00200000) // FILE_FLAG_OPEN_REPARSE_POINT: never follow a link.
         .open(path)
         .map_err(|error| format!("open protected Runtime snapshot: {error}"))
 }
@@ -972,14 +973,56 @@ fn verify_path_binding(
 }
 
 #[cfg(windows)]
+fn windows_file_identity(file: &File) -> Result<(u32, u64), String> {
+    use std::os::windows::io::AsRawHandle;
+
+    // Win32 BY_HANDLE_FILE_INFORMATION, including its DWORD-aligned FILETIMEs.
+    #[repr(C)]
+    struct Information {
+        attributes: u32,
+        creation_time: [u32; 2],
+        access_time: [u32; 2],
+        write_time: [u32; 2],
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(
+            handle: *mut std::ffi::c_void,
+            information: *mut Information,
+        ) -> i32;
+    }
+    let mut information = std::mem::MaybeUninit::<Information>::uninit();
+    // SAFETY: File owns a live handle; Win32 writes the complete C-layout record on success.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) } == 0 {
+        return Err(format!(
+            "inspect Runtime file identity: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the successful call above initialized every field.
+    let information = unsafe { information.assume_init() };
+    if has_windows_reparse_attribute(information.attributes) {
+        return Err("Runtime snapshot identity is a reparse point".into());
+    }
+    Ok((
+        information.volume_serial,
+        (u64::from(information.index_high) << 32) | u64::from(information.index_low),
+    ))
+}
+
+#[cfg(windows)]
 fn verify_path_binding(
     file: &File,
     path: &Path,
     expected: &str,
     expected_len: u64,
 ) -> Result<(), String> {
-    use std::os::windows::fs::MetadataExt;
-
     let held = file
         .metadata()
         .map_err(|error| format!("inspect held Runtime snapshot: {error}"))?;
@@ -989,10 +1032,10 @@ fn verify_path_binding(
         || !path_metadata.is_file()
         || held.len() != expected_len
         || path_metadata.len() != expected_len
-        || held.volume_serial_number().is_none()
-        || held.volume_serial_number() != path_metadata.volume_serial_number()
-        || held.file_index().is_none()
-        || held.file_index() != path_metadata.file_index()
+        || {
+            let path_file = open_locked_snapshot(path)?;
+            windows_file_identity(file)? != windows_file_identity(&path_file)?
+        }
     {
         return Err("Runtime snapshot path no longer names the verified file".into());
     }
@@ -1096,6 +1139,34 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_snapshot_identity_binds_the_file_not_only_its_bytes() {
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "codex-agent-windows-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let original = root.join("original");
+        let alias = root.join("alias");
+        let different = root.join("different");
+        fs::write(&original, b"same").unwrap();
+        fs::write(&different, b"same").unwrap();
+        fs::hard_link(&original, &alias).unwrap();
+        let held = open_locked_snapshot(&original).unwrap();
+        let digest = sha256_identity(b"same");
+        verify_path_binding(&held, &original, &digest, 4).unwrap();
+        verify_path_binding(&held, &alias, &digest, 4).unwrap();
+        assert!(verify_path_binding(&held, &different, &digest, 4).is_err());
+        assert!(verify_path_binding(&held, &root.join("missing"), &digest, 4).is_err());
+        drop(held);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

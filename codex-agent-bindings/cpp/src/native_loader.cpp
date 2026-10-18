@@ -396,8 +396,8 @@ public:
     std::string finish() {
         const auto bits = total_ * 8;
         block_[used_++] = 0x80;
-        if (used_ > 56) { std::fill(block_.begin() + static_cast<std::ptrdiff_t>(used_), block_.end(), 0); transform(); used_ = 0; }
-        std::fill(block_.begin() + static_cast<std::ptrdiff_t>(used_), block_.begin() + 56, 0);
+        if (used_ > 56) { std::fill(block_.begin() + static_cast<std::ptrdiff_t>(used_), block_.end(), uint8_t{0}); transform(); used_ = 0; }
+        std::fill(block_.begin() + static_cast<std::ptrdiff_t>(used_), block_.begin() + 56, uint8_t{0});
         for (std::size_t index = 0; index < 8; ++index) block_[63 - index] = static_cast<std::uint8_t>(bits >> (index * 8));
         transform();
         static constexpr char hex[] = "0123456789abcdef";

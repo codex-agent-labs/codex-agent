@@ -778,6 +778,13 @@ def verified_native_consumer_authorization(evidence: Path, sdks: Path, target: s
             raise ValueError("Native consumer authorization or SDK policy changed during use")
 
 
+class _LfEvidencePath(type(Path())):
+    """Only fresh consumer reports use this writer; imported files stay untouched."""
+
+    def write_text(self, data, encoding=None, errors=None, newline=None):
+        return super().write_text(data, encoding=encoding, errors=errors, newline="\n")
+
+
 def consume_authorized_native(repository, packages, sdks, output, sdk_version, language, *,
                               runtime_authorization, expected_classifier, offline=False,
                               package_negative_evidence=None, plan=None):
@@ -874,6 +881,9 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
                 raise ValueError("Native consumer must authenticate exactly one external-positive invocation per library")
 
     namespace["_consume"] = authorized_consumer
+    # Write canonical bytes once, before any receipt is issued, even on Windows.
+    # Do not edit the shared package producer or normalize authenticated inputs.
+    output = _LfEvidencePath(output)
     # Keep the original output guards and exception cleanup around authorization too.
     if all_languages:
         native_wrappers.invalidate_output(package_negative_evidence)

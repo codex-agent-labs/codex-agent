@@ -1,5 +1,6 @@
 """Local authorization/wiring checks, not genuine product acceptance evidence."""
 
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -97,6 +98,27 @@ class NativeConsumerAuthorizationTest(TestCase):
         self.assertEqual(before, regular_file_inventory(self.packages))
         for name, original in functions.items():
             self.assertIs(getattr(native_wrappers, name), original)
+
+    def test_fresh_reports_are_written_as_lf_without_post_write_normalization(self):
+        original = Path.write_text
+        writes = []
+
+        def windows_text(path, data, encoding=None, errors=None, newline=None):
+            writes.append((path, newline))
+            return original(path, data, encoding=encoding, errors=errors,
+                            newline="\r\n" if newline is None else newline)
+
+        def consumer(repository, packages, sdks, plan, output, version, **kwargs):
+            library = require_matching_native(packages, "installed.dylib",
+                sdks / "macos-arm64/lib/libcodex_agent.dylib", "unit fixture")
+            run("external-positive", library)
+            output.mkdir()
+            (output / "host.tsv").write_text("test\tstatus\nconsumer\tpassed\n", encoding="utf-8")
+
+        with patch.object(Path, "write_text", windows_text):
+            self.consume(consumer, lambda *args, **kwargs: None)
+        self.assertEqual([(self.output / "host.tsv", "\n")], writes)
+        self.assertEqual(b"test\tstatus\nconsumer\tpassed\n", (self.output / "host.tsv").read_bytes())
 
     def test_signature_equality_and_lifetime_failures_clear_output_without_modifying_originals(self):
         for failure in ("signature", "library", "execution", "lifetime"):

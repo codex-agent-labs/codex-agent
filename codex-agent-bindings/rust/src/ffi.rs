@@ -1,6 +1,5 @@
 use libloading::Library;
 use std::ffi::c_void;
-#[cfg(unix)]
 use std::mem::ManuallyDrop;
 use std::path::Path;
 
@@ -460,8 +459,16 @@ pub(crate) unsafe fn load_value_symbol<T: Copy>(
     api: &Api,
     name: &'static [u8],
 ) -> Result<T, String> {
+    #[cfg(unix)]
+    let library = &api._library;
+    #[cfg(windows)]
+    // SAFETY: Api owns this authenticated LoadLibrary handle until process exit.
+    // This borrowed view must never decrement its reference count.
+    let library = ManuallyDrop::new(unsafe {
+        libloading::os::windows::Library::from_raw(api.library_handle as isize)
+    });
     // SAFETY: callers bind each stable public name to its reviewed codex_agent.h signature.
-    match unsafe { api._library.get::<T>(name) } {
+    match unsafe { library.get::<T>(name) } {
         Ok(symbol) => Ok(*symbol),
         Err(error) => Err(format!(
             "missing C SDK value symbol {}: {error}",
