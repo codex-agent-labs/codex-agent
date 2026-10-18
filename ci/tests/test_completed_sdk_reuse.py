@@ -849,8 +849,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
         self.check_v3_issuer_original_member('python', 'package', 'desktop', collected=True,
                                             collected_wave=4, receipt_hint=True)
 
+    def test_historical_qualification_keeps_issuer_identity_and_current_consumer_gate(self):
+        self.check_v3_issuer_original_member('dart', 'package', 'desktop', collected=True,
+            collected_wave=4, receipt_hint=True, reused=True, issuer_revision='d' * 40)
+
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
-                                      collected_wave=9, receipt_hint=False):
+                                      collected_wave=9, receipt_hint=False, issuer_revision='a' * 40):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -959,10 +963,11 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     self.assertEqual(pins['sourceCommit'], arguments['revision'])
                     return previous
                 self.assertEqual(spec['parent'], pins)
+                self.assertEqual('a' * 40, arguments['revision'])
                 return {'proof': parent}
             fetched = stack.enter_context(patch.object(native, '_fetch_completed_sdk', side_effect=native_completion))
             stack.enter_context(patch.object(completed, '_base', return_value=self.base))
-            stack.enter_context(patch.object(completed, 'validate_current'))
+            current = stack.enter_context(patch.object(completed, 'validate_current'))
             stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
             stack.enter_context(patch.object(completed, '_contract_files'))
             stack.enter_context(patch.object(completed, 'observe_source', side_effect=lambda item, token, **kw:
@@ -1027,9 +1032,12 @@ class CompletedSdkControlsTest(unittest.TestCase):
                             completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
                         self.assertFalse((work / 'completion.json').exists())
                     else:
-                        report = completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
+                        report = completed.issue_extension(spec, work, root=fixture.repository, revision=issuer_revision, frozen={}, token='synthetic')
                         result = json.loads((work / 'completion.json').read_bytes())
                         self.assertEqual(3, result['schemaVersion'])
+                        self.assertEqual(issuer_revision, result['issuerCommit'])
+                        self.assertEqual('a' * 40, current.call_args.kwargs['revision'])
+                        self.assertEqual('a' * 40, current.call_args.kwargs['original_revision'])
                         self.assertEqual([{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}], result['members'])
                         self.assertEqual(len(contract) + (0 if collected else len(source)), report['downloadedOriginalBytes'])
                         self.assertEqual(700 if collected else 0, report['sourceControlRangeBytes'])
@@ -1040,9 +1048,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         with patch.object(native, '_validate_completed_sdk', return_value={}), \
                                 patch.object(completed, '_base', return_value=self.base):
                             def validate(value):
-                                return completed.validate_extension(spec, value, {'signer_commit': 'a' * 40},
-                                    root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
+                                return completed.validate_extension(spec, value, {'signer_commit': issuer_revision},
+                                    root=fixture.repository, revision=issuer_revision, frozen={}, token='synthetic')
                             self.assertEqual(spec, validate(result)['extension']['spec'])
+                            self.assertEqual(issuer_revision, current.call_args.kwargs['revision'])
+                            with patch.object(completed, 'validate_current',
+                                    side_effect=QualificationIncompatible('current owning inputs changed')):
+                                with self.assertRaisesRegex(QualificationIncompatible, 'current owning inputs'):
+                                    validate(result)
                             if embedded:
                                 changed = deepcopy(result)
                                 changed['members'][0]['bytes'] += 1

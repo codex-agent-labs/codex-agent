@@ -502,8 +502,11 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
     from runtime_reference_archive import open_reference_archive, copy_reference_member
     started = time.perf_counter()
     originals = _spec(spec)
+    # Qualify the pinned successful producer's bytes, not the issuer's newer
+    # product source. validate_extension still gates each consumer's inputs.
+    inventory_revision = _inventory_revision(spec, root, token=token)
     sdk = native._fetch_completed_sdk(work / "parent", spec["parent"],
-        root=root, revision=revision, frozen=frozen, token=token)
+        root=root, revision=inventory_revision, frozen=frozen, token=token)
     if sha256_bytes(canonical_json_bytes(sdk["proof"])) != spec["parentProofSha256"]:
         raise ValueError("Incremental issuer parent differs from its fixed subject")
 
@@ -619,15 +622,14 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
             controls = {row["relativePath"]: load_canonical_json_bytes(retained(row["relativePath"]))
                         for row in spec["controls"]}
         request, phases, receipts = validate_controls(spec, controls, _base(frozen, sdk))
-        validate_current(request, phases, receipts, root=root, revision=revision,
-                         original_revision=_inventory_revision(spec, root, token=token))
+        validate_current(request, phases, receipts, root=root, revision=inventory_revision,
+                         original_revision=inventory_revision)
         qualified = {}
         if "reuseCompletion" in spec:
             prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
                 root=root, revision=spec["reuseCompletion"]["sourceCommit"], frozen=frozen, token=token)
-            # Authenticate historical bytes at their pinned source. validate_current
-            # above still binds all selected phases to this issuer's current source;
-            # only exact matching keys/receipts/objects inherit body qualification.
+            # Both subjects bind their original product source; only exact
+            # matching keys/receipts/objects inherit body qualification.
             qualified = _qualified_members(spec, prior, phases, receipts)
         available = _records(request["availableObjects"], "Incremental original objects")
         members, locators, transferred, reused_bytes = [], [], 0, 0
