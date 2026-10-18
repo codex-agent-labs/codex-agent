@@ -106,7 +106,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
             for name in ('product-validation.yml', 'contract-validation.yml')]
         action = (Path(__file__).resolve().parents[2] /
                   '.github/actions/capture-sdk-tooling/action.yml').read_text()
-        code = textwrap.dedent(action.split("python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0])
+        capture_step = action.split('    - id: capture\n', 1)[1]
+        code = textwrap.dedent(capture_step.split("python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0])
         java_home = self.root / 'java-home'
         (java_home / 'bin').mkdir(parents=True)
         (java_home / 'bin/java').write_bytes(self.fixture.java.read_bytes())

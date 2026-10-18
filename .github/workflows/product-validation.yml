@@ -4184,6 +4184,7 @@ jobs:
 
   sdk-native-validation:
     name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}
+    environment: product-read
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-prepare, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
@@ -4223,6 +4224,9 @@ jobs:
       - id: tooling
         uses: ./.github/actions/capture-sdk-tooling
         with:
+          read-app-id: ${{ vars.PRODUCT_READ_APP_ID }}
+          read-installation-id: ${{ vars.PRODUCT_READ_INSTALLATION_ID }}
+          read-app-private-key: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
@@ -4278,6 +4282,7 @@ jobs:
 
   sdk-collect-7:
     name: sdk-collect-7
+    environment: product-read
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
@@ -4314,6 +4319,9 @@ jobs:
       - id: tooling
         uses: ./.github/actions/capture-sdk-tooling
         with:
+          read-app-id: ${{ vars.PRODUCT_READ_APP_ID }}
+          read-installation-id: ${{ vars.PRODUCT_READ_INSTALLATION_ID }}
+          read-app-private-key: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
           artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}

@@ -38,7 +38,8 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
 from runtime_reference_transport import measured, count
-from reuse import api_json, download_artifact, download_artifact_to_file, github_output, paginated_items, run_matches_pr
+from reuse import github_output, run_matches_pr
+from runtime_reference_transport import api_json, download_artifact, download_artifact_to_file, paginated_items
 
 
 def _primary_rate_limit_delay(error):
@@ -5956,7 +5957,8 @@ def _worker_process_environment(root, producer, destination, environ):
                         "PYTHONSAFEPATH": "1", "PYTHONPATH": os.pathsep.join((str(root), str(root / "ci"))),
                         "PYTHONPYCACHEPREFIX": str(destination / "python-bytecode"),
                         "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"})
-    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP"):
+    from runtime_reference_transport import ENVIRONMENT as read_app_environment
+    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP", *read_app_environment):
         environment.pop(name, None)
     return environment
 

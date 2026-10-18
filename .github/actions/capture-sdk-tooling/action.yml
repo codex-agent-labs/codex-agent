@@ -1,6 +1,15 @@
 name: Capture exact signed SDK validation tooling
 description: Reauthenticate tooling under the consumer's Git policy and installed Java, importing missing signed-original Git objects without checkout. No build, signing or JAR execution.
 inputs:
+  read-app-id:
+    default: ''
+    description: Optional protected read-only App identity; never artifact authority.
+  read-installation-id:
+    default: ''
+    description: Matching dedicated single-repository App installation.
+  read-app-private-key:
+    default: ''
+    description: Protected product-read environment credential, not a product input.
   artifact-id:
     required: true
     description: Caller-selected exact original tooling upload ID.
@@ -38,6 +47,20 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Prepare protected renewable read credentials
+      if: inputs.read-app-id != '' || inputs.read-installation-id != '' || inputs.read-app-private-key != ''
+      shell: bash
+      env:
+        READ_APP_ID: ${{ inputs.read-app-id }}
+        READ_INSTALLATION_ID: ${{ inputs.read-installation-id }}
+        READ_APP_PRIVATE_KEY: ${{ inputs.read-app-private-key }}
+      run: |
+        python3 -B - <<'PY'
+        import sys
+        sys.path.insert(0, 'ci')
+        from runtime_reference_transport import configure_read_app
+        configure_read_app()
+        PY
     - id: capture
       name: Capture caller-selected tooling using provisioned Java
       shell: bash

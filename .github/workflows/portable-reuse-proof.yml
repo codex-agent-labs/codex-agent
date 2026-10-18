@@ -9,6 +9,81 @@ permissions:
   actions: read
 
 jobs:
+  github-read-app-proof:
+    if: >-
+      github.event.label.name == 'ci:github-read-app-proof' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    environment: product-read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-26, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify real scoped App reads and renewal without product builds
+        shell: bash
+        env:
+          READ_APP_ID: ${{ vars.PRODUCT_READ_APP_ID }}
+          READ_INSTALLATION_ID: ${{ vars.PRODUCT_READ_INSTALLATION_ID }}
+          READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, pathlib, sys, time, urllib.request
+          sys.path.insert(0, 'ci')
+          import runtime_reference_transport as auth
+          source = auth.subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert source == os.environ['EXPECTED_SOURCE']
+          auth.configure_read_app()
+          url = 'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/12125719858'
+          observations = []
+          counters = {}
+          scope = auth._MEASUREMENTS.set((counters,))
+          started = time.perf_counter()
+          try:
+              for iteration in range(2):
+                  token = auth.token_for(url, '')
+                  for _ in range(1000):
+                      assert auth.token_for(url, '') == token
+                  request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      artifact = json.load(response)
+                      assert artifact['id'] == 12125719858 and not artifact['expired']
+                      quota = {name: int(response.headers['x-ratelimit-' + name]) for name in ('limit', 'remaining', 'used')}
+                      assert quota['limit'] >= 5000
+                      observations.append(quota)
+                  if iteration == 0:
+                      # Exercise the actual renewal branch without occupying a runner for an hour.
+                      auth._cached = (auth._cached[0], token, time.time() + 299)
+              assert counters['githubAppTokenRenewals'] == 2
+          finally:
+              auth._MEASUREMENTS.reset(scope)
+          report = dict(runner=os.environ['RUNNER_OS'], runId=os.environ['GITHUB_RUN_ID'],
+              source=source, workflowMerge=os.environ['GITHUB_SHA'], elapsedSeconds=time.perf_counter()-started,
+              quota=observations, counters=counters, forcedExpiryBoundary=True,
+              actualApiReads=2, productBuilds=0, artifactBodyDownloads=0)
+          print(json.dumps(report, sort_keys=True))
+          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'github-read-app-proof'
+          destination.mkdir()
+          (destination / 'result.json').write_text(json.dumps(report, sort_keys=True) + '\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: github-read-app-proof-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/github-read-app-proof/result.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+
   native-validation-diagnostics:
     if: >-
       (github.event.label.name == 'ci:native-validation-diagnostics' ||
