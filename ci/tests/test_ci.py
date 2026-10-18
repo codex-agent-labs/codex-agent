@@ -122,9 +122,11 @@ class RunLaneContractTest(unittest.TestCase):
             caller,
         )
         self.assertEqual(1, len(references))
-        reviewed = references[0]
-        self.assertIn(f"trustedWorkflowSha: {reviewed}", caller)
-        self.assertRegex(references[0], r"^[0-9a-f]{40}$")
+        self.assertEqual("reuse-authority", references[0])
+        product = (CI_ROOT.parent / ".github/workflows/product-validation.yml").read_text()
+        self.assertIn("uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority", product)
+        self.assertIn("publisher_sha: ${{ steps.publication.outputs.publisher-sha }}", product)
+        self.assertIn("trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}", product)
         self.assertIn("workflow_dispatch:", caller)
         for value in ("baseCommit", "validationCommit", "validationTree"):
             self.assertIn(f"      {value}:\n", caller)
@@ -142,9 +144,9 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("'SDK custody / complete' ||", gate)
         self.assertIn("'Contract record / complete' ||", gate)
         self.assertIn("'SDK authority / complete' ||", gate)
-        self.assertIn("'SDK Maven sidecars / complete' || 'CI / merge-gate'", gate)
+        self.assertIn("'SDK Runtime trust / complete' || 'CI / merge-gate'", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars]", gate)
+        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = success', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
         product_caller = caller.split("\n  product-validation:\n", 1)[1]
@@ -335,7 +337,8 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("-PcodexAgent.phase=metadata", job)
         self.assertIn('-PcodexAgent.contractValidationStageRoot="$PWD/build/contract-handoff/validation/stage"', job)
         self.assertNotIn("ssh-keygen", job)
-        self.assertNotIn("secrets.", job)
+        self.assertEqual(["REUSE_AUTHORITY_READ_TOKEN"], re.findall(r"secrets\.([A-Z_]+)", job))
+        self.assertIn("authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}", job)
         self.assertEqual(1, job.count("ci.products.contract_attestation capture-closure"))
         self.assertNotIn("ci.products.contract_attestation build", job)
         self.assertIn("for phase in binary package validation metadata; do", job)
@@ -490,17 +493,12 @@ class RunLaneContractTest(unittest.TestCase):
             self.assertLess(
                 package.index("components: rustfmt,clippy"), package.index(command)
             )
-        self.assertEqual(
-            [
-                'CODEX_AGENT_LIBRARY="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" --all-targets --release --locked --offline',
-                'CODEX_AGENT_REAL_SDK="$sdk" cargo test --manifest-path "$binding/rust/Cargo.toml" \\',
-            ],
-            [
-                line.strip()
-                for line in package.splitlines()
-                if 'cargo test --manifest-path "$binding/rust/Cargo.toml"' in line
-            ],
-        )
+        self.assertIn("python3 -B -m ci.products.sdk_package '${{ matrix.language }}-capabilities'", package)
+        self.assertNotIn('cargo test --manifest-path "$binding/rust/Cargo.toml"', package)
+        producer = (CI_ROOT / "products/sdk_package.py").read_text()
+        self.assertIn('"--include-ignored"', producer)
+        self.assertIn('["--doc"]', producer)
+        self.assertIn('["--lib", "--test", "enum_parity"]', producer)
 
     def test_native_wrapper_dart_behavior_runs_declared_sdk_floor(self) -> None:
         root = CI_ROOT.parent
@@ -536,32 +534,13 @@ class RunLaneContractTest(unittest.TestCase):
         package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
             "\n  native-wrapper-package-validation:", 1
         )[0]
-        lines = [line.strip() for line in package.splitlines()]
-        project = (
-            'dotnet run --project '
-            '"$binding/csharp/tests/CodexAgent.Tests/CodexAgent.Tests.csproj" \\'
-        )
-        arguments = [
-            (index, line)
-            for index, line in enumerate(lines)
-            if line.startswith("--configuration Release --no-build")
-        ]
-
-        self.assertEqual(2, lines.count(project))
-        self.assertEqual(
-            [
-                '--configuration Release --no-build -- --real-mcp-values "$sdk"',
-                "--configuration Release --no-build",
-            ],
-            [line for _, line in arguments],
-        )
-        self.assertLess(
-            arguments[-1][0],
-            lines.index(
-                'cp "$csharp/artifacts"/{compiler-evidence.tsv,executed-tests.tsv} '
-                '"$evidence/"'
-            ),
-        )
+        self.assertIn('options+=(--dotnet "$(command -v dotnet)")', package)
+        self.assertLess(package.index("-m ci.products.sdk_package"),
+                        package.index('ln "$raw/"{compiler-evidence.tsv,executed-tests.tsv,test-program}'))
+        producer = (CI_ROOT.parent / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py").read_text()
+        for proof in ("--real-mcp-values", "native-values-execution.json", "complete-suite-execution.json",
+                      "loader-security-execution.json"):
+            self.assertIn(proof, producer)
 
     def test_native_wrapper_validation_stages_once_fans_out_and_collects(self) -> None:
         workflow = (
@@ -607,15 +586,23 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("path: build/sdk-native-prepared-receiver/upload", stage)
         self.assertIn("retention-days: 1", stage)
         versioned_sdk_root = "native-wrapper-c-abi-sdks/${{ inputs.validationTree }}"
-        self.assertEqual(3, workflow.count(versioned_sdk_root))
+        self.assertEqual(6, workflow.count(versioned_sdk_root))
         self.assertNotIn("native-wrapper-c-abi-sdks/linux-x64", workflow)
 
         self.assertIn("needs: native-wrapper-sdk-stage", language)
         self.assertIn("fail-fast: false", language)
         self.assertIn(
-            "name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}",
+            "name: codex-agent-native-wrapper-language-inputs-${{ inputs.validationTree }}",
             language,
         )
+        self.assertNotIn("name: codex-agent-native-wrapper-sdk-stage-", language)
+        self.assertIn("Forward only inputs consumed by Linux language checks", stage)
+        self.assertIn("capture_runtime_authorization", language)
+        self.assertIn("vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION", language)
+        self.assertIn('--runtime-authorization "$PWD/build/native-wrapper-authorization"', language)
+        self.assertLess(language.index("capture_runtime_authorization"), language.index("-m ci.products.sdk_package"))
+        self.assertIn("build/native-wrapper-raw", language)
+        self.assertIn("name: codex-agent-native-wrapper-raw-${{ matrix.language }}-${{ inputs.validationTree }}", language)
         self.assertEqual(
             ["python", "csharp", "rust", "cpp", "dart"],
             [
@@ -665,6 +652,13 @@ class RunLaneContractTest(unittest.TestCase):
         )
         self.assertIn("retention-days: 1", package)
         self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', consumers)
+        self.assertIn("capture_runtime_authorization", consumers)
+        self.assertIn("-m ci.products.sdk_package consume-native", consumers)
+        self.assertNotIn("python ci/native_wrappers.py consume", consumers)
+        self.assertIn('--plan "$PWD/build/ci/plan/impact-plan.json"', consumers)
+        self.assertIn('--package-negative-evidence "$PWD/build/native-wrapper-negative/$TARGET"', consumers)
+        self.assertIn("build/native-wrapper-negative", consumers)
+        self.assertIn("build/native-wrapper-authorization", consumers)
 
         self.assertIn("if: always()", assembly)
         self.assertIn(
@@ -732,7 +726,7 @@ class RunLaneContractTest(unittest.TestCase):
             self.assertIn(condition, caller)
         for field, source in (
             ("planId", "needs.plan.outputs.plan_id"),
-            ("trustedWorkflowSha", "inputs.trustedWorkflowSha"),
+            ("trustedWorkflowSha", "needs.plan.outputs.publisher_sha"),
             ("stateArtifactId", "needs.sdk-csharp-binary-result.outputs.artifact_id"),
             ("stateArtifactSha256", "needs.sdk-csharp-binary-result.outputs.artifact_digest"),
             ("stateWave", "needs.sdk-csharp-binary-result.outputs.state_wave"),

@@ -780,7 +780,7 @@ def verified_native_consumer_authorization(evidence: Path, sdks: Path, target: s
 
 def consume_authorized_native(repository, packages, sdks, output, sdk_version, language, *,
                               runtime_authorization, expected_classifier, offline=False,
-                              package_negative_evidence=None):
+                              package_negative_evidence=None, plan=None):
     """Reuse the unchanged installed consumer with one additional staging seam.
 
     A private function namespace keeps the package-producing module and its
@@ -788,6 +788,19 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
     execute; each installed loader still verifies its own signed sidecars.
     """
     from ci import native_wrappers
+    all_languages = language is None
+    if all_languages != (plan is not None):
+        raise ValueError("All-language consumers require exactly one original lane plan")
+    if all_languages:
+        if package_negative_evidence is None or native_wrappers.host_classifier() != expected_classifier:
+            raise ValueError("All-language consumers require matching host and C++ negative evidence")
+        for destination in (output, package_negative_evidence):
+            if (destination.resolve() == (repository / "build").resolve()
+                    or not destination.resolve().is_relative_to((repository / "build").resolve())
+                    or any(path.is_symlink() for path in (destination, *destination.parents))):
+                raise ValueError("All-language consumer output must be a private build directory")
+            _require_capability_output_separate(destination, [packages, sdks, plan])
+        _require_capability_output_separate(output, package_negative_evidence)
     for destination in (output, package_negative_evidence):
         if destination is not None:
             _require_capability_output_separate(destination, Path(runtime_authorization))
@@ -807,7 +820,11 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
 
         def matching_native(root, pattern, sdk_library, label):
             native = native_wrappers.require_matching_native(root, pattern, sdk_library, label)
-            if matches:
+            if all_languages:
+                labels = ("Python", "C#", "Rust", "C++", "Dart")
+                if len(matches) >= len(labels) or label != labels[len(matches)]:
+                    raise ValueError("All-language consumer library order differs from the original suite")
+            elif matches:
                 raise ValueError("Native consumer must select exactly one installed library")
             matches.append(native)
             return native
@@ -816,46 +833,59 @@ def consume_authorized_native(repository, packages, sdks, output, sdk_version, l
             external_calls = []
 
             def run(*command, **options):
-                if language == "csharp" and command[:2] == ("dotnet", "restore"):
+                if (all_languages or language == "csharp") and command[:2] == ("dotnet", "restore"):
                     # .NET 8 names this switch --no-cache; preserve the original
                     # local-only source, isolated package cache and forced restore.
                     command = tuple("--no-cache" if value == "--no-http-cache" else value
                                     for value in command)
-                if language == "rust" and "codex-agent-rust-lifecycle-smoke" in command:
-                    if (len(matches) != 1 or tuple(command[:-1]) != (
+                if (all_languages or language == "rust") and "codex-agent-rust-lifecycle-smoke" in command:
+                    if (len(matches) != (3 if all_languages else 1) or tuple(command[:-1]) != (
                             "cargo", "run", "--manifest-path", options["cwd"] / "rust-consumer/Cargo.toml",
                             "--release", "--locked", "--offline", "--bin",
                             "codex-agent-rust-lifecycle-smoke", "--")):
                         raise ValueError("Rust fixture consumer invocation differs from the fixed test path")
-                    return run_rust_fixture_consumer(matches[0].parents[2],
+                    return run_rust_fixture_consumer(matches[-1].parents[2],
                         options["cwd"] / "rust-consumer/src/bin/lifecycle_smoke.rs",
                         Path(command[-1]), environ=options["env"])
-                if not matches or not any(str(value) == str(matches[0]) for value in command):
+                if not matches or not any(str(value) == str(matches[-1]) for value in command):
                     return native_wrappers.run(*command, **options)
                 # Only the explicit external-positive invocation sees sidecars.
                 # Package-negative fixtures and deterministic evidence never copy them.
-                sidecar = matches[0].with_name(matches[0].name + ".evidence")
+                if matches[-1] in external_calls:
+                    raise ValueError("Native consumer repeated an external-positive invocation")
+                sidecar = matches[-1].with_name(matches[-1].name + ".evidence")
                 inventory = regular_file_inventory(evidence)
                 publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
                 try:
                     result = native_wrappers.run(*command, **options)
                     if regular_file_inventory(sidecar) != inventory:
                         raise ValueError("Installed consumer changed its Runtime authorization")
-                    external_calls.append(True)
+                    external_calls.append(matches[-1])
                     return result
                 finally:
                     native_wrappers.invalidate_output(sidecar)
 
             namespace.update(require_matching_native=matching_native, run=run)
+            if all_languages:
+                kwargs["package_negative_evidence"] = package_negative_evidence
+                kwargs["offline"] = offline
             original_consumer(*args, **kwargs)
-            if len(matches) != 1 or len(external_calls) != 1:
-                raise ValueError("Native consumer must authenticate exactly one external-positive invocation")
+            if len(matches) != (5 if all_languages else 1) or external_calls != matches:
+                raise ValueError("Native consumer must authenticate exactly one external-positive invocation per library")
 
     namespace["_consume"] = authorized_consumer
     # Keep the original output guards and exception cleanup around authorization too.
-    bind("consume_language")(repository, packages, sdks, output, sdk_version, language,
-        expected_classifier=expected_classifier, offline=offline,
-        package_negative_evidence=package_negative_evidence)
+    if all_languages:
+        native_wrappers.invalidate_output(package_negative_evidence)
+        try:
+            bind("consume")(repository, packages, sdks, plan, output, sdk_version)
+        except Exception:
+            native_wrappers.invalidate_output(package_negative_evidence)
+            raise
+    else:
+        bind("consume_language")(repository, packages, sdks, output, sdk_version, language,
+            expected_classifier=expected_classifier, offline=offline,
+            package_negative_evidence=package_negative_evidence)
 
 
 def run_rust_fixture_consumer(package: Path, program: Path, fixture: Path, *, environ):
@@ -1213,7 +1243,9 @@ def main(argv: list[str] | None = None) -> int:
     consumer = commands.add_parser("consume-native", allow_abbrev=False)
     for name in ("repository", "packages", "sdks", "output", "sdk-version-file", "runtime-authorization"):
         consumer.add_argument(f"--{name}", type=Path, required=True)
-    consumer.add_argument("--language", choices=NATIVE_BINDINGS, required=True)
+    consumer_scope = consumer.add_mutually_exclusive_group(required=True)
+    consumer_scope.add_argument("--language", choices=NATIVE_BINDINGS)
+    consumer_scope.add_argument("--plan", type=Path)
     consumer.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
     consumer.add_argument("--offline", action="store_true")
     consumer.add_argument("--package-negative-evidence", type=Path)
@@ -1252,7 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
         consume_authorized_native(args.repository.resolve(), args.packages.resolve(), args.sdks,
             args.output.absolute(), require_sdk_version_file(args.sdk_version_file.resolve()), args.language,
             runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier,
-            offline=args.offline, package_negative_evidence=args.package_negative_evidence)
+            offline=args.offline, package_negative_evidence=args.package_negative_evidence, plan=args.plan)
         return 0
     if args.command == "native-metadata":
         sys.stdout.buffer.write(canonical_json_bytes(native_metadata_content(args.contents, args.package_receipt, args.component)))

@@ -165,3 +165,54 @@ class NativeConsumerAuthorizationTest(TestCase):
             "--packages", self.packages / "cache", "--configfile", self.packages / "NuGet.Config"),
             {"cwd": self.packages}), calls[0])
         self.assertEqual(("external-positive", self.installed), calls[1][0])
+
+    def test_all_language_plan_reuses_one_authorization_and_keeps_negative_output(self):
+        build = self.repository / "build"
+        build.mkdir()
+        output, negatives, plan = build / "host", build / "negative", build / "plan.json"
+        plan.write_text("fixture plan, no lane acceptance")
+        for name in ("Python", "C#", "Rust", "C++", "Dart"):
+            path = self.packages / name / "installed.dylib"
+            path.parent.mkdir()
+            path.write_bytes(self.library.read_bytes())
+        repeated = []
+
+        def consumer(repository, packages, sdks, original_plan, destination, version, **kwargs):
+            assert original_plan == plan
+            assert kwargs["package_negative_evidence"] == negatives
+            for name in ("Python", "C#", "Rust", "C++", "Dart"):
+                library = require_matching_native(packages / name, "installed.dylib",
+                    sdks / "macos-arm64/lib/libcodex_agent.dylib", name)
+                run("external-positive", library)
+            if repeated:
+                run("external-positive", library)
+            negatives.mkdir()
+            (negatives / "unit-only").write_text("not genuine package-negative evidence")
+            destination.mkdir()
+            (destination / "unit-only").write_text("not a genuine lane receipt")
+
+        def execute(command, library):
+            sidecar = library.with_name(library.name + ".evidence")
+            self.assertEqual(regular_file_inventory(sidecar), regular_file_inventory(self.evidence / "sidecars"))
+
+        for reject in (False, True):
+            if reject:
+                repeated.append(True)
+            with patch.object(native_wrappers, "_consume", consumer), \
+                    patch.object(native_wrappers, "host_classifier", return_value="macos-arm64"), \
+                    patch.object(native_wrappers, "run", execute), \
+                    patch("ci.products.sdk_package.verified_native_consumer_authorization",
+                          wraps=verified_native_consumer_authorization) as authorization:
+                def invoke():
+                    consume_authorized_native(self.repository, self.packages, self.sdks, output, "0.8.0", None,
+                        runtime_authorization=self.evidence, expected_classifier="macos-arm64",
+                        package_negative_evidence=negatives, plan=plan)
+                if reject:
+                    with self.assertRaisesRegex(ValueError, "repeated an external-positive"):
+                        invoke()
+                else:
+                    invoke()
+                authorization.assert_called_once()
+                self.assertEqual(output.exists(), not reject)
+                self.assertEqual(negatives.exists(), not reject)
+                self.assertFalse(list(self.packages.rglob("*.evidence")))
