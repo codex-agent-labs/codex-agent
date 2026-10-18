@@ -483,6 +483,8 @@ jobs:
     uses: ./.github/workflows/reuse-qualification.yml
     with:
       completed-sdk: true
+    secrets:
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   warm:
     if: >-

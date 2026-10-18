@@ -102,6 +102,10 @@ class GitHubAppAuthTest(unittest.TestCase):
         self.assertIn('secrets.PRODUCT_READ_APP_PRIVATE_KEY', issuer)
         self.assertLess(issuer.index('configure_read_app()'), issuer.index("issue_completed_sdk(os.environ"))
         self.assertIn('GITHUB_TOKEN: ${{ github.token }}', issuer)
+        caller = (root / '.github/workflows/portable-reuse-proof.yml').read_text().split(
+            '  completion:\n', 1)[1].split('\n  warm:', 1)[0]
+        self.assertIn('PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}', caller)
+        self.assertNotIn('secrets: inherit', caller)
 
     def test_transport_reuses_existing_digest_and_redirect_checks(self):
         artifact = {'archive_download_url': self.url}
