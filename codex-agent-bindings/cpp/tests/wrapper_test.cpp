@@ -9,7 +9,34 @@
 
 using namespace std::chrono_literals;
 
+static void verify_subscription_close_ownership() {
+    int closes = 0;
+    {
+        codex_agent::StateSubscription<int> original([&] { ++closes; }, {});
+        auto moved = std::move(original);
+        original.close();
+        assert(closes == 0);
+        moved.close();
+        moved.close();
+        assert(closes == 1);
+    }
+    assert(closes == 1);
+    {
+        codex_agent::StateSubscription<int> original([&] { ++closes; }, {});
+        codex_agent::StateSubscription<int> destination([&] { ++closes; }, {});
+        destination = std::move(original);
+        assert(closes == 2);
+        original.close();
+        assert(closes == 2);
+        destination.close();
+        destination.close();
+        assert(closes == 3);
+    }
+    assert(closes == 3);
+}
+
 int main() {
+    verify_subscription_close_ownership();
     static_assert(std::is_move_constructible_v<codex_agent::Host>);
     static_assert(!std::is_copy_constructible_v<codex_agent::Host>);
     static_assert(std::is_move_constructible_v<codex_agent::Conversation>);

@@ -3077,12 +3077,12 @@ public:
     StateSubscription& operator=(const StateSubscription&) = delete;
 
     StateSubscription(StateSubscription&& other) noexcept
-        : close_(std::move(other.close_)), error_(std::move(other.error_)) {}
+        : close_(std::exchange(other.close_, {})), error_(std::move(other.error_)) {}
 
     StateSubscription& operator=(StateSubscription&& other) noexcept {
         if (this != &other) {
             close_noexcept();
-            close_ = std::move(other.close_);
+            close_ = std::exchange(other.close_, {});
             error_ = std::move(other.error_);
         }
         return *this;
@@ -3092,7 +3092,7 @@ public:
 
     void close() {
         if (close_) {
-            auto close = std::move(close_);
+            auto close = std::exchange(close_, {});
             close();
         }
     }
