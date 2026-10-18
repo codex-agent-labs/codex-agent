@@ -556,6 +556,11 @@ fn ordinary_enum_claims_match_canonical_compiler_and_header_evidence() {
 
     let evidence = value_behavior::verify_and_execute(&all_rows);
     assert_eq!(
+        evidence.compiler["rust-analyzer-host:006"],
+        "codex_agent::CodexHost::state,codex_agent::CodexHost::states",
+        "compiler evidence must retain both current and streamed Host state projections"
+    );
+    assert_eq!(
         evidence.tests.len(),
         556,
         "every claim executed exactly once"

@@ -2139,7 +2139,7 @@ pub fn verify_and_execute(rows: &[Vec<&str>]) -> Evidence {
             compiler_symbols
                 .entry((*id).to_owned())
                 .or_default()
-                .insert(symbols[0].to_owned());
+                .extend(symbols.iter().map(|symbol| (*symbol).to_owned()));
         }
         if row[0].contains("|kind=enum-entry|") {
             assert!(tests[0].starts_with("rust.enum."));

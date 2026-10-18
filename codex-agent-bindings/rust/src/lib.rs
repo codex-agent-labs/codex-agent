@@ -387,12 +387,58 @@ fn exact_external_runtime_path(requested: &Path) -> Result<PathBuf, CodexError> 
             requested.display()
         ))
     })?;
-    if canonical != requested {
+    let exact = canonical.as_os_str() == requested.as_os_str();
+    #[cfg(windows)]
+    let exact = exact || windows_canonical_runtime_spelling(
+        requested.as_os_str().as_encoded_bytes(),
+        canonical.as_os_str().as_encoded_bytes(),
+    );
+    if !exact {
         return Err(CodexError::load(
             "Codex Agent external Runtime path must already be canonical",
         ));
     }
     Ok(canonical)
+}
+
+#[cfg(any(windows, test))]
+fn windows_canonical_runtime_spelling(requested: &[u8], canonical: &[u8]) -> bool {
+    // canonicalize adds the Windows extended-length prefix. Accept only that
+    // representation change, never case, separator, dot-component or link changes.
+    canonical.strip_prefix(br"\\?\") == Some(requested)
+        || canonical.strip_prefix(br"\\?\UNC\")
+            .zip(requested.strip_prefix(br"\\"))
+            .is_some_and(|(canonical, requested)| canonical == requested)
+}
+
+#[cfg(test)]
+mod runtime_path_tests {
+    use super::*;
+
+    #[test]
+    fn windows_canonical_prefix_does_not_normalize_the_requested_path() {
+        for (requested, canonical) in [
+            (br"C:\sdk\codex_agent.dll".as_slice(), br"\\?\C:\sdk\codex_agent.dll".as_slice()),
+            (br"\\server\share\sdk\codex_agent.dll", br"\\?\UNC\server\share\sdk\codex_agent.dll"),
+        ] {
+            assert!(windows_canonical_runtime_spelling(requested, canonical));
+        }
+        for requested in [
+            br"C:\sdk\nested\..\codex_agent.dll".as_slice(),
+            br"C:\sdk\.\codex_agent.dll",
+            br"C:/sdk/codex_agent.dll",
+            br"C:\SDK\codex_agent.dll",
+            br"C:\sdk\\codex_agent.dll",
+            br"C:\sdk\codex_agent.dll ",
+            br"\\.\C:\sdk\codex_agent.dll",
+        ] {
+            assert!(!windows_canonical_runtime_spelling(requested, br"\\?\C:\sdk\codex_agent.dll"));
+        }
+        assert!(!windows_canonical_runtime_spelling(
+            br"\\server\share\sdk\..\codex_agent.dll",
+            br"\\?\UNC\server\share\codex_agent.dll",
+        ));
+    }
 }
 
 fn external_evidence_directory(path: &Path) -> Result<PathBuf, CodexError> {
