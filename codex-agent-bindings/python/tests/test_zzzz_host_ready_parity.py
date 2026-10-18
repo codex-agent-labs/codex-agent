@@ -379,9 +379,12 @@ async def _exercise(capability: str) -> set[str]:
         await cancelled.aclose()
         with unittest.TestCase().assertRaises(StopAsyncIteration):
             await anext(cancelled)
+        terminal_size = cancelled.queue.qsize()
         fake.emit_after_cancel()
         await asyncio.sleep(0)
-        unittest.TestCase().assertTrue(cancelled.queue.empty())
+        unittest.TestCase().assertEqual(cancelled.queue.qsize(), terminal_size)
+        with unittest.TestCase().assertRaises(StopAsyncIteration):
+            await anext(cancelled)
         calls = set(fake.calls)
         await host.aclose()
         with unittest.TestCase().assertRaises(ClosedError):

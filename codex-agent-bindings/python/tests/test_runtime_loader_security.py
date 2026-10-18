@@ -23,6 +23,7 @@ NATIVE_LOADER_TESTS = ("test_signed_external_runtime_loads_and_tampering_fails",
                        "test_noncanonical_native_identity_fails")
 _native_loader_directory: Path | None = None
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from codex_agent._ffi import (  # noqa: E402
     NativeLibrary,
@@ -212,6 +213,8 @@ API int32_t codex_agent_abi_is_compatible(uint32_t requested) {{ return requeste
 
 class RuntimeLoaderSecurityTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("CODEX_AGENT_LIBRARY", None)
         self.compatibility = _validate_compatibility(canonical(compatibility()))
 
     def test_embedded_and_external_identity_rules(self) -> None:
@@ -501,11 +504,12 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
             library = Path(directory) / _library_name(current_classifier())
             library.write_bytes(b"unverified Runtime")
             with patch("codex_agent._ffi._load_compatibility", return_value=self.compatibility), \
+                    patch("codex_agent._ffi._read_sdk_runtime_root", return_value=b"unused without evidence"), \
                     patch("codex_agent._ffi.ctypes.CDLL") as dynamic_loader:
-                with self.assertRaisesRegex(OSError, "release-attested evidence"):
+                with self.assertRaisesRegex(OSError, "Runtime evidence does not exist"):
                     NativeLibrary.load(library)
                 with patch.dict(os.environ, {"CODEX_AGENT_LIBRARY": str(library)}):
-                    with self.assertRaisesRegex(OSError, "release-attested evidence"):
+                    with self.assertRaisesRegex(OSError, "Runtime evidence does not exist"):
                         NativeLibrary.load()
             dynamic_loader.assert_not_called()
 
@@ -544,7 +548,9 @@ class RuntimeLoaderSecurityTests(unittest.TestCase):
         root = Path(temporary.name)
         target = current_classifier()
         runtime_identity = identity(target)
-        library = compile_library(root, "signed_external", canonical(runtime_identity, False), 0x010D0000)
+        compiled = compile_library(_native_loader_directory, "signed_external", canonical(runtime_identity, False), 0x010D0000)
+        library = root / compiled.name
+        library.write_bytes(compiled.read_bytes())
         evidence = Path(str(library) + ".evidence")
         root_public = authorize(library, runtime_identity, "0.8.5")
         release_public = (evidence / "keys/release.pub").read_bytes()

@@ -100,6 +100,9 @@ class NativeWrapperProductPhaseArtifactGraphTest {
         assertTrue(task.indexOf("val before = capabilityInputInventory(inputs)") < task.indexOf("\"verify-evidence\""))
         assertTrue(task.indexOf("\"verify-evidence\"") < task.indexOf("val command = nativeWrapperCapabilityCommand("))
         assertTrue("before == capabilityInputInventory(inputs)" in task)
+        assertTrue("language.get() in setOf(\"rust\", \"python\")" in task)
+        assertTrue("if (authorization != null)" in task)
+        assertTrue("\"${'$'}{binding.id}-capabilities\"" in task)
     }
 
     private val desktop = File("../../runtime/build-logic/src/main/kotlin/codexagent.desktop-runtime.gradle.kts")

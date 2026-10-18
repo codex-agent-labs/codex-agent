@@ -933,15 +933,17 @@ def rust_lifecycle_unit_source(original: bytes) -> bytes:
         "CodexNativeLibrary::load(", "CodexNativeLibrary::load_fixture_for_test(")).encode("utf-8")
 
 
-def produce_authorized_rust_capabilities(repository: Path, *, canonical_api: Path, c_abi_bootstrap: Path,
+def produce_authorized_native_capabilities(repository: Path, *, language: str, canonical_api: Path, c_abi_bootstrap: Path,
         c_sdk_root: Path, native_library: Path, sdk_compatibility: Path, output: Path,
         runtime_authorization: Path, expected_classifier: str) -> None:
     """Compose the existing raw producer; no package changes or mock signatures."""
     from .c_abi import TARGET_SPECS
     from ci.native_wrappers import invalidate_output
-    script = repository / "codex-agent-bindings/rust/tools/produce_sdk_validation_evidence.py"
+    if language not in {"rust", "python"}:
+        raise ValueError("Unsupported authorized capability language")
+    script = repository / f"codex-agent-bindings/{language}/tools/produce_sdk_validation_evidence.py"
     script_raw = read_regular_file_bytes(script, reject_symlink_parents=True)
-    spec = importlib.util.spec_from_file_location("rust_capability_producer", script)
+    spec = importlib.util.spec_from_file_location(f"{language}_capability_producer", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     sdks = sdk_compatibility.parent
@@ -949,41 +951,50 @@ def produce_authorized_rust_capabilities(repository: Path, *, canonical_api: Pat
                         if spec.classifier == "c-abi-" + expected_classifier)
     if (sdk_compatibility.name != COMPATIBILITY_NAME or c_sdk_root != sdks / expected_classifier
             or native_library != c_sdk_root / library_path):
-        raise ValueError("Rust capability inputs differ from the exact SDK host paths")
+        raise ValueError("Capability inputs differ from the exact SDK host paths")
     _require_capability_output_separate(output, [runtime_authorization, sdks])
     original_run = subprocess.run
     calls = []
 
     with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence:
         def run(command, **options):
-            if calls or command != ["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"]:
-                raise ValueError("Unexpected Rust capability producer invocation")
-            calls.append(True)
             source = options["cwd"]
-            unit = source / "tests/lifecycle_unit.rs"
-            root = source / "native/sdk-runtime-root.pub"
-            if unit.exists() or root.exists():
-                raise ValueError("Rust capability unit projection collides with original sources")
-            unit.write_bytes(rust_lifecycle_unit_source((source / "tests/lifecycle.rs").read_bytes()))
+            expected = (["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"]
+                if language == "rust" else [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"])
+            if calls or command != expected:
+                raise ValueError("Unexpected capability producer invocation")
+            calls.append(True)
+            root = source / ("native/sdk-runtime-root.pub" if language == "rust" else "src/codex_agent/native/sdk-runtime-root.pub")
+            if root.exists() or root.is_symlink():
+                raise ValueError("Capability trust root collides with original sources")
             root.write_bytes(read_regular_file_bytes(sdks / "sdk-runtime-root.pub", reject_symlink_parents=True))
-            library = source / "src/lib.rs"
-            library.write_bytes(library.read_bytes() +
-                b'\n#[cfg(test)]\n#[path = "../tests/lifecycle_unit.rs"]\nmod codex_lifecycle_fixture;\n')
+            if language == "rust":
+                unit = source / "tests/lifecycle_unit.rs"
+                if unit.exists() or unit.is_symlink():
+                    raise ValueError("Rust capability unit projection collides with original sources")
+                unit.write_bytes(rust_lifecycle_unit_source((source / "tests/lifecycle.rs").read_bytes()))
+                library = source / "src/lib.rs"
+                library.write_bytes(library.read_bytes() +
+                    b'\n#[cfg(test)]\n#[path = "../tests/lifecycle_unit.rs"]\nmod codex_lifecycle_fixture;\n')
+            else:
+                # The private suite includes repository packaging-control tests.
+                options["env"] = {**options["env"], "PYTHONPATH": str(repository)}
             sidecar = native_library.with_name(native_library.name + ".evidence")
             if sidecar.exists() or sidecar.is_symlink():
-                raise ValueError("Rust capability sidecar destination is already occupied")
+                raise ValueError("Capability sidecar destination is already occupied")
             inventory = regular_file_inventory(evidence)
             publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
             try:
                 # Lifecycle assertions drain a process-global cleanup registry.
                 result = original_run(command[:2] + ["--lib", "--test", "enum_parity"] +
-                    command[2:] + ["--test-threads=1"], **options)
+                    command[2:] + ["--test-threads=1"] if language == "rust" else command, **options)
                 # Explicit target selection excludes doctests; retain the existing
                 # compile-fail ownership proof using the SAME Cargo target cache/log.
-                original_run(command[:2] + ["--doc"] + command[2:] + ["--test-threads=1"], **options)
+                if language == "rust":
+                    original_run(command[:2] + ["--doc"] + command[2:] + ["--test-threads=1"], **options)
                 if (regular_file_inventory(sidecar) != inventory
                         or read_regular_file_bytes(script, reject_symlink_parents=True) != script_raw):
-                    raise ValueError("Rust capability authorization or producer changed during execution")
+                    raise ValueError("Capability authorization or producer changed during execution")
                 return result
             finally:
                 invalidate_output(sidecar)
@@ -992,21 +1003,25 @@ def produce_authorized_rust_capabilities(repository: Path, *, canonical_api: Pat
             module._retain_cargo_test_executables(log, source, evidence, lifecycle_as_unit=True)
 
         namespace = {**vars(module), "subprocess": SimpleNamespace(run=run, STDOUT=subprocess.STDOUT,
-            CalledProcessError=subprocess.CalledProcessError), "_retain_cargo_test_executables": retain}
+            CalledProcessError=subprocess.CalledProcessError)}
+        if language == "rust":
+            namespace["_retain_cargo_test_executables"] = retain
         produce = FunctionType(module.produce.__code__, namespace, module.produce.__name__)
-        produce(canonical_api, c_abi_bootstrap, c_sdk_root, native_library, sdk_compatibility, output)
+        produce(canonical_api=canonical_api, c_abi_bootstrap=c_abi_bootstrap, c_sdk_root=c_sdk_root,
+                native_library=native_library, sdk_compatibility=sdk_compatibility, output=output)
         if calls != [True]:
-            raise ValueError("Rust capability producer did not execute its exact suite")
+            raise ValueError("Capability producer did not execute its exact suite")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    rust = commands.add_parser("rust-capabilities", allow_abbrev=False)
-    for name in ("repository", "canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library",
-                 "sdk-compatibility", "output", "runtime-authorization"):
-        rust.add_argument(f"--{name}", type=Path, required=True)
-    rust.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
+    for language in ("rust", "python"):
+        capability = commands.add_parser(f"{language}-capabilities", allow_abbrev=False)
+        for name in ("repository", "canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library",
+                     "sdk-compatibility", "output", "runtime-authorization"):
+            capability.add_argument(f"--{name}", type=Path, required=True)
+        capability.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
     consumer = commands.add_parser("consume-native", allow_abbrev=False)
     for name in ("repository", "packages", "sdks", "output", "sdk-version-file", "runtime-authorization"):
         consumer.add_argument(f"--{name}", type=Path, required=True)
@@ -1034,8 +1049,8 @@ def main(argv: list[str] | None = None) -> int:
     metadata.add_argument("--package-receipt", type=Path, required=True)
     metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
-    if args.command == "rust-capabilities":
-        produce_authorized_rust_capabilities(args.repository, canonical_api=args.canonical_api,
+    if args.command in {"rust-capabilities", "python-capabilities"}:
+        produce_authorized_native_capabilities(args.repository, language=args.command.removesuffix("-capabilities"), canonical_api=args.canonical_api,
             c_abi_bootstrap=args.c_abi_bootstrap, c_sdk_root=args.c_sdk_root, native_library=args.native_library,
             sdk_compatibility=args.sdk_compatibility, output=args.output,
             runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier)

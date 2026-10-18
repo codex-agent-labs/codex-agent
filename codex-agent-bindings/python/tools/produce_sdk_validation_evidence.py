@@ -25,8 +25,10 @@ EVIDENCE_ENV = "CODEX_AGENT_PYTHON_EVIDENCE_DIRECTORY"
 COMPILER_HEADER = ("compilerEvidenceId", "publicSymbols")
 TEST_HEADER = ("executedTestId", "status")
 LOADER_NATIVE_CASES = {
+    "test_signed_external_runtime_loads_and_tampering_fails": ("signed_external",),
     "test_real_missing_identity_and_abi_mismatch_above_floor_fail": (
-        "missing_identity", "abi_1.12", "wrong_abi_major", "abi_mismatch", "incompatible_override",
+        "missing_identity", "abi_1.12", "wrong_abi_major", "abi_mismatch", "abi_width_collision",
+        "incompatible_override", "compatible_patch_override", "wrong_target", "unsupported_compatibility", "malformed_component",
     ),
     "test_noncanonical_native_identity_fails": ("noncanonical",),
 }

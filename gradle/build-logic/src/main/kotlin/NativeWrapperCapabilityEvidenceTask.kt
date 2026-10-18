@@ -72,7 +72,7 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
         val handoff = capabilityInputsDirectory.get().asFile
         val host = installedConsumerEvidence.get().asFile
         val negatives = packageNegativeEvidenceDirectory.orNull?.asFile
-        val authorization = if (language.get() == "rust") runtimeAuthorization.get().asFile else null
+        val authorization = if (language.get() in setOf("rust", "python")) runtimeAuthorization.get().asFile else null
         check((language.get() == "cpp") == (negatives != null)) {
             "C++ capability validation requires original package negative evidence"
         }
@@ -108,9 +108,9 @@ abstract class NativeWrapperCapabilityEvidenceTask @Inject constructor(
             processes.exec {
                 workingDir(repositoryRoot.get().asFile)
                 environment("PYTHONDONTWRITEBYTECODE", "1")
-                commandLine(if (binding.id == "rust") listOf(pythonExecutable.get(), "-m",
-                    "ci.products.sdk_package", "rust-capabilities", "--repository", repositoryRoot.get().asFile.absolutePath,
-                    "--runtime-authorization", authorization!!.absolutePath, "--expected-classifier", classifier,
+                commandLine(if (authorization != null) listOf(pythonExecutable.get(), "-m",
+                    "ci.products.sdk_package", "${binding.id}-capabilities", "--repository", repositoryRoot.get().asFile.absolutePath,
+                    "--runtime-authorization", authorization.absolutePath, "--expected-classifier", classifier,
                 ) + command.drop(2) else command)
             }
             // Keep the complete raw directory (including language auxiliaries); the existing

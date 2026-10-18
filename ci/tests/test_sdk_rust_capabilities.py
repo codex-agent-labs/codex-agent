@@ -2,17 +2,68 @@
 
 from contextlib import nullcontext
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from ci.products.inventory import regular_file_inventory
-from ci.products.sdk_package import produce_authorized_rust_capabilities, rust_lifecycle_unit_source
+from ci.products.sdk_package import produce_authorized_native_capabilities, rust_lifecycle_unit_source
 
 
 class RustCapabilitiesTest(unittest.TestCase):
+    def test_python_reuses_authenticated_sidecars_and_cleans_failed_suite(self):
+        repository = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            sdks = root / "sdks"
+            sdk = sdks / "macos-arm64"
+            library = sdk / "lib/libcodex_agent.dylib"
+            library.parent.mkdir(parents=True)
+            library.write_bytes(b"mocked subprocess input; not a genuine library")
+            (sdk / "include").mkdir()
+            (sdk / "include/codex_agent.h").write_bytes(b"fixture header")
+            compatibility = sdks / "sdk-compatibility.json"
+            compatibility.write_bytes(b"fixture declaration; no authentication claim")
+            root_public = (repository / "gradle/release/keys/sdk-runtime-root.pub").read_bytes()
+            (sdks / "sdk-runtime-root.pub").write_bytes(root_public)
+            authorization = root / "authorization"
+            authorization.mkdir()
+            (authorization / "fixture").write_bytes(b"mocked authenticated context")
+            canonical, bootstrap = root / "canonical.json", root / "bootstrap.json"
+            canonical.write_bytes(b"fixture")
+            bootstrap.write_bytes(b"fixture")
+            output = root / "output"
+            before = regular_file_inventory(sdks)
+            sidecar = library.with_name(library.name + ".evidence")
+
+            def execute(command, **options):
+                source = options["cwd"]
+                self.assertEqual([sys.executable, "-m", "unittest", "discover", "-s",
+                                  str(source / "tests"), "-v"], command)
+                self.assertEqual(str(library), options["env"]["CODEX_AGENT_LIBRARY"])
+                self.assertEqual(str(repository), options["env"]["PYTHONPATH"].split(os.pathsep)[0])
+                self.assertEqual(root_public, (source / "src/codex_agent/native/sdk-runtime-root.pub").read_bytes())
+                self.assertEqual(regular_file_inventory(authorization), regular_file_inventory(sidecar))
+                raise subprocess.CalledProcessError(1, command)
+
+            with patch("ci.products.sdk_package.verified_native_consumer_authorization",
+                       return_value=nullcontext(authorization)) as authenticated, \
+                    patch("ci.products.sdk_package.subprocess.run", side_effect=execute) as runner:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    produce_authorized_native_capabilities(repository, language="python", canonical_api=canonical,
+                        c_abi_bootstrap=bootstrap, c_sdk_root=sdk, native_library=library,
+                        sdk_compatibility=compatibility, output=output,
+                        runtime_authorization=authorization, expected_classifier="macos-arm64")
+                authenticated.assert_called_once_with(authorization, sdks, "macos-arm64")
+                runner.assert_called_once()
+            self.assertFalse(output.exists())
+            self.assertFalse(sidecar.exists())
+            self.assertEqual(before, regular_file_inventory(sdks))
+
     def test_projection_preserves_real_loader_and_every_assertion(self):
         source = Path(__file__).resolve().parents[2] / "codex-agent-bindings/rust/tests/lifecycle.rs"
         original = source.read_bytes()
@@ -94,7 +145,7 @@ class RustCapabilitiesTest(unittest.TestCase):
                 with patch("ci.products.sdk_package.verified_native_consumer_authorization",
                            return_value=nullcontext(authorization)) as authenticated, \
                         patch("ci.products.sdk_package.subprocess.run", side_effect=execute):
-                    produce_authorized_rust_capabilities(repository, canonical_api=canonical,
+                    produce_authorized_native_capabilities(repository, language="rust", canonical_api=canonical,
                         c_abi_bootstrap=bootstrap, c_sdk_root=sdk, native_library=library,
                         sdk_compatibility=compatibility, output=output,
                         runtime_authorization=authorization, expected_classifier="macos-arm64")

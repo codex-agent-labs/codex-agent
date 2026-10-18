@@ -8,14 +8,11 @@ import os
 import platform
 import re
 import shlex
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from collections import defaultdict
 from pathlib import Path
-from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,9 +28,8 @@ from artifact_inputs import (  # noqa: E402
     real_library,
 )
 from codex_agent._errors import check  # noqa: E402
-from codex_agent._ffi import Handle, HandlePointer, NativeLibrary, _load_compatibility, _read_runtime_identity  # noqa: E402
+from codex_agent._ffi import Handle, HandlePointer, NativeLibrary  # noqa: E402
 from codex_agent._mcp_native import read_owned_mcp_server  # noqa: E402
-from runtime_signed_fixture import authorize  # noqa: E402
 import test_enum_parity as enum_parity  # noqa: E402
 from test_runtime_loader_security import write_execution  # noqa: E402
 
@@ -281,20 +277,13 @@ def _compile_fixture(sdk: Path) -> Path:
 
 def _native_graph() -> tuple[object, object, object]:
     sdk = _sdk_path()
-    fixture_root = ROOT / "build" / "mcp-value-evidence"
-    fixture_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=fixture_root) as temporary:
-        selected = Path(temporary) / sdk.name
-        shutil.copy2(sdk, selected)
-        # The declared real C SDK is test input; its identity seeds only this
-        # synthetic release signature, never the production trust root.
-        runtime_identity = _read_runtime_identity(ctypes.CDLL(str(sdk)))
-        compatibility = _load_compatibility()
-        trusted_root = authorize(selected, runtime_identity,
-                                 compatibility["runtime"]["defaultRuntimeVersion"])
-        with patch("codex_agent._ffi._read_sdk_runtime_root", return_value=trusted_root):
-            native = NativeLibrary.load(selected)
-    fixture_path = _compile_fixture(Path(native.library._name))
+    # Like the other C-ABI projection fixtures, use the declared authenticated
+    # SDK directly. A loader snapshot is a second Runtime instance: the linked
+    # C fixture resolves the original image and cannot use that instance's handles.
+    # Production embedded/external authentication is exercised by the loader tests
+    # and installed consumers, not by test-key signing of this projection fixture.
+    native = NativeLibrary(ctypes.CDLL(str(sdk)))
+    fixture_path = _compile_fixture(sdk)
     if platform.system() == "Windows":
         with os.add_dll_directory(str(sdk.parent)):
             fixture = ctypes.CDLL(str(fixture_path))
