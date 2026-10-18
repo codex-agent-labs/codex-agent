@@ -201,7 +201,12 @@ def _copy_sources(files: list[Path], destination: Path) -> None:
     for source in files:
         target = destination / source.relative_to(ROOT)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        if sys.platform == "win32" and source == SUITE_ROOT / "native/fake_codex_agent.c":
+            # This private, single-threaded fixture only reads getenv's result.
+            # Keep strict warnings; opt out of MS CRT's nonportable deprecation.
+            target.write_bytes(b"#define _CRT_SECURE_NO_WARNINGS 1\n" + source.read_bytes())
+        else:
+            shutil.copyfile(source, target)
     # Test-only exports must use the SDK's already authenticated image too, not
     # load a second copy of the fixture with independent process-local state.
     resolver = destination / "tests/CodexAgent.Tests/CapabilityFixtureResolver.cs"

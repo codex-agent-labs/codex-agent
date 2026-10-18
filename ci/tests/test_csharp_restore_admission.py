@@ -7,6 +7,7 @@ import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes
 from ci.products.receipt import write_output_manifest
@@ -45,6 +46,23 @@ def execution(target: str) -> dict:
 
 
 class CsharpRestoreAdmissionTest(unittest.TestCase):
+    def test_only_private_windows_fixture_selects_portable_read_only_crt(self):
+        script = Path(__file__).resolve().parents[2] / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py"
+        spec = importlib.util.spec_from_file_location("csharp_crt_fixture_producer", script)
+        producer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(producer)
+        fixture = producer.SUITE_ROOT / "native/fake_codex_agent.c"
+        original = fixture.read_bytes()
+        prefix = b"#define _CRT_SECURE_NO_WARNINGS 1\n"
+        for platform in ("win32", "darwin", "linux"):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temporary:
+                destination = Path(temporary) / "source"
+                with patch.object(producer.sys, "platform", platform):
+                    producer._copy_sources([fixture], destination)
+                self.assertEqual((prefix if platform == "win32" else b"") + original,
+                    (destination / fixture.relative_to(producer.ROOT)).read_bytes())
+                self.assertEqual(original, fixture.read_bytes())
+
     def test_private_fixture_callbacks_reuse_the_unchanged_sdk_resolver(self):
         script = Path(__file__).resolve().parents[2] / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py"
         spec = importlib.util.spec_from_file_location("csharp_fixture_producer", script)
