@@ -1749,6 +1749,7 @@ void main() {
   });
 
   tearDownAll(() {
+    library.close();
     final fixture = File(libraryPath);
     if (fixture.existsSync()) fixture.deleteSync();
     final expectedCompilerEvidence =
