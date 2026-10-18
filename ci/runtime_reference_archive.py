@@ -21,6 +21,7 @@ import zipfile
 from products.inventory import require_integer, require_relative_path, require_sha256
 from products.zip_central_directory import verify_zip64_end_record
 from reuse import OriginBoundRedirectHandler
+from github_app_auth import token_for
 
 _READ_AHEAD = 256 * 1024
 _DOWNLOAD_BLOCK_BYTES = 32 * 1024 * 1024
@@ -92,7 +93,7 @@ class _Archive(io.RawIOBase):
                 request_headers['If-Match'] = self.etag
             if url == self.url:
                 request_headers.update({'Accept': 'application/vnd.github+json',
-                    'Authorization': f'Bearer {self.token}', 'X-GitHub-Api-Version': '2022-11-28'})
+                    'Authorization': f'Bearer {token_for(url, self.token)}', 'X-GitHub-Api-Version': '2022-11-28'})
             return self.opener.open(urllib.request.Request(url, headers=request_headers), timeout=60)
         waited_for_reset = False
         for attempt in range(3):

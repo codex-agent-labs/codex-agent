@@ -38,7 +38,8 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
 from runtime_reference_transport import measured, count
-from reuse import api_json, download_artifact, download_artifact_to_file, github_output, paginated_items, run_matches_pr
+from reuse import github_output, run_matches_pr
+from github_app_auth import api_json, download_artifact, download_artifact_to_file, paginated_items
 
 
 def _primary_rate_limit_delay(error):
@@ -5956,7 +5957,8 @@ def _worker_process_environment(root, producer, destination, environ):
                         "PYTHONSAFEPATH": "1", "PYTHONPATH": os.pathsep.join((str(root), str(root / "ci"))),
                         "PYTHONPYCACHEPREFIX": str(destination / "python-bytecode"),
                         "npm_config_offline": "true", "npm_config_audit": "false", "npm_config_fund": "false"})
-    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP"):
+    from github_app_auth import ENVIRONMENT as read_app_environment
+    for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP", *read_app_environment):
         environment.pop(name, None)
     return environment
 
@@ -6581,6 +6583,7 @@ def collect_runtime_workers(
         prepared = Path(temporary).resolve() / "collection"
         prepared.mkdir()
         rows, collected_originals = [], []
+        prepared_sdk_sources = set()
         for instance, ready in selected:
             name = f"{instance.component}-{instance.phase}-{instance.target}"
             job_name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
@@ -6735,6 +6738,26 @@ def collect_runtime_workers(
                             or records[0]["target"] != instance.target
                             or records[0]["receiptSha256"] != sha256_bytes(canonical_json_bytes(receipt))):
                         raise ValueError("SDK validation carrier differs from its elected original shard")
+                    # Fetch only receipt-bound predecessor Git objects, once across
+                    # sibling hosts. Transport alone never authorizes a producer.
+                    from sdk_handoff import _ensure_observed_sdk_commit
+                    predecessors = []
+                    for phase in (("binary", "package") if instance.component == "csharp" else ("package",)):
+                        raw = read_regular_file_bytes(carrier / records[0][phase + "Receipt"],
+                            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+                        predecessor = validate_phase_receipt(load_canonical_json_bytes(raw))
+                        identity = PhaseInstanceId("sdk", instance.component, phase, "desktop")
+                        expected = state.prior_carrier_phases.get(identity)
+                        if (expected is None or _identity(predecessor) != identity
+                                or predecessor["buildKey"] != expected["buildKey"]
+                                or sha256_bytes(raw) != expected["receiptSha256"]):
+                            raise ValueError("SDK validation source differs from its verified predecessor")
+                        predecessors.append(predecessor["producer"])
+                    for predecessor_producer in predecessors:
+                        source = (predecessor_producer["commit"], predecessor_producer["tree"])
+                        if source not in prepared_sdk_sources:
+                            _ensure_observed_sdk_commit(root, predecessor_producer, token)
+                            prepared_sdk_sources.add(source)
                     authenticated = retained / "sdk-validation-evidence"
                     stage_sdk_validation_evidence(records, carrier, authenticated,
                         repository=root, policy_revision=state.plan["validationCommit"],
@@ -6834,8 +6857,8 @@ def collect_runtime_workers(
                            shardDirectory=(original / "shard").relative_to(prepared).as_posix())
                 if original_producer != producer:
                     collected_originals.append((destination / row["shardDirectory"], verified))
-            except (ValueError, OSError) as error:
-                row["reason"] = str(error)
+            except (ValueError, OSError, subprocess.CalledProcessError) as error:
+                row["reason"] = "\n".join((str(error), *getattr(error, "__notes__", ())))
         result = {"schemaVersion": 1, "producer": producer, "observed": observed, "rows": rows}
         write_canonical_json(prepared / "collection.json", result)
         publish_regular_tree(prepared, destination, allow_empty=True)

@@ -6,6 +6,7 @@ these tests prove transport/pairing, not SDK semantic or hosted acceptance.
 """
 
 from unittest.mock import patch
+import subprocess
 import unittest
 
 from ci.tests import test_sdk_validation_inputs as evidence_fixture
@@ -38,6 +39,7 @@ class SdkNativeCollectionTest(unittest.TestCase):
     def setUp(self):
         transport_fixture.SdkWorkerCollectionTest.setUp(self)
         self.plan["validationCommit"] = self.producer["commit"]
+        self.predecessors = {}
 
     @staticmethod
     def runtime_proof(**arguments):
@@ -47,26 +49,33 @@ class SdkNativeCollectionTest(unittest.TestCase):
         proof = evidence_fixture.SdkValidationInputsTest.proof(**arguments)
         return projection.VerifiedSdkValidationProjection(proof._receipt, proof._content, projection._VERIFIED)
 
-    def shard(self, component, target, *, different_key=False):
+    def shard(self, component, target, *, different_key=False, binary_producer=None):
         self.counter += 1
         base = self.repository / f"build/native-original-{self.counter}"
         source = base / "source"
         source.mkdir(parents=True)
         (source / "request.json").write_bytes((self.original / "request.json").read_bytes())
         record = {"component": component, "target": target, "compatibilityRequest": "request.json"}
-        for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks", "runtimeAuthorization"):
+        for name in ("packageStage", "validationStage", "runtimeStages", "stagedSdks", "runtimeAuthorization",
+                     *(("binaryStage",) if component == "csharp" else ())):
             (source / name / "outputs").mkdir(parents=True)
             (source / name / "outputs/original.log").write_bytes(b"original synthetic SDK bytes\xff\n")
             record[name] = name
-        for phase, phase_target in (("package", "desktop"), ("validation", target)):
+        for phase, phase_target in (*(( ("binary", "desktop"),) if component == "csharp" else ()),
+                                    ("package", "desktop"), ("validation", target)):
             manifest = write_output_manifest(source / record[phase + "Stage"], "sdk", component,
                 phase, phase_target, "0.2.9", {"evidence": "outputs"})
             receipt_path = source / (phase + "Receipt")
             receipt = write_receipt(receipt_path, product="sdk", component=component, phase=phase,
                 target=phase_target, version="0.2.9", version_identity="0.2.9", outputs=manifest["outputs"],
-                upstream=[], context={"producer": self.producer},
+                upstream=[], context={"producer": binary_producer if phase == "binary" and binary_producer else self.producer},
                 **({"toolchain": sha256_bytes(b"different synthetic original key")} if different_key else {}))
             record[phase + "Receipt"] = receipt_path.name
+            if phase != "validation":
+                self.predecessors[PhaseInstanceId("sdk", component, phase, phase_target)] = {
+                    **{name: receipt[name] for name in ("product", "component", "phase", "target", "buildKey")},
+                    "receiptSha256": sha256_bytes(receipt_path.read_bytes()),
+                }
         ready = {name: receipt[name] for name in PHASE_PLAN_KEYS}
         shard = base / "shard"
         finalized = finalize_phase_object(stage_root=source / "validationStage", phase_plan=ready,
@@ -86,10 +95,12 @@ class SdkNativeCollectionTest(unittest.TestCase):
         files["worker/gradle.log"] = b""
         return PhaseInstanceId("sdk", component, "validation", target), ready, finalized, carrier, files
 
-    def collect(self, ready, uploads, destination, *, proof=None):
+    def collect(self, ready, uploads, destination, *, proof=None, ensure_source=None):
         state = transport_fixture.SdkWorkerCollectionTest.state(self, ready)
         state.expected_fixed["versions"]["sdk"] = "0.2.9"
+        state.prior_carrier_phases = self.predecessors
         with patch.object(adapter, "_verified_product_state", return_value=state), \
+                patch("sdk_handoff._ensure_observed_sdk_commit", side_effect=ensure_source), \
                 self.official_api(ready, uploads), \
                 patch.object(evidence, "_capture_validation_sources", self.sources), \
                 patch.object(projection, "verify_sdk_validation_projection", side_effect=proof or self.runtime_proof):
@@ -163,21 +174,58 @@ class SdkNativeCollectionTest(unittest.TestCase):
         bad = self.shard("rust", "linux-x64")
         good = self.shard("python", "windows-x64")
         calls = []
+        process_error = subprocess.CalledProcessError(1, ["java", "-jar", "signed-tooling.jar"])
+        process_error.add_note("synthetic full SDK projection rejection")
+        for index, error in enumerate((ValueError("synthetic full SDK projection rejection"), process_error)):
+            with self.subTest(error=type(error).__name__):
+                calls.clear()
+                def proof(**arguments):
+                    calls.append((arguments["component"], arguments["target"]))
+                    if arguments["component"] == "rust":
+                        raise error
+                    return self.runtime_proof(**arguments)
+                destination = self.repository / f"build/full-gate-rejection-{index}"
+                result = self.collect({bad[0]: bad[1], good[0]: good[1]},
+                    {bad[0]: archive(bad[4]), good[0]: archive(good[4])}, destination, proof=proof)
+                rows = {adapter._identity(row): row for row in result["rows"]}
+                self.assertEqual({("rust", "linux-x64"), ("python", "windows-x64")}, set(calls))
+                self.assertEqual("failure", rows[bad[0]]["result"])
+                self.assertIn("synthetic full SDK projection rejection", rows[bad[0]]["reason"])
+                self.assertIsNone(rows[bad[0]].get("sdkValidationEvidenceDirectory"))
+                self.assertEqual("success", rows[good[0]]["result"])
+                self.assertIsNotNone(rows[good[0]]["sdkValidationEvidenceDirectory"])
+
+    def test_original_binary_and_package_sources_are_bound_and_prepared_once_before_admission(self):
+        original = {**self.producer, "commit": "9" * 40, "tree": "8" * 40, "runId": 3}
+        items = [self.shard("csharp", target, binary_producer=original)
+                 for target in ("linux-arm64", "windows-x64")]
+        prepared = []
+        def ensure(repository, producer, token):
+            self.assertEqual(self.repository, repository)
+            self.assertEqual("synthetic-token", token)
+            prepared.append(producer)
         def proof(**arguments):
-            calls.append((arguments["component"], arguments["target"]))
-            if arguments["component"] == "rust":
-                raise ValueError("synthetic full SDK projection rejection")
+            self.assertIn(original, prepared)
+            self.assertIn(self.producer, prepared)
             return self.runtime_proof(**arguments)
-        destination = self.repository / "build/full-gate-rejection"
-        result = self.collect({bad[0]: bad[1], good[0]: good[1]},
-            {bad[0]: archive(bad[4]), good[0]: archive(good[4])}, destination, proof=proof)
-        rows = {adapter._identity(row): row for row in result["rows"]}
-        self.assertEqual({("rust", "linux-x64"), ("python", "windows-x64")}, set(calls))
-        self.assertEqual("failure", rows[bad[0]]["result"])
-        self.assertIn("synthetic full SDK projection rejection", rows[bad[0]]["reason"])
-        self.assertIsNone(rows[bad[0]].get("sdkValidationEvidenceDirectory"))
-        self.assertEqual("success", rows[good[0]]["result"])
-        self.assertIsNotNone(rows[good[0]]["sdkValidationEvidenceDirectory"])
+        result = self.collect({item[0]:item[1] for item in items},
+            {item[0]:archive(item[4]) for item in items}, self.repository/"build/predecessor-sources",
+            proof=proof, ensure_source=ensure)
+        self.assertEqual(["success", "success"], [row["result"] for row in result["rows"]])
+        self.assertEqual([original, self.producer], prepared)
+
+    def test_unbound_predecessor_receipt_cannot_request_source_or_admit_validation(self):
+        item = self.shard("csharp", "linux-arm64")
+        predecessor = self.predecessors[PhaseInstanceId("sdk", "csharp", "binary", "desktop")]
+        predecessor["receiptSha256"] = "sha256:" + "0" * 64
+        calls = []
+        result = self.collect({item[0]:item[1]}, {item[0]:archive(item[4])},
+            self.repository/"build/unbound-predecessor",
+            ensure_source=lambda *args: calls.append(args),
+            proof=lambda **kwargs: self.fail("Unbound source reached semantic admission"))
+        self.assertEqual([], calls)
+        self.assertEqual("failure", result["rows"][0]["result"])
+        self.assertIn("verified predecessor", result["rows"][0]["reason"])
 
 
 if __name__ == "__main__":

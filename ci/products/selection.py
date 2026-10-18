@@ -235,6 +235,8 @@ _IOS_BINARY_BUILD_LOGIC = frozenset({
     "codexagent.ios-runtime.gradle.kts",
 })
 _CONTROL_ONLY_FILES = frozenset({
+    "ci/github_app_auth.py",
+    ".github/actions/prepare-github-read-app/action.yml",
     "ci/hydrated_evidence.py",
     "ci/hosted_reuse_proof.py",
     "ci/reuse_qualification.py",
