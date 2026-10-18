@@ -33,11 +33,22 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             self.assertNotIn(forbidden, block)
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
         passed = {name: {"outcome": "success"} for name in ("cpp", "csharp", "dart-identity", "dart-lifecycle")}
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}):
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed),
+                                     "DIAGNOSTIC_LABEL": "ci:native-validation-diagnostics"}):
             exec(compile(script, "native-host-diagnostic-result", "exec"), {})
         passed["cpp"]["outcome"] = "failure"
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}), self.assertRaises(AssertionError):
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed),
+                                     "DIAGNOSTIC_LABEL": "ci:native-validation-diagnostics"}), self.assertRaises(AssertionError):
             exec(compile(script, "native-host-diagnostic-result", "exec"), {})
+        for step in ("cpp", "csharp"):
+            passed[step]["outcome"] = "skipped"
+        self.assertEqual(2, block.count("if: github.event.label.name == 'ci:native-validation-diagnostics'"))
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed),
+                                     "DIAGNOSTIC_LABEL": "ci:dart-validation-diagnostics"}):
+            exec(compile(script, "native-host-diagnostic-result", "exec"), {})
+            passed['dart-identity']['outcome'] = 'failure'
+            with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}), self.assertRaises(AssertionError):
+                exec(compile(script, "native-host-diagnostic-result", "exec"), {})
 
     def test_native_diagnostic_commands_preserve_exact_compiler_policy(self):
         from ci.tests import native_windows_diagnostic as diagnostic

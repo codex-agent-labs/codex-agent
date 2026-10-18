@@ -672,10 +672,16 @@ ProcessResult _verifyWindowsSshsig(File allowed, File detached, File input,
   } finally {
     free(buffer.cast<Void>());
   }
-  final verifier = File('$system\\OpenSSH\\ssh-keygen.exe');
-  final shell = File('$system\\WindowsPowerShell\\v1.0\\powershell.exe');
-  requireAbsoluteRegularFile(verifier, 'Windows SSHSIG verifier');
-  requireAbsoluteRegularFile(shell, 'Windows SSHSIG input transport');
+  final verifier = _requireAbsoluteRegularFile(
+    File('$system\\OpenSSH\\ssh-keygen.exe'),
+    'Windows SSHSIG verifier',
+    windowsSystemExecutable: true,
+  );
+  final shell = _requireAbsoluteRegularFile(
+    File('$system\\WindowsPowerShell\\v1.0\\powershell.exe'),
+    'Windows SSHSIG input transport',
+    windowsSystemExecutable: true,
+  );
   final arguments = [
     '-Y',
     'verify',
@@ -895,6 +901,11 @@ String _fileSha256(File file) {
 }
 
 void requireAbsoluteRegularFile(File file, String label) {
+  _requireAbsoluteRegularFile(file, label);
+}
+
+File _requireAbsoluteRegularFile(File file, String label,
+    {bool windowsSystemExecutable = false}) {
   if (file.path.isEmpty || !file.isAbsolute || _hasDotSegment(file.path)) {
     throw CodexException('$label path must be a literal absolute path');
   }
@@ -903,7 +914,13 @@ void requireAbsoluteRegularFile(File file, String label) {
       FileSystemEntityType.file) {
     throw CodexException('$label is absent or not a regular file: $path');
   }
-  if (file.resolveSymbolicLinksSync() != path) {
+  final canonical = file.resolveSymbolicLinksSync();
+  // GetSystemDirectoryW may return system32 instead of System32. Only these
+  // OS-selected executables accept case differences, never caller Runtime paths.
+  if (canonical != path &&
+      !(windowsSystemExecutable &&
+          Platform.isWindows &&
+          canonical.toLowerCase() == path.toLowerCase())) {
     throw CodexException('$label path is not canonically spelled: $path');
   }
   while (true) {
@@ -915,6 +932,7 @@ void requireAbsoluteRegularFile(File file, String label) {
     }
     path = parent;
   }
+  return File(canonical);
 }
 
 bool _hasDotSegment(String path) =>

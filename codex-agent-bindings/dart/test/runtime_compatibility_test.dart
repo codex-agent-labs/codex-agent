@@ -293,6 +293,12 @@ void main() {
 
     final real = File('${temporary.path}${Platform.pathSeparator}runtime')
       ..writeAsStringSync('runtime');
+    if (Platform.isWindows) {
+      expect(
+        () => resolveLibraryPathSync('${temporary.path}\\RUNTIME'),
+        throwsA(isA<CodexException>()),
+      );
+    }
     final separator = Platform.pathSeparator;
     final redundant =
         '${real.parent.path}$separator$separator${real.uri.pathSegments.last}';
@@ -364,12 +370,22 @@ void main() {
     );
     final missing = await _compileLibrary(temporary, 'missing');
 
-    final json = readRuntimeIdentity(DynamicLibrary.open(valid.path));
-    compatibility.verifyRuntimeIdentity(json, target, embedded: false);
-    expect(
-      () => readRuntimeIdentity(DynamicLibrary.open(missing.path)),
-      throwsA(isA<CodexException>()),
-    );
+    final validLibrary = DynamicLibrary.open(valid.path);
+    try {
+      final json = readRuntimeIdentity(validLibrary);
+      compatibility.verifyRuntimeIdentity(json, target, embedded: false);
+    } finally {
+      validLibrary.close();
+    }
+    final missingLibrary = DynamicLibrary.open(missing.path);
+    try {
+      expect(
+        () => readRuntimeIdentity(missingLibrary),
+        throwsA(isA<CodexException>()),
+      );
+    } finally {
+      missingLibrary.close();
+    }
   });
 
   test('identity ABI must exactly equal the exported ABI before API lookup',
@@ -406,32 +422,35 @@ void main() {
     );
   });
 
-  test('path-only override fails before dynamic loading', () {
+  test('path-only override fails before dynamic loading', () async {
     final library =
         File('${temporary.path}${Platform.pathSeparator}path-only-runtime')
           ..writeAsStringSync('not a native library');
-    var reachedDynamicOpen = false;
-
-    expect(
-      () => authenticatedRuntimeLibraryForTesting(
-        library.path,
-        beforeDynamicOpen: (_) => reachedDynamicOpen = true,
-      ),
-      throwsA(isA<CodexException>().having(
-        (error) => error.message,
-        'message',
-        contains('external Runtime evidence release-keyring.json is absent'),
-      )),
-    );
-    expect(reachedDynamicOpen, isFalse);
-    expect(
-      () => NativeApi.load(library.path),
-      throwsA(isA<CodexException>().having(
-        (error) => error.message,
-        'message',
-        contains('external Runtime evidence release-keyring.json is absent'),
-      )),
-    );
+    // Raw source validation has no installed SDK root. Use the same isolated
+    // package as the signed-loader tests, so this reaches the missing sidecar.
+    final root = _testKey(temporary, 'root');
+    final result = await _runIsolated(temporary, root.public, '''
+import 'package:codex_agent/src/errors.dart';
+import 'package:codex_agent/src/ffi.dart';
+void main(List<String> arguments) {
+  var reachedDynamicOpen = false;
+  for (final load in <void Function()>[
+    () { authenticatedRuntimeLibraryForTesting(arguments.single,
+      beforeDynamicOpen: (_) => reachedDynamicOpen = true); },
+    () { NativeApi.load(arguments.single); },
+  ]) {
+    try {
+      load();
+      throw StateError('path-only override was accepted');
+    } on CodexException catch (error) {
+      if (!error.message.contains(
+          'external Runtime evidence release-keyring.json is absent')) rethrow;
+    }
+  }
+  if (reachedDynamicOpen) throw StateError('unauthenticated dynamic open');
+}
+''', [library.path]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
   });
 
   test('explicit packaged library uses embedded trust, not external evidence',
@@ -451,9 +470,9 @@ void main() {
   });
 
   test('root-delegated release evidence binds exact external bytes', () {
-    final library =
-        File('${temporary.path}${Platform.pathSeparator}signed runtime space & % !')
-          ..writeAsStringSync('synthetic runtime bytes');
+    final library = File(
+        '${temporary.path}${Platform.pathSeparator}signed runtime space & % !')
+      ..writeAsStringSync('synthetic runtime bytes');
     final root = _testKey(temporary, 'root');
     final signer = _testKey(temporary, 'signer');
     final evidence = Directory('${library.path}.evidence')..createSync();

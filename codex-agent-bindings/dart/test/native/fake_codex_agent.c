@@ -49,7 +49,7 @@ typedef struct handle {
 #else
   pthread_t worker;
 #endif
-} handle_t;
+} test_handle_t;
 
 static test_atomic_int_t active_operations = 0;
 static test_atomic_int_t active_subscriptions = 0;
@@ -137,8 +137,8 @@ typedef struct open_options {
 typedef void (CALL *operation_callback_t)(void *, void *, void *);
 typedef void (CALL *state_callback_t)(void *, void *, int32_t, void *, int32_t, void *);
 
-static handle_t *new_handle(int kind) {
-  handle_t *value = (handle_t *)calloc(1, sizeof(handle_t));
+static test_handle_t *new_handle(int kind) {
+  test_handle_t *value = (test_handle_t *)calloc(1, sizeof(test_handle_t));
   if (value != NULL) {
     value->kind = kind;
     value->busy_remaining = 1;
@@ -148,8 +148,8 @@ static handle_t *new_handle(int kind) {
 
 static int release_handle(void **slot) {
   if (slot == NULL) return 1;
-  if (*slot != NULL && ((handle_t *)*slot)->busy_remaining > 0) {
-    ((handle_t *)*slot)->busy_remaining--;
+  if (*slot != NULL && ((test_handle_t *)*slot)->busy_remaining > 0) {
+    ((test_handle_t *)*slot)->busy_remaining--;
     return BUSY;
   }
   free(*slot);
@@ -191,7 +191,7 @@ static int value_release(void **slot);
 
 typedef struct operation_args {
   void *context;
-  handle_t *operation;
+  test_handle_t *operation;
   operation_callback_t callback;
   void *user_data;
 } operation_args_t;
@@ -226,7 +226,7 @@ static void *operation_worker(void *value) {
 static int operation(void *context, operation_callback_t callback, void *user_data, void **out, int kind) {
   (void)context;
   if (out == NULL || *out != NULL || callback == NULL) return 1;
-  handle_t *value = new_handle(kind);
+  test_handle_t *value = new_handle(kind);
   if (value == NULL) return 2;
   int forced_failure = test_load(&fail_next_operation);
   if (forced_failure != 0) test_store(&fail_next_operation, 0);
@@ -261,7 +261,7 @@ static int snapshot_get(void **out, int kind) {
 
 typedef struct state_args {
   void *context;
-  handle_t *subscription;
+  test_handle_t *subscription;
   state_callback_t callback;
   void *user_data;
   int kind;
@@ -272,7 +272,7 @@ typedef struct state_args {
 static void run_state_callbacks(state_args_t *args) {
   callback_delay();
   if (test_load(&args->subscription->cancel_requested) == 0) {
-    handle_t *changed = new_handle(args->kind);
+    test_handle_t *changed = new_handle(args->kind);
     if (changed != NULL) changed->result = args->initial_result;
     args->callback(args->context, args->subscription, OK, changed, 0, args->user_data);
   }
@@ -280,13 +280,13 @@ static void run_state_callbacks(state_args_t *args) {
     int result;
     for (result = 3; result <= 4; result++) {
       if (test_load(&args->subscription->cancel_requested) != 0) break;
-      handle_t *changed = new_handle(args->kind);
+      test_handle_t *changed = new_handle(args->kind);
       if (changed != NULL) changed->result = result;
       args->callback(args->context, args->subscription, OK, changed, 0, args->user_data);
     }
   }
   if (args->emit_terminal != 0 && test_load(&args->subscription->cancel_requested) == 0) {
-    handle_t *terminal = new_handle(args->kind);
+    test_handle_t *terminal = new_handle(args->kind);
     if (terminal != NULL) terminal->result = 2;
     args->callback(args->context, args->subscription, OK, terminal, 1, args->user_data);
   }
@@ -319,13 +319,13 @@ static int subscribe_with_initial(
   state_args_t *args = (state_args_t *)calloc(1, sizeof(state_args_t));
   if (args == NULL) { free(*out); *out = NULL; return 2; }
   args->context = context;
-  args->subscription = (handle_t *)*out;
+  args->subscription = (test_handle_t *)*out;
   args->callback = callback;
   args->user_data = user_data;
   args->kind = kind;
   args->initial_result = initial_result;
   args->emit_terminal = test_load(&emit_terminal_state);
-  handle_t *subscription = (handle_t *)*out;
+  test_handle_t *subscription = (test_handle_t *)*out;
 #if defined(_WIN32)
   HANDLE thread = CreateThread(NULL, 0, state_worker, args, 0, NULL);
   if (thread == NULL) { free(args); free(subscription); *out = NULL; return 8; }
@@ -485,20 +485,20 @@ API int CALL codex_agent_conversations_list(void *c, void *v, operation_callback
 API int CALL codex_agent_conversations_read(void *c, void *v, void *id, operation_callback_t cb, void *u, void **out) {
   (void)v;
   leaf_record("codex_agent_conversations_read");
-  if (id == NULL || strcmp(((handle_t *)id)->text, "conversation-1") != 0) return 1;
+  if (id == NULL || strcmp(((test_handle_t *)id)->text, "conversation-1") != 0) return 1;
   return operation(c, cb, u, out, 13);
 }
 API int CALL codex_agent_conversations_rename(void *c, void *v, void *id, const string_view_t *name, operation_callback_t cb, void *u, void **out) {
   (void)v;
   leaf_record("codex_agent_conversations_rename");
-  if (id == NULL || strcmp(((handle_t *)id)->text, "conversation-1") != 0 ||
+  if (id == NULL || strcmp(((test_handle_t *)id)->text, "conversation-1") != 0 ||
       !view_equals(name, "renamed")) return 1;
   return operation(c, cb, u, out, 10);
 }
 API int CALL codex_agent_conversations_delete(void *c, void *v, void *id, operation_callback_t cb, void *u, void **out) {
   (void)v;
   leaf_record("codex_agent_conversations_delete");
-  if (id == NULL || strcmp(((handle_t *)id)->text, "conversation-1") != 0) return 1;
+  if (id == NULL || strcmp(((test_handle_t *)id)->text, "conversation-1") != 0) return 1;
   return operation(c, cb, u, out, 10);
 }
 API int CALL codex_agent_conversations_open(void *c, void *v, const open_options_t *o, operation_callback_t cb, void *u, void **out) {
@@ -522,8 +522,8 @@ API int CALL codex_agent_conversation_release(void *c, void **slot) { (void)c; r
 API int CALL codex_agent_conversation_is_same(void *c, void *left, void *right, int32_t *same) {
   (void)c;
   if (left == NULL || right == NULL || same == NULL) return 1;
-  *same = ((handle_t *)left)->kind == ((handle_t *)right)->kind &&
-      strcmp(((handle_t *)left)->text, ((handle_t *)right)->text) == 0;
+  *same = ((test_handle_t *)left)->kind == ((test_handle_t *)right)->kind &&
+      strcmp(((test_handle_t *)left)->text, ((test_handle_t *)right)->text) == 0;
   return OK;
 }
 API int CALL codex_agent_conversation_send(void *c, void *v, const string_view_t *s, operation_callback_t cb, void *u, void **out) {
@@ -536,8 +536,8 @@ API int CALL codex_agent_conversation_send(void *c, void *v, const string_view_t
 API int CALL codex_agent_conversation_send_request(void *c, void *v, void *request, operation_callback_t cb, void *u, void **out) {
   (void)v;
   leaf_record("codex_agent_conversation_send_request");
-  if (request == NULL || ((handle_t *)request)->kind != 82 ||
-      ((handle_t *)request)->result != 1) return 1;
+  if (request == NULL || ((test_handle_t *)request)->kind != 82 ||
+      ((test_handle_t *)request)->result != 1) return 1;
   return operation(c, cb, u, out, 10);
 }
 API int CALL codex_agent_conversation_run_shell_command(void *c, void *v, const string_view_t *s, operation_callback_t cb, void *u, void **out) {
@@ -554,7 +554,7 @@ API int CALL codex_agent_conversation_state_get(void *c, void *v, void **out) {
   (void)c; (void)v; leaf_record("codex_agent_conversation_state_get"); return snapshot_get(out, 2);
 }
 API int CALL codex_agent_conversation_state_subscribe(void *c, void *v, state_callback_t cb, void *u, void **out) {
-  handle_t *conversation = (handle_t *)v;
+  test_handle_t *conversation = (test_handle_t *)v;
   leaf_record("codex_agent_conversation_state_subscribe");
   if (conversation == NULL) return 1;
   int initial_result = conversation->result == 0 ? 0 : 1;
@@ -568,8 +568,8 @@ API int CALL codex_agent_conversation_state_subscribe(void *c, void *v, state_ca
     int status = snapshot_get(out, 1); \
     if (status == OK) { \
       int ready = current_ready && v != NULL && \
-          strcmp(((handle_t *)v)->second, "current-ready") == 0; \
-      ((handle_t *)*out)->result = ready ? 1 : 2; \
+          strcmp(((test_handle_t *)v)->second, "current-ready") == 0; \
+      ((test_handle_t *)*out)->result = ready ? 1 : 2; \
     } \
     return status; \
   } \
@@ -597,28 +597,28 @@ API int CALL codex_agent_conversation_active_turn_progress_subscribe(void *c, vo
 
 API int CALL codex_agent_operation_cancel(void *c, void *operation_value) {
   (void)c; leaf_record("codex_agent_operation_cancel");
-  ((handle_t *)operation_value)->result = CANCELLED; return OK;
+  ((test_handle_t *)operation_value)->result = CANCELLED; return OK;
 }
 API int CALL codex_agent_operation_result(void *c, void *operation_value, int32_t *result) {
-  (void)c; leaf_record("codex_agent_operation_result"); if (result == NULL) return 1; *result = ((handle_t *)operation_value)->result; return OK;
+  (void)c; leaf_record("codex_agent_operation_result"); if (result == NULL) return 1; *result = ((test_handle_t *)operation_value)->result; return OK;
 }
 API int CALL codex_agent_operation_conversation(void *c, void *v, void *o, void **out) {
   (void)c; (void)v;
   int status = snapshot_get(out, 20);
-  if (status == OK && o != NULL && ((handle_t *)o)->kind == 112) {
-    (void)strcpy(((handle_t *)*out)->second, "current-ready");
+  if (status == OK && o != NULL && ((test_handle_t *)o)->kind == 112) {
+    (void)strcpy(((test_handle_t *)*out)->second, "current-ready");
   }
   return status;
 }
 API int CALL codex_agent_operation_conversation_value(void *c, void *o, void **out) {
   (void)c;
   leaf_record("codex_agent_operation_conversation_value");
-  if (o == NULL || ((handle_t *)o)->kind != 13) return 1;
+  if (o == NULL || ((test_handle_t *)o)->kind != 13) return 1;
   return snapshot_get(out, 62);
 }
 API int CALL codex_agent_operation_failure(void *c, void *o, void **out) {
   (void)c;
-  if (((handle_t *)o)->result != OPERATION_FAILED) return NOT_READY;
+  if (((test_handle_t *)o)->result != OPERATION_FAILED) return NOT_READY;
   return snapshot_get(out, 50);
 }
 API int CALL codex_agent_operation_conversation_summaries_count(void *c, void *o, size_t *count) {
@@ -629,7 +629,7 @@ API int CALL codex_agent_operation_conversation_summary_at(void *c, void *o, siz
   leaf_record("codex_agent_operation_conversation_summary_at");
   if (index > 1) return 1;
   int status = snapshot_get(out, 30);
-  if (status == OK) ((handle_t *)*out)->result = (int)index;
+  if (status == OK) ((test_handle_t *)*out)->result = (int)index;
   return status;
 }
 API int CALL codex_agent_operation_destroy(void *c, void **slot) {
@@ -645,7 +645,7 @@ API int CALL codex_agent_operation_destroy(void *c, void **slot) {
 API int CALL codex_agent_subscription_destroy(void *c, void **slot) {
   (void)c;
   if (slot == NULL) return 1;
-  handle_t *subscription = (handle_t *)*slot;
+  test_handle_t *subscription = (test_handle_t *)*slot;
   if (subscription == NULL) return OK;
   test_store(&subscription->cancel_requested, 1);
   if (subscription->busy_remaining > 0) {
@@ -675,7 +675,7 @@ API int CALL codex_agent_snapshot_destroy(void *c, void **slot) {
 API int CALL codex_agent_host_state_kind(void *c, void *snapshot, int32_t *kind) {
   (void)c; leaf_record("codex_agent_host_state_kind");
   if (snapshot == NULL || kind == NULL) return 1;
-  *kind = ((handle_t *)snapshot)->result == 2 ? 6 : 4;
+  *kind = ((test_handle_t *)snapshot)->result == 2 ? 6 : 4;
   return OK;
 }
 API int CALL codex_agent_host_state_agent(void *c, void *h, void *s, void **out) {
@@ -689,7 +689,7 @@ API int CALL codex_agent_host_state_failure(void *c, void *s, void **out) {
 }
 API int CALL codex_agent_host_state_has_workspace(void *c, void *s, int32_t *has) {
   (void)c; if (s == NULL || has == NULL) return 1;
-  *has = ((handle_t *)s)->result == 2 ? 0 : 1;
+  *has = ((test_handle_t *)s)->result == 2 ? 0 : 1;
   return OK;
 }
 API int CALL codex_agent_host_state_workspace_path_copy(void *c, void *s, uint8_t *b, size_t n, size_t *r) {
@@ -706,19 +706,19 @@ API int CALL codex_agent_host_state_requirement_message_copy(void *c, void *s, u
 }
 API int CALL codex_agent_active_conversation(void *c, void *v, void *s, void **out) {
   (void)c; (void)v; leaf_record("codex_agent_active_conversation");
-  if (s != NULL && ((handle_t *)s)->result == 1) return NOT_READY;
+  if (s != NULL && ((test_handle_t *)s)->result == 1) return NOT_READY;
   return snapshot_get(out, 20);
 }
 API int CALL codex_agent_conversation_state_status(void *c, void *s, int32_t *status) {
   (void)c; if (s == NULL || status == NULL) return 1;
-  *status = ((handle_t *)s)->result == 0 ? 2 : ((handle_t *)s)->result == 1 ? 4 : 8;
+  *status = ((test_handle_t *)s)->result == 0 ? 2 : ((test_handle_t *)s)->result == 1 ? 4 : 8;
   return OK;
 }
 API int CALL codex_agent_conversation_state_failure(void *c, void *s, void **out) {
   (void)c; (void)s; (void)out; return NOT_READY;
 }
 API int CALL codex_agent_state_boolean_value(void *c, void *s, int32_t *value) {
-  (void)c; (void)s; leaf_record("codex_agent_state_boolean_value"); if (value == NULL) return 1; *value = ((handle_t *)s)->result == 2 ? 0 : 1; return OK;
+  (void)c; (void)s; leaf_record("codex_agent_state_boolean_value"); if (value == NULL) return 1; *value = ((test_handle_t *)s)->result == 2 ? 0 : 1; return OK;
 }
 
 API int CALL codex_agent_failure_release(void *c, void **slot) { (void)c; return release_handle(slot); }
@@ -737,9 +737,9 @@ API int CALL codex_agent_conversation_summary_conversation_id(void *c, void *s, 
   (void)c;
   int status = snapshot_get(out, 31);
   if (status == OK) {
-    const char *value = ((handle_t *)s)->result == 0 ? "conversation-1" : "conversation-2";
-    (void)strcpy(((handle_t *)*out)->text, value);
-    ((handle_t *)*out)->busy_remaining = 0;
+    const char *value = ((test_handle_t *)s)->result == 0 ? "conversation-1" : "conversation-2";
+    (void)strcpy(((test_handle_t *)*out)->text, value);
+    ((test_handle_t *)*out)->busy_remaining = 0;
   }
   return status;
 }
@@ -747,17 +747,17 @@ API int CALL codex_agent_conversation_summary_title_copy(void *c, void *s, uint8
   (void)c; (void)s; return copy_bytes("Fixture", b, n, r);
 }
 API int CALL codex_agent_conversation_summary_updated_at_epoch_seconds(void *c, void *s, int64_t *value) {
-  (void)c; if (value == NULL) return 1; *value = 1700000000 + ((handle_t *)s)->result; return OK;
+  (void)c; if (value == NULL) return 1; *value = 1700000000 + ((test_handle_t *)s)->result; return OK;
 }
 API int CALL codex_agent_conversation_id_destroy(void *c, void **slot) { (void)c; return release_handle(slot); }
 API int CALL codex_agent_conversation_id_value_copy(void *c, void *id, uint8_t *b, size_t n, size_t *r) {
   (void)c;
-  return copy_bytes(((handle_t *)id)->text[0] == '\0' ? "conversation-1" : ((handle_t *)id)->text, b, n, r);
+  return copy_bytes(((test_handle_t *)id)->text[0] == '\0' ? "conversation-1" : ((test_handle_t *)id)->text, b, n, r);
 }
 API int CALL codex_agent_conversation_id_create(void *c, const string_view_t *value, void **out) {
   (void)c;
   if (out == NULL || *out != NULL || value == NULL) return 1;
-  handle_t *id = new_handle(31);
+  test_handle_t *id = new_handle(31);
   if (id == NULL) return 2;
   if (copy_view(id->text, sizeof(id->text), value) != OK) { free(id); return 1; }
   id->busy_remaining = 0;
@@ -768,7 +768,7 @@ API int CALL codex_agent_conversation_id_create(void *c, const string_view_t *va
 API int CALL codex_agent_invocation_plugin_create(void *c, const string_view_t *name, const string_view_t *uri, void **out) {
   (void)c;
   if (out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(78);
+  test_handle_t *value = new_handle(78);
   if (value == NULL) return 2;
   if (copy_view(value->text, sizeof(value->text), name) != OK ||
       copy_view(value->second, sizeof(value->second), uri) != OK) { free(value); return 1; }
@@ -779,7 +779,7 @@ API int CALL codex_agent_invocation_plugin_create(void *c, const string_view_t *
 API int CALL codex_agent_invocation_skill_create(void *c, const string_view_t *name, const string_view_t *path, void **out) {
   (void)c;
   if (out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(79);
+  test_handle_t *value = new_handle(79);
   if (value == NULL) return 2;
   if (copy_view(value->text, sizeof(value->text), name) != OK ||
       copy_view(value->second, sizeof(value->second), path) != OK) { free(value); return 1; }
@@ -792,57 +792,57 @@ API int CALL codex_agent_invocation_skill_destroy(void *c, void **slot) { (void)
 API int CALL codex_agent_invocation_from_plugin(void *c, void *plugin, void **out) {
   (void)c;
   if (plugin == NULL || out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(80);
+  test_handle_t *value = new_handle(80);
   if (value == NULL) return 2;
   value->busy_remaining = 0;
   value->result = 0;
-  memcpy(value->text, ((handle_t *)plugin)->text, sizeof(value->text));
-  memcpy(value->second, ((handle_t *)plugin)->second, sizeof(value->second));
+  memcpy(value->text, ((test_handle_t *)plugin)->text, sizeof(value->text));
+  memcpy(value->second, ((test_handle_t *)plugin)->second, sizeof(value->second));
   *out = value;
   return OK;
 }
 API int CALL codex_agent_invocation_from_skill(void *c, void *skill, void **out) {
   int status = codex_agent_invocation_from_plugin(c, skill, out);
-  if (status == OK) ((handle_t *)*out)->result = 1;
+  if (status == OK) ((test_handle_t *)*out)->result = 1;
   return status;
 }
 API int CALL codex_agent_invocation_destroy(void *c, void **slot) { (void)c; return destroy_value(slot); }
 API int CALL codex_agent_invocation_kind(void *c, void *invocation, int32_t *kind) {
-  (void)c; if (invocation == NULL || kind == NULL) return 1; *kind = ((handle_t *)invocation)->result; return OK;
+  (void)c; if (invocation == NULL || kind == NULL) return 1; *kind = ((test_handle_t *)invocation)->result; return OK;
 }
 API int CALL codex_agent_invocation_plugin(void *c, void *invocation, void **out) {
   (void)c;
-  if (invocation == NULL || ((handle_t *)invocation)->result != 0 || out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(78);
+  if (invocation == NULL || ((test_handle_t *)invocation)->result != 0 || out == NULL || *out != NULL) return 1;
+  test_handle_t *value = new_handle(78);
   if (value == NULL) return 2;
   value->busy_remaining = 0;
-  memcpy(value->text, ((handle_t *)invocation)->text, sizeof(value->text));
-  memcpy(value->second, ((handle_t *)invocation)->second, sizeof(value->second));
+  memcpy(value->text, ((test_handle_t *)invocation)->text, sizeof(value->text));
+  memcpy(value->second, ((test_handle_t *)invocation)->second, sizeof(value->second));
   *out = value;
   return OK;
 }
 API int CALL codex_agent_invocation_skill(void *c, void *invocation, void **out) {
   (void)c;
-  if (invocation == NULL || ((handle_t *)invocation)->result != 1 || out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(79);
+  if (invocation == NULL || ((test_handle_t *)invocation)->result != 1 || out == NULL || *out != NULL) return 1;
+  test_handle_t *value = new_handle(79);
   if (value == NULL) return 2;
   value->busy_remaining = 0;
-  memcpy(value->text, ((handle_t *)invocation)->text, sizeof(value->text));
-  memcpy(value->second, ((handle_t *)invocation)->second, sizeof(value->second));
+  memcpy(value->text, ((test_handle_t *)invocation)->text, sizeof(value->text));
+  memcpy(value->second, ((test_handle_t *)invocation)->second, sizeof(value->second));
   *out = value;
   return OK;
 }
 API int CALL codex_agent_invocation_plugin_name_copy(void *c, void *value, uint8_t *b, size_t n, size_t *r) {
-  (void)c; return copy_bytes(((handle_t *)value)->text, b, n, r);
+  (void)c; return copy_bytes(((test_handle_t *)value)->text, b, n, r);
 }
 API int CALL codex_agent_invocation_plugin_uri_copy(void *c, void *value, uint8_t *b, size_t n, size_t *r) {
-  (void)c; return copy_bytes(((handle_t *)value)->second, b, n, r);
+  (void)c; return copy_bytes(((test_handle_t *)value)->second, b, n, r);
 }
 API int CALL codex_agent_invocation_skill_name_copy(void *c, void *value, uint8_t *b, size_t n, size_t *r) {
-  (void)c; return copy_bytes(((handle_t *)value)->text, b, n, r);
+  (void)c; return copy_bytes(((test_handle_t *)value)->text, b, n, r);
 }
 API int CALL codex_agent_invocation_skill_path_copy(void *c, void *value, uint8_t *b, size_t n, size_t *r) {
-  (void)c; return copy_bytes(((handle_t *)value)->second, b, n, r);
+  (void)c; return copy_bytes(((test_handle_t *)value)->second, b, n, r);
 }
 
 API int CALL codex_agent_turn_request_create(
@@ -861,13 +861,13 @@ API int CALL codex_agent_turn_request_create(
       has_tier != 1 || !view_equals(tier, "priority") || approval != 2 || mode != 1 ||
       capability_count != 1 || capabilities == NULL || capabilities[0] != 0 ||
       invocation_count != 2 || invocations == NULL) return 1;
-  handle_t *plugin = (handle_t *)invocations[0];
-  handle_t *skill = (handle_t *)invocations[1];
+  test_handle_t *plugin = (test_handle_t *)invocations[0];
+  test_handle_t *skill = (test_handle_t *)invocations[1];
   if (plugin == NULL || plugin->result != 0 || strcmp(plugin->text, "plugin") != 0 ||
       strcmp(plugin->second, "plugin://fixture") != 0 || skill == NULL ||
       skill->result != 1 || strcmp(skill->text, "skill") != 0 ||
       strcmp(skill->second, "/fixture/SKILL.md") != 0) return 1;
-  handle_t *request = new_handle(82);
+  test_handle_t *request = new_handle(82);
   if (request == NULL) return 2;
   request->busy_remaining = 0;
   request->result = 1;
@@ -880,7 +880,7 @@ API int CALL codex_agent_conversation_value_destroy(void *c, void **slot) { (voi
 API int CALL codex_agent_conversation_value_summary(void *c, void *value, void **out) {
   (void)c; (void)value;
   int status = snapshot_get(out, 30);
-  if (status == OK) ((handle_t *)*out)->busy_remaining = 0;
+  if (status == OK) ((test_handle_t *)*out)->busy_remaining = 0;
   return status;
 }
 API int CALL codex_agent_conversation_value_messages_count(void *c, void *value, size_t *count) {
@@ -890,14 +890,14 @@ API int CALL codex_agent_conversation_value_message_at(void *c, void *value, siz
   (void)c; (void)value;
   if (index > 1) return 1;
   int status = snapshot_get(out, 63);
-  if (status == OK) { ((handle_t *)*out)->busy_remaining = 0; ((handle_t *)*out)->result = (int)index; }
+  if (status == OK) { ((test_handle_t *)*out)->busy_remaining = 0; ((test_handle_t *)*out)->result = (int)index; }
   return status;
 }
 API int CALL codex_agent_conversation_current_messages_count(void *c, void *snapshot, size_t *count) {
   (void)c;
   leaf_record("codex_agent_conversation_current_messages_count");
   if (snapshot == NULL || count == NULL) return 1;
-  int transition = ((handle_t *)snapshot)->result;
+  int transition = ((test_handle_t *)snapshot)->result;
   *count = transition == 0 ? 2u : transition == 1 ? 1u : 0u;
   return OK;
 }
@@ -905,10 +905,10 @@ API int CALL codex_agent_conversation_current_messages_at(void *c, void *snapsho
   (void)c;
   leaf_record("codex_agent_conversation_current_messages_at");
   if (snapshot == NULL || out == NULL || *out != NULL) return 1;
-  int transition = ((handle_t *)snapshot)->result;
+  int transition = ((test_handle_t *)snapshot)->result;
   size_t count = transition == 0 ? 2u : transition == 1 ? 1u : 0u;
   if (index >= count) return 1;
-  handle_t *message = new_handle(63);
+  test_handle_t *message = new_handle(63);
   if (message == NULL) return 2;
   message->busy_remaining = 0;
   message->result = (int)index + transition * 10;
@@ -917,45 +917,45 @@ API int CALL codex_agent_conversation_current_messages_at(void *c, void *snapsho
 }
 API int CALL codex_agent_message_destroy(void *c, void **slot) { (void)c; return destroy_value(slot); }
 API int CALL codex_agent_message_id_copy(void *c, void *message, uint8_t *b, size_t n, size_t *r) {
-  (void)c; int value = ((handle_t *)message)->result;
+  (void)c; int value = ((test_handle_t *)message)->result;
   return copy_bytes(value >= 10 ? "message-updated" : value == 0 ? "message-1" : "message-2", b, n, r);
 }
 API int CALL codex_agent_message_has_client_message_id(void *c, void *message, int32_t *out) {
-  (void)c; if (out == NULL) return 1; *out = ((handle_t *)message)->result % 10 == 0; return OK;
+  (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)message)->result % 10 == 0; return OK;
 }
 API int CALL codex_agent_message_client_message_id_copy(void *c, void *message, uint8_t *b, size_t n, size_t *r) {
   (void)c; (void)message; return copy_bytes("client-message", b, n, r);
 }
 API int CALL codex_agent_message_role(void *c, void *message, int32_t *out) {
-  (void)c; if (out == NULL) return 1; *out = ((handle_t *)message)->result % 10; return OK;
+  (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)message)->result % 10; return OK;
 }
 API int CALL codex_agent_message_text_copy(void *c, void *message, uint8_t *b, size_t n, size_t *r) {
-  (void)c; int value = ((handle_t *)message)->result;
+  (void)c; int value = ((test_handle_t *)message)->result;
   return copy_bytes(value >= 10 ? "updated" : "duplicate", b, n, r);
 }
 API int CALL codex_agent_message_collaboration_mode(void *c, void *message, int32_t *out) {
-  (void)c; if (out == NULL) return 1; *out = ((handle_t *)message)->result % 10; return OK;
+  (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)message)->result % 10; return OK;
 }
 API int CALL codex_agent_message_has_reasoning(void *c, void *message, int32_t *out) {
-  (void)c; if (out == NULL) return 1; *out = ((handle_t *)message)->result % 10 == 0; return OK;
+  (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)message)->result % 10 == 0; return OK;
 }
 API int CALL codex_agent_message_reasoning_copy(void *c, void *message, uint8_t *b, size_t n, size_t *r) {
   (void)c; (void)message; return copy_bytes("reasoning", b, n, r);
 }
 API int CALL codex_agent_message_has_plan(void *c, void *message, int32_t *out) {
-  (void)c; if (out == NULL) return 1; *out = ((handle_t *)message)->result % 10 == 1; return OK;
+  (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)message)->result % 10 == 1; return OK;
 }
 API int CALL codex_agent_message_plan_copy(void *c, void *message, uint8_t *b, size_t n, size_t *r) {
   (void)c; (void)message; return copy_bytes("plan", b, n, r);
 }
 API int CALL codex_agent_message_has_shell_command(void *c, void *message, int32_t *out) {
-  (void)c; if (out == NULL) return 1; *out = ((handle_t *)message)->result % 10 == 0; return OK;
+  (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)message)->result % 10 == 0; return OK;
 }
 API int CALL codex_agent_message_shell_command_copy(void *c, void *message, uint8_t *b, size_t n, size_t *r) {
   (void)c; (void)message; return copy_bytes("pwd", b, n, r);
 }
 API int CALL codex_agent_message_exit_code(void *c, void *message, int32_t *has, int32_t *value) {
-  (void)c; if (has == NULL || value == NULL) return 1; *has = ((handle_t *)message)->result % 10 == 0; *value = 7; return OK;
+  (void)c; if (has == NULL || value == NULL) return 1; *has = ((test_handle_t *)message)->result % 10 == 0; *value = 7; return OK;
 }
 API int CALL codex_agent_message_capabilities_count(void *c, void *message, size_t *count) {
   (void)c; (void)message; if (count == NULL) return 1; *count = 1; return OK;
@@ -969,7 +969,7 @@ API int CALL codex_agent_message_invocations_count(void *c, void *message, size_
 API int CALL codex_agent_message_invocation_at(void *c, void *message, size_t index, void **out) {
   (void)c; (void)message;
   if (index > 1 || out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(80);
+  test_handle_t *value = new_handle(80);
   if (value == NULL) return 2;
   value->busy_remaining = 0;
   value->result = (int)index;
@@ -980,16 +980,16 @@ API int CALL codex_agent_message_invocation_at(void *c, void *message, size_t in
 }
 
 API int CALL codex_agent_conversation_active_turn_progress_has_value(void *c, void *snapshot, int32_t *out) {
-  (void)c; leaf_record("codex_agent_conversation_active_turn_progress_has_value"); if (snapshot == NULL || out == NULL) return 1; *out = ((handle_t *)snapshot)->result != 0 && ((handle_t *)snapshot)->result != 2; return OK;
+  (void)c; leaf_record("codex_agent_conversation_active_turn_progress_has_value"); if (snapshot == NULL || out == NULL) return 1; *out = ((test_handle_t *)snapshot)->result != 0 && ((test_handle_t *)snapshot)->result != 2; return OK;
 }
 API int CALL codex_agent_conversation_active_turn_progress_value(void *c, void *snapshot, void **out) {
   (void)c;
   leaf_record("codex_agent_conversation_active_turn_progress_value");
-  if (snapshot == NULL || (((handle_t *)snapshot)->result != 1 && ((handle_t *)snapshot)->result != 3 && ((handle_t *)snapshot)->result != 4) || out == NULL || *out != NULL) return NOT_READY;
-  handle_t *value = new_handle(90);
+  if (snapshot == NULL || (((test_handle_t *)snapshot)->result != 1 && ((test_handle_t *)snapshot)->result != 3 && ((test_handle_t *)snapshot)->result != 4) || out == NULL || *out != NULL) return NOT_READY;
+  test_handle_t *value = new_handle(90);
   if (value == NULL) return 2;
   value->busy_remaining = 0;
-  value->result = ((handle_t *)snapshot)->result;
+  value->result = ((test_handle_t *)snapshot)->result;
   *out = value;
   return OK;
 }
@@ -1000,29 +1000,29 @@ PROGRESS_COPY(codex_agent_turn_progress_commentary_copy, "commentary")
 PROGRESS_COPY(codex_agent_turn_progress_reasoning_copy, "reasoning")
 PROGRESS_COPY(codex_agent_turn_progress_plan_copy, "plan")
 PROGRESS_COPY(codex_agent_turn_progress_shell_output_copy, "shell")
-API int CALL codex_agent_turn_progress_has_plan_progress(void *c, void *p, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((handle_t *)p)->result != 4; return OK; }
-API int CALL codex_agent_turn_progress_plan_progress(void *c, void *p, void **out) { (void)c; if (((handle_t *)p)->result == 4) return NOT_READY; int status = snapshot_get(out, 91); if (status == OK) { ((handle_t *)*out)->busy_remaining = 0; ((handle_t *)*out)->result = ((handle_t *)p)->result; } return status; }
-API int CALL codex_agent_turn_progress_shell_exit_code(void *c, void *p, int32_t *has, int32_t *value) { (void)c; if (has == NULL || value == NULL) return 1; *has = ((handle_t *)p)->result == 1; *value = 9; return OK; }
-API int CALL codex_agent_turn_progress_work_activity(void *c, void *p, int32_t *has, int32_t *value) { (void)c; if (has == NULL || value == NULL) return 1; *has = ((handle_t *)p)->result == 1; *value = 1; return OK; }
+API int CALL codex_agent_turn_progress_has_plan_progress(void *c, void *p, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)p)->result != 4; return OK; }
+API int CALL codex_agent_turn_progress_plan_progress(void *c, void *p, void **out) { (void)c; if (((test_handle_t *)p)->result == 4) return NOT_READY; int status = snapshot_get(out, 91); if (status == OK) { ((test_handle_t *)*out)->busy_remaining = 0; ((test_handle_t *)*out)->result = ((test_handle_t *)p)->result; } return status; }
+API int CALL codex_agent_turn_progress_shell_exit_code(void *c, void *p, int32_t *has, int32_t *value) { (void)c; if (has == NULL || value == NULL) return 1; *has = ((test_handle_t *)p)->result == 1; *value = 9; return OK; }
+API int CALL codex_agent_turn_progress_work_activity(void *c, void *p, int32_t *has, int32_t *value) { (void)c; if (has == NULL || value == NULL) return 1; *has = ((test_handle_t *)p)->result == 1; *value = 1; return OK; }
 API int CALL codex_agent_turn_progress_hook_activities_count(void *c, void *p, size_t *count) { (void)c; (void)p; if (count == NULL) return 1; *count = 2; return OK; }
-API int CALL codex_agent_turn_progress_hook_activity_at(void *c, void *p, size_t index, void **out) { (void)c; if (index > 1) return 1; int status = snapshot_get(out, 92); if (status == OK) { ((handle_t *)*out)->busy_remaining = 0; ((handle_t *)*out)->result = (int)index; if (((handle_t *)p)->result != 1) (void)strcpy(((handle_t *)*out)->second, "nested-absent"); } return status; }
+API int CALL codex_agent_turn_progress_hook_activity_at(void *c, void *p, size_t index, void **out) { (void)c; if (index > 1) return 1; int status = snapshot_get(out, 92); if (status == OK) { ((test_handle_t *)*out)->busy_remaining = 0; ((test_handle_t *)*out)->result = (int)index; if (((test_handle_t *)p)->result != 1) (void)strcpy(((test_handle_t *)*out)->second, "nested-absent"); } return status; }
 API int CALL codex_agent_turn_progress_is_truncated(void *c, void *p, int32_t *out) { (void)c; (void)p; if (out == NULL) return 1; *out = 1; return OK; }
 
 API int CALL codex_agent_plan_progress_destroy(void *c, void **slot) { (void)c; return destroy_value(slot); }
-API int CALL codex_agent_plan_progress_has_explanation(void *c, void *p, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((handle_t *)p)->result == 1; return OK; }
+API int CALL codex_agent_plan_progress_has_explanation(void *c, void *p, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)p)->result == 1; return OK; }
 API int CALL codex_agent_plan_progress_explanation_copy(void *c, void *p, uint8_t *b, size_t n, size_t *r) { (void)c; (void)p; return copy_bytes("explanation", b, n, r); }
 API int CALL codex_agent_plan_progress_steps_count(void *c, void *p, size_t *count) { (void)c; (void)p; if (count == NULL) return 1; *count = 2; return OK; }
-API int CALL codex_agent_plan_progress_step_at(void *c, void *p, size_t index, void **out) { (void)c; (void)p; if (index > 1) return 1; int status = snapshot_get(out, 93); if (status == OK) { ((handle_t *)*out)->busy_remaining = 0; ((handle_t *)*out)->result = (int)index; } return status; }
+API int CALL codex_agent_plan_progress_step_at(void *c, void *p, size_t index, void **out) { (void)c; (void)p; if (index > 1) return 1; int status = snapshot_get(out, 93); if (status == OK) { ((test_handle_t *)*out)->busy_remaining = 0; ((test_handle_t *)*out)->result = (int)index; } return status; }
 API int CALL codex_agent_plan_step_destroy(void *c, void **slot) { (void)c; return destroy_value(slot); }
 API int CALL codex_agent_plan_step_text_copy(void *c, void *step, uint8_t *b, size_t n, size_t *r) { (void)c; (void)step; return copy_bytes("duplicate step", b, n, r); }
-API int CALL codex_agent_plan_step_status(void *c, void *step, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((handle_t *)step)->result; return OK; }
+API int CALL codex_agent_plan_step_status(void *c, void *step, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)step)->result; return OK; }
 
 API int CALL codex_agent_hook_activity_destroy(void *c, void **slot) { (void)c; return destroy_value(slot); }
-API int CALL codex_agent_hook_activity_id_copy(void *c, void *activity, uint8_t *b, size_t n, size_t *r) { (void)c; return copy_bytes(((handle_t *)activity)->result == 0 ? "hook-1" : "hook-2", b, n, r); }
+API int CALL codex_agent_hook_activity_id_copy(void *c, void *activity, uint8_t *b, size_t n, size_t *r) { (void)c; return copy_bytes(((test_handle_t *)activity)->result == 0 ? "hook-1" : "hook-2", b, n, r); }
 API int CALL codex_agent_hook_activity_event_name_copy(void *c, void *activity, uint8_t *b, size_t n, size_t *r) { (void)c; (void)activity; return copy_bytes("event", b, n, r); }
 API int CALL codex_agent_hook_activity_handler_type_copy(void *c, void *activity, uint8_t *b, size_t n, size_t *r) { (void)c; (void)activity; return copy_bytes("command", b, n, r); }
-API int CALL codex_agent_hook_activity_status(void *c, void *activity, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((handle_t *)activity)->result; return OK; }
-API int CALL codex_agent_hook_activity_has_status_message(void *c, void *activity, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((handle_t *)activity)->second[0] == '\0'; return OK; }
+API int CALL codex_agent_hook_activity_status(void *c, void *activity, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)activity)->result; return OK; }
+API int CALL codex_agent_hook_activity_has_status_message(void *c, void *activity, int32_t *out) { (void)c; if (out == NULL) return 1; *out = ((test_handle_t *)activity)->second[0] == '\0'; return OK; }
 API int CALL codex_agent_hook_activity_status_message_copy(void *c, void *activity, uint8_t *b, size_t n, size_t *r) { (void)c; (void)activity; return copy_bytes("status", b, n, r); }
 API int CALL codex_agent_hook_activity_details_count(void *c, void *activity, size_t *count) { (void)c; (void)activity; if (count == NULL) return 1; *count = 2; return OK; }
 API int CALL codex_agent_hook_activity_detail_copy_at(void *c, void *activity, size_t index, uint8_t *b, size_t n, size_t *r) { (void)c; (void)activity; if (index > 1) return 1; return copy_bytes("duplicate detail", b, n, r); }
@@ -1032,7 +1032,7 @@ API int CALL codex_agent_hook_activity_detail_copy_at(void *c, void *activity, s
  * production Dart FFI field used with the real SDK. */
 static int value_out(void **out, int kind) {
   if (out == NULL || *out != NULL) return 1;
-  handle_t *value = new_handle(kind);
+  test_handle_t *value = new_handle(kind);
   if (value == NULL) return 2;
   value->busy_remaining = 0;
   *out = value;
