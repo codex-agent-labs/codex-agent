@@ -5865,7 +5865,7 @@ def _runtime_worker_checkout(root, producer):
                           "codex-agent-runtime-android", "codex-agent-runtime-ios",
                           ":(glob)**/*.py", ":(glob)**/*.pyc", ":(glob)**/*.pyo",
                           "sitecustomize", "usercustomize", ":(glob)sitecustomize.*", ":(glob)usercustomize.*",
-                          ":(exclude).codex/**", ":(exclude)**/build/**",
+                          ":(exclude).codex/**", ":(exclude)build/**", ":(exclude)**/build/**",
                           ":(exclude)**/.gradle/**", ":(exclude)**/__pycache__/**")
     if untracked:
         raise ValueError(f"Runtime worker rejects untracked source or build policy: {untracked.splitlines()[:20]!r}")

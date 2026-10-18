@@ -512,8 +512,15 @@ class ProductWorkerCheckoutTest(unittest.TestCase):
             git("commit", "-qm", "fixture")
             producer = {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}")}
             (root / "DRAFT_TODO.md").write_text("user note\n")
+            for name in ("build/sdk-worker/prepared-upload/original/prepared-sources/cpp/tests/test_fixture.py",
+                         "codex-agent-sdk/build/private/test_fixture.py"):
+                prepared = root / name
+                prepared.parent.mkdir(parents=True, exist_ok=True)
+                prepared.write_text("authenticated build staging, not checkout source\n")
             adapter._runtime_worker_checkout(root, producer)
             for path in (
+                "injected.py",
+                "ci/injected.py",
                 "codex-agent-core/src/commonMain/Injected.kt",
                 "codex-agent-sdk/src/commonMain/Injected.kt",
                 "codex-agent-bindings/rust/src/injected.rs",
