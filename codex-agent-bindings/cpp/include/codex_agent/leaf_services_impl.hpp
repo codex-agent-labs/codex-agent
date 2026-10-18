@@ -1025,7 +1025,8 @@ inline auto mcp_transport_views(
 inline SyncHandle<codex_agent_mcp_transport_t, codex_agent_mcp_transport_destroy>
 make_mcp_transport(const Context& context, const McpTransport& transport) {
     return std::visit(
-        [&](const auto& value) {
+        [&](const auto& value)
+            -> SyncHandle<codex_agent_mcp_transport_t, codex_agent_mcp_transport_destroy> {
             using Value = std::decay_t<decltype(value)>;
             codex_agent_mcp_transport_t* raw = nullptr;
             if constexpr (std::is_same_v<Value, McpHttpTransport>) {
