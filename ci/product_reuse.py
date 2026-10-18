@@ -728,16 +728,27 @@ _CI_OBSERVATIONS = ContextVar("original_ci_observation_batch", default=None)
 
 
 @contextmanager
-def _ci_observation_batch(current_attempt=None):
+def _ci_observation_batch(current_attempt=None, *, share_nested=False):
     """One explicit multi-source acquisition; never the wider byte-cache lifetime."""
-    token = _CI_OBSERVATIONS.set({"currentAttempt": current_attempt, "observationGuards": (Lock(), {})})
+    parent = _CI_OBSERVATIONS.get()
+    # Only an opted-in acquisition may compose nested reads. Caller identity,
+    # live/current refresh and every per-receipt admission check still apply.
+    if (parent is not None and parent.get("shareNested") and current_attempt is not None
+            and current_attempt == parent["currentAttempt"]
+            and all(isinstance(value, str) and value.isdecimal() for value in current_attempt)):
+        yield
+        return
+    token = _CI_OBSERVATIONS.set({"currentAttempt": current_attempt,
+        "shareNested": share_nested, "observationGuards": (Lock(), {})})
     try:
         yield
     finally:
         _CI_OBSERVATIONS.reset(token)
 
 
-def _fresh_ci_observations(operation):
+def _fresh_ci_observations(operation=None, *, share_nested=False):
+    if operation is None:
+        return partial(_fresh_ci_observations, share_nested=share_nested)
     parameters = signature(operation)
     @wraps(operation)
     def observed(*args, **kwargs):
@@ -747,7 +758,7 @@ def _fresh_ci_observations(operation):
         producer = arguments.get("consumer_producer")
         current = ((producer["runId"], producer["runAttempt"]) if producer is not None else
                    (environment.get("GITHUB_RUN_ID"), environment.get("GITHUB_RUN_ATTEMPT")))
-        with _ci_observation_batch(tuple(str(value) for value in current)):
+        with _ci_observation_batch(tuple(str(value) for value in current), share_nested=share_nested):
             return operation(*args, **kwargs)
     return observed
 

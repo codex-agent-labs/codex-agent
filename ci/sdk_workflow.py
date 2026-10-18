@@ -1236,6 +1236,7 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         destination=destination / "shard")
 
 
+@product_reuse._fresh_ci_observations(share_nested=True)
 def _workflow_main(argv):
     from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Replay, capture and collect exact SDK phase work", allow_abbrev=False)

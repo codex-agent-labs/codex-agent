@@ -244,6 +244,47 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                         self.assertEqual(expected * (2 if fail else 1), len(calls))
                         self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
 
+    def test_sdk_command_composes_completed_observations_only_for_its_current_consumer(self):
+        from ci import sdk_workflow
+        self.assertIs(adapter, sdk_workflow.product_reuse)
+        prior_context = adapter._CI_OBSERVATIONS.get()
+        argv = ['matrix', '--plan', str(self.root / 'plan'),
+                '--discovery-root', str(self.root / 'discovery'),
+                '--state-root', str(self.root / 'state'), '--github-output', str(self.root / 'output')]
+
+        @adapter._fresh_ci_observations
+        def read(environment):
+            for _ in range(2):
+                adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha=self.pin,
+                    token='not-a-real-token')
+
+        for current, child, status, expected in (
+                ('72', '72', 'completed', 1), ('71', '71', 'completed', 4),
+                ('72', '72', 'in_progress', 4), ('72', '73', 'completed', 2),
+                (None, None, 'completed', 2)):
+            environment = {} if current is None else {'GITHUB_RUN_ID': current, 'GITHUB_RUN_ATTEMPT': '2'}
+            nested = {} if child is None else {'GITHUB_RUN_ID': child, 'GITHUB_RUN_ATTEMPT': '2'}
+            def dispatch(**_):
+                read(nested)
+                read(nested)
+            with self.subTest(current=current, child=child, status=status), \
+                    mock.patch.dict(os.environ, environment, clear=True), \
+                    mock.patch('reuse.api_request', side_effect=self.api(run={**self.run, 'status': status})) as http, \
+                    mock.patch.object(sdk_workflow, 'matrix', side_effect=dispatch):
+                for invocation in (1, 2):
+                    self.assertEqual(0, sdk_workflow.main(argv))
+                    calls = [call for call in http.call_args_list
+                             if call.args[0].endswith('/actions/runs/71/attempts/2')]
+                    self.assertEqual(expected * invocation, len(calls))
+                    self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
+
+        with mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '72', 'GITHUB_RUN_ATTEMPT': '2'}), \
+                mock.patch.object(sdk_workflow, 'matrix', side_effect=RuntimeError('failed acquisition')):
+            with self.assertRaisesRegex(RuntimeError, 'failed acquisition'):
+                sdk_workflow.main(argv)
+        self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
+
     def test_completed_attempt_observations_are_shared_only_inside_one_operation(self):
         from products.restore import verification_session
         with mock.patch('reuse.api_request', side_effect=self.api()) as http:
