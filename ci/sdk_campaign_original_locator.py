@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -14,13 +15,13 @@ from sdk_facade_capture import _capture_route
 import product_reuse as products
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    require_exact_keys, require_integer, require_relative_path, require_semver,
+    require_array, require_exact_keys, require_integer, require_relative_path, require_semver,
     require_sha256, regular_file_inventory, sha256_bytes,
     sha256_file, verified_zip_contents,
 )
 from products.index import SignedProductIndex, _verify_index_receipt, verify_signed_product_index
 from products.receipt import validate_phase_receipt, validate_producer
-from products.registry import PhaseInstanceId
+from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from products.restore import verify_object, verify_phase_shard
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.signing_isolation import require_no_signing_secret
@@ -32,6 +33,38 @@ RETAINED_CORE_METADATA_KEY = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89
 RETAINED_CORE_ANDROID_VALIDATION_KEY = "sha256:671c8786babf765a4260487e0e7c0f189e32baad1f58f12be68baaf14aaddda0"
 RETAINED_ANDROID_BINARY_KEY = "sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c"
 RETAINED_ANDROID_METADATA_KEY = "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"
+
+
+def retained_native_validation_records():
+    """Reviewed locators only; successful original jobs and bodies are rechecked."""
+    path = Path(__file__).parent / "tests/data/retained-native-sdk-validations.json"
+    value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(path,
+        max_bytes=128 * 1024, reject_symlink_parents=True)), {"schemaVersion", "producer", "originals"},
+        "Retained native SDK originals")
+    producer = validate_producer(value["producer"])
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or (producer["repository"], producer["workflowPath"], producer["event"], producer["pullRequest"]) !=
+            ("codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request", 31)):
+        raise ValueError("Retained native SDK originals change their reviewed PR scope")
+    rows = require_array(value["originals"], "Retained native SDK workers")
+    identities = []
+    if not 1 <= len(rows) <= len(NATIVE_BINDINGS) * len(NATIVE_TARGETS):
+        raise ValueError("Retained native SDK worker inventory exceeds its phase scope")
+    for row in rows:
+        require_exact_keys(row, {"component", "target", "buildKey", "receiptSha256", "objectSha256",
+            "artifactId", "artifactSha256", "jobId", "workflowSha"}, "Retained native SDK worker")
+        if row["component"] not in NATIVE_BINDINGS or row["target"] not in NATIVE_TARGETS:
+            raise ValueError("Retained native SDK worker has an unknown language or host")
+        for field in ("buildKey", "receiptSha256", "objectSha256", "artifactSha256"):
+            require_sha256(row[field], "Retained native SDK " + field)
+        for field in ("artifactId", "jobId"):
+            require_integer(row[field], "Retained native SDK " + field, 1)
+        if type(row["workflowSha"]) is not str or re.fullmatch(r"[0-9a-f]{40}", row["workflowSha"]) is None:
+            raise ValueError("Retained native SDK workflow is not an exact revision")
+        identities.append((row["component"], row["target"]))
+    if identities != sorted(set(identities)):
+        raise ValueError("Retained native SDK workers must have unique sorted phase identities")
+    return value
 
 
 def retained_core_binary_origin(build_key, consumer):
@@ -54,7 +87,22 @@ def retained_core_binary_origin(build_key, consumer):
 
 
 def retained_core_origin(phase, build_key, consumer, *, target="common", component="sdk-core"):
-    """Keep reviewed Maven originals separate from current admission (legacy API name)."""
+    """Keep reviewed SDK originals separate from current admission (legacy API name)."""
+    if component in NATIVE_BINDINGS and phase == "validation":
+        value = retained_native_validation_records()
+        producer = value["producer"]
+        selected = next((row for row in value["originals"]
+                         if (row["component"], row["target"], row["buildKey"]) == (component, target, build_key)), None)
+        if (selected is None or any(consumer.get(name) != producer[name]
+                for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": selected["artifactId"],
+            "artifact_sha256": selected["artifactSha256"], "receipt_sha256": selected["receiptSha256"],
+            "object_sha256": selected["objectSha256"], "job_id": selected["jobId"],
+            "workflow_sha": selected["workflowSha"], "workflow_path": ".github/workflows/product-validation.yml",
+            "job_name": f"product-validation / sdk-{component}-validation-{target}"}
     if (component, phase, target) == ("sdk-android", "metadata", "android"):
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "22a3757ec0156876701fc8aaab5692efdb917f01", "tree": "7af47631319572430e83f7e1765797f8956a2773",

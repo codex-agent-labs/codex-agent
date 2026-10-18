@@ -135,8 +135,25 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
             tooling = job.split("      - id: tooling\n", 1)[1].split("\n      - ", 1)[0]
             with self.subTest(job=name):
                 for block in (java, tooling):
-                    self.assertNotIn("if:", block)
+                    if name == "sdk-native-validation":
+                        self.assertIn("if: steps.retained.outputs.reused != 'true'", block)
+                    else:
+                        self.assertNotIn("if:", block)
                 self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", job)
+
+    def test_retained_validation_skips_preparation_only_after_original_lookup(self):
+        worker = self.job("sdk-native-validation")
+        self.assertLess(worker.index("locate_retained_core_binary_upload"), worker.index("select_caller_java"))
+        self.assertIn("retained_native_validation_records()['originals']", worker)
+        self.assertIn("(r['component'], r['target'], r['buildKey'])", worker)
+        for step in ("retained-plan", "retained"):
+            block = worker.split(f"      - id: {step}\n", 1)[1].split("\n      - ", 1)[0]
+            self.assertIn("if: steps.retained-candidate.outputs.candidate == 'true'", block)
+        self.assertIn("if origin is None:", worker)
+        for action in ("capture-sdk-tooling", "provision-sdk-dart-cache", "sdk-native-validation-worker"):
+            block = next(part for part in worker.split("\n      - ") if f"./.github/actions/{action}\n" in part)
+            self.assertIn("steps.retained.outputs.reused != 'true'", block)
+        self.assertNotIn("if: steps.retained", self.job("sdk-collect-7"))
 
     def test_collection_runs_after_failed_workers_and_merge_waits_for_final_gate(self):
         collector = self.job("sdk-collect-7")

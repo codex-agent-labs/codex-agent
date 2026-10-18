@@ -6469,11 +6469,13 @@ def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
     origin = (retained_validation_origin(receipt["target"], receipt["buildKey"], consumer["producer"])
               if (receipt["product"], receipt["component"], receipt["phase"]) ==
                  ("sdk", "sdk-ios", "validation") else None)
-    if receipt["product"] == "sdk" and receipt["component"] in {"sdk-core", "sdk-android"}:
+    if receipt["product"] == "sdk" and (receipt["component"] in {"sdk-core", "sdk-android"}
+            or _sdk_family_worker_instance(_identity(receipt), "native-validation")):
         origin = retained_core_origin(receipt["phase"], receipt["buildKey"], consumer["producer"], target=receipt["target"],
             **({"component": receipt["component"]} if receipt["component"] != "sdk-core" else {}))
-        if origin is not None and origin.get("receipt_sha256", verified["receiptSha256"]) != verified["receiptSha256"]:
-            raise ValueError("Retained Maven receipt differs from its reviewed original")
+        if origin is not None and any(origin.get(field, verified[key]) != verified[key]
+                for field, key in (("receipt_sha256", "receiptSha256"), ("object_sha256", "objectSha256"))):
+            raise ValueError("Retained SDK receipt or object differs from its reviewed original")
     original = (origin["producer"] if origin is not None and receipt["producer"] == origin["producer"] else
                 _same_run_state_consumer(consumer, receipt["producer"])["producer"])
     if verified["receipt"]["product"] != "sdk":
@@ -6605,15 +6607,17 @@ def collect_runtime_workers(
                     retained_attestation = observe_retained_validation_attestation(
                         instance.target, ready["buildKey"], producer, token=token)
                 elif sdk_family in ("core-binary", "core-package", "core-validation", "core-metadata",
-                                    "android-binary", "android-metadata"):
+                                    "android-binary", "android-metadata", "native-validation"):
                     from sdk_campaign_original_locator import retained_core_origin
                     retained_core = retained_core_origin(instance.phase, ready["buildKey"], producer, target=instance.target,
                         **({"component": instance.component} if instance.component != "sdk-core" else {}))
-                    if retained_core is not None and (sdk_worker_workflow_path, job_name) != (
+                    if retained_core is not None and (sdk_worker_workflow_path or ".github/workflows/product-validation.yml", job_name) != (
                             retained_core["workflow_path"], retained_core["job_name"]):
                         raise ValueError("Retained Core worker requires its exact child workflow route")
                 retained_worker = retained_validation or retained_core
                 if retained_worker is not None:
+                    if sdk_family == "native-validation" and candidates:
+                        raise ValueError("Retained native SDK original conflicts with a current worker upload")
                     original_producer = retained_worker["producer"]
                     artifact_name = (_worker_artifact_prefix(product, instance) + ready["buildKey"][7:] + "-"
                         + original_producer["tree"] + f"-attempt-{original_producer['runAttempt']}")
@@ -6679,7 +6683,10 @@ def collect_runtime_workers(
                 if job.get("conclusion") == "success" and not signer_failed:
                     if retained_worker is not None:
                         from sdk_handoff import _ensure_observed_sdk_commit
-                        _ensure_observed_sdk_commit(root, original_producer, token)
+                        source = (original_producer["commit"], original_producer["tree"])
+                        if source not in prepared_sdk_sources:
+                            _ensure_observed_sdk_commit(root, original_producer, token)
+                            prepared_sdk_sources.add(source)
                     artifact, _ = _download_contract_ci_upload(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
                         original_observed[0]["run"], token, destination=archive,

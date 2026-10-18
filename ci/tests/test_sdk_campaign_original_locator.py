@@ -18,6 +18,40 @@ from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
 class SdkCampaignOriginalLocatorTest(TestCase):
+    def test_native_validation_recovers_exact_originals_without_product_download(self):
+        reviewed = locator.retained_native_validation_records()
+        consumer = {**reviewed["producer"], "runId": 40000000000, "runAttempt": 1}
+        for row in reviewed["originals"]:
+            options = {"component": row["component"], "target": row["target"], "phase": "validation"}
+            origin = locator.retained_core_origin(build_key=row["buildKey"], consumer=consumer, **options)
+            with self.subTest(component=row["component"], target=row["target"]):
+                self.assertEqual(reviewed["producer"], origin["producer"])
+                for public, internal in (("artifactId", "artifact_id"), ("jobId", "job_id"),
+                        ("receiptSha256", "receipt_sha256"), ("objectSha256", "object_sha256")):
+                    self.assertEqual(row[public], origin[internal])
+                for change, key in (({}, "sha256:" + "0" * 64), ({"pullRequest": 32}, row["buildKey"]),
+                        ({"event": "merge_group"}, row["buildKey"]), ({"runId": True}, row["buildKey"]),
+                        ({"runId": reviewed["producer"]["runId"]}, row["buildKey"]),
+                        ({"repository": "other/repository"}, row["buildKey"])):
+                    self.assertIsNone(locator.retained_core_origin(build_key=key,
+                        consumer={**consumer, **change}, **options))
+                with patch.object(locator.products, "_validate_plan", return_value={"event": "pull_request", "remoteBuildAuthorized": True}), \
+                        patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                        patch.object(locator, "_locate", return_value={name: origin[name] for name in
+                            ("artifact_id", "artifact_sha256")}) as observe:
+                    def call():
+                        return locator.locate_retained_core_binary_upload(self.fixture.plan_path,
+                            self.fixture.repository, expected_build_key=row["buildKey"], token="synthetic",
+                            environ={}, **options)
+                    self.assertEqual(origin, call())
+                    self.assertEqual(row["jobId"], observe.call_args.kwargs["expected_job_id"])
+                    self.assertEqual(row["buildKey"], observe.call_args.kwargs["expected_build_key"])
+                    self.assertEqual({"validation": {"path": origin["workflow_path"], "sha": row["workflowSha"]}},
+                                     observe.call_args.kwargs["trusted_workflows_by_phase"])
+                    observe.return_value = {"artifact_id": row["artifactId"], "artifact_sha256": "sha256:" + "f" * 64}
+                    with self.assertRaisesRegex(ValueError, "reviewed successful original"):
+                        call()
+
     def test_android_metadata_recovers_only_exact_successful_original(self):
         consumer = {**self.fixture.producer, "runId": 40000000000, "runAttempt": 1}
         key = locator.RETAINED_ANDROID_METADATA_KEY

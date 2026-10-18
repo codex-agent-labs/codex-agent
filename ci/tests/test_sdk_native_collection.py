@@ -148,6 +148,80 @@ class SdkNativeCollectionTest(unittest.TestCase):
             (records[0]["component"], records[0]["target"], records[0]["receiptSha256"]))
         self.assertEqual(b"", (original / "worker/gradle.log").read_bytes())
 
+    def test_cross_run_native_original_requires_fresh_job_and_exact_receipt_object(self):
+        instance, ready, finalized, _, files = self.shard("rust", "linux-x64")
+        raw = archive(files)
+        original = dict(self.producer)
+        job_name, artifact_name = self.names(instance, ready["buildKey"])
+        self.producer = {**original, "runId": 8, "runAttempt": 1, "commit": "d" * 40, "tree": "e" * 40}
+        self.environment.update(GITHUB_RUN_ID="8", GITHUB_RUN_ATTEMPT="1")
+        origin = {"producer": original, "artifact_id": 901, "artifact_sha256": sha256_bytes(raw),
+            "receipt_sha256": finalized["receiptSha256"], "object_sha256": finalized["objectSha256"],
+            "job_id": 901, "workflow_sha": "f" * 40,
+            "workflow_path": ".github/workflows/product-validation.yml", "job_name": job_name}
+        original_job = {"id": 901, "name": f"{job_name} ({ready['buildKey']}, ..."[:118] + "...",
+            "run_id": original["runId"], "head_sha": original["commit"], "status": "completed", "conclusion": "success",
+            "started_at": "2026-09-08T10:00:00Z", "completed_at": "2026-09-08T10:10:00Z"}
+        observe = adapter._observe_ci_producer_jobs
+        def observed(producers, **kwargs):
+            if "worker" not in producers:
+                return observe(producers, **kwargs)
+            self.assertEqual(original, producers["worker"])
+            self.assertEqual(origin["workflow_sha"], kwargs["trusted_workflow_sha"])
+            self.assertEqual({"worker": ready["buildKey"]}, kwargs["build_keys_by_phase"])
+            return [{"run": {"head_sha": original["commit"]}, "jobs": [original_job]}]
+        state = transport_fixture.SdkWorkerCollectionTest.state(self, {instance: ready})
+        state.expected_fixed["versions"]["sdk"] = "0.2.9"
+        state.prior_carrier_phases = self.predecessors
+        destination = self.repository / "build/cross-run-native"
+        with adapter.verification_session(), \
+                patch.object(adapter, "_verified_product_state", return_value=state), \
+                self.official_api({instance: ready}, {instance: raw}) as (query, listing, downloaded), \
+                patch("sdk_campaign_original_locator.retained_core_origin", return_value=origin), \
+                patch.object(adapter, "_observe_ci_producer_jobs", side_effect=observed), \
+                patch("sdk_handoff._ensure_observed_sdk_commit") as source, \
+                patch.object(evidence, "_capture_validation_sources", self.sources), \
+                patch.object(projection, "verify_sdk_validation_projection", side_effect=self.runtime_proof):
+            original_query, original_listing = query.side_effect, listing.side_effect
+            def metadata(url, token):
+                value = original_query(url, token)
+                if "/actions/artifacts/" in url:
+                    return {**value, "name": artifact_name,
+                        "workflow_run": {"id": original["runId"], "head_sha": original["commit"]}}
+                return value
+            query.side_effect = metadata
+            listing.side_effect = lambda url, field, token: [] if field == "artifacts" else original_listing(url, field, token)
+            def collect(path):
+                return adapter.collect_runtime_workers(self.plan_path, self.discovery, self.discovery, path,
+                    trusted_workflow_sha=transport_fixture.PIN, repository_root=self.repository,
+                    environ=self.environment, token="synthetic-token", sdk_family="native-validation",
+                    sdk_validation_tooling=self.tooling)
+            result = collect(destination)
+            row, = result["rows"]
+            self.assertEqual("success", row["result"], row["reason"])
+            source.assert_called_once_with(self.repository, original, "synthetic-token")
+            downloaded.assert_called_once()
+            shard = destination / row["shardDirectory"]
+            verified = adapter.verify_phase_shard(shard, instance)
+            self.assertEqual(finalized["receiptBytes"], (shard / "phase-receipt.json").read_bytes())
+            self.assertEqual(original, adapter._require_collected_sdk_original(
+                shard, verified, {"producer": self.producer}, transport_fixture.PIN))
+            for field in ("receipt_sha256", "object_sha256"):
+                with patch.dict(origin, {field: "sha256:" + "0" * 64}), \
+                        self.assertRaisesRegex(ValueError, "reviewed original"):
+                    adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, transport_fixture.PIN)
+            original_job["id"] = 902
+            failed = collect(self.repository / "build/wrong-native-job")
+            self.assertIn("reviewed successful job", failed["rows"][0]["reason"])
+            downloaded.assert_called_once()
+            listing.side_effect = original_listing
+            failed = collect(self.repository / "build/conflicting-native-upload")
+            self.assertIn("conflicts with a current worker", failed["rows"][0]["reason"])
+            downloaded.assert_called_once()
+        with patch("sdk_campaign_original_locator.retained_core_origin", return_value=origin), \
+                self.assertRaisesRegex(ValueError, "fresh authenticated"):
+            adapter._require_collected_sdk_original(shard, verified, {"producer": self.producer}, transport_fixture.PIN)
+
     def test_sibling_hosts_share_categories_without_rewriting_original_receipts(self):
         first, second = self.shard("rust", "linux-x64"), self.shard("rust", "linux-arm64")
         destination = self.repository / "build/shared-native"
