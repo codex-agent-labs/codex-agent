@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -500,7 +501,7 @@ Map<String, Object?> _keyRecord(Object? value) {
 
 List<int> _evidenceFile(Directory root, String name,
     {int maxBytes = 1024 * 1024}) {
-  final file = File('${root.path}${Platform.pathSeparator}$name');
+  final file = File.fromUri(root.uri.resolve(name));
   requireAbsoluteRegularFile(file, 'external Runtime evidence $name');
   final opened = file.openSync(mode: FileMode.read);
   try {
@@ -607,7 +608,7 @@ void _verifySshsig(List<int> message, List<int> signature, List<int> key,
   }
   if (!supportsExternalRuntimeSignatureVerifier(Platform.operatingSystem)) {
     throw const CodexException(
-        'external Runtime SSHSIG verification is unavailable on Windows');
+        'external Runtime SSHSIG verification is unavailable on this platform');
   }
   final directory = Directory.systemTemp.createTempSync('codex-agent-sshsig-');
   try {
@@ -618,16 +619,18 @@ void _verifySshsig(List<int> message, List<int> signature, List<int> key,
     final input = File('${directory.path}/message')..writeAsBytesSync(message);
     const script =
         'exec /usr/bin/ssh-keygen -Y verify -f "\$1" -I "\$2" -n "\$3" -s "\$4" < "\$5"';
-    final result = Process.runSync('/bin/sh', [
-      '-c',
-      script,
-      'sh',
-      allowed.path,
-      principal,
-      namespace,
-      detached.path,
-      input.path,
-    ]);
+    final result = Platform.isWindows
+        ? _verifyWindowsSshsig(allowed, detached, input, namespace, principal)
+        : Process.runSync('/bin/sh', [
+            '-c',
+            script,
+            'sh',
+            allowed.path,
+            principal,
+            namespace,
+            detached.path,
+            input.path,
+          ]);
     if (result.exitCode != 0) {
       throw const CodexException('external Runtime SSHSIG verification failed');
     }
@@ -640,7 +643,92 @@ void _verifySshsig(List<int> message, List<int> signature, List<int> key,
 }
 
 bool supportsExternalRuntimeSignatureVerifier(String operatingSystem) =>
-    operatingSystem == 'macos' || operatingSystem == 'linux';
+    operatingSystem == 'macos' ||
+    operatingSystem == 'linux' ||
+    operatingSystem == 'windows';
+
+ProcessResult _verifyWindowsSshsig(File allowed, File detached, File input,
+    String namespace, String principal) {
+  // Resolve the OS directory through the OS, never PATH/SystemRoot/COMSPEC.
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final allocate = kernel.lookupFunction<Pointer<Void> Function(Uint32, IntPtr),
+      Pointer<Void> Function(int, int)>('LocalAlloc');
+  final free = kernel.lookupFunction<Pointer<Void> Function(Pointer<Void>),
+      Pointer<Void> Function(Pointer<Void>)>('LocalFree');
+  final systemDirectory = kernel.lookupFunction<
+      Uint32 Function(Pointer<Uint16>, Uint32),
+      int Function(Pointer<Uint16>, int)>('GetSystemDirectoryW');
+  final buffer = allocate(0, 32768 * 2).cast<Uint16>();
+  if (buffer == nullptr) {
+    throw const CodexException('Windows system directory allocation failed');
+  }
+  late final String system;
+  try {
+    final length = systemDirectory(buffer, 32768);
+    if (length == 0 || length >= 32768) {
+      throw const CodexException('Windows system directory is unavailable');
+    }
+    system = String.fromCharCodes(buffer.asTypedList(length));
+  } finally {
+    free(buffer.cast<Void>());
+  }
+  final verifier = File('$system\\OpenSSH\\ssh-keygen.exe');
+  final shell = File('$system\\WindowsPowerShell\\v1.0\\powershell.exe');
+  requireAbsoluteRegularFile(verifier, 'Windows SSHSIG verifier');
+  requireAbsoluteRegularFile(shell, 'Windows SSHSIG input transport');
+  final arguments = [
+    '-Y',
+    'verify',
+    '-f',
+    allowed.path,
+    '-I',
+    principal,
+    '-n',
+    namespace,
+    '-s',
+    detached.path
+  ];
+  if (arguments.any((value) =>
+      value.contains('"') ||
+      value.endsWith('\\') ||
+      value.codeUnits.any((unit) => unit < 32))) {
+    throw const CodexException('Windows SSHSIG argument is invalid');
+  }
+  // Dart's synchronous process API has no stdin input. The fixed system shell
+  // forwards exact bytes through .NET, without shell interpolation or text encoding.
+  const script = r'''
+$ErrorActionPreference = 'Stop'
+$process = [System.Diagnostics.Process]::new()
+try {
+  $process.StartInfo.FileName = $env:CODEX_AGENT_SSHSIG_VERIFIER
+  $process.StartInfo.Arguments = $env:CODEX_AGENT_SSHSIG_ARGUMENTS
+  $process.StartInfo.UseShellExecute = $false
+  $process.StartInfo.CreateNoWindow = $true
+  $process.StartInfo.RedirectStandardInput = $true
+  if (-not $process.Start()) { exit 1 }
+  $bytes = [System.IO.File]::ReadAllBytes($env:CODEX_AGENT_SSHSIG_INPUT)
+  $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+  $process.StandardInput.Close()
+  if (-not $process.WaitForExit(10000)) { $process.Kill(); exit 1 }
+  exit $process.ExitCode
+} catch { exit 1 } finally { $process.Dispose() }
+''';
+  final encoded = base64.encode([
+    for (final unit in script.codeUnits) ...[unit & 255, unit >> 8],
+  ]);
+  return Process.runSync(shell.path, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-EncodedCommand',
+    encoded
+  ], environment: {
+    'CODEX_AGENT_SSHSIG_VERIFIER': verifier.path,
+    'CODEX_AGENT_SSHSIG_ARGUMENTS':
+        arguments.map((value) => '"$value"').join(' '),
+    'CODEX_AGENT_SSHSIG_INPUT': input.path,
+  });
+}
 
 void _requireExactEvidenceFiles(Directory root, Set<String> expected) {
   if (!root.existsSync()) {

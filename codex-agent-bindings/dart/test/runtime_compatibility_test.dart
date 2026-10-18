@@ -86,7 +86,7 @@ void main() {
   });
 
   test('embedded bytes are authenticated and external bytes may differ', () {
-    final library = File('${temporary.path}/runtime')
+    final library = File('${temporary.path}${Platform.pathSeparator}runtime')
       ..writeAsStringSync('runtime');
     final digest = runtimeFileSha256(library);
     final target = currentClassifier();
@@ -126,7 +126,8 @@ void main() {
   });
 
   test('Runtime hash rejects an oversized sparse file before reading it', () {
-    final library = File('${temporary.path}/oversized-runtime');
+    final library =
+        File('${temporary.path}${Platform.pathSeparator}oversized-runtime');
     final opened = library.openSync(mode: FileMode.write);
     try {
       opened.truncateSync(512 * 1024 * 1024 + 1);
@@ -178,7 +179,8 @@ void main() {
   });
 
   test('declaration rejects noncanonical unknown and incomplete inputs', () {
-    final file = File('${temporary.path}/sdk-compatibility.json');
+    final file = File(
+        '${temporary.path}${Platform.pathSeparator}sdk-compatibility.json');
     file.writeAsStringSync(jsonEncode(declaration));
     expect(
       () => RuntimeCompatibility.read(file),
@@ -216,14 +218,16 @@ void main() {
   test('missing SDK compatibility declaration fails closed', () {
     expect(
       () => RuntimeCompatibility.read(
-        File('${temporary.path}/missing-sdk-compatibility.json'),
+        File(
+            '${temporary.path}${Platform.pathSeparator}missing-sdk-compatibility.json'),
       ),
       throwsA(isA<CodexException>()),
     );
   });
 
   test('oversized SDK compatibility declaration fails before parsing', () {
-    final file = File('${temporary.path}/oversized-sdk-compatibility.json');
+    final file = File(
+        '${temporary.path}${Platform.pathSeparator}oversized-sdk-compatibility.json');
     final opened = file.openSync(mode: FileMode.write);
     try {
       opened.truncateSync(1024 * 1024 + 1);
@@ -287,7 +291,7 @@ void main() {
       );
     }
 
-    final real = File('${temporary.path}/runtime')
+    final real = File('${temporary.path}${Platform.pathSeparator}runtime')
       ..writeAsStringSync('runtime');
     final separator = Platform.pathSeparator;
     final redundant =
@@ -307,19 +311,23 @@ void main() {
         throwsA(isA<CodexException>()),
       );
     }
-    final finalLink = Link('${temporary.path}/runtime-link')
-      ..createSync(real.path);
+    final finalLink =
+        Link('${temporary.path}${Platform.pathSeparator}runtime-link')
+          ..createSync(real.path);
     expect(
       () => resolveLibraryPathSync(finalLink.path),
       throwsA(isA<CodexException>()),
     );
-    final parent = Directory('${temporary.path}/parent')..createSync();
-    final nested = File('${parent.path}/runtime')..writeAsStringSync('runtime');
-    final parentLink = Link('${temporary.path}/parent-link')
-      ..createSync(parent.path);
+    final parent = Directory('${temporary.path}${Platform.pathSeparator}parent')
+      ..createSync();
+    final nested = File('${parent.path}${Platform.pathSeparator}runtime')
+      ..writeAsStringSync('runtime');
+    final parentLink =
+        Link('${temporary.path}${Platform.pathSeparator}parent-link')
+          ..createSync(parent.path);
     expect(
       () => resolveLibraryPathSync(
-          '${parentLink.path}/${nested.uri.pathSegments.last}'),
+          '${parentLink.path}${Platform.pathSeparator}${nested.uri.pathSegments.last}'),
       throwsA(isA<CodexException>()),
     );
     expect(resolveLibraryPathSync(real.path), real.path);
@@ -399,8 +407,9 @@ void main() {
   });
 
   test('path-only override fails before dynamic loading', () {
-    final library = File('${temporary.path}/path-only-runtime')
-      ..writeAsStringSync('not a native library');
+    final library =
+        File('${temporary.path}${Platform.pathSeparator}path-only-runtime')
+          ..writeAsStringSync('not a native library');
     var reachedDynamicOpen = false;
 
     expect(
@@ -433,45 +442,52 @@ void main() {
     expect(requiresExternalRuntimeEvidence(false, false), isFalse);
   });
 
-  test('Windows external signature verification fails closed', () {
-    expect(supportsExternalRuntimeSignatureVerifier('windows'), isFalse);
+  test('external signature verification is limited to the three desktop OSes',
+      () {
+    expect(supportsExternalRuntimeSignatureVerifier('windows'), isTrue);
     expect(supportsExternalRuntimeSignatureVerifier('macos'), isTrue);
     expect(supportsExternalRuntimeSignatureVerifier('linux'), isTrue);
+    expect(supportsExternalRuntimeSignatureVerifier('android'), isFalse);
   });
 
   test('root-delegated release evidence binds exact external bytes', () {
-    if (Platform.isWindows) return;
-    final library = File('${temporary.path}/signed-runtime')
-      ..writeAsStringSync('synthetic runtime bytes');
+    final library =
+        File('${temporary.path}${Platform.pathSeparator}signed runtime space & % !')
+          ..writeAsStringSync('synthetic runtime bytes');
     final root = _testKey(temporary, 'root');
     final signer = _testKey(temporary, 'signer');
     final evidence = Directory('${library.path}.evidence')..createSync();
-    final keys = Directory('${evidence.path}/keys')..createSync();
-    final releaseKey = File('${keys.path}/release-a.pub')
-      ..writeAsBytesSync(signer.public);
+    final keys = Directory('${evidence.path}${Platform.pathSeparator}keys')
+      ..createSync();
+    final releaseKey =
+        File('${keys.path}${Platform.pathSeparator}release-a.pub')
+          ..writeAsBytesSync(signer.public);
     final signerFingerprint = _fingerprint(signer.public);
-    final keyring = File('${evidence.path}/release-keyring.json')
-      ..writeAsStringSync(_canonicalJson({
-        'schemaVersion': 1,
-        'namespace': 'codex-agent-product-v1',
-        'algorithm': 'ssh-ed25519',
-        'trustDomain': 'release',
-        'activeKey': {
-          'keyId': 'release-a',
-          'fingerprint': signerFingerprint,
-        },
-        'retiredKeys': <Object>[],
-      }));
-    final delegation = File('${evidence.path}/root-delegation.json')
-      ..writeAsStringSync(_canonicalJson({
-        'schemaVersion': 1,
-        'kind': 'sdk-runtime-release-keyring-delegation',
-        'scope': 'desktop-runtime-library',
-        'rootFingerprint': _fingerprint(root.public),
-        'keyringSha256': _digest(keyring.readAsBytesSync()),
-      }));
+    final keyring =
+        File('${evidence.path}${Platform.pathSeparator}release-keyring.json')
+          ..writeAsStringSync(_canonicalJson({
+            'schemaVersion': 1,
+            'namespace': 'codex-agent-product-v1',
+            'algorithm': 'ssh-ed25519',
+            'trustDomain': 'release',
+            'activeKey': {
+              'keyId': 'release-a',
+              'fingerprint': signerFingerprint,
+            },
+            'retiredKeys': <Object>[],
+          }));
+    final delegation =
+        File('${evidence.path}${Platform.pathSeparator}root-delegation.json')
+          ..writeAsStringSync(_canonicalJson({
+            'schemaVersion': 1,
+            'kind': 'sdk-runtime-release-keyring-delegation',
+            'scope': 'desktop-runtime-library',
+            'rootFingerprint': _fingerprint(root.public),
+            'keyringSha256': _digest(keyring.readAsBytesSync()),
+          }));
     _sign(delegation, root.privateKey, 'codex-agent-sdk-runtime-root-v1');
-    final claim = File('${evidence.path}/runtime-library-authorization.json')
+    final claim = File(
+        '${evidence.path}${Platform.pathSeparator}runtime-library-authorization.json')
       ..writeAsStringSync(_canonicalJson({
         'schemaVersion': 1,
         'kind': 'desktop-runtime-library-authorization',
@@ -699,7 +715,7 @@ Set<String> _runtimeSnapshots(Directory ownedTemporary) => ownedTemporary
 
 ({String privateKey, List<int> public}) _testKey(
     Directory directory, String name) {
-  final path = '${directory.path}/$name';
+  final path = '${directory.path}${Platform.pathSeparator}$name';
   final result = Process.runSync('ssh-keygen', [
     '-q',
     '-t',
@@ -731,7 +747,7 @@ void _sign(File manifest, String privateKey, String namespace) {
   ]);
   expect(result.exitCode, 0, reason: '${result.stderr}');
   File('${manifest.path}.sig').renameSync(
-      '${manifest.parent.path}/${manifest.uri.pathSegments.last.replaceAll('.json', '.sig')}');
+      '${manifest.parent.path}${Platform.pathSeparator}${manifest.uri.pathSegments.last.replaceAll('.json', '.sig')}');
 }
 
 void _writeSignedEvidence(
@@ -741,28 +757,33 @@ void _writeSignedEvidence(
   String identity,
 ) {
   final evidence = Directory('${library.path}.evidence')..createSync();
-  final keys = Directory('${evidence.path}/keys')..createSync();
-  File('${keys.path}/release-a.pub').writeAsBytesSync(signer.public);
+  final keys = Directory('${evidence.path}${Platform.pathSeparator}keys')
+    ..createSync();
+  File('${keys.path}${Platform.pathSeparator}release-a.pub')
+      .writeAsBytesSync(signer.public);
   final fingerprint = _fingerprint(signer.public);
-  final keyring = File('${evidence.path}/release-keyring.json')
-    ..writeAsStringSync(_canonicalJson({
-      'schemaVersion': 1,
-      'namespace': 'codex-agent-product-v1',
-      'algorithm': 'ssh-ed25519',
-      'trustDomain': 'release',
-      'activeKey': {'keyId': 'release-a', 'fingerprint': fingerprint},
-      'retiredKeys': <Object>[],
-    }));
-  final delegation = File('${evidence.path}/root-delegation.json')
-    ..writeAsStringSync(_canonicalJson({
-      'schemaVersion': 1,
-      'kind': 'sdk-runtime-release-keyring-delegation',
-      'scope': 'desktop-runtime-library',
-      'rootFingerprint': _fingerprint(root.public),
-      'keyringSha256': _digest(keyring.readAsBytesSync()),
-    }));
+  final keyring =
+      File('${evidence.path}${Platform.pathSeparator}release-keyring.json')
+        ..writeAsStringSync(_canonicalJson({
+          'schemaVersion': 1,
+          'namespace': 'codex-agent-product-v1',
+          'algorithm': 'ssh-ed25519',
+          'trustDomain': 'release',
+          'activeKey': {'keyId': 'release-a', 'fingerprint': fingerprint},
+          'retiredKeys': <Object>[],
+        }));
+  final delegation =
+      File('${evidence.path}${Platform.pathSeparator}root-delegation.json')
+        ..writeAsStringSync(_canonicalJson({
+          'schemaVersion': 1,
+          'kind': 'sdk-runtime-release-keyring-delegation',
+          'scope': 'desktop-runtime-library',
+          'rootFingerprint': _fingerprint(root.public),
+          'keyringSha256': _digest(keyring.readAsBytesSync()),
+        }));
   _sign(delegation, root.privateKey, 'codex-agent-sdk-runtime-root-v1');
-  final claim = File('${evidence.path}/runtime-library-authorization.json')
+  final claim = File(
+      '${evidence.path}${Platform.pathSeparator}runtime-library-authorization.json')
     ..writeAsStringSync(_canonicalJson({
       'schemaVersion': 1,
       'kind': 'desktop-runtime-library-authorization',
@@ -791,19 +812,21 @@ Future<ProcessResult> _runIsolated(
   String source,
   List<String> arguments,
 ) async {
-  final package = Directory('${temporary.path}/isolated-package')..createSync();
-  Directory('${package.path}/lib').createSync();
+  final package =
+      Directory('${temporary.path}${Platform.pathSeparator}isolated-package')
+        ..createSync();
+  Directory('${package.path}${Platform.pathSeparator}lib').createSync();
   final original = Directory('lib');
   for (final entity in original.listSync(recursive: true)) {
     final relative = entity.path.substring(original.path.length + 1);
-    final destination = '${package.path}/lib/$relative';
+    final destination = '${package.path}${Platform.pathSeparator}lib/$relative';
     if (entity is Directory) {
       Directory(destination).createSync(recursive: true);
     } else if (entity is File) {
       File(entity.path).copySync(destination);
     }
   }
-  File('${package.path}/lib/src/native/sdk-runtime-root.pub')
+  File('${package.path}${Platform.pathSeparator}lib/src/native/sdk-runtime-root.pub')
       .writeAsBytesSync(rootKey);
   final configuration =
       jsonDecode(File('.dart_tool/package_config.json').readAsStringSync())
@@ -813,10 +836,12 @@ Future<ProcessResult> _runIsolated(
       .cast<Map<String, Object?>>()
       .singleWhere((entry) => entry['name'] == 'codex_agent');
   codexAgent['rootUri'] = package.uri.toString();
-  final configFile = File('${temporary.path}/package_config.json')
-    ..writeAsStringSync(jsonEncode(configuration));
-  final script = File('${temporary.path}/isolated_test.dart')
-    ..writeAsStringSync(source);
+  final configFile =
+      File('${temporary.path}${Platform.pathSeparator}package_config.json')
+        ..writeAsStringSync(jsonEncode(configuration));
+  final script =
+      File('${temporary.path}${Platform.pathSeparator}isolated_test.dart')
+        ..writeAsStringSync(source);
   return Process.run(Platform.resolvedExecutable, [
     '--packages=${configFile.path}',
     script.path,
@@ -832,7 +857,8 @@ RuntimeCompatibility _writeCompatibility(
   Directory root,
   Map<String, Object?> value,
 ) {
-  final file = File('${root.path}/sdk-compatibility.json');
+  final file =
+      File('${root.path}${Platform.pathSeparator}sdk-compatibility.json');
   file.writeAsStringSync(_canonicalJson(value));
   return RuntimeCompatibility.read(file);
 }
@@ -879,9 +905,9 @@ Future<File> _compileLibrary(
   bool requireIdentityBeforeAbi = false,
   int marker = 1,
 }) async {
-  final source = File('${root.path}/$name.c');
+  final source = File('${root.path}${Platform.pathSeparator}$name.c');
   final output = File(
-    '${root.path}/$name${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}',
+    '${root.path}${Platform.pathSeparator}$name${Platform.isMacOS ? '.dylib' : Platform.isWindows ? '.dll' : '.so'}',
   );
   source.writeAsStringSync(identity == null
       ? 'int codex_agent_test_only(void) { return 0; }\n'
