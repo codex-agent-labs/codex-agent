@@ -65,6 +65,12 @@ class ProductPythonToolingReleaseJarTest {
 
     @Test
     fun `packaged native import closure and fixed cpp verifier require no checkout scripts`() {
+        val inspector = "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/"
+        val packaged = releaseToolingJar.pythonProductResources()
+        for (name in listOf("Program.cs", "VerifySdkRuntimeRoot.csproj")) {
+            assertTrue(inspector + name in nativeWrapperPythonResources)
+            assertTrue("python/$inspector$name" in packaged)
+        }
         assertTrue("verify-native" in runNativeWrapperPython(listOf("--help")))
         assertTrue("--expected-test-program" in runProductPythonModule("cpp_package", listOf("verify-evidence", "--help")))
         assertFailsWith<IllegalStateException> { runProductPythonModule("cpp_package", listOf("--help")) }

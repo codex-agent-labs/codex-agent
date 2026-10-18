@@ -6,6 +6,10 @@ allprojects {
                 include('runtime_validation_projection.py', 'sdk_csharp_binary.py', 'sdk_dotnet_toolchain.py', 'sdk_runtime_root.py')
                 into('python/ci/products')
             }
+            from(project.layout.projectDirectory.dir('../../codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot')) {
+                include('Program.cs', 'VerifySdkRuntimeRoot.csproj')
+                into('python/codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot')
+            }
         }
     }
     tasks.withType(org.gradle.jvm.tasks.Jar).configureEach {

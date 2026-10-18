@@ -10,6 +10,8 @@ internal val nativeWrapperPythonResources = productPythonResources.getValue("sdk
     "ci/products/sdk_csharp_binary.py",
     "ci/products/sdk_dotnet_toolchain.py",
     "ci/products/sdk_runtime_root.py",
+    "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs",
+    "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/VerifySdkRuntimeRoot.csproj",
 )
 
 /** Use the scoped release-tooling init script to package this native-only closure. */
