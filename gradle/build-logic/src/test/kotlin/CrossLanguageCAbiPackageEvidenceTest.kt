@@ -24,6 +24,28 @@ class CrossLanguageCAbiPackageEvidenceTest {
         .first { it.resolve("settings.gradle.kts").isFile && it.resolve("codex-agent-bindings").isDirectory }
 
     @Test
+    fun `private C ABI command accepts only the Windows transport terminator`() {
+        val canonical = """{"schemaVersion":1,"text":"café"}""" + "\n"
+        val expected = Json.parseToJsonElement(canonical).jsonObject
+        for (windows in listOf(false, true)) {
+            assertEquals(expected, parseCAbiCommandResponse(canonical, "probe", windows))
+            for (invalid in listOf(canonical + "\n", canonical + "\r\n",
+                canonical.dropLast(1), canonical.dropLast(1) + "\r\r\n",
+                " " + canonical, canonical.replace(":1", ": 1"),
+                canonical.replace("1,", "1,\"schemaVersion\":1,"))) {
+                assertFailsWith<IllegalStateException>(invalid) {
+                    parseCAbiCommandResponse(invalid, "probe", windows)
+                }
+            }
+        }
+        val windowsOutput = canonical.dropLast(1) + "\r\n"
+        assertEquals(expected, parseCAbiCommandResponse(windowsOutput, "probe", windows = true))
+        assertFailsWith<IllegalStateException> {
+            parseCAbiCommandResponse(windowsOutput, "probe", windows = false)
+        }
+    }
+
+    @Test
     fun `SDK plugin wires imported native wrapper packages`() {
         val sdkWiring = repository.resolve(
             "gradle/build-logic/src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts",

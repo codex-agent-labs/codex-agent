@@ -167,7 +167,7 @@ internal fun <T> withPortableVerifiedCrossLanguageCAbiPackageEvidence(
             }
             add("--output-directory"); add(verifiedRoot.absolutePath)
         }
-        val report = parseCanonicalCAbiClientObject(
+        val report = parseCAbiCommandResponse(
             runProductPythonModule("c_abi", arguments),
             "C ABI portable verification output",
         )
@@ -224,7 +224,7 @@ private fun crossLanguageCAbiClientTarget(target: String): CrossLanguageCAbiClie
     crossLanguageCAbiClientCatalog.targets[target] ?: error("Unsupported C ABI package target: $target")
 
 private fun readCrossLanguageCAbiClientCatalog(contents: String): CrossLanguageCAbiClientCatalog {
-    val root = parseCanonicalCAbiClientObject(contents, "C ABI catalog")
+    val root = parseCAbiCommandResponse(contents, "C ABI catalog")
     root.requireCAbiClientKeys(setOf("schemaVersion", "abi", "paths", "consumers", "hostMappings", "targets"))
     check(root.cAbiClientInt("schemaVersion") == 1) { "C ABI catalog schema version mismatch" }
 
@@ -313,6 +313,17 @@ private fun readCrossLanguageCAbiClientCatalog(contents: String): CrossLanguageC
         hostMappings,
         targets.toSortedMap(),
     )
+}
+
+internal fun parseCAbiCommandResponse(
+    contents: String,
+    label: String,
+    windows: Boolean = System.getProperty("os.name").startsWith("Windows"),
+): JsonObject {
+    // Only the private Python command's final LF is translated by Windows text
+    // stdout. Never apply this transport conversion to artifact or receipt bytes.
+    val response = if (windows && contents.endsWith("\r\n")) contents.dropLast(2) + "\n" else contents
+    return parseCanonicalCAbiClientObject(response, label)
 }
 
 private fun parseCanonicalCAbiClientObject(contents: String, label: String): JsonObject {
