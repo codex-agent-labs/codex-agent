@@ -25,7 +25,10 @@ class RustEvidenceProducerTest(unittest.TestCase):
         for path in (self.inputs[0], self.inputs[1], self.inputs[3], self.inputs[4]):
             path.write_text("declared fixture")
         self.contract_digest = "sha256:" + "b" * 64
-        self.inputs[4].write_text(json.dumps({"contract": {"digest": self.contract_digest}}))
+        declaration = json.loads((producer.ROOT / "native/sdk-compatibility.json").read_bytes())
+        declaration["contract"]["digest"] = self.contract_digest
+        declaration["runtime"]["requiredContractDigest"] = self.contract_digest
+        self.inputs[4].write_text(json.dumps(declaration))
         (self.inputs[2] / "include").mkdir(parents=True)
         (self.inputs[2] / "include/codex_agent.h").write_text("fixture header")
         (self.inputs[2] / "lib").mkdir()
@@ -106,7 +109,19 @@ class RustEvidenceProducerTest(unittest.TestCase):
         for directory in ("src", "tests", "parity"):
             for path in (producer.ROOT / directory).rglob("*"):
                 if path.is_file():
-                    self.assertEqual(path.read_bytes(), (self.output / "source" / path.relative_to(producer.ROOT)).read_bytes())
+                    if path.relative_to(producer.ROOT).as_posix() == "src/native_values.rs":
+                        # The separately checked private linkage shares the authenticated
+                        # Runtime image, not a second native handle registry.
+                        marker = b'#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]'
+                        self.assertEqual(path.read_bytes().split(marker)[0],
+                                         (self.output / "source/src/native_values.rs").read_bytes().split(marker)[0])
+                        continue
+                    expected = path.read_bytes()
+                    if path.relative_to(producer.ROOT).as_posix() in {
+                        "src/lib.rs", "src/compatibility.rs", "tests/fixtures/mock_codex_agent.c",
+                    }:
+                        expected = expected.replace(("sha256:" + "a" * 64).encode(), self.contract_digest.encode())
+                    self.assertEqual(expected, (self.output / "source" / path.relative_to(producer.ROOT)).read_bytes())
         self.assertFalse((self.output / "source/target").exists())
         self.assertEqual(self.inputs[4].read_bytes(), (self.output / "source/native/sdk-compatibility.json").read_bytes())
 

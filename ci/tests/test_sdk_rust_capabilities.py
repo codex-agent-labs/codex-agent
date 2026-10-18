@@ -1,6 +1,7 @@
 """Raw producer composition checks, not compiler/host or signature acceptance."""
 
 from contextlib import nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -157,7 +158,13 @@ class RustCapabilitiesTest(unittest.TestCase):
             (sdk / "include").mkdir()
             (sdk / "include/codex_agent.h").write_text("fixture header")
             compatibility = sdks / "sdk-compatibility.json"
-            compatibility.write_bytes((original / "native/sdk-compatibility.json").read_bytes())
+            declaration = json.loads((original / "native/sdk-compatibility.json").read_bytes())
+            digest = "sha256:" + hashlib.sha256(b"imported contract fixture").hexdigest()
+            declaration["contract"]["digest"] = declaration["runtime"]["requiredContractDigest"] = digest
+            for variant in declaration["runtime"]["embeddedVariants"]:
+                for field in ("componentId", "manifestSha256"):
+                    variant[field] = "sha256:" + hashlib.sha256((variant["target"] + field).encode()).hexdigest()
+            compatibility.write_bytes(json.dumps(declaration, sort_keys=True, separators=(",", ":")).encode() + b"\n")
             (sdks / "sdk-runtime-root.pub").write_bytes(
                 (repository / "gradle/release/keys/sdk-runtime-root.pub").read_bytes())
             authorization = root / "external-sidecars"
@@ -191,6 +198,21 @@ class RustCapabilitiesTest(unittest.TestCase):
                 self.assertIn(b'#[cfg(test)]\n#[path = "../tests/lifecycle_unit.rs"]', (source / "src/lib.rs").read_bytes())
                 self.assertEqual({"sdk-compatibility.json", "sdk-runtime-root.pub"},
                                  {path.name for path in (source / "native").iterdir()})
+                self.assertEqual(compatibility.read_bytes(), (source / "native/sdk-compatibility.json").read_bytes())
+                for name, marker in (("src/compatibility.rs", b"#[cfg(test)]\nmod tests {"),
+                                     ("src/lib.rs", b"#[cfg(all(test, unix))]\nmod loader_security_tests {")):
+                    before_source = (original / name).read_bytes()
+                    projected = (source / name).read_bytes()
+                    self.assertEqual(before_source.split(marker)[0], projected.split(marker)[0])
+                    self.assertIn(digest.encode(), projected)
+                    self.assertNotIn(("sha256:" + "a" * 64).encode(), projected)
+                projected = (source / "src/compatibility.rs").read_text()
+                for variant in declaration["runtime"]["embeddedVariants"][:2]:
+                    self.assertIn(variant["componentId"], projected)
+                    self.assertIn(variant["manifestSha256"], projected)
+                values = (source / "src/native_values.rs").read_text()
+                self.assertIn('load_fixture_for_test(&sdk).expect("load real C SDK")', values)
+                self.assertIn("C fixture and Rust must share one authenticated Runtime image", values)
                 raw = source / "target/cross-language-evidence"
                 raw.mkdir(parents=True)
                 (raw / "compiler-evidence.tsv").write_text("compilerEvidenceId\tpublicSymbols\nfixture\tSymbol\n")

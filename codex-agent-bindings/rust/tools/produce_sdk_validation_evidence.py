@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -86,6 +87,75 @@ def _copy_sources(destination: Path, source_root: Path) -> None:
         else:
             shutil.copyfile(source, destination / name)
     _validate_tree(destination)
+
+
+def _project_fixture_identities(source: Path, declaration: dict) -> dict[str, bytes]:
+    """Bind private mock/test data to the imported declaration, not the source demo.
+
+    Production loader code and the imported declaration remain byte-identical.
+    In particular the duplicate-component/manifest negatives still mutate one
+    real entry into another; they must not silently become no-op replacements.
+    """
+    targets = ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-x64")
+    variants = declaration["runtime"]["embeddedVariants"]
+    if [row["target"] for row in variants] != list(targets):
+        raise ValueError("Rust fixture projection requires the exact five Runtime targets")
+    replacements = {"sha256:" + "a" * 64: declaration["contract"]["digest"]}
+    for index, row in enumerate(variants, 1):
+        for prefix, field in (("2", "componentId"), ("3", "manifestSha256")):
+            replacements["sha256:" + prefix + str(index) * 63] = row[field]
+    if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in replacements.values()):
+        raise ValueError("Rust fixture projection requires exact Runtime identities")
+    projected = {}
+    for name, marker in (
+        ("src/compatibility.rs", "#[cfg(test)]\nmod tests {"),
+        ("src/lib.rs", "#[cfg(all(test, unix))]\nmod loader_security_tests {"),
+        ("tests/fixtures/mock_codex_agent.c", "#ifndef CODEX_AGENT_TEST_CONTRACT_DIGEST"),
+    ):
+        path = source / name
+        raw = path.read_text(encoding="utf-8")
+        if raw.count(marker) != 1:
+            raise ValueError("Rust fixture identity projection source boundary changed")
+        production, tests = raw.split(marker)
+        tests = re.sub(r"sha256:[0-9a-f]{64}", lambda match: replacements.get(match[0], match[0]), tests)
+        if name == "src/lib.rs":
+            tests = tests.replace('"2' + '5' * 63 + '"', '"' + variants[-1]["componentId"][7:] + '"')
+        projected[name] = (production + marker + tests).encode("utf-8")
+        path.write_bytes(projected[name])
+    # Value tests share the caller-authenticated input image with their linked
+    # C fixture, using the existing cfg(test) seam. Public loader/signature and
+    # snapshot tests still run separately, including the genuine lifecycle test.
+    name = "src/native_values.rs"
+    path = source / name
+    raw = path.read_text(encoding="utf-8")
+    original = 'let native = CodexNativeLibrary::load(&sdk).expect("load real C SDK");'
+    if raw.count(original) != 1:
+        raise ValueError("Rust real value fixture linkage differs from the reviewed projection")
+    raw = raw.replace(original, original.replace("::load(", "::load_fixture_for_test("))
+    if raw.count('.arg("-dynamiclib")') != 1:
+        raise ValueError("Rust value fixture compiler invocation changed")
+    raw = raw.replace('.arg("-dynamiclib")', '.arg("-dynamiclib").arg("-Wl,-headerpad_max_install_names")')
+    linkage = "        output\n    }\n\n    fn create_server("
+    if raw.count(linkage) != 1:
+        raise ValueError("Rust value fixture link boundary changed")
+    raw = raw.replace(linkage, '''        assert!(Command::new("install_name_tool")
+            .args(["-change", "@rpath/libcodex_agent.dylib"])
+            .arg(sdk).arg(&output).status().expect("bind exact fixture Runtime").success());
+        output
+    }
+
+    fn create_server(''')
+    check = "        (native, context, fixture)"
+    if raw.count(check) != 1:
+        raise ValueError("Rust value fixture identity check boundary changed")
+    raw = raw.replace(check, '''        // SAFETY: compare addresses only; never call this erased signature.
+        let create = unsafe { fixture.get::<unsafe extern "C" fn()>(b"codex_agent_context_create\\0") }.unwrap();
+        assert_eq!(*create as usize, native.inner.api.context_create as usize,
+            "C fixture and Rust must share one authenticated Runtime image");
+        (native, context, fixture)''')
+    projected[name] = raw.encode("utf-8")
+    path.write_bytes(projected[name])
+    return projected
 
 
 def _retain_tree(source: Path, destination: Path) -> None:
@@ -210,6 +280,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             # marker and all real-library execution must use the explicit import.
             (source / "native").mkdir()
             (source / "native/sdk-compatibility.json").write_bytes(compatibility_bytes)
+            projected = _project_fixture_identities(source, declaration)
             evidence.mkdir()
             scratch.mkdir()
             environment = os.environ.copy()
@@ -234,6 +305,11 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
                     shutil.copyfileobj(log, sys.stderr.buffer)
                     sys.stderr.buffer.flush()
                     raise
+            # The authorized caller appends the existing lifecycle unit module
+            # to lib.rs; its original projected prefix must still be intact.
+            if any(not (source / name).read_bytes().startswith(raw) if name == "src/lib.rs"
+                   else (source / name).read_bytes() != raw for name, raw in projected.items()):
+                raise ValueError("Rust fixture identity projection changed during execution")
             _retain_cargo_test_executables(evidence / "cargo-test.log", source, evidence)
             raw = source / "target/cross-language-evidence"
             _verify_reports(raw)
