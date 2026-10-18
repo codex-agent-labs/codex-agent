@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 from unittest import mock
+from ci.products.sdk_package import project_cpp_capability_linkage
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,24 @@ class RootOverlayTest(unittest.TestCase):
         self.assertFalse((self.case.sdk / resource).exists())
         self.assertEqual("authenticated public root\n", self.root.read_text())
         self.assertEqual(4, len(self.case.calls))
+
+    def test_mock_object_projection_changes_only_retained_private_test_linkage(self):
+        self.case.write(self.case.source / "tests/CMakeLists.txt",
+                        "add_library(codex_agent_mock STATIC mock_codex_agent.cpp)\n")
+        original = (self.case.source / "tests/CMakeLists.txt").read_bytes()
+        self.case.produce()
+        project_cpp_capability_linkage(self.case.output / "source")
+        projected = (self.case.output / "source/tests/CMakeLists.txt").read_bytes()
+        self.assertEqual(original, projected.replace(b"OBJECT", b"STATIC"))
+        self.assertIn(b"codex_agent_mock OBJECT", projected)
+        self.assertEqual(original, (self.case.source / "tests/CMakeLists.txt").read_bytes())
+
+    def test_unknown_mock_linkage_rejects_before_compilation(self):
+        self.case.write(self.case.source / "tests/CMakeLists.txt", "unknown declaration\n")
+        with self.assertRaisesRegex(ValueError, "mock test linkage declaration changed"):
+            project_cpp_capability_linkage(self.case.source)
+        self.assertEqual([], self.case.calls)
+        self.assertFalse(self.case.output.exists())
 
     def test_bad_root_rejects_before_execution_or_old_evidence_deletion(self):
         for mutation in ("empty", "symlink", "conflict"):

@@ -24,6 +24,9 @@ class RustCapabilitiesTest(unittest.TestCase):
     def test_csharp_projection_keeps_loader_tests_and_cleans_failed_restore(self):
         self._check_authenticated_sidecars_and_failed_suite("csharp")
 
+    def test_cpp_projection_keeps_real_targets_and_cleans_failed_configure(self):
+        self._check_authenticated_sidecars_and_failed_suite("cpp")
+
     def _check_authenticated_sidecars_and_failed_suite(self, language):
         repository = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as temporary:
@@ -88,6 +91,14 @@ class RustCapabilitiesTest(unittest.TestCase):
                         self.assertEqual(original, projected.split("\n", 1)[1].replace(
                             "return registerCapabilityFixture(output);", "return output;"))
                     resource = "lib/src/native/sdk-runtime-root.pub"
+                elif language == "cpp":
+                    self.assertEqual(["cmake", "-S", str(source)], command[:3])
+                    projected = (source / "tests/CMakeLists.txt").read_bytes()
+                    original = (repository / "codex-agent-bindings/cpp/tests/CMakeLists.txt").read_bytes()
+                    self.assertEqual(original, projected.replace(
+                        b"add_library(codex_agent_mock OBJECT mock_codex_agent.cpp)",
+                        b"add_library(codex_agent_mock STATIC mock_codex_agent.cpp)"))
+                    resource = "../imported-c-sdk/share/CodexAgent/native/sdk-runtime-root.pub"
                 else:
                     self.assertEqual([str(dotnet), "restore"], command[:2])
                     self.assertIn("--no-cache", command)

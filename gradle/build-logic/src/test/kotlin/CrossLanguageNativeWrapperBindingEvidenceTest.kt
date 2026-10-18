@@ -55,6 +55,7 @@ class CrossLanguageNativeWrapperBindingEvidenceTest {
                 capabilityInputsDirectory.set(input)
                 installedConsumerEvidence.set(root.resolve("host"))
                 packageNegativeEvidenceDirectory.set(negatives)
+                runtimeAuthorization.set(root.resolve("authorization").apply { mkdirs(); resolve("fixture").writeText("fixture") })
                 producerScript.set(producer)
                 claims.set(source) // Command ordering fixture, not canonical claims/acceptance.
                 producerSources.from(producer, reader, source)

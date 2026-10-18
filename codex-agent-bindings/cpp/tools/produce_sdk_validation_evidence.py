@@ -146,6 +146,14 @@ def _verify_raw(build: Path, evidence: Path, classifier: str) -> None:
         raise ValueError("C++ CTest evidence omits an existing capability/native proof")
 
 
+def _copy_sources(source: Path) -> None:
+    for name in SOURCE_FILES:
+        shutil.copyfile(ROOT / name, source / name)
+    for name in SOURCE_DIRECTORIES:
+        shutil.copytree(ROOT / name, source / name, symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+
+
 def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             native_library: Path, output: Path, *, classifier: str, sdk_compatibility: Path) -> None:
     if classifier not in CLASSIFIERS:
@@ -198,11 +206,7 @@ def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,
             source, build, scratch = evidence / "source", evidence / "build", evidence / "scratch"
             source.mkdir(parents=True)
             scratch.mkdir()
-            for name in SOURCE_FILES:
-                shutil.copyfile(ROOT / name, source / name)
-            for name in SOURCE_DIRECTORIES:
-                shutil.copytree(ROOT / name, source / name, symlinks=True,
-                                ignore=shutil.ignore_patterns("__pycache__"))
+            _copy_sources(source)
             _tree(source)
             private_sdk = evidence / "imported-c-sdk"
             shutil.copytree(c_sdk_root, private_sdk, symlinks=True)

@@ -1050,13 +1050,27 @@ def capability_sidecars(native_library: Path, evidence: Path):
         invalidate_output(sidecar)
 
 
+def project_cpp_capability_linkage(source: Path) -> dict[str, bytes]:
+    # Force the mock object into mock-only tests instead of letting the earlier
+    # shared Runtime satisfy its symbols before the static archive is extracted.
+    name = "tests/CMakeLists.txt"
+    path = source / name
+    raw = read_regular_file_bytes(path, reject_symlink_parents=True)
+    declaration = b"add_library(codex_agent_mock STATIC mock_codex_agent.cpp)"
+    if raw.count(declaration) != 1:
+        raise ValueError("C++ mock test linkage declaration changed")
+    raw = raw.replace(declaration, declaration.replace(b"STATIC", b"OBJECT"))
+    path.write_bytes(raw)
+    return {name: raw}
+
+
 def produce_authorized_native_capabilities(repository: Path, *, language: str, canonical_api: Path, c_abi_bootstrap: Path,
         c_sdk_root: Path, native_library: Path, sdk_compatibility: Path, output: Path,
         runtime_authorization: Path, expected_classifier: str,
         dart_executable: str = "dart", package_config: Path | None = None, dotnet: Path | None = None) -> None:
     """Compose the existing raw producer; no package changes or mock signatures."""
     from .c_abi import TARGET_SPECS
-    if language not in {"rust", "python", "dart", "csharp"}:
+    if language not in NATIVE_BINDINGS:
         raise ValueError("Unsupported authorized capability language")
     directory = "tool" if language == "dart" else "tools"
     script = repository / f"codex-agent-bindings/{language}/{directory}/produce_sdk_validation_evidence.py"
@@ -1136,6 +1150,19 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
             module._run_logged(command, **options)
             verify_projection(options["cwd"])
 
+        def copy_cpp_sources(source):
+            if calls:
+                raise ValueError("C++ capability producer repeated source composition")
+            module._copy_sources(source)
+            projected_sources.update(project_cpp_capability_linkage(source))
+            calls.append(True)
+
+        def run_cpp(command, **options):
+            verify_projection(options["cwd"])
+            result = original_run(command, **options)
+            verify_projection(options["cwd"])
+            return result
+
         def retain(log, source, evidence):
             module._retain_cargo_test_executables(log, source, evidence, lifecycle_as_unit=True)
 
@@ -1147,9 +1174,13 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
             if dotnet is None or not dotnet.is_absolute():
                 raise ValueError("C# capability requires an explicit absolute dotnet executable")
             namespace.update(_copy_sources=copy_csharp_sources, _run_logged=run_csharp)
+        elif language == "cpp":
+            namespace.update(_copy_sources=copy_cpp_sources, subprocess=SimpleNamespace(
+                run=run_cpp, STDOUT=subprocess.STDOUT, CalledProcessError=subprocess.CalledProcessError))
         produce = FunctionType(module.produce.__code__, namespace, module.produce.__name__)
         options = ({"dart_executable": dart_executable, "package_config": package_config} if language == "dart"
-                   else {"dotnet": dotnet} if language == "csharp" else {})
+                   else {"dotnet": dotnet} if language == "csharp"
+                   else {"classifier": expected_classifier} if language == "cpp" else {})
         produce(canonical_api=canonical_api, c_abi_bootstrap=c_abi_bootstrap, c_sdk_root=c_sdk_root,
                 native_library=native_library, sdk_compatibility=sdk_compatibility, output=output, **options)
         if calls != [True]:
@@ -1166,12 +1197,14 @@ def produce_authorized_native_capabilities(repository: Path, *, language: str, c
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    for language in ("rust", "python", "dart", "csharp"):
+    for language in NATIVE_BINDINGS:
         capability = commands.add_parser(f"{language}-capabilities", allow_abbrev=False)
         for name in ("repository", "canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library",
                      "sdk-compatibility", "output", "runtime-authorization"):
             capability.add_argument(f"--{name}", type=Path, required=True)
         capability.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
+        if language == "cpp":
+            capability.add_argument("--classifier", choices=NATIVE_TARGETS, required=True)
         if language == "dart":
             capability.add_argument("--dart-executable", default="dart")
             capability.add_argument("--package-config", type=Path)
@@ -1204,7 +1237,9 @@ def main(argv: list[str] | None = None) -> int:
     metadata.add_argument("--package-receipt", type=Path, required=True)
     metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
-    if args.command in {"rust-capabilities", "python-capabilities", "dart-capabilities", "csharp-capabilities"}:
+    if args.command in {f"{language}-capabilities" for language in NATIVE_BINDINGS}:
+        if args.command == "cpp-capabilities" and args.classifier != args.expected_classifier:
+            raise ValueError("C++ capability classifier differs from authenticated host")
         options = ({"dart_executable": args.dart_executable, "package_config": args.package_config} if args.command == "dart-capabilities"
                    else {"dotnet": args.dotnet} if args.command == "csharp-capabilities" else {})
         produce_authorized_native_capabilities(args.repository, language=args.command.removesuffix("-capabilities"), canonical_api=args.canonical_api,
