@@ -48,6 +48,15 @@ class RootOverlayTest(unittest.TestCase):
         self.assertEqual([], self.case.calls)
         self.assertFalse(self.case.output.exists())
 
+    def test_fixed_width_fixture_header_is_only_added_to_private_test_source(self):
+        path = self.case.write(self.case.source / "tests/native_loader_fixture.cpp",
+                               "std::int32_t fixture();\n")
+        original = path.read_bytes()
+        self.case.produce()
+        self.assertEqual(original, path.read_bytes())
+        self.assertEqual(b"#include <cstdint>\n" + original,
+                         (self.case.output / "source/tests/native_loader_fixture.cpp").read_bytes())
+
     def test_bad_root_rejects_before_execution_or_old_evidence_deletion(self):
         for mutation in ("empty", "symlink", "conflict"):
             with self.subTest(mutation=mutation):

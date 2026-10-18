@@ -439,7 +439,7 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                 self.root / "build/rejected-after-exit", repository_root=self.root, environ={})
         self.assertFalse((self.root / "build/rejected-after-exit").exists())
 
-    def test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(self):
+    def test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(self, deferred=False):
         stage = self.produce(self.ready,
             compatibility_request=self.sdk / "sdk-compatibility-request.json")["stage"]
         manifest = workflow.verify_output_manifest_identity(stage, "sdk", "csharp", "binary",
@@ -465,8 +465,19 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
             sources={workflow._INSTANCE: object_path},
             prior_by_instance={workflow._INSTANCE: record},
             prior_ready_plans={},
-            prior_carrier_phases={workflow._INSTANCE: {"transportSource": None}},
+            prior_carrier_phases={workflow._INSTANCE: {**record, "transportSource": None}},
+            completed_frozen=None, capture_deferred_object=None, ensure_original_source=None,
             producer=self.producer, plan={"validationCommit": self.producer["commit"]})
+
+        captures = []
+        if deferred:
+            selected.completed_frozen = object()  # Plumbing only, not native authority.
+            selected.sources[workflow._INSTANCE] = self.root / "deferred-object.zip"
+            def capture(original, destination):
+                self.assertEqual(selected.prior_carrier_phases[workflow._INSTANCE], original)
+                captures.append(original)
+                destination.write_bytes(object_bytes)
+            selected.capture_deferred_object = capture
 
         with (patch.object(workflow.sdk_workflow, "verified_inputs", side_effect=self.verified),
               patch.object(workflow.product_reuse, "_verified_product_state", return_value=selected),
@@ -481,6 +492,7 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                 self.assertEqual(original_producer, original["receipt"]["producer"])
                 self.assertEqual(None, original["transportSource"])
                 self.assertTrue((captured_stage / "outputs/csharp/CodexAgent.dll").is_file())
+            self.assertEqual(int(deferred), len(captures))
             tampered_object = self.root / "tampered-object.zip"
             tampered_object.write_bytes(object_bytes + b"x")
             for label in ("object byte", "pinned digest"):
@@ -490,6 +502,7 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                     else:
                         selected.sources[workflow._INSTANCE] = object_path
                         record["objectSha256"] = "sha256:" + "0" * 64
+                        selected.prior_carrier_phases[workflow._INSTANCE]["objectSha256"] = record["objectSha256"]
                     destination = self.root / ("build/rejected-" + label.replace(" ", "-"))
                     with self.assertRaisesRegex(ValueError, "Product cache object SHA-256"):
                         workflow.stage_csharp_original(self.plan, self.discovery, self.state,
@@ -500,6 +513,9 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                             repository_root=self.root, environ={}, token="fixture-token")
                     self.assertFalse(destination.exists())
         self.assertFalse(captured_stage.exists())
+
+    def test_selected_native_qualified_csharp_original_restores_only_its_deferred_object(self):
+        self.test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(deferred=True)
 
     def test_csharp_original_route_uses_selected_carrier_only_when_selected(self):
         for selected in (True, False):

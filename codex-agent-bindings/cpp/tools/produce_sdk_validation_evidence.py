@@ -152,6 +152,12 @@ def _copy_sources(source: Path) -> None:
     for name in SOURCE_DIRECTORIES:
         shutil.copytree(ROOT / name, source / name, symlinks=True,
                         ignore=shutil.ignore_patterns("__pycache__"))
+    # The fixture uses std::int32_t; libc++'s transitive includes hid this on Mac.
+    # Supply the header in the private test copy without changing package bytes.
+    fixture = source / "tests/native_loader_fixture.cpp"
+    if fixture.exists():
+        fixture = _required(fixture)
+        fixture.write_bytes(b"#include <cstdint>\n" + fixture.read_bytes())
 
 
 def produce(canonical_api: Path, c_abi_bootstrap: Path, c_sdk_root: Path,

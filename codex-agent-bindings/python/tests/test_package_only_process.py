@@ -34,7 +34,7 @@ class PythonPackageOnlyProcessTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             shutil.copytree(SOURCE, source, ignore=shutil.ignore_patterns(
-                "tests", "consumer", "parity", "__pycache__", "*.pyc"))
+                "tests", "consumer", "parity", "native", "__pycache__", "*.pyc"))
             native = source / "src/codex_agent/native"
             native.mkdir()
             (native / "sdk-compatibility.json").write_bytes(b"{}\n")

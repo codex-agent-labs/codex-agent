@@ -111,7 +111,9 @@ fn digest(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn version(value: &str) -> Result<(u64, u64, u64), String> {
+type Version = (u64, u64, u64);
+
+fn version(value: &str) -> Result<Version, String> {
     let parts: Vec<_> = value.split('.').collect();
     if parts.len() != 3
         || parts.iter().any(|part| {
@@ -129,7 +131,7 @@ fn version(value: &str) -> Result<(u64, u64, u64), String> {
     ))
 }
 
-fn range(value: &str) -> Result<((u64, u64, u64), (u64, u64, u64)), String> {
+fn range(value: &str) -> Result<(Version, Version), String> {
     let (lower, upper) = value
         .split_once(' ')
         .ok_or("external evidence range is malformed")?;

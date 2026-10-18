@@ -2,6 +2,7 @@
 
 import base64
 import copy
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
@@ -44,6 +45,25 @@ def execution(target: str) -> dict:
 
 
 class CsharpRestoreAdmissionTest(unittest.TestCase):
+    def test_private_fixture_callbacks_reuse_the_unchanged_sdk_resolver(self):
+        script = Path(__file__).resolve().parents[2] / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py"
+        spec = importlib.util.spec_from_file_location("csharp_fixture_producer", script)
+        producer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(producer)
+        program = producer.TEST_SOURCE.read_bytes()
+        loader = producer.ROOT / "src/CodexAgent/Interop/NativeLibraryLoader.cs"
+        original_loader = loader.read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            producer._copy_sources(producer._source_files(), source)
+            resolver = source / "tests/CodexAgent.Tests/CapabilityFixtureResolver.cs"
+            self.assertIn('GetMethod("Resolve", BindingFlags.Static | BindingFlags.NonPublic)', resolver.read_text())
+            self.assertIn("method.CreateDelegate<DllImportResolver>()", resolver.read_text())
+            self.assertNotIn("NativeLibrary.Load(", resolver.read_text())
+            self.assertEqual(program, (source / producer.TEST_SOURCE.relative_to(producer.ROOT)).read_bytes())
+            self.assertEqual(original_loader, (source / loader.relative_to(producer.ROOT)).read_bytes())
+        self.assertFalse((producer.SUITE_ROOT / "CapabilityFixtureResolver.cs").exists())
+
     def verify(self, value: dict, target: str = "linux-x64") -> None:
         with tempfile.TemporaryDirectory(prefix="csharp-restore-") as temporary:
             path = Path(temporary).resolve() / "execution.json"

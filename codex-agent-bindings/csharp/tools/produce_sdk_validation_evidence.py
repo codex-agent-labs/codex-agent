@@ -202,6 +202,27 @@ def _copy_sources(files: list[Path], destination: Path) -> None:
         target = destination / source.relative_to(ROOT)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+    # Test-only exports must use the SDK's already authenticated image too, not
+    # load a second copy of the fixture with independent process-local state.
+    resolver = destination / "tests/CodexAgent.Tests/CapabilityFixtureResolver.cs"
+    with resolver.open("x", encoding="utf-8") as output:
+        output.write("""using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using CodexAgent.Interop;
+
+internal static class CapabilityFixtureResolver
+{
+    [ModuleInitializer]
+    internal static void Initialize()
+    {
+        var method = typeof(NativeLibraryLoader).GetMethod("Resolve", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException("SDK native resolver is missing");
+        NativeLibrary.SetDllImportResolver(typeof(CapabilityFixtureResolver).Assembly,
+            method.CreateDelegate<DllImportResolver>());
+    }
+}
+""")
 
 
 def _values(value: str, label: str) -> tuple[str, ...]:

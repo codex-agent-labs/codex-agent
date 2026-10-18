@@ -19,7 +19,7 @@ from products.inventory import (
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, restore_object, verify_phase_shard
+from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_shard
 from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from products.sdk_inputs import COMPATIBILITY_NAME, REQUEST_NAME
 from products.sdk_native_metadata import _inventory
@@ -227,7 +227,7 @@ def verified_selected_csharp_original(plan, discovery, state, *,
 
     with tempfile.TemporaryDirectory(prefix="sdk-csharp-selected-", dir=root) as temporary:
         private = Path(temporary).resolve()
-        stage = private / "stage"
+        stage = private / "sdk-csharp-binary-desktop/stage"
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 requested_scope=(product_reuse._identity(_PACKAGE),),
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
@@ -252,9 +252,8 @@ def verified_selected_csharp_original(plan, discovery, state, *,
             record = verified.prior_by_instance[_INSTANCE]
             if record["state"] not in {"retained", "reused"}:
                 raise ValueError("Selected C# binary is not a completed original")
-            restored = restore_object(verified.sources[_INSTANCE], stage,
-                build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
-                object_sha256=record["objectSha256"])
+            restored = product_reuse._restore_product_objects(
+                verified, (_INSTANCE,), private)[_INSTANCE]
             receipt = restored["receipt"]
             elected = {name: receipt[name] for name in PHASE_PLAN_KEYS}
             producer = receipt["producer"]
