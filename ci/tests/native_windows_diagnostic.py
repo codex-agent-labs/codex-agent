@@ -18,12 +18,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
-CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS)
+REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit")
+CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
-def observed(command, *, check=True):
+def observed(command, *, check=True, cwd=ROOT, env=None):
     started = time.monotonic_ns()
-    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+    result = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
     print(json.dumps({"command": command, "returnCode": result.returncode,
                       "elapsedNs": time.monotonic_ns() - started}), flush=True)
     print(result.stdout.decode(errors="replace"), flush=True)
@@ -32,7 +33,7 @@ def observed(command, *, check=True):
     return result
 
 
-def pinned_windows_library(scratch):
+def pinned_windows_library(scratch, *, crate_path=None):
     """One small original package, existing source/transport/object authentication.
 
     Diagnostic execution only: this does not grant current-plan phase admission.
@@ -79,6 +80,8 @@ def pinned_windows_library(scratch):
     library = windows_library_bytes(crate, compatibility)
     destination = scratch / "codex_agent.dll"
     destination.write_bytes(library)
+    if crate_path is not None:
+        crate_path.write_bytes(crate)
     print(json.dumps({"originalArtifactId": artifact["id"], "originalSha256": digest,
         "downloadedBytes": artifact["size_in_bytes"], "librarySha256": sha256_bytes(library),
         "phaseAdmissionGranted": False}), flush=True)
@@ -144,10 +147,68 @@ if sys.argv[2] == 'unload':
 '''
 
 
+RUST_EXIT_PIN_PROBE = r'''
+    if std::env::var_os("CODEX_AGENT_DIAGNOSTIC_PIN").is_some() {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetModuleHandleExW(flags: u32, name: *const u16, module: *mut *mut std::ffi::c_void) -> i32;
+        }
+        let name: Vec<u16> = "codex_agent.dll".encode_utf16().chain([0]).collect();
+        let mut module = std::ptr::null_mut();
+        // Diagnostic only: keep the already-loaded module mapped until OS exit,
+        // isolating early unloading from the unchanged package's atexit cleanup.
+        let pinned = unsafe { GetModuleHandleExW(1, name.as_ptr(), &mut module) };
+        assert_ne!(pinned, 0, "pin loaded Runtime: {}", std::io::Error::last_os_error());
+        println!("diagnostic Runtime module pinned until process termination");
+    }
+'''
+
+
+def rust_host_probe(scratch):
+    from native_wrappers import safe_extract_tar
+    crate = scratch / "original.crate"
+    pinned_windows_library(scratch, crate_path=crate)
+    safe_extract_tar(crate, scratch / "package")
+    package = scratch / "package/codex-agent-0.8.0"
+    consumer = scratch / "consumer"
+    # The same installed consumer as production, no test fixture library.
+    shutil.copytree(ROOT / "codex-agent-bindings/rust/consumer", consumer,
+                    ignore=shutil.ignore_patterns("target"))
+    manifest = consumer / "Cargo.toml"
+    raw = manifest.read_text(encoding="utf-8")
+    if raw.count('path = ".."') != 1:
+        raise ValueError("Rust diagnostic consumer dependency changed")
+    manifest.write_text(raw.replace('path = ".."', f'path = "{package.as_posix()}"'), encoding="utf-8")
+    host = consumer / "src/bin/host_smoke.rs"
+    raw = host.read_text(encoding="utf-8")
+    marker = '    println!("installed-crate Host smoke passed with {source}");'
+    if raw.count(marker) != 1:
+        raise ValueError("Rust diagnostic Host lifecycle changed")
+    host.write_text(raw.replace(marker, marker + "\n" + RUST_EXIT_PIN_PROBE), encoding="utf-8")
+    environment = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "target"))
+    for name in ("CODEX_AGENT_LIBRARY", "CODEX_AGENT_DIAGNOSTIC_PIN", "GITHUB_TOKEN", "GH_TOKEN"):
+        environment.pop(name, None)
+    observed(["rustc", "--version", "--verbose"])
+    observed(["cargo", "fetch", "--manifest-path", str(manifest), "--locked"], cwd=scratch, env=environment)
+    observed(["cargo", "build", "--manifest-path", str(manifest), "--release", "--locked", "--offline",
+              "--bin", "codex-agent-rust-host-smoke"], cwd=scratch, env=environment)
+    executable = str(scratch / "target/release/codex-agent-rust-host-smoke.exe")
+    for pin in (False, True):
+        print(json.dumps({"rustExitPin": pin, "instrumentedConsumer": True,
+                          "originalPackageUnchanged": True}), flush=True)
+        observed([executable], check=False, cwd=scratch,
+                 env=environment | ({"CODEX_AGENT_DIAGNOSTIC_PIN": "1"} if pin else {}))
+
+
 def control_probe(check, scratch):
     sys.path[:0] = [str(ROOT / "ci"), str(ROOT)]
     scratch.mkdir(exist_ok=False)
-    if check in ("signing-acl", "signing-workspace"):
+    if check in ("signing-acl", "signing-workspace", "signing-private-parent"):
+        if check == "signing-private-parent":
+            from ci.sdk_native_validation_workflow import _private_windows_validation_parent
+            _private_windows_validation_parent(scratch)
+            scratch = scratch / "validation/outputs/private-test/program/runtime-loader-signed"
+            scratch.mkdir(parents=True)
         fixture = ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/fixtures/sdk-runtime-root-test-only"
         key, payload = scratch / "test-only-key", scratch / "payload"
         shutil.copyfile(fixture, key)
@@ -156,7 +217,9 @@ def control_probe(check, scratch):
         signer = str(Path(os.environ["SystemRoot"]) / "System32/OpenSSH/ssh-keygen.exe")
         command = [signer, "-Y", "sign", "-f", str(key), "-n", "codex-agent-sdk-runtime-root-v1", str(payload)]
         observed(["icacls", str(key)])
-        observed(command, check=False)
+        observed(command, check=check == "signing-private-parent")
+        if check == "signing-private-parent":
+            return
         payload.with_name(payload.name + ".sig").unlink(missing_ok=True)
         user = subprocess.check_output(["whoami"], text=True).strip()
         observed(["icacls", str(key), "/inheritance:r", "/grant:r", user + ":F"])
@@ -190,12 +253,14 @@ def control_probe(check, scratch):
         for mode in ("retain", "unload"):
             observed([sys.executable, "-c", RUNTIME_EXIT_PROBE, str(library), mode,
                       "host" if check == "runtime-host-exit" else "context"], check=False)
+    elif check == "rust-host-exit":
+        rust_host_probe(scratch)
     else:
         raise ValueError("Unknown control diagnostic")
 
 
 def commands(check, scratch):
-    if check in (*CONTROL_CHECKS, *FOLLOWUP_CHECKS):
+    if check in (*CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS):
         return ROOT, [[sys.executable, str(Path(__file__).resolve()), check, str(scratch / "probe"), "--probe"]]
     include = ROOT / "codex-agent-runtime-desktop/native/c-api/include"
     if check == "cpp":
@@ -228,7 +293,7 @@ def commands(check, scratch):
 def diagnose(check, output):
     output.mkdir(parents=True, exist_ok=False)
     report = {"diagnosticOnly": True, "productPhasesProduced": 0,
-              "existingRuntimeExecutionRequested": check in ("runtime-exit", "runtime-host-exit"), "check": check,
+              "existingRuntimeExecutionRequested": check in ("runtime-exit", "runtime-host-exit", "rust-host-exit"), "check": check,
               "source": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True).strip(),
               "run": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
@@ -239,7 +304,7 @@ def diagnose(check, output):
             raise ValueError("Actual Windows execution is required")
         # Match the C# producer's workspace/build TemporaryDirectory location;
         # user Temp has different inherited ACLs and already passed signing.
-        parent = ROOT / "build" if check == "signing-workspace" else None
+        parent = ROOT / "build" if check in ("signing-workspace", "signing-private-parent") else None
         if parent is not None:
             parent.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="native-host-diagnostic-", dir=parent) as temporary:

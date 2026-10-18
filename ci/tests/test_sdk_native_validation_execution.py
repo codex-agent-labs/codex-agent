@@ -7,6 +7,7 @@ are real; the leaf tests execute only a mocked Gradle process.
 
 from contextlib import contextmanager
 from copy import deepcopy
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -381,6 +382,26 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
 class SdkNativeValidationWorkerTest(unittest.TestCase):
     fixture = leaf_fixture.SdkNativePhaseTest.fixture
     predecessor = leaf_fixture.SdkNativePhaseTest.predecessor
+
+    def test_private_windows_scratch_is_empty_scoped_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            with patch.dict(os.environ, {"SystemRoot": str(parent / "Windows")}), \
+                    patch.object(workflow.subprocess, "check_output", return_value="runner\\owner\n"), \
+                    patch.object(workflow.subprocess, "run") as acl:
+                workflow._private_windows_validation_parent(parent)
+                acl.assert_called_once_with([str(parent / "Windows/System32/icacls.exe"), str(parent),
+                    "/inheritance:r", "/grant:r", "runner\\owner:(OI)(CI)F"], check=True)
+                acl.side_effect = subprocess.CalledProcessError(1, "icacls")
+                with self.assertRaises(subprocess.CalledProcessError):
+                    workflow._private_windows_validation_parent(parent)
+                acl.reset_mock()
+                original = parent / "original"
+                original.write_bytes(b"preserved")
+                with self.assertRaisesRegex(ValueError, "must be empty"):
+                    workflow._private_windows_validation_parent(parent)
+                acl.assert_not_called()
+                self.assertEqual(b"preserved", original.read_bytes())
 
     def setUp(self):
         leaf_fixture.SdkNativePhaseTest.setUp(self)

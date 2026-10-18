@@ -91,13 +91,13 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         self.assertEqual(2, block.count("continue-on-error: true"))
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
-        results = {name: {"outcome": "success"} for name in diagnostic.FOLLOWUP_CHECKS}
+        results = {name: {"outcome": "success"} for name in diagnostic.REMAINING_CHECKS}
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        results["runtime-host-exit"]["outcome"] = "failure"
+        results["rust-host-exit"]["outcome"] = "failure"
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}), self.assertRaises(AssertionError):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        for check in (*diagnostic.CONTROL_CHECKS, *diagnostic.FOLLOWUP_CHECKS):
+        for check in (*diagnostic.CONTROL_CHECKS, *diagnostic.FOLLOWUP_CHECKS, *diagnostic.REMAINING_CHECKS):
             cwd, commands = diagnostic.commands(check, Path("private"))
             self.assertEqual(diagnostic.ROOT, cwd)
             self.assertEqual([check, str(Path("private/probe")), "--probe"], commands[0][-3:])
@@ -140,6 +140,31 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "original job differs"):
                 diagnostic.pinned_windows_library(Path("unused"))
             download.assert_not_called()
+
+    def test_rust_exit_diagnostic_compiles_one_consumer_not_a_package(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        import native_wrappers
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(diagnostic, "pinned_windows_library") as authenticated, \
+                patch.object(native_wrappers, "safe_extract_tar"), \
+                patch.object(diagnostic, "observed") as run, patch("builtins.print"):
+            scratch = Path(temporary).resolve()
+            diagnostic.rust_host_probe(scratch)
+            authenticated.assert_called_once_with(scratch, crate_path=scratch / "original.crate")
+            calls = run.call_args_list
+            self.assertEqual(5, len(calls))
+            self.assertEqual(["rustc", "--version", "--verbose"], calls[0].args[0])
+            self.assertEqual(["--release", "--locked", "--offline", "--bin", "codex-agent-rust-host-smoke"],
+                             calls[2].args[0][-5:])
+            self.assertEqual(calls[3].args, calls[4].args)
+            self.assertNotIn("CODEX_AGENT_DIAGNOSTIC_PIN", calls[3].kwargs["env"])
+            self.assertNotIn("GITHUB_TOKEN", calls[3].kwargs["env"])
+            self.assertEqual("1", calls[4].kwargs["env"]["CODEX_AGENT_DIAGNOSTIC_PIN"])
+            self.assertFalse(calls[3].kwargs["check"])
+            self.assertFalse(calls[4].kwargs["check"])
+            original = (diagnostic.ROOT / "codex-agent-bindings/rust/consumer/src/bin/host_smoke.rs").read_text()
+            projected = (scratch / "consumer/src/bin/host_smoke.rs").read_text()
+            self.assertEqual(original, projected.replace("\n" + diagnostic.RUST_EXIT_PIN_PROBE, ""))
 
     def test_failed_native_diagnostic_preserves_observations_not_success(self):
         from ci.tests import native_windows_diagnostic as diagnostic

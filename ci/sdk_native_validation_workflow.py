@@ -109,6 +109,22 @@ def capture_runtime_authorization(policy, target, destination, *, token):
     return destination
 
 
+def _private_windows_validation_parent(parent):
+    """Provision only fresh execution scratch, never change an original's ACL."""
+    if not parent.is_absolute() or any(path.is_symlink() for path in (parent, *parent.parents)):
+        raise ValueError("Windows validation scratch must be an absolute nonsymbolic directory")
+    if not parent.is_dir() or any(parent.iterdir()):
+        raise ValueError("Windows validation scratch parent must be empty")
+    system = Path(os.environ["SystemRoot"]) / "System32"
+    user = subprocess.check_output([str(system / "whoami.exe")], text=True).strip()
+    if not user or any(character in user for character in "\r\n"):
+        raise ValueError("Windows validation owner identity is invalid")
+    # OpenSSH rejects fixture keys inheriting BUILTIN\Users read access from
+    # the hosted workspace. New children must inherit only this runner's ACL.
+    subprocess.run([str(system / "icacls.exe"), str(parent), "/inheritance:r",
+                    "/grant:r", user + ":(OI)(CI)F"], check=True)
+
+
 def _execute_validation(plan, *, producer, sdk_version, repository_root, destination,
                         runtime_stages, staged_sdks, compatibility_request, package,
                         predecessor, environ, dotnet_executable, dart_executable,
@@ -193,6 +209,11 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
             raise ValueError("Native SDK validation originals or invocation policy changed")
 
     unchanged()
+    if component == "csharp" and identity.target == "windows-x64":
+        _require_capability_output_separate(stage.parent, protected)
+        if stage.parent.exists() or stage.parent.is_symlink():
+            raise ValueError("Windows private validation parent must be freshly created")
+        _private_windows_validation_parent(product_reuse._prepare_destination(stage.parent, root))
     for output in owned:
         product_reuse._prepare_destination(output, root).rmdir()
     destination = product_reuse._prepare_destination(destination, root)
