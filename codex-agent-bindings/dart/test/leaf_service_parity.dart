@@ -529,42 +529,41 @@ Future<void> verifyRealLeafBoundary(
   final importLibrary = File(
     '${requiredCSdkInclude().parent.path}/lib/codex_agent.lib',
   );
-  if (Platform.isWindows &&
-      !FileSystemEntity.isFileSync(importLibrary.path)) {
+  if (Platform.isWindows && !FileSystemEntity.isFileSync(importLibrary.path)) {
     throw StateError(
       'Windows real leaf boundary requires ${importLibrary.path}',
     );
   }
   final object = File('${nativeEvidence.path}/real-leaf-boundary.obj');
-  final arguments = Platform.isWindows &&
-          (compilerName == 'cl' || compilerName == 'cl.exe')
-      ? <String>[
-          '/nologo',
-          '/std:c11',
-          '/W4',
-          '/WX',
-          '/I${requiredCSdkInclude().path}',
-          retainedSource.path,
-          importLibrary.path,
-          '/Fe:${executable.path}',
-          '/Fo${object.path}',
-        ]
-      : <String>[
-          '-std=c11',
-          '-Wall',
-          '-Wextra',
-          '-Werror',
-          '-pedantic',
-          if (!Platform.isWindows) '-fPIC',
-          '-I',
-          requiredCSdkInclude().path,
-          retainedSource.path,
-          Platform.isWindows ? importLibrary.path : library.absolute.path,
-          if (!Platform.isWindows)
-            '-Wl,-rpath,${library.absolute.parent.path}',
-          '-o',
-          executable.path,
-        ];
+  final arguments =
+      Platform.isWindows && (compilerName == 'cl' || compilerName == 'cl.exe')
+          ? <String>[
+              '/nologo',
+              '/std:c11',
+              '/W4',
+              '/WX',
+              '/I${requiredCSdkInclude().path}',
+              retainedSource.path,
+              importLibrary.path,
+              '/Fe:${executable.path}',
+              '/Fo${object.path}',
+            ]
+          : <String>[
+              '-std=c11',
+              '-Wall',
+              '-Wextra',
+              '-Werror',
+              '-pedantic',
+              if (!Platform.isWindows) '-fPIC',
+              '-I',
+              requiredCSdkInclude().path,
+              retainedSource.path,
+              Platform.isWindows ? importLibrary.path : library.absolute.path,
+              if (!Platform.isWindows)
+                '-Wl,-rpath,${library.absolute.parent.path}',
+              '-o',
+              executable.path,
+            ];
   final command = <String>[compiler, ...arguments];
   final compile = await Process.run(
     compiler,
@@ -644,8 +643,7 @@ Future<void> verifyRealLeafBoundary(
   output.createSync(recursive: true);
   File('${output.path}/host-classifier.txt').writeAsStringSync('$classifier\n');
   final sorted = claims.toList()
-    ..sort(
-        (left, right) => left.capabilityKey.compareTo(right.capabilityKey));
+    ..sort((left, right) => left.capabilityKey.compareTo(right.capabilityKey));
   File('${output.path}/leaf-real-sdk-receipt.tsv').writeAsStringSync(
     'capabilityKey\tpublicSymbol\texactNativeCalls\tclassifier\tboundary\tstatus\n'
     '${sorted.map((claim) => <String>[
@@ -667,14 +665,14 @@ void _writeRealLeafExecution(
   ProcessResult result,
 ) {
   destination.writeAsStringSync('${jsonEncode(<String, Object>{
-    'classifier': classifier,
-    'command': command,
-    'exitCode': result.exitCode,
-    'runtimeLibraryDirectory': runtimeLibraryDirectory,
-    'schemaVersion': 1,
-    'stderrBase64': base64Encode(result.stderr as List<int>),
-    'stdoutBase64': base64Encode(result.stdout as List<int>),
-  })}\n');
+        'classifier': classifier,
+        'command': command,
+        'exitCode': result.exitCode,
+        'runtimeLibraryDirectory': runtimeLibraryDirectory,
+        'schemaVersion': 1,
+        'stderrBase64': base64Encode(result.stderr as List<int>),
+        'stdoutBase64': base64Encode(result.stdout as List<int>),
+      })}\n');
 }
 
 extension on File {

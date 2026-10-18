@@ -268,9 +268,7 @@ Future<void> verifyRealHostBoundary(
   final api = NativeApi.load(library.absolute.path);
   final handle = newHandleSlot<Void>();
   final scalar = nativeMemory.allocate<Int32>(sizeOf<Int32>());
-  final rows = <String>[
-    'executedTestId\tnativeSymbol\tclassifier\tstatus'
-  ];
+  final rows = <String>['executedTestId\tnativeSymbol\tclassifier\tstatus'];
   try {
     for (final claim in claims.toList()
       ..sort(

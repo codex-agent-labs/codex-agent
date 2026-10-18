@@ -3050,9 +3050,8 @@ mod loader_security_tests {
         );
 
         let mut wrong_contract = original_claim.clone();
-        wrong_contract["runtimeIdentity"]["contractDigest"] = json!(
-            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-        );
+        wrong_contract["runtimeIdentity"]["contractDigest"] =
+            json!("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         canonical_json(&claim_path, &wrong_contract);
         sign(
             &claim_path,
@@ -3066,7 +3065,10 @@ mod loader_security_tests {
             })
             .err()
             .expect("wrong-Contract signed Runtime must be rejected");
-        assert!(error.to_string().contains("incompatible with this SDK"), "{error}");
+        assert!(
+            error.to_string().contains("incompatible with this SDK"),
+            "{error}"
+        );
         canonical_json(&claim_path, &original_claim);
         sign(
             &claim_path,
