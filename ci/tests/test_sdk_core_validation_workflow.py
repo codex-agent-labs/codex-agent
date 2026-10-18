@@ -17,6 +17,61 @@ CHILD = WORKFLOW.with_name("sdk-core-validation.yml")
 
 
 class CoreValidationWorkflowTest(unittest.TestCase):
+    def test_native_diagnostics_are_narrow_and_collect_before_failure(self):
+        source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
+        block = source.split("  native-validation-diagnostics:\n", 1)[1].split("  core-validation-diagnostics:\n", 1)[0]
+        for required in ("ci:native-validation-diagnostics", "pull_request.number == 31",
+                         "head.repo.fork == false", "persist-credentials: false",
+                         "runs-on: windows-2025", "uses: ./.github/actions/setup-msvc",
+                         "uses: ./.github/actions/provision-sdk-dart-cache",
+                         "dart pub get --enforce-lockfile --offline", "overwrite: false"):
+            self.assertIn(required, block)
+        self.assertEqual(4, block.count("continue-on-error: true"))
+        self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Fail after collecting"))
+        for forbidden in ("secrets.", "id-token: write", "attestations: write", "gradlew",
+                          "capture-sdk-tooling", "product-attestation", "download-artifact"):
+            self.assertNotIn(forbidden, block)
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        passed = {name: {"outcome": "success"} for name in ("cpp", "csharp", "dart-identity", "dart-lifecycle")}
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}):
+            exec(compile(script, "native-host-diagnostic-result", "exec"), {})
+        passed["cpp"]["outcome"] = "failure"
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(passed)}), self.assertRaises(AssertionError):
+            exec(compile(script, "native-host-diagnostic-result", "exec"), {})
+
+    def test_native_diagnostic_commands_preserve_exact_compiler_policy(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"VCToolsVersion": "14.51.36231"}):
+            scratch = Path(temporary)
+            _, commands = diagnostic.commands("cpp", scratch)
+            self.assertIn("/Zs", commands[0])
+            self.assertIn("/std:c++20", commands[0])
+            self.assertTrue(commands[0][-1].endswith("consumer/host_smoke.cpp"))
+            with patch("sys.platform", "win32"):
+                _, commands = diagnostic.commands("csharp", scratch)
+            self.assertEqual(["clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DCODEX_AGENT_BUILD"], commands[1][:6])
+            fixture = scratch / "source/tests/CodexAgent.Tests/native/fake_codex_agent.c"
+            self.assertTrue(fixture.read_bytes().startswith(b"#define _CRT_SECURE_NO_WARNINGS 1\n"))
+        with patch.dict(os.environ, {"VCToolsVersion": "different"}), self.assertRaises(ValueError):
+            diagnostic.commands("cpp", Path("unused"))
+
+    def test_failed_native_diagnostic_preserves_observations_not_success(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary, patch("sys.platform", "win32"), \
+                patch.object(diagnostic.subprocess, "check_output", return_value="observed\n"), \
+                patch.object(diagnostic.subprocess, "run", return_value=subprocess.CompletedProcess(["cl"], 1)), \
+                patch.dict(os.environ, {"VCToolsVersion": "14.51.36231"}), patch("builtins.print"):
+            output = Path(temporary) / "diagnostics"
+            self.assertEqual(1, diagnostic.diagnose("cpp", output))
+            report = json.loads((output / "result.json").read_text())
+            self.assertTrue(report["diagnosticOnly"])
+            self.assertFalse(report["productExecuted"])
+            self.assertFalse(report["passed"])
+            self.assertEqual(1, report["commands"][0]["returnCode"])
+            self.assertGreater(report["commands"][0]["elapsedNs"], 0)
+            self.assertTrue((output / "0.log").is_file())
+
     def test_narrow_diagnostics_are_read_only_and_separate_from_product_proofs(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = source.split("  core-validation-diagnostics:\n", 1)[1].split("  recovery-diagnostics:\n", 1)[0]

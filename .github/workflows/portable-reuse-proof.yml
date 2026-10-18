@@ -9,6 +9,86 @@ permissions:
   actions: read
 
 jobs:
+  native-validation-diagnostics:
+    if: >-
+      github.event.label.name == 'ci:native-validation-diagnostics' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+      - uses: ./.github/actions/setup-msvc
+      - name: Reproduce the exact MSVC consumer compilation
+        id: cpp
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py cpp "$env:RUNNER_TEMP/native-diagnostics/cpp"
+      - name: Compile the private C-sharp fixture with strict Clang warnings
+        id: csharp
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py csharp "$env:RUNNER_TEMP/native-diagnostics/csharp"
+      - id: dart-cache
+        uses: ./.github/actions/provision-sdk-dart-cache
+        with:
+          revision: ${{ github.event.pull_request.head.sha }}
+      - name: Resolve the already authenticated locked Dart cache offline
+        shell: pwsh
+        working-directory: codex-agent-bindings/dart
+        env:
+          PUB_CACHE: ${{ steps.dart-cache.outputs.pub-cache }}
+        run: dart pub get --enforce-lockfile --offline
+      - name: Exercise Windows root delegation, exact paths and tamper rejection
+        id: dart-identity
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PUB_CACHE: ${{ steps.dart-cache.outputs.pub-cache }}
+        run: python -B ci/tests/native_windows_diagnostic.py dart-identity "$env:RUNNER_TEMP/native-diagnostics/dart-identity"
+      - name: Exercise signed Windows native lifecycle fixtures
+        id: dart-lifecycle
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PUB_CACHE: ${{ steps.dart-cache.outputs.pub-cache }}
+        run: python -B ci/tests/native_windows_diagnostic.py dart-lifecycle "$env:RUNNER_TEMP/native-diagnostics/dart-lifecycle"
+      - name: Preserve diagnostic logs, not product receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-diagnostics
+            ${{ steps.dart-cache.outputs.diagnostics }}
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+      - name: Fail after collecting every diagnostic
+        if: always()
+        shell: python
+        env:
+          DIAGNOSTIC_STEPS: ${{ toJSON(steps) }}
+        run: |
+          import json, os
+          results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
+          required = ('cpp', 'csharp', 'dart-identity', 'dart-lifecycle')
+          assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
+
   core-validation-diagnostics:
     if: >-
       github.event.label.name == 'ci:core-validation-diagnostics' &&
