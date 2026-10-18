@@ -19,7 +19,7 @@ CHILD = WORKFLOW.with_name("sdk-core-validation.yml")
 class CoreValidationWorkflowTest(unittest.TestCase):
     def test_native_diagnostics_are_narrow_and_collect_before_failure(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
-        block = source.split("  native-validation-diagnostics:\n", 1)[1].split("  core-validation-diagnostics:\n", 1)[0]
+        block = source.split("  native-validation-diagnostics:\n", 1)[1].split("  windows-control-diagnostics:\n", 1)[0]
         for required in ("ci:native-validation-diagnostics", "pull_request.number == 31",
                          "head.repo.fork == false", "persist-credentials: false",
                          "runs-on: windows-2025", "uses: ./.github/actions/setup-msvc",
@@ -76,6 +76,70 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             self.assertTrue(fixture.read_bytes().startswith(b"#define _CRT_SECURE_NO_WARNINGS 1\n"))
         with patch.dict(os.environ, {"VCToolsVersion": "different"}), self.assertRaises(ValueError):
             diagnostic.commands("cpp", Path("unused"))
+
+    def test_windows_controls_use_only_existing_inputs_and_collect_all_outcomes(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
+        block = source.split("  windows-control-diagnostics:\n", 1)[1].split("  core-validation-diagnostics:\n", 1)[0]
+        for required in ("ci:windows-control-diagnostics", "pull_request.number == 31",
+                         "head.repo.fork == false", "persist-credentials: false",
+                         "runs-on: windows-2025", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false"):
+            self.assertIn(required, block)
+        for forbidden in ("secrets.", "id-token: write", "gradlew", "setup-msvc", "dart-cache",
+                          "download-artifact", "capture-sdk-tooling", "product-attestation"):
+            self.assertNotIn(forbidden, block)
+        self.assertEqual(4, block.count("continue-on-error: true"))
+        self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        results = {name: {"outcome": "success"} for name in diagnostic.CONTROL_CHECKS}
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}):
+            exec(compile(script, "windows-controls-result", "exec"), {})
+        results["runtime-exit"]["outcome"] = "failure"
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}), self.assertRaises(AssertionError):
+            exec(compile(script, "windows-controls-result", "exec"), {})
+        for check in diagnostic.CONTROL_CHECKS:
+            cwd, commands = diagnostic.commands(check, Path("private"))
+            self.assertEqual(diagnostic.ROOT, cwd)
+            self.assertEqual([check, str(Path("private/probe")), "--probe"], commands[0][-3:])
+        compile(diagnostic.RUNTIME_EXIT_PROBE, "runtime-exit-child", "exec")
+
+    def test_windows_library_projection_rejects_duplicates_links_and_wrong_digest(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        from products.inventory import sha256_bytes
+        import io
+        import tarfile
+        library = b"already-authenticated-package-fixture"
+        compatibility = {"runtime": {"embeddedVariants": [dict(target="windows-x64",
+            runtimeLibrarySha256=sha256_bytes(library))]}}
+        def crate(*, duplicate=False, symlink=False):
+            raw = io.BytesIO()
+            with tarfile.open(fileobj=raw, mode="w:gz") as archive:
+                for _ in range(2 if duplicate else 1):
+                    member = tarfile.TarInfo("codex-agent-0.8.0/native/win-x64/codex_agent.dll")
+                    member.size = len(library)
+                    if symlink:
+                        member.type = tarfile.SYMTYPE
+                        member.linkname = "elsewhere"
+                    archive.addfile(member, io.BytesIO(library))
+            return raw.getvalue()
+        self.assertEqual(library, diagnostic.windows_library_bytes(crate(), compatibility))
+        for options in ({"duplicate": True}, {"symlink": True}):
+            with self.assertRaises(ValueError):
+                diagnostic.windows_library_bytes(crate(**options), compatibility)
+        compatibility["runtime"]["embeddedVariants"][0]["runtimeLibrarySha256"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(ValueError, "differs from authenticated"):
+            diagnostic.windows_library_bytes(crate(), compatibility)
+
+    def test_windows_original_mismatch_fails_before_body_download(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        import product_reuse
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-only"}), \
+                patch.object(product_reuse, "_observe_ci_producer_jobs", return_value=[{"jobs": []}]), \
+                patch.object(product_reuse, "_matching_ci_jobs", return_value=[{"id": 99}]), \
+                patch.object(product_reuse, "_reuse_contract_ci_upload") as download:
+            with self.assertRaisesRegex(ValueError, "original job differs"):
+                diagnostic.pinned_windows_library(Path("unused"))
+            download.assert_not_called()
 
     def test_failed_native_diagnostic_preserves_observations_not_success(self):
         from ci.tests import native_windows_diagnostic as diagnostic

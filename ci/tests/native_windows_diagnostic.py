@@ -2,20 +2,180 @@
 
 import argparse
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle")
+CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
+CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS)
+
+
+def observed(command, *, check=True):
+    started = time.monotonic_ns()
+    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+    print(json.dumps({"command": command, "returnCode": result.returncode,
+                      "elapsedNs": time.monotonic_ns() - started}), flush=True)
+    print(result.stdout.decode(errors="replace"), flush=True)
+    if check:
+        result.check_returncode()
+    return result
+
+
+def pinned_windows_library(scratch):
+    """One small original package, existing source/transport/object authentication.
+
+    Diagnostic execution only: this does not grant current-plan phase admission.
+    """
+    import product_reuse as reuse
+    from products.inventory import sha256_bytes, verified_zip_contents
+    from products.restore import _verified_object_snapshot
+
+    token = os.environ["GITHUB_TOKEN"]
+    key = "f102a9e45b4aadab1e296870e0d03bb76845a8ee73353d266771c00ddb8ce95b"
+    receipt = "fcb9899c9a7f324065a1fe8ddd519f415d707218c61eb4845a9a241f5149962e"
+    producer = dict(commit="cc7dd57e0e069d610f93488b29923762cdfa2d44",
+        tree="be87ed630f7b844312dbfa34884e9ef10896aee5", runId=39130038248, runAttempt=1,
+        event="pull_request", repository="codex-agent-labs/codex-agent", pullRequest=31,
+        workflowPath=".github/workflows/ci.yml")
+    job = "product-validation / sdk-rust-package-desktop"
+    observation, = reuse._observe_ci_producer_jobs({"package": producer},
+        jobs_by_phase={"package": job}, token=token,
+        trusted_workflow_sha="c89bb8510208a6560a80a4984be6b1a26e72654b",
+        build_keys_by_phase={"package": "sha256:" + key})
+    selected, = reuse._matching_ci_jobs(observation["jobs"], job, expected_build_key="sha256:" + key)
+    if selected["id"] != 117685954378:
+        raise ValueError("Diagnostic original job differs from reviewed custody")
+    digest = "sha256:bb36797686c89ec49acb2433f7a7fd427905d3adbb0573384eff69b7026d4e0f"
+    name = f"codex-agent-sdk-worker-rust-package-desktop-{key}-{producer['tree']}-attempt-1"
+    artifact = reuse._contract_ci_upload_metadata(12138113349, digest, name, producer, observation["run"], token)
+    reuse._require_artifact_job_window(observation, job, artifact)
+    archive = scratch / "original.zip"
+    reuse._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+        destination=archive, limit=32 * 1024**2, artifact_sha256=digest, size=artifact["size_in_bytes"])
+    object_path = f"shard/v1/objects/sha256/{key}/{receipt}.zip"
+    _, contents, _ = verified_zip_contents(archive, retained_paths=(object_path,),
+        max_archive_bytes=32 * 1024**2, max_total_bytes=32 * 1024**2,
+        max_retained_bytes=32 * 1024**2, require_sorted=False, allow_empty_members=True)
+    original = scratch / "object.zip"
+    original.write_bytes(contents[object_path])
+    with _verified_object_snapshot(original, build_key="sha256:" + key, receipt_sha256="sha256:" + receipt,
+            object_sha256="sha256:9a4fadd2804ad1929f8242396ca56548dbb0e35c24eb9e718e5c9346068d3d75") as (snapshot, verified):
+        if verified["receipt"]["producer"] != producer:
+            raise ValueError("Diagnostic package producer differs from its observed original")
+        with zipfile.ZipFile(snapshot) as stage:
+            crate = stage.read("stage/outputs/rust/codex-agent-0.8.0.crate")
+            compatibility = json.loads(stage.read("stage/outputs/evidence/sdk-compatibility.json"))
+    library = windows_library_bytes(crate, compatibility)
+    destination = scratch / "codex_agent.dll"
+    destination.write_bytes(library)
+    print(json.dumps({"originalArtifactId": artifact["id"], "originalSha256": digest,
+        "downloadedBytes": artifact["size_in_bytes"], "librarySha256": sha256_bytes(library),
+        "phaseAdmissionGranted": False}), flush=True)
+    return destination
+
+
+def windows_library_bytes(crate, compatibility):
+    from products.inventory import sha256_bytes
+    # Read only the consumed regular member; never extract paths from a tarball.
+    with tarfile.open(fileobj=io.BytesIO(crate), mode="r:gz") as archive:
+        member, = [row for row in archive.getmembers()
+                   if row.name == "codex-agent-0.8.0/native/win-x64/codex_agent.dll"]
+        if not member.isfile() or not 0 < member.size <= 64 * 1024**2:
+            raise ValueError("Diagnostic Windows library is not a bounded regular member")
+        library = archive.extractfile(member).read(member.size + 1)
+    variant, = [row for row in compatibility["runtime"]["embeddedVariants"] if row["target"] == "windows-x64"]
+    if len(library) != member.size or sha256_bytes(library) != variant["runtimeLibrarySha256"]:
+        raise ValueError("Diagnostic library differs from authenticated SDK compatibility")
+    return library
+
+
+RUNTIME_EXIT_PROBE = r'''
+import atexit, ctypes, sys
+library = ctypes.CDLL(sys.argv[1])
+library.codex_agent_abi_version.restype = ctypes.c_uint32
+assert library.codex_agent_abi_version() == 0x010d0000
+context = ctypes.c_void_p()
+for name in ('codex_agent_context_create', 'codex_agent_context_destroy'):
+    method = getattr(library, name)
+    method.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    method.restype = ctypes.c_int
+    assert method(ctypes.byref(context)) == 0, name
+assert context.value is None
+print('Context create/destroy completed; exit mode=' + sys.argv[2], flush=True)
+if sys.argv[2] == 'unload':
+    free = ctypes.WinDLL('kernel32', use_last_error=True).FreeLibrary
+    free.argtypes = [ctypes.c_void_p]
+    free.restype = ctypes.c_int
+    def unload():
+        print('FreeLibrary entering', flush=True)
+        assert free(library._handle)
+        print('FreeLibrary returned', flush=True)
+    atexit.register(unload)
+'''
+
+
+def control_probe(check, scratch):
+    sys.path[:0] = [str(ROOT / "ci"), str(ROOT)]
+    scratch.mkdir(exist_ok=False)
+    if check == "signing-acl":
+        fixture = ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/fixtures/sdk-runtime-root-test-only"
+        key, payload = scratch / "test-only-key", scratch / "payload"
+        shutil.copyfile(fixture, key)
+        shutil.copyfile(fixture.with_name(fixture.name + ".pub"), key.with_name(key.name + ".pub"))
+        payload.write_bytes(b"Windows test-only signing diagnostic\n")
+        signer = str(Path(os.environ["SystemRoot"]) / "System32/OpenSSH/ssh-keygen.exe")
+        command = [signer, "-Y", "sign", "-f", str(key), "-n", "codex-agent-sdk-runtime-root-v1", str(payload)]
+        observed(["icacls", str(key)])
+        observed(command, check=False)
+        payload.with_name(payload.name + ".sig").unlink(missing_ok=True)
+        user = subprocess.check_output(["whoami"], text=True).strip()
+        observed(["icacls", str(key), "/inheritance:r", "/grant:r", user + ":F"])
+        observed(command)
+    elif check == "catalog-newlines":
+        from products.c_abi import describe_c_abi
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        result = subprocess.run([sys.executable, "-m", "ci.products.c_abi", "describe"],
+                                cwd=ROOT, capture_output=True, check=True, timeout=60)
+        expected = canonical_json_bytes(describe_c_abi())
+        print(json.dumps({"canonical": result.stdout == expected, "tailHex": result.stdout[-4:].hex(),
+            "stdoutSha256": sha256_bytes(result.stdout), "expectedSha256": sha256_bytes(expected),
+            "crlfOnlyDifference": result.stdout == expected[:-1] + b"\r\n"}), flush=True)
+        if result.stdout not in (expected, expected[:-1] + b"\r\n"):
+            raise ValueError("Catalog difference is not only final newline translation")
+    elif check == "native-signature":
+        import reuse_qualification as qualification
+        observed(["gh", "--version"])
+        commit = "cc7dd57e0e069d610f93488b29923762cdfa2d44"
+        report, captured = qualification._fetch_qualification_archive(scratch / "qualification",
+            artifact_id=12137458247, artifact_sha256="sha256:614273eea4c84c50c8c41a45d2d82c7467659cfb4a1605608e3e67de49091e5c",
+            run_id=39129485152, run_attempt=1, signer_commit=commit, source_commit=commit,
+            token=os.environ["GITHUB_TOKEN"], _completed_sdk=True)
+        qualification._authenticate_native_subject(captured["completion.json"], captured["bundle.jsonl"],
+            "completion.json", signer_commit=commit, source_commit=commit)
+        print(json.dumps({"signatureAuthenticated": True, "downloadedBytes": report["downloadedQualificationBytes"],
+                          "qualificationIssued": False, "phaseAdmissionGranted": False}), flush=True)
+    elif check == "runtime-exit":
+        library = pinned_windows_library(scratch)
+        # Same authenticated DLL, isolated processes; preserve BOTH outcomes.
+        for mode in ("retain", "unload"):
+            observed([sys.executable, "-c", RUNTIME_EXIT_PROBE, str(library), mode], check=False)
+    else:
+        raise ValueError("Unknown control diagnostic")
 
 
 def commands(check, scratch):
+    if check in CONTROL_CHECKS:
+        return ROOT, [[sys.executable, str(Path(__file__).resolve()), check, str(scratch / "probe"), "--probe"]]
     include = ROOT / "codex-agent-runtime-desktop/native/c-api/include"
     if check == "cpp":
         if os.environ.get("VCToolsVersion", "").rstrip("/\\") != "14.51.36231":
@@ -86,5 +246,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("check", choices=CHECKS)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()
+    if args.probe:
+        if sys.platform != "win32":
+            raise ValueError("Actual Windows execution is required")
+        control_probe(args.check, args.output.resolve())
+        raise SystemExit(0)
     raise SystemExit(diagnose(args.check, args.output.resolve()))
