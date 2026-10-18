@@ -311,7 +311,8 @@ def stage_csharp_original(plan, discovery, state, destination, **kwargs):
     """Publish only checked C# package inputs after their original context exits."""
     require_no_signing_secret(kwargs["environ"])
     root = Path(kwargs["repository_root"]).resolve(strict=True)
-    _, _, destination = product_reuse._product_materialization_paths(
+    plan = Path(plan).absolute()
+    discovery, state, destination = product_reuse._product_materialization_paths(
         root, discovery, state, destination)
     if (root not in destination.parents or destination.resolve(strict=False) != destination
             or destination.exists() or destination.is_symlink()):

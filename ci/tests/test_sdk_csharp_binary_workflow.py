@@ -1,6 +1,7 @@
 """C# binary orchestration gates; hosted/original trust functions are mocked."""
 
 from contextlib import contextmanager
+from contextlib import chdir
 from contextlib import redirect_stderr
 import io
 from pathlib import Path
@@ -389,7 +390,10 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         context_exits = []
 
         @contextmanager
-        def held(*_args, **_kwargs):
+        def held(plan, discovery, state, **_kwargs):
+            self.assertEqual(self.plan, plan)
+            self.assertEqual(self.discovery, discovery)
+            self.assertEqual(self.state, state)
             yield original
             context_exits.append(True)
 
@@ -405,6 +409,13 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
         self.assertEqual({"CodexAgent.dll", "CodexAgent.pdb", "CodexAgent.xml",
             "CodexAgent.deps.json", "sdk-compatibility.json", "sdk-runtime-root.pub"},
             {path.name for path in result["csharpBinary"].iterdir()})
+
+        with (chdir(self.root),
+              patch.object(workflow, "verified_csharp_original", side_effect=held),
+              patch.object(workflow, "git_regular_blob_bytes", return_value=profile_bytes)):
+            relative = workflow.stage_csharp_original(Path("plan.json"), Path("discovery"), Path("state"),
+                Path("build/relative-handoff"), repository_root=self.root, environ={})
+        self.assertEqual(original["receiptBytes"], relative["receipt"].read_bytes())
 
         original["plan"]["inputs"]["toolchainProfileDigest"] = "sha256:" + "0" * 64
         with (patch.object(workflow, "verified_csharp_original", side_effect=held),
