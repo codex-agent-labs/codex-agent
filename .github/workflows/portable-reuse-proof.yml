@@ -181,7 +181,11 @@ jobs:
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     env:
       GIT_CONFIG_COUNT: '1'
@@ -198,21 +202,33 @@ jobs:
         with:
           python-version: '3.11'
       - id: signing-private-parent
+        if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py signing-private-parent "$env:RUNNER_TEMP/windows-controls/signing-private-parent"
       - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0, same as the failing consumer
+        if: runner.os == 'Windows'
       - id: rust-host-exit
+        if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python -B ci/tests/native_windows_diagnostic.py rust-host-exit "$env:RUNNER_TEMP/windows-controls/rust-host-exit"
+      - name: Install the same checksum-pinned attestation verifier as product workers
+        shell: bash
+        run: bash .github/actions/restore-reuse-qualification/install-gh.sh
+      - id: signature-initialization
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -B ci/tests/native_windows_diagnostic.py signature-initialization "$RUNNER_TEMP/windows-controls/signature-initialization"
       - name: Preserve all raw diagnostic outcomes before failing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-control-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          name: windows-control-diagnostics-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-controls
           if-no-files-found: error
           overwrite: false
@@ -222,10 +238,13 @@ jobs:
         shell: python
         env:
           DIAGNOSTIC_STEPS: ${{ toJSON(steps) }}
+          DIAGNOSTIC_RUNNER: ${{ runner.os }}
         run: |
           import json, os
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
-          required = ('signing-private-parent', 'rust-host-exit')
+          required = ('signature-initialization',)
+          if os.environ['DIAGNOSTIC_RUNNER'] == 'Windows':
+              required += ('signing-private-parent', 'rust-host-exit')
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:

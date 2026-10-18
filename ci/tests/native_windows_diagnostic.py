@@ -1,6 +1,7 @@
 """Narrow hosted diagnostics, never a product producer or acceptance receipt."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
@@ -18,13 +19,14 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
-REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit")
+REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization")
 CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
-def observed(command, *, check=True, cwd=ROOT, env=None):
+def observed(command, *, check=True, cwd=ROOT, env=None, input=None):
     started = time.monotonic_ns()
-    result = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+    result = subprocess.run(command, cwd=cwd, env=env, input=input,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
     print(json.dumps({"command": command, "returnCode": result.returncode,
                       "elapsedNs": time.monotonic_ns() - started}), flush=True)
     print(result.stdout.decode(errors="replace"), flush=True)
@@ -164,6 +166,32 @@ RUST_EXIT_PIN_PROBE = r'''
 '''
 
 
+CSHARP_SIGNING_PROBE = r'''
+param([string]$fixture, [string]$root, [string]$signer)
+$ErrorActionPreference = 'Stop'
+$key = [IO.Path]::Combine($root, 'root-key')
+$payload = [IO.Path]::Combine($root, 'root-delegation.json')
+[IO.File]::Copy($fixture, $key)
+[IO.File]::WriteAllBytes($payload, [Text.Encoding]::UTF8.GetBytes("{} `n"))
+& "$env:SystemRoot/System32/icacls.exe" $key
+$start = [Diagnostics.ProcessStartInfo]::new($signer)
+$start.UseShellExecute = $false
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+foreach ($argument in @('-Y', 'sign', '-f', $key, '-n', 'codex-agent-sdk-runtime-root-v1', $payload)) {
+    $start.ArgumentList.Add($argument)
+}
+$process = [Diagnostics.Process]::Start($start)
+$output = $process.StandardOutput.ReadToEnd()
+$errorOutput = $process.StandardError.ReadToEnd()
+$process.WaitForExit()
+@{dotnetRuntime = [Environment]::Version.ToString(); keyPathLength = $key.Length;
+  payloadPathLength = $payload.Length; returnCode = $process.ExitCode;
+  stdout = $output; stderr = $errorOutput} | ConvertTo-Json -Compress
+exit $process.ExitCode
+'''
+
+
 def rust_host_probe(scratch):
     from native_wrappers import safe_extract_tar
     crate = scratch / "original.crate"
@@ -184,20 +212,27 @@ def rust_host_probe(scratch):
     marker = '    println!("installed-crate Host smoke passed with {source}");'
     if raw.count(marker) != 1:
         raise ValueError("Rust diagnostic Host lifecycle changed")
-    host.write_text(raw.replace(marker, marker + "\n" + RUST_EXIT_PIN_PROBE), encoding="utf-8")
     environment = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "target"))
     for name in ("CODEX_AGENT_LIBRARY", "CODEX_AGENT_DIAGNOSTIC_PIN", "GITHUB_TOKEN", "GH_TOKEN"):
         environment.pop(name, None)
     observed(["rustc", "--version", "--verbose"])
     observed(["cargo", "fetch", "--manifest-path", str(manifest), "--locked"], cwd=scratch, env=environment)
-    observed(["cargo", "build", "--manifest-path", str(manifest), "--release", "--locked", "--offline",
-              "--bin", "codex-agent-rust-host-smoke"], cwd=scratch, env=environment)
+    build = ["cargo", "build", "--manifest-path", str(manifest), "--release", "--locked", "--offline",
+             "--bin", "codex-agent-rust-host-smoke"]
+    observed(build, cwd=scratch, env=environment)
     executable = str(scratch / "target/release/codex-agent-rust-host-smoke.exe")
-    for pin in (False, True):
-        print(json.dumps({"rustExitPin": pin, "instrumentedConsumer": True,
-                          "originalPackageUnchanged": True}), flush=True)
-        observed([executable], check=False, cwd=scratch,
-                 env=environment | ({"CODEX_AGENT_DIAGNOSTIC_PIN": "1"} if pin else {}))
+    # The earlier instrumented-only single trial could hide an exit race. Keep
+    # the actual consumer as the baseline; rebuild only this small test binary.
+    for instrumented in (False, True):
+        if instrumented:
+            host.write_text(raw.replace(marker, marker + "\n" + RUST_EXIT_PIN_PROBE), encoding="utf-8")
+            observed(build, cwd=scratch, env=environment)
+        for pin in ((False, True) if instrumented else (False,)):
+            for trial in range(5):
+                print(json.dumps({"rustExitPin": pin, "instrumentedConsumer": instrumented,
+                                  "trial": trial, "originalPackageUnchanged": True}), flush=True)
+                observed([executable], check=False, cwd=scratch,
+                         env=environment | ({"CODEX_AGENT_DIAGNOSTIC_PIN": "1"} if pin else {}))
 
 
 def control_probe(check, scratch):
@@ -219,6 +254,24 @@ def control_probe(check, scratch):
         observed(["icacls", str(key)])
         observed(command, check=check == "signing-private-parent")
         if check == "signing-private-parent":
+            # The Python worker passed Gradle but failed the final verifier's
+            # OpenSSH call under its reduced environment. Reuse this signature.
+            allowed = scratch / "allowed-signers"
+            allowed.write_bytes(b"diagnostic " + key.with_name(key.name + ".pub").read_bytes())
+            verify = [signer, "-Y", "verify", "-f", str(allowed), "-I", "diagnostic",
+                      "-n", "codex-agent-sdk-runtime-root-v1", "-s", str(payload) + ".sig"]
+            names = {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}
+            for reduced in (False, True):
+                environment = {k: v for k, v in os.environ.items() if not reduced or k in names}
+                environment.update(LC_ALL="C", LANG="C")
+                print(json.dumps({"reducedVerifierEnvironment": reduced}), flush=True)
+                observed(verify, env=environment, input=payload.read_bytes(), check=False)
+            # Match the suite's .NET File.Copy and ProcessStartInfo instead of
+            # treating the Python-copy/direct-sign probe as equivalent evidence.
+            script = scratch / "signing-copy.ps1"
+            script.write_text(CSHARP_SIGNING_PROBE, encoding="utf-8")
+            observed(["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script),
+                      str(key), str(scratch), signer], check=False)
             return
         payload.with_name(payload.name + ".sig").unlink(missing_ok=True)
         user = subprocess.check_output(["whoami"], text=True).strip()
@@ -247,6 +300,42 @@ def control_probe(check, scratch):
             "completion.json", signer_commit=commit, source_commit=commit)
         print(json.dumps({"signatureAuthenticated": True, "downloadedBytes": report["downloadedQualificationBytes"],
                           "qualificationIssued": False, "phaseAdmissionGranted": False}), flush=True)
+    elif check == "signature-initialization":
+        import reuse_qualification as qualification
+        observed(["gh", "--version"])
+        subjects = []
+        # These are the two already-signed controls used by the failing worker.
+        # Only their small original uploads are fetched, once each; no issuer runs.
+        for name, artifact, digest, run, commit, completed in (
+            ("qualification.json", 12023034412, "3c31cfd94a21ed031716454de44ebf9fbc0069001c6e844e6c212dd87be30af8",
+             38846309757, "92793307c0044fdfca6352b26babe2e4bb873bd6", False),
+            ("completion.json", 12137458247, "614273eea4c84c50c8c41a45d2d82c7467659cfb4a1605608e3e67de49091e5c",
+             39129485152, "cc7dd57e0e069d610f93488b29923762cdfa2d44", True),
+        ):
+            _, captured = qualification._fetch_qualification_archive(scratch / name,
+                artifact_id=artifact, artifact_sha256="sha256:" + digest,
+                run_id=run, run_attempt=1, signer_commit=commit, source_commit=commit,
+                token=os.environ["GITHUB_TOKEN"], _completed_sdk=completed)
+            subject, bundle = scratch / (name + ".subject"), scratch / (name + ".bundle")
+            subject.write_bytes(captured[name])
+            bundle.write_bytes(captured["bundle.jsonl"])
+            subjects.append((subject, bundle, commit))
+        def verify(item, environment):
+            subject, bundle, commit = item
+            # Human output exposes native initialization diagnostics suppressed
+            # by --format=json; every cryptographic/identity constraint remains.
+            return observed(["gh", "attestation", "verify", str(subject), "--bundle", str(bundle),
+                "--repo", qualification.REPOSITORY, "--signer-workflow",
+                qualification.REPOSITORY + "/" + qualification.ISSUER_WORKFLOW,
+                "--signer-digest", commit, "--source-digest", commit,
+                "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+                "--deny-self-hosted-runners"], env=environment, check=False).returncode
+        for trial in range(3):
+            environment = dict(os.environ, GH_CACHE_DIR=str(scratch / f"trust-cache-{trial}"))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(lambda item: verify(item, environment), subjects))
+            print(json.dumps({"signatureInitializationTrial": trial, "returnCodes": outcomes,
+                              "qualificationIssued": False, "phaseAdmissionGranted": False}), flush=True)
     elif check in ("runtime-exit", "runtime-host-exit"):
         library = pinned_windows_library(scratch)
         # Same authenticated DLL, isolated processes; preserve BOTH outcomes.
@@ -290,6 +379,11 @@ def commands(check, scratch):
         ["dart", "test", "test/" + test + "_test.dart", "-r", "expanded"]]
 
 
+def require_diagnostic_host(check):
+    if sys.platform != "win32" and not (sys.platform == "darwin" and check == "signature-initialization"):
+        raise ValueError("Actual Windows execution or macOS signature diagnostic is required")
+
+
 def diagnose(check, output):
     output.mkdir(parents=True, exist_ok=False)
     report = {"diagnosticOnly": True, "productPhasesProduced": 0,
@@ -300,8 +394,7 @@ def diagnose(check, output):
               "vcToolsVersion": os.environ.get("VCToolsVersion"), "commands": [], "passed": False}
     start = time.monotonic_ns()
     try:
-        if sys.platform != "win32":
-            raise ValueError("Actual Windows execution is required")
+        require_diagnostic_host(check)
         # Match the C# producer's workspace/build TemporaryDirectory location;
         # user Temp has different inherited ACLs and already passed signing.
         parent = ROOT / "build" if check in ("signing-workspace", "signing-private-parent") else None
@@ -341,8 +434,7 @@ if __name__ == "__main__":
     parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()
     if args.probe:
-        if sys.platform != "win32":
-            raise ValueError("Actual Windows execution is required")
+        require_diagnostic_host(args.check)
         control_probe(args.check, args.output.resolve())
         raise SystemExit(0)
     raise SystemExit(diagnose(args.check, args.output.resolve()))

@@ -83,20 +83,31 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         block = source.split("  windows-control-diagnostics:\n", 1)[1].split("  core-validation-diagnostics:\n", 1)[0]
         for required in ("ci:windows-control-diagnostics", "pull_request.number == 31",
                          "head.repo.fork == false", "persist-credentials: false",
-                         "runs-on: windows-2025", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false"):
+                         "runner: [windows-2025, macos-26-intel]", "runs-on: ${{ matrix.runner }}",
+                         "fail-fast: false", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false",
+                         "windows-control-diagnostics-${{ runner.os }}-"):
             self.assertIn(required, block)
         for forbidden in ("secrets.", "id-token: write", "gradlew", "setup-msvc", "dart-cache",
                           "download-artifact", "capture-sdk-tooling", "product-attestation"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(2, block.count("continue-on-error: true"))
+        self.assertEqual(3, block.count("continue-on-error: true"))
+        self.assertEqual(3, block.count("if: runner.os == 'Windows'"))
+        self.assertIn("bash .github/actions/restore-reuse-qualification/install-gh.sh", block)
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
         results = {name: {"outcome": "success"} for name in diagnostic.REMAINING_CHECKS}
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}):
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}):
             exec(compile(script, "windows-controls-result", "exec"), {})
         results["rust-host-exit"]["outcome"] = "failure"
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}), self.assertRaises(AssertionError):
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}), self.assertRaises(AssertionError):
             exec(compile(script, "windows-controls-result", "exec"), {})
+        for name in ("signing-private-parent", "rust-host-exit"):
+            results[name]["outcome"] = "skipped"
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "macOS"}):
+            exec(compile(script, "macos-signature-result", "exec"), {})
+        results["signature-initialization"]["outcome"] = "failure"
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "macOS"}), self.assertRaises(AssertionError):
+            exec(compile(script, "macos-signature-result", "exec"), {})
         for check in (*diagnostic.CONTROL_CHECKS, *diagnostic.FOLLOWUP_CHECKS, *diagnostic.REMAINING_CHECKS):
             cwd, commands = diagnostic.commands(check, Path("private"))
             self.assertEqual(diagnostic.ROOT, cwd)
@@ -141,7 +152,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                 diagnostic.pinned_windows_library(Path("unused"))
             download.assert_not_called()
 
-    def test_rust_exit_diagnostic_compiles_one_consumer_not_a_package(self):
+    def test_rust_exit_diagnostic_preserves_plain_control_before_private_instrumentation(self):
         from ci.tests import native_windows_diagnostic as diagnostic
         import native_wrappers
         with tempfile.TemporaryDirectory() as temporary, \
@@ -149,22 +160,98 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                 patch.object(native_wrappers, "safe_extract_tar"), \
                 patch.object(diagnostic, "observed") as run, patch("builtins.print"):
             scratch = Path(temporary).resolve()
+            original = (diagnostic.ROOT / "codex-agent-bindings/rust/consumer/src/bin/host_smoke.rs").read_text()
+            builds = []
+            def observe(command, **kwargs):
+                if command[:2] == ["cargo", "build"]:
+                    builds.append((scratch / "consumer/src/bin/host_smoke.rs").read_text())
+            run.side_effect = observe
             diagnostic.rust_host_probe(scratch)
             authenticated.assert_called_once_with(scratch, crate_path=scratch / "original.crate")
             calls = run.call_args_list
-            self.assertEqual(5, len(calls))
+            self.assertEqual(19, len(calls))
             self.assertEqual(["rustc", "--version", "--verbose"], calls[0].args[0])
             self.assertEqual(["--release", "--locked", "--offline", "--bin", "codex-agent-rust-host-smoke"],
                              calls[2].args[0][-5:])
-            self.assertEqual(calls[3].args, calls[4].args)
-            self.assertNotIn("CODEX_AGENT_DIAGNOSTIC_PIN", calls[3].kwargs["env"])
-            self.assertNotIn("GITHUB_TOKEN", calls[3].kwargs["env"])
-            self.assertEqual("1", calls[4].kwargs["env"]["CODEX_AGENT_DIAGNOSTIC_PIN"])
-            self.assertFalse(calls[3].kwargs["check"])
-            self.assertFalse(calls[4].kwargs["check"])
-            original = (diagnostic.ROOT / "codex-agent-bindings/rust/consumer/src/bin/host_smoke.rs").read_text()
+            self.assertEqual(calls[2].args, calls[8].args)
+            trials = calls[3:8] + calls[9:]
+            self.assertEqual(15, len(trials))
+            for index, call in enumerate(trials):
+                self.assertEqual(calls[3].args, call.args)
+                self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+                self.assertNotIn("GH_TOKEN", call.kwargs["env"])
+                self.assertEqual("1" if index >= 10 else None, call.kwargs["env"].get("CODEX_AGENT_DIAGNOSTIC_PIN"))
+                self.assertFalse(call.kwargs["check"])
             projected = (scratch / "consumer/src/bin/host_smoke.rs").read_text()
+            self.assertEqual([original, projected], builds)
             self.assertEqual(original, projected.replace("\n" + diagnostic.RUST_EXIT_PIN_PROBE, ""))
+
+    def test_private_signing_probe_also_observes_dotnet_copy_and_process_errors(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("ci.sdk_native_validation_workflow._private_windows_validation_parent") as private, \
+                patch.object(diagnostic, "observed") as run, \
+                patch.dict(os.environ, {"SystemRoot": "C:/Windows"}):
+            scratch = Path(temporary) / "probe"
+            diagnostic.control_probe("signing-private-parent", scratch)
+            private.assert_called_once_with(scratch)
+            self.assertEqual(5, run.call_count)
+            self.assertTrue(run.call_args_list[1].kwargs["check"])
+            verification = run.call_args_list[2:4]
+            self.assertEqual(verification[0].args, verification[1].args)
+            self.assertEqual(verification[0].kwargs["input"], verification[1].kwargs["input"])
+            self.assertNotIn("GITHUB_TOKEN", verification[1].kwargs["env"])
+            from ci.products import sdk_validation
+            import inspect
+            names = '{"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}'
+            self.assertIn(names, inspect.getsource(sdk_validation.verify_sdk_validation_projection))
+            self.assertIn(names, inspect.getsource(diagnostic.control_probe))
+            call = run.call_args_list[4]
+            command = call.args[0]
+            self.assertEqual(["pwsh", "-NoProfile", "-NonInteractive", "-File"], command[:4])
+            self.assertFalse(call.kwargs["check"])
+            self.assertEqual(diagnostic.CSHARP_SIGNING_PROBE, Path(command[4]).read_text())
+            self.assertEqual(Path(command[6]) / "test-only-key", Path(command[5]))
+            for required in ("[IO.File]::Copy", "[Diagnostics.ProcessStartInfo]", "ArgumentList.Add",
+                             "StandardError.ReadToEnd", "exit $process.ExitCode"):
+                self.assertIn(required, diagnostic.CSHARP_SIGNING_PROBE)
+
+    def test_signature_probe_allows_macos_without_allowing_windows_consumers_there(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        for platform in ("win32", "darwin", "linux"):
+            for check in diagnostic.CHECKS:
+                with self.subTest(platform=platform, check=check), patch.object(diagnostic.sys, "platform", platform):
+                    if platform == "win32" or (platform == "darwin" and check == "signature-initialization"):
+                        diagnostic.require_diagnostic_host(check)
+                    else:
+                        with self.assertRaises(ValueError):
+                            diagnostic.require_diagnostic_host(check)
+
+    def test_signature_initialization_probe_retains_all_trust_constraints(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        import reuse_qualification
+        import subprocess
+        captured = {"qualification.json": b"frozen", "completion.json": b"sdk", "bundle.jsonl": b"bundle"}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(reuse_qualification, "_fetch_qualification_archive", return_value=({}, captured)) as fetch, \
+                patch.object(diagnostic, "observed", return_value=subprocess.CompletedProcess([], 1)) as run, \
+                patch.dict(os.environ, {"GITHUB_TOKEN": "test-only"}), patch("builtins.print"):
+            scratch = Path(temporary) / "probe"
+            diagnostic.control_probe("signature-initialization", scratch)
+            self.assertEqual(2, fetch.call_count)
+            calls = [call for call in run.call_args_list if call.args[0][1:3] == ["attestation", "verify"]]
+            self.assertEqual(6, len(calls))
+            self.assertEqual(3, len({call.kwargs["env"]["GH_CACHE_DIR"] for call in calls}))
+            for call in calls:
+                command = call.args[0]
+                self.assertFalse(call.kwargs["check"])
+                for flag in ("--repo", "--signer-workflow", "--signer-digest", "--source-digest",
+                             "--cert-oidc-issuer", "--deny-self-hosted-runners"):
+                    self.assertIn(flag, command)
+                for flag in ("--custom-trusted-root", "--no-public-good", "--format"):
+                    self.assertNotIn(flag, command)
+            self.assertEqual(b"frozen", (scratch / "qualification.json.subject").read_bytes())
+            self.assertEqual(b"sdk", (scratch / "completion.json.subject").read_bytes())
 
     def test_failed_native_diagnostic_preserves_observations_not_success(self):
         from ci.tests import native_windows_diagnostic as diagnostic
