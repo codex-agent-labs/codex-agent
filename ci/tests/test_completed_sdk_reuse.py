@@ -634,6 +634,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def test_large_native_package_member_is_bound_to_its_original_only_in_v3(self):
         import json
+        import product_reuse as products
         import reuse_qualification as native
         from products.restore import object_relative_path
         spec = ordinary_spec()
@@ -650,12 +651,15 @@ class CompletedSdkControlsTest(unittest.TestCase):
             'controls': {}, 'source': {'source': 1}, 'originals': [{'original': 1}],
             'members': [member], 'contractSource': {'source': 1}, 'contractFiles': {}}
         available = {**phase, 'objectPath': 'unused-for-original-package.zip'}
+        receipt = {**phase, 'producer': self.receipt['producer']}
         with ExitStack() as stack:
+            prime = stack.enter_context(patch.object(products, '_prime_runtime_artifact_metadata',
+                wraps=products._prime_runtime_artifact_metadata))
             stack.enter_context(patch.object(native, '_validate_completed_sdk', return_value={}))
             stack.enter_context(patch.object(completed, '_base', return_value={}))
             stack.enter_context(patch.object(completed, 'validate_controls', return_value=(
                 {'availableObjects': [available]},
-                [{key: value for key, value in phase.items() if key != 'receiptPath'}], [phase])))
+                [{key: value for key, value in phase.items() if key != 'receiptPath'}], [receipt])))
             stack.enter_context(patch.object(completed, 'validate_current'))
             inventory = stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
             observed_source = stack.enter_context(patch.object(completed, 'observe_source', return_value=({}, [], {'source': 1})))
@@ -665,6 +669,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 return completed.validate_extension(spec, value, {'signer_commit': 'a' * 40},
                     root=Path.cwd(), revision='a' * 40, frozen={}, token='synthetic')
             self.assertEqual(spec, validate(proof)['extension']['spec'])
+            prime.assert_called_once_with([
+                {'receipt': receipt, 'artifactId': spec['originals'][0]['artifactId']}], 'synthetic')
             inventory.assert_called_once_with(spec, Path.cwd(), token='synthetic')
             inventory.reset_mock()
             observed_source.side_effect = ValueError('source no longer successful')

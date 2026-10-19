@@ -425,6 +425,9 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     if type(proof["originals"]) is not list or len(proof["originals"]) != len(receipts):
         raise ValueError("Incremental SDK native original scope changed")
     with products._ci_observation_batch():
+        products._prime_runtime_artifact_metadata([
+            {"receipt": receipt, "artifactId": originals[_identity(receipt)]["artifactId"]}
+            for receipt in receipts], token)
         source, contract, *expected_locators = bounded_verify(lambda observe: observe()[2], (
             lambda: observe_source(spec["source"], token, native_locator=proof["source"]),
             lambda: observe_source(spec["contractControls"], token, contract=True, native_locator=proof["contractSource"]),
