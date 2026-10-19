@@ -25,7 +25,10 @@ CHECKOUT = ROOT.parents[1]
 # The trusted standalone checkout and packaged Python extraction both include
 # this existing filesystem helper; it grants no package/source authority.
 sys.path.insert(0, str(CHECKOUT))
-from ci.products.inventory import _directory_inventory, _open_directory
+from ci.products.inventory import (
+    _directory_inventory, _is_windows, _open_directory, _regular_file_digest,
+    _windows_directory_path, _windows_snapshot_inventory,
+)
 
 VERIFIER = ROOT / "tests/test_installed_package_tamper.py"
 CASE_IDS = tuple(sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
@@ -40,22 +43,44 @@ def _regular(path: Path, *, directory: bool = False) -> Path:
         path.is_dir() if directory else path.is_file()
     ):
         raise ValueError(f"Required regular input is missing or symbolic: {path}")
+    if _is_windows():
+        _windows_directory_path(path if directory else path.parent, "Imported C++ input")
     return path.resolve()
 
 
 def _tree(path: Path) -> None:
     _regular(path, directory=True)
+    if _is_windows():
+        _windows_snapshot_inventory(path, allow_empty=True)
+        return
     if any(item.is_symlink() or not (item.is_file() or item.is_dir()) for item in path.rglob("*")):
         raise ValueError("Imported package/evidence contains a symbolic or special member")
 
 
 def _package_inventory(root: Path) -> tuple:
     """Compare exact local package bytes, not receipt or archive authority."""
+    if _is_windows():
+        return _windows_package_state(root)[1]
     descriptor = _open_directory(root, "Imported C++ package")
     try:
         return _directory_inventory(descriptor, allow_empty=True)
     finally:
         os.close(descriptor)
+
+
+def _windows_package_state(root: Path) -> tuple:
+    """Use the existing guarded Windows reader, retaining empty dirs and modes."""
+    before = _windows_snapshot_inventory(root, allow_empty=True)
+    directories, files = before
+    modes = {name: (root / name).lstat().st_mode for name in (*directories, *files)}
+    records = [(name, "directory", modes[name], 0, "") for name in directories if name != "."]
+    for name in files:
+        size, digest = _regular_file_digest(root / name, reject_symlink_parents=True)
+        records.append((name, "file", modes[name], size, digest))
+    if (_windows_snapshot_inventory(root, allow_empty=True) != before
+            or any((root / name).lstat().st_mode != mode for name, mode in modes.items())):
+        raise ValueError("Imported C++ tree changed during verification")
+    return directories["."][:2], tuple(sorted(records))
 
 
 def _relative(value: str) -> str:
@@ -72,6 +97,9 @@ def _output(path: Path, package: Path) -> Path:
     path = Path(os.path.abspath(path.expanduser()))
     if any(item.is_symlink() for item in (path, *path.parents)):
         raise ValueError("Imported package evidence output has a symbolic parent")
+    if _is_windows():
+        _windows_directory_path(next(item for item in (path, *path.parents) if item.exists()),
+                                "Imported C++ evidence output")
     if path == Path(path.anchor) or any(item == path or item.is_relative_to(path)
                                        for item in (Path.home().resolve(), CHECKOUT, ROOT, ROOT.parent)):
         raise ValueError("Imported package evidence output is too broad")
@@ -219,14 +247,19 @@ def verify_imported_package(package_root: Path, output: Path, *, cmake: str,
                     raise ValueError("Retained C++ evidence changed during publication")
         finally:
             unchanged()
-        descriptor = _open_directory(output, "Published C++ evidence final check")
-        try:
-            observed = os.fstat(descriptor)
-            if ((observed.st_dev, observed.st_ino) != published
-                    or _directory_inventory(descriptor, allow_empty=True) != evidence_inventory):
+        if _is_windows():
+            identity, inventory = _windows_package_state(output)
+            if identity != published or inventory != evidence_inventory:
                 raise ValueError("Retained C++ evidence changed after final input check")
-        finally:
-            os.close(descriptor)
+        else:
+            descriptor = _open_directory(output, "Published C++ evidence final check")
+            try:
+                observed = os.fstat(descriptor)
+                if ((observed.st_dev, observed.st_ino) != published
+                        or _directory_inventory(descriptor, allow_empty=True) != evidence_inventory):
+                    raise ValueError("Retained C++ evidence changed after final input check")
+            finally:
+                os.close(descriptor)
     except BaseException:
         # No atomic compare-inode-and-remove primitive is available. Retain
         # failed raw diagnostics rather than risk deleting a replacement.

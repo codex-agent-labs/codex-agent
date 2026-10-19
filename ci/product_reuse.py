@@ -37,7 +37,7 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
-from runtime_reference_transport import measured, count
+from runtime_reference_transport import measured, count, report_api_error
 from reuse import github_output, run_matches_pr
 from runtime_reference_transport import api_json, download_artifact, download_artifact_to_file, paginated_items
 
@@ -86,6 +86,7 @@ def _retry_github_get(operation):
                 if attempt == 3 or not transient and delay is None:
                     raise
                 if delay is not None:
+                    report_api_error(error)
                     waited_for_reset = True
                     count('primaryRateLimitRetries')
                     count('primaryRateLimitWaitSeconds', delay)

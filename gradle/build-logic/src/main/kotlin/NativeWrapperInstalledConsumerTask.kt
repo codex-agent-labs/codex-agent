@@ -218,8 +218,7 @@ internal fun requireExactNativeWrapperInstalledConsumerEvidence(
     val expectedTools = when (language) {
         "python" -> setOf("python")
         "csharp" -> setOf("dotnet")
-        "rust" -> setOf("cargo", "rustc") +
-            if (classifier == "windows-x64") emptySet() else setOf("rustFixtureCompiler")
+        "rust" -> setOf("cargo", "rustc", "rustFixtureCompiler")
         "cpp" -> setOf("cmake", "cppCompiler")
         "dart" -> setOf("dart")
         else -> error("Unsupported native wrapper language: $language")

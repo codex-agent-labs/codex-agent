@@ -69,6 +69,8 @@ class CsharpRestoreAdmissionTest(unittest.TestCase):
         producer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(producer)
         program = producer.TEST_SOURCE.read_bytes()
+        security = producer.SUITE_ROOT / "RuntimeLoaderSecurity.cs"
+        original_security = security.read_bytes()
         loader = producer.ROOT / "src/CodexAgent/Interop/NativeLibraryLoader.cs"
         original_loader = loader.read_bytes()
         with tempfile.TemporaryDirectory() as temporary:
@@ -80,6 +82,11 @@ class CsharpRestoreAdmissionTest(unittest.TestCase):
             self.assertNotIn("NativeLibrary.Load(", resolver.read_text())
             self.assertEqual(program, (source / producer.TEST_SOURCE.relative_to(producer.ROOT)).read_bytes())
             self.assertEqual(original_loader, (source / loader.relative_to(producer.ROOT)).read_bytes())
+            projected = (source / security.relative_to(producer.ROOT)).read_bytes()
+            self.assertEqual(2, projected.count(b"Console.Error.Write(process.StandardError.ReadToEnd());"))
+            self.assertEqual(original_security, projected.replace(
+                b"Console.Error.Write(process.StandardError.ReadToEnd());", b"_ = process.StandardError.ReadToEnd();"))
+            self.assertEqual(original_security, security.read_bytes())
         self.assertFalse((producer.SUITE_ROOT / "CapabilityFixtureResolver.cs").exists())
 
     def verify(self, value: dict, target: str = "linux-x64") -> None:

@@ -217,6 +217,22 @@ class NativeWrapperInstalledConsumerTaskTest {
     }
 
     @Test
+    fun `Windows Rust evidence retains the mock compiler identity`() {
+        val output = createTempDirectory("windows-rust-tool-evidence").toFile()
+        try {
+            val tools = listOf("cargo", "rustFixtureCompiler", "rustc")
+            writeSyntheticEvidence(output, "rust", tools, "windows-x64")
+            requireExactNativeWrapperInstalledConsumerEvidence(output, "rust", "windows-x64")
+            writeSyntheticEvidence(output, "rust", tools - "rustFixtureCompiler", "windows-x64")
+            assertFailsWith<IllegalStateException> {
+                requireExactNativeWrapperInstalledConsumerEvidence(output, "rust", "windows-x64")
+            }
+        } finally {
+            output.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `registration verifies imported integrity and keeps product phase closure external`() {
         val source = File("src/main/kotlin/codexagent.native-wrapper-sdk.gradle.kts").readText()
         val seam = source.substringAfter("val nativeWrapperInstalledConsumerTasks =")
@@ -314,11 +330,13 @@ class NativeWrapperInstalledConsumerTaskTest {
         """.trimIndent() + "\n"
     }
 
-    private fun writeSyntheticEvidence(output: File, language: String, tools: List<String>) {
+    private fun writeSyntheticEvidence(
+        output: File, language: String, tools: List<String>, classifier: String = "linux-x64",
+    ) {
         val directory = output.resolve("evidence/$language").also(File::mkdirs)
-        directory.resolve("linux-x64.tsv").writeText(
+        directory.resolve("$classifier.tsv").writeText(
             "classifier\tpackageArtifactId\tpackageSha256\tnativeLibrarySha256\ttestId\tstatus\n" +
-                "linux-x64\t$language-package/package.zip\t${"a".repeat(64)}\t${"b".repeat(64)}\t" +
+                "$classifier\t$language-package/package.zip\t${"a".repeat(64)}\t${"b".repeat(64)}\t" +
                 "$language-installed-host-lifecycle\tpassed\n",
         )
         directory.resolve("toolchain.tsv").writeText(

@@ -312,14 +312,13 @@ def csharp_security_probe(scratch):
     document.write(project, encoding="utf-8")
     security = project.parent / "RuntimeLoaderSecurity.cs"
     raw = security.read_text(encoding="utf-8")
-    assert raw.count("_ = process.StandardError.ReadToEnd();") == 2
+    assert raw.count("Console.Error.Write(process.StandardError.ReadToEnd());") == 2
     sign = '                foreach (var argument in new[] { "-Y", "sign",'
     assert raw.count(sign) == 1
     diagnostic = '''                Console.WriteLine("fixtureKeyPath=" + privateKey + ";payloadPath=" + path);
                 Console.WriteLine("fixtureKeySha256=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(privateKey))));
 '''
-    security.write_text(raw.replace("_ = process.StandardError.ReadToEnd();",
-        "Console.WriteLine(process.StandardError.ReadToEnd());").replace(sign, diagnostic + sign), encoding="utf-8")
+    security.write_text(raw.replace(sign, diagnostic + sign), encoding="utf-8")
     entry = project.parent / "Program.cs"
     raw = entry.read_text(encoding="utf-8")
     marker = "var capabilityClaims = ReadCapabilityClaims();"

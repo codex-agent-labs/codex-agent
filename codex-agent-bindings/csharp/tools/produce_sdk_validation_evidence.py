@@ -205,6 +205,14 @@ def _copy_sources(files: list[Path], destination: Path) -> None:
             # This private, single-threaded fixture only reads getenv's result.
             # Keep strict warnings; opt out of MS CRT's nonportable deprecation.
             target.write_bytes(b"#define _CRT_SECURE_NO_WARNINGS 1\n" + source.read_bytes())
+        elif source == SUITE_ROOT / "RuntimeLoaderSecurity.cs":
+            # Retain signer diagnostics in this validation-only private copy;
+            # never change the packaged source or its existing success gates.
+            raw = source.read_bytes()
+            discarded = b"_ = process.StandardError.ReadToEnd();"
+            if raw.count(discarded) != 2:
+                raise ValueError("C# fixture signer diagnostics changed")
+            target.write_bytes(raw.replace(discarded, b"Console.Error.Write(process.StandardError.ReadToEnd());"))
         else:
             shutil.copyfile(source, target)
     # Test-only exports must use the SDK's already authenticated image too, not

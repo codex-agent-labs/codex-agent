@@ -247,7 +247,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
 '''
             self.assertEqual(1, projected.read_text().count(instrumentation))
             self.assertEqual(original.read_text(), projected.read_text().replace(instrumentation, "").replace(
-                "Console.WriteLine(process.StandardError.ReadToEnd());", "_ = process.StandardError.ReadToEnd();"))
+                "Console.Error.Write(process.StandardError.ReadToEnd());", "_ = process.StandardError.ReadToEnd();"))
             self.assertEqual(3, run.call_count)
             restore, build, execute = (call.args[0] for call in run.call_args_list)
             self.assertEqual(["dotnet", "restore"], restore[:2])

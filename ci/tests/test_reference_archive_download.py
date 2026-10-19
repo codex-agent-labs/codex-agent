@@ -1,5 +1,6 @@
 """Per-open transport reuse retains immutable range and member authentication."""
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -48,6 +49,8 @@ class ReferenceDownloadTest(unittest.TestCase):
         raw = b'original bytes'
         artifact = dict(id=1, size_in_bytes=len(raw), digest=sha256_bytes(raw),
             archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+        headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
+                   'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}
         for repeated in (False, True):
             requests = []
             opener = RangeOpener({1: raw})
@@ -55,12 +58,12 @@ class ReferenceDownloadTest(unittest.TestCase):
                 requests.append(request)
                 if repeated or len(requests) == 1:
                     raise urllib.error.HTTPError(request.full_url, 403, 'limited',
-                        {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
-                         'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}, io.BytesIO())
+                        headers, io.BytesIO(b'private body secret'))
                 return opener.open(request, timeout)
             with mock.patch.object(transport.urllib.request, 'build_opener') as factory, \
                     mock.patch.object(transport.time, 'time', return_value=1000), \
-                    mock.patch.object(transport.time, 'sleep') as sleep:
+                    mock.patch.object(transport.time, 'sleep') as sleep, \
+                    mock.patch.object(sys, 'stderr', new_callable=io.StringIO) as log:
                 factory.return_value.open.side_effect = open_range
                 stream = transport._Archive(artifact, 'secret')
                 if repeated:
@@ -73,6 +76,13 @@ class ReferenceDownloadTest(unittest.TestCase):
                 self.assertEqual(requests[0].full_url, requests[1].full_url)
                 self.assertEqual(requests[0].headers, requests[1].headers)
                 sleep.assert_called_once_with(122)
+                self.assertNotIn('secret', log.getvalue())
+                self.assertNotIn('private body', log.getvalue())
+                self.assertNotIn(artifact['archive_download_url'], log.getvalue())
+                diagnostics = [json.loads(line.removeprefix('github-api-error '))
+                               for line in log.getvalue().splitlines()]
+                self.assertEqual([{'status': 403, 'messageKind': 'unclassified',
+                    'rateLimit': {name: int(value) for name, value in headers.items()}}], diagnostics)
 
     def test_large_stored_member_uses_two_bounded_ranges_and_keeps_exact_digest(self):
         from ci.tests.test_runtime_reference_transport import RangeOpener

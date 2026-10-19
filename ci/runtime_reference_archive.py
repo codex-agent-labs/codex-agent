@@ -21,7 +21,7 @@ import zipfile
 from products.inventory import require_integer, require_relative_path, require_sha256
 from products.zip_central_directory import verify_zip64_end_record
 from reuse import OriginBoundRedirectHandler
-from runtime_reference_transport import token_for
+from runtime_reference_transport import token_for, report_api_error
 
 _READ_AHEAD = 256 * 1024
 _DOWNLOAD_BLOCK_BYTES = 32 * 1024 * 1024
@@ -137,6 +137,8 @@ class _Archive(io.RawIOBase):
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (TimeoutError, ConnectionError, socket.gaierror)))
                 if isinstance(error, urllib.error.HTTPError):
+                    if delay is not None and attempt < 2:
+                        report_api_error(error)
                     error.close()
                 if not transient and delay is None or attempt == 2:
                     if isinstance(error, http.client.IncompleteRead):

@@ -2,6 +2,7 @@
 import hashlib
 from http.client import IncompleteRead
 import io
+import json
 import socket
 import ssl
 from pathlib import Path
@@ -36,6 +37,12 @@ class RecoveryGetRetryTest(unittest.TestCase):
                 sleep.assert_called_once_with(122)
                 self.assertNotIn('secret-token', log.getvalue())
                 self.assertNotIn('private body', log.getvalue())
+                self.assertNotIn(error.url, log.getvalue())
+                diagnostics = [json.loads(line.removeprefix('github-api-error '))
+                               for line in log.getvalue().splitlines()
+                               if line.startswith('github-api-error ')]
+                self.assertEqual([{'status': 403, 'messageKind': 'unclassified',
+                    'rateLimit': {name: int(value) for name, value in headers.items()}}], diagnostics)
 
     def test_other_denials_and_unbounded_or_untrusted_resets_never_authorize_wait(self):
         headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
@@ -53,7 +60,8 @@ class RecoveryGetRetryTest(unittest.TestCase):
         for code, url, values in cases:
             with self.subTest(code=code, url=url, headers=values), \
                     mock.patch.object(recovery.time, 'time', return_value=1000), \
-                    mock.patch.object(recovery.time, 'sleep') as sleep:
+                    mock.patch.object(recovery.time, 'sleep') as sleep, \
+                    mock.patch.object(recovery, 'report_api_error') as report:
                 error = urllib.error.HTTPError(url, code, 'denied', values, None)
                 self.addCleanup(error.close)
                 operation = mock.Mock(side_effect=error)
@@ -61,6 +69,7 @@ class RecoveryGetRetryTest(unittest.TestCase):
                     recovery._retry_github_get(operation)()
                 operation.assert_called_once()
                 sleep.assert_not_called()
+                report.assert_not_called()
         error = urllib.error.HTTPError('https://api.github.com/x', 429, 'limited',
                                       dict(headers, **{'retry-after': '200'}), None)
         self.addCleanup(error.close)
