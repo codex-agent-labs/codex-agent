@@ -8,7 +8,7 @@ import os
 import uuid
 import subprocess
 
-from products.inventory import require_sha256, sha256_file, _open_directory
+from products.inventory import require_sha256, sha256_file, _open_directory, _is_windows, _windows_directory_path
 from runtime_reference_transport import _copy_exact
 
 
@@ -45,22 +45,34 @@ def retain(record, source):
         if path.stat().st_size != record["bytes"] or sha256_file(path, reject_symlink_parents=True) != record["sha256"]:
             raise ValueError("Occupied hydrated evidence differs from its qualified identity")
         return
-    parent = _open_directory(path.parent, "Hydrated evidence parent", create=True)
+    parent = None
+    if _is_windows():
+        _windows_directory_path(path.parent, "Hydrated evidence parent", create=True)
+    else:
+        parent = _open_directory(path.parent, "Hydrated evidence parent", create=True)
     temporary = path.with_name(".pending-" + uuid.uuid4().hex)
     try:
         _copy_exact(Path(source), temporary, record, destination_directory=parent)
         try:
-            os.link(temporary.name, path.name, src_dir_fd=parent, dst_dir_fd=parent,
-                    follow_symlinks=False)
+            if parent is None:
+                _windows_directory_path(path.parent, "Hydrated evidence parent")
+                os.rename(temporary, path)  # Windows atomically rejects an existing target.
+            else:
+                os.link(temporary.name, path.name, src_dir_fd=parent, dst_dir_fd=parent,
+                        follow_symlinks=False)
         except FileExistsError:
             if path.stat().st_size != record["bytes"] or sha256_file(path, reject_symlink_parents=True) != record["sha256"]:
                 raise ValueError("Concurrent hydrated evidence differs from its qualified identity")
     finally:
         try:
-            os.unlink(temporary.name, dir_fd=parent)
+            if parent is None:
+                temporary.unlink()
+            else:
+                os.unlink(temporary.name, dir_fd=parent)
         except FileNotFoundError:
             pass
-        os.close(parent)
+        if parent is not None:
+            os.close(parent)
 
 
 def hosted(mode, references, directory, *, selected_paths=None):

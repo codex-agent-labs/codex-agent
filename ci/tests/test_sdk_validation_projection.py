@@ -121,15 +121,23 @@ class SdkValidationProjectionTest(unittest.TestCase):
             with self.subTest(package_field=field), self.assertRaises(ValueError):
                 proof.receipt_value(receipt, wrong)
 
-    def test_verifier_keeps_required_openssh_os_path_without_injected_options_or_credentials(self):
+    def test_verifier_keeps_required_windows_os_paths_without_injected_options_or_credentials(self):
+        from ci.products.sdk_validation import _fixed_environment
+        expected = {"PROGRAMDATA": "C:/ProgramData", "PROGRAMFILES": "C:/Program Files",
+                    "PROGRAMFILES(X86)": "C:/Program Files (x86)",
+                    "APPDATA": "C:/Users/runner/AppData/Roaming",
+                    "LOCALAPPDATA": "C:/Users/runner/AppData/Local"}
         def execute(command, **kwargs):
-            self.assertEqual({"PROGRAMDATA": "C:/ProgramData"}, kwargs["env"])
+            self.assertEqual(expected, kwargs["env"])
             return self.execute(command, **kwargs)
-        with patch.dict("os.environ", {"PROGRAMDATA": "C:/ProgramData",
+        with patch.dict("os.environ", {**expected,
                 "JAVA_TOOL_OPTIONS": "untrusted", "GH_TOKEN": "secret",
-                "SSH_AUTH_SOCK": "untrusted", "CODEX_AGENT_LIBRARY": "untrusted"}, clear=True), \
+                "SSH_AUTH_SOCK": "untrusted", "CODEX_AGENT_LIBRARY": "untrusted",
+                "DOTNET_STARTUP_HOOKS": "untrusted", "NUGET_PLUGIN_PATHS": "untrusted",
+                "NUGET_PACKAGES": "untrusted", "PYTHONPATH": "untrusted"}, clear=True), \
                 patch("ci.products.tooling.verified_tooling_capture", self.capture), \
                 patch("ci.products.sdk_validation.subprocess.run", side_effect=execute):
+            self.assertEqual(expected, _fixed_environment())
             verify_sdk_validation_projection(**self.args)
 
     def test_different_original_producer_receipts_keep_equal_comparison_content(self):

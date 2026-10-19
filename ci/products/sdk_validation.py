@@ -211,10 +211,7 @@ def verify_sdk_validation_projection(
                 "validation-receipt": captured["validation"], "content-output": output}
             command = [str(java_executable), "-jar", str(jar), "write-native-wrapper-validation-content"]
             command += [part for key, value in arguments.items() for part in (f"--{key}", str(value))]
-            # Win32 OpenSSH needs ProgramData during process initialization,
-            # including for verification; this is an OS path, not trust input.
-            environment = {key: value for key, value in os.environ.items()
-                           if key in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA"}}
+            environment = _fixed_environment()
             try:
                 subprocess.run(command, cwd=root, env=environment, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError as error:
@@ -428,8 +425,7 @@ class SharedPackageSession:
 
 def _host_gates(java, jar, common, view, component, target):
     """Fixed existing verifier commands; no caller-selected matcher or callback."""
-    environment = {key: value for key, value in os.environ.items() if key in {
-        "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA"}}
+    environment = _fixed_environment()
     raw = view / "validation/outputs"
     if component == "cpp":
         # Reuse this fixed worker's already-captured signed resource tree.
@@ -484,8 +480,10 @@ _SHARED_SCOPE = ContextVar("sdk_shared_verifier", default=None)
 
 
 def _fixed_environment():
+    # OpenSSH and NuGet need Windows OS paths, not credentials or injected options.
     return {key: value for key, value in os.environ.items() if key in {
-        "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA"}}
+        "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+        "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "APPDATA", "LOCALAPPDATA"}}
 
 
 def _path(value):

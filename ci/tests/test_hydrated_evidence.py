@@ -12,6 +12,49 @@ from products.inventory import sha256_bytes
 
 
 class HydratedEvidenceTest(unittest.TestCase):
+    def test_windows_retention_uses_verified_bytes_and_atomic_no_replace(self):
+        # Exercise the Windows branch locally; no claim of genuine Windows execution.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "original"
+            source.write_bytes(b"immutable")
+            record = {"bytes": 9, "sha256": sha256_bytes(b"immutable")}
+            with patch.dict(os.environ, {"CODEX_AGENT_HYDRATED_EVIDENCE": str(root / "cache")}), \
+                    patch.object(cache, "_is_windows", return_value=True, create=True), \
+                    patch.object(cache, "_open_directory", side_effect=AssertionError("POSIX directory API")):
+                cache.retain(record, source)
+                self.assertTrue(cache.copy(record, root / "restored"))
+                cache.retain(record, source)
+                target = cache.blob(record)
+                target.unlink()
+                source.write_bytes(b"corrupted")
+                with self.assertRaises(ValueError):
+                    cache.retain(record, source)
+                self.assertFalse(target.exists())
+                self.assertEqual([], list(target.parent.iterdir()))
+                source.write_bytes(b"immutable")
+                for contents in (b"immutable", b"corrupted"):
+                    def concurrent_writer(_source, destination):
+                        destination.write_bytes(contents)
+                        raise FileExistsError(destination)
+
+                    with patch.object(cache.os, "rename", side_effect=concurrent_writer):
+                        if contents == b"immutable":
+                            cache.retain(record, source)
+                        else:
+                            with self.assertRaises(ValueError):
+                                cache.retain(record, source)
+                    self.assertEqual(contents, target.read_bytes())
+                    self.assertEqual([target], list(target.parent.iterdir()))
+                    target.unlink()
+                target.parent.rmdir()
+                outside = root / "outside"
+                outside.mkdir()
+                target.parent.symlink_to(outside, target_is_directory=True)
+                with self.assertRaises(ValueError):
+                    cache.retain(record, source)
+                self.assertEqual([], list(outside.iterdir()))
+
     def test_hosted_manifest_includes_aggregate_unique_bytes_and_excludes_aliases(self):
         import json
         from ci.tests.test_products import phase_receipt
