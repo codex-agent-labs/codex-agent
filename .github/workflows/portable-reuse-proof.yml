@@ -201,20 +201,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11'
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0, same as the C# worker
+        if: runner.os == 'Windows'
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
+        with:
+          dotnet-version: '8.0.419'
       - id: signing-private-parent
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py signing-private-parent "$env:RUNNER_TEMP/windows-controls/signing-private-parent"
-      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0, same as the failing consumer
-        if: runner.os == 'Windows'
-      - id: rust-host-exit
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python -B ci/tests/native_windows_diagnostic.py rust-host-exit "$env:RUNNER_TEMP/windows-controls/rust-host-exit"
       - name: Install the same checksum-pinned attestation verifier as product workers
         shell: bash
         run: bash .github/actions/restore-reuse-qualification/install-gh.sh
@@ -244,7 +241,7 @@ jobs:
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
           required = ('signature-initialization',)
           if os.environ['DIAGNOSTIC_RUNNER'] == 'Windows':
-              required += ('signing-private-parent', 'rust-host-exit')
+              required += ('signing-private-parent',)
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:

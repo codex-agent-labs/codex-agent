@@ -235,6 +235,44 @@ def rust_host_probe(scratch):
                          env=environment | ({"CODEX_AGENT_DIAGNOSTIC_PIN": "1"} if pin else {}))
 
 
+def csharp_signing_probe(scratch):
+    """Compile only the actual suite's signing methods under its .NET 8 SDK."""
+    test = ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests"
+    raw = (test / "RuntimeLoaderSecurity.cs").read_text(encoding="utf-8")
+    keygen = raw.split("            static void Keygen(", 1)[1].split("            static byte[] PublicKey(", 1)[0]
+    sign = raw.split("            static void Sign(", 1)[1].split("            var rootKey =", 1)[0]
+    # Preserve process arguments/copy behavior; expose stderr discarded by the
+    # suite. This is a diagnostic consumer, never package or phase evidence.
+    sign = sign.replace("_ = process.StandardError.ReadToEnd();", "Console.WriteLine(process.StandardError.ReadToEnd());")
+    source = '''using System;
+using System.IO;
+using System.Diagnostics;
+Console.WriteLine("dotnetRuntime=" + Environment.Version);
+var root = Path.Combine(AppContext.BaseDirectory, "runtime-loader-signed");
+Directory.CreateDirectory(root);
+var key = Path.Combine(root, "root-key");
+File.Copy(args[0], key);
+if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(key, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+Keygen(Path.Combine(root, "release-key"));
+var evidence = Path.Combine(root, "codex_agent.dll.evidence");
+Directory.CreateDirectory(evidence);
+var payload = Path.Combine(evidence, "root-delegation.json");
+File.WriteAllBytes(payload, System.Text.Encoding.UTF8.GetBytes("{}\\n"));
+Console.WriteLine("keyPathLength=" + key.Length + ";payloadPathLength=" + payload.Length);
+Sign(payload, key, "codex-agent-sdk-runtime-root-v1", Path.Combine(evidence, "root-delegation.sig"));
+''' + "static void Keygen(" + keygen + "static void Sign(" + sign
+    project = scratch / "dotnet8-signing"
+    project.mkdir()
+    (project / "Program.cs").write_text(source, encoding="utf-8")
+    (project / "probe.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup></Project>\n', encoding="utf-8")
+    (project / "global.json").write_text('{"sdk":{"version":"8.0.419","rollForward":"disable"}}\n', encoding="utf-8")
+    (project / "NuGet.Config").write_text('<configuration><packageSources><clear /></packageSources></configuration>\n', encoding="utf-8")
+    observed(["dotnet", "--version"], cwd=project)
+    observed(["dotnet", "build", "probe.csproj", "--configuration", "Release", "--nologo"], cwd=project)
+    observed(["dotnet", str(project / "bin/Release/net8.0/probe.dll"), str(test / "fixtures/sdk-runtime-root-test-only")],
+             cwd=project, check=False)
+
+
 def control_probe(check, scratch):
     sys.path[:0] = [str(ROOT / "ci"), str(ROOT)]
     scratch.mkdir(exist_ok=False)
@@ -242,6 +280,7 @@ def control_probe(check, scratch):
         if check == "signing-private-parent":
             from ci.sdk_native_validation_workflow import _private_windows_validation_parent
             _private_windows_validation_parent(scratch)
+            private_parent = scratch
             scratch = scratch / "validation/outputs/private-test/program/runtime-loader-signed"
             scratch.mkdir(parents=True)
         fixture = ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/fixtures/sdk-runtime-root-test-only"
@@ -266,12 +305,18 @@ def control_probe(check, scratch):
                 environment.update(LC_ALL="C", LANG="C")
                 print(json.dumps({"reducedVerifierEnvironment": reduced}), flush=True)
                 observed(verify, env=environment, input=payload.read_bytes(), check=False)
+            # Win32 OpenSSH init_prog_paths requires ProgramData before its
+            # normal stderr initialization. Add only that one missing OS path.
+            environment = {**environment, "PROGRAMDATA": os.environ["PROGRAMDATA"]}
+            print(json.dumps({"reducedVerifierEnvironment": True, "programDataRestored": True}), flush=True)
+            observed(verify, env=environment, input=payload.read_bytes(), check=False)
             # Match the suite's .NET File.Copy and ProcessStartInfo instead of
             # treating the Python-copy/direct-sign probe as equivalent evidence.
             script = scratch / "signing-copy.ps1"
             script.write_text(CSHARP_SIGNING_PROBE, encoding="utf-8")
             observed(["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script),
                       str(key), str(scratch), signer], check=False)
+            csharp_signing_probe(private_parent)
             return
         payload.with_name(payload.name + ".sig").unlink(missing_ok=True)
         user = subprocess.check_output(["whoami"], text=True).strip()
@@ -316,7 +361,7 @@ def control_probe(check, scratch):
                 artifact_id=artifact, artifact_sha256="sha256:" + digest,
                 run_id=run, run_attempt=1, signer_commit=commit, source_commit=commit,
                 token=os.environ["GITHUB_TOKEN"], _completed_sdk=completed)
-            subject, bundle = scratch / (name + ".subject"), scratch / (name + ".bundle")
+            subject, bundle = scratch / (name + ".subject"), scratch / (name + ".bundle.jsonl")
             subject.write_bytes(captured[name])
             bundle.write_bytes(captured["bundle.jsonl"])
             subjects.append((subject, bundle, commit))

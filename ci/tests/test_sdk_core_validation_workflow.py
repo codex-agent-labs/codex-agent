@@ -90,15 +90,20 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         for forbidden in ("secrets.", "id-token: write", "gradlew", "setup-msvc", "dart-cache",
                           "download-artifact", "capture-sdk-tooling", "product-attestation"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(3, block.count("continue-on-error: true"))
-        self.assertEqual(3, block.count("if: runner.os == 'Windows'"))
+        self.assertEqual(2, block.count("continue-on-error: true"))
+        self.assertEqual(2, block.count("if: runner.os == 'Windows'"))
+        self.assertNotIn("rust-host-exit", block)  # Existing fifteen exit observations are sufficient.
+        self.assertNotIn("rust-toolchain", block)
+        worker = (WORKFLOW.parents[1] / "actions/sdk-native-validation-worker/action.yml").read_text()
+        dotnet = re.search(r"uses: actions/setup-dotnet@\w+", block).group()
+        self.assertIn(dotnet, worker)
         self.assertIn("bash .github/actions/restore-reuse-qualification/install-gh.sh", block)
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
         results = {name: {"outcome": "success"} for name in diagnostic.REMAINING_CHECKS}
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        results["rust-host-exit"]["outcome"] = "failure"
+        results["signing-private-parent"]["outcome"] = "failure"
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}), self.assertRaises(AssertionError):
             exec(compile(script, "windows-controls-result", "exec"), {})
         for name in ("signing-private-parent", "rust-host-exit"):
@@ -191,11 +196,12 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, \
                 patch("ci.sdk_native_validation_workflow._private_windows_validation_parent") as private, \
                 patch.object(diagnostic, "observed") as run, \
-                patch.dict(os.environ, {"SystemRoot": "C:/Windows"}):
+                patch.object(diagnostic, "csharp_signing_probe") as dotnet, \
+                patch.dict(os.environ, {"SystemRoot": "C:/Windows", "PROGRAMDATA": "C:/ProgramData"}):
             scratch = Path(temporary) / "probe"
             diagnostic.control_probe("signing-private-parent", scratch)
             private.assert_called_once_with(scratch)
-            self.assertEqual(5, run.call_count)
+            self.assertEqual(6, run.call_count)
             self.assertTrue(run.call_args_list[1].kwargs["check"])
             verification = run.call_args_list[2:4]
             self.assertEqual(verification[0].args, verification[1].args)
@@ -204,14 +210,19 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             from ci.products import sdk_validation
             import inspect
             names = '{"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}'
-            self.assertIn(names, inspect.getsource(sdk_validation.verify_sdk_validation_projection))
+            self.assertIn(names[:-1] + ', "PROGRAMDATA"}', inspect.getsource(sdk_validation.verify_sdk_validation_projection))
             self.assertIn(names, inspect.getsource(diagnostic.control_probe))
-            call = run.call_args_list[4]
+            repaired = run.call_args_list[4]
+            self.assertEqual(verification[0].args, repaired.args)
+            self.assertEqual("C:/ProgramData", repaired.kwargs["env"]["PROGRAMDATA"])
+            self.assertNotIn("GITHUB_TOKEN", repaired.kwargs["env"])
+            call = run.call_args_list[5]
             command = call.args[0]
             self.assertEqual(["pwsh", "-NoProfile", "-NonInteractive", "-File"], command[:4])
             self.assertFalse(call.kwargs["check"])
             self.assertEqual(diagnostic.CSHARP_SIGNING_PROBE, Path(command[4]).read_text())
             self.assertEqual(Path(command[6]) / "test-only-key", Path(command[5]))
+            dotnet.assert_called_once_with(scratch)
             for required in ("[IO.File]::Copy", "[Diagnostics.ProcessStartInfo]", "ArgumentList.Add",
                              "StandardError.ReadToEnd", "exit $process.ExitCode"):
                 self.assertIn(required, diagnostic.CSHARP_SIGNING_PROBE)
@@ -245,6 +256,9 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             for call in calls:
                 command = call.args[0]
                 self.assertFalse(call.kwargs["check"])
+                bundle = Path(command[command.index("--bundle") + 1])
+                self.assertEqual(".jsonl", bundle.suffix)
+                self.assertEqual(captured["bundle.jsonl"], bundle.read_bytes())
                 for flag in ("--repo", "--signer-workflow", "--signer-digest", "--source-digest",
                              "--cert-oidc-issuer", "--deny-self-hosted-runners"):
                     self.assertIn(flag, command)

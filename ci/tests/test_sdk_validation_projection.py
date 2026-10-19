@@ -121,6 +121,17 @@ class SdkValidationProjectionTest(unittest.TestCase):
             with self.subTest(package_field=field), self.assertRaises(ValueError):
                 proof.receipt_value(receipt, wrong)
 
+    def test_verifier_keeps_required_openssh_os_path_without_injected_options_or_credentials(self):
+        def execute(command, **kwargs):
+            self.assertEqual({"PROGRAMDATA": "C:/ProgramData"}, kwargs["env"])
+            return self.execute(command, **kwargs)
+        with patch.dict("os.environ", {"PROGRAMDATA": "C:/ProgramData",
+                "JAVA_TOOL_OPTIONS": "untrusted", "GH_TOKEN": "secret",
+                "SSH_AUTH_SOCK": "untrusted", "CODEX_AGENT_LIBRARY": "untrusted"}, clear=True), \
+                patch("ci.products.tooling.verified_tooling_capture", self.capture), \
+                patch("ci.products.sdk_validation.subprocess.run", side_effect=execute):
+            verify_sdk_validation_projection(**self.args)
+
     def test_different_original_producer_receipts_keep_equal_comparison_content(self):
         first = self.verify()
         original = self.args["validation_receipt"].read_bytes()

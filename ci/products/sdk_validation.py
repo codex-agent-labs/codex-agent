@@ -206,8 +206,10 @@ def verify_sdk_validation_projection(
                 "validation-receipt": captured["validation"], "content-output": output}
             command = [str(java_executable), "-jar", str(jar), "write-native-wrapper-validation-content"]
             command += [part for key, value in arguments.items() for part in (f"--{key}", str(value))]
+            # Win32 OpenSSH needs ProgramData during process initialization,
+            # including for verification; this is an OS path, not trust input.
             environment = {key: value for key, value in os.environ.items()
-                           if key in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}}
+                           if key in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA"}}
             try:
                 subprocess.run(command, cwd=root, env=environment, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError as error:
