@@ -466,7 +466,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
     return sdk
 
 
-def _qualified_members(spec, prior, phases, receipts):
+def _qualified_members(spec, prior, phases, receipts, *, root=None):
     """Join only after _fetch_completed_sdk freshly authenticates the native subject.
 
     The new issuer reuses exact byte qualification; current source admission,
@@ -483,11 +483,25 @@ def _qualified_members(spec, prior, phases, receipts):
     selected = _records(phases, "Current admitted SDK phases")
     earlier = _records(old["completedPhases"], "Previously native-qualified SDK phases")
     current_receipts = {_identity(receipt): canonical_json_bytes(receipt) for receipt in receipts}
-    if not set(earlier) <= set(selected):
-        raise ValueError("Reused native completion drops a previously admitted SDK phase")
+    omitted = set(earlier) - set(selected)
+    if omitted:
+        if root is None:
+            raise ValueError("Reused native completion drops a previously admitted SDK phase")
+        from products.inventory import tree_entries
+        from products.selection import phase_inventory_paths
+        from reuse_qualification import _changed_inventory_paths
+        before, after = (dict(tree_entries(root, _inventory_revision(subject, root)))
+                         for subject in (old, spec))
+        changed = _changed_inventory_paths(before, after)
+        if any(not phase_inventory_paths(changed, instance) for instance in omitted):
+            raise ValueError("Reused native completion drops an unchanged SDK phase")
     qualified = {}
     for instance, member, locator in zip(sorted(earlier), proof["members"], proof["originals"], strict=True):
         phase = earlier[instance]
+        if instance in omitted:
+            # Its old proof/receipt remains immutable in reuseCompletion. Changed
+            # inputs invalidate this key; no replacement receives body authority.
+            continue
         if phase['buildKey'] != selected[instance]['buildKey']:
             # A changed key inherits no qualification: the issuer below verifies
             # its new successful original and complete object independently.
@@ -639,7 +653,7 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
                 root=root, revision=None, frozen=frozen, token=token)
             # Both subjects bind their original product source; only exact
             # matching keys/receipts/objects inherit body qualification.
-            qualified = _qualified_members(spec, prior, phases, receipts)
+            qualified = _qualified_members(spec, prior, phases, receipts, root=root)
         available = _records(request["availableObjects"], "Incremental original objects")
         members, locators, transferred, reused_bytes = [], [], 0, 0
         for number, phase in enumerate(phases):

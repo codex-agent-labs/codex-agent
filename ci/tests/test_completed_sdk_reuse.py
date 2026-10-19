@@ -884,6 +884,49 @@ class CompletedSdkControlsTest(unittest.TestCase):
         self.check_v3_issuer_original_member('python', 'package', 'desktop', collected=True,
                                             collected_wave=4, receipt_hint=True)
 
+    def test_omitted_old_validations_require_changed_owning_inputs_and_bound_trees(self):
+        phase = deepcopy(self.spec['completedPhases'][0])
+        old_phases, controls = [phase], deepcopy(self.controls)
+        for target in ('macos-arm64', 'macos-x64'):
+            receipt = {**deepcopy(self.receipt), 'phase': 'validation', 'target': target}
+            receipt['buildKey'] = compute_build_key(**{field: receipt[field]
+                for field in (*completed.IDENTITY, 'inputs')})
+            path = 'original/' + target + '/phase-receipt.json'
+            controls[path] = receipt
+            old_phases.append({**{field: receipt[field] for field in (*completed.IDENTITY, 'buildKey')},
+                'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
+                'objectSha256': sha256_bytes(target.encode()), 'receiptPath': path})
+        parent = {'schemaVersion': 1}
+        source = lambda commit, tree: {'inventoryCommit': commit, 'producer': {'tree': tree}}
+        spec = {'parent': {'artifactId': 7}, 'parentProofSha256': sha256_bytes(canonical_json_bytes(parent)),
+                'source': source('c' * 40, 'd' * 40)}
+        members = [{'relativePath': str(i), 'bytes': 8, 'sha256': row['objectSha256']}
+                   for i, row in enumerate(old_phases)]
+        locators = [{'original': 71 + i} for i in range(len(old_phases))]
+        prior = {'proof': parent, 'extension': {'spec': {'schemaVersion': 3, 'parent': spec['parent'],
+            'source': source('a' * 40, 'b' * 40), 'completedPhases': old_phases},
+            'proof': {'members': members, 'originals': locators, 'controls': controls}}}
+        spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(prior['extension']['proof']))
+        original = canonical_json_bytes(prior)
+        path = 'codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py'
+        before = {path: ('100644', '1' * 40)}
+        for case in ('owning', 'unrelated', 'unchanged', 'wrong-tree'):
+            after = dict(before)
+            if case in ('owning', 'wrong-tree'): after[path] = ('100644', '2' * 40)
+            if case == 'unrelated': after['README.md'] = ('100644', '2' * 40)
+            trees = {'a' * 40 + '^{tree}': 'b' * 40, 'c' * 40 + '^{tree}': 'd' * 40}
+            if case == 'wrong-tree': trees['a' * 40 + '^{tree}'] = 'e' * 40
+            with self.subTest(case=case), \
+                    patch('products.inventory.run_git', side_effect=lambda root, command, ref: trees[ref]), \
+                    patch('products.inventory.tree_entries', side_effect=[list(before.items()), list(after.items())]):
+                if case == 'owning':
+                    self.assertEqual({completed._identity(phase): (members[0], locators[0])},
+                        completed._qualified_members(spec, prior, [phase], [self.receipt], root=Path('/fixture')))
+                else:
+                    with self.assertRaises(ValueError):
+                        completed._qualified_members(spec, prior, [phase], [self.receipt], root=Path('/fixture'))
+            self.assertEqual(original, canonical_json_bytes(prior))
+
     def test_historical_qualification_keeps_issuer_identity_and_current_consumer_gate(self):
         self.check_v3_issuer_original_member('dart', 'package', 'desktop', collected=True,
             collected_wave=4, receipt_hint=True, reused=True, issuer_revision='d' * 40)
