@@ -43,8 +43,24 @@ class CompletedSdkControlsTest(unittest.TestCase):
             self.assertEqual(family, CHECKPOINT_ROUTES[job].family)
             self.assertTrue(SDK_FAMILY_INSTANCES[family] <= set(COMPACT_REPLAY_INSTANCES))
             for instance in SDK_FAMILY_INSTANCES[family]:
-                self.assertEqual(512 * 1024 * 1024 if wave == 4 else completed.LIMIT,
-                                 completed._object_limit(instance))
+                self.assertEqual(512 * 1024 * 1024, completed._object_limit(instance))
+
+    def test_native_validation_object_bound_does_not_expand_json_or_other_phases(self):
+        from products.registry import PhaseInstanceId
+        from products.restore import object_relative_path
+        phase = deepcopy(self.spec['completedPhases'][0])
+        phase.update(product='sdk', component='cpp', phase='validation', target='linux-x64')
+        path = 'runtime-state/original-objects/' + object_relative_path(phase['buildKey'], phase['receiptSha256'])
+        phase['receiptPath'] = path + '/phase-receipt.json'
+        obj = {'relativePath': path, 'bytes': 512 * 1024 * 1024, 'sha256': phase['objectSha256']}
+        spec = {'stateRoot': 'runtime-state', 'completedPhases': [phase], 'receiptObjects': [obj]}
+        self.assertEqual({phase['receiptPath']: (obj, phase)}, completed._receipt_objects(spec))
+        obj['bytes'] += 1
+        with self.assertRaises(ValueError): completed._receipt_objects(spec)
+        self.assertEqual(16 * 1024 * 1024, completed.LIMIT)
+        for changed in (PhaseInstanceId('sdk', 'cpp', 'metadata', 'desktop'),
+                        PhaseInstanceId('sdk', 'cpp', 'validation', 'unregistered')):
+            self.assertEqual(completed.LIMIT, completed._object_limit(changed))
 
     def setUp(self):
         def record(receipt):

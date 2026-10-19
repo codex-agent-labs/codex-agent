@@ -63,8 +63,9 @@ def _object_limit(instance):
     if instance == IOS_PACKAGE:
         return 8 * 1024**3
     if instance in (SDK_FAMILY_INSTANCES['android-binary'] | SDK_FAMILY_INSTANCES['android-package']
-                    | SDK_FAMILY_INSTANCES['native-package']):
-        # Bounded package bodies (native packages embed five libraries), not JSON.
+                    | SDK_FAMILY_INSTANCES['native-package'] | SDK_FAMILY_INSTANCES['native-validation']):
+        # Packages and native validation's compiled test closures are bounded
+        # object bodies, not JSON controls. Receipt/manifest JSON keeps LIMIT.
         return 512 * 1024 * 1024
     return LIMIT
 
