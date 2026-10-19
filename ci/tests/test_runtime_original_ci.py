@@ -216,6 +216,49 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 observe()
             self.assertEqual(2, sum('/actions/jobs/101' in c.args[0] for c in api.call_args_list))
 
+    def test_distinct_native_jobs_share_tested_commit_only_in_private_batch(self):
+        from products.restore import bounded_verify
+        original = self.api()
+        jobs = [{**job, 'run_attempt': 2} for job in self.jobs]
+        def http(url, token):
+            if '/actions/jobs/' in url:
+                return json.dumps(next(job for job in jobs if url.endswith('/' + str(job['id'])))).encode()
+            return original(url, token)
+        def observe(job):
+            return adapter._observe_ci_producer_jobs({'original': self.producer},
+                jobs_by_phase={'original': job['name']}, trusted_workflow_sha=self.pin,
+                token='not-a-real-token', native_job_ids_by_phase={'original': job['id']})
+        for current, expected in ((None, 1), (('71', '2'), len(jobs))):
+            with self.subTest(current=current), mock.patch('reuse.api_request', side_effect=http) as api:
+                for batch in range(2):
+                    with adapter._ci_observation_batch(current):
+                        results = bounded_verify(observe, jobs)
+                        self.assertEqual([job['id'] for job in jobs],
+                                         [result[0]['jobs'][0]['id'] for result in results])
+                        results[0][0]['testedCommit']['tree']['sha'] = '0' * 40
+                        self.assertEqual(self.producer['tree'], observe(jobs[0])[0]['testedCommit']['tree']['sha'])
+                    self.assertEqual((batch + 1) * (expected + int(current is not None)),
+                        sum('/git/commits/' in call.args[0] for call in api.call_args_list))
+                    self.assertEqual((batch + 1) * (len(jobs) + int(current is not None)),
+                        sum('/actions/jobs/' in call.args[0] for call in api.call_args_list))
+
+    def test_shared_tested_commit_revalidates_every_callers_exact_pins(self):
+        arguments = dict(api='https://api.github.com', repository=self.producer['repository'],
+            token='fixture', expected_commit=self.producer['commit'],
+            expected_tree=self.producer['tree'], pull_request=31)
+        with adapter._ci_observation_batch(), mock.patch.object(adapter, 'api_json',
+                return_value=self.commit) as api:
+            adapter._observe_tested_commit(self.run, **arguments)
+            for changes in ({'expected_tree': '0' * 40}, {'pull_request': 32}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    adapter._observe_tested_commit(self.run, **{**arguments, **changes})
+            self.assertEqual(1, api.call_count)
+            adapter._observe_tested_commit(self.run, **{**arguments, 'token': 'different'})
+            self.assertEqual(2, api.call_count)
+            for _ in range(2):
+                adapter._observe_tested_commit({**self.run, 'status': 'in_progress'}, **arguments)
+            self.assertEqual(4, api.call_count)
+
     def test_operation_batch_binds_positional_environment_and_never_leaks(self):
         prior_context = adapter._CI_OBSERVATIONS.get()
         @adapter._fresh_ci_observations

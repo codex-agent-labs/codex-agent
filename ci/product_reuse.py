@@ -377,7 +377,14 @@ def _observe_tested_commit(
     if any(not isinstance(value, str) or _OID.fullmatch(value) is None
            for value in (expected_commit, expected_tree)):
         raise ValueError("Tested Git commit/tree identity is malformed")
-    commit = api_json(f"{api}/repos/{repository}/git/commits/{expected_commit}", token)
+    attempt = tuple(str(run.get(field)) for field in ("id", "run_attempt"))
+    # Share only the immutable Git response, never a caller's admission verdict.
+    # Live runs and each new acquisition still require a fresh observation.
+    observations = _CI_OBSERVATIONS.get() if run.get("status") == "completed" else None
+    commit = _historical_ci_observation(observations or {},
+        ("tested-commit", api, repository, token, expected_commit, attempt), attempt,
+        lambda: {"run": run, "testedCommit": api_json(
+            f"{api}/repos/{repository}/git/commits/{expected_commit}", token)})["testedCommit"]
     return _validate_tested_commit(run, commit, expected_commit=expected_commit,
         expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch)
 
