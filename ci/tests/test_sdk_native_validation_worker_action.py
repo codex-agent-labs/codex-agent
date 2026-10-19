@@ -356,7 +356,7 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertNotIn('build/sdk-worker', block)
         self.assertNotIn('RUNNER_TEMP', block)
 
-    def test_capture_identity_setup_and_whole_worker_upload_order(self):
+    def test_capture_identity_setup_and_consumed_worker_upload_order(self):
         action = self.action
         self.assertLess(action.index('- id: policy'), action.index('- id: captured'))
         self.assertLess(action.index('- id: dart-inputs'), action.index('- id: captured'))
@@ -374,7 +374,11 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertIn('sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}', self.block('captured'))
         self.assertIn("product-worker: 'true'", action)
         self.assertIn("cache-read-only: 'true'", action)
-        self.assertIn('path: build/sdk-worker\n', action)
+        self.assertIn('path: |\n          build/sdk-worker\n', action)
+        for name in ('inputs', 'runtime-stages', 'package-inputs', 'prepared-upload/original'):
+            self.assertIn("${{ steps.execute.outcome == 'success' && '!build/sdk-worker/" + name + "' || '' }}", action)
+        for kept in ('shard', 'sdk-validation-evidence', 'prepared-upload/capture-transport.json', 'worker', 'failed-validation'):
+            self.assertNotIn('!build/sdk-worker/' + kept, action)
         self.assertIn('name: codex-agent-sdk-worker-${{ inputs.component }}-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}', action)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", action)
         self.assertIn('overwrite: false', action)

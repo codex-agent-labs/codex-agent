@@ -1,10 +1,11 @@
 """Incomplete SDK campaign recovery is a development cache, not release evidence."""
 
 from pathlib import Path
+from dataclasses import fields
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ci.products.index import SignedProductIndex, verify_signed_product_index
 from ci.products.inventory import sha256_bytes
@@ -16,6 +17,7 @@ from ci.sdk_campaign_partial_catalog_caller import (
     stage_partial_sdk_catalog,
 )
 from ci import product_reuse
+from ci import sdk_completion
 from ci.tests.product_chain_support import write_receipt
 
 
@@ -156,6 +158,40 @@ class PartialSdkCampaignCatalogTest(unittest.TestCase):
             self.assertEqual(index["entries"][0]["component"], self.instances[0].component)
             self.assertNotEqual(index["entries"][0]["buildKey"],
                                 self.envelopes[self.stable_instance]["receipt"]["buildKey"])
+
+    def test_qualified_missing_bodies_are_not_repacked_but_unqualified_missing_or_tampered_objects_fail(self):
+        original = self._state()
+        state = sdk_completion.products._VerifiedProductState(**{
+            field.name: getattr(original, field.name, None)
+            for field in fields(sdk_completion.products._VerifiedProductState)})
+        qualified = next(iter(state.sources))
+        pending = next(identity for identity in state.sources if identity != qualified)
+        capability = Mock()
+        capability.envelope.side_effect = lambda record: (
+            {"authenticated": "mock boundary"} if record is state.prior_by_instance[qualified] else None)
+        from dataclasses import replace
+        state = replace(state, completed_frozen=capability,
+            sources={**state.sources, qualified: self.root / "intentionally-deferred.zip"})
+        with tempfile.TemporaryDirectory(prefix="sdk-partial-qualified-") as temporary:
+            root = Path(temporary).resolve()
+            result = sdk_completion.stage_partial_catalog(state, root / "catalog")
+            self.assertEqual(1, result["phaseCount"])
+            self.assertEqual(2, capability.envelope.call_count)
+            self.assertFalse(state.sources[qualified].exists())
+            self.assertEqual(original.prior_by_instance, state.prior_by_instance)
+            with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                sdk_completion.stage_partial_catalog(replace(state,
+                    sources={**state.sources, pending: root / "missing.zip"}), root / "missing")
+            changed = root / "tampered.zip"
+            changed.write_bytes(state.sources[pending].read_bytes() + b"tampered")
+            with self.assertRaises(ValueError):
+                sdk_completion.stage_partial_catalog(replace(state,
+                    sources={**state.sources, pending: changed}), root / "tampered")
+            capability.envelope.return_value = {}
+            capability.envelope.side_effect = None
+            self.assertEqual({"phaseCount": 0, "objectBytes": 0},
+                sdk_completion.stage_partial_catalog(state, root / "empty"))
+            self.assertFalse((root / "empty").exists())
 
     def test_existing_same_pr_lookup_rejects_failed_campaign_run(self):
         artifact = {"workflow_run": {"id": 3, "head_sha": self.producer["commit"]}}

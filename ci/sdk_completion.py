@@ -1,6 +1,7 @@
 """Require completion of every selected SDK phase in authenticated replay."""
 
 import argparse
+from dataclasses import replace
 import os
 from pathlib import Path
 import sys
@@ -10,17 +11,20 @@ if __package__:
 
 import product_reuse as products
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
 from products.inventory import (
     canonical_json_bytes, require_array, require_boolean, require_exact_keys,
     require_integer, require_object, require_sha256, require_string,
 )
 from reuse import github_output
+from products.restore import verification_scoped
 
 
 def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                            repository_root=None, environ=None, sdk_validation_tooling=None,
                            sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
-                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+                           completed_frozen=None):
     """Check the full replayed SDK closure, not a family matrix or new election.
 
     Existing inspection authenticates the exact result schema, requested closure,
@@ -36,6 +40,7 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
            if sdk_apple_validation_policy is not None else {}),
         **({"sdk_original_workflow_sha": sdk_original_workflow_sha}
            if sdk_original_workflow_sha is not None else {}),
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **products._metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     result = require_exact_keys(require_object(inspected, "SDK completion inspection").get("result"),
                                 products._REUSE_RESULT_KEYS, "SDK completion replay result")
@@ -65,6 +70,28 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
     return {"complete": True, "phaseCount": count, "fullReuse": result["fullReuse"]}
 
 
+def stage_partial_catalog(state, destination):
+    """Preserve new originals; independently qualified objects need no second catalog.
+
+    Full state replay precedes this selection. A qualified envelope is authority
+    to omit its body, never an absent-file heuristic or a changed producer receipt.
+    The existing development catalog writer still authenticates every new object.
+    """
+    from sdk_campaign_partial_catalog_caller import stage_partial_sdk_catalog
+    from products.signing_isolation import require_no_signing_secret
+    require_no_signing_secret(os.environ)
+    if state.producer["event"] != "pull_request":
+        raise ValueError("Partial SDK catalog requires a current PR")
+    selected = {instance: record for instance, record in state.prior_by_instance.items()
+                if instance.product == "sdk" and record["state"] in {"retained", "reused"}
+                and record.get("source") not in {"stable", "promoted-main"}
+                and (state.completed_frozen is None or state.completed_frozen.envelope(record) is None)}
+    if not selected:
+        return {"phaseCount": 0, "objectBytes": 0}
+    return stage_partial_sdk_catalog(replace(state, prior_by_instance=selected), destination)
+
+
+@verification_scoped
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "repository-root"):
@@ -72,22 +99,45 @@ def main(argv=None):
     for name in ("state-root", "sdk-validation-tooling", "sdk-apple-validation-policy", "github-output"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--sdk-original-workflow-sha")
+    parser.add_argument("--partial-catalog-destination", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     try:
-        with metadata_admission_options(args) as admissions:
+        with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
             tooling = {} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")}
             apple = {} if args.sdk_apple_validation_policy is None else {"sdk_apple_validation_policy":
                 products._canonical_control(args.sdk_apple_validation_policy, "Caller Apple validation policy")}
-            result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
-                repository_root=args.repository_root, environ=os.environ, **tooling, **apple,
+            options = {**tooling, **apple, **admissions, **completed,
                 **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
-                   if args.sdk_original_workflow_sha is not None else {}), **admissions)
-            if args.github_output is None:
-                print(canonical_json_bytes(result).decode().strip())
+                   if args.sdk_original_workflow_sha is not None else {})}
+            if args.partial_catalog_destination is None:
+                result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
+                    repository_root=args.repository_root, environ=os.environ, **options)
             else:
-                github_output(args.github_output, result)
+                from products.sdk_package import _require_capability_output_separate
+                from products.signing_isolation import require_no_signing_secret
+                require_no_signing_secret(os.environ)
+                root = args.repository_root.resolve(strict=True)
+                paths = [Path(os.path.abspath(path)) for path in (args.discovery_root, args.state_root)
+                         if path is not None]
+                if (len(paths) != 2 or not args.sdk_original_workflow_sha
+                        or any(path == root or root not in path.parents for path in paths)):
+                    raise ValueError("Partial SDK catalog requires original workflow and in-repository state roots")
+                _require_capability_output_separate(args.partial_catalog_destination, [args.plan, *paths])
+                if args.github_output is not None:
+                    _require_capability_output_separate(args.github_output,
+                        [args.plan, *paths, args.partial_catalog_destination])
+                options.setdefault("sdk_validation_tooling", None)
+                state = products._verified_product_state(args.plan, *paths, root, os.environ, **options)
+                result = stage_partial_catalog(state, args.partial_catalog_destination)
+                require_no_signing_secret(os.environ)
+        # Policy lifetime checks must succeed before advertising any result.
+        if args.github_output is None:
+            print(canonical_json_bytes(result).decode().strip())
+        else:
+            github_output(args.github_output, result)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

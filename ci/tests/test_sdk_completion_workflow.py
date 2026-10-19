@@ -223,18 +223,18 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", job)
         self.assertIsNotNone(match)
         script = textwrap.dedent(match[1])
-        imported = re.search(r"from ([\w.]+) import select_sdk_completion_state", script)
+        imported = re.search(r"from ([\w.]+) import [^\n]*\bselect_sdk_completion_state", script)
         self.assertIsNotNone(imported)
         selector_module = importlib.import_module(imported[1])
-        environment_name = re.search(r"json.loads\(os.environ\[['\"]([^'\"]+)['\"]\]\)", script)
-        self.assertIsNotNone(environment_name)
+        self.assertIn("for name in _JOBS", script)
         needs = {name: {"result": "skipped", "outputs": {}} for name in SELECTOR_JOBS}
         locator = {"artifact_id": "91", "artifact_digest": "sha256:" + "a" * 64,
                    "state_wave": "0", "sdk_state_wave": "9"}
         for failure in (False, True):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="sdk-completion-wiring-") as temporary:
                 output = Path(temporary) / "output"
-                with patch.dict(os.environ, {environment_name[1]: json.dumps(needs), "GITHUB_OUTPUT": str(output)}, clear=True), \
+                environment = {name.upper().replace('-', '_'): json.dumps(value) for name, value in needs.items()}
+                with patch.dict(os.environ, {**environment, "GITHUB_OUTPUT": str(output)}, clear=True), \
                         patch.object(selector_module, "select_sdk_completion_state", return_value=locator,
                                      side_effect=ValueError("synthetic routing failure") if failure else None) as select:
                     if failure:

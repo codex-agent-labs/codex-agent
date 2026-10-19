@@ -387,7 +387,14 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-${{ inputs.component }}-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/sdk-worker
+        # Successful originals already retain these inputs in the full evidence
+        # carrier. Keep failed workers intact for diagnosis; never prune originals.
+        path: |
+          build/sdk-worker
+          ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/inputs' || '' }}
+          ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/runtime-stages' || '' }}
+          ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/package-inputs' || '' }}
+          ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/prepared-upload/original' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true

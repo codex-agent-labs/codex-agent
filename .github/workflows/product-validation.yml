@@ -5735,6 +5735,9 @@ jobs:
           if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
             tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
           fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
           python3 -B -m ci.sdk_completion --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
             --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
@@ -5890,11 +5893,15 @@ jobs:
           if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
             tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
           fi
-          python3 -B -m ci.sdk_campaign_partial_catalog_caller --plan "$PLAN" \
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
+          python3 -B -m ci.sdk_completion --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
             --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --repository-root "$GITHUB_WORKSPACE" \
-            --destination build/ci/sdk-partial-catalog \
+            --partial-catalog-destination build/ci/sdk-partial-catalog \
+            --github-output "$GITHUB_OUTPUT" \
             ${tooling[@]+"${tooling[@]}"}
       - id: identity
         env:
@@ -5908,6 +5915,7 @@ jobs:
           [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
           echo "name=codex-agent-sdk-partial-catalog-v1-pull-request-$PR-$TREE-attempt-$ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.catalog.outputs.phaseCount != '0'
         with:
           name: ${{ steps.identity.outputs.name }}
           path: build/ci/sdk-partial-catalog

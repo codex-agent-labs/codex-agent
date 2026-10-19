@@ -4,7 +4,7 @@ Fixtures use the real result field names and registered identities, not product
 or CI proof. The production inspector retains all original evidence validation.
 """
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
 import os
@@ -108,6 +108,28 @@ class SdkCompletionTest(unittest.TestCase):
                     else:
                         self.assertNotIn(name, self.inspect.call_args.kwargs)
 
+    def test_completed_capability_is_forwarded_explicitly_and_held_until_replay_finishes(self):
+        capability = object()  # Mocked authentication boundary, never evidence.
+        self.call(inspected([]), completed_frozen=capability)
+        self.assertIs(capability, self.inspect.call_args.kwargs["completed_frozen"])
+        events = []
+        @contextmanager
+        def authority(args):
+            self.assertEqual(Path("/caller/completed.json"), args.completed_frozen_policy)
+            events.append("enter")
+            yield {"completed_frozen": capability}
+            events.append("exit")
+        def replay(*args, **kwargs):
+            self.assertEqual(["enter"], events)
+            self.assertIs(capability, kwargs["completed_frozen"])
+            return {"complete": True, "phaseCount": 0, "fullReuse": True}
+        argv = ["--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]),
+                "--repository-root", str(self.root), "--completed-frozen-policy", "/caller/completed.json"]
+        with patch.object(completion, "completed_frozen_options", authority), \
+                patch.object(completion, "require_sdk_completion", side_effect=replay), redirect_stdout(io.StringIO()):
+            self.assertEqual(0, completion.main(argv))
+        self.assertEqual(["enter", "exit"], events)
+
     def test_completed_apple_validations_do_not_complete_unresolved_ios_metadata(self):
         validations = sorted(identity for identity in self.sdk
                              if identity.component == "sdk-ios" and identity.phase == "validation")
@@ -183,6 +205,33 @@ class SdkCompletionTest(unittest.TestCase):
             self.assertEqual(0, completion.main(argv))
         gate.assert_called_once_with(*self.paths[:2], None, repository_root=self.root, environ=os.environ)
         self.assertEqual('{"complete":true,"fullReuse":true,"phaseCount":0}\n', stdout.getvalue())
+
+
+    def test_partial_cli_replays_with_explicit_authority_before_catalog_and_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="sdk-partial-cli-") as temporary:
+            root = Path(temporary).resolve()
+            plan, discovery, state = (root / name for name in ("plan", "discovery", "state"))
+            destination, output = root / "catalog", root / "github-output"
+            argv = ["--plan", str(plan), "--discovery-root", str(discovery), "--state-root", str(state),
+                    "--repository-root", str(root), "--sdk-original-workflow-sha", "a" * 40,
+                    "--partial-catalog-destination", str(destination), "--github-output", str(output)]
+            capability, verified = object(), object()
+            with patch.object(completion, "completed_frozen_options", return_value=nullcontext(
+                    {"completed_frozen": capability})), \
+                    patch.object(completion.products, "_verified_product_state", return_value=verified) as replay, \
+                    patch.object(completion, "stage_partial_catalog", return_value={"phaseCount": 0, "objectBytes": 0}) as stage:
+                self.assertEqual(0, completion.main(argv))
+                replay.assert_called_once_with(plan, discovery, state, root, os.environ,
+                    sdk_validation_tooling=None, sdk_original_workflow_sha="a" * 40, completed_frozen=capability)
+                stage.assert_called_once_with(verified, destination)
+            self.assertEqual("phaseCount=0\nobjectBytes=0\n", output.read_text())
+            output.unlink()
+            with patch.object(completion.products, "_verified_product_state", side_effect=ValueError("unqualified missing object")), \
+                    patch.object(completion, "stage_partial_catalog") as stage, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main(argv)
+            stage.assert_not_called()
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
