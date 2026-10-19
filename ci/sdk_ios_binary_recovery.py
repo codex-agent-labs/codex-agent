@@ -490,9 +490,19 @@ def capture_completed_javascript(destination, artifact_root, *, completed_frozen
             if ios_package else _javascript_package_record(capture, Path(artifact_root), instance.phase,
                 component=instance.component, target=instance.target, completed_frozen=completed_frozen))
     from products.restore import bounded_verify
-    with products._ci_observation_batch():
-        return bounded_verify(capture_one, [row for row in extension["spec"]["completedPhases"]
-            if products._identity(row) in completed_frozen.completed_phases()])
+    selected = [row for row in extension["spec"]["completedPhases"]
+        if products._identity(row) in completed_frozen.completed_phases()]
+    if not selected:
+        return []
+    completed_frozen.check_consumer({"kind": "ci", "producer": producer})
+    originals = {products._identity(row): row for row in extension["spec"]["originals"]}
+    sources = [{"receipt": completed_frozen.envelope(row)["receipt"],
+                "artifactId": originals[products._identity(row)]["artifactId"]} for row in selected]
+    source = extension["spec"]["source"]
+    sources.append({"receipt": {"producer": source["producer"]}, "artifactId": source["artifactId"]})
+    with products._ci_observation_batch(tuple(str(producer[field]) for field in ("runId", "runAttempt"))):
+        products._prime_runtime_artifact_metadata(sources, token)
+        return bounded_verify(capture_one, selected)
 
 
 def capture_prior_ios_binary(plan_path, plan, consumer_producer, build_key, destination,

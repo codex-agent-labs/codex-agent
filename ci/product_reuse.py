@@ -1016,8 +1016,14 @@ def _contract_ci_upload_metadata(artifact_id, artifact_sha256, expected_name, pr
               if batch is not None and observed_run.get("status") == "completed"
               and attempt != batch.get("currentAttempt") else None)
     if listed is None:
-        artifact = api_json(url, token)
-        count('artifactMetadataRequests')
+        def fetch():
+            count('artifactMetadataRequests')
+            return {"run": observed_run, "artifact": api_json(url, token)}
+        # Share raw completed-history metadata only inside this acquisition;
+        # every caller below still validates its own digest/name/run/size pins.
+        observations = batch if observed_run.get("status") == "completed" else None
+        artifact = _historical_ci_observation(observations or {},
+            ("artifact", url, token, attempt), attempt, fetch)["artifact"]
     else:
         from copy import deepcopy
         artifact = deepcopy(listed)

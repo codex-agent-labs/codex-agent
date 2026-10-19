@@ -19,6 +19,13 @@ def control_bytes(path, value):
     return value.encode('utf-8') if path == completed.SOURCE_PLAN else canonical_json_bytes(value)
 
 
+def capture_extension(records, receipts):
+    return {'spec': {'schemaVersion': 3, 'completedPhases': records,
+        'originals': [{**{field: row[field] for field in completed.IDENTITY}, 'artifactId': 71 + index}
+                      for index, row in enumerate(records)],
+        'source': {'producer': receipts[0]['producer'], 'artifactId': 900}}, 'proof': {}}
+
+
 def ordinary_spec():
     """Keep legacy intake regressions independent of the current issuer role."""
     import json
@@ -116,15 +123,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
                   'objectSha256': sha256_bytes(b'synthetic object')}
         spec = {'request': self.base['request'], 'expectedResult': {'phases': [record]}}
         cap = native.CompletedFrozenReuse(spec, [receipt], native._COMPLETED_FROZEN,
-            revision=receipt['producer']['commit'], sdk={'extension': {
-                'spec': {'completedPhases': [record]}, 'proof': {}}})
+            revision=receipt['producer']['commit'], sdk={'extension': capture_extension([record], [receipt])})
         artifact = {'id': 71, 'name': 'synthetic-original', 'digest': record['objectSha256']}
         consumer = {**receipt['producer'], 'runId': receipt['producer']['runId'] + 1}
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve()
             observed = stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk',
                 return_value=({}, artifact, [])))
-            stack.enter_context(patch.object(recovery.products, 'api_json', return_value={}))
+            stack.enter_context(patch.object(recovery.products, 'api_json', return_value={'total_count': 0, 'artifacts': []}))
             stack.enter_context(patch.object(recovery, '_require_prior', return_value=(7, 1)))
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
@@ -423,7 +429,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': [record]}},
                 [receipt], native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
                 sdk={'spec': {'completedPhase': record},
-                     'extension': {'spec': {'schemaVersion': 3, 'completedPhases': [record]}, 'proof': {}}})
+                     'extension': capture_extension([record], [receipt])})
             consumer = {**receipt['producer'], 'runId': receipt['producer']['runId'] + 1}
             artifact = {'id': 71, 'name': 'synthetic-original', 'digest': sha256_bytes(b'original')}
             plan = {'repository': receipt['producer']['repository'], 'event': 'pull_request', 'remoteBuildAuthorized': True,
@@ -434,7 +440,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 plan_path.write_bytes(canonical_json_bytes(plan))
                 stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({}, artifact, [])))
                 stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_sdk', return_value=({}, artifact, [])))
-                stack.enter_context(patch.object(recovery.products, 'api_json', return_value={}))
+                stack.enter_context(patch.object(recovery.products, 'api_json', return_value={'total_count': 0, 'artifacts': []}))
                 stack.enter_context(patch.object(recovery, '_require_prior', return_value=(7, 1)))
                 stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
                 stack.enter_context(patch.object(recovery.products, '_validate_plan', return_value=plan))
@@ -550,7 +556,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': sha256_bytes(b'object')})
         cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': records}},
             receipts, native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
-            sdk={'extension': {'spec': {'schemaVersion': 3, 'completedPhases': records}, 'proof': {}}})
+            sdk={'extension': capture_extension(records, receipts)})
+        consumer = {**receipt['producer'], 'runId': receipt['producer']['runId'] + 1}
         barrier = threading.Barrier(3)
         seen = recovery.products._CI_OBSERVATIONS.get()
         def observe(record, **kwargs):
@@ -559,9 +566,13 @@ class CompletedSdkControlsTest(unittest.TestCase):
             return {}, {'id': 71}, []
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            with patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', side_effect=observe):
+            with patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', side_effect=observe), \
+                    patch.object(recovery.products, 'api_json', return_value={'total_count': 0, 'artifacts': []}), \
+                    patch.object(recovery.products, '_prime_runtime_artifact_metadata',
+                                 wraps=recovery.products._prime_runtime_artifact_metadata) as prime:
                 result = recovery.capture_completed_javascript(root / 'success', root,
-                    completed_frozen=cap, producer={}, token='synthetic')
+                    completed_frozen=cap, producer=consumer, token='synthetic')
+                self.assertEqual([71, 72, 73, 900], [row['artifactId'] for row in prime.call_args.args[0]])
             self.assertEqual([row['phase'] for row in records], [row['phase'] for row in result])
             self.assertTrue(all(not (root / row['objectPath']).exists() for row in result))
             self.assertIs(seen, recovery.products._CI_OBSERVATIONS.get())
@@ -570,9 +581,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     raise ValueError('original provenance changed')
                 return {}, {'id': 71}, []
             with patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', side_effect=failed), \
+                    patch.object(recovery.products, 'api_json', return_value={'total_count': 0, 'artifacts': []}), \
                     self.assertRaisesRegex(ValueError, 'original provenance changed'):
                 recovery.capture_completed_javascript(root / 'failure', root,
-                    completed_frozen=cap, producer={}, token='synthetic')
+                    completed_frozen=cap, producer=consumer, token='synthetic')
             self.assertIs(seen, recovery.products._CI_OBSERVATIONS.get())
 
     def test_full_state_overlaps_only_native_sdk_reads_and_propagates_failures(self):

@@ -136,6 +136,45 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 **sources[0]['receipt'], 'producer': {**self.producer, 'runId': 999}}}], 'fixture')
         api.assert_not_called()
 
+    def test_single_artifact_metadata_is_shared_without_sharing_admission(self):
+        from products.restore import bounded_verify
+        original = self.artifacts['binary']
+        def metadata(*, token='fixture', run=None, **changes):
+            expected = {**original, **changes}
+            return adapter._contract_ci_upload_metadata(original['id'], expected['digest'],
+                expected['name'], self.producer, self.run if run is None else run, token)
+        with mock.patch.object(adapter, 'api_json', return_value=original) as api:
+            with adapter._ci_observation_batch():
+                self.assertEqual([original] * 8, bounded_verify(lambda _: metadata(), range(8)))
+                self.assertEqual(1, api.call_count)
+                metadata()['expired'] = True
+                self.assertFalse(metadata()['expired'])
+                for changes in ({'digest': 'sha256:' + '0' * 64}, {'name': 'wrong'}):
+                    with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'caller-bound'):
+                        metadata(**changes)
+                with self.assertRaisesRegex(ValueError, 'caller-bound'):
+                    metadata(run={**self.run, 'head_sha': '0' * 40})
+                self.assertEqual(1, api.call_count)
+                metadata(token='different-token')
+                self.assertEqual(2, api.call_count)
+                for _ in range(2):
+                    metadata(run={**self.run, 'status': 'in_progress'})
+                self.assertEqual(4, api.call_count)
+            metadata()
+            with adapter._ci_observation_batch():
+                metadata()
+            self.assertEqual(6, api.call_count)
+            with adapter._ci_observation_batch(tuple(str(self.producer[k]) for k in ('runId', 'runAttempt'))):
+                metadata()
+                metadata()
+            self.assertEqual(8, api.call_count)
+        with adapter._ci_observation_batch(), mock.patch.object(adapter, 'api_json',
+                side_effect=[OSError('unavailable'), original]) as api:
+            with self.assertRaisesRegex(OSError, 'unavailable'):
+                metadata()
+            self.assertEqual(original, metadata())
+            self.assertEqual(2, api.call_count)
+
     def test_native_job_lookup_preserves_every_fresh_identity_gate(self):
         job = {**self.jobs[0], 'run_attempt': 2}
         name = job['name']
