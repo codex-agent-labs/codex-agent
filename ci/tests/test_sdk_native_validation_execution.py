@@ -491,10 +491,31 @@ class SdkNativeValidationWorkerTest(unittest.TestCase):
                     path.rmdir()
 
     def test_windows_rust_mock_keeps_strict_warnings_with_supported_posix_names(self):
-        self.check_windows_compiler_environment("rust", {"CC": "clang -D_CRT_NONSTDC_NO_WARNINGS"})
+        compiler = self.root / "tool chain/clang.exe"
+        compiler.parent.mkdir()
+        compiler.write_bytes(b"fixture compiler, not executable evidence")
+        with patch.object(workflow.shutil, "which", return_value=str(compiler)):
+            self.check_windows_compiler_environment("rust", {
+                "CC": "codex-agent-fixture-clang.cmd", "PATH": str(self.destination)})
+        launcher = self.destination / "codex-agent-fixture-clang.cmd"
+        self.assertEqual((f'@echo off\r\nsetlocal DisableDelayedExpansion\r\n'
+                          f'"{compiler}" -D_CRT_NONSTDC_NO_WARNINGS %*\r\n').encode("ascii"),
+                         launcher.read_bytes())
 
     def test_windows_cpp_provisions_existing_cpp20_preprocessor(self):
         self.check_windows_compiler_environment("cpp", {"CL": "/Zc:preprocessor"})
+
+    def test_windows_rust_rejects_missing_or_shell_active_compiler_paths(self):
+        for index, compiler in enumerate((None, "clang.exe", str(self.root / "bad%clang.exe"),
+                                           str(self.root / 'bad"clang.exe'))):
+            with self.subTest(compiler=compiler):
+                self.destination = self.root / f"build/bad-compiler-{index}"
+                self.args["destination"] = self.destination
+                with patch.object(workflow.shutil, "which", return_value=compiler), \
+                        self.assertRaisesRegex(ValueError, "compiler path is unsafe or missing"):
+                    self.check_windows_compiler_environment("rust", {})
+                self.assertFalse((self.destination / "codex-agent-fixture-clang.cmd").exists())
+                self.assertEqual([], self.calls)
 
     def check_windows_compiler_environment(self, component, expected):
         self.host = "windows-x64"
