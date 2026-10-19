@@ -3382,7 +3382,25 @@ mod windows_loader_cleanup_tests {
     use super::*;
     use std::process::Command;
 
-    const COMPONENT: &str = "2555555555555555555555555555555555555555555555555555555555555555";
+    fn snapshots(root: &Path) -> PathBuf {
+        let declaration: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../native/sdk-compatibility.json")).unwrap();
+        let variant = declaration["runtime"]["embeddedVariants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|variant| variant["target"] == "windows-x64")
+            .unwrap();
+        root.join("codex-agent/runtime")
+            .join(
+                variant["componentId"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("sha256:")
+                    .unwrap(),
+            )
+            .join("windows-x64/snapshots")
+    }
 
     #[test]
     fn embedded_snapshot_windows_child() {
@@ -3392,10 +3410,7 @@ mod windows_loader_cleanup_tests {
         let native =
             CodexNativeLibrary::load_default().expect("load staged embedded Windows Runtime");
         drop(native);
-        let snapshots = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
-            .join("codex-agent/runtime")
-            .join(COMPONENT)
-            .join("windows-x64/snapshots");
+        let snapshots = snapshots(&PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()));
         let owner = std::fs::read_dir(snapshots)
             .unwrap()
             .next()
@@ -3422,10 +3437,7 @@ mod windows_loader_cleanup_tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let snapshots = root
-            .join("codex-agent/runtime")
-            .join(COMPONENT)
-            .join("windows-x64/snapshots");
+        let snapshots = snapshots(&root);
         std::fs::create_dir_all(&snapshots).unwrap();
         let before: Vec<_> = std::fs::read_dir(&snapshots)
             .unwrap()
