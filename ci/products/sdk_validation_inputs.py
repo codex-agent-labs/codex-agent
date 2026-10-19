@@ -21,7 +21,7 @@ from .sdk_inputs import COMPATIBILITY_NAME, INVENTORY_NAME, REQUEST_NAME as INPU
 from .sdk_package import _capture_validation_sources, _require_capability_output_separate
 from .sdk_validation import (
     VerifiedSdkValidationProjection, decode_sdk_validation_records,
-    sdk_validation_provider as _full_provider,
+    sdk_validation_provider as _full_provider, shared_sdk_validation_scope,
 )
 from .signatures import load_keyring, public_key_path
 from runtime_reference_transport import count, measured
@@ -44,7 +44,7 @@ def collection_admission_scope(operation):
         cache = {}
         token = _COLLECTION.set(cache)
         try:
-            with verification_session():
+            with verification_session(), shared_sdk_validation_scope():
                 return operation(*args, **kwargs)
         finally:
             _COLLECTION.reset(token)
