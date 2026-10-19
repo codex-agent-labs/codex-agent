@@ -490,6 +490,26 @@ class SdkNativeValidationWorkerTest(unittest.TestCase):
                     sentinel.unlink()
                     path.rmdir()
 
+    def test_windows_rust_mock_keeps_strict_warnings_with_supported_posix_names(self):
+        self.host = "windows-x64"
+        self.plan.update(component="rust", target=self.host)
+        self.plan["buildKey"] = compute_build_key(**{name: self.plan[name] for name in
+            ("product", "component", "phase", "target", "inputs")})
+        manifest = write_output_manifest(self.package["stage"], "sdk", "rust", "package", "desktop", "0.3.0",
+                                         {"package": "outputs"})
+        self.package["receipt"] = write_receipt(self.package["receiptPath"], product="sdk", component="rust",
+            phase="package", target="desktop", version="0.3.0", version_identity="0.3.0",
+            outputs=manifest["outputs"], upstream=[], context={"producer": self.producer})
+
+        def command(wrapper, fields, environment, **kwargs):
+            self.assertEqual({"SAFE": "fixed", "CC": "clang -D_CRT_NONSTDC_NO_WARNINGS"}, environment)
+            raise RuntimeError("invocation inspected before Gradle")
+
+        with patch.object(workflow.product_reuse, "_runtime_worker_command", side_effect=command), \
+                self.assertRaisesRegex(RuntimeError, "invocation inspected"):
+            self.invoke()
+        self.assertEqual([], self.calls)
+
     def test_cleanup_descendants_of_outer_policy_are_rejected_before_creation(self):
         policy = self.root / "codex-agent-sdk/build"
         policy.mkdir(parents=True)

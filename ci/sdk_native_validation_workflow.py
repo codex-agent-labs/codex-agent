@@ -192,6 +192,9 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
     for output in owned:
         _require_capability_output_separate(output, protected)
     environment, wrapper = product_reuse._runtime_worker_environment(root, producer, destination, environ, build_directory=".")
+    if component == "rust" and identity.target == "windows-x64":
+        # The unchanged mock uses POSIX strdup; retain -Werror for real warnings.
+        environment["CC"] = "clang -D_CRT_NONSTDC_NO_WARNINGS"
 
     def unchanged():
         product_reuse._runtime_worker_checkout(root, producer)

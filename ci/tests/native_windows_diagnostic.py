@@ -295,6 +295,10 @@ def csharp_security_probe(scratch):
     if sys.platform == "win32":
         from ci.sdk_native_validation_workflow import _private_windows_validation_parent
         _private_windows_validation_parent(scratch)
+    # Match the producer's nested workspace layout, not the shorter probe that
+    # passed while the real worker still failed. This remains diagnostic-only.
+    scratch = scratch / "validation/outputs/.csharp-binding-evidence-diagnostic"
+    scratch.mkdir(parents=True)
     source, program = scratch / "source", scratch / "program"
     producer._copy_sources(producer._source_files(), source)
     project = source / producer.PROJECT.relative_to(producer.ROOT)
@@ -309,8 +313,13 @@ def csharp_security_probe(scratch):
     security = project.parent / "RuntimeLoaderSecurity.cs"
     raw = security.read_text(encoding="utf-8")
     assert raw.count("_ = process.StandardError.ReadToEnd();") == 2
+    sign = '                foreach (var argument in new[] { "-Y", "sign",'
+    assert raw.count(sign) == 1
+    diagnostic = '''                Console.WriteLine("fixtureKeyPath=" + privateKey + ";payloadPath=" + path);
+                Console.WriteLine("fixtureKeySha256=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(privateKey))));
+'''
     security.write_text(raw.replace("_ = process.StandardError.ReadToEnd();",
-        "Console.WriteLine(process.StandardError.ReadToEnd());"), encoding="utf-8")
+        "Console.WriteLine(process.StandardError.ReadToEnd());").replace(sign, diagnostic + sign), encoding="utf-8")
     entry = project.parent / "Program.cs"
     raw = entry.read_text(encoding="utf-8")
     marker = "var capabilityClaims = ReadCapabilityClaims();"

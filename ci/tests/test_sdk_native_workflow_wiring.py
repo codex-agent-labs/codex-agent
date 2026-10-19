@@ -21,6 +21,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SdkNativeWorkflowWiringTest(unittest.TestCase):
+    def test_host_fixture_crt_compatibility_is_windows_only(self):
+        workflow = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
+        block = workflow.split("      - name: Execute all installed consumers under one host authorization\n", 1)[1]
+        setup = textwrap.dedent(block.split("        run: |\n", 1)[1].split("          python3 -B - <<'PY'\n", 1)[0])
+        for target in ("windows-x64", "macos-arm64", "linux-x64"):
+            result = subprocess.check_output(["bash", "-c", setup + '\nprintf "%s" "$CC"'],
+                env={**os.environ, "TARGET": target, "CC": "existing-compiler"}, text=True)
+            self.assertEqual("clang -D_CRT_NONSTDC_NO_WARNINGS" if target == "windows-x64"
+                             else "existing-compiler", result)
+        consumer = (ROOT / "ci/native_wrappers.py").read_text()
+        self.assertIn('flags = ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]', consumer)
+        self.assertNotIn("-Wno-", setup)
+
     def test_preparation_identity_allows_base_state_without_an_sdk_wave(self):
         child = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
         block = child.split("      - name: Require one exact original preparation state\n", 1)[1]

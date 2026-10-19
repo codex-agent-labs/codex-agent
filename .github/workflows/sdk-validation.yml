@@ -601,6 +601,11 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           set -euo pipefail
+          if [ "$TARGET" = windows-x64 ]; then
+            # The portable Rust test fixture uses the CRT's supported POSIX
+            # strdup spelling. Keep -Werror; disable only that CRT naming notice.
+            export CC="clang -D_CRT_NONSTDC_NO_WARNINGS"
+          fi
           python3 -B - <<'PY'
           import json, os
           from pathlib import Path

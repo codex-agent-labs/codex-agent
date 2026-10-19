@@ -239,9 +239,14 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                 patch("ci.sdk_native_validation_workflow._private_windows_validation_parent"):
             scratch = Path(temporary)
             diagnostic.csharp_security_probe(scratch)
+            scratch /= "validation/outputs/.csharp-binding-evidence-diagnostic"
             original = diagnostic.ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs"
             projected = scratch / "source/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs"
-            self.assertEqual(original.read_text(), projected.read_text().replace(
+            instrumentation = '''                Console.WriteLine("fixtureKeyPath=" + privateKey + ";payloadPath=" + path);
+                Console.WriteLine("fixtureKeySha256=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(privateKey))));
+'''
+            self.assertEqual(1, projected.read_text().count(instrumentation))
+            self.assertEqual(original.read_text(), projected.read_text().replace(instrumentation, "").replace(
                 "Console.WriteLine(process.StandardError.ReadToEnd());", "_ = process.StandardError.ReadToEnd();"))
             self.assertEqual(3, run.call_count)
             restore, build, execute = (call.args[0] for call in run.call_args_list)
