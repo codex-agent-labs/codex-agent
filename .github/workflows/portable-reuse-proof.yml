@@ -181,11 +181,7 @@ jobs:
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [windows-2025, macos-26-intel]
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-2025
     timeout-minutes: 15
     env:
       GIT_CONFIG_COUNT: '1'
@@ -212,15 +208,6 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py csharp-loader-security "$env:RUNNER_TEMP/windows-controls/csharp-loader-security"
-      - name: Install the same checksum-pinned attestation verifier as product workers
-        shell: bash
-        run: bash .github/actions/restore-reuse-qualification/install-gh.sh
-      - id: signature-initialization
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python -B ci/tests/native_windows_diagnostic.py signature-initialization "$RUNNER_TEMP/windows-controls/signature-initialization"
       - name: Preserve all raw diagnostic outcomes before failing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -235,13 +222,10 @@ jobs:
         shell: python
         env:
           DIAGNOSTIC_STEPS: ${{ toJSON(steps) }}
-          DIAGNOSTIC_RUNNER: ${{ runner.os }}
         run: |
           import json, os
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
-          required = ('signature-initialization',)
-          if os.environ['DIAGNOSTIC_RUNNER'] == 'Windows':
-              required += ('csharp-loader-security',)
+          required = ('csharp-loader-security',)
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:

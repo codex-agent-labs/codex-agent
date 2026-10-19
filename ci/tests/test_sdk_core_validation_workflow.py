@@ -83,36 +83,31 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         block = source.split("  windows-control-diagnostics:\n", 1)[1].split("  core-validation-diagnostics:\n", 1)[0]
         for required in ("ci:windows-control-diagnostics", "pull_request.number == 31",
                          "head.repo.fork == false", "persist-credentials: false",
-                         "runner: [windows-2025, macos-26-intel]", "runs-on: ${{ matrix.runner }}",
-                         "fail-fast: false", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false",
+                         "runs-on: windows-2025", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false",
                          "windows-control-diagnostics-${{ runner.os }}-"):
             self.assertIn(required, block)
         for forbidden in ("secrets.", "id-token: write", "gradlew", "setup-msvc", "dart-cache",
-                          "download-artifact", "capture-sdk-tooling", "product-attestation"):
+                          "download-artifact", "capture-sdk-tooling", "product-attestation",
+                          "signature-initialization", "install-gh.sh", "macos-26-intel"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(2, block.count("continue-on-error: true"))
+        self.assertEqual(1, block.count("continue-on-error: true"))
         self.assertEqual(2, block.count("if: runner.os == 'Windows'"))
         self.assertNotIn("rust-host-exit", block)  # Existing fifteen exit observations are sufficient.
         self.assertNotIn("rust-toolchain", block)
         worker = (WORKFLOW.parents[1] / "actions/sdk-native-validation-worker/action.yml").read_text()
         dotnet = re.search(r"uses: actions/setup-dotnet@\w+", block).group()
         self.assertIn(dotnet, worker)
-        self.assertIn("bash .github/actions/restore-reuse-qualification/install-gh.sh", block)
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
-        results = {name: {"outcome": "success"} for name in diagnostic.REMAINING_CHECKS}
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}):
+        results = {"csharp-loader-security": {"outcome": "success"}}
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}):
             exec(compile(script, "windows-controls-result", "exec"), {})
         results["csharp-loader-security"]["outcome"] = "failure"
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}), self.assertRaises(AssertionError):
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}), self.assertRaises(AssertionError):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        for name in ("csharp-loader-security", "rust-host-exit"):
-            results[name]["outcome"] = "skipped"
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "macOS"}):
-            exec(compile(script, "macos-signature-result", "exec"), {})
-        results["signature-initialization"]["outcome"] = "failure"
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "macOS"}), self.assertRaises(AssertionError):
-            exec(compile(script, "macos-signature-result", "exec"), {})
+        results["csharp-loader-security"]["outcome"] = "skipped"
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}), self.assertRaises(AssertionError):
+            exec(compile(script, "windows-controls-result", "exec"), {})
         for check in (*diagnostic.CONTROL_CHECKS, *diagnostic.FOLLOWUP_CHECKS, *diagnostic.REMAINING_CHECKS):
             cwd, commands = diagnostic.commands(check, Path("private"))
             self.assertEqual(diagnostic.ROOT, cwd)
@@ -252,8 +247,20 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             restore, build, execute = (call.args[0] for call in run.call_args_list)
             self.assertEqual(["dotnet", "restore"], restore[:2])
             self.assertEqual(["dotnet", "build"], build[:2])
+            self.assertIn("-p:UseSharedCompilation=false", build)
             self.assertFalse(any("CodexAgentRealSdkPath" in value for value in build))
-            self.assertEqual("--runtime-loader-security", execute[-1])
+            self.assertEqual("--runtime-loader-signed-fixture", execute[-1])
+            entry = (scratch / "source/tests/CodexAgent.Tests/Program.cs").read_text()
+            injection = '''if (args is ["--runtime-loader-signed-fixture"])
+{
+    RuntimeLoaderSecurity.LoadFakeNativeForTests();
+    return;
+}
+
+'''
+            self.assertEqual(1, entry.count(injection))
+            self.assertEqual(original.with_name("Program.cs").read_text(), entry.replace(injection, ""))
+            self.assertEqual(str(scratch / "dotnet-home"), run.call_args.kwargs["env"]["DOTNET_CLI_HOME"])
             self.assertFalse(run.call_args.kwargs["check"])
             self.assertNotIn("GITHUB_TOKEN", run.call_args.kwargs["env"])
 

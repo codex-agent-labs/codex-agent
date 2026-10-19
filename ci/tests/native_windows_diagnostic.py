@@ -311,6 +311,17 @@ def csharp_security_probe(scratch):
     assert raw.count("_ = process.StandardError.ReadToEnd();") == 2
     security.write_text(raw.replace("_ = process.StandardError.ReadToEnd();",
         "Console.WriteLine(process.StandardError.ReadToEnd());"), encoding="utf-8")
+    entry = project.parent / "Program.cs"
+    raw = entry.read_text(encoding="utf-8")
+    marker = "var capabilityClaims = ReadCapabilityClaims();"
+    assert raw.count(marker) == 1
+    entry.write_text(raw.replace(marker, '''if (args is ["--runtime-loader-signed-fixture"])
+{
+    RuntimeLoaderSecurity.LoadFakeNativeForTests();
+    return;
+}
+
+''' + marker), encoding="utf-8")
     config = scratch / "NuGet.Config"
     config.write_bytes(producer.RESTORE_CONFIG)
     (source / "global.json").write_text('{"sdk":{"version":"8.0.419","rollForward":"disable"}}\n', encoding="utf-8")
@@ -319,15 +330,21 @@ def csharp_security_probe(scratch):
     temporary.mkdir()
     environment = dict(os.environ, **producer._fixture_environment(compatibility),
         DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1",
+        DOTNET_CLI_HOME=str(scratch / "dotnet-home"), NUGET_PACKAGES=str(scratch / "packages"),
+        NUGET_HTTP_CACHE_PATH=str(scratch / "nuget-http-cache"),
+        NUGET_PLUGINS_CACHE_PATH=str(scratch / "nuget-plugins-cache"),
         TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
     for name in ("GITHUB_TOKEN", "GH_TOKEN"):
         environment.pop(name, None)
     observed(["dotnet", "restore", str(project), "--configfile", str(config),
               "--packages", str(scratch / "packages"), "-p:NuGetAudit=false"], cwd=source, env=environment)
     observed(["dotnet", "build", str(project), "--configuration", "Release", "--no-restore",
+              "-p:UseSharedCompilation=false",
               "--output", str(program), f"-p:CodexAgentSdkCompatibility={compatibility}",
               f"-p:CodexAgentCSdkRoot={ROOT / 'codex-agent-runtime-desktop/native/c-api'}"], cwd=source, env=environment)
-    observed(["dotnet", str(program / producer.TEST_PROGRAM), "--runtime-loader-security"],
+    # The ordinary suite enters here directly, unlike Verify() which first runs
+    # snapshot/path tests. Observe that exact startup without repeating Verify().
+    observed(["dotnet", str(program / producer.TEST_PROGRAM), "--runtime-loader-signed-fixture"],
              cwd=source, env=environment, check=False)
 
 
