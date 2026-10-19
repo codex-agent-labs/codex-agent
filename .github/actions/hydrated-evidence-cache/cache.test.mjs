@@ -7,8 +7,9 @@ import {createGzip, createGunzip, gzipSync, gunzipSync} from 'node:zlib';
 import {verify, main, cacheResponse} from './cache.mjs';
 import {mkdtemp, mkdir, writeFile, readFile, rm, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, dirname} from 'node:path';
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import {syncBuiltinESMExports} from 'node:module';
 
 test('cache service failures and competing saves preserve original bytes; integrity and defects remain fatal', async () => {
@@ -22,6 +23,13 @@ test('cache service failures and competing saves preserve original bytes; integr
     const manifest = join(root, 'manifest.json'), report = join(root, 'report.json');
     await writeFile(manifest, JSON.stringify([{bytes: body.length, sha256: `sha256:${digest}`} ]));
     Object.assign(process.env, {INPUT_ROOT: root, INPUT_MANIFEST: manifest, INPUT_REPORT: report});
+    // Windows rejects mkdir on an existing drive root with EPERM, not EEXIST.
+    const realMkdir = fsPromises.mkdir;
+    mock.method(fsPromises, 'mkdir', async (path, ...options) => {
+      if (dirname(path) === path) throw Object.assign(Error('Cannot create drive root'), {code: 'EPERM'});
+      return realMkdir(path, ...options);
+    });
+    syncBuiltinESMExports();
     const outage = () => { throw Object.assign(Error('connection reset'), {code: 'ECONNRESET'}); };
     process.env.INPUT_MODE = 'restore';
     await main({GetCacheEntryDownloadURL: outage});
@@ -50,6 +58,8 @@ test('cache service failures and competing saves preserve original bytes; integr
     await assert.rejects(main({GetCacheEntryDownloadURL: async ({key}) => ({ok: true, matchedKey: key + '-wrong'})}), /different content identity/);
     await assert.rejects(readFile(report), {code: 'ENOENT'});
   } finally {
+    mock.restoreAll();
+    syncBuiltinESMExports();
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
     Object.assign(process.env, previous);
     await rm(root, {recursive: true, force: true});

@@ -86,8 +86,10 @@ async function service(operation) {
 
 async function safeParents(path) {
   const parent = dirname(path);
-  if (parent !== path) await safeParents(parent);
-  try { await mkdir(path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  if (parent !== path) {
+    await safeParents(parent);
+    try { await mkdir(path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink()) throw Error('Unsafe cache directory');
 }
