@@ -21,21 +21,28 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         block = WORKFLOW.with_name("portable-reuse-proof.yml").read_text().split("  cpp-failure-diagnostics:\n", 1)[1]
         for required in ("ci:cpp-failure-diagnostics", "pull_request.number == 31", "head.repo.fork == false",
                          "runs-on: windows-2025", "persist-credentials: false", "GIT_CONFIG_VALUE_0: 'false'",
-                         "uses: ./.github/actions/setup-msvc", "cpp-mock-linkage", "cpp-leaf-codegen", "overwrite: false"):
+                         "uses: ./.github/actions/setup-msvc", "cpp-mock-linkage", "cpp-leaf-codegen", "overwrite: false",
+                         "ci:cpp-clang-diagnostic", "cpp-clang-leaf"):
             self.assertIn(required, block)
         for forbidden in ("secrets.", "id-token: write", "gradlew", "download-artifact", "capture-sdk-tooling",
                           "product-attestation", "setup-dotnet", "rust-toolchain", "reuse-qualification"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(2, block.count("continue-on-error: true"))
+        self.assertEqual(3, block.count("continue-on-error: true"))
+        self.assertEqual(2, block.count("if: github.event.label.name == 'ci:cpp-failure-diagnostics'"))
+        self.assertEqual(1, block.count("if: github.event.label.name == 'ci:cpp-clang-diagnostic'"))
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
-        outcomes = {name: {"outcome": "success"} for name in ("mock-linkage", "leaf-codegen")}
-        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes)}):
-            exec(compile(script, "cpp-diagnostic-collection", "exec"), {})
-        for outcome in ("failure", "skipped"):
-            outcomes["leaf-codegen"]["outcome"] = outcome
-            with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes)}), self.assertRaises(AssertionError):
+        for label, selected in (("ci:cpp-failure-diagnostics", ("mock-linkage", "leaf-codegen")),
+                                ("ci:cpp-clang-diagnostic", ("clang-leaf",))):
+            outcomes = {name: {"outcome": "success" if name in selected else "skipped"}
+                        for name in ("mock-linkage", "leaf-codegen", "clang-leaf")}
+            with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes), "DIAGNOSTIC_LABEL": label}):
                 exec(compile(script, "cpp-diagnostic-collection", "exec"), {})
+            for outcome in ("failure", "skipped"):
+                outcomes[selected[-1]]["outcome"] = outcome
+                with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes), "DIAGNOSTIC_LABEL": label}), \
+                        self.assertRaises(AssertionError):
+                    exec(compile(script, "cpp-diagnostic-collection", "exec"), {})
 
     def test_cpp_failure_probes_preserve_baseline_and_all_comparisons(self):
         import subprocess
@@ -74,6 +81,29 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             self.assertEqual(2, sum(c.args[0][0].endswith(".exe") for c in run.call_args_list))
             with patch.dict(os.environ, {"VCToolsVersion": "different"}), self.assertRaises(ValueError):
                 diagnostic.cpp_failure_probe("cpp-leaf-codegen", scratch)
+
+    def test_clang_probe_compiles_unchanged_consumer_without_inherited_flags(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ,
+                {"VCToolsVersion": "14.51.36231", "GITHUB_TOKEN": "private", "GH_TOKEN": "private",
+                 "CL": "unwanted", "_CL_": "unwanted"}), patch.object(diagnostic, "observed") as run:
+            scratch = Path(temporary)
+            compiler = scratch / "clang-cl.exe"
+            compiler.write_bytes(b"test-only executable identity")
+            with patch.object(diagnostic.shutil, "which", return_value=str(compiler)):
+                diagnostic.cpp_failure_probe("cpp-clang-leaf", scratch)
+            self.assertEqual(2, run.call_count)
+            version, compile_call = run.call_args_list
+            self.assertEqual([str(compiler), "--version"], version.args[0])
+            for flag in ("/c", "/O2", "/Ob2", "/MD", "/EHsc", "/W4", "/WX", "/DNDEBUG", "/std:c++20"):
+                self.assertIn(flag, compile_call.args[0])
+            self.assertNotIn("/Bv", compile_call.args[0])
+            self.assertEqual(str(diagnostic.ROOT / "codex-agent-bindings/cpp/tests/leaf_real_boundary_test.cpp"),
+                             compile_call.args[0][-1])
+            for call in run.call_args_list:
+                self.assertFalse({"CL", "_CL_", "GITHUB_TOKEN", "GH_TOKEN"} & call.kwargs["env"].keys())
+            with patch.object(diagnostic.shutil, "which", return_value=None), self.assertRaises(ValueError):
+                diagnostic.cpp_failure_probe("cpp-clang-leaf", scratch)
 
     def test_native_diagnostics_are_narrow_and_collect_before_failure(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()

@@ -563,7 +563,7 @@ jobs:
 
   cpp-failure-diagnostics:
     if: >-
-      github.event.label.name == 'ci:cpp-failure-diagnostics' &&
+      (github.event.label.name == 'ci:cpp-failure-diagnostics' || github.event.label.name == 'ci:cpp-clang-diagnostic') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -586,14 +586,21 @@ jobs:
           python-version: '3.12.10'
       - uses: ./.github/actions/setup-msvc
       - id: mock-linkage
+        if: github.event.label.name == 'ci:cpp-failure-diagnostics'
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py cpp-mock-linkage "$env:RUNNER_TEMP/cpp-failures/mock-linkage"
       - id: leaf-codegen
+        if: github.event.label.name == 'ci:cpp-failure-diagnostics'
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py cpp-leaf-codegen "$env:RUNNER_TEMP/cpp-failures/leaf-codegen"
-      - name: Preserve both original compiler and linker observations
+      - id: clang-leaf
+        if: github.event.label.name == 'ci:cpp-clang-diagnostic'
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py cpp-clang-leaf "$env:RUNNER_TEMP/cpp-failures/clang-leaf"
+      - name: Preserve original compiler and linker observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -607,8 +614,10 @@ jobs:
         shell: python
         env:
           DIAGNOSTIC_STEPS: ${{ toJSON(steps) }}
+          DIAGNOSTIC_LABEL: ${{ github.event.label.name }}
         run: |
           import json, os
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
+          selected = ('clang-leaf',) if os.environ['DIAGNOSTIC_LABEL'] == 'ci:cpp-clang-diagnostic' else ('mock-linkage', 'leaf-codegen')
           assert all(results.get(name, {}).get('outcome') == 'success'
-                     for name in ('mock-linkage', 'leaf-codegen')), results
+                     for name in selected), results

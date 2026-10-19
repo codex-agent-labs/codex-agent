@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import importlib.util
 import io
 import json
@@ -20,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
 REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization", "csharp-loader-security",
-                    "cpp-leaf-preprocessor", "rust-fixture-compiler", "cpp-mock-linkage", "cpp-leaf-codegen")
+                    "cpp-leaf-preprocessor", "rust-fixture-compiler", "cpp-mock-linkage", "cpp-leaf-codegen",
+                    "cpp-clang-leaf")
 CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
@@ -371,6 +373,23 @@ def cpp_failure_probe(check, scratch):
     environment = dict(os.environ, CL="/Zc:preprocessor")
     for name in ("GITHUB_TOKEN", "GH_TOKEN"):
         environment.pop(name, None)
+    if check == "cpp-clang-leaf":
+        compiler = shutil.which("clang-cl")
+        if compiler is None or not Path(compiler).is_absolute():
+            raise ValueError("Diagnostic requires the runner's installed clang-cl")
+        with Path(compiler).open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        print(json.dumps({"compiler": compiler, "sha256": digest, "productAcceptance": False}), flush=True)
+        for name in ("CL", "_CL_"):
+            environment.pop(name, None)
+        observed([compiler, "--version"], cwd=scratch, env=environment)
+        cpp = ROOT / "codex-agent-bindings/cpp"
+        observed([compiler, "/nologo", "/std:c++20", "/c", "/O2", "/Ob2", "/MD",
+                  "/EHsc", "/W4", "/WX", "/DNDEBUG", "/Fo" + str(scratch / "leaf.obj"),
+                  "/I" + str(cpp / "include"),
+                  "/I" + str(ROOT / "codex-agent-runtime-desktop/native/c-api/include"),
+                  str(cpp / "tests/leaf_real_boundary_test.cpp")], cwd=scratch, env=environment)
+        return
     if check == "cpp-leaf-codegen":
         cpp = ROOT / "codex-agent-bindings/cpp"
         outcomes = []
@@ -466,7 +485,7 @@ def control_probe(check, scratch):
     scratch.mkdir(exist_ok=False)
     if check == "csharp-loader-security":
         csharp_security_probe(scratch)
-    elif check in ("cpp-mock-linkage", "cpp-leaf-codegen"):
+    elif check in ("cpp-mock-linkage", "cpp-leaf-codegen", "cpp-clang-leaf"):
         cpp_failure_probe(check, scratch)
     elif check in ("cpp-leaf-preprocessor", "rust-fixture-compiler"):
         compiler_probe(check, scratch)
