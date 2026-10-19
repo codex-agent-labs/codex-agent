@@ -69,7 +69,9 @@ endforeach()
             compiler.write_bytes(b"unit compiler, never executed")
             destination = root / "diagnostics"
             destination.mkdir()
-            environment = {"VCToolsVersion": "14.51.36231", "PATH": "unit"}
+            # dict(os.environ) on Windows has uppercase keys, unlike os.environ's
+            # case-insensitive lookup. Exercise the real copied-worker shape.
+            environment = {"VCTOOLSVERSION": "14.51.36231", "PATH": "unit"}
             paths = {"clang-cl": str(compiler), "cl": str(root / "cl"), "ninja": str(root / "ninja")}
             with patch.object(policy, "git_regular_blob_bytes", return_value=source.read_bytes()), \
                     patch.object(policy.shutil, "which", side_effect=lambda name, **kw: paths[name]), \

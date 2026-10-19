@@ -56,7 +56,8 @@ def prepare(root, revision, destination, environment):
     raw = read_regular_file_bytes(source, max_bytes=64 * 1024, reject_symlink_parents=True)
     if raw != git_regular_blob_bytes(root, revision, POLICY, max_bytes=64 * 1024):
         raise ValueError("Windows C++ compiler policy differs from the elected Git input")
-    if environment.get("VCToolsVersion", "").rstrip("/\\") != "14.51.36231":
+    toolsets = {value.rstrip("/\\") for name, value in environment.items() if name.upper() == "VCTOOLSVERSION"}
+    if toolsets != {"14.51.36231"}:
         raise ValueError("Windows C++ validation requires MSVC 14.51.36231 headers and libraries")
     for name in ("CL", "_CL_", "CC", "CXX", "CMAKE_TOOLCHAIN_FILE", "CMAKE_GENERATOR",
                  "CMAKE_GENERATOR_PLATFORM", "CMAKE_GENERATOR_TOOLSET"):
