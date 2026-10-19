@@ -272,10 +272,10 @@ from time import perf_counter
 from zipfile import ZipFile
 
 if __package__ in {"ci.products", "products"}:
-    from . import sdk_package as package, restore
+    from . import restore
     from .inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes, snapshot_regular_tree
 else:  # Standalone local factoring test, never the fixed signed entry.
-    from ci.products import sdk_package as package, restore
+    from ci.products import restore
     from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, sha256_bytes, snapshot_regular_tree
 
 
@@ -309,6 +309,8 @@ class SharedPackageSession:
 
     def __init__(self, root, repository, package_stage, package_receipt, request,
                  runtime_stages, staged_sdks, *, binary_stage=None, binary_receipt=None):
+        from . import sdk_package as package
+
         self.root, self.repository = root, repository
         self.inputs = dict(package_stage=package_stage, package_receipt=package_receipt, request=request,
                            runtime_stages=runtime_stages, staged_sdks=staged_sdks,
@@ -350,6 +352,8 @@ class SharedPackageSession:
 
     @staticmethod
     def subject(inputs):
+        from . import sdk_package as package
+
         # Collector carriers already have a closed, shared compatibility category.
         # Do not scan the repository or rehash its multi-GB payloads per host.
         request = inputs["request"]
@@ -379,6 +383,8 @@ class SharedPackageSession:
 
     def verify_host(self, stage, receipt_path, target, authorization, *, java, jar, inputs=None):
         """Return comparison bytes only, never production Verified* authority."""
+        from . import sdk_package as package
+
         self.check(inputs)
         started = perf_counter()
         validation, original = package._receipt(receipt_path)
@@ -510,6 +516,8 @@ def _failure_detail(error):
 
 def _serve_shared_verifier(repository, java, jar):
     """At most two host gates and five retained package groups per collection."""
+    from . import sdk_package as package
+
     # Keep protocol separate from all inherited child-tool stdout/stdin. A .NET
     # inspector's progress is diagnostic text, never a protocol/acceptance record.
     incoming = os.fdopen(os.dup(0), "rb")
@@ -637,7 +645,7 @@ class _SharedVerifierProcess:
         self.lock, self.slots = Lock(), BoundedSemaphore(2)
         self.pending, self.serial, self.failed = {}, 0, None
         try:
-            ready = package.load_canonical_json_bytes(self.process.stdout.readline(_LIMIT + 1))
+            ready = load_canonical_json_bytes(self.process.stdout.readline(_LIMIT + 1))
             if ready != {"protocol": _SHARED_PROTOCOL}:
                 raise ValueError("Signed tooling does not support the fixed shared verifier")
         except BaseException as error:
@@ -656,7 +664,7 @@ class _SharedVerifierProcess:
             while raw := self.process.stdout.readline(_LIMIT + 1):
                 if len(raw) > _LIMIT:
                     raise ValueError("Oversized shared-verifier response")
-                result = package.load_canonical_json_bytes(raw)
+                result = load_canonical_json_bytes(raw)
                 if type(result) is not dict or type(result.get("id")) is not int:
                     raise ValueError("Malformed shared-verifier response")
                 with self.lock:
@@ -694,7 +702,7 @@ class _SharedVerifierProcess:
                 self.process.stdin.flush()
             result = future.result()
             self.check()
-            metrics = package.require_exact_keys(result.get("metrics"),
+            metrics = require_exact_keys(result.get("metrics"),
                 {"commonChecks", "commonReuses", "elapsedSeconds"}, "shared-verifier measurements")
             if any(type(metrics[name]) is not int or metrics[name] not in (0, 1)
                    for name in ("commonChecks", "commonReuses")):
@@ -705,11 +713,11 @@ class _SharedVerifierProcess:
             count("nativeSdkSharedCommonChecks", metrics["commonChecks"])
             count("nativeSdkSharedCommonReuses", metrics["commonReuses"])
             if result.get("result") == "failure":
-                package.require_exact_keys(result, {"id", "result", "error", "metrics"}, "shared-verifier failure")
+                require_exact_keys(result, {"id", "result", "error", "metrics"}, "shared-verifier failure")
                 error = ValueError(result["error"])
                 error.add_note("Shared verifier metrics: " + json.dumps(result["metrics"], sort_keys=True))
                 raise error
-            package.require_exact_keys(result, {"id", "result", "receiptSha256", "content", "metrics"},
+            require_exact_keys(result, {"id", "result", "receiptSha256", "content", "metrics"},
                                        "shared-verifier success")
             if result["result"] != "success":
                 raise ValueError("Shared verifier did not prove successful verification")
@@ -775,6 +783,8 @@ class _SharedCollection:
         return fields, key
 
     def verify(self, **arguments):
+        from . import sdk_package as package
+
         with self.lock:
             if not self.active:
                 raise ValueError("Shared collection is outside its private lifetime")

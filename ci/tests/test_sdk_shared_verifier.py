@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 import subprocess
+import sys
 import unittest
 from unittest.mock import Mock, patch
 from zipfile import ZipFile
@@ -16,6 +17,16 @@ from ci.tests.test_sdk_validation_projection import SdkValidationProjectionTest
 
 
 class SharedSdkVerifierTest(unittest.TestCase):
+    def test_fresh_entrypoints_do_not_depend_on_preloaded_package_modules(self):
+        repository = Path(__file__).resolve().parents[2]
+        bootstrap = "import sys;sys.path[:0]=sys.argv[1:3];"
+        for module in ("product_reuse", "ci.product_reuse", "products.aggregate", "ci.products.aggregate"):
+            with self.subTest(module=module):
+                result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c",
+                    bootstrap + "__import__(sys.argv[3])", str(repository / "ci"), str(repository), module],
+                    capture_output=True, timeout=30)
+                self.assertEqual(0, result.returncode, result.stderr.decode())
+
     def test_real_collection_scope_shares_worker_across_copied_admission_contexts(self):
         from ci.products.sdk_validation_inputs import collection_admission_scope
         fixture = SdkValidationProjectionTest()
@@ -121,7 +132,7 @@ for line in sys.stdin:
                     worker.close()
 
     def test_cpp_isolated_verifier_reuses_captured_dependency_layout(self):
-        repository = Path(verifier.package.__file__).resolve().parents[2]
+        repository = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             code = root / "code"
