@@ -103,10 +103,10 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         results = {name: {"outcome": "success"} for name in diagnostic.REMAINING_CHECKS}
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        results["signing-private-parent"]["outcome"] = "failure"
+        results["csharp-loader-security"]["outcome"] = "failure"
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "Windows"}), self.assertRaises(AssertionError):
             exec(compile(script, "windows-controls-result", "exec"), {})
-        for name in ("signing-private-parent", "rust-host-exit"):
+        for name in ("csharp-loader-security", "rust-host-exit"):
             results[name]["outcome"] = "skipped"
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results), "DIAGNOSTIC_RUNNER": "macOS"}):
             exec(compile(script, "macos-signature-result", "exec"), {})
@@ -238,6 +238,25 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             diagnostic.require_diagnostic_host(check)
 
+    def test_security_diagnostic_preserves_entire_suite_and_uses_only_unit_fixtures(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        with tempfile.TemporaryDirectory() as temporary, patch.object(diagnostic, "observed") as run, \
+                patch("ci.sdk_native_validation_workflow._private_windows_validation_parent"):
+            scratch = Path(temporary)
+            diagnostic.csharp_security_probe(scratch)
+            original = diagnostic.ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs"
+            projected = scratch / "source/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs"
+            self.assertEqual(original.read_text(), projected.read_text().replace(
+                "Console.WriteLine(process.StandardError.ReadToEnd());", "_ = process.StandardError.ReadToEnd();"))
+            self.assertEqual(3, run.call_count)
+            restore, build, execute = (call.args[0] for call in run.call_args_list)
+            self.assertEqual(["dotnet", "restore"], restore[:2])
+            self.assertEqual(["dotnet", "build"], build[:2])
+            self.assertFalse(any("CodexAgentRealSdkPath" in value for value in build))
+            self.assertEqual("--runtime-loader-security", execute[-1])
+            self.assertFalse(run.call_args.kwargs["check"])
+            self.assertNotIn("GITHUB_TOKEN", run.call_args.kwargs["env"])
+
     def test_signature_initialization_probe_retains_all_trust_constraints(self):
         from ci.tests import native_windows_diagnostic as diagnostic
         import reuse_qualification
@@ -250,20 +269,21 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             scratch = Path(temporary) / "probe"
             diagnostic.control_probe("signature-initialization", scratch)
             self.assertEqual(2, fetch.call_count)
-            calls = [call for call in run.call_args_list if call.args[0][1:3] == ["attestation", "verify"]]
+            calls = [call for call in run.call_args_list if call.args[0][1:3] == ["-c", diagnostic.SIGNATURE_INITIALIZATION_PROBE]]
             self.assertEqual(6, len(calls))
             self.assertEqual(3, len({call.kwargs["env"]["GH_CACHE_DIR"] for call in calls}))
             for call in calls:
                 command = call.args[0]
                 self.assertFalse(call.kwargs["check"])
-                bundle = Path(command[command.index("--bundle") + 1])
+                bundle = Path(command[4])
                 self.assertEqual(".jsonl", bundle.suffix)
                 self.assertEqual(captured["bundle.jsonl"], bundle.read_bytes())
-                for flag in ("--repo", "--signer-workflow", "--signer-digest", "--source-digest",
-                             "--cert-oidc-issuer", "--deny-self-hosted-runners"):
-                    self.assertIn(flag, command)
-                for flag in ("--custom-trusted-root", "--no-public-good", "--format"):
-                    self.assertNotIn(flag, command)
+                with patch.object(reuse_qualification, "_authenticate_native_subject") as verify, \
+                        patch("sys.argv", ["probe", *command[3:]]):
+                    exec(compile(diagnostic.SIGNATURE_INITIALIZATION_PROBE, "production-verifier-probe", "exec"))
+                name = Path(command[3]).name.removesuffix(".subject")
+                verify.assert_called_once_with(captured[name], captured["bundle.jsonl"], name,
+                    signer_commit=command[5], source_commit=command[5])
             self.assertEqual(b"frozen", (scratch / "qualification.json.subject").read_bytes())
             self.assertEqual(b"sdk", (scratch / "completion.json.subject").read_bytes())
 

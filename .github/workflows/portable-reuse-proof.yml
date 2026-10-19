@@ -207,11 +207,11 @@ jobs:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
         with:
           dotnet-version: '8.0.419'
-      - id: signing-private-parent
+      - id: csharp-loader-security
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
-        run: python -B ci/tests/native_windows_diagnostic.py signing-private-parent "$env:RUNNER_TEMP/windows-controls/signing-private-parent"
+        run: python -B ci/tests/native_windows_diagnostic.py csharp-loader-security "$env:RUNNER_TEMP/windows-controls/csharp-loader-security"
       - name: Install the same checksum-pinned attestation verifier as product workers
         shell: bash
         run: bash .github/actions/restore-reuse-qualification/install-gh.sh
@@ -241,7 +241,7 @@ jobs:
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
           required = ('signature-initialization',)
           if os.environ['DIAGNOSTIC_RUNNER'] == 'Windows':
-              required += ('signing-private-parent',)
+              required += ('csharp-loader-security',)
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:

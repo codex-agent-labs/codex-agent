@@ -19,7 +19,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
-REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization")
+REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization", "csharp-loader-security")
 CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
@@ -192,6 +192,18 @@ exit $process.ExitCode
 '''
 
 
+SIGNATURE_INITIALIZATION_PROBE = '''
+import sys
+from pathlib import Path
+sys.path[:0] = [str(Path.cwd() / "ci"), str(Path.cwd())]
+from reuse_qualification import _authenticate_native_subject
+subject, bundle, commit = sys.argv[1:]
+_authenticate_native_subject(Path(subject).read_bytes(), Path(bundle).read_bytes(),
+    Path(subject).name.removesuffix(".subject"), signer_commit=commit, source_commit=commit)
+print("Production native verification passed; no qualification issued or phase admitted")
+'''
+
+
 def rust_host_probe(scratch):
     from native_wrappers import safe_extract_tar
     crate = scratch / "original.crate"
@@ -273,10 +285,58 @@ Sign(payload, key, "codex-agent-sdk-runtime-root-v1", Path.Combine(evidence, "ro
              cwd=project, check=False)
 
 
+def csharp_security_probe(scratch):
+    """Actual loader-security suite composition, not product/capability evidence."""
+    import xml.etree.ElementTree as ET
+    path = ROOT / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py"
+    spec = importlib.util.spec_from_file_location("csharp_security_producer", path)
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    if sys.platform == "win32":
+        from ci.sdk_native_validation_workflow import _private_windows_validation_parent
+        _private_windows_validation_parent(scratch)
+    source, program = scratch / "source", scratch / "program"
+    producer._copy_sources(producer._source_files(), source)
+    project = source / producer.PROJECT.relative_to(producer.ROOT)
+    # This diagnostic runs no capability/parity reports and uses only the
+    # existing unit fixtures. Do not invent Contract reports to satisfy their
+    # unrelated presence guard; remove that guard ONLY from this private copy.
+    document = ET.parse(project)
+    guard, = [node for node in document.getroot().findall("Target")
+              if node.get("Name") == "ValidateDeclaredArtifactInputs"]
+    document.getroot().remove(guard)
+    document.write(project, encoding="utf-8")
+    security = project.parent / "RuntimeLoaderSecurity.cs"
+    raw = security.read_text(encoding="utf-8")
+    assert raw.count("_ = process.StandardError.ReadToEnd();") == 2
+    security.write_text(raw.replace("_ = process.StandardError.ReadToEnd();",
+        "Console.WriteLine(process.StandardError.ReadToEnd());"), encoding="utf-8")
+    config = scratch / "NuGet.Config"
+    config.write_bytes(producer.RESTORE_CONFIG)
+    (source / "global.json").write_text('{"sdk":{"version":"8.0.419","rollForward":"disable"}}\n', encoding="utf-8")
+    compatibility = producer.ROOT / "native/sdk-compatibility.json"
+    temporary = scratch / "scratch"
+    temporary.mkdir()
+    environment = dict(os.environ, **producer._fixture_environment(compatibility),
+        DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1",
+        TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        environment.pop(name, None)
+    observed(["dotnet", "restore", str(project), "--configfile", str(config),
+              "--packages", str(scratch / "packages"), "-p:NuGetAudit=false"], cwd=source, env=environment)
+    observed(["dotnet", "build", str(project), "--configuration", "Release", "--no-restore",
+              "--output", str(program), f"-p:CodexAgentSdkCompatibility={compatibility}",
+              f"-p:CodexAgentCSdkRoot={ROOT / 'codex-agent-runtime-desktop/native/c-api'}"], cwd=source, env=environment)
+    observed(["dotnet", str(program / producer.TEST_PROGRAM), "--runtime-loader-security"],
+             cwd=source, env=environment, check=False)
+
+
 def control_probe(check, scratch):
     sys.path[:0] = [str(ROOT / "ci"), str(ROOT)]
     scratch.mkdir(exist_ok=False)
-    if check in ("signing-acl", "signing-workspace", "signing-private-parent"):
+    if check == "csharp-loader-security":
+        csharp_security_probe(scratch)
+    elif check in ("signing-acl", "signing-workspace", "signing-private-parent"):
         if check == "signing-private-parent":
             from ci.sdk_native_validation_workflow import _private_windows_validation_parent
             _private_windows_validation_parent(scratch)
@@ -367,14 +427,10 @@ def control_probe(check, scratch):
             subjects.append((subject, bundle, commit))
         def verify(item, environment):
             subject, bundle, commit = item
-            # Human output exposes native initialization diagnostics suppressed
-            # by --format=json; every cryptographic/identity constraint remains.
-            return observed(["gh", "attestation", "verify", str(subject), "--bundle", str(bundle),
-                "--repo", qualification.REPOSITORY, "--signer-workflow",
-                qualification.REPOSITORY + "/" + qualification.ISSUER_WORKFLOW,
-                "--signer-digest", commit, "--source-digest", commit,
-                "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
-                "--deny-self-hosted-runners"], env=environment, check=False).returncode
+            # Exercise the production verifier, including its bounded startup
+            # retry, in separate processes sharing only this trial's trust cache.
+            return observed([sys.executable, "-c", SIGNATURE_INITIALIZATION_PROBE,
+                str(subject), str(bundle), commit], env=environment, check=False).returncode
         for trial in range(3):
             environment = dict(os.environ, GH_CACHE_DIR=str(scratch / f"trust-cache-{trial}"))
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -442,7 +498,7 @@ def diagnose(check, output):
         require_diagnostic_host(check)
         # Match the C# producer's workspace/build TemporaryDirectory location;
         # user Temp has different inherited ACLs and already passed signing.
-        parent = ROOT / "build" if check in ("signing-workspace", "signing-private-parent") else None
+        parent = ROOT / "build" if check in ("signing-workspace", "signing-private-parent", "csharp-loader-security") else None
         if parent is not None:
             parent.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="native-host-diagnostic-", dir=parent) as temporary:
