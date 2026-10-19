@@ -221,6 +221,10 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
     if component == "rust" and identity.target == "windows-x64":
         # The unchanged mock uses POSIX strdup; retain -Werror for real warnings.
         environment["CC"] = "clang -D_CRT_NONSTDC_NO_WARNINGS"
+    if component == "cpp" and identity.target == "windows-x64":
+        # MSVC needs this switch to implement the suite's existing C++20
+        # __VA_OPT__ macros; /std:c++20 alone keeps its legacy preprocessor.
+        environment["CL"] = "/Zc:preprocessor"
 
     def unchanged():
         product_reuse._runtime_worker_checkout(root, producer)

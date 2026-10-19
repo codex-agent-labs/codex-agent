@@ -491,18 +491,24 @@ class SdkNativeValidationWorkerTest(unittest.TestCase):
                     path.rmdir()
 
     def test_windows_rust_mock_keeps_strict_warnings_with_supported_posix_names(self):
+        self.check_windows_compiler_environment("rust", {"CC": "clang -D_CRT_NONSTDC_NO_WARNINGS"})
+
+    def test_windows_cpp_provisions_existing_cpp20_preprocessor(self):
+        self.check_windows_compiler_environment("cpp", {"CL": "/Zc:preprocessor"})
+
+    def check_windows_compiler_environment(self, component, expected):
         self.host = "windows-x64"
-        self.plan.update(component="rust", target=self.host)
+        self.plan.update(component=component, target=self.host)
         self.plan["buildKey"] = compute_build_key(**{name: self.plan[name] for name in
             ("product", "component", "phase", "target", "inputs")})
-        manifest = write_output_manifest(self.package["stage"], "sdk", "rust", "package", "desktop", "0.3.0",
+        manifest = write_output_manifest(self.package["stage"], "sdk", component, "package", "desktop", "0.3.0",
                                          {"package": "outputs"})
-        self.package["receipt"] = write_receipt(self.package["receiptPath"], product="sdk", component="rust",
+        self.package["receipt"] = write_receipt(self.package["receiptPath"], product="sdk", component=component,
             phase="package", target="desktop", version="0.3.0", version_identity="0.3.0",
             outputs=manifest["outputs"], upstream=[], context={"producer": self.producer})
 
         def command(wrapper, fields, environment, **kwargs):
-            self.assertEqual({"SAFE": "fixed", "CC": "clang -D_CRT_NONSTDC_NO_WARNINGS"}, environment)
+            self.assertEqual({"SAFE": "fixed", **expected}, environment)
             raise RuntimeError("invocation inspected before Gradle")
 
         with patch.object(workflow.product_reuse, "_runtime_worker_command", side_effect=command), \
