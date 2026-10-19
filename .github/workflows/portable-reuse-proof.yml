@@ -560,3 +560,55 @@ jobs:
     uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
+  cpp-failure-diagnostics:
+    if: >-
+      github.event.label.name == 'ci:cpp-failure-diagnostics' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: windows-2025
+    timeout-minutes: 15
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12.10'
+      - uses: ./.github/actions/setup-msvc
+      - id: mock-linkage
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py cpp-mock-linkage "$env:RUNNER_TEMP/cpp-failures/mock-linkage"
+      - id: leaf-codegen
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py cpp-leaf-codegen "$env:RUNNER_TEMP/cpp-failures/leaf-codegen"
+      - name: Preserve both original compiler and linker observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cpp-failure-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cpp-failures
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+      - name: Require complete diagnostic collection, not product acceptance
+        if: always()
+        shell: python
+        env:
+          DIAGNOSTIC_STEPS: ${{ toJSON(steps) }}
+        run: |
+          import json, os
+          results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
+          assert all(results.get(name, {}).get('outcome') == 'success'
+                     for name in ('mock-linkage', 'leaf-codegen')), results

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
 REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization", "csharp-loader-security",
-                    "cpp-leaf-preprocessor", "rust-fixture-compiler")
+                    "cpp-leaf-preprocessor", "rust-fixture-compiler", "cpp-mock-linkage", "cpp-leaf-codegen")
 CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
@@ -364,6 +364,62 @@ def csharp_security_probe(scratch):
              cwd=source, env=environment)
 
 
+def cpp_failure_probe(check, scratch):
+    """Observe the two Windows failures without fetching or rebuilding products."""
+    if os.environ.get("VCToolsVersion", "").rstrip("/\\") != "14.51.36231":
+        raise ValueError("Diagnostic requires the failing worker's MSVC 14.51.36231")
+    environment = dict(os.environ, CL="/Zc:preprocessor")
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        environment.pop(name, None)
+    if check == "cpp-leaf-codegen":
+        cpp = ROOT / "codex-agent-bindings/cpp"
+        outcomes = []
+        for name, optimization in (("release", ["/O2", "/Ob2"]),
+                                   ("explicit-inline", ["/O2", "/Ob1"]),
+                                   ("unoptimized", ["/Od", "/Ob0"])):
+            print(json.dumps({"leafCodegenCase": name, "productAcceptance": False}), flush=True)
+            outcomes.append(observed(["cl", "/nologo", "/Bv", "/std:c++20", "/c", *optimization,
+                "/MD", "/EHsc", "/W4", "/WX", "/DNDEBUG", "/Fo" + str(scratch / (name + ".obj")),
+                "/I" + str(cpp / "include"),
+                "/I" + str(ROOT / "codex-agent-runtime-desktop/native/c-api/include"),
+                str(cpp / "tests/leaf_real_boundary_test.cpp")],
+                check=False, cwd=scratch, env=environment))
+        if not outcomes[0].returncode or b"C1001" not in outcomes[0].stdout:
+            raise ValueError("Original MSVC Release compiler crash was not reproduced; retain observations")
+        if all(result.returncode for result in outcomes[1:]):
+            raise ValueError("Both bounded optimization comparisons failed; retain all compiler diagnostics")
+        return
+    if check != "cpp-mock-linkage":
+        raise ValueError("Unknown C++ failure probe")
+    sources = {
+        "runtime": '__declspec(dllexport) int boundary(void) { return 1; }\n',
+        "mock": '__declspec(dllexport) int boundary(void) { return 2; }\nint mock_control(void) { return 0; }\n',
+        "main": 'int boundary(void); int mock_control(void);\nint main(void) { return boundary() == 2 && mock_control() == 0 ? 0 : 99; }\n',
+    }
+    for name, source in sources.items():
+        path = scratch / (name + ".c")
+        path.write_text(source, encoding="utf-8")
+        observed(["cl", "/nologo", "/Bv", "/c", "/MD", "/W4", "/WX",
+                  "/Fo" + name + ".obj", str(path)], cwd=scratch, env=environment)
+    observed(["link", "/nologo", "/dll", "/out:runtime.dll", "/implib:runtime.lib", "runtime.obj"],
+             cwd=scratch, env=environment)
+    observed(["lib", "/nologo", "/out:mock.lib", "mock.obj"], cwd=scratch, env=environment)
+    outcomes = []
+    for name, inputs in (("runtime-first", ["main.obj", "runtime.lib", "mock.lib"]),
+                         ("mock-first", ["main.obj", "mock.lib", "runtime.lib"]),
+                         ("direct-object", ["main.obj", "mock.obj", "runtime.lib"])):
+        executable = scratch / (name + ".exe")
+        linked = observed(["link", "/nologo", "/out:" + str(executable), *inputs],
+                          check=False, cwd=scratch, env=environment)
+        executed = (observed([str(executable)], check=False, cwd=scratch, env=environment)
+                    if not linked.returncode else None)
+        outcomes.append((linked, executed))
+    if not outcomes[0][0].returncode or b"LNK2005" not in outcomes[0][0].stdout:
+        raise ValueError("Original MSVC mock/import collision not reproduced; retain all observations")
+    if any(linked.returncode or executed is None or executed.returncode for linked, executed in outcomes[1:]):
+        raise ValueError("Mock ordering/object comparison failed; retain all linker diagnostics")
+
+
 def compiler_probe(check, scratch):
     """Compile only the failing test source, never a product or acceptance receipt."""
     if check == "cpp-leaf-preprocessor":
@@ -410,6 +466,8 @@ def control_probe(check, scratch):
     scratch.mkdir(exist_ok=False)
     if check == "csharp-loader-security":
         csharp_security_probe(scratch)
+    elif check in ("cpp-mock-linkage", "cpp-leaf-codegen"):
+        cpp_failure_probe(check, scratch)
     elif check in ("cpp-leaf-preprocessor", "rust-fixture-compiler"):
         compiler_probe(check, scratch)
     elif check in ("signing-acl", "signing-workspace", "signing-private-parent"):

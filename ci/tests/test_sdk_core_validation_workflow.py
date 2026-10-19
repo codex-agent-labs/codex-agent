@@ -17,6 +17,64 @@ CHILD = WORKFLOW.with_name("sdk-core-validation.yml")
 
 
 class CoreValidationWorkflowTest(unittest.TestCase):
+    def test_cpp_failure_diagnostics_are_scoped_and_collect_both_failures(self):
+        block = WORKFLOW.with_name("portable-reuse-proof.yml").read_text().split("  cpp-failure-diagnostics:\n", 1)[1]
+        for required in ("ci:cpp-failure-diagnostics", "pull_request.number == 31", "head.repo.fork == false",
+                         "runs-on: windows-2025", "persist-credentials: false", "GIT_CONFIG_VALUE_0: 'false'",
+                         "uses: ./.github/actions/setup-msvc", "cpp-mock-linkage", "cpp-leaf-codegen", "overwrite: false"):
+            self.assertIn(required, block)
+        for forbidden in ("secrets.", "id-token: write", "gradlew", "download-artifact", "capture-sdk-tooling",
+                          "product-attestation", "setup-dotnet", "rust-toolchain", "reuse-qualification"):
+            self.assertNotIn(forbidden, block)
+        self.assertEqual(2, block.count("continue-on-error: true"))
+        self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        outcomes = {name: {"outcome": "success"} for name in ("mock-linkage", "leaf-codegen")}
+        with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes)}):
+            exec(compile(script, "cpp-diagnostic-collection", "exec"), {})
+        for outcome in ("failure", "skipped"):
+            outcomes["leaf-codegen"]["outcome"] = outcome
+            with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes)}), self.assertRaises(AssertionError):
+                exec(compile(script, "cpp-diagnostic-collection", "exec"), {})
+
+    def test_cpp_failure_probes_preserve_baseline_and_all_comparisons(self):
+        import subprocess
+        from ci.tests import native_windows_diagnostic as diagnostic
+        ok = subprocess.CompletedProcess([], 0, b"")
+        crash = subprocess.CompletedProcess([], 2, b"fatal error C1001: Internal compiler error")
+        collision = subprocess.CompletedProcess([], 1, b"error LNK2005: already defined")
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ,
+                {"VCToolsVersion": "14.51.36231", "GITHUB_TOKEN": "must-not-reach-compiler"}), \
+                patch.object(diagnostic, "observed") as run, patch("builtins.print"):
+            scratch = Path(temporary)
+            run.side_effect = [crash, ok, ok]
+            diagnostic.cpp_failure_probe("cpp-leaf-codegen", scratch)
+            calls = run.call_args_list
+            self.assertEqual(3, len(calls))
+            for call, options in zip(calls, (("/O2", "/Ob2"), ("/O2", "/Ob1"), ("/Od", "/Ob0")), strict=True):
+                for flag in (*options, "/W4", "/WX", "/MD", "/EHsc", "/DNDEBUG", "/c"):
+                    self.assertIn(flag, call.args[0])
+                self.assertTrue(call.args[0][-1].endswith("tests/leaf_real_boundary_test.cpp"))
+                self.assertEqual("/Zc:preprocessor", call.kwargs["env"]["CL"])
+                self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+                self.assertFalse(call.kwargs["check"])
+            run.reset_mock(); run.side_effect = [crash, crash, crash]
+            with self.assertRaisesRegex(ValueError, "Both bounded optimization"):
+                diagnostic.cpp_failure_probe("cpp-leaf-codegen", scratch)
+            self.assertEqual(3, run.call_count)
+            run.reset_mock(); run.side_effect = [ok, ok, ok]
+            with self.assertRaisesRegex(ValueError, "not reproduced"):
+                diagnostic.cpp_failure_probe("cpp-leaf-codegen", scratch)
+            run.reset_mock(); run.side_effect = [ok] * 5 + [collision, ok, ok, ok, ok]
+            diagnostic.cpp_failure_probe("cpp-mock-linkage", scratch)
+            links = [c.args[0] for c in run.call_args_list if c.args[0][0] == "link" and "/dll" not in c.args[0]]
+            self.assertEqual([["main.obj", "runtime.lib", "mock.lib"], ["main.obj", "mock.lib", "runtime.lib"],
+                              ["main.obj", "mock.obj", "runtime.lib"]], [c[-3:] for c in links])
+            self.assertIn("__declspec(dllexport)", (scratch / "mock.c").read_text())
+            self.assertEqual(2, sum(c.args[0][0].endswith(".exe") for c in run.call_args_list))
+            with patch.dict(os.environ, {"VCToolsVersion": "different"}), self.assertRaises(ValueError):
+                diagnostic.cpp_failure_probe("cpp-leaf-codegen", scratch)
+
     def test_native_diagnostics_are_narrow_and_collect_before_failure(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = source.split("  native-validation-diagnostics:\n", 1)[1].split("  windows-control-diagnostics:\n", 1)[0]
@@ -209,7 +267,10 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             from ci.products import sdk_validation
             import inspect
             names = '{"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"}'
-            self.assertIn(names[:-1] + ', "PROGRAMDATA"}', inspect.getsource(sdk_validation.verify_sdk_validation_projection))
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "not-a-child-input"}):
+                environment = sdk_validation._fixed_environment()
+            self.assertEqual("C:/ProgramData", environment["PROGRAMDATA"])
+            self.assertNotIn("GITHUB_TOKEN", environment)
             self.assertIn(names, inspect.getsource(diagnostic.control_probe))
             repaired = run.call_args_list[4]
             self.assertEqual(verification[0].args, repaired.args)
