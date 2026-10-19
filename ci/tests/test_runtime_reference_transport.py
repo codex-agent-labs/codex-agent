@@ -35,6 +35,24 @@ class RangeOpener:
 
 
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_parallel_measurement_counters_remain_exact_in_parent_scope(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextvars import copy_context
+        from runtime_reference_transport import _MEASUREMENTS, count
+        counters = {}
+        token = _MEASUREMENTS.set((counters,))
+        def increment():
+            for _ in range(10_000):
+                count("authenticatedBytes", 7)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(copy_context().run, increment) for _ in range(2)]
+                for future in futures:
+                    future.result()
+            self.assertEqual({"authenticatedBytes": 140_000}, counters)
+        finally:
+            _MEASUREMENTS.reset(token)
+
     def test_http_diagnostics_keep_failure_and_never_print_credentials(self):
         import json
         import os

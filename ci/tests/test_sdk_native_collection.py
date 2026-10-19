@@ -6,7 +6,9 @@ these tests prove transport/pairing, not SDK semantic or hosted acceptance.
 """
 
 from unittest.mock import patch
+from contextvars import ContextVar
 import subprocess
+from threading import Event, Lock, get_ident
 import unittest
 
 from ci.tests import test_sdk_validation_inputs as evidence_fixture
@@ -22,6 +24,55 @@ import products.sdk_validation_inputs as evidence
 
 
 adapter = transport_fixture.adapter
+
+
+class BoundedNativeCollectionTest(unittest.TestCase):
+    def test_ordered_two_slot_window_preserves_context_without_eager_queue(self):
+        authority = ContextVar("collection-test-authority", default=None)
+        token = authority.set(object())
+        expected = authority.get()
+        second = Event()
+        started = []
+
+        def collect(index):
+            self.assertIs(expected, authority.get())
+            started.append(index)
+            if index == 0:
+                self.assertTrue(second.wait(5), "Second independent admission did not overlap")
+            if index == 1:
+                second.set()
+            return index
+
+        try:
+            with adapter._native_collection_rows(collect, [(i,) for i in range(5)]) as rows:
+                self.assertEqual(0, next(rows))
+                self.assertEqual({0, 1}, set(started))
+                # The third multi-GB original cannot start until merge resumes.
+                self.assertEqual([1, 2, 3, 4], list(rows))
+            self.assertEqual(set(range(5)), set(started))
+        finally:
+            authority.reset(token)
+
+    def test_merge_failure_joins_private_workers_without_starting_later_rows(self):
+        second = Event()
+        finished = Event()
+        started = []
+
+        def collect(index):
+            started.append(index)
+            if index == 1:
+                second.set()
+                finished.set()
+            else:
+                self.assertTrue(second.wait(5))
+            return index
+
+        with self.assertRaisesRegex(ValueError, "merge failed"):
+            with adapter._native_collection_rows(collect, [(i,) for i in range(5)]) as rows:
+                self.assertEqual(0, next(rows))
+                raise ValueError("merge failed")
+        self.assertTrue(finished.is_set())
+        self.assertEqual({0, 1}, set(started))
 
 
 class SdkNativeCollectionTest(unittest.TestCase):
@@ -244,6 +295,59 @@ class SdkNativeCollectionTest(unittest.TestCase):
         self.assertEqual(regular_file_inventory(shared, allow_empty=True),
                          regular_file_inventory(recaptured, allow_empty=True))
 
+    def test_transfer_overlaps_full_gates_but_merges_are_ordered_on_the_caller(self):
+        items = [self.shard("rust", target) for target in ("linux-arm64", "linux-x64", "windows-x64")]
+        first_gate, next_download, next_gate = Event(), Event(), Event()
+        download = adapter._download_contract_ci_upload
+        append = evidence.append_shared_sdk_validation_evidence
+        lock = Lock()
+        downloads = active_downloads = maximum_downloads = admissions = 0
+        merged = []
+        caller = get_ident()
+
+        def transfer(*args, **kwargs):
+            nonlocal downloads, active_downloads, maximum_downloads
+            with lock:
+                downloads += 1
+                index = downloads
+                active_downloads += 1
+                maximum_downloads = max(maximum_downloads, active_downloads)
+            try:
+                if index == 2:
+                    self.assertTrue(first_gate.wait(10), "First gate did not start")
+                    next_download.set()
+                return download(*args, **kwargs)
+            finally:
+                with lock:
+                    active_downloads -= 1
+
+        def proof(**arguments):
+            nonlocal admissions
+            with lock:
+                admissions += 1
+                index = admissions
+            if index == 1:
+                first_gate.set()
+                self.assertTrue(next_download.wait(10), "Next download remained serialized behind full admission")
+                self.assertTrue(next_gate.wait(10), "Independent full gates did not overlap")
+            elif index == 2:
+                next_gate.set()
+            return self.runtime_proof(**arguments)
+
+        def merge(source, destination):
+            self.assertEqual(caller, get_ident(), "Shared carrier must have one caller-thread writer")
+            merged.extend(row["target"] for row in evidence.load_sdk_validation_evidence(source))
+            return append(source, destination)
+
+        with patch.object(adapter, "_download_contract_ci_upload", side_effect=transfer), \
+                patch.object(evidence, "append_shared_sdk_validation_evidence", side_effect=merge):
+            result = self.collect({item[0]: item[1] for item in items},
+                {item[0]: archive(item[4]) for item in items}, self.repository / "build/overlapped", proof=proof)
+        self.assertEqual(["success"] * 3, [row["result"] for row in result["rows"]], result)
+        self.assertEqual(["linux-arm64", "linux-x64", "windows-x64"], merged)
+        self.assertEqual(1, maximum_downloads)
+        self.assertEqual(3, downloads)
+
     def test_projection_still_authenticates_unconsumed_original_bytes(self):
         instance, ready, _, _, files = self.shard("rust", "linux-x64")
         unused = b"unconsumed original input whose CRC must still be verified"
@@ -257,6 +361,38 @@ class SdkNativeCollectionTest(unittest.TestCase):
         self.assertEqual("failure", result["rows"][0]["result"])
         self.assertIsNone(result["rows"][0]["shardDirectory"])
         extract.assert_not_called()
+
+    def test_parallel_admissions_reuse_concrete_proofs_during_serial_advancement(self):
+        items = [self.shard("rust", target) for target in ("linux-arm64", "linux-x64")]
+        (self.repository / "ci").mkdir()
+        (self.repository / "ci/verifier.py").write_bytes(b"synthetic trusted source\n")
+        caller = self.repository / "caller"
+        (caller / "tooling").mkdir(parents=True)
+        (caller / "tooling/evidence.json").write_bytes(b"synthetic tooling evidence\n")
+        for name in ("public.pub", "java"):
+            (caller / name).write_bytes(b"synthetic caller policy\n")
+        self.tooling = {**self.tooling, "evidence": str(caller / "tooling"),
+                        "publicKey": str(caller / "public.pub"), "javaExecutable": str(caller / "java")}
+        gates = []
+        def proof(**arguments):
+            gates.append(arguments["target"])
+            return self.runtime_proof(**arguments)
+
+        @evidence.collection_admission_scope
+        def collect_then_advance():
+            destination = self.repository / "build/parallel-to-serial"
+            result = self.collect({item[0]: item[1] for item in items},
+                {item[0]: archive(item[4]) for item in items}, destination, proof=proof)
+            self.assertEqual(["success"] * 2, [row["result"] for row in result["rows"]], result)
+            shared = destination / "sdk-validation-evidence"
+            with patch.object(evidence, "_capture_validation_sources", self.sources), \
+                    patch.object(projection, "verify_sdk_validation_projection", side_effect=AssertionError(
+                        "Serial advancement must reuse the completed concrete private proof")):
+                evidence.stage_sdk_validation_evidence(evidence.load_sdk_validation_evidence(shared), shared,
+                    self.repository / "build/advanced", repository=self.repository,
+                    policy_revision=self.producer["commit"], tooling=self.tooling)
+        collect_then_advance()
+        self.assertEqual(["linux-arm64", "linux-x64"], sorted(gates))
 
     def test_missing_wrong_or_extra_carriers_fail_only_the_affected_sibling(self):
         bad = self.shard("rust", "linux-x64")

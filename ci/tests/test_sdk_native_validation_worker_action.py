@@ -137,6 +137,30 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                 self.execute('policy')
             self.assertFalse(self.output.exists())
 
+    def test_execution_accepts_original_pretty_plan_but_rejects_unsafe_json(self):
+        # impact-plan.json is authenticated as original bytes, not canonicalized.
+        plan = json.loads(self.plan.read_bytes())
+        original = (json.dumps(plan, indent=2) + '\n').encode()
+        self.plan.write_bytes(original)
+        with patch('subprocess.run') as run:
+            self.execute('execute')
+        run.assert_called_once()
+        self.assertEqual(original, self.plan.read_bytes())
+        for raw in (b'{"validationTree":"a","validationTree":"b"}',
+                    b'{"validationTree":1.5}'):
+            with self.subTest(raw=raw):
+                self.plan.write_bytes(raw)
+                with patch('subprocess.run') as run, self.assertRaises(ValueError):
+                    self.execute('execute')
+                run.assert_not_called()
+        original_path = self.root / 'original-plan.json'
+        original_path.write_bytes(original)
+        self.plan.unlink()
+        self.plan.symlink_to(original_path)
+        with patch('subprocess.run') as run, self.assertRaises((OSError, ValueError)):
+            self.execute('execute')
+        run.assert_not_called()
+
     def test_rust_provisions_only_locked_consumer_dependencies_before_offline_execution(self):
         block = self.block('rust-dependencies')
         self.assertIn("if: inputs.component == 'rust'", block)

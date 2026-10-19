@@ -179,12 +179,17 @@ SDK_REFERENCE_NAME = 'sdk-runtime-reference.json'
 SDK_INPUT_REFERENCE_NAME = 'sdk-input-reference.json'
 _ROOTS = {"product-resume-inputs", "product-resume-state", "runtime-state"}
 _MEASUREMENTS = ContextVar('throughput_measurements', default=())
+_MEASUREMENT_LOCK = Lock()
 
 
 def count(name, amount=1):
     """Inclusive operation counters; never identifiers, arguments or credentials."""
-    for counters in _MEASUREMENTS.get():
-        counters[name] = counters.get(name, 0) + amount
+    # Context propagation shares parent counters across bounded verifier threads.
+    measurements = _MEASUREMENTS.get()
+    if measurements:
+        with _MEASUREMENT_LOCK:
+            for counters in measurements:
+                counters[name] = counters.get(name, 0) + amount
 
 
 def report_api_error(error: urllib.error.HTTPError) -> None:

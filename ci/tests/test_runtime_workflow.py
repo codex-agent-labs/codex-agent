@@ -832,6 +832,40 @@ class RuntimeWorkflowTest(unittest.TestCase):
 
 
 class WorkerUploadPreflightTest(unittest.TestCase):
+    def test_retained_native_presence_without_current_upload_uses_existing_lookup(self):
+        from ci.tests import test_runtime_resume_capture as fixtures
+        fixture = fixtures.RuntimeResumeCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        products = workflow.products
+        original = dict(component='cpp', target='linux-arm64', buildKey='sha256:' + 'a' * 64)
+        with mock.patch.object(products, '_validate_plan', return_value=json.loads(fixture.plan_path.read_bytes())), \
+                mock.patch.object(products, '_consumer', return_value={'producer': fixture.producer}), \
+                mock.patch.object(products, 'paginated_items', return_value=[]), \
+                mock.patch.object(products, '_verified_product_state', side_effect=AssertionError('expensive replay')), \
+                mock.patch('sdk_campaign_original_locator.retained_native_validation_records', return_value={
+                    'originals': [original, dict(original, target='linux-x64')]}), \
+                mock.patch('sdk_campaign_original_locator.locate_retained_core_binary_upload') as locate:
+            def preflight(wave=7):
+                products.preflight_worker_uploads(fixture.plan_path, product='sdk', family='native-validation', wave=wave,
+                    trusted_workflow_sha=fixture.pin, token='fixture', repository_root=fixture.root, environ=fixture.environment)
+            locate.return_value = {'artifact_id': 71}
+            preflight()
+            locate.assert_called_once_with(fixture.plan_path, fixture.root,
+                expected_build_key=original['buildKey'], token='fixture', environ=fixture.environment,
+                phase='validation', component='cpp', target='linux-arm64')
+            locate.reset_mock()
+            with self.assertRaisesRegex(ValueError, 'parent recovery'):
+                preflight(6)
+            locate.assert_not_called()
+            locate.return_value = None
+            with self.assertRaisesRegex(ValueError, 'parent recovery'):
+                preflight()
+            self.assertEqual(2, locate.call_count)
+            locate.side_effect = ValueError('expired original')
+            with self.assertRaisesRegex(ValueError, 'expired original'):
+                preflight()
+
     def test_retained_core_presence_reaches_collection_without_current_upload(self):
         from ci.tests import test_runtime_resume_capture as fixtures
         from sdk_campaign_original_locator import RETAINED_CORE_BINARY_KEY, RETAINED_CORE_PACKAGE_KEY

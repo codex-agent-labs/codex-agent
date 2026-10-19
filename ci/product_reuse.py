@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext, contextmanager
-from concurrent.futures import Future
-from contextvars import ContextVar
+from collections import deque
+from contextlib import ExitStack, nullcontext, contextmanager
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial, wraps
@@ -6468,6 +6469,15 @@ def preflight_worker_uploads(plan_path, *, product, wave, family=None,
                    if family.startswith("android-") else
                    {"phase": family.removeprefix("core-")} if family != "core-binary" else {})) is not None:
             return
+    if (product, family, wave) == ("sdk", "native-validation", 7):
+        from sdk_campaign_original_locator import retained_native_validation_records, locate_retained_core_binary_upload
+        # Recovery workers upload nothing. Stop at the first freshly observed
+        # original; this presence hint never replaces elected-key/full admission.
+        for original in retained_native_validation_records()["originals"]:
+            if locate_retained_core_binary_upload(plan_path, root,
+                    expected_build_key=original["buildKey"], token=token, environ=environment,
+                    phase="validation", component=original["component"], target=original["target"]) is not None:
+                return
     write_canonical_json(root / "build/runtime-preflight.json", {
         "schemaVersion": 1, "producer": producer, "product": product,
         "wave": wave, "family": family, "result": "no-worker-uploads"})
@@ -6501,6 +6511,35 @@ def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
         if _collected_sdk_identity(shard, verified, consumer["producer"], workflow_sha) not in session.get("collectedSdkOriginals", ()):
             raise ValueError("Earlier SDK shard requires fresh authenticated original collection")
     return original
+
+
+@contextmanager
+def _native_collection_rows(operation, selected):
+    """Two private originals at most; consume/merge in election order.
+
+    Do not use Executor.map: its eager queue can retain every multi-GB carrier.
+    Contexts preserve the existing private verification/observation lifetimes;
+    executor exit joins workers before their workspace or authority is removed.
+    """
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        remaining = iter(selected)
+        pending = deque()
+
+        def submit():
+            item = next(remaining, None)
+            if item is not None:
+                pending.append(executor.submit(copy_context().run, operation, *item))
+
+        submit()
+        submit()
+
+        def ordered():
+            while pending:
+                yield pending.popleft().result()
+                # Submit only after the caller has merged and removed duplicates.
+                submit()
+
+        yield ordered()
 
 
 @measured
@@ -6604,7 +6643,9 @@ def collect_runtime_workers(
         prepared.mkdir()
         rows, collected_originals = [], []
         prepared_sdk_sources = set()
-        for instance, ready in selected:
+        preparation_lock = Lock()
+
+        def collect_row(instance, ready):
             name = f"{instance.component}-{instance.phase}-{instance.target}"
             job_name = (sdk_worker_job_name.replace("{target}", instance.target) if sdk_family == "core-validation"
                         and sdk_worker_job_name is not None else sdk_worker_job_name or _worker_job_name(product, instance))
@@ -6613,8 +6654,13 @@ def collect_runtime_workers(
             row = {**_identity_record(instance), "buildKey": ready["buildKey"],
                    "jobName": job_name, "artifactName": artifact_name, "result": "failure", "reason": None,
                    "artifact": None, "originalDirectory": None, "shardDirectory": None}
-            rows.append(row)
+            preparation = ExitStack()
+            verified = None
             try:
+                if sdk_family == "native-validation":
+                    # One original transfer/preparation at a time. The other
+                    # slot may run its full gate; Git source acquisition stays serial.
+                    preparation.enter_context(preparation_lock)
                 original_producer, original_observed, original_jobs = producer, observed, jobs
                 candidates = [item for item in artifacts if isinstance(item, dict) and item.get("name") == artifact_name]
                 retained_validation = retained_attestation = None
@@ -6786,19 +6832,12 @@ def collect_runtime_workers(
                             _ensure_observed_sdk_commit(root, predecessor_producer, token)
                             prepared_sdk_sources.add(source)
                     authenticated = retained / "sdk-validation-evidence"
+                    preparation.close()
                     stage_sdk_validation_evidence(records, carrier, authenticated,
                         repository=root, policy_revision=state.plan["validationCommit"],
                         tooling=sdk_validation_tooling)
                     if verify_phase_shard(original / "shard", instance) != verified:
                         raise ValueError("SDK validation original shard changed during evidence admission")
-                    from products.sdk_validation_inputs import append_shared_sdk_validation_evidence
-                    shared = prepared / "sdk-validation-evidence"
-                    append_shared_sdk_validation_evidence(authenticated, shared)
-                    # Only private duplicates go away; immutable originals and
-                    # all original receipts remain. Publication checks the pool.
-                    shutil.rmtree(carrier)
-                    shutil.rmtree(authenticated)
-                    row["sdkValidationEvidenceDirectory"] = shared.relative_to(prepared).as_posix()
                 if sdk_family == "ios-validation":
                     from sdk_apple_attestation_capture import capture_apple_validation_attestation
                     from products.sdk_apple_validation_admission import stage_collected_apple_validation
@@ -6889,10 +6928,32 @@ def collect_runtime_workers(
                         raise ValueError("Apple metadata original shard or diagnostics changed during collection")
                 row.update(result="success", reason="verified-original-shard",
                            shardDirectory=(original / "shard").relative_to(prepared).as_posix())
-                if original_producer != producer:
-                    collected_originals.append((destination / row["shardDirectory"], verified))
             except (ValueError, OSError, subprocess.CalledProcessError) as error:
                 row["reason"] = "\n".join((str(error), *getattr(error, "__notes__", ())))
+            finally:
+                preparation.close()
+            return row, verified
+
+        collected = (_native_collection_rows(collect_row, selected) if sdk_family == "native-validation" and len(selected) > 1
+                     else nullcontext((collect_row(*item) for item in selected)))
+        with collected as ordered:
+            for row, verified in ordered:
+                if row["result"] == "success" and sdk_family == "native-validation":
+                    from products.sdk_validation_inputs import append_shared_sdk_validation_evidence
+                    original = prepared / row["originalDirectory"]
+                    authenticated = original.parent / "sdk-validation-evidence"
+                    shared = prepared / "sdk-validation-evidence"
+                    if verify_phase_shard(original / "shard", _identity(row)) != verified:
+                        raise ValueError("SDK validation original shard changed before ordered merge")
+                    # Sole writer, in election order. Only private duplicates
+                    # are removed; final publication verifies the complete pool.
+                    append_shared_sdk_validation_evidence(authenticated, shared)
+                    shutil.rmtree(original / "sdk-validation-evidence")
+                    shutil.rmtree(authenticated)
+                    row["sdkValidationEvidenceDirectory"] = shared.relative_to(prepared).as_posix()
+                rows.append(row)
+                if row["result"] == "success" and verified["receipt"]["producer"] != producer:
+                    collected_originals.append((destination / row["shardDirectory"], verified))
         result = {"schemaVersion": 1, "producer": producer, "observed": observed, "rows": rows}
         if sdk_family == "native-validation" and (prepared / "sdk-validation-evidence").exists():
             load_sdk_validation_evidence(prepared / "sdk-validation-evidence")

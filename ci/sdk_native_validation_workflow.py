@@ -23,7 +23,7 @@ import sdk_workflow
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from native_wrappers import host_classifier
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
     require_integer, require_relative_path, require_semver, require_sha256, sha256_bytes,
     snapshot_regular_tree, write_canonical_json,
@@ -62,7 +62,11 @@ def validate_worker_elections(current, preparation, environment):
                 or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
                 or (rows[0]['runnerOs'], rows[0]['runnerArch']) != topology):
             raise ValueError('Native validation or preparation differs from its original election')
-    plan = product_reuse._canonical_control(current['plan_path'], 'Captured native validation plan')
+    # The capture authenticates original impact-plan bytes, which may be pretty JSON.
+    plan = load_json_bytes(read_regular_file_bytes(
+        current['plan_path'], max_bytes=_LIMIT, reject_symlink_parents=True))
+    if type(plan) is not dict:
+        raise ValueError('Captured native validation plan must be an object')
     if (plan['validationTree'] != environment['TREE']
             or plan['validationCommit'] != environment['POLICY_REVISION']):
         raise ValueError('Native validation source changed during capture')
