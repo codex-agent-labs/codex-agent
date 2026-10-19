@@ -51,6 +51,10 @@ Published packages must supply the verified matching-target Runtime and canonica
 `native/sdk-compatibility.json`. When those authenticated assets are present, `load_default()`
 checks the embedded digest, writes a private read-only snapshot, loads that exact path, rechecks the
 snapshot, and verifies Runtime identity, target, Contract, ABI, and compatibility line.
+Loaded Runtime images remain mapped until process termination. On Windows their private
+snapshot files also remain locked against writing or deletion until then; the resulting
+read-only cache files can be removed after the process exits. Unloading during exit callbacks
+is unsafe while Runtime threads still exist.
 `CODEX_AGENT_LIBRARY` may select a compatible external Runtime only by an already-canonical,
 non-symbolic absolute path; the external component may differ but must prove the same identity
 constraints. Target package IDs are `osx-arm64`, `osx-x64`, `linux-arm64`, `linux-x64`, and

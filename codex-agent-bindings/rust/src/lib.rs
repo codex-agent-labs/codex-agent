@@ -521,9 +521,7 @@ impl CodexNativeLibrary {
             Ok(library)
         })?;
         #[cfg(windows)]
-        snapshot
-            .retain_until_exit(native.inner.api.library_handle())
-            .map_err(CodexError::load)?;
+        snapshot.retain_for_process();
         #[cfg(not(windows))]
         drop(snapshot);
         Ok(native)
@@ -601,9 +599,7 @@ impl CodexNativeLibrary {
             Ok(library)
         })?;
         #[cfg(windows)]
-        snapshot
-            .retain_until_exit(native.inner.api.library_handle())
-            .map_err(CodexError::load)?;
+        snapshot.retain_for_process();
         #[cfg(not(windows))]
         drop(snapshot);
         Ok(native)
@@ -3393,11 +3389,31 @@ mod windows_loader_cleanup_tests {
         if std::env::var_os("CODEX_AGENT_RUST_WINDOWS_EMBEDDED_CHILD").is_none() {
             return;
         }
-        CodexNativeLibrary::load_default().expect("load staged embedded Windows Runtime");
+        let native =
+            CodexNativeLibrary::load_default().expect("load staged embedded Windows Runtime");
+        drop(native);
+        let snapshots = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+            .join("codex-agent/runtime")
+            .join(COMPONENT)
+            .join("windows-x64/snapshots");
+        let owner = std::fs::read_dir(snapshots)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let library = owner.join("codex_agent.dll");
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&library)
+                .is_err()
+        );
+        assert!(std::fs::remove_file(&library).is_err());
     }
 
     #[test]
-    fn embedded_snapshot_windows_exit_frees_then_deletes_owner() {
+    fn embedded_snapshot_windows_exit_keeps_runtime_mapped_and_protected() {
         if !compatibility::embedded_available_for_test() {
             return;
         }
@@ -3435,9 +3451,15 @@ mod windows_loader_cleanup_tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(
-            before, after,
-            "Windows process exit leaked a Runtime snapshot owner"
-        );
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1, "one process-lifetime Runtime snapshot");
+        // Only the parent, after successful child termination, may remove the
+        // immutable image. Production never unloads it from a CRT exit callback.
+        let library = snapshots.join(&after[0]).join("codex_agent.dll");
+        let mut permissions = std::fs::metadata(&library).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&library, permissions).unwrap();
+        std::fs::remove_file(library).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

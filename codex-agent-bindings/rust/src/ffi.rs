@@ -396,9 +396,6 @@ macro_rules! api {
                     $($field,)+
                 })
             }
-
-            #[cfg(windows)]
-            pub(crate) fn library_handle(&self) -> usize { self.library_handle }
         }
     };
 }

@@ -543,32 +543,8 @@ pub(crate) struct EmbeddedRuntimeSnapshot {
 }
 
 #[cfg(windows)]
-static WINDOWS_CLEANUP: OnceLock<Result<(), String>> = OnceLock::new();
-#[cfg(windows)]
-static WINDOWS_SNAPSHOTS: OnceLock<std::sync::Mutex<Vec<(usize, EmbeddedRuntimeSnapshot)>>> =
+static WINDOWS_SNAPSHOTS: OnceLock<std::sync::Mutex<Vec<EmbeddedRuntimeSnapshot>>> =
     OnceLock::new();
-
-#[cfg(windows)]
-unsafe extern "C" fn cleanup_windows_snapshots() {
-    let values = WINDOWS_SNAPSHOTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
-    let mut values = values
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for (handle, snapshot) in values.drain(..) {
-        // SAFETY: handle came from LoadLibrary and is released once at process exit.
-        unsafe { free_library(handle) };
-        drop(snapshot);
-    }
-}
-
-#[cfg(windows)]
-unsafe fn free_library(handle: usize) {
-    unsafe extern "system" {
-        fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
-    }
-    // SAFETY: handle came from LoadLibrary and is released exactly once.
-    unsafe { FreeLibrary(handle as *mut std::ffi::c_void) };
-}
 
 impl EmbeddedRuntimeSnapshot {
     #[cfg(test)]
@@ -594,31 +570,16 @@ impl EmbeddedRuntimeSnapshot {
     }
 
     #[cfg(windows)]
-    pub(crate) fn retain_until_exit(self, library_handle: usize) -> Result<(), String> {
-        if let Err(error) = WINDOWS_CLEANUP
-            .get_or_init(|| {
-                unsafe extern "C" {
-                    fn atexit(callback: unsafe extern "C" fn()) -> i32;
-                }
-                // SAFETY: cleanup has C ABI, process lifetime, and no captured state.
-                if unsafe { atexit(cleanup_windows_snapshots) } != 0 {
-                    Err("register Windows Runtime snapshot cleanup".into())
-                } else {
-                    Ok(())
-                }
-            })
-            .clone()
-        {
-            // SAFETY: ownership was transferred from libloading immediately before this call.
-            unsafe { free_library(library_handle) };
-            return Err(error);
-        }
+    pub(crate) fn retain_for_process(self) {
+        // Api deliberately keeps the DLL mapped. CRT atexit runs while native
+        // runtime threads can still execute; FreeLibrary there races those
+        // threads. Keep the read/no-write/no-delete handle until OS teardown too.
+        // The immutable cache file may be removed after the process has exited.
         WINDOWS_SNAPSHOTS
             .get_or_init(|| std::sync::Mutex::new(Vec::new()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push((library_handle, self));
-        Ok(())
+            .push(self);
     }
 }
 
