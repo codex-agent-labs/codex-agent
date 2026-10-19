@@ -275,13 +275,30 @@ def _authenticate_native_subject(raw, signature, name, *, signer_commit, source_
         subject, signed = Path(temporary) / name, Path(temporary) / "bundle.jsonl"
         subject.write_bytes(raw)
         signed.write_bytes(signature)
-        result = subprocess.run([
+        command = [
             "gh", "attestation", "verify", str(subject), "--bundle", str(signed),
             "--repo", REPOSITORY, "--signer-workflow", f"{REPOSITORY}/{ISSUER_WORKFLOW}",
             "--signer-digest", signer_commit, "--source-digest", source_commit,
             "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
             "--deny-self-hosted-runners", "--format", "json",
-        ], check=True, stdout=subprocess.PIPE, timeout=120)
+        ]
+        for attempt in range(2):
+            try:
+                result = subprocess.run(command, check=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=120)
+                break
+            except subprocess.CalledProcessError as error:
+                if error.stderr:
+                    print(error.stderr.decode("utf-8", errors="replace"), file=sys.stderr, end="")
+                if (attempt or error.returncode != 1 or
+                        b"public good verifier is not available (initialization may have failed)"
+                        not in (error.stderr or b"")):
+                    raise
+                # Retry only verifier startup, never an invalid attestation.
+                # The same private bytes, identity pins and full crypto gate run
+                # again; a second failure remains fatal. No healthy-path delay.
+                count("nativeSignatureInitializationRetries")
+                time.sleep(2)
         verified = json.loads(result.stdout)
         if not isinstance(verified, list) or not verified or any(
                 not isinstance(row, dict) or not row.get("verificationResult") for row in verified):

@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import urljoin, urlparse
 from urllib.request import url2pathname
 
@@ -243,20 +243,24 @@ def _verify_native(native: Path, source: Path, sdk: Path, library: Path) -> None
         raise ValueError("Dart retained real leaf boundary executable is not executable")
     compiler = _execution(leaf / "compiler-execution.json", classifier, library)
     boundary = _execution(leaf / "boundary-execution.json", classifier, library)
-    retained_source = str(leaf / "real-leaf-boundary.c")
-    executable = str(leaf / LEAF_EXECUTABLE)
-    if retained_source not in compiler or boundary != [executable]:
+    # Dart joins with '/', including on Windows. Compare target path identity,
+    # never rewrite the retained raw command or weaken its argument checks.
+    path_type = PureWindowsPath if classifier == "windows-x64" else PurePosixPath
+    compiler_paths = {path_type(value) for value in compiler}
+    retained_source = path_type(leaf / "real-leaf-boundary.c")
+    executable = path_type(leaf / LEAF_EXECUTABLE)
+    if retained_source not in compiler_paths or [path_type(value) for value in boundary] != [executable]:
         raise ValueError("Dart real leaf boundary command identity is invalid")
     if classifier == "windows-x64":
-        imported = str(sdk / "lib" / "codex_agent.lib")
-        compiler_name = Path(compiler[0]).name.lower()
-        if (imported not in compiler or compiler_name not in {"cl", "cl.exe", "clang", "clang.exe"} or
+        imported = path_type(sdk / "lib" / "codex_agent.lib")
+        compiler_name = path_type(compiler[0]).name.lower()
+        if (imported not in compiler_paths or compiler_name not in {"cl", "cl.exe", "clang", "clang.exe"} or
                 "-fPIC" in compiler or any(value.startswith("-Wl,-rpath") for value in compiler)):
             raise ValueError("Dart Windows real leaf import command is invalid")
         expected_warning = "/WX" if compiler_name in {"cl", "cl.exe"} else "-Werror"
         if expected_warning not in compiler:
             raise ValueError("Dart Windows real leaf compiler flags are invalid")
-    elif (str(library.absolute()) not in compiler or "-fPIC" not in compiler or
+    elif (path_type(library.absolute()) not in compiler_paths or "-fPIC" not in compiler or
           not any(value.startswith("-Wl,-rpath") for value in compiler)):
         raise ValueError("Dart POSIX real leaf library command is invalid")
 

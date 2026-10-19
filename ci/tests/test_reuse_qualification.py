@@ -242,7 +242,7 @@ class ReuseQualificationTest(unittest.TestCase):
         command = native.call_args.args[0]
         self.assertEqual(subprocess.PIPE, native.call_args.kwargs.get("stdout"))
         self.assertNotIn("capture_output", native.call_args.kwargs)
-        self.assertIsNone(native.call_args.kwargs.get("stderr"))
+        self.assertEqual(subprocess.PIPE, native.call_args.kwargs.get("stderr"))
         self.assertTrue(native.call_args.kwargs["check"])
         for flag, expected in (("--signer-digest", pins["signer_commit"]),
                 ("--source-digest", pins["source_commit"]), ("--repo", qualification.REPOSITORY),
@@ -371,6 +371,35 @@ class PortablePolicyTest(unittest.TestCase):
 
 
 class QualificationTransportTest(unittest.TestCase):
+    def test_only_native_initialization_is_retried_with_identical_authority(self):
+        import contextlib
+        import io
+        startup = b"public good verifier is not available (initialization may have failed)"
+        success = subprocess.CompletedProcess([], 0, b'[{"verificationResult":{"fixture":true}}]', b"")
+        for stderr, final, calls, accepted in (
+            (startup, success, 2, True),
+            (startup, subprocess.CalledProcessError(1, "gh", stderr=startup), 2, False),
+            (b"signature verification failed", success, 1, False),
+        ):
+            with self.subTest(stderr=stderr, accepted=accepted), \
+                    patch.object(qualification.subprocess, "run", side_effect=[
+                        subprocess.CalledProcessError(1, "gh", stderr=stderr), final]) as run, \
+                    patch.object(qualification.time, "sleep") as pause, \
+                    contextlib.redirect_stderr(io.StringIO()) as log:
+                if accepted:
+                    qualification._authenticate_native_subject(b"subject", b"bundle", "completion.json",
+                        signer_commit="a" * 40, source_commit="b" * 40)
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        qualification._authenticate_native_subject(b"subject", b"bundle", "completion.json",
+                            signer_commit="a" * 40, source_commit="b" * 40)
+                self.assertEqual(calls, run.call_count)
+                self.assertIn(stderr.decode(), log.getvalue())
+                self.assertEqual(1 if calls == 2 else 0, pause.call_count)
+                if calls == 2:
+                    self.assertEqual(run.call_args_list[0], run.call_args_list[1])
+                    pause.assert_called_once_with(2)
+
     def test_issuer_read_failure_joins_pending_reads_before_returning(self):
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
