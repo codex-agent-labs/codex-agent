@@ -22,7 +22,7 @@ CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtim
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
 REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization", "csharp-loader-security",
                     "cpp-leaf-preprocessor", "rust-fixture-compiler", "cpp-mock-linkage", "cpp-leaf-codegen",
-                    "cpp-clang-leaf")
+                    "cpp-clang-leaf", "cpp-policy-cmake")
 CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
@@ -373,6 +373,70 @@ def cpp_failure_probe(check, scratch):
     environment = dict(os.environ, CL="/Zc:preprocessor")
     for name in ("GITHUB_TOKEN", "GH_TOKEN"):
         environment.pop(name, None)
+    if check == "cpp-policy-cmake":
+        from sdk_cpp_windows_policy import prepare
+        environment.pop("CL")
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        files, unchanged = prepare(ROOT, revision, scratch, environment)
+        suite, consumer = scratch / "suite", scratch / "consumer"
+        suite.mkdir(); consumer.mkdir()
+        (suite / "runtime.cpp").write_text('__declspec(dllexport) int boundary() { return 1; }\n')
+        (suite / "mock.cpp").write_text('__declspec(dllexport) int boundary() { return 2; }\nint mock_control() { return 0; }\n')
+        (suite / "main.cpp").write_text('int boundary(); int mock_control();\nint main() { return boundary() == 2 && mock_control() == 0 ? 0 : 99; }\n')
+        (suite / "CMakeLists.txt").write_text('''cmake_minimum_required(VERSION 3.24)
+project(CodexAgent LANGUAGES CXX)
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(FATAL_ERROR "Capability policy did not select Clang")
+endif()
+enable_testing()
+add_library(runtime SHARED runtime.cpp)
+add_library(CodexAgent::C ALIAS runtime)
+add_library(interface INTERFACE)
+add_library(CodexAgent::CodexAgent ALIAS interface)
+add_library(threads INTERFACE)
+add_library(Threads::Threads ALIAS threads)
+foreach(kind agent host leaf)
+    add_library(codex_agent_${kind}_mock STATIC mock.cpp)
+    add_executable(codex_agent_cpp_${kind}_test main.cpp)
+    target_link_libraries(codex_agent_cpp_${kind}_test PRIVATE
+        CodexAgent::CodexAgent CodexAgent::C codex_agent_${kind}_mock)
+    if(NOT kind STREQUAL "agent")
+        target_link_libraries(codex_agent_cpp_${kind}_test PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME ${kind} COMMAND codex_agent_cpp_${kind}_test)
+endforeach()
+add_library(real_leaf OBJECT [[@ROOT@/codex-agent-bindings/cpp/tests/leaf_real_boundary_test.cpp]])
+target_include_directories(real_leaf PRIVATE [[@ROOT@/codex-agent-bindings/cpp/include]]
+    [[@ROOT@/codex-agent-runtime-desktop/native/c-api/include]])
+target_compile_features(real_leaf PRIVATE cxx_std_20)
+target_compile_options(real_leaf PRIVATE /W4 /WX)
+'''.replace("@ROOT@", ROOT.as_posix()))
+        (consumer / "main.cpp").write_text('''#if !defined(_MSC_VER) || defined(__clang__) || _MSVC_TRADITIONAL
+#error Installed consumer must retain conforming MSVC
+#endif
+int main() { return 0; }
+''')
+        (consumer / "CMakeLists.txt").write_text('''cmake_minimum_required(VERSION 3.24)
+project(CodexAgentConsumer LANGUAGES CXX)
+enable_testing()
+add_executable(consumer main.cpp)
+target_compile_features(consumer PRIVATE cxx_std_20)
+target_compile_options(consumer PRIVATE /W4 /WX)
+add_test(NAME installed_compiler COMMAND consumer)
+''')
+        try:
+            for source, tests in ((suite, "ON"), (consumer, "OFF")):
+                build = scratch / (source.name + "-build")
+                observed(["cmake", "-S", str(source), "-B", str(build),
+                          "-DCODEX_AGENT_CPP_BUILD_TESTS=" + tests], cwd=scratch, env=environment)
+                observed(["cmake", "--build", str(build), "--config", "Release"], cwd=scratch, env=environment)
+                observed(["ctest", "--test-dir", str(build), "-C", "Release", "--output-on-failure", "--no-tests=error"],
+                         cwd=scratch, env=environment)
+        finally:
+            unchanged()
+            if any(path.read_bytes() != raw for path, raw in files.items()):
+                raise ValueError("Keyed compiler policy changed during diagnostic execution")
+        return
     if check == "cpp-clang-leaf":
         compiler = shutil.which("clang-cl")
         if compiler is None or not Path(compiler).is_absolute():
@@ -485,7 +549,7 @@ def control_probe(check, scratch):
     scratch.mkdir(exist_ok=False)
     if check == "csharp-loader-security":
         csharp_security_probe(scratch)
-    elif check in ("cpp-mock-linkage", "cpp-leaf-codegen", "cpp-clang-leaf"):
+    elif check in ("cpp-mock-linkage", "cpp-leaf-codegen", "cpp-clang-leaf", "cpp-policy-cmake"):
         cpp_failure_probe(check, scratch)
     elif check in ("cpp-leaf-preprocessor", "rust-fixture-compiler"):
         compiler_probe(check, scratch)

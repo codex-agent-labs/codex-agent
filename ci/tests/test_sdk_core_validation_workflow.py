@@ -22,20 +22,22 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         for required in ("ci:cpp-failure-diagnostics", "pull_request.number == 31", "head.repo.fork == false",
                          "runs-on: windows-2025", "persist-credentials: false", "GIT_CONFIG_VALUE_0: 'false'",
                          "uses: ./.github/actions/setup-msvc", "cpp-mock-linkage", "cpp-leaf-codegen", "overwrite: false",
-                         "ci:cpp-clang-diagnostic", "cpp-clang-leaf"):
+                         "ci:cpp-clang-diagnostic", "cpp-clang-leaf", "ci:cpp-policy-diagnostic", "cpp-policy-cmake"):
             self.assertIn(required, block)
         for forbidden in ("secrets.", "id-token: write", "gradlew", "download-artifact", "capture-sdk-tooling",
                           "product-attestation", "setup-dotnet", "rust-toolchain", "reuse-qualification"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(3, block.count("continue-on-error: true"))
+        self.assertEqual(4, block.count("continue-on-error: true"))
         self.assertEqual(2, block.count("if: github.event.label.name == 'ci:cpp-failure-diagnostics'"))
         self.assertEqual(1, block.count("if: github.event.label.name == 'ci:cpp-clang-diagnostic'"))
+        self.assertEqual(1, block.count("if: github.event.label.name == 'ci:cpp-policy-diagnostic'"))
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
         for label, selected in (("ci:cpp-failure-diagnostics", ("mock-linkage", "leaf-codegen")),
-                                ("ci:cpp-clang-diagnostic", ("clang-leaf",))):
+                                ("ci:cpp-clang-diagnostic", ("clang-leaf",)),
+                                ("ci:cpp-policy-diagnostic", ("policy-cmake",))):
             outcomes = {name: {"outcome": "success" if name in selected else "skipped"}
-                        for name in ("mock-linkage", "leaf-codegen", "clang-leaf")}
+                        for name in ("mock-linkage", "leaf-codegen", "clang-leaf", "policy-cmake")}
             with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(outcomes), "DIAGNOSTIC_LABEL": label}):
                 exec(compile(script, "cpp-diagnostic-collection", "exec"), {})
             for outcome in ("failure", "skipped"):
@@ -104,6 +106,30 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                 self.assertFalse({"CL", "_CL_", "GITHUB_TOKEN", "GH_TOKEN"} & call.kwargs["env"].keys())
             with patch.object(diagnostic.shutil, "which", return_value=None), self.assertRaises(ValueError):
                 diagnostic.cpp_failure_probe("cpp-clang-leaf", scratch)
+
+    def test_policy_diagnostic_uses_keyed_policy_and_both_compiler_paths(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ,
+                {"VCToolsVersion": "14.51.36231", "GH_TOKEN": "private"}), \
+                patch.object(diagnostic, "observed") as run, \
+                patch.object(diagnostic.subprocess, "check_output", return_value="unit-revision\n"), \
+                patch('sdk_cpp_windows_policy.prepare') as prepare:
+            scratch = Path(temporary)
+            from unittest.mock import Mock
+            unchanged = Mock()
+            prepare.return_value = ({}, unchanged)
+            diagnostic.cpp_failure_probe("cpp-policy-cmake", scratch)
+            self.assertEqual((diagnostic.ROOT, "unit-revision", scratch), prepare.call_args.args[:3])
+            self.assertEqual(6, run.call_count)
+            self.assertEqual(["cmake", "cmake", "ctest"] * 2, [call.args[0][0] for call in run.call_args_list])
+            self.assertIn("-DCODEX_AGENT_CPP_BUILD_TESTS=ON", run.call_args_list[0].args[0])
+            self.assertIn("-DCODEX_AGENT_CPP_BUILD_TESTS=OFF", run.call_args_list[3].args[0])
+            for call in run.call_args_list:
+                self.assertNotIn("CL", call.kwargs['env'])
+                self.assertNotIn("GH_TOKEN", call.kwargs['env'])
+            self.assertIn("leaf_real_boundary_test.cpp", (scratch / "suite/CMakeLists.txt").read_text())
+            self.assertIn("_MSVC_TRADITIONAL", (scratch / "consumer/main.cpp").read_text())
+            unchanged.assert_called_once()
 
     def test_native_diagnostics_are_narrow_and_collect_before_failure(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()

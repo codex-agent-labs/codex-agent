@@ -563,7 +563,7 @@ jobs:
 
   cpp-failure-diagnostics:
     if: >-
-      (github.event.label.name == 'ci:cpp-failure-diagnostics' || github.event.label.name == 'ci:cpp-clang-diagnostic') &&
+      (github.event.label.name == 'ci:cpp-failure-diagnostics' || github.event.label.name == 'ci:cpp-clang-diagnostic' || github.event.label.name == 'ci:cpp-policy-diagnostic') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -600,6 +600,11 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py cpp-clang-leaf "$env:RUNNER_TEMP/cpp-failures/clang-leaf"
+      - id: policy-cmake
+        if: github.event.label.name == 'ci:cpp-policy-diagnostic'
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py cpp-policy-cmake "$env:RUNNER_TEMP/cpp-failures/policy-cmake"
       - name: Preserve original compiler and linker observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -618,6 +623,8 @@ jobs:
         run: |
           import json, os
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
-          selected = ('clang-leaf',) if os.environ['DIAGNOSTIC_LABEL'] == 'ci:cpp-clang-diagnostic' else ('mock-linkage', 'leaf-codegen')
+          selected = {'ci:cpp-failure-diagnostics': ('mock-linkage', 'leaf-codegen'),
+                      'ci:cpp-clang-diagnostic': ('clang-leaf',),
+                      'ci:cpp-policy-diagnostic': ('policy-cmake',)}[os.environ['DIAGNOSTIC_LABEL']]
           assert all(results.get(name, {}).get('outcome') == 'success'
                      for name in selected), results
