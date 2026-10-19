@@ -1037,6 +1037,8 @@ def _is_control_only(path: str) -> bool:
 
 
 def _classify(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/sdk_cpp_windows_policy.py":
+        return _from_phase("sdk", "cpp", "validation", validation_targets=("windows-x64",))
     if path in _CONTRACT_INVENTORY_POLICIES:
         return _contract()
     if path in _MIGRATED_BUILD_LOGIC_FILES or any(

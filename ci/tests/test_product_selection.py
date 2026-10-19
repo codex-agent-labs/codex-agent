@@ -59,6 +59,14 @@ def tracked_product_paths() -> tuple[str, ...]:
 
 
 class ProductSelectionTest(unittest.TestCase):
+    def test_windows_cpp_policy_owns_only_its_validation_and_selects_its_successor(self):
+        path = "ci/sdk_cpp_windows_policy.py"
+        validation = PhaseInstanceId("sdk", "cpp", "validation", "windows-x64")
+        metadata = PhaseInstanceId("sdk", "cpp", "metadata", "desktop")
+        self.assertEqual({validation, metadata}, identities(classify_paths([path])))
+        self.assertEqual({validation}, {phase for phase in PHASE_INSTANCE_IDS
+                                       if phase_inventory_paths([path], phase)})
+
     def test_native_validation_projection_preserves_expensive_predecessor_keys(self) -> None:
         changed = (
             "ci/product_reuse.py", "ci/products/selection.py",

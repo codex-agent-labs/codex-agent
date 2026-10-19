@@ -502,8 +502,11 @@ class SdkNativeValidationWorkerTest(unittest.TestCase):
                           f'"{compiler}" -D_CRT_NONSTDC_NO_WARNINGS %*\r\n').encode("ascii"),
                          launcher.read_bytes())
 
-    def test_windows_cpp_provisions_existing_cpp20_preprocessor(self):
-        self.check_windows_compiler_environment("cpp", {"CL": "/Zc:preprocessor"})
+    def test_windows_cpp_provisions_keyed_policy_without_changing_the_package(self):
+        with patch('sdk_cpp_windows_policy.prepare', return_value=({}, lambda: None)) as prepare:
+            self.check_windows_compiler_environment("cpp", {})
+        prepare.assert_called_once()
+        self.assertEqual((self.root, self.producer['commit'], self.destination), prepare.call_args.args[:3])
 
     def test_windows_rust_rejects_missing_or_shell_active_compiler_paths(self):
         for index, compiler in enumerate((None, "clang.exe", str(self.root / "bad%clang.exe"),

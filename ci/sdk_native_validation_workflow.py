@@ -239,10 +239,6 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
     for output in owned:
         _require_capability_output_separate(output, protected)
     environment, wrapper = product_reuse._runtime_worker_environment(root, producer, destination, environ, build_directory=".")
-    if component == "cpp" and identity.target == "windows-x64":
-        # MSVC needs this switch to implement the suite's existing C++20
-        # __VA_OPT__ macros; /std:c++20 alone keeps its legacy preprocessor.
-        environment["CL"] = "/Zc:preprocessor"
 
     def unchanged():
         product_reuse._runtime_worker_checkout(root, producer)
@@ -268,6 +264,11 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
     for output in owned:
         product_reuse._prepare_destination(output, root).rmdir()
     destination = product_reuse._prepare_destination(destination, root)
+    compiler_check = None
+    if component == "cpp" and identity.target == "windows-x64":
+        from sdk_cpp_windows_policy import prepare
+        policy_files, compiler_check = prepare(root, producer["commit"], destination, environment)
+        tools.update(policy_files)
     if component == "rust" and identity.target == "windows-x64":
         tools.update(_windows_rust_fixture_compiler(destination, environment))
     fields = {"codexAgent.product": "sdk", "codexAgent.component": component,
@@ -297,6 +298,8 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
             "command": command, "returnCode": return_code, "launchError": launch_error,
             "elapsedNs": time.monotonic_ns() - started})
         unchanged()
+        if compiler_check is not None:
+            compiler_check()
     if return_code != 0:
         raise ValueError(f"Native SDK validation failed with exit code {return_code}; see {destination / 'gradle.log'}")
     product_reuse.verify_output_manifest_identity(stage, "sdk", component, "validation", identity.target, sdk_version)
