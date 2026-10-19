@@ -46,6 +46,43 @@ def execution(target: str) -> dict:
 
 
 class CsharpRestoreAdmissionTest(unittest.TestCase):
+    def test_nested_windows_workspace_acl_is_private_before_copying_sources(self):
+        script = Path(__file__).resolve().parents[2] / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py"
+        spec = importlib.util.spec_from_file_location("csharp_acl_fixture_producer", script)
+        producer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(producer)
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            with patch.dict(producer.os.environ, {"SystemRoot": str(work / "Windows")}), \
+                    patch.object(producer.sys, "platform", "win32"), \
+                    patch.object(producer.subprocess, "check_output", return_value="runner\\owner\r\n") as owner, \
+                    patch.object(producer.subprocess, "run") as runner:
+                producer._private_windows_workspace(work)
+                system = work / "Windows/System32"
+                owner.assert_called_once_with([str(system / "whoami.exe")], text=True)
+                runner.assert_called_once_with([str(system / "icacls.exe"), str(work), "/inheritance:r",
+                    "/grant:r", "runner\\owner:(OI)(CI)F", "/remove:g", "*S-1-3-4"], check=True)
+                runner.reset_mock()
+                owner.return_value = "two\nidentities"
+                with self.assertRaisesRegex(ValueError, "owner identity"):
+                    producer._private_windows_workspace(work)
+                owner.return_value = "runner\\owner"
+                (work / "original-key").write_bytes(b"untouched")
+                with self.assertRaisesRegex(ValueError, "fresh empty"):
+                    producer._private_windows_workspace(work)
+                self.assertEqual(b"untouched", (work / "original-key").read_bytes())
+                runner.assert_not_called()
+            with patch.object(producer.sys, "platform", "linux"), \
+                    patch.object(producer.subprocess, "run") as runner:
+                producer._private_windows_workspace(work)
+                runner.assert_not_called()
+        # The production caller restricts the newly allocated nested directory,
+        # before source copies or children; the old outer-parent fix is insufficient.
+        import inspect
+        source = inspect.getsource(producer.produce)
+        self.assertLess(source.index("_private_windows_workspace(work)"), source.index("scratch.mkdir()"))
+        self.assertLess(source.index("_private_windows_workspace(work)"), source.index("_copy_sources("))
+
     def test_only_private_windows_fixture_selects_portable_read_only_crt(self):
         script = Path(__file__).resolve().parents[2] / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py"
         spec = importlib.util.spec_from_file_location("csharp_crt_fixture_producer", script)

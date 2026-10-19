@@ -19,7 +19,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_CHECKS = ("signing-acl", "catalog-newlines", "native-signature", "runtime-exit")
 FOLLOWUP_CHECKS = ("signing-workspace", "runtime-host-exit")
-REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization", "csharp-loader-security")
+REMAINING_CHECKS = ("signing-private-parent", "rust-host-exit", "signature-initialization", "csharp-loader-security",
+                    "cpp-leaf-preprocessor", "rust-fixture-compiler")
 CHECKS = ("cpp", "csharp", "dart-identity", "dart-lifecycle", *CONTROL_CHECKS, *FOLLOWUP_CHECKS, *REMAINING_CHECKS)
 
 
@@ -297,8 +298,15 @@ def csharp_security_probe(scratch):
         _private_windows_validation_parent(scratch)
     # Match the producer's nested workspace layout, not the shorter probe that
     # passed while the real worker still failed. This remains diagnostic-only.
-    scratch = scratch / "validation/outputs/.csharp-binding-evidence-diagnostic"
-    scratch.mkdir(parents=True)
+    parent = scratch / "validation/outputs"
+    parent.mkdir(parents=True)
+    # The enclosing diagnostic owns/cleans this tree. Use Python's actual
+    # mode-0700 temporary allocation; ordinary mkdir misses the failing ACL.
+    scratch = Path(tempfile.mkdtemp(prefix=".csharp-binding-evidence-", dir=parent))
+    if sys.platform == "win32":
+        observed([str(Path(os.environ["SystemRoot"]) / "System32/icacls.exe"), str(scratch)])
+        producer._private_windows_workspace(scratch)
+        observed([str(Path(os.environ["SystemRoot"]) / "System32/icacls.exe"), str(scratch)])
     source, program = scratch / "source", scratch / "program"
     producer._copy_sources(producer._source_files(), source)
     project = source / producer.PROJECT.relative_to(producer.ROOT)
@@ -353,7 +361,48 @@ def csharp_security_probe(scratch):
     # The ordinary suite enters here directly, unlike Verify() which first runs
     # snapshot/path tests. Observe that exact startup without repeating Verify().
     observed(["dotnet", str(program / producer.TEST_PROGRAM), "--runtime-loader-signed-fixture"],
-             cwd=source, env=environment, check=False)
+             cwd=source, env=environment)
+
+
+def compiler_probe(check, scratch):
+    """Compile only the failing test source, never a product or acceptance receipt."""
+    if check == "cpp-leaf-preprocessor":
+        if os.environ.get("VCToolsVersion", "").rstrip("/\\") != "14.51.36231":
+            raise ValueError("Diagnostic requires the failing worker's MSVC 14.51.36231")
+        cpp = ROOT / "codex-agent-bindings/cpp"
+        observed(["cl", "/nologo", "/Bv", "/std:c++20", "/c", "/O2", "/Ob2", "/MD",
+                  "/EHsc", "/W4", "/WX", "/DNDEBUG", "/Fo" + str(scratch / "leaf.obj"),
+                  "/I" + str(cpp / "include"),
+                  "/I" + str(ROOT / "codex-agent-runtime-desktop/native/c-api/include"),
+                  str(cpp / "tests/leaf_behavior_test.cpp")],
+                 cwd=scratch, env=dict(os.environ, CL="/Zc:preprocessor"))
+        return
+    from ci.sdk_native_validation_workflow import _windows_rust_fixture_compiler
+    environment = dict(os.environ)
+    adapter = _windows_rust_fixture_compiler(scratch, environment)
+    crate = ROOT / "codex-agent-bindings/rust"
+    raw = (crate / "tests/lifecycle.rs").read_text()
+    start, end = "fn compile_fixture_with_defines(", "\nstruct ThreadWake"
+    assert raw.count(start) == raw.count(end) == 1
+    function = start + raw.split(start, 1)[1].split(end, 1)[0]
+    # Execute the exact source function with std only, including quoted -D
+    # arguments and paths containing spaces. No Cargo/dependency/package build.
+    source = scratch / "probe.rs"
+    source.write_text("use std::path::{Path, PathBuf};\nuse std::process::Command;\n" + function +
+        '\nfn main() { for definitions in [&[][..], &["CODEX_AGENT_TEST_OMIT_IDENTITY"][..]] {\n'
+        'assert!(compile_fixture_with_defines("mock_codex_agent.c", "diagnostic", definitions).is_file());\n'
+        '} }\n', encoding="utf-8")
+    temporary = scratch / "fixture temporary with spaces"
+    temporary.mkdir()
+    environment.update(CARGO_MANIFEST_DIR=str(crate), TMP=str(temporary), TEMP=str(temporary),
+                       CODEX_AGENT_TEST_CONTRACT_DIGEST="sha256:" + "a" * 64)
+    observed(["rustc", "--version"])
+    observed(["clang", "--version"])
+    executable = scratch / "probe.exe"
+    observed(["rustc", "--edition=2021", str(source), "-o", str(executable)], cwd=scratch, env=environment)
+    observed([str(executable)], cwd=scratch, env=environment)
+    if any(path.read_bytes() != contents for path, contents in adapter.items()):
+        raise ValueError("Diagnostic compiler adapter changed during execution")
 
 
 def control_probe(check, scratch):
@@ -361,6 +410,8 @@ def control_probe(check, scratch):
     scratch.mkdir(exist_ok=False)
     if check == "csharp-loader-security":
         csharp_security_probe(scratch)
+    elif check in ("cpp-leaf-preprocessor", "rust-fixture-compiler"):
+        compiler_probe(check, scratch)
     elif check in ("signing-acl", "signing-workspace", "signing-private-parent"):
         if check == "signing-private-parent":
             from ci.sdk_native_validation_workflow import _private_windows_validation_parent

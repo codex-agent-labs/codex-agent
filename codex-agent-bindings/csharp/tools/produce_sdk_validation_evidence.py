@@ -320,6 +320,23 @@ def _invalidate_output(output: Path) -> None:
         shutil.rmtree(output)
 
 
+def _private_windows_workspace(work: Path) -> None:
+    if sys.platform != "win32":
+        return
+    if (not work.is_absolute() or any(path.is_symlink() for path in (work, *work.parents))
+            or not work.is_dir() or any(work.iterdir())):
+        raise ValueError("C# validation workspace must be a fresh empty nonsymbolic directory")
+    system = Path(os.environ["SystemRoot"]) / "System32"
+    user = subprocess.check_output([str(system / "whoami.exe")], text=True).strip()
+    if not user or any(character in user for character in "\r\n"):
+        raise ValueError("C# validation owner identity is invalid")
+    # Python 3.12's mode-0700 mkdir installs OWNER RIGHTS even under a private
+    # parent. OpenSSH rejects that ACE on copied fixture keys. Restrict this
+    # empty workspace to its actual owner before any children inherit its ACL.
+    subprocess.run([str(system / "icacls.exe"), str(work), "/inheritance:r",
+                    "/grant:r", user + ":(OI)(CI)F", "/remove:g", "*S-1-3-4"], check=True)
+
+
 def produce(
     dotnet: Path,
     canonical_api: Path,
@@ -354,6 +371,7 @@ def produce(
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".csharp-binding-evidence-", dir=output.parent) as temporary:
             work = Path(temporary)
+            _private_windows_workspace(work)
             source = work / "source"
             program = work / "program"
             scratch = work / "scratch"

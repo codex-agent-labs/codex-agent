@@ -86,20 +86,24 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                          "runs-on: windows-2025", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false",
                          "windows-control-diagnostics-${{ runner.os }}-"):
             self.assertIn(required, block)
-        for forbidden in ("secrets.", "id-token: write", "gradlew", "setup-msvc", "dart-cache",
+        for forbidden in ("secrets.", "id-token: write", "gradlew", "dart-cache",
                           "download-artifact", "capture-sdk-tooling", "product-attestation",
                           "signature-initialization", "install-gh.sh", "macos-26-intel"):
             self.assertNotIn(forbidden, block)
-        self.assertEqual(1, block.count("continue-on-error: true"))
+        self.assertEqual(3, block.count("continue-on-error: true"))
         self.assertEqual(2, block.count("if: runner.os == 'Windows'"))
         self.assertNotIn("rust-host-exit", block)  # Existing fifteen exit observations are sufficient.
-        self.assertNotIn("rust-toolchain", block)
         worker = (WORKFLOW.parents[1] / "actions/sdk-native-validation-worker/action.yml").read_text()
+        self.assertIn("python-version: '3.12.10'", block)
+        self.assertIn("uses: ./.github/actions/setup-msvc", block)
+        rust = re.search(r"uses: dtolnay/rust-toolchain@\w+", block).group()
+        self.assertIn(rust, worker)
         dotnet = re.search(r"uses: actions/setup-dotnet@\w+", block).group()
         self.assertIn(dotnet, worker)
         self.assertLess(block.index("uses: actions/upload-artifact@"), block.index("Require complete diagnostic"))
         script = textwrap.dedent(block.split("        run: |\n", 1)[1])
-        results = {"csharp-loader-security": {"outcome": "success"}}
+        results = {name: {"outcome": "success"} for name in
+                   ("csharp-loader-security", "cpp-leaf-preprocessor", "rust-fixture-compiler")}
         with patch.dict(os.environ, {"DIAGNOSTIC_STEPS": json.dumps(results)}):
             exec(compile(script, "windows-controls-result", "exec"), {})
         results["csharp-loader-security"]["outcome"] = "failure"
@@ -239,7 +243,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
                 patch("ci.sdk_native_validation_workflow._private_windows_validation_parent"):
             scratch = Path(temporary)
             diagnostic.csharp_security_probe(scratch)
-            scratch /= "validation/outputs/.csharp-binding-evidence-diagnostic"
+            scratch, = (scratch / "validation/outputs").glob(".csharp-binding-evidence-*")
             original = diagnostic.ROOT / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs"
             projected = scratch / "source/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs"
             instrumentation = '''                Console.WriteLine("fixtureKeyPath=" + privateKey + ";payloadPath=" + path);
@@ -266,8 +270,29 @@ class CoreValidationWorkflowTest(unittest.TestCase):
             self.assertEqual(1, entry.count(injection))
             self.assertEqual(original.with_name("Program.cs").read_text(), entry.replace(injection, ""))
             self.assertEqual(str(scratch / "dotnet-home"), run.call_args.kwargs["env"]["DOTNET_CLI_HOME"])
-            self.assertFalse(run.call_args.kwargs["check"])
+            self.assertNotIn("check", run.call_args.kwargs)  # Failure must fail this diagnostic.
             self.assertNotIn("GITHUB_TOKEN", run.call_args.kwargs["env"])
+
+    def test_compiler_diagnostic_uses_exact_rust_source_and_guarded_production_adapter(self):
+        from ci.tests import native_windows_diagnostic as diagnostic
+        with tempfile.TemporaryDirectory() as temporary, patch.object(diagnostic, "observed") as run, \
+                patch("ci.sdk_native_validation_workflow._windows_rust_fixture_compiler", return_value={}) as adapter:
+            scratch = Path(temporary).resolve()
+            diagnostic.compiler_probe("rust-fixture-compiler", scratch)
+            adapter.assert_called_once()
+            raw = (diagnostic.ROOT / "codex-agent-bindings/rust/tests/lifecycle.rs").read_text()
+            function = "fn compile_fixture_with_defines(" + raw.split("fn compile_fixture_with_defines(", 1)[1].split("\nstruct ThreadWake", 1)[0]
+            self.assertIn(function, (scratch / "probe.rs").read_text())
+            self.assertEqual(4, run.call_count)
+            self.assertEqual("sha256:" + "a" * 64, run.call_args.kwargs["env"]["CODEX_AGENT_TEST_CONTRACT_DIGEST"])
+            self.assertIn("with spaces", run.call_args.kwargs["env"]["TEMP"])
+            self.assertNotIn("check", run.call_args.kwargs)
+            run.reset_mock()
+            with patch.dict(os.environ, {"VCToolsVersion": "14.51.36231"}):
+                diagnostic.compiler_probe("cpp-leaf-preprocessor", scratch)
+            self.assertEqual("/Zc:preprocessor", run.call_args.kwargs["env"]["CL"])
+            self.assertTrue(run.call_args.args[0][-1].endswith("tests/leaf_behavior_test.cpp"))
+            self.assertIn("/WX", run.call_args.args[0])
 
     def test_signature_initialization_probe_retains_all_trust_constraints(self):
         from ci.tests import native_windows_diagnostic as diagnostic

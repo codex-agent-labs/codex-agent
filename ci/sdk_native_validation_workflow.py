@@ -152,6 +152,22 @@ def _private_windows_validation_parent(parent):
                     "/grant:r", user + ":(OI)(CI)F"], check=True)
 
 
+def _windows_rust_fixture_compiler(destination, environment):
+    """One executable for shlex-based consumers and Rust's Command::new(CC)."""
+    compiler = shutil.which("clang.exe", path=environment.get("PATH", ""))
+    if (not compiler or not Path(compiler).is_absolute() or not compiler.isascii()
+            or any(c in compiler for c in '\r\n"%!^&|<>')):
+        raise ValueError("Windows Rust fixture compiler path is unsafe or missing")
+    launcher = destination / "codex-agent-fixture-clang.cmd"
+    raw = (f'@echo off\r\nsetlocal DisableDelayedExpansion\r\n'
+           f'"{compiler}" -D_CRT_NONSTDC_NO_WARNINGS %*\r\n').encode("ascii")
+    with launcher.open("xb") as output:
+        output.write(raw)
+    environment["CC"] = launcher.name
+    environment["PATH"] = os.pathsep.join(filter(None, (str(destination), environment.get("PATH", ""))))
+    return {launcher: raw}
+
+
 def _execute_validation(plan, *, producer, sdk_version, repository_root, destination,
                         runtime_stages, staged_sdks, compatibility_request, package,
                         predecessor, environ, dotnet_executable, dart_executable,
@@ -249,20 +265,7 @@ def _execute_validation(plan, *, producer, sdk_version, repository_root, destina
         product_reuse._prepare_destination(output, root).rmdir()
     destination = product_reuse._prepare_destination(destination, root)
     if component == "rust" and identity.target == "windows-x64":
-        # One executable works for both shlex-based consumers and Rust's
-        # Command::new(CC). Keep the existing fixed flag and strict warnings.
-        compiler = shutil.which("clang.exe", path=environment.get("PATH", ""))
-        if (not compiler or not Path(compiler).is_absolute() or not compiler.isascii()
-                or any(c in compiler for c in '\r\n"%!^&|<>')):
-            raise ValueError("Windows Rust fixture compiler path is unsafe or missing")
-        launcher = destination / "codex-agent-fixture-clang.cmd"
-        raw = (f'@echo off\r\nsetlocal DisableDelayedExpansion\r\n'
-               f'"{compiler}" -D_CRT_NONSTDC_NO_WARNINGS %*\r\n').encode("ascii")
-        with launcher.open("xb") as output:
-            output.write(raw)
-        tools[launcher] = raw  # Existing before/after checks protect this adapter.
-        environment["CC"] = launcher.name
-        environment["PATH"] = os.pathsep.join(filter(None, (str(destination), environment.get("PATH", ""))))
+        tools.update(_windows_rust_fixture_compiler(destination, environment))
     fields = {"codexAgent.product": "sdk", "codexAgent.component": component,
         "codexAgent.phase": "validation", "codexAgent.target": identity.target,
         "codexAgent.candidateCommit": producer["commit"], "codexAgent.candidateTree": tree,

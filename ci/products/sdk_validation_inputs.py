@@ -57,13 +57,13 @@ def _admission_subject(root, record, repository, revision, tooling):
         return sha256_bytes(read_regular_file_bytes(Path(path), max_bytes=128 * 1024**2,
                                                    reject_symlink_parents=True))
 
-    complete = regular_file_inventory(root, allow_empty=True)
-
     def category(path):
         require_regular_directory(path, "SDK admission category")
-        prefix = path.relative_to(root).as_posix() + "/"
-        return [{**row, "relativePath": row["relativePath"][len(prefix):]}
-                for row in complete if row["relativePath"].startswith(prefix)]
+        path.relative_to(root)
+        # Planner records are repository-relative, not necessarily carrier-relative.
+        # Read only the complete declared category; the private verification scope
+        # shares its guarded inventory across sibling records and reuse checks.
+        return regular_file_inventory(path, allow_empty=True)
 
     trees = {name: category(record[name]) for name in (
         "packageStage", "validationStage", "runtimeStages", "stagedSdks", "runtimeAuthorization",

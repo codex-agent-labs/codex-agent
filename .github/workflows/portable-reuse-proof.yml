@@ -196,7 +196,9 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: '3.11'
+          python-version: '3.12.10'
+      - uses: ./.github/actions/setup-msvc
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0, same as the Rust worker
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0, same as the C# worker
         if: runner.os == 'Windows'
         env:
@@ -208,6 +210,14 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: python -B ci/tests/native_windows_diagnostic.py csharp-loader-security "$env:RUNNER_TEMP/windows-controls/csharp-loader-security"
+      - id: cpp-leaf-preprocessor
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py cpp-leaf-preprocessor "$env:RUNNER_TEMP/windows-controls/cpp-leaf-preprocessor"
+      - id: rust-fixture-compiler
+        continue-on-error: true
+        shell: pwsh
+        run: python -B ci/tests/native_windows_diagnostic.py rust-fixture-compiler "$env:RUNNER_TEMP/windows-controls/rust-fixture-compiler"
       - name: Preserve all raw diagnostic outcomes before failing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -225,7 +235,7 @@ jobs:
         run: |
           import json, os
           results = json.loads(os.environ['DIAGNOSTIC_STEPS'])
-          required = ('csharp-loader-security',)
+          required = ('csharp-loader-security', 'cpp-leaf-preprocessor', 'rust-fixture-compiler')
           assert all(results.get(name, {}).get('outcome') == 'success' for name in required), results
 
   core-validation-diagnostics:
