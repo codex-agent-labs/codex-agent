@@ -54,9 +54,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.git(self.candidate, "remote", "set-url", "origin", str(self.trusted))
         self._patch_reviewed()
 
-    def test_sdk_selector_pin_matches_reviewed_native_staging_bytes(self):
+    def test_sdk_selector_pin_matches_reviewed_windows_validation_bytes(self):
         root = HELPER.parents[3]
-        self.assertEqual("bd83cc6cbd3b5cae6954bed7e91ac1cf106a3715", recovery.SDK_SELECTION_REVISION)
+        self.assertEqual("f9281a0cd53642fb00b5a6a22cd5d8af94aa75bc", recovery.SDK_SELECTION_REVISION)
         self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
                          (root / recovery.SDK_SELECTOR).read_bytes())
 
