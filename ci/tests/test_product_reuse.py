@@ -828,7 +828,7 @@ class ProductReuseTest(unittest.TestCase):
         with mock.patch("ci.products.reuse.advance_reuse", return_value=(expected, ())) as delegated, \
                 mock.patch("ci.products.reuse._native_comparison_provider", return_value=comparison_provider) as proof_factory, \
                 mock.patch("ci.products.reuse.adapter_comparison_provider", return_value=adapter_provider) as adapter_factory, \
-                mock.patch("ci.products.reuse.sdk_validation_provider", return_value=sdk_provider) as sdk_factory, \
+                mock.patch("ci.products.sdk_validation_inputs.sdk_validation_provider", return_value=sdk_provider) as sdk_factory, \
                 mock.patch("ci.products.reuse.AppleValidationAdmission") as apple_factory:
             result = plan_reuse_wave(request)
         self.assertIs(expected, result)

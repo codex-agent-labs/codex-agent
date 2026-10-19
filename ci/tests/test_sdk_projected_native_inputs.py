@@ -259,6 +259,26 @@ class ProjectedNativeSdkInputsTest(unittest.TestCase):
             self.assertEqual(1, signed_gate.call_count)
             self.assertEqual(5, observed.call_count)
             self.assertEqual(11, copied.call_count)  # Two reports/target plus one bootstrap sidecar.
+            # Separate planners in one private operation reuse the same full
+            # signature/original gate; a later operation must authenticate afresh.
+            from products.restore import verification_session
+            keys = self.root / "gradle/release/keys"
+            keys.mkdir(parents=True, exist_ok=True)
+            keyring = keys.parent / "product-signing-keys.json"
+            keyring.write_bytes(b"fixture caller key policy")
+            (keys / "fixture.pub").write_bytes(b"fixture public key")
+            with verification_session():
+                for _ in range(3):
+                    shared = make()
+                    shared(PhaseInstanceId("sdk", "python", "package", "desktop"), selected, projection)
+                self.assertEqual(2, signed_gate.call_count)
+                self.assertEqual(10, observed.call_count)
+                self.assertEqual(22, copied.call_count)
+                keyring.write_bytes(b"changed fixture caller policy")
+                with self.assertRaisesRegex(ValueError, "changed.*authority"):
+                    shared(PhaseInstanceId("sdk", "python", "package", "desktop"), selected, projection)
+            with self.assertRaisesRegex(ValueError, "outlived"):
+                shared(PhaseInstanceId("sdk", "python", "package", "desktop"), selected, projection)
             changed = copy.deepcopy(selected)
             changed[0]["receiptSha256"] = "sha256:" + "0" * 64
             with self.assertRaisesRegex(ValueError, "selected original"):

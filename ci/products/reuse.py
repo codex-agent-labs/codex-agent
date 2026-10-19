@@ -63,7 +63,7 @@ from .runtime_adapter_content import (
     VerifiedAdapterRuntimeProjection, adapter_comparison_provider, decode_adapter_comparison_records,
 )
 from .receipt import build_key_payload
-from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records, sdk_validation_provider
+from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records
 from .sdk_apple_validation_admission import AppleValidationAdmission
 from .sdk_apple_package_admission import ApplePackageAdmission
 from .sdk_facade_metadata_admission import FacadeMetadataAdmission
@@ -1186,6 +1186,7 @@ def plan_reuse_wave(
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
     sdk_originals = decode_sdk_validation_records(artifact_root, request.get("sdkValidationEvidence", []))
+    from .sdk_validation_inputs import sdk_validation_provider
     sdk_comparison = sdk_validation_provider(artifact_root, request.get("sdkValidationEvidence", []),
         repository=repository_root, policy_revision=revision, tooling=request.get("sdkValidationTooling"))
     if ("sdkAppleValidationEvidence" in request) != ("sdkAppleValidationPolicy" in request):

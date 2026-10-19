@@ -964,6 +964,7 @@ def _require_artifact_job_window(observation, job_name, artifact):
 
 
 @verification_scoped
+@measured
 def _download_contract_ci_upload(
     artifact_id: int, artifact_sha256: str, expected_name: str,
     producer: Mapping[str, Any], observed_run: Mapping[str, Any], token: str,
@@ -1412,6 +1413,7 @@ def capture_contract_original_ci_phases(
     return evidence
 
 
+@measured
 def _extract_runtime_original_projection(archive, zipped, destination):
     """Full archive authentication is already complete; copy only consumed bytes."""
     from products.inventory import _open_regular_file
@@ -4602,6 +4604,7 @@ def _scoped_reuse_result(value, closure):
 
 @verification_scoped
 @_fresh_ci_observations
+@measured
 def _verified_product_state(
     plan_path: Path, discovery_root: Path, state_root: Path, root: Path,
     environment: Mapping[str, str], sdk_validation_tooling: Mapping[str, Any] | None,
@@ -6486,6 +6489,7 @@ def _require_collected_sdk_original(shard, verified, consumer, workflow_sha):
     return original
 
 
+@measured
 def collect_runtime_workers(
     plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
     trusted_workflow_sha: str, repository_root: Path | None = None,

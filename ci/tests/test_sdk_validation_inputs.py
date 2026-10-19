@@ -106,6 +106,23 @@ class SdkValidationInputsTest(unittest.TestCase):
             finally:
                 hidden.rename(self.chain["root"])
 
+    def test_retained_capture_never_reconstructs_sdk_inputs_or_discards_full_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "retained"
+            with patch("ci.products.sdk_validation_inputs.stage_sdk_inputs",
+                       side_effect=AssertionError("retained inputs must not be regenerated")), \
+                    patch("ci.products.sdk_validation_inputs._request_inventory",
+                          side_effect=AssertionError("layout validation must reuse its full inventory")), \
+                    patch("ci.products.sdk_validation_inputs._capture_validation_sources", self.sources), \
+                    patch("ci.products.sdk_validation.verify_sdk_validation_projection",
+                          side_effect=self.proof) as full_gate:
+                self.assertEqual(self.captured, stage_sdk_validation_evidence(
+                    self.captured, self.carrier, output, repository=self.root,
+                    policy_revision="a" * 40, tooling=self.tooling))
+            self.assertEqual(1, full_gate.call_count)
+            self.assertEqual(regular_file_inventory(self.carrier, allow_empty=True),
+                             regular_file_inventory(output, allow_empty=True))
+
     def test_csharp_binary_context_survives_carrier_relocation_without_rewriting_receipts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

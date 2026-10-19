@@ -79,11 +79,11 @@ def completed_native_runtime_provider(completed, request, *, plan, producer, tru
     from .inventory import sha256_bytes
     from .plan import native_runtime_validation_dependencies
     from .registry import PhaseInstanceId
-    from .restore import bounded_verify
+    from .restore import bounded_verify, _VERIFICATION_SESSION, memoized_file_inventory
     from .runtime_aggregate import validate_runtime_aggregate_attestation
     from .runtime_evidence import PRODUCT_RUNTIME_TARGETS
     from .sdk_runtime_content import VerifiedNativeRuntimeProjection, _VERIFIED_NATIVE_RUNTIME, _native_contract_identity
-    from runtime_reference_transport import count
+    from runtime_reference_transport import count, measured
 
     if type(completed) is not CompletedFrozenReuse:
         raise TypeError("Native projection requires concrete completed native authority")
@@ -94,6 +94,29 @@ def completed_native_runtime_provider(completed, request, *, plan, producer, tru
         return None  # Other releases retain their ordinary complete K/R gate.
     cache, checkpoint, sources = {}, {}, {}
     root = Path(request["repositoryRoot"])
+    session = _VERIFICATION_SESSION.get()
+
+    def authority():
+        return sha256_bytes(canonical_json_bytes({
+            "plan": plan, "producer": producer, "workflow": trusted_workflow_sha,
+            "root": str(root.resolve(strict=True)), "version": request["versions"]["runtime-release"],
+            "spec": completed._values()[0],
+            "keyring": sha256_bytes(read_regular_file_bytes(root / "gradle/release/product-signing-keys.json",
+                reject_symlink_parents=True)),
+            "keys": memoized_file_inventory(root / "gradle/release/keys"),
+        }))
+
+    admitted_authority = authority() if session is not None else None
+    if session is not None:
+        # Concrete capability + exact caller/key policy, only in this process
+        # lifetime. No serialized success marker or cross-run authentication hit.
+        pool = session.setdefault("completedNativeProjections", {})
+        key = (completed, admitted_authority)
+        if key in pool:
+            cache, checkpoint, sources = pool[key]
+            count("nativeProjectionProviderReuses")
+        elif len(pool) < 4:
+            pool[key] = cache, checkpoint, sources
 
     def signed_checkpoint():
         if not checkpoint:
@@ -173,7 +196,11 @@ def completed_native_runtime_provider(completed, request, *, plan, producer, tru
             identity, _VERIFIED_NATIVE_RUNTIME, content)
         return cache[key]
 
-    def verify(instance, envelopes, projection):
+    @measured
+    def verify_completed_native_projection(instance, envelopes, projection):
+        if session is not None:
+            if _VERIFICATION_SESSION.get() is not session or authority() != admitted_authority:
+                raise ValueError("Completed native projection outlived or changed its caller authority")
         dependencies = native_runtime_validation_dependencies(instance)
         if not dependencies or len(envelopes) != len(dependencies) or type(projection) is not VerifiedContractProjection:
             raise ValueError("Completed native projection requires exact SDK dependencies and Contract")
@@ -191,9 +218,12 @@ def completed_native_runtime_provider(completed, request, *, plan, producer, tru
         # duplicate signature/original body work for the other SDK languages.
         signed_checkpoint()
         with products._ci_observation_batch():
-            return tuple(bounded_verify(target_projection,
+            result = tuple(bounded_verify(target_projection,
                 [(dependency.target, original, projection) for dependency, original in zip(dependencies, envelopes, strict=True)]))
-    return verify
+        if session is not None and authority() != admitted_authority:
+            raise ValueError("Completed native projection changed its caller authority during admission")
+        return result
+    return verify_completed_native_projection
 
 
 def load_native_runtime_evidence(root: Path) -> list[dict]:

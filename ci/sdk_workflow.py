@@ -35,6 +35,7 @@ from reuse import github_output
 from products.contract_model import _execution_tree_digest
 from products.signing_isolation import require_no_signing_secret
 from products.sdk_validation import decode_sdk_validation_records
+from products.sdk_validation_inputs import collection_admission_scope
 from products.sdk_maven import _zip_members
 from products.tooling import verified_tooling_capture
 
@@ -951,6 +952,7 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
 
 @verification_scoped
 @measured
+@collection_admission_scope
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
