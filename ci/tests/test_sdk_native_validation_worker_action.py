@@ -1,6 +1,7 @@
 """Executed action guards and fixed argv only; no hosted or content acceptance."""
 
 from copy import deepcopy
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ if str(CI_ROOT) not in sys.path:
     sys.path.insert(0, str(CI_ROOT))
 
 import native_wrappers
+from ci import sdk_native_validation_workflow as worker
 from ci.products.inventory import canonical_json_bytes, sha256_bytes
 
 
@@ -35,7 +37,8 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.policy_path.write_bytes(canonical_json_bytes(self.policy))
         self.output = self.root / 'github-output'
         self.plan = self.root / 'plan.json'
-        self.plan.write_text(json.dumps({'validationTree': 'b' * 40, 'validationCommit': 'c' * 40}))
+        self.plan.write_bytes(canonical_json_bytes({'validationTree': 'b' * 40, 'validationCommit': 'c' * 40,
+            'remoteBuildAuthorized': True, 'event': 'pull_request'}))
         self.environment = {'SDK_VALIDATION_TOOLING': str(self.policy_path), 'GITHUB_OUTPUT': str(self.output),
             'POLICY_SHA256': sha256_bytes(self.policy_path.read_bytes()), 'GITHUB_WORKSPACE': str(self.root),
             'PLAN': str(self.plan), 'COMPONENT': 'python', 'TARGET': 'linux-x64', 'BUILD_KEY': 'sha256:' + 'a' * 64,
@@ -48,7 +51,11 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
             'RUNTIME_AUTHORIZATION': str(self.root / 'runtime-authorization'),
             'TRUSTED_WORKFLOW_SHA': '1' * 40, 'POLICY_REVISION': 'c' * 40,
             'DOTNET_EXECUTABLE': '', 'DART_EXECUTABLE': '', 'DART_PACKAGE_CONFIG': '',
-            'DART_PUB_CACHE': '', 'GITHUB_TOKEN': 'caller-token'}
+            'DART_PUB_CACHE': '', 'GITHUB_TOKEN': 'caller-token',
+            'ARTIFACT_ID': '78', 'ARTIFACT_SHA256': 'sha256:' + '8' * 64, 'STATE_WAVE': '0',
+            'SDK_STATE_WAVE': '', 'PREPARATION_ARTIFACT_ID': '71',
+            'PREPARATION_ARTIFACT_SHA256': 'sha256:' + '7' * 64,
+            'PREPARATION_STATE_WAVE': '0', 'PREPARATION_SDK_STATE_WAVE': ''}
         self.current = {'product': 'sdk', 'component': 'python', 'phase': 'validation', 'target': 'linux-x64',
             'buildKey': self.environment['BUILD_KEY'], 'runnerOs': 'Linux', 'runnerArch': 'X64'}
         self.preparation = {'product': 'sdk', 'component': 'rust', 'phase': 'package', 'target': 'desktop',
@@ -63,9 +70,46 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         return self.action.split('    - id: ' + step + '\n', 1)[1].split('\n    - ', 1)[0]
 
     def execute(self, step):
-        code = self.block(step).split("        python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0]
-        with patch.dict(os.environ, self.environment, clear=True):
+        code = self.block(step).split("python3 -B - <<'PY'\n", 1)[1].rsplit('PY', 1)[0]
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, self.environment, clear=True))
+            if step == 'identity':
+                stack.enter_context(patch('product_reuse._validate_plan', side_effect=lambda *args: json.loads(self.plan.read_text())))
+                stack.enter_context(patch('product_reuse._consumer', return_value={'producer': {}}))
+                stack.enter_context(patch('product_reuse._runtime_worker_checkout'))
+            if step == 'execute':
+                # Exercise the actual action callback, mocking only authenticated
+                # capture and the native CLI's product boundary. No extra process.
+                capability = object()
+                def capture(argv, *, _continuation):
+                    self.assertEqual(['capture', '--scope-inputs'], argv[:2])
+                    flags = dict(zip(argv[2::2], argv[3::2]))
+                    self.assertEqual('native-validation', flags['--family'])
+                    self.assertEqual('71', flags['--preparation-artifact-id'])
+                    self.assertEqual('78', flags['--artifact-id'])
+                    self.assertEqual(self.environment.get('SDK_APPLE_VALIDATION_POLICY') or None,
+                        flags.get('--sdk-apple-validation-policy'))
+                    _continuation({'plan_path': self.plan, 'discovery_root': self.environment['DISCOVERY'],
+                        'state_root': self.environment['STATE'], 'matrix': {'include': [
+                            dict(self.current, component=self.environment['COMPONENT'])]}},
+                        {'state_root': self.environment['PREPARATION_STATE'],
+                         'matrix': json.loads(self.environment['PREPARATION_MATRIX'])},
+                        {'completed_frozen': capability})
+                def native(argv, *, _completed_frozen):
+                    self.assertIs(capability, _completed_frozen)
+                    self.assertNotIn('--completed-frozen-policy', argv)
+                    # Existing argv assertions observe the CLI boundary, not a
+                    # process launch in the shipped action.
+                    subprocess.run([sys.executable, '-B', '-m', 'ci.sdk_workflow', 'native-validation', *argv],
+                        cwd=os.environ['GITHUB_WORKSPACE'], env=os.environ, check=True)
+                stack.enter_context(patch('ci.sdk_workflow._workflow_main', side_effect=capture))
+                stack.enter_context(patch.object(worker, 'main', side_effect=native))
+                stack.enter_context(patch.object(worker, 'host_classifier', return_value=self.environment['TARGET']))
             exec(compile(textwrap.dedent(code), '<action-' + step + '>', 'exec'), {})
+
+    def elections(self):
+        worker.validate_worker_elections({'plan_path': self.plan, 'matrix': json.loads(self.environment['MATRIX'])},
+            {'matrix': json.loads(self.environment['PREPARATION_MATRIX'])}, self.environment)
 
     @staticmethod
     def worker_environment(root, producer, destination, environ):
@@ -117,6 +161,8 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                 self.current.update(target=host, runnerOs=values[2], runnerArch=values[3])
                 self.matrices()
                 self.output.unlink(missing_ok=True)
+                with patch.object(worker, 'host_classifier', return_value=host):
+                    self.elections()
                 self.execute('identity')
                 self.assertEqual('key_hex=' + 'a' * 64 + '\npolicy_revision=' + 'c' * 40 + '\n', self.output.read_text())
 
@@ -132,14 +178,25 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
                 current, preparation, environment = deepcopy(self.current), deepcopy(self.preparation), dict(self.environment)
                 mutate()
                 self.matrices()
-                with patch.object(native_wrappers, 'host_classifier', return_value='linux-x64'), self.assertRaises(ValueError):
+                with patch.object(native_wrappers, 'host_classifier', return_value='linux-x64'), \
+                        patch.object(worker, 'host_classifier', return_value='linux-x64'), self.assertRaises(ValueError):
+                    self.elections()
                     self.execute('identity')
                 self.assertFalse(self.output.exists())
                 self.current, self.preparation, self.environment = current, preparation, environment
                 self.policy_path.write_bytes(canonical_json_bytes(self.policy))
         self.matrices(preparation=[self.preparation, self.preparation])
-        with patch.object(native_wrappers, 'host_classifier', return_value='linux-x64'), self.assertRaises(ValueError):
-            self.execute('identity')
+        with patch.object(worker, 'host_classifier', return_value='linux-x64'), self.assertRaises(ValueError):
+            self.elections()
+
+    def test_tool_setup_preflight_rejects_unauthorized_or_dispatch_plan(self):
+        original = json.loads(self.plan.read_text())
+        for change in ({'remoteBuildAuthorized': False}, {'event': 'workflow_dispatch'}):
+            with self.subTest(change=change), patch.object(native_wrappers, 'host_classifier', return_value='linux-x64'):
+                self.plan.write_bytes(canonical_json_bytes({**original, **change}))
+                with self.assertRaisesRegex(ValueError, 'authorized PR or merge-group'):
+                    self.execute('identity')
+                self.assertFalse(self.output.exists())
         self.assertFalse(self.output.exists())
 
     def test_fixed_controller_forwards_original_inputs_and_exact_caller_policy(self):
@@ -356,22 +413,28 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertNotIn('build/sdk-worker', block)
         self.assertNotIn('RUNNER_TEMP', block)
 
-    def test_capture_identity_setup_and_consumed_worker_upload_order(self):
+    def test_authorized_setup_then_one_capture_execution_scope_and_consumed_upload(self):
         action = self.action
-        self.assertLess(action.index('- id: policy'), action.index('- id: captured'))
-        self.assertLess(action.index('- id: dart-inputs'), action.index('- id: captured'))
+        self.assertLess(action.index('- id: policy'), action.index('- id: identity'))
+        self.assertLess(action.index('- id: dart-inputs'), action.index('- id: identity'))
         self.assertIn("if: inputs.component == 'dart'", self.block('dart-inputs'))
-        self.assertLess(action.index('- id: captured'), action.index('- id: identity'))
+        self.assertNotIn('- id: captured', action)
         self.assertNotIn('- id: preparation', action)
-        self.assertIn('PREPARATION_MATRIX: ${{ steps.captured.outputs.preparation-sdk-matrix }}', action)
-        self.assertIn('PREPARATION_STATE: ${{ steps.captured.outputs.preparation-state-root }}', action)
-        for name, original in (('artifact-id', 'state-id'), ('artifact-sha256', 'state-sha256'),
-                               ('state-wave', 'state-wave'), ('sdk-state-wave', 'sdk-state-wave'), ('phase', 'phase')):
-            self.assertIn('preparation-' + name + ': ${{ inputs.preparation-' + original + ' }}', self.block('captured'))
+        execute = self.block('execute')
+        self.assertIn('uses: ./.github/actions/hydrated-evidence-cache', execute)
+        self.assertIn('mode: execute', execute)
+        self.assertIn("_continuation=validate", execute)
+        self.assertIn("_completed_frozen=semantic.get('completed_frozen')", execute)
+        self.assertNotIn("'completed-frozen-policy']", execute)
+        self.assertLess(execute.index('validate_worker_elections(current, prepared, os.environ)'),
+                        execute.index('subprocess.run('))
+        self.assertLess(execute.index('validate_worker_elections(current, prepared, os.environ)'),
+                        execute.index('native_main(['))
         self.assertLess(action.index('- id: identity'), action.index('./.github/actions/setup-kmp'))
-        self.assertIn('sdk-family: native-validation', self.block('captured'))
-        self.assertIn('sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}', self.block('captured'))
-        self.assertIn('sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}', self.block('captured'))
+        self.assertLess(action.index('./.github/actions/setup-kmp'), action.index('- id: execute'))
+        self.assertIn("_validate_plan(Path(os.environ['PLAN']), root)", self.block('identity'))
+        self.assertIn("plan['remoteBuildAuthorized'] is not True", self.block('identity'))
+        self.assertIn("_runtime_worker_checkout(root, _consumer(plan, os.environ)['producer'])", self.block('identity'))
         self.assertIn("product-worker: 'true'", action)
         self.assertIn("cache-read-only: 'true'", action)
         self.assertIn('path: |\n          build/sdk-worker\n', action)
@@ -382,7 +445,10 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertIn('name: codex-agent-sdk-worker-${{ inputs.component }}-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}', action)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", action)
         self.assertIn('overwrite: false', action)
-        for forbidden in ('dotnet restore', 'dart pub get', 'native-prepare --', 'actions/download-artifact', 'run: ./gradlew'):
+        # Only the small original plan uses download-artifact; product state is
+        # captured by the authenticated/scoped shared reader, never bulk-forwarded.
+        self.assertEqual(1, action.count('uses: actions/download-artifact@'))
+        for forbidden in ('dotnet restore', 'dart pub get', 'native-prepare --', 'run: ./gradlew'):
             self.assertNotIn(forbidden, action)
 
     def test_optional_apple_policy_is_forwarded_only_when_supplied(self):

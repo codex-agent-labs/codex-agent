@@ -81,7 +81,8 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         self.assertEqual((self.plan_path, self.discovery, self.state), args)
         self.assertEqual({**{key: value for key, value in self.arguments.items()
                           if key not in {"component", "expected_build_key"}},
-                          "requested_scope": (PhaseInstanceId("sdk", "python", "package", "desktop"),)}, kwargs)
+                          "requested_scope": (PhaseInstanceId(*(self.ready[field] for field in
+                              ("product", "component", "phase", "target"))),)}, kwargs)
         self.events.append("enter")
         self.live = True
         try:

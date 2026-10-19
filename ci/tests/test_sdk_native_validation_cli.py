@@ -107,6 +107,20 @@ class SdkNativeValidationCliTest(unittest.TestCase):
             self.assertEqual(2, failure.exception.code)
             self.assertIn(str(error), output.getvalue())
 
+    def test_in_process_capability_is_forwarded_without_reauthentication_or_policy_replacement(self):
+        capability = object()
+        with patch('reuse_qualification.completed_frozen_options') as authenticate, \
+                patch.object(workflow, 'execute') as execute:
+            self.assertEqual(0, workflow.main(self.argv, _completed_frozen=capability))
+            self.assertIs(capability, execute.call_args.kwargs['completed_frozen'])
+            authenticate.assert_not_called()
+            execute.reset_mock()
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                workflow.main([*self.argv, '--completed-frozen-policy', '/replacement'],
+                    _completed_frozen=capability)
+            execute.assert_not_called()
+            authenticate.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

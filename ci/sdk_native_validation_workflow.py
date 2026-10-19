@@ -41,6 +41,32 @@ from sdk_phase import native_consumed_predecessors
 _LIMIT = 16 * 1024 * 1024
 
 
+def validate_worker_elections(current, preparation, environment):
+    """Check both freshly replayed elections before any consumer/provisioner runs."""
+    from native_wrappers import HOSTS, LANGUAGES
+    from runtime_native_phase import _HOSTS
+    host = host_classifier()
+    phase, target = environment['PREPARATION_PHASE'], environment['PREPARATION_TARGET']
+    if (environment['TARGET'] != host or phase not in ('package', 'validation', 'metadata')
+            or (target not in _HOSTS if phase == 'validation' else target != 'desktop')):
+        raise ValueError('Invalid native validation host or preparation identity')
+    topology = _HOSTS[target][1:] if phase == 'validation' else ('Linux', 'X64')
+    for prefix, matrix, phase, target, topology in (
+            ('', current['matrix'], 'validation', host, HOSTS[host][2:4]),
+            ('PREPARATION_', preparation['matrix'], phase, target, topology)):
+        component, key = environment[prefix + 'COMPONENT'], environment[prefix + 'BUILD_KEY']
+        rows = [row for row in matrix['include'] if
+                (row['product'], row['component'], row['phase'], row['target']) == ('sdk', component, phase, target)]
+        if (component not in LANGUAGES or len(rows) != 1 or rows[0]['buildKey'] != key
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', key)
+                or (rows[0]['runnerOs'], rows[0]['runnerArch']) != topology):
+            raise ValueError('Native validation or preparation differs from its original election')
+    plan = product_reuse._canonical_control(current['plan_path'], 'Captured native validation plan')
+    if (plan['validationTree'] != environment['TREE']
+            or plan['validationCommit'] != environment['POLICY_REVISION']):
+        raise ValueError('Native validation source changed during capture')
+
+
 def capture_runtime_authorization(policy, target, destination, *, token):
     """Fetch only one host's sidecars under independent caller pins and fresh CI provenance.
 
@@ -520,7 +546,8 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
     return verify_phase_shard(destination / "shard", instance)
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, _completed_frozen=None) -> int:
+    from contextlib import nullcontext
     from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "keyring", "keys-directory", "repository-root",
@@ -551,6 +578,9 @@ def main(argv=None) -> int:
     arguments = {name: value for name, value in vars(args).items()
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     try:
+        if _completed_frozen is not None:
+            if arguments.pop("completed_frozen_policy") is not None:
+                raise ValueError("In-process native continuation cannot replace its authenticated policy")
         if "retained_sdk_inputs_source" in arguments:
             arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
                 arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
@@ -558,7 +588,9 @@ def main(argv=None) -> int:
         if apple_policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 apple_policy, "Caller Apple validation policy")
-        with metadata_admission_options(args) as admissions, completed_frozen_options(arguments) as semantic:
+        authority = (completed_frozen_options(arguments) if _completed_frozen is None else
+                     nullcontext({"completed_frozen": _completed_frozen}))
+        with metadata_admission_options(args) as admissions, authority as semantic:
             execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))

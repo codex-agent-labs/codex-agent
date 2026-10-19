@@ -1238,8 +1238,9 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         destination=destination / "shard")
 
 
+@verification_scoped
 @product_reuse._fresh_ci_observations(share_nested=True)
-def _workflow_main(argv):
+def _workflow_main(argv, *, _continuation=None):
     from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Replay, capture and collect exact SDK phase work", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1286,6 +1287,8 @@ def _workflow_main(argv):
         preparation = {name: arguments.pop("preparation_" + name, None) for name in
             ("destination", "artifact_id", "artifact_sha256", "phase", "state_wave", "sdk_state_wave")}
         paired = any(value is not None for value in preparation.values())
+        if _continuation is not None and not paired:
+            raise ValueError("Native worker continuation requires paired scoped captures")
         output = arguments["github_output_path"]
         if paired:
             if (command != "capture" or arguments.get("family") != "native-validation"
@@ -1297,7 +1300,8 @@ def _workflow_main(argv):
                 raise ValueError("Paired native capture destinations overlap")
             preparation["family"] = "native-" + preparation.pop("phase")
             preparation["state_wave"] = preparation["state_wave"] or 0
-            # Nothing is exposed to setup until both captures and policy exit checks pass.
+            # Withhold caller outputs until both captures, the optional execution
+            # continuation, and policy exit checks pass.
             arguments["github_output_path"] = None
         with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             policy = arguments.pop("sdk_validation_tooling")
@@ -1311,6 +1315,10 @@ def _workflow_main(argv):
             if paired:
                 prepared = capture(**{**arguments, **preparation, "plan": result["plan_path"]},
                     **admissions, **semantic, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                if _continuation is not None:
+                    # The capability never crosses a process or serialized boundary.
+                    # Both captures and execution remain inside its lifetime checks.
+                    _continuation(result, prepared, semantic)
         if paired:
             github_output(output, {**{name: str(value) for name, value in result.items() if name != "matrix"},
                 "sdk_matrix": canonical_json_bytes(result["matrix"]).decode().strip(),

@@ -127,7 +127,7 @@ class SdkPreparationAnchorWiringTest(unittest.TestCase):
         f = validation_fixture.SdkNativeValidationWorkerActionTest(methodName="runTest")
         f.setUp()
         self.addCleanup(f.doCleanups)
-        self.assertIn('--family "native-$PREPARATION_PHASE"', f.block("preparation"))
+        self.assertIn("'preparation-phase': os.environ['PREPARATION_PHASE']", f.block("execute"))
         for phase, target in ANCHORS:
             with self.subTest(phase=phase, target=target):
                 f.environment.update(PREPARATION_PHASE=phase, PREPARATION_TARGET=target)
@@ -135,6 +135,8 @@ class SdkPreparationAnchorWiringTest(unittest.TestCase):
                     runnerOs="macOS" if target == "macos-arm64" else "Linux",
                     runnerArch="ARM64" if target == "macos-arm64" else "X64")
                 f.matrices()
+                with patch.object(validation_fixture.worker, "host_classifier", return_value="linux-x64"):
+                    f.elections()
                 with patch.object(validation_fixture.native_wrappers, "host_classifier", return_value="linux-x64"):
                     f.execute("identity")
                 with patch("subprocess.run") as process:

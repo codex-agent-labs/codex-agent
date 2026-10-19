@@ -354,8 +354,9 @@ class SdkWorkflowTest(unittest.TestCase):
     def upload_for_capture(self):
         return {key: self.upload[key] for key in ("artifact_id", "artifact_sha256", "trusted_workflow_sha")}
 
-    def test_paired_capture_shares_authority_and_exposes_outputs_only_after_both_exit_checks(self):
+    def test_paired_capture_execution_shares_authority_and_exposes_outputs_only_after_exit_checks(self):
         import reuse_qualification
+        from products.restore import _VERIFICATION_SESSION
         output = self.root / "paired-output"
         argv = ["capture", "--family", "native-validation", "--scope-inputs", "--plan", str(self.plan),
             "--destination", str(self.root / "current"), "--artifact-id", "42", "--artifact-sha256", "a" * 64,
@@ -363,18 +364,23 @@ class SdkWorkflowTest(unittest.TestCase):
             "--preparation-destination", str(self.root / "previous"), "--preparation-artifact-id", "41",
             "--preparation-artifact-sha256", "c" * 64, "--preparation-phase", "package",
             "--preparation-sdk-state-wave", "4"]
-        for failure in (None, "second", "exit"):
+        for failure in (None, "second", "execute", "exit"):
             events, capability = [], object()
+            sessions = []
             @contextmanager
             def authority(arguments):
                 arguments.pop("completed_frozen_policy")
                 events.append("authenticate")
-                yield {"completed_frozen": capability}
-                self.assertFalse(output.exists())
-                events.append("exit-check")
-                if failure == "exit":
-                    raise ValueError("policy changed during use")
+                sessions.append(_VERIFICATION_SESSION.get())
+                try:
+                    yield {"completed_frozen": capability}
+                finally:
+                    self.assertFalse(output.exists())
+                    events.append("exit-check")
+                    if failure == "exit":
+                        raise ValueError("policy changed during use")
             def capture(**arguments):
+                sessions.append(_VERIFICATION_SESSION.get())
                 self.assertIs(capability, arguments["completed_frozen"])
                 self.assertTrue(arguments["scope_inputs"])
                 self.assertIsNone(arguments["github_output_path"])
@@ -391,24 +397,37 @@ class SdkWorkflowTest(unittest.TestCase):
                 root = arguments["destination"]
                 return {"plan_path": root / "plan.json", "state_root": root / "state",
                     "matrix": {"include": [{"family": arguments["family"]}]}}
+            def continuation(current, previous, semantic):
+                sessions.append(_VERIFICATION_SESSION.get())
+                self.assertIs(capability, semantic['completed_frozen'])
+                self.assertEqual(self.root / 'current/plan.json', current['plan_path'])
+                self.assertEqual(self.root / 'previous/state', previous['state_root'])
+                self.assertEqual(['authenticate', 'native-validation', 'native-package'], events)
+                self.assertFalse(output.exists())
+                events.append('execute')
+                if failure == 'execute':
+                    raise ValueError('consumer failed')
             with self.subTest(failure=failure), \
                     patch.object(reuse_qualification, "completed_frozen_options", side_effect=authority) as auth, \
                     patch.object(workflow, "capture", side_effect=capture) as captured:
                 if failure:
                     with self.assertRaises(SystemExit):
-                        workflow.main(argv)
+                        workflow._workflow_main(argv, _continuation=continuation)
                     self.assertFalse(output.exists())
                 else:
-                    self.assertEqual(0, workflow.main(argv))
+                    workflow._workflow_main(argv, _continuation=continuation)
                     fields = dict(line.split("=", 1) for line in output.read_text().splitlines())
                     self.assertEqual(str(self.root / "previous/state"), fields["preparation_state_root"])
                     self.assertEqual({"include": [{"family": "native-package"}]}, json.loads(fields["preparation_sdk_matrix"]))
                     self.assertEqual({"include": [{"family": "native-validation"}]}, json.loads(fields["sdk_matrix"]))
                     output.unlink()
                 auth.assert_called_once()
+                self.assertIsNotNone(sessions[0])
+                self.assertTrue(all(value is sessions[0] for value in sessions))
+                self.assertIsNone(_VERIFICATION_SESSION.get())
                 self.assertEqual(2, captured.call_count)
                 self.assertEqual(["authenticate", "native-validation", "native-package"] +
-                    ([] if failure == "second" else ["exit-check"]), events)
+                    ([] if failure == "second" else ["execute"]) + ["exit-check"], events)
         for flag, value in (("--family", "native-package"), ("--preparation-destination", str(self.root / "current/child"))):
             invalid = list(argv)
             invalid[invalid.index(flag) + 1] = value
