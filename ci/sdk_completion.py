@@ -4,6 +4,7 @@ import argparse
 from dataclasses import replace
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -20,6 +21,66 @@ from products.inventory import (
 )
 from reuse import github_output
 from products.restore import verification_scoped
+
+
+LOCAL_REPOSITORY_INIT = """\
+gradle.projectsEvaluated {
+    def root = rootProject
+    if (root.findProject(':codex-agent-core') == null) return
+    def policy = System.getProperty('codexAgent.completedRepositoryPolicy')
+    def python = System.getProperty('codexAgent.repositoryPython')
+    if (!policy || !python) throw new GradleException('Repository verification requires explicit caller inputs')
+    def report = root.layout.buildDirectory.file('reports/repository/imported-product-evidence.json').get().asFile
+    def captured = new ByteArrayOutputStream()
+    def authenticated = root.tasks.register('verifyCompletedRepositoryEvidence', org.gradle.api.tasks.Exec) {
+        group = 'verification'
+        description = 'Authenticates original completed products against current repository inputs.'
+        dependsOn root.tasks.named('invalidateImportedRepositoryEvidenceOutput')
+        workingDir root.projectDir
+        environment 'PYTHONDONTWRITEBYTECODE', '1'
+        commandLine python, '-B', '-m', 'ci.sdk_completion', '--repository', '--local',
+            '--repository-root', root.projectDir.absolutePath, '--completed-frozen-policy', policy
+        standardOutput = captured
+        outputs.upToDateWhen { false }
+        doLast {
+            report.parentFile.mkdirs()
+            report.bytes = captured.toByteArray()
+        }
+    }
+    root.tasks.named('verifyRepository').configure {
+        dependsOn authenticated
+        // The legacy direct-terminal reader cannot read genuine transitive receipts.
+        // Its explicit replacement authenticates the complete DAG, not rewritten receipts.
+        setOnlyIf('Replaced by authenticated completed-product verification') { false }
+    }
+}
+"""
+
+
+def run_local_repository_gradle(repository_root, policy_path):
+    """Use the root verification entry point without changing product/toolkit inputs."""
+    root = Path(repository_root).resolve(strict=True)
+    policy = Path(policy_path).absolute()
+    read_regular_file_bytes(policy, max_bytes=4096, reject_symlink_parents=True)
+    report = root / "build/reports/repository/imported-product-evidence.json"
+    from products.sdk_package import _require_capability_output_separate
+    _require_capability_output_separate(report, [policy])
+    # Reject linked output ancestors before the legacy invalidation task can delete anything.
+    for path in (report, *report.parents):
+        if path.is_symlink():
+            raise ValueError("Repository acceptance output must not traverse symbolic links")
+    report.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix="repository-gradle-adapter-") as temporary:
+        script = Path(temporary) / "repository.init.gradle"
+        script.write_text(LOCAL_REPOSITORY_INIT, encoding="utf-8")
+        subprocess.run([str(root / "gradlew"), "--offline", "--no-configuration-cache", "--no-build-cache",
+            "--max-workers=4", "--console=plain", "--init-script",
+            str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
+            "--init-script", str(script), "-DcodexAgent.completedRepositoryPolicy=" + str(policy),
+            "-DcodexAgent.repositoryPython=" + sys.executable, ":verifyRepository"],
+            cwd=root, stdout=sys.stderr, check=True)
+    return load_canonical_json_bytes(read_regular_file_bytes(
+        report, max_bytes=1024 * 1024, reject_symlink_parents=True))
 
 
 def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
@@ -112,8 +173,7 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
     """
     import reuse_qualification as native
     from products.registry import PhaseInstanceId
-    from products.reuse import LookupSession, advance_reuse
-    from products.selection import phase_git_inventory
+    from products.reuse import LookupSession, advance_reuse, _phase_git_inventories
 
     environment = os.environ if environ is None else environ
     if environment.get("GITHUB_ACTIONS") or environment.get("GITHUB_RUN_ID"):
@@ -147,10 +207,11 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
         if authorities is None or unavailable:
             raise ValueError(unavailable or "Current repository phase authorities are unavailable")
         versions = products._versions(root, revision)
+        inventories = _phase_git_inventories(root, revision, instances)
         values = {}
         for row in authorities:
             instance = PhaseInstanceId(*(row[key] for key in products._IDENTITY_KEYS))
-            values[instance] = dict(inventory=phase_git_inventory(root, revision, instance),
+            values[instance] = dict(inventory=inventories[instance],
                 versions=versions, flags_digest=row["flagsDigest"],
                 toolchain_profile_digest=row["toolchainProfileDigest"],
                 output_schema_version=row["outputSchemaVersion"])
@@ -203,20 +264,25 @@ def main(argv=None):
                         help="Require the complete authenticated Contract/Runtime/SDK phase DAG")
     parser.add_argument("--local", action="store_true",
                         help="Verify current local repository inputs through completed original evidence; no CI identity")
+    parser.add_argument("--gradle", action="store_true",
+                        help="Run --repository --local through root :verifyRepository (offline, warm build)")
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     if args.repository and (args.partial_catalog_destination is not None or args.github_output is not None):
         parser.error("Repository verification requires its standalone report, not catalog or routing outputs")
+    if args.gradle and not args.local:
+        parser.error("--gradle requires --repository --local")
     if args.local:
         if (not args.repository or args.completed_frozen_policy is None or any(value is not None for name, value in
-                vars(args).items() if name not in {"repository_root", "completed_frozen_policy", "repository", "local"})):
+                vars(args).items() if name not in {"repository_root", "completed_frozen_policy", "repository", "local", "gradle"})):
             parser.error("Local repository verification accepts only its current source and explicit completed policy")
     elif args.plan is None or args.discovery_root is None:
         parser.error("Hosted replay requires --plan and --discovery-root")
     try:
         if args.local:
-            result = require_local_repository_completion(args.repository_root, args.completed_frozen_policy)
+            gate = run_local_repository_gradle if args.gradle else require_local_repository_completion
+            result = gate(args.repository_root, args.completed_frozen_policy)
             print(canonical_json_bytes(result).decode().strip())
             return 0
         with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
@@ -256,7 +322,7 @@ def main(argv=None):
             print(canonical_json_bytes(result).decode().strip())
         else:
             github_output(args.github_output, result)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
     return 0
 

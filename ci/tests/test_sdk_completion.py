@@ -127,7 +127,7 @@ class SdkCompletionTest(unittest.TestCase):
 
     def test_local_repository_uses_current_inputs_and_original_capability_without_ci_identity(self):
         import reuse_qualification as native
-        from products import reuse, selection
+        from products import reuse
         instances = tuple(sorted(PHASE_INSTANCE_IDS))
         revision = "d" * 40
         policy = dict(schemaVersion=1, kind="completed-frozen-reuse", consumerCommit=revision,
@@ -159,7 +159,8 @@ class SdkCompletionTest(unittest.TestCase):
                             side_effect=[revision, "f" * 40] if mutation == "source" else lambda *_: revision), \
                         patch.object(completion.products, "_authorities", return_value=(authorities, None)), \
                         patch.object(completion.products, "_versions", return_value={"current": "Git versions"}), \
-                        patch.object(selection, "phase_git_inventory", return_value=["current Git inventory"]), \
+                        patch.object(reuse, "_phase_git_inventories", return_value={
+                            item: ["current Git inventory"] for item in instances}) as inventories, \
                         patch.object(reuse, "advance_reuse", side_effect=planned) as advance:
                     if mutation != "none":
                         with self.assertRaises(ValueError):
@@ -177,6 +178,7 @@ class SdkCompletionTest(unittest.TestCase):
                     self.assertEqual(revision, authenticate.call_args.kwargs["consumer_commit"])
                     self.assertNotIn("producer", authenticate.call_args.kwargs)
                     self.assertIs(capability, advance.call_args.kwargs["completed_frozen"])
+                    inventories.assert_called_once_with(root, revision, instances)
                     self.assertEqual(instances, advance.call_args.args[0])
                     self.assertEqual(set(instances), set(advance.call_args.args[1]))
                     for row in advance.call_args.args[1].values():
@@ -205,6 +207,43 @@ class SdkCompletionTest(unittest.TestCase):
                 redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             completion.main(argv)
         self.assertEqual("", output.getvalue())
+
+    def test_local_gradle_routes_only_repository_gate_and_preserves_failure(self):
+        argv = ["--repository", "--local", "--gradle", "--repository-root", "/actual/repository",
+                "--completed-frozen-policy", "/actual/policy.json"]
+        with patch.object(completion, "run_local_repository_gradle", return_value={"result": "passed"}) as gate, \
+                patch.object(completion, "require_local_repository_completion") as duplicate, \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(0, completion.main(argv))
+            gate.assert_called_once_with(Path("/actual/repository"), Path("/actual/policy.json"))
+            duplicate.assert_not_called()
+            self.assertEqual('{"result":"passed"}\n', output.getvalue())
+        with tempfile.TemporaryDirectory(prefix="repository-gradle-") as temporary:
+            root = Path(temporary).resolve()
+            policy = root / "caller.json"
+            policy.write_text("{}\n")
+            report = root / "build/reports/repository/imported-product-evidence.json"
+            def gradle(command, **options):
+                script = Path(command[command.index("--init-script", command.index("--init-script") + 1) + 1])
+                self.assertEqual(completion.LOCAL_REPOSITORY_INIT, script.read_text())
+                self.assertEqual(":verifyRepository", command[-1])
+                self.assertIn("--offline", command)
+                self.assertTrue(options["check"])
+                report.parent.mkdir(parents=True)
+                report.write_bytes(canonical_json_bytes({"result": "passed"}))
+            with patch.object(completion.subprocess, "run", side_effect=gradle) as run:
+                self.assertEqual({"result": "passed"}, completion.run_local_repository_gradle(root, policy))
+                self.assertEqual(1, run.call_count)
+            with patch.object(completion.subprocess, "run", side_effect=completion.subprocess.CalledProcessError(1, "gradle")), \
+                    self.assertRaises(completion.subprocess.CalledProcessError):
+                completion.run_local_repository_gradle(root, policy)
+            self.assertFalse(report.exists())
+            report.symlink_to(policy)
+            with patch.object(completion.subprocess, "run") as run, self.assertRaises(ValueError):
+                completion.run_local_repository_gradle(root, policy)
+            run.assert_not_called()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            completion.main(["--gradle", "--repository-root", "/unused"])
 
     def test_every_unresolved_sdk_identity_rejects_even_when_all_worker_matrices_are_empty(self):
         for identity in self.sdk:
