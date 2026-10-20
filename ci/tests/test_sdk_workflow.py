@@ -257,6 +257,15 @@ class SdkWorkflowTest(unittest.TestCase):
                 else:
                     config_path = next(value.split("=", 1)[1] for value in command
                         if value.startswith("-DcodexAgent.importedNativeParityInputs="))
+                    native_init = Path(config_path).with_name("native.init.gradle").read_text()
+                    self.assertIn("java.nio.file.Files.delete(output)", native_init)
+                    self.assertIn("java.nio.file.LinkOption.NOFOLLOW_LINKS", native_init)
+                    self.assertIn("C ABI parity output must be fresh", native_init)
+                    self.assertIn("C ABI parity output overlaps an original input", native_init)
+                    self.assertNotIn("deleteRecursively", native_init)
+                    self.assertNotIn("VerifyImportedCAbiBindingParityTask", native_init)
+                    self.assertIn("file(original.bootstrap)", native_init)
+                    self.assertIn("spec.classifier.substring('c-abi-'.length())", native_init)
                     config = workflow.product_reuse.load_json_bytes(Path(config_path).read_bytes())
                     if ":verifyImportedSdkBindingParity" in command:
                         Path(config["finalOutput"]).write_bytes(b'{"result":"passed"}\n')

@@ -125,18 +125,68 @@ gradle.projectsEvaluated {
             outputs.upToDateWhen { false }
         }
     }
-    def type = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
-        .loadClass('VerifyImportedCAbiBindingParityTask')
-    rootProject.tasks.register('verifyImportedCAbiBindingParity', type) {
+    def loader = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
+    rootProject.tasks.register('verifyImportedCAbiBindingParity') {
         def original = config.native.cpp
-        language.set('cpp')
-        packageStage.set(file(original.packageStage))
-        packageReceipt.set(file(original.packageReceipt))
-        compatibilityRequest.set(file(original.request))
-        runtimeStages.set(file(original.runtime))
-        stagedSdks.set(file(original.sdks))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-        evidenceDirectory.set(file(config.cabiOutput))
+        def directory = file(config.cabiOutput)
+        // Reject prior contents before Gradle's stale-output cleanup can touch them.
+        if (java.nio.file.Files.exists(directory.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new GradleException('C ABI parity output must be fresh')
+        }
+        def outputPath = directory.canonicalFile.toPath()
+        if ([original.packageStage, original.packageReceipt, original.request, original.runtime,
+             original.sdks, original.bootstrap, rootProject.file('ci').path].any { value ->
+                def source = file(value).canonicalFile.toPath()
+                outputPath.startsWith(source) || source.startsWith(outputPath)
+            }) {
+            throw new GradleException('C ABI parity output overlaps an original input')
+        }
+        outputs.dir(directory)
+        outputs.upToDateWhen { false }
+        doFirst {
+            // Gradle creates output directories before task actions.
+            // This caller owns a new private tree; remove only an empty real directory.
+            def output = directory.toPath()
+            def noFollow = java.nio.file.LinkOption.NOFOLLOW_LINKS
+            if (java.nio.file.Files.exists(output, noFollow)) {
+                if (!java.nio.file.Files.isDirectory(output, noFollow)) {
+                    throw new GradleException('C ABI parity output is not a regular directory')
+                }
+                java.nio.file.Files.delete(output)
+            }
+        }
+        doLast {
+            java.nio.file.Files.createDirectory(directory.toPath())
+            // The enclosing Python transaction has already fully authenticated these
+            // originals. Reuse its bootstrap and the existing frozen receipt builders;
+            // no second package snapshot, semantic verification or serializer.
+            def evidence = loader.loadClass('CrossLanguageCAbiBindingEvidenceKt')
+            def client = loader.loadClass('CrossLanguageCAbiClientKt')
+            def identity = loader.loadClass('CrossLanguageBindingArtifactIdentity')
+            def input = loader.loadClass('CrossLanguageCAbiBindingEvidenceInput')
+            def io = loader.loadClass('ReleaseIoKt')
+            def bootstrap = file(original.bootstrap)
+            def scenarioFile = new File(directory, 'c-abi-scenarios.json')
+            def count = evidence.C_ABI_BINDING_CAPABILITY_COUNT
+            def symbols = evidence.getC_ABI_BINDING_PUBLIC_SYMBOL_COUNT()
+            def digest = evidence.C_ABI_BINDING_CAPABILITY_SHA256
+            def scenario = evidence.writeCrossLanguageCAbiScenarioProof(scenarioFile, bootstrap,
+                evidence.productionCrossLanguageCAbiScenarioMappings(), count, symbols, digest)
+            def artifact = { name, path ->
+                identity.newInstance(name, io.releaseDigest(path, 'SHA-256'))
+            }
+            def artifacts = [artifact('c-abi-bootstrap', bootstrap),
+                artifact(evidence.C_ABI_SCENARIO_PROOF_ARTIFACT_ID, scenarioFile)]
+            client.getCrossLanguageCAbiTargetSpecs().sort().each { target, spec ->
+                def component = spec.classifier.substring('c-abi-'.length())
+                def proof = new File(original.runtime, component + '/validation/outputs/c-abi/' +
+                    client.crossLanguageCAbiPackageEvidenceFileName(target))
+                artifacts.add(artifact(client.getCrossLanguageCAbiPackageProofIds().get(target), proof))
+            }
+            evidence.writeCrossLanguageCAbiBindingReceipt(new File(directory, 'c-abi-parity.json'),
+                input.newInstance(bootstrap, scenario.mappings, artifacts,
+                    scenario.testProgramSha256, scenario.testResultsSha256, count, symbols, digest))
+        }
     }
     rootProject.tasks.named('verifyImportedSdkBindingParity').configure {
         setDependsOn([])
