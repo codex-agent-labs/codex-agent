@@ -259,7 +259,7 @@ def _completed_apple_parity_files(verified, destination, *, token):
     """Recover genuine raw receipts, after native admission and fresh observation."""
     from reuse_qualification import CompletedFrozenReuse
     from sdk_apple_upload_locator import (
-        retained_validation_origin, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS,
+        RETAINED_PARITY_SOURCE, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS,
     )
     from runtime_reference_archive import (
         open_reference_archive, open_stored_reference_archive, copy_reference_member,
@@ -275,12 +275,12 @@ def _completed_apple_parity_files(verified, destination, *, token):
     envelope = completed.envelope(row)
     if envelope is None:
         raise ValueError("Compact Apple parity lacks its exact qualified original")
-    origin = retained_validation_origin(identity.target, row["buildKey"], verified.producer)
-    if origin is None or envelope["receipt"]["producer"] != origin["producer"]:
+    if any(row[field] != RETAINED_PARITY_SOURCE[field] for field in ("buildKey", "receiptSha256")):
         raise ValueError("Compact Apple parity differs from its reviewed original")
     _, artifact, observed = completed.observe_extended_sdk(row, producer=verified.producer, token=token)
-    if ((artifact["id"], artifact["digest"]) != (origin["artifact_id"], origin["artifact_sha256"])
-            or not any(job["id"] == origin["job_id"] for observation in observed for job in observation["jobs"])):
+    if ((artifact["id"], artifact["digest"]) != (RETAINED_PARITY_SOURCE["artifactId"], RETAINED_PARITY_SOURCE["artifactSha256"])
+            or not any(job["id"] == RETAINED_PARITY_SOURCE["jobId"]
+                       for observation in observed for job in observation["jobs"])):
         raise ValueError("Compact Apple parity changes its independently qualified upload")
     files = {}
     with open_reference_archive(artifact, token) as (archive, stream), \

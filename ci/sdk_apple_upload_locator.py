@@ -27,17 +27,24 @@ RETAINED_VALIDATION_UPLOADS = {
         11935475988, "sha256:1b4e95d83b250735dd0892127b89769cff1800d54993394bc89f2ffe03d67de8", 116144183702),
 }
 
-# Exact raw receipts in the fully SHA-verified ios-arm64 original 11934933559.
+# Exact raw receipts in the fully SHA-verified ios-arm64 original 12036959536.
 # These reviewed content pins enable scoped transport, not semantic admission.
 # Consumption additionally requires the matching native-qualified phase and
 # fresh original job/workflow/upload observation. Never derive raw receipts
 # from the deterministic projection, which intentionally omits execution hashes.
-RETAINED_PARITY_ARCHIVE_BYTES = 1610548650
+RETAINED_PARITY_SOURCE = {
+    "buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
+    "receiptSha256": "sha256:a9aa3a319595b754bc06ad843ff0142a4c7527824768a91cb131a3610c51adab",
+    "artifactId": 12036959536,
+    "artifactSha256": "sha256:835b2c7641fb225ff2a35f8f8f326746b6bf456cdffc45a2ff07c12ede280202",
+    "jobId": 116893614838,
+}
+RETAINED_PARITY_ARCHIVE_BYTES = 1610548543
 RETAINED_PARITY_REPORTS = (
     {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
-     "sha256": "sha256:614ed737ce103c271bedcb339afca9add2bf27e2c2a6f2ecbff520ed119b208a"},
+     "sha256": "sha256:edce83956aeaaa95fa501b90a66fa5ee40efb43dede5d61eb2d8eda11849e6d5"},
     {"relativePath": "reports/swift-parity.json", "bytes": 439042,
-     "sha256": "sha256:02b59f4974855a394fa8be194cfd3d22d045f6727dac925b9964b4fd274c32b9"},
+     "sha256": "sha256:2ddaaad6fb5484c111df9e0c0ea9d83664f1bd9c8088d9f8b36c5a61bcfb8cc3"},
 )
 
 

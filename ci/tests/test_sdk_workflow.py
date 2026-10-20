@@ -15,6 +15,19 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_compact_apple_pins_select_current_completion_not_legacy_recovery_hint(self):
+        import sdk_apple_upload_locator as locator
+        spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
+        def selected(row):
+            return (row["product"], row["component"], row["phase"], row["target"]) == (
+                "sdk", "sdk-ios", "validation", "ios-arm64")
+        phase, = [row for row in spec["completedPhases"] if selected(row)]
+        original, = [row for row in spec["originals"] if selected(row)]
+        self.assertEqual(
+            {**{field: phase[field] for field in ("buildKey", "receiptSha256")},
+             **{field: original[field] for field in ("artifactId", "artifactSha256", "jobId")}},
+            locator.RETAINED_PARITY_SOURCE)
+
     def test_compact_apple_parity_requires_qualified_original_and_exact_raw_reports(self):
         from reuse_qualification import CompletedFrozenReuse
         import sdk_apple_upload_locator as locator
@@ -24,10 +37,9 @@ class SdkWorkflowTest(unittest.TestCase):
         identity = workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
         consumer = dict(repository="codex-agent-labs/codex-agent", workflowPath=".github/workflows/ci.yml",
                         event="pull_request", pullRequest=31, runId=40000000000, runAttempt=1)
-        key = locator.RETAINED_VALIDATION_UPLOADS["ios-arm64"][0]
-        origin = locator.retained_validation_origin("ios-arm64", key, consumer)
-        row = dict(buildKey=key)
-        envelope = dict(receipt={"producer": origin["producer"]})
+        origin = locator.RETAINED_PARITY_SOURCE
+        row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
+        envelope = dict(receipt={"producer": consumer})
         verified = SimpleNamespace(completed_frozen=cap, consumer={"kind": "ci", "producer": consumer},
             producer=consumer, rebased_request={}, prior_by_instance={identity: row})
         inner = io.BytesIO()
@@ -40,12 +52,12 @@ class SdkWorkflowTest(unittest.TestCase):
         outer = io.BytesIO()
         with ZipFile(outer, "w") as archive:
             archive.writestr("execution/apple-validation-evidence.zip", inner.getvalue())
-        artifact = dict(id=origin["artifact_id"], digest=origin["artifact_sha256"])
-        observed = [{"jobs": [{"id": origin["job_id"]}]}]
-        for defect in (None, "authority", "producer", "upload", "job", "report"):
+        artifact = dict(id=origin["artifactId"], digest=origin["artifactSha256"])
+        observed = [{"jobs": [{"id": origin["jobId"]}]}]
+        for defect in (None, "authority", "receipt", "upload", "job", "report"):
             destination = self.root / ("apple-parity-" + str(defect))
-            selected = None if defect == "authority" else (
-                dict(receipt={"producer": {}}) if defect == "producer" else envelope)
+            selected = None if defect == "authority" else envelope
+            verified.prior_by_instance[identity] = {**row, "receiptSha256": "wrong"} if defect == "receipt" else row
             with self.subTest(defect=defect), ExitStack() as stack:
                 for name in ("check_request", "check_consumer"):
                     stack.enter_context(patch.object(CompletedFrozenReuse, name))
