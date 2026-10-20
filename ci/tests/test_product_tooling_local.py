@@ -221,3 +221,56 @@ class LocalToolingTest(GitFixture):
         with self.assertRaisesRegex(ValueError, "required Apple execution classes"), \
                 self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip()):
             self.fail("an incomplete signed JAR was admitted")
+        with self.assertRaisesRegex(ValueError, "required Apple execution classes"), \
+                self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip(),
+                             use="javascript-validation"):
+            self.fail("JavaScript scope bypassed a present class policy")
+
+    def test_historical_javascript_scope_keeps_source_resources_and_class_checks(self):
+        from ci.products.inventory import run_git
+        from ci.products.tooling import _verify_tooling_policy
+
+        self.commit("ci/products/sdk_package.py", "# original verifier\n")
+        (self.root / ".github/actions/run-ci-lane/release_tooling_classes.json").unlink()
+        run_git(self.root, "add", ".github/actions/run-ci-lane/release_tooling_classes.json")
+        run_git(self.root, "commit", "-qm", "fixture predating Apple class policy")
+        original_execute = self.execute
+
+        def execute(command, **kwargs):
+            result = original_execute(command, **kwargs)
+            if command[-1] == "releaseToolingJar":
+                source = Path(kwargs["cwd"])
+                with zipfile.ZipFile(source / JAR.removeprefix("payload/"), "w") as archive:
+                    for name in ("CrossLanguageJavaScriptBindingEvidenceKt",
+                                 "CrossLanguageJavaScriptMetadataEvidenceKt",
+                                 "CrossLanguageJavaScriptStagedMetadataKt", "ReleaseToolingCliKt"):
+                        archive.writestr(name + ".class", b"fixture class, never executed")
+                    archive.writestr("python/ci/products/sdk_package.py",
+                                     (source / "ci/products/sdk_package.py").read_bytes())
+            return result
+
+        with mock.patch.object(self, "execute", side_effect=execute):
+            self.produce()
+        revision = run_git(self.root, "rev-parse", "HEAD").strip()
+        before = regular_file_inventory(self.output, allow_empty=True)
+        with self.assertRaisesRegex(ValueError, "Git blob is absent"), self.capture(policy_revision=revision):
+            self.fail("Full scope silently accepted absent policy")
+        with self.capture(policy_revision=revision, use="javascript-validation") as jar:
+            # Exercise actual legacy class inventory, with signatures already
+            # checked by the enclosing capture. Never admit this mutated copy.
+            bad = self.root / "missing-js-class.jar"
+            with zipfile.ZipFile(jar) as source, zipfile.ZipFile(bad, "w") as target:
+                for member in source.infolist():
+                    if member.filename != "ReleaseToolingCliKt.class":
+                        target.writestr(member, source.read(member))
+            with self.assertRaisesRegex(ValueError, "required JavaScript replay classes"):
+                _verify_tooling_policy(bad, self.output, self.root, revision, use="javascript-validation")
+        self.assertEqual(before, regular_file_inventory(self.output, allow_empty=True))
+        for options in ({"use": "javascript-validation"}, {"use": "unknown", "policy_revision": revision}):
+            with self.assertRaisesRegex(ValueError, "consumer scope"), self.capture(**options):
+                self.fail("Unbound consumer scope was accepted")
+        self.commit("ci/products/sdk_package.py", "# changed verifier\n")
+        with self.assertRaisesRegex(ValueError, "resource differs"), \
+                self.capture(policy_revision=run_git(self.root, "rev-parse", "HEAD").strip(),
+                             use="javascript-validation"):
+            self.fail("Historical scope weakened resource identity")

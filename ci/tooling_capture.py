@@ -48,7 +48,7 @@ def _ensure_original_source(repository, producer):
 def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sha256,
                       transport_producer, trusted_workflow_sha, policy_revision,
                       java_executable, token, trusted_workflow_path=None,
-                      trusted_job_name=None, transport_archive=None):
+                      trusted_job_name=None, transport_archive=None, tooling_use="full"):
     """Create the existing SDK tooling policy from independently authenticated bytes.
 
     Upload ID/digest and producer come from the trusted caller, not the download.
@@ -111,7 +111,8 @@ def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sh
         original = regular_file_inventory(evidence, allow_empty=True)
         with verified_tooling_capture(evidence, repository, key, required_trust_domain="release",
                 keyring=trust.keyring, keys_directory=trust.keys, policy_revision=policy_revision,
-                ensure_original_source=lambda producer: _ensure_original_source(repository, producer)):
+                ensure_original_source=lambda producer: _ensure_original_source(repository, producer),
+                use=tooling_use):
             snapshot_regular_tree(evidence, prepared / "evidence", allow_empty=True)
         if regular_file_inventory(prepared / "evidence", allow_empty=True) != original:
             raise ValueError("Tooling capture changed its authenticated original evidence")

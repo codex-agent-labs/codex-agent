@@ -171,7 +171,8 @@ def _verify_sdk_javascript_validation(
         output = private / "replayed.json"
         with verified_tooling_capture(tooling_evidence, repository, tooling_public_key,
                 required_trust_domain=required_trust_domain, keyring=tooling_keyring,
-                keys_directory=tooling_keys_directory, policy_revision=policy_revision) as jar:
+                keys_directory=tooling_keys_directory, policy_revision=policy_revision,
+                use="javascript-validation") as jar:
             arguments = {"contract-stage": captured["contract"], "package-stage": captured["package"],
                 "validation-stage": captured["validation"], "runtime-validation-stage": captured["runtime"],
                 "original-consumer-directory": original_consumer_directory,
