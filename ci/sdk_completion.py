@@ -261,7 +261,6 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
     unchanged verifier inputs establish applicability without re-running it.
     """
     from products.tooling import _COMPILER_INPUTS
-    from products.registry import NATIVE_BINDINGS
     policy_path = Path(policy_path).absolute()
     raw = read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True)
     policy = require_exact_keys(load_canonical_json_bytes(raw), {
@@ -291,12 +290,32 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
     original_recipe = git_inventory(root, producer["tree"], recipe)
     if not original_recipe or original_recipe != git_inventory(root, revision, recipe):
         raise ValueError("Original SDK parity verifier recipe differs from current inputs")
+    content = verify_completed_parity_archive(archive, expected_phases=result["phases"],
+        expected_bytes=artifact["size_in_bytes"], expected_sha256=policy["artifactSha256"])
+    if read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True) != raw:
+        raise ValueError("Original SDK parity caller policy changed during verification")
+    return dict(content, producer=producer, jobId=job["id"],
+        artifactId=policy["artifactId"], artifactSha256=policy["artifactSha256"],
+        policySha256=sha256_bytes(raw), verifierInputsSha256=sha256_bytes(original_recipe.encode()))
+
+
+def verify_completed_parity_archive(archive, *, expected_phases, expected_bytes, expected_sha256):
+    """Read exact prevalidated parity bytes, NOT grant transport/release authority.
+
+    The caller must independently authenticate the archive identity and phase
+    selection. No original receipt is decoded through a different schema or
+    rewritten: the successful original verifier supplies its semantics.
+    One bounded ZIP pass checks all members without extracting product bodies.
+    """
+    from products.registry import NATIVE_BINDINGS
+    require_integer(expected_bytes, "Original parity archive bytes", 1)
+    require_sha256(expected_sha256, "Original parity archive digest")
     inventory, retained, transport = verified_zip_contents(Path(archive),
         max_archive_bytes=32 * 1024 * 1024, max_members=32,
         max_entry_bytes=16 * 1024 * 1024, max_total_bytes=32 * 1024 * 1024,
         retained_paths=("sdk-parity.json", "original-phase-identities.json"),
         max_retained_bytes=1024 * 1024, require_sorted=False)
-    if transport != {"bytes": artifact["size_in_bytes"], "sha256": policy["artifactSha256"]}:
+    if transport != {"bytes": expected_bytes, "sha256": expected_sha256}:
         raise ValueError("Held SDK parity archive differs from authenticated original upload")
     if set(retained) != {"sdk-parity.json", "original-phase-identities.json"}:
         raise ValueError("Original SDK parity archive lacks its report or phase identities")
@@ -304,10 +323,10 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
                               "Original SDK parity phases")
     # Compatibility excludes retrieval/reuse state; original receipts remain exact.
     fields = (*products._IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256")
-    expected = {tuple(row[key] for key in fields) for row in result["phases"]}
+    expected = {tuple(row[key] for key in fields) for row in expected_phases}
     actual = {tuple(require_string(require_exact_keys(row, products._REUSE_PHASE_KEYS,
               "Original SDK parity phase")[key], "Parity original " + key) for key in fields) for row in originals}
-    if len(originals) != len(expected) or actual != expected:
+    if len(expected_phases) != len(expected) or len(originals) != len(expected) or actual != expected:
         raise ValueError("Original SDK parity does not cover the current exact phase identities")
     report = require_exact_keys(load_canonical_json_bytes(retained["sdk-parity.json"]), {
         "schemaVersion", "phase", "result", "capabilityCount", "languageCount", "scenarioCount",
@@ -339,11 +358,7 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
                 ("canonicalApiSha256", "canonical-api.json"),
                 ("canonicalCoverageSha256", "canonical-coverage.json")))):
         raise ValueError("SDK parity evidence differs from the original exact report inventory")
-    if read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True) != raw:
-        raise ValueError("Original SDK parity caller policy changed during verification")
-    return dict(result="passed", producer=producer, jobId=job["id"],
-        artifactId=policy["artifactId"], artifactSha256=policy["artifactSha256"],
-        policySha256=sha256_bytes(raw), verifierInputsSha256=sha256_bytes(original_recipe.encode()),
+    return dict(result="passed",
         reportSha256=sha256_bytes(retained["sdk-parity.json"]), phaseCount=len(originals),
         languageCount=11, satisfied=6104, excluded=12, scenarioCount=14)
 

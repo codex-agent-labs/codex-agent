@@ -6,12 +6,15 @@ import copy
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ci import sdk_candidate_semantics as candidate
 from ci.products.aggregate import RUNTIME_TARGETS
-from ci.products.inventory import canonical_json_bytes, sha256_bytes
+from ci.products.inventory import canonical_json_bytes, sha256_bytes, sha256_file
+from ci.products.registry import NATIVE_BINDINGS, PHASE_INSTANCE_IDS, PhaseInstanceId
 from ci.products.restore import object_relative_path
+from ci.tests.test_sdk_completion import phase
 
 
 _DIGEST = "sha256:" + "1" * 64
@@ -44,10 +47,38 @@ def _compatibility() -> dict:
 def _selection(raw: bytes) -> dict:
     pins = {name: _DIGEST for name in candidate._JOIN if name.endswith("_sha256")}
     pins.update(expected_sdk_version="0.8.0", expected_validation_tree="a" * 40)
-    return {"schemaVersion": 1, "joinPins": pins,
+    return {"schemaVersion": 2, "joinPins": pins,
             "dependencies": {"contractVersion": "0.8.0", "contractDigest": _CONTRACT,
                              "runtimeVersion": "0.8.0", "runtimeManifestSha256": _RUNTIME,
-                             "sdkCompatibilitySha256": sha256_bytes(raw)}}
+                             "sdkCompatibilitySha256": sha256_bytes(raw)},
+            "parity": {"archiveSha256": _DIGEST, "archiveBytes": 1,
+                       "phaseIdentitiesSha256": _DIGEST}}
+
+
+def _parity_fixture(root, phases):
+    # Content-join fixture only; official custody/signed campaign is mocked below.
+    # This deliberately does not claim execution or manufacture hosted identities.
+    names = {"canonical-api.json", "canonical-coverage.json", "binding-obligations-m11.json",
+             *(name + "-parity.json" for name in (*NATIVE_BINDINGS, "kotlin", "java",
+                 "javascript-typescript", "swift", "objective-c", "c-abi"))}
+    evidence = {name: canonical_json_bytes({"fixture": name}) for name in names}
+    digest = lambda raw: sha256_bytes(raw).removeprefix("sha256:")
+    report = dict(schemaVersion=2, phase="M11", result="passed", capabilityCount=556,
+        languageCount=11, scenarioCount=14, active=6104, pending=0, excluded=12, satisfied=6104, missing=0,
+        canonicalApiSha256=digest(evidence["canonical-api.json"]),
+        canonicalCoverageSha256=digest(evidence["canonical-coverage.json"]),
+        evidenceFiles=[dict(path=name, bytes=len(raw), sha256=digest(raw))
+                       for name, raw in sorted(evidence.items())])
+    archive = root / "parity.zip"
+    phase_file = root / "phases.json"
+    phase_file.write_bytes(canonical_json_bytes(phases))
+    with zipfile.ZipFile(archive, "w") as zipped:
+        for name, raw in evidence.items():
+            zipped.writestr("m11/" + name, raw)
+        zipped.writestr("sdk-parity.json", canonical_json_bytes(report))
+        zipped.writestr("original-phase-identities.json", phase_file.read_bytes())
+        zipped.writestr("consumer.log", b"fixture only\n")
+    return archive, phase_file
 
 
 class SdkCandidateSemanticsTest(unittest.TestCase):
@@ -67,15 +98,23 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
         self.selected["joinPins"].update(
             expected_phase10_index_sha256=sha256_bytes(self.index_bytes),
             expected_phase10_signature_sha256=sha256_bytes(self.signature_bytes))
+        self.phases = [dict(phase(instance), buildKey=_KEY, receiptSha256=_RECEIPT)
+                       for instance in sorted(PHASE_INSTANCE_IDS)]
         self.entries = []
-        for instance in sorted(candidate._PACKAGES):
-            row = {"product": "sdk", "component": instance.component,
-                   "phase": "package", "target": instance.target,
-                   "buildKey": _KEY, "receiptSha256": _RECEIPT}
+        for row in self.phases:
+            if row["product"] != "sdk":
+                continue
             self.entries.append(row)
             path = self.objects / "objects" / object_relative_path(_KEY, _RECEIPT)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"object\n")
+        object_pins = canonical_json_bytes({"objects": self.entries})
+        (self.objects / "object-pins.json").write_bytes(object_pins)
+        self.selected["joinPins"]["expected_object_pins_sha256"] = sha256_bytes(object_pins)
+        self.parity_archive, self.parity_phases = _parity_fixture(self.root, self.phases)
+        self.selected["parity"].update(archiveSha256=sha256_file(self.parity_archive),
+            archiveBytes=self.parity_archive.stat().st_size,
+            phaseIdentitiesSha256=sha256_file(self.parity_phases))
 
     def _verify(self, *, raw=None, selection=None, per_component=None):
         raw = self.raw if raw is None else raw
@@ -95,7 +134,8 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
                           return_value=({"entries": self.entries}, self.index_bytes)), \
              patch.object(candidate, "restore_object", side_effect=restore) as restored:
             result = candidate.verify_sdk_candidate_semantics(
-                self.root / "promoted", self.objects, self.root / "maven", selection)
+                self.root / "promoted", self.objects, self.root / "maven", selection,
+                parity_archive=self.parity_archive, parity_phase_identities=self.parity_phases)
         self.assertEqual(1, join.call_count)
         self.assertEqual(3, restored.call_count)
         return result
@@ -105,6 +145,8 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
         self.assertFalse(result["admitted"])
         self.assertEqual(result["contractDigest"], _CONTRACT)
         self.assertEqual(result["runtimeManifestSha256"], _RUNTIME)
+        self.assertEqual(result["parity"]["phaseCount"], 112)
+        self.assertEqual(result["parity"]["satisfied"], 6104)
 
     def test_contract_runtime_and_compatibility_mutations_reject(self):
         for field, value in (("contractDigest", _DIGEST),
@@ -143,8 +185,46 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
                             "--expected-selection-sha256", _DIGEST,
                             "--promoted-catalog", str(self.root),
                             "--forwarded-objects", str(self.objects),
-                            "--forwarded-maven", str(self.root)])
+                            "--forwarded-maven", str(self.root),
+                            "--parity-archive", str(self.parity_archive),
+                            "--parity-phase-identities", str(self.parity_phases)])
         verify.assert_not_called()
+
+    def test_parity_must_bind_independent_pins_and_exact_sdk_objects(self):
+        for field, value in (("archiveSha256", _DIGEST), ("archiveBytes", 1),
+                             ("phaseIdentitiesSha256", _DIGEST)):
+            selected = copy.deepcopy(self.selected)
+            selected["parity"][field] = value
+            with self.subTest(pin=field), self.assertRaises(ValueError):
+                self._verify(selection=selected)
+        entries = {PhaseInstanceId(*(row[k] for k in ("product", "component", "phase", "target"))): row
+                   for row in self.entries}
+        for field in ("buildKey", "receiptSha256", "objectSha256"):
+            objects = copy.deepcopy(entries)
+            objects[next(iter(objects))][field] = _DIGEST
+            with self.subTest(object_field=field), self.assertRaisesRegex(ValueError, "signed SDK campaign"):
+                candidate.verify_candidate_sdk_parity(self.parity_archive, self.parity_phases,
+                    self.selected["parity"], entries, objects)
+        for phases in (self.phases[:-1], self.phases + self.phases[:1]):
+            raw = canonical_json_bytes(phases)
+            self.parity_phases.write_bytes(raw)
+            pins = dict(self.selected["parity"], phaseIdentitiesSha256=sha256_bytes(raw))
+            with self.assertRaisesRegex(ValueError, "phase set"):
+                candidate.verify_candidate_sdk_parity(self.parity_archive, self.parity_phases,
+                    pins, entries, entries)
+
+    def test_old_selection_and_mutated_object_pins_cannot_skip_parity(self):
+        for mutation in ("schema", "missing"):
+            selected = copy.deepcopy(self.selected)
+            if mutation == "schema":
+                selected["schemaVersion"] = 1
+            else:
+                del selected["parity"]
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                candidate._selection(selected)
+        (self.objects / "object-pins.json").write_bytes(b"{}\n")
+        with self.assertRaisesRegex(ValueError, "object pins changed"):
+            self._verify()
 
 
 if __name__ == "__main__":
