@@ -21,6 +21,7 @@ from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_shard
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate
+from products.sdk_validation_inputs import collection_admission_scope
 
 
 def completed_validation_recovery(completed, request, tooling, context):
@@ -103,8 +104,6 @@ def completed_validation_recovery(completed, request, tooling, context):
     common = {}
     ordinary_records = request.get("sdkValidationEvidence", [])
     ordinary = decode_sdk_validation_records(root, ordinary_records)
-    ordinary_provider = sdk_validation_provider(root, ordinary_records, repository=root,
-        policy_revision=request["repositoryRevision"], tooling=policy)
 
     def check():
         if _VERIFICATION_SESSION.get() is not session or authority() != original_authority:
@@ -216,6 +215,10 @@ def completed_validation_recovery(completed, request, tooling, context):
         records.sort(key=lambda record: record["receiptSha256"])
         provider = sdk_validation_provider(private, records, repository=root,
             policy_revision=request["repositoryRevision"], tooling=policy)
+        # Recovery categories may outlive a nested admission scope. Bind this
+        # provider to the current scope, never a previous scope's expired cache.
+        ordinary_provider = sdk_validation_provider(root, ordinary_records, repository=root,
+            policy_revision=request["repositoryRevision"], tooling=policy)
         result = tuple((ordinary_provider if envelope["receiptSha256"] in ordinary else provider)(
                            {**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
                        for envelope in envelopes)
@@ -230,6 +233,7 @@ def completed_validation_recovery(completed, request, tooling, context):
     return result
 
 
+@collection_admission_scope
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             preparation_component, preparation_build_key, preparation_state,
             prepared_artifact_id, prepared_artifact_sha256,

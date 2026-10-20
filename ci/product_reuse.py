@@ -4628,6 +4628,7 @@ def _scoped_reuse_result(value, closure):
 
 
 @verification_scoped
+@collection_admission_scope
 @_fresh_ci_observations
 @measured
 def _verified_product_state(

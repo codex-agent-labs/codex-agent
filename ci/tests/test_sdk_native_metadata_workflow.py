@@ -19,6 +19,31 @@ from products.restore import finalize_phase_object, verify_phase_shard
 
 
 class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
+    def test_state_replay_shares_admission_scope_and_clears_it_after_failure(self):
+        from products.sdk_validation_inputs import _COLLECTION
+        caches = []
+
+        def planner(*args, **kwargs):
+            cache = _COLLECTION.get()
+            self.assertIsNotNone(cache)
+            caches.append(cache)
+            return {}
+
+        def replay(*args, **kwargs):
+            workflow.product_reuse._plan_with_sdk_tooling({}, None)
+            workflow.product_reuse._plan_with_sdk_tooling({}, None)
+            raise ValueError("stop after scope composition check")
+
+        with patch.object(workflow.product_reuse, "_validate_plan", side_effect=replay), \
+                patch.object(workflow.product_reuse, "plan_reuse_wave", side_effect=planner):
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, "scope composition"):
+                    workflow.product_reuse._verified_product_state(None, None, None, None, {}, None)
+                self.assertIsNone(_COLLECTION.get())
+        self.assertIs(caches[0], caches[1])
+        self.assertIs(caches[2], caches[3])
+        self.assertIsNot(caches[0], caches[2])
+
     def test_private_recovery_reuses_one_scope_and_rejects_expired_or_changed_authority(self):
         # Control/lifetime test only; no mocked object is claimed as authenticated.
         from reuse_qualification import CompletedFrozenReuse
@@ -94,10 +119,14 @@ class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
                 proofs = {phase.target: Mock() for phase in dependencies}
 
                 def provider(directory, records, **kwargs):
+                    from products.sdk_validation_inputs import _COLLECTION
+                    cache = _COLLECTION.get()
                     targets = {record["target"] for record in records}
                     self.assertEqual({"windows-x64"} if directory == root else
                                      set(NATIVE_TARGETS) - {"windows-x64"}, targets)
                     def verify(entry):
+                        self.assertIsNotNone(cache)
+                        self.assertIs(cache, _COLLECTION.get())
                         self.assertIn(entry["target"], targets)
                         admissions.append(entry["target"])
                         return proofs[entry["target"]]
@@ -124,8 +153,9 @@ class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
                                    for name in ("compatibility_request", "runtime_stages", "staged_sdks")})
                     selected = tuple(originals[phase] for phase in dependencies)
                     expected = tuple(proofs[phase.target] for phase in dependencies)
-                    self.assertEqual(expected, mixed["verify"](identity, selected, originals[package]))
-                    self.assertEqual(expected, mixed["verify"](identity, selected, originals[package]))
+                    scoped_verify = workflow.collection_admission_scope(mixed["verify"])
+                    self.assertEqual(expected, scoped_verify(identity, selected, originals[package]))
+                    self.assertEqual(expected, scoped_verify(identity, selected, originals[package]))
                     self.assertEqual([phase.target for phase in dependencies] * 2, admissions)
                     self.assertEqual({package, *(phase for phase in dependencies if phase != new_host)}, set(captures))
                     self.assertEqual(5, len(captures))  # No repeat originals, no new-host download.
@@ -314,7 +344,23 @@ class SdkNativeMetadataWorkflowTest(unittest.TestCase):
                                     **{**self.arguments, **changes})
 
     def test_authenticates_preparation_runtime_and_s858_before_publishing_existing_metadata_shard(self):
-        result = self.invoke()
+        from products.sdk_validation_inputs import _COLLECTION
+        caches = []
+        def observe(delegate):
+            def wrapped(*args, **kwargs):
+                cache = _COLLECTION.get()
+                self.assertIsNotNone(cache)
+                caches.append(cache)
+                return delegate(*args, **kwargs)
+            return wrapped
+        with patch.object(self, "verified", side_effect=observe(self.verified)), \
+                patch.object(self, "inspect", side_effect=observe(self.inspect)), \
+                patch.object(self, "materialize", side_effect=observe(self.materialize)), \
+                patch.object(self, "metadata", side_effect=observe(self.metadata)):
+            result = self.invoke()
+        self.assertEqual(4, len(caches))
+        self.assertTrue(all(cache is caches[0] for cache in caches))
+        self.assertIsNone(_COLLECTION.get())
         self.assertEqual(["enter", "inspect", "capture", "materialize", "metadata",
                           "exit-check", "exited"], self.events)
         self.assertEqual(result, verify_phase_shard(self.destination / "shard", self.instance))
