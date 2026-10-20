@@ -34,6 +34,7 @@ _PRIOR_TOOLING_WORKFLOW_SHAS = (
     "07712206009da19a5de9c4d237cb241cda81be84",
     "894ecc38ae7463c98ee2742fca69c0f08dca56d2",
     "b4fbebd49866c0607bceee8fa9882f041ef0f2b0",
+    "f339db79f75765d8dca66b4acee1cd7e88163cea",
 )
 
 
