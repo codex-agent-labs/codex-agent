@@ -248,6 +248,7 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertEqual(workflow.regular_file_inventory(stage),
                         workflow.regular_file_inventory(package.parent / "csharp-binary/stage"))
             if "--init-script" in command:
+                self.assertIn(str(self.repository / ".github/actions/run-ci-lane/release_tooling.init.gradle"), command)
                 if ":codex-agent-core:verifyJavaBindingParity" in command:
                     path = next(value.split("=", 1)[1] for value in command
                         if value.startswith("-DcodexAgent.importedJavaParityOutput="))

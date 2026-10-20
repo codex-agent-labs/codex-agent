@@ -579,7 +579,9 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
             java_script.write_text(IMPORTED_JAVA_PARITY_INIT)
             config_path = private / "native.json"
             config_path.write_bytes(canonical_json_bytes(config))
-            gradle = [str(root / "gradlew"), "--no-configuration-cache",
+            gradle = [str(root / "gradlew"),
+                "--init-script", str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
+                "--no-configuration-cache",
                 "--no-build-cache", "--max-workers=4", "--console=plain"]
             native_options = ["--init-script", str(native_script),
                 "-DcodexAgent.importedNativeParityInputs=" + str(config_path)]
