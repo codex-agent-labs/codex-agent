@@ -61,6 +61,8 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             condition = re.search(r"(?ms)^    if: >-\n(.*?)(?=^    \S)", job)[1]
             clauses = [value.strip() for value in condition.split("&&")]
             self.assertEqual(["always()", "!cancelled()"], clauses[:2])
+            if name == "sdk-catalog":
+                self.assertEqual("needs.plan.outputs.native_resume_full_reuse != 'true'", clauses.pop())
             comparisons = []
             for clause in clauses[2:]:
                 comparison = re.fullmatch(r"([\w.-]+) == '([^']*)'", clause)
@@ -412,6 +414,30 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             process = subprocess.run(["bash", "-c", identity], env=env, cwd=ROOT,
                                      capture_output=True, text=True)
             self.assertNotEqual(0, process.returncode)
+
+    def test_catalog_is_unnecessary_only_for_authenticated_initial_full_reuse(self):
+        guard = "needs.plan.outputs.native_resume_full_reuse != 'true'"
+        header = self.job("sdk-catalog").split("    runs-on:", 1)[0]
+        self.assertIn(guard, header)
+        # Final completion is also true after new work: use the initial planner,
+        # not final completion, to avoid suppressing a genuinely new catalog.
+        self.assertNotIn("needs.sdk-completion.outputs.full_reuse", header)
+        expression = re.search(r"(?m)^          SDK_CATALOG_REQUIRED: \$\{\{ (.+) \}\}$",
+                               self.job("merge-gate"))[1]
+        self.assertEqual("github.event_name == 'pull_request' && "
+                         "needs.sdk-completion.outputs.phase_count == '62' && " + guard, expression)
+        for event, count, reuse, required in (
+                ("pull_request", "62", "true", False),
+                ("pull_request", "62", "false", True),
+                ("pull_request", "62", "", True),
+                ("pull_request", "62", "unknown", True),
+                ("push", "62", "false", False),
+                ("pull_request", "61", "false", False)):
+            with self.subTest(event=event, count=count, reuse=reuse):
+                actual = expression.replace("github.event_name", repr(event)).replace(
+                    "needs.sdk-completion.outputs.phase_count", repr(count)).replace(
+                    "needs.plan.outputs.native_resume_full_reuse", repr(reuse)).replace("&&", "and")
+                self.assertEqual(required, eval(actual, {"__builtins__": {}}))
 
 
 if __name__ == "__main__":

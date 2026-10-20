@@ -1,7 +1,8 @@
 """SDK workflow composition only; mocked authenticated gates are not host evidence."""
 
-from contextlib import ExitStack, nullcontext, contextmanager
+from contextlib import ExitStack, nullcontext, contextmanager, redirect_stderr
 from copy import deepcopy
+import io
 import os
 import json
 from pathlib import Path
@@ -221,8 +222,10 @@ class SdkWorkflowTest(unittest.TestCase):
         stage.mkdir()
         (stage / "evidence").write_bytes(b"synthetic original stage\n")
         receipt.write_bytes(b"synthetic original receipt\n")
-        record = {name: stage for name in ("packageStage", "runtimeStages", "stagedSdks", "validationStage", "runtimeAuthorization")}
-        record.update({name: receipt for name in ("packageReceipt", "validationReceipt", "compatibilityRequest")})
+        record = {name: stage for name in ("packageStage", "runtimeStages", "stagedSdks",
+                                         "validationStage", "runtimeAuthorization", "binaryStage")}
+        record.update({name: receipt for name in
+                       ("packageReceipt", "validationReceipt", "compatibilityRequest", "binaryReceipt")})
         inputs = {"java": original, "files": files, "phases": {}, "native": {
             language: {target: record for target in workflow.NATIVE_TARGETS} for language in workflow.NATIVE_BINDINGS}}
         tooling = {"evidence": original, "publicKey": receipt, "requiredTrustDomain": "development",
@@ -233,6 +236,17 @@ class SdkWorkflowTest(unittest.TestCase):
         def consumer(command, **kwargs):
             commands.append(command)
             kwargs["stdout"].write(b"synthetic consumer log\n")
+            if failure == "child":
+                raise workflow.subprocess.CalledProcessError(1, command)
+            if "verify-native" in command:
+                package = Path(command[command.index("--receipt") + 1])
+                self.assertEqual(receipt.read_bytes(), package.read_bytes())
+                self.assertEqual(workflow.regular_file_inventory(stage),
+                    workflow.regular_file_inventory(package.parent / "runtime-authorization/linux-x64"))
+                if command[command.index("--component") + 1] == "csharp":
+                    self.assertEqual(receipt.read_bytes(), (package.parent / "csharp-binary/phase-receipt.json").read_bytes())
+                    self.assertEqual(workflow.regular_file_inventory(stage),
+                        workflow.regular_file_inventory(package.parent / "csharp-binary/stage"))
             if "--init-script" in command:
                 if ":codex-agent-core:verifyJavaBindingParity" in command:
                     path = next(value.split("=", 1)[1] for value in command
@@ -245,6 +259,8 @@ class SdkWorkflowTest(unittest.TestCase):
                     config = workflow.product_reuse.load_json_bytes(Path(config_path).read_bytes())
                     if ":verifyImportedSdkBindingParity" in command:
                         Path(config["finalOutput"]).write_bytes(b'{"result":"passed"}\n')
+                        if failure == "context":
+                            Path(config["native"]["cpp"]["packageReceipt"]).write_bytes(b"changed")
                     else:
                         for values in config["native"].values():
                             Path(values["output"]).write_bytes(b"synthetic consumer parity\n")
@@ -255,19 +271,25 @@ class SdkWorkflowTest(unittest.TestCase):
                 output = Path(command[command.index("--output") + 1])
                 output.write_bytes(b"synthetic derived audit or receipt\n")
 
-        for exit_failure in (False, True):
+        for failure in (None, "original", "context", "child"):
             @contextmanager
             def authenticated(*args, **kwargs):
                 yield inputs
-                if exit_failure:
+                if failure == "original":
                     raise ValueError("Original parity inputs changed during use")
-            destination = self.repository / ("success" if not exit_failure else "failure")
+            destination = self.repository / ("result-" + str(failure))
             commands.clear()
+            diagnostic = io.StringIO()
             with patch.object(workflow, "verified_parity_inputs", side_effect=authenticated) as authenticate, \
                     patch.object(workflow, "verified_tooling_capture", return_value=nullcontext(receipt)) as tool_auth, \
-                    patch.object(workflow.subprocess, "run", side_effect=consumer):
-                if exit_failure:
-                    with self.assertRaisesRegex(ValueError, "Original parity inputs changed"):
+                    patch.object(workflow.subprocess, "run", side_effect=consumer), \
+                    patch.object(workflow, "snapshot_regular_tree", wraps=workflow.snapshot_regular_tree) as capture, \
+                    redirect_stderr(diagnostic):
+                if failure:
+                    error = workflow.subprocess.CalledProcessError if failure == "child" else ValueError
+                    message = {"original": "Original parity inputs changed",
+                               "context": "Parity package context changed", "child": "exit status 1"}[failure]
+                    with self.assertRaisesRegex(error, message):
                         workflow.execute_parity(self.plan, self.discovery, self.state, destination,
                             repository_root=self.repository, environ={}, sdk_validation_tooling=tooling)
                     self.assertFalse(destination.exists())
@@ -278,7 +300,14 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertTrue((destination / "sdk-parity.json").is_file())
                 authenticate.assert_called_once()
                 self.assertEqual(self.revision, tool_auth.call_args.kwargs["policy_revision"])
+                authorizations = [call for call in capture.call_args_list if
+                                  "runtime-authorization" in Path(call.args[1]).parts]
+                self.assertEqual(5, len(authorizations))  # Shared once, not 25 copies.
             self.assertEqual(before, workflow.regular_file_inventory(original))
+            if failure == "child":
+                self.assertIn("synthetic consumer log", diagnostic.getvalue())
+                self.assertEqual(1, len(commands))
+                continue
             audits = [command[command.index("--phase") + 1] for command in commands
                 if "audit-cross-language-bindings" in command]
             self.assertEqual(["M8", "M9_PYTHON", "M9_CSHARP", "M9_RUST", "M9_CPP", "M9_DART", "M11"], audits)

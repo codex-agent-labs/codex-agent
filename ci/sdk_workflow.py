@@ -19,7 +19,7 @@ import product_reuse
 import sdk_handoff
 from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
-from runtime_reference_transport import measured
+from runtime_reference_transport import count, measured
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -458,6 +458,49 @@ def execute_java_parity(plan, discovery, state, destination, *, repository_root,
     return {"evidence": destination / "java-parity.json"}
 
 
+@measured
+def _parity_package_receipts(native, directory):
+    """Adapt borrowed categories to the existing verifier's sibling layout once.
+
+    Only external authorization, original receipts and the C# binary context are
+    copied. Product packages, Runtime bodies and compatibility inputs stay borrowed.
+    """
+    contexts, receipts = {}, {}
+    for language, hosts in native.items():
+        inventories = {target: memoized_file_inventory(record["runtimeAuthorization"])
+                       for target, record in hosts.items()}
+        key = canonical_json_bytes(inventories)
+        if key not in contexts:
+            context = directory / str(len(contexts))
+            for target, record in hosts.items():
+                captured = context / "runtime-authorization" / target
+                snapshot_regular_tree(record["runtimeAuthorization"], captured)
+                if memoized_file_inventory(captured) != inventories[target]:
+                    raise ValueError("Parity Runtime authorization changed during capture")
+                count("parityContextCopiedBytes", sum(row["bytes"] for row in inventories[target]))
+            contexts[key] = context
+            count("parityAuthorizationCaptures")
+        else:
+            count("parityAuthorizationReuses")
+        context = contexts[key]
+        primary = hosts["linux-x64"]
+        if language == "csharp":
+            binary = context / "csharp-binary"
+            inventory = memoized_file_inventory(primary["binaryStage"])
+            snapshot_regular_tree(primary["binaryStage"], binary / "stage")
+            if memoized_file_inventory(binary / "stage") != inventory:
+                raise ValueError("Parity C# binary changed during capture")
+            raw = read_regular_file_bytes(primary["binaryReceipt"], reject_symlink_parents=True)
+            (binary / "phase-receipt.json").write_bytes(raw)
+            count("parityContextCopiedBytes", sum(row["bytes"] for row in inventory) + len(raw))
+        receipt = context / (language + ".json")
+        raw = read_regular_file_bytes(primary["packageReceipt"], reject_symlink_parents=True)
+        receipt.write_bytes(raw)
+        count("parityContextCopiedBytes", len(raw))
+        receipts[language] = receipt
+    return receipts
+
+
 def execute_parity(plan, discovery, state, destination, *, repository_root, environ,
                    sdk_validation_tooling, **policies):
     """Full consumer parity over authenticated originals; no product execution."""
@@ -478,16 +521,27 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                     required_trust_domain=tooling["requiredTrustDomain"],
                     keyring=Path(tooling["keyring"]) if tooling["keyring"] else None,
                     keys_directory=Path(tooling["keysDirectory"]) if tooling["keysDirectory"] else None,
-                    policy_revision=revision) as jar, (result / "consumer.log").open("wb") as log:
+                    policy_revision=revision) as jar, (result / "consumer.log").open("w+b") as log:
             def run(command):
-                subprocess.run(command, cwd=root, env=dict(environ), check=True,
-                    stdout=log, stderr=subprocess.STDOUT)
+                start = log.tell()
+                try:
+                    subprocess.run(command, cwd=root, env=dict(environ), check=True,
+                        stdout=log, stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError:
+                    log.flush()
+                    log.seek(max(start, log.tell() - 65536))
+                    print("Parity consumer diagnostics (last 64 KiB):\n" +
+                          log.read().decode("utf-8", errors="replace"), file=sys.stderr)
+                    raise
 
             def copy(source, target):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(read_regular_file_bytes(source, reject_symlink_parents=True))
 
             files = inputs["files"]
+            contexts = private / "package-contexts"
+            package_receipts = _parity_package_receipts(inputs["native"], contexts)
+            context_inventory = memoized_file_inventory(contexts)
             config = {"api": str(files["canonical-api.json"]), "coverage": str(files["canonical-coverage.json"]),
                 "native": {}, "cabiOutput": str(private / "cabi"),
                 "finalEvidence": str(result / "m11"), "finalOutput": str(result / "sdk-parity.json")}
@@ -504,14 +558,15 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                 command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
                     "--repository", str(root), "--component", language,
                     "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
-                for option, key in (("stage", "packageStage"), ("receipt", "packageReceipt"),
+                command.extend(("--receipt", str(package_receipts[language])))
+                for option, key in (("stage", "packageStage"),
                         ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
                         ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
                         ("validation-receipt", "validationReceipt")):
                     command.extend(("--" + option, str(primary[key])))
                 run(command)
                 config["native"][language] = {"packageStage": str(primary["packageStage"]),
-                    "packageReceipt": str(primary["packageReceipt"]), "request": str(primary["compatibilityRequest"]),
+                    "packageReceipt": str(package_receipts[language]), "request": str(primary["compatibilityRequest"]),
                     "runtime": str(primary["runtimeStages"]), "sdks": str(primary["stagedSdks"]),
                     "validationStages": str(lane / "hosts"), "validationReceipts": str(lane / "receipts"),
                     "bootstrap": str(handoff / "bootstrap/bootstrap-evidence.json"),
@@ -569,6 +624,8 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
             run(gradle + native_options + [":verifyImportedSdkBindingParity"])
             if product_reuse.load_json_bytes(read_regular_file_bytes(result / "sdk-parity.json"))["result"] != "passed":
                 raise ValueError("Full imported SDK parity did not pass")
+            if memoized_file_inventory(contexts) != context_inventory:
+                raise ValueError("Parity package context changed during consumption")
             (result / "original-phase-identities.json").write_bytes(canonical_json_bytes(list(inputs["phases"].values())))
         # Every original lifetime and tooling authentication check must finish
         # successfully before a report can become available to another caller.
