@@ -23,7 +23,7 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -34,7 +34,7 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(134)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(135)]
                     elif fault == "duplicate": rows.append(dict(rows[0]))
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
