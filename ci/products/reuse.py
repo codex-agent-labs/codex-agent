@@ -9,7 +9,10 @@ import subprocess
 import tempfile
 from typing import Any
 
-from .aggregate import verified_index_content, verify_immutable_product_indexes
+from .sdk_campaign_index import (
+    is_javascript_validation, verified_index_content, verify_immutable_product_indexes,
+    verify_sdk_validation_index_object, verify_build_key_output_consistency,
+)
 from .contract_projection import VerifiedContractProjection, VerifiedContractExecutionProjection, verify_contract_component_projection
 from .inventory import (
     canonical_json_bytes,
@@ -35,7 +38,6 @@ from .index import (
     verify_contract_index_object,
     verify_native_runtime_index_object,
     verify_adapter_runtime_index_object,
-    verify_sdk_validation_index_object,
     SignedProductIndex,
     stable_index_identity,
     verify_release_product_index,
@@ -50,7 +52,6 @@ from .plan import (
     runtime_validation_dependencies,
     verified_phase_flags_digest,
     verified_phase_toolchain_digest,
-    verify_build_key_output_consistency,
     verify_runtime_validation_projection,
     native_runtime_validation_dependencies, _native_runtime_projections_from_request,
     sdk_validation_dependencies,
@@ -299,6 +300,7 @@ class LookupSession:
         adapter_runtime_evidence=None,
         runtime_aggregate_evidence=None,
         sdk_validation_projection=None,
+        sdk_javascript_index_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
         if self.repository.count("/") != 1:
@@ -325,7 +327,10 @@ class LookupSession:
         if sdk_validation_projection is not None and not callable(sdk_validation_projection):
             raise ValueError("SDK validation comparison provider must be callable")
         self._sdk_validation_projection = sdk_validation_projection
-        self._sdk_projections: dict[bytes, VerifiedSdkValidationProjection] = {}
+        if sdk_javascript_index_projection is not None and not callable(sdk_javascript_index_projection):
+            raise ValueError("JavaScript index comparison provider must be caller-owned and callable")
+        self._sdk_javascript_index_projection = sdk_javascript_index_projection
+        self._sdk_projections: dict[bytes, Any] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -464,7 +469,7 @@ class LookupSession:
                 return proof
         raise ValueError("Conflicting adapter Runtime inventories require both authenticated objects")
 
-    def _catalog_sdk_projection(self, entry: dict[str, Any]) -> VerifiedSdkValidationProjection:
+    def _catalog_sdk_projection(self, entry: dict[str, Any]):
         key = canonical_json_bytes(entry)
         if key in self._sdk_projections:
             return self._sdk_projections[key]
@@ -473,7 +478,9 @@ class LookupSession:
                 if candidate.entry != entry or candidate.object_path is None:
                     continue
                 try:
-                    proof = verify_sdk_validation_index_object(entry, candidate.object_path, self._sdk_validation_projection)
+                    provider = (self._sdk_javascript_index_projection if is_javascript_validation(entry)
+                                else self._sdk_validation_projection)
+                    proof = verify_sdk_validation_index_object(entry, candidate.object_path, provider)
                 except FileNotFoundError:
                     continue
                 self._sdk_projections[key] = proof
@@ -1136,6 +1143,7 @@ def plan_reuse_wave(
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
     sdk_javascript_validation_projection_provider=None,
+    sdk_javascript_index_projection=None,
     completed_native_runtime_projection_provider=None,
     completed_sdk_validation_projection_provider=None,
     completed_frozen=None,
@@ -1392,6 +1400,7 @@ def plan_reuse_wave(
             runtime_aggregate_evidence={record["receiptSha256"]: artifact_root / record["handoffRoot"]
                 for record in request.get("runtimeAggregateReleaseEvidence", [])},
             sdk_validation_projection=sdk_comparison,
+            sdk_javascript_index_projection=sdk_javascript_index_projection,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
             stable=stable,

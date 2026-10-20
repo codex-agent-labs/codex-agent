@@ -1,6 +1,7 @@
 """Original validation boundaries; simulated tooling is not parity acceptance."""
 
 from contextlib import contextmanager
+import copy
 from pathlib import Path
 import subprocess
 import tempfile
@@ -104,6 +105,127 @@ class JavaScriptValidationPhaseTest(unittest.TestCase):
             self.assertNotEqual(original_record["outputsDigest"], proof.upstream_record(
                 self.fixture.support.receipts["validation"])["outputsDigest"])
 
+    def test_receipt_consistency_requires_both_exact_javascript_proofs(self):
+        from ci.products.sdk_campaign_index import verify_build_key_output_consistency
+
+        original = copy.deepcopy(self.fixture.support.receipts["validation"])
+        original_bytes = canonical_json_bytes(original)
+        proof = self.verify(operation=verify_sdk_javascript_validation_projection)
+        stage = self.arguments["validation_stage"]
+        (stage / "outputs/test-report/packed-tests.xml").write_bytes(b'<testsuites time="9.9"/>\n')
+        self.fixture.replan("validation", self.fixture.validation_commit, self.fixture.validation_tree)
+        changed = copy.deepcopy(self.fixture.support.receipts["validation"])
+        changed_bytes = canonical_json_bytes(changed)
+        changed_proof = self.verify(operation=verify_sdk_javascript_validation_projection)
+        proofs = {sha256_bytes(original_bytes): proof, sha256_bytes(changed_bytes): changed_proof}
+        calls = []
+
+        def provider(receipt):
+            digest = sha256_bytes(canonical_json_bytes(receipt))
+            calls.append(digest)
+            return proofs[digest]
+
+        self.assertEqual(original["buildKey"], changed["buildKey"])
+        verify_build_key_output_consistency([original, copy.deepcopy(original)],
+            sdk_javascript_validation_projection=provider)
+        self.assertEqual(calls, [])  # Unchanged raw inventories need no expensive matcher.
+        with self.assertRaisesRegex(ValueError, "conflicting output inventories"):
+            verify_build_key_output_consistency([original, changed])
+        verify_build_key_output_consistency([original, changed],
+            sdk_javascript_validation_projection=provider)
+        self.assertEqual(calls, [sha256_bytes(original_bytes), sha256_bytes(changed_bytes)])
+        self.assertEqual((canonical_json_bytes(original), canonical_json_bytes(changed)),
+                         (original_bytes, changed_bytes))
+        for invalid in (lambda _: object(), lambda _: proof):
+            with self.assertRaisesRegex(ValueError, "projection is required|original receipt"):
+                verify_build_key_output_consistency([original, changed],
+                    sdk_javascript_validation_projection=invalid)
+
+        # This fixture simulates the full matcher, not genuine parity acceptance.
+        # Different verified content must still fail the consistency gate.
+        self.replay_bytes = canonical_json_bytes({"verified-content-change": "scenario"})
+        (stage / "outputs/binding-evidence/javascript-typescript-parity.json").write_bytes(self.replay_bytes)
+        self.fixture.replan("validation", self.fixture.validation_commit, self.fixture.validation_tree)
+        different = self.fixture.support.receipts["validation"]
+        different_proof = self.verify(operation=verify_sdk_javascript_validation_projection)
+        with self.assertRaisesRegex(ValueError, "conflicting output inventories"):
+            verify_build_key_output_consistency([original, different],
+                sdk_javascript_validation_projection=lambda r: proof if r == original else different_proof)
+
+    def test_signed_catalog_comparison_preserves_originals_and_reuses_exact_proofs(self):
+        from dataclasses import replace
+        from ci.products import sdk_campaign_index as index_comparison
+        from ci.products.inventory import load_canonical_json_bytes
+        from ci.products.restore import store_local_object
+        from ci.products.signatures import generate_development_key
+        from ci.tests.test_product_reuse import ProductReuseTest, REPOSITORY
+
+        # Existing simulated full-matcher fixture; signing/object checks are real.
+        support = self.fixture.support
+        support.context["producer"].update(repository=REPOSITORY, event="pull_request",
+            workflowPath=".github/workflows/ci.yml", runId=7, runAttempt=1, pullRequest=31)
+        catalogs = ProductReuseTest()
+        catalogs.root, catalogs.counter = support.root / "catalogs", 0
+        catalogs.root.mkdir()
+        catalogs.private_key, catalogs.public_key, catalogs.development_signing = \
+            generate_development_key(support.root / "catalog-keys")
+        originals, proofs, signed = [], {}, []
+        for generation in range(2):
+            if generation:
+                (self.arguments["validation_stage"] / "outputs/test-report/packed-tests.xml").write_bytes(
+                    b'<testsuites time="9.9"/>\n')
+                support.context["producer"]["runId"] = 8
+            self.fixture.replan("validation", self.fixture.validation_commit, self.fixture.validation_tree)
+            raw = support.receipt_paths["validation"].read_bytes()
+            stored = store_local_object(support.stage_paths["validation"], support.receipt_paths["validation"],
+                                        support.root / "catalog-objects")
+            envelope = dict(receipt=load_canonical_json_bytes(raw), receiptBytes=raw,
+                receiptSha256=stored["receiptSha256"], objectSha256=stored["objectSha256"])
+            originals.append(envelope)
+            proofs[envelope["receiptSha256"]] = self.verify(operation=verify_sdk_javascript_validation_projection)
+            signed.append(catalogs.catalog("same-pr", [(envelope, stored["path"])]))
+        before = [source.manifest.read_bytes() for source in signed]
+        indexes = [load_canonical_json_bytes(raw) for raw in before]
+        self.assertEqual(originals[0]["receipt"]["buildKey"], originals[1]["receipt"]["buildKey"])
+        self.assertNotEqual(originals[0]["receipt"]["producer"], originals[1]["receipt"]["producer"])
+        calls = []
+
+        def provider(entry, archive):
+            calls.append(entry["receiptSha256"])
+            self.assertTrue(archive.is_file())
+            return proofs[entry["receiptSha256"]]
+
+        with self.assertRaisesRegex(ValueError, "authenticated original evidence"):
+            catalogs.session(same_pr=signed)
+        session = catalogs.session(same_pr=signed, sdk_javascript_index_projection=provider)
+        self.assertEqual(calls, [o["receiptSha256"] for o in originals])
+        # Repeating consistency checks uses session proof custody, not another matcher.
+        index_comparison.verify_immutable_product_indexes(*indexes,
+            sdk_validation_projection=session._catalog_sdk_projection)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(before, [source.manifest.read_bytes() for source in signed])
+        for envelope in originals:
+            self.assertEqual(canonical_json_bytes(envelope["receipt"]), envelope["receiptBytes"])
+        with self.assertRaisesRegex(ValueError, "both authenticated objects"):
+            catalogs.session(same_pr=[signed[0], replace(signed[1], objects={})],
+                sdk_javascript_index_projection=provider)
+        with self.assertRaisesRegex(ValueError, "original receipt"):
+            catalogs.session(same_pr=signed,
+                sdk_javascript_index_projection=lambda *_: proofs[originals[0]["receiptSha256"]])
+        self.replay_bytes = canonical_json_bytes({"verified-content-change": "scenario"})
+        (support.stage_paths["validation"] / "outputs/binding-evidence/javascript-typescript-parity.json").write_bytes(
+            self.replay_bytes)
+        self.fixture.replan("validation", self.fixture.validation_commit, self.fixture.validation_tree)
+        raw = support.receipt_paths["validation"].read_bytes()
+        stored = store_local_object(support.stage_paths["validation"], support.receipt_paths["validation"],
+                                    support.root / "catalog-objects")
+        changed = dict(receipt=load_canonical_json_bytes(raw), receiptBytes=raw,
+            receiptSha256=stored["receiptSha256"], objectSha256=stored["objectSha256"])
+        proofs[changed["receiptSha256"]] = self.verify(operation=verify_sdk_javascript_validation_projection)
+        different = catalogs.catalog("same-pr", [(changed, stored["path"])])
+        with self.assertRaisesRegex(ValueError, "conflict"):
+            catalogs.session(same_pr=[signed[0], different], sdk_javascript_index_projection=provider)
+
     def test_metadata_reuse_waits_for_caller_proof_then_preserves_originals(self):
         from ci.products.registry import PhaseInstanceId
         from ci.products.plan import plan_phase
@@ -200,9 +322,23 @@ class JavaScriptValidationPhaseTest(unittest.TestCase):
                 patch.object(adapter, "capture_sdk_javascript_validation_upload", capture), \
                 patch("products.sdk_javascript_validation_phase.verified_tooling_capture", self.tooling), \
                 patch("products.sdk_javascript_validation_phase.subprocess.run", self.process):
-            provider = adapter._javascript_projection_provider(request, policy, context)
+            cache = {}
+            provider = adapter._javascript_projection_provider(request, policy, context, _proofs=cache)
             proof = provider(metadata, tuple(originals))
-        self.assertEqual(calls, ["authenticated-original-upload"])
+            from ci.tests.test_product_reuse import ProductReuseTest
+            entry = ProductReuseTest.entry(originals[2])
+            indexes = adapter._javascript_index_projection_provider(request, policy, context, _proofs=cache)
+            archive = support.root / records[2]["objectPath"]
+            self.assertIs(proof, indexes(entry, archive))
+            missing = adapter._javascript_index_projection_provider(
+                {**request, "availableObjects": records[1:]}, policy, context)
+            with self.assertRaisesRegex(ValueError, "original dependency evidence"):
+                missing(entry, archive)
+            # Independent catalog invocation follows the same real source/plan/
+            # transport matcher boundary, not an alias or native-proof factory.
+            independent = adapter._javascript_index_projection_provider(request, policy, context)
+            self.assertEqual(independent(entry, archive).content_bytes(validation), self.replay_bytes)
+        self.assertEqual(calls, ["authenticated-original-upload", "authenticated-original-upload"])
         self.assertEqual(proof.policy_revision, request["repositoryRevision"])
         self.assertNotEqual(proof.policy_revision, validation["producer"]["commit"])
         self.assertEqual(proof.content_bytes(validation), self.replay_bytes)

@@ -3703,7 +3703,7 @@ def _apple_package_origin(plan_path, root, workflow_sha, environment):
             "token": environment.get("GITHUB_TOKEN", "")}
 
 
-def _javascript_projection_provider(request, tooling, original_context, *, completed_frozen=None):
+def _javascript_projection_provider(request, tooling, original_context, *, completed_frozen=None, _proofs=None):
     """Authenticate the original upload/cwd before deriving a metadata key view."""
     if (tooling is None or original_context is None or not any(
             javascript_validation_dependencies(_identity(value)) for value in request.get("requested", []))):
@@ -3722,7 +3722,7 @@ def _javascript_projection_provider(request, tooling, original_context, *, compl
         raise ValueError("JavaScript tooling paths must be absolute caller inputs")
     objects = {_identity(record): record for record in request["availableObjects"]}
     artifact_root = Path(request["artifactRoot"])
-    proofs = {}
+    proofs = {} if _proofs is None else _proofs
 
     def verify(instance, originals):
         if not javascript_validation_dependencies(instance) or len(originals) != 4:
@@ -3789,6 +3789,66 @@ def _javascript_projection_provider(request, tooling, original_context, *, compl
     return verify
 
 
+def _javascript_index_projection_provider(request, tooling, original_context, *,
+                                         completed_frozen=None, _proofs=None):
+    """Compare a catalog original using the same full, original-source matcher."""
+    if tooling is None or original_context is None:
+        return None
+    from products.sdk_campaign_index import is_javascript_validation
+
+    artifact_root = Path(request["artifactRoot"])
+    objects = {_identity(record): record for record in request["availableObjects"]}
+    metadata = PhaseInstanceId("sdk", "javascript", "metadata", "node")
+    family = (
+        PhaseInstanceId("contract", "contract", "binary", "common"),
+        PhaseInstanceId("sdk", "javascript", "package", "node"),
+        PhaseInstanceId("sdk", "javascript", "validation", "node"),
+        PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding"),
+    )
+    proofs = {} if _proofs is None else _proofs
+
+    def verify(entry, archive):
+        if not is_javascript_validation(entry):
+            raise ValueError("JavaScript catalog comparison requires its exact validation identity")
+        verified = verify_object(archive, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+        validation = {name: verified[name] for name in ("receipt", "receiptBytes", "objectSha256")}
+        validation["receiptSha256"] = entry["receiptSha256"]
+        selected = {**_identity_record(family[2]), "buildKey": entry["buildKey"],
+            "receiptSha256": entry["receiptSha256"], "objectSha256": verified["objectSha256"],
+            "objectPath": Path(archive).relative_to(artifact_root).as_posix()}
+        records = [selected if identity == family[2] else objects.get(identity) for identity in family]
+        if any(record is None for record in records):
+            raise ValueError("JavaScript catalog comparison lacks original dependency evidence")
+        key = tuple((record["receiptSha256"], record["objectSha256"]) for record in records)
+        if key in proofs:
+            proof = proofs[key]
+            proof.output_inventory(entry["receiptSha256"], entry["outputs"], identity=entry)
+            return proof
+        originals = []
+        for identity, record in zip(family, records, strict=True):
+            envelope = validation if identity == family[2] else (
+                completed_frozen.envelope(record) if completed_frozen is not None else None)
+            if envelope is None:
+                original = verify_object(artifact_root / require_relative_path(record["objectPath"], "JS original object"),
+                    build_key=record["buildKey"], receipt_sha256=record["receiptSha256"],
+                    object_sha256=record["objectSha256"])
+                envelope = {name: original[name] for name in ("receipt", "receiptBytes", "objectSha256")}
+                envelope["receiptSha256"] = record["receiptSha256"]
+            originals.append(envelope)
+        # These are invocation-local selections of unchanged original objects,
+        # not a rewritten catalog, receipt, producer or transported authority.
+        scoped = {**request, "requested": [_identity_record(metadata)], "availableObjects": records}
+        provider = _javascript_projection_provider(scoped, tooling, original_context,
+            completed_frozen=completed_frozen, _proofs=proofs)
+        proof = provider(metadata, tuple(originals))
+        if proof is None:
+            raise ValueError("JavaScript catalog comparison lacks authenticated original execution")
+        proof.output_inventory(entry["receiptSha256"], entry["outputs"], identity=entry)
+        return proof
+
+    return verify
+
+
 @collection_admission_scope
 @measured
 def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package_origin=None, **kwargs):
@@ -3840,11 +3900,18 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
                     producer=_consumer(plan, apple_package_origin["environ"])["producer"],
                     trusted_workflow_sha=apple_package_origin["trusted_workflow_sha"],
                     token=apple_package_origin["token"])
+        javascript_proofs = {}
         if "sdk_javascript_validation_projection_provider" not in kwargs:
             javascript_provider = _javascript_projection_provider(request, tooling, apple_package_origin,
+                _proofs=javascript_proofs,
                 **({"completed_frozen": kwargs["completed_frozen"]} if kwargs.get("completed_frozen") is not None else {}))
             if javascript_provider is not None:
                 kwargs["sdk_javascript_validation_projection_provider"] = javascript_provider
+        if "sdk_javascript_index_projection" not in kwargs:
+            javascript_indexes = _javascript_index_projection_provider(request, tooling, apple_package_origin,
+                completed_frozen=kwargs.get("completed_frozen"), _proofs=javascript_proofs)
+            if javascript_indexes is not None:
+                kwargs["sdk_javascript_index_projection"] = javascript_indexes
         completed = kwargs.get("completed_frozen")
         if (completed is not None and tooling is not None and apple_package_origin is not None
                 and "completed_sdk_validation_projection_provider" not in kwargs

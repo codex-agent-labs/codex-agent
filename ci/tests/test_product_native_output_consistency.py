@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ci.products.aggregate import verified_index_content, verify_immutable_product_indexes
+from ci.products.sdk_campaign_index import verified_index_content, verify_immutable_product_indexes
 from ci.products.c_abi import STRICT_CONSUMERS
 from ci.products.contract_projection import verify_contract_component_projection
 from ci.products.index import IndexEntrySource, build_product_index

@@ -13,13 +13,11 @@ from .index import (
     IndexEntrySource, SignedProductIndex, _verify_index_receipt,
     verify_release_product_index,
 )
+from . import aggregate, index
 from .aggregate import validate_product_index
 from .inventory import canonical_json_bytes, sha256_bytes, _is_windows, _stat_identity
 from .registry import PhaseInstanceId
-from .restore import verify_object, _open_safe_regular, _VERIFICATION_SESSION
-from .sdk_campaign_selection import (
-    SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection, verify_sdk_campaign_objects,
-)
+from .restore import verify_object, verification_scoped, _open_safe_regular, _VERIFICATION_SESSION
 
 
 def verify_release_sdk_campaign_objects(index: dict, objects: Mapping[str, Path], *,
@@ -30,6 +28,8 @@ def verify_release_sdk_campaign_objects(index: dict, objects: Mapping[str, Path]
     Original development receipts remain unchanged; the release signature is the
     separate admission authority. Stable SDK catalogs are not yet produced.
     """
+    from .sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, verify_sdk_campaign_objects
+
     index = validate_product_index(index)
     if (index["repository"] != repository or index["trustDomain"] != "release"
             or index["context"]["kind"] != "promoted-main"):
@@ -102,6 +102,8 @@ def verify_signed_sdk_campaign_originals(
     stages: Mapping[PhaseInstanceId, Path],
 ) -> tuple[dict, bytes]:
     """Authenticate the release-signed PR index and all 62 original phase objects."""
+    from .sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES, held_sdk_campaign_selection
+
     index, raw = verify_release_product_index(
         index_source, keyring_path=keyring_path, keys_directory=keys_directory,
     )
@@ -142,3 +144,104 @@ def verify_signed_sdk_campaign_originals(
                     or entry["artifactSha256"] != artifact["sha256"]):
                 raise ValueError("SDK campaign index differs from the selected original artifact")
     return index, raw
+
+
+def is_javascript_validation(entry):
+    return tuple(entry.get(field) for field in ("product", "component", "phase", "target")) == (
+        "sdk", "javascript", "validation", "node")
+
+
+def _javascript_inventory(proof, entry):
+    from .sdk_javascript_validation_phase import VerifiedJavaScriptValidationProjection
+
+    if type(proof) is not VerifiedJavaScriptValidationProjection:
+        raise ValueError("Verified JavaScript validation projection is required for index consistency")
+    return proof.output_inventory(entry["receiptSha256"], entry["outputs"], identity=entry)
+
+
+@verification_scoped
+def verify_sdk_validation_index_object(entry, archive, projection_provider):
+    """Bind the full proof to the actual original object, never an index assertion."""
+    if not is_javascript_validation(entry):
+        return index.verify_sdk_validation_index_object(entry, archive, projection_provider)
+    if not callable(projection_provider):
+        raise ValueError("JavaScript comparison requires authenticated original evidence")
+    verified = verify_object(archive, build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+    _verify_index_receipt(entry, {**verified, "receiptSha256": sha256_bytes(verified["receiptBytes"])})
+    proof = projection_provider(entry, archive)
+    _javascript_inventory(proof, entry)
+    return proof
+
+
+def verified_index_content(entry, contract_execution_projection=None, native_runtime_projection=None,
+                           adapter_runtime_projection=None, sdk_validation_projection=None):
+    """Consumer comparison only; preserve frozen producer code and original bytes."""
+    from .receipt import output_inventory_digest
+
+    if sdk_validation_projection is not None and is_javascript_validation(entry):
+        outputs = _javascript_inventory(sdk_validation_projection(entry), entry)
+        return {**entry, "outputs": outputs, "outputInventoryDigest": output_inventory_digest(outputs),
+                "artifactName": None, "artifactSha256": None}
+    return aggregate.verified_index_content(entry, contract_execution_projection,
+        native_runtime_projection, adapter_runtime_projection, sdk_validation_projection)
+
+
+def verify_immutable_product_indexes(existing, candidate, *, contract_execution_projection=None,
+                                     native_runtime_projection=None, adapter_runtime_projection=None,
+                                     sdk_validation_projection=None):
+    prior = validate_product_index(existing)["entries"]
+    proposed = validate_product_index(candidate)["entries"]
+    providers = (contract_execution_projection, native_runtime_projection,
+                 adapter_runtime_projection, sdk_validation_projection)
+    # Views are not signed indexes or receipts. Derive only actual conflicts,
+    # at most once per original entry; never serialize or transport these views.
+    views = {}
+
+    def content(entry):
+        key = id(entry)
+        if key not in views:
+            views[key] = verified_index_content(entry, *providers)
+        return views[key]
+
+    by_key = {entry["buildKey"]: entry for entry in prior}
+    for entry in proposed:
+        previous = by_key.get(entry["buildKey"])
+        if previous is not None and previous["outputs"] != entry["outputs"]:
+            if content(previous)["outputs"] != content(entry)["outputs"]:
+                raise ValueError("Identical product build key has a conflicting output inventory")
+    prior_releases, proposed_releases = {}, {}
+    for entries, releases in ((prior, prior_releases), (proposed, proposed_releases)):
+        for entry in entries:
+            releases.setdefault(aggregate._release_identity(entry), []).append(entry)
+    for identity in prior_releases.keys() & proposed_releases.keys():
+        left, right = prior_releases[identity], proposed_releases[identity]
+        if aggregate._release_output_projection(left) != aggregate._release_output_projection(right):
+            if aggregate._release_output_projection([content(entry) for entry in left]) != \
+                    aggregate._release_output_projection([content(entry) for entry in right]):
+                raise ValueError("Stable product identity has different asset names or output bytes")
+
+
+def verify_build_key_output_consistency(receipts, *, sdk_javascript_validation_projection=None, **providers):
+    """Extend the frozen receipt verifier without rewriting any original receipt."""
+    from .plan import verify_build_key_output_consistency as verify_other_receipts
+
+    if sdk_javascript_validation_projection is None:
+        return verify_other_receipts(receipts, **providers)
+    from .receipt import validate_phase_receipt
+    from .inventory import require_array
+
+    remaining, javascript = [], {}
+    for value in require_array(receipts, "phase receipts"):
+        receipt = validate_phase_receipt(value)
+        if sdk_javascript_validation_projection is not None and is_javascript_validation(receipt):
+            previous = javascript.setdefault(receipt["buildKey"], receipt)
+            if previous["outputs"] != receipt["outputs"]:
+                views = [_javascript_inventory(sdk_javascript_validation_projection(member),
+                    {**member, "receiptSha256": sha256_bytes(canonical_json_bytes(member))})
+                    for member in (previous, receipt)]
+                if views[0] != views[1]:
+                    raise ValueError(f"Build key has conflicting output inventories: {receipt['buildKey']}")
+            if previous is not receipt:
+                continue  # Already compared, not deleted from the caller's evidence.
+        remaining.append(receipt)
+    verify_other_receipts(remaining, **providers)
