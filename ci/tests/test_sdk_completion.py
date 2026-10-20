@@ -55,6 +55,76 @@ class SdkCompletionTest(unittest.TestCase):
         self.assertEqual(original, value)
         self.inspect.assert_called_once_with(*self.paths, repository_root=self.root, environ=self.environment)
 
+    def test_repository_completion_uses_full_authenticated_dag_without_rewriting_originals(self):
+        value = inspected([phase(identity) for identity in sorted(PHASE_INSTANCE_IDS)])
+        original = deepcopy(value)
+        policy = object()
+        with patch.object(completion.products, "inspect_products", return_value=value) as inspect:
+            report = completion.require_repository_completion(*self.paths,
+                repository_root=self.root, environ=self.environment, completed_frozen=policy)
+        inspect.assert_called_once_with(*self.paths, repository_root=self.root,
+            environ=self.environment, completed_frozen=policy)
+        self.assertEqual("passed", report["result"])
+        self.assertEqual(len(PHASE_INSTANCE_IDS), report["phaseCount"])
+        self.assertEqual(["contract", "runtime", "sdk"], [row["product"] for row in report["products"]])
+        self.assertEqual([("contract", "runtime"), ("contract", "sdk"), ("runtime", "sdk")],
+                         [(row["producerProduct"], row["consumerProduct"]) for row in report["edges"]])
+        self.assertEqual(value["result"]["phases"], report["originalPhases"])
+        self.assertEqual(original, value)
+        # Every edge is transitive in the actual registry, not an invented
+        # direct reference added to one of the immutable metadata receipts.
+        terminals = {row["product"]: completion.products._identity(row) for row in report["products"]}
+        for producer, consumer in (("contract", "runtime"), ("contract", "sdk"), ("runtime", "sdk")):
+            self.assertNotIn(terminals[producer],
+                             completion.products.phase_instance_dependencies(terminals[consumer]))
+
+    def test_repository_completion_rejects_partial_state_and_authentication_failure(self):
+        rows = [phase(identity) for identity in sorted(PHASE_INSTANCE_IDS)]
+        for bad in (rows[:-1], rows + [rows[-1]], rows[1:] + rows[:1], []):
+            with self.subTest(count=len(bad)), \
+                    patch.object(completion.products, "inspect_products", return_value=inspected(bad)), \
+                    self.assertRaises(ValueError):
+                completion.require_repository_completion(*self.paths)
+        for identity in PHASE_INSTANCE_IDS:
+            bad = [phase(item, "waiting" if item == identity else "retained")
+                   for item in sorted(PHASE_INSTANCE_IDS)]
+            with self.subTest(identity=identity), \
+                    patch.object(completion.products, "inspect_products", return_value=inspected(bad)), \
+                    self.assertRaises(ValueError):
+                completion.require_repository_completion(*self.paths)
+        with patch.object(completion.products, "inspect_products", side_effect=ValueError("bad original")):
+            with self.assertRaisesRegex(ValueError, "bad original"):
+                completion.require_repository_completion(*self.paths)
+
+    def test_repository_cli_holds_authority_until_exit_and_never_emits_failed_report(self):
+        argv = ["--repository", "--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]),
+                "--state-root", str(self.paths[2]), "--repository-root", str(self.root)]
+        report = {"schemaVersion": 1, "result": "passed", "phaseCount": len(PHASE_INSTANCE_IDS)}
+        for fail_exit in (False, True):
+            @contextmanager
+            def authority(_):
+                yield {"completed_frozen": "fixture boundary, not genuine authority"}
+                if fail_exit:
+                    raise ValueError("authority changed")
+            stdout = io.StringIO()
+            with patch.object(completion, "completed_frozen_options", authority), \
+                    patch.object(completion, "require_repository_completion", return_value=report) as verify, \
+                    redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                if fail_exit:
+                    with self.assertRaises(SystemExit):
+                        completion.main(argv)
+                    self.assertEqual("", stdout.getvalue())
+                else:
+                    self.assertEqual(0, completion.main(argv))
+                    self.assertEqual(canonical_json_bytes(report).decode(), stdout.getvalue())
+                verify.assert_called_once_with(*self.paths, repository_root=self.root, environ=os.environ,
+                    completed_frozen="fixture boundary, not genuine authority")
+        for extra in (["--partial-catalog-destination", "/unused"], ["--github-output", "/unused"]):
+            with patch.object(completion, "require_repository_completion") as verify, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main(argv + extra)
+            verify.assert_not_called()
+
     def test_every_unresolved_sdk_identity_rejects_even_when_all_worker_matrices_are_empty(self):
         for identity in self.sdk:
             for state in ("build", "waiting"):

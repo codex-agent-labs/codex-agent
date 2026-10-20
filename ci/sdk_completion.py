@@ -70,6 +70,34 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
     return {"complete": True, "phaseCount": count, "fullReuse": result["fullReuse"]}
 
 
+def require_repository_completion(plan_path, discovery_root, state_root=None, **options):
+    """Report the full authenticated phase DAG, not invented terminal-receipt edges.
+
+    Inspection owns original object/receipt/provenance, semantic projections and
+    current-key verification. This report is external evidence, never reuse authority.
+    """
+    from products.aggregate import REPOSITORY_EDGES, REPOSITORY_EVIDENCE_IDENTITIES
+
+    inspected = products.inspect_products(plan_path, discovery_root, state_root, **options)
+    _, selected, records = products._validate_reuse_result(
+        inspected["result"], tuple(sorted(products.PHASE_INSTANCE_IDS)), require_complete=True)
+    phases = {products._identity(row): row for row in records}
+    terminals = {name: products.PhaseInstanceId(name, *identity)
+                 for name, identity in REPOSITORY_EVIDENCE_IDENTITIES.items()}
+    edges = []
+    for producer, consumer in REPOSITORY_EDGES:
+        if terminals[producer] not in products._dependency_closure((terminals[consumer],)):
+            raise ValueError("Repository terminal phases lack their required dependency path")
+        edges.append({
+            "producerProduct": producer, "consumerProduct": consumer,
+            "producerReceiptSha256": phases[terminals[producer]]["receiptSha256"],
+            "consumerReceiptSha256": phases[terminals[consumer]]["receiptSha256"],
+        })
+    return {"schemaVersion": 1, "result": "passed", "phaseCount": len(selected),
+            "products": [phases[terminals[name]] for name in ("contract", "runtime", "sdk")],
+            "edges": edges, "originalPhases": records}
+
+
 def stage_partial_catalog(state, destination):
     """Preserve new originals; independently qualified objects need no second catalog.
 
@@ -100,9 +128,13 @@ def main(argv=None):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--sdk-original-workflow-sha")
     parser.add_argument("--partial-catalog-destination", type=Path)
+    parser.add_argument("--repository", action="store_true",
+                        help="Require the complete authenticated Contract/Runtime/SDK phase DAG")
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
+    if args.repository and (args.partial_catalog_destination is not None or args.github_output is not None):
+        parser.error("Repository verification requires its standalone report, not catalog or routing outputs")
     try:
         with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
             tooling = {} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
@@ -112,7 +144,10 @@ def main(argv=None):
             options = {**tooling, **apple, **admissions, **completed,
                 **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
                    if args.sdk_original_workflow_sha is not None else {})}
-            if args.partial_catalog_destination is None:
+            if args.repository:
+                result = require_repository_completion(args.plan, args.discovery_root, args.state_root,
+                    repository_root=args.repository_root, environ=os.environ, **options)
+            elif args.partial_catalog_destination is None:
                 result = require_sdk_completion(args.plan, args.discovery_root, args.state_root,
                     repository_root=args.repository_root, environ=os.environ, **options)
             else:
