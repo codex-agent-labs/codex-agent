@@ -119,6 +119,9 @@ def completed_validation_recovery(completed, request, tooling, context):
                 receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
             if restored["receiptBytes"] != envelope["receiptBytes"]:
                 raise ValueError("Recovered SDK input differs from its qualified receipt")
+            if instance.product == "sdk":
+                from sdk_handoff import _ensure_observed_sdk_commit
+                _ensure_observed_sdk_commit(root, envelope["receipt"]["producer"], context["token"])
             receipt = directory / "phase-receipt.json"
             receipt.write_bytes(envelope["receiptBytes"])
             stages[instance] = (dict(stage=stage, receiptPath=receipt, receipt=envelope["receipt"]),

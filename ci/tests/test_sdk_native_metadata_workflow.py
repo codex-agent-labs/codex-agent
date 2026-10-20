@@ -3,6 +3,7 @@
 from contextlib import ExitStack, contextmanager, redirect_stderr
 from copy import deepcopy
 import io
+import inspect
 import os
 from pathlib import Path
 import tempfile
@@ -36,16 +37,41 @@ class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
                     CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION='{"fixture":"authorization"}'))
             request = dict(versions={"sdk": "0.8.0"}, repositoryRevision="b" * 40)
             capability = object.__new__(CompletedFrozenReuse)
-            for name, value in (("check_request", None), ("check_consumer", None), ("_values", ({}, {})),
+            phases = {}
+            for name, value in (("check_request", None), ("check_consumer", None), ("_values", ({}, phases)),
                     ("sdk_original", {"spec": {"sdkInputs": {"source": {"fixture": "source"}, "runtimeSource": {}}}})):
                 stack.enter_context(patch.object(CompletedFrozenReuse, name, return_value=value))
             stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", return_value={}))
             stack.enter_context(patch.object(workflow.product_reuse, "_consumer", return_value={"producer": {}}))
+            restore = stack.enter_context(patch("products.restore.restore_object"))
             with verification_session():
                 recovery = workflow.completed_validation_recovery(capability, request, tooling, context)
                 self.assertIs(recovery, workflow.completed_validation_recovery(capability, request, tooling, context))
                 identity = PhaseInstanceId("sdk", "python", "metadata", "desktop")
                 self.assertIsNone(recovery["verify"](identity, (), {}))  # Missing originals never fetch/build.
+                # Exercise the private original loader itself: fetch source only
+                # after the object/receipt gate, and once per captured category.
+                original = inspect.getclosurevars(inspect.unwrap(recovery["verify"])).nonlocals["original"]
+                binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+                phases[binary] = dict(buildKey="key", receiptSha256="receipt", objectSha256="object")
+                producer = {"commit": "original", "tree": "original-tree"}
+                envelope = dict(receiptBytes=b"fixture-receipt", receipt={"producer": producer})
+                events = []
+
+                def restored(obj, stage, **kwargs):
+                    events.append("restore")
+                    stage.mkdir(parents=True)
+                    (stage / "output").write_bytes(b"fixture")
+                    return dict(receiptBytes=envelope["receiptBytes"])
+
+                restore.side_effect = restored
+                with patch.object(CompletedFrozenReuse, "envelope", return_value=envelope), \
+                        patch.object(CompletedFrozenReuse, "capture_object", side_effect=lambda *a, **kw: events.append("capture")), \
+                        patch("sdk_handoff._ensure_observed_sdk_commit", side_effect=lambda *a: events.append("source")) as source_gate:
+                    captured = original(binary)
+                    self.assertIs(captured, original(binary))
+                    self.assertEqual(["capture", "restore", "source"], events)
+                    source_gate.assert_called_once_with(root, producer, "fixture")
                 context["environ"]["CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"] = '{}'
                 with self.assertRaisesRegex(ValueError, "changed its caller authority"):
                     recovery["verify"](identity, (), {})
