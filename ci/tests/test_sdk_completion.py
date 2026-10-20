@@ -370,6 +370,107 @@ class SdkCompletionTest(unittest.TestCase):
                 self.assertEqual({"result": "passed"}, completion.run_local_repository_gradle(root, policy,
                     parity_policy=root / "parity.json", parity_archive=root / "parity.zip"))
 
+    def test_runtime_scope_authenticates_all_fifty_originals_without_fetching_sdk_extension(self):
+        import reuse_qualification as native
+        from products import reuse
+        instances = tuple(sorted(item for item in PHASE_INSTANCE_IDS if item.product != "sdk"))
+        self.assertEqual(50, len(instances))
+        rows = {item: phase(item) for item in instances}
+        authorities = [dict(zip(completion.products._IDENTITY_KEYS, (
+            item.product, item.component, item.phase, item.target)),
+            flagsDigest="sha256:" + "c" * 64, toolchainProfileDigest="sha256:" + "e" * 64,
+            outputSchemaVersion=1) for item in instances]
+        capability = Mock()
+        capability.completed_phases.return_value = instances
+        capability._values.return_value = ({}, rows)
+        capability.envelope.side_effect = lambda row: {"original": row}
+        revision = "d" * 40
+        policy = dict(schemaVersion=1, kind="completed-frozen-reuse", consumerCommit=revision,
+            verifierPolicySha256="sha256:" + "a" * 64, artifactId=123, artifactSha256="sha256:" + "b" * 64,
+            runId=45, runAttempt=1, signerCommit="e" * 40, sourceCommit="e" * 40,
+            sdkCompletion={"fixture": "must not be acquired in Runtime scope"})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            pinned = root / "policy.json"
+            pinned.write_bytes(canonical_json_bytes(policy))
+            with patch.object(native, "validate_completed_reuse_policy"), \
+                    patch.object(native, "fetch_completed_frozen", return_value=(capability, {})) as fetch, \
+                    patch.object(completion.products, "_git_value", return_value=revision), \
+                    patch.object(completion.products, "_authorities", return_value=(authorities, None)), \
+                    patch.object(completion.products, "_versions", return_value={}), \
+                    patch.object(reuse, "_phase_git_inventories", return_value={item: [] for item in instances}), \
+                    patch.object(reuse, "advance_reuse", return_value=(inspected(list(rows.values()))["result"], {})):
+                result = completion.require_local_repository_completion(root, pinned,
+                    runtime_only=True, environ={"GH_TOKEN": "fixture"})
+                self.assertEqual(50, result["phaseCount"])
+                self.assertEqual(["contract", "runtime"], [row["product"] for row in result["products"]])
+                self.assertEqual(1, len(result["edges"]))
+                self.assertNotIn("sdk_completion", fetch.call_args.kwargs)
+                capability.completed_phases.return_value = instances[:-1]
+                with self.assertRaises(ValueError):
+                    completion.require_local_repository_completion(root, pinned,
+                        runtime_only=True, environ={"GH_TOKEN": "fixture"})
+
+    def test_standalone_adapter_preserves_settings_contract_gate_and_binds_its_manifest(self):
+        argv = ["--runtime", "--local", "--gradle", "--repository-root", "/actual/repository",
+            "--completed-frozen-policy", "/actual/completed.json",
+            "--runtime-contract-policy", "/actual/contract.json"]
+        with patch.object(completion, "run_local_repository_gradle", return_value={"result": "passed"}) as gate, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(0, completion.main(argv))
+            gate.assert_called_once_with(Path("/actual/repository"), Path("/actual/completed.json"),
+                                        runtime_contract_policy=Path("/actual/contract.json"))
+        for bad in (argv[:-2], argv + ["--sdk"], argv + ["--repository"],
+                    argv + ["--runtime-contract-manifest", "/fake/settings-manifest"]):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main(bad)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            policy = root / "inputs.json"
+            inputs = dict(schemaVersion=1, contractVersion="0.8.0", runtimeVersion="0.8.0", target="jvm")
+            for name in ("contractPayload", "contractMetadataReceipt", "contractAttestation",
+                         "contractAttestationSignature", "contractPublicKey"):
+                path = root / name
+                path.write_bytes(b"{}\n")
+                inputs[name] = str(path)
+            policy.write_bytes(canonical_json_bytes(inputs))
+            report = root / "runtime/build/reports/runtime/completed-runtime-evidence.json"
+            def gradle(command, **options):
+                init = Path(command[command.index("--init-script", command.index("--init-script") + 1) + 1]).read_text()
+                self.assertIn("root.tasks.named('verifyRuntime').configure", init)
+                self.assertIn("setDependsOn([authenticated])", init)
+                self.assertIn("'--runtime', '--local'", init)
+                self.assertIn("get('codexAgent.verifiedContractManifest').absolutePath", init)
+                self.assertEqual(str(root / "runtime"), command[command.index("--project-dir") + 1])
+                self.assertEqual(":verifyRuntime", command[-1])
+                for name, value in inputs.items():
+                    if name != "schemaVersion":
+                        self.assertIn("-PcodexAgent." + name + "=" + value, command)
+                report.parent.mkdir(parents=True)
+                report.write_bytes(b'{"result":"passed"}\n')
+            with patch.object(completion.subprocess, "run", side_effect=gradle):
+                self.assertEqual({"result": "passed"}, completion.run_local_repository_gradle(
+                    root, policy, runtime_contract_policy=policy))
+            metadata = dict(product="contract", component="contract", phase="metadata", target="common",
+                receiptSha256=completion.sha256_bytes(b"{}\n"))
+            manifest = root / "runtime/.gradle/verified-contracts/current/contract-manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_bytes(b'{"fixture":"current manifest"}\n')
+            digest = "sha256:" + "f" * 64
+            with patch.object(completion.products, "validate_phase_receipt",
+                    return_value=dict(productVersion="0.8.0", outputs=[dict(bytes=50, sha256=digest)])), \
+                    patch.object(completion, "verified_zip_contents", return_value=(
+                        [], {"contract-manifest.json": manifest.read_bytes()}, dict(bytes=50, sha256=digest))):
+                versions = {"contract": "0.8.0", "runtime-release": "0.8.0"}
+                result = completion._bind_runtime_contract(root, {"phases": [metadata]}, policy, manifest, versions)
+                self.assertEqual(digest, result["payloadSha256"])
+                manifest.write_bytes(b'{"fixture":"tampered manifest"}\n')
+                with self.assertRaisesRegex(ValueError, "manifest/payload"):
+                    completion._bind_runtime_contract(root, {"phases": [metadata]}, policy, manifest, versions)
+                metadata["receiptSha256"] = digest
+                with self.assertRaisesRegex(ValueError, "current authenticated"):
+                    completion._bind_runtime_contract(root, {"phases": [metadata]}, policy, manifest, versions)
+
     def test_other_product_misses_and_zero_sdk_selection_do_not_claim_sdk_production(self):
         other = next(identity for identity in PHASE_INSTANCE_IDS if identity.product == "runtime")
         self.assertEqual({"complete": True, "phaseCount": 0, "fullReuse": False}, self.call(inspected([phase(other, "build")])))

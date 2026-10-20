@@ -57,19 +57,46 @@ gradle.projectsEvaluated {
 """
 
 
-def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=None, parity_archive=None):
+def _runtime_contract_policy(path):
+    raw = read_regular_file_bytes(path, max_bytes=8192, reject_symlink_parents=True)
+    value = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "contractVersion", "runtimeVersion", "target", "contractPayload",
+        "contractMetadataReceipt", "contractAttestation", "contractAttestationSignature", "contractPublicKey",
+    }, "Standalone acceptance Contract inputs")
+    if require_integer(value["schemaVersion"], "Contract inputs schema", 1) != 1 or value["target"] != "jvm":
+        raise ValueError("Standalone acceptance uses JVM configuration and the complete authenticated Runtime closure")
+    for name in ("contractVersion", "runtimeVersion"):
+        products.require_semver(value[name], name)
+    for name in ("contractPayload", "contractMetadataReceipt", "contractAttestation",
+                 "contractAttestationSignature", "contractPublicKey"):
+        path = Path(require_string(value[name], name))
+        if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_file():
+            raise ValueError("Standalone Contract inputs require absolute non-symbolic paths")
+    return raw, value
+
+
+def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=None, parity_archive=None,
+                               runtime_contract_policy=None):
     """Use the root verification entry point without changing product/toolkit inputs."""
     root = Path(repository_root).resolve(strict=True)
     policy = Path(policy_path).absolute()
     read_regular_file_bytes(policy, max_bytes=4096, reject_symlink_parents=True)
     sdk = parity_policy is not None or parity_archive is not None
+    runtime = runtime_contract_policy is not None
+    if runtime and sdk:
+        raise ValueError("Standalone Runtime acceptance does not consume SDK parity")
     if sdk and (parity_policy is None or parity_archive is None):
         raise ValueError("SDK acceptance requires both original parity policy and archive")
-    report = root / ("build/reports/sdk/completed-sdk-evidence.json" if sdk else
+    report = root / ("runtime/build/reports/runtime/completed-runtime-evidence.json" if runtime else
+                     "build/reports/sdk/completed-sdk-evidence.json" if sdk else
                      "build/reports/repository/imported-product-evidence.json")
     from products.sdk_package import _require_capability_output_separate
-    _require_capability_output_separate(report, [policy, *(
-        (parity_policy, parity_archive) if sdk else ())])
+    protected = [policy, *((parity_policy, parity_archive) if sdk else ())]
+    if runtime:
+        contract_raw, contract = _runtime_contract_policy(runtime_contract_policy)
+        protected.extend([runtime_contract_policy, *(Path(value) for name, value in contract.items()
+            if name.startswith("contract") and name != "contractVersion")])
+    _require_capability_output_separate(report, protected)
     # Reject linked output ancestors before the legacy invalidation task can delete anything.
     for path in (report, *report.parents):
         if path.is_symlink():
@@ -79,6 +106,31 @@ def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=N
         script = Path(temporary) / "repository.init.gradle"
         init = LOCAL_REPOSITORY_INIT
         extra = []
+        if runtime:
+            init = init.replace("':codex-agent-core'", "':codex-agent-runtime-desktop'")
+            init = init.replace("reports/repository/imported-product-evidence.json",
+                                "reports/runtime/completed-runtime-evidence.json")
+            init = init.replace("verifyCompletedRepositoryEvidence", "verifyCompletedRuntimeEvidence")
+            init = init.replace("dependsOn root.tasks.named('invalidateImportedRepositoryEvidenceOutput')", "")
+            init = init.replace("'--repository', '--local',", "'--runtime', '--local',")
+            init = init.replace("root.projectDir", "root.projectDir.parentFile")
+            init = init.replace("'--completed-frozen-policy', policy",
+                "'--completed-frozen-policy', policy,\n"
+                "            '--runtime-contract-policy', System.getProperty('codexAgent.runtimeContractPolicy'),\n"
+                "            '--runtime-contract-manifest', root.extensions.extraProperties"
+                ".get('codexAgent.verifiedContractManifest').absolutePath")
+            init = init[:init.index("    root.tasks.named('verifyRepository')")] + """\
+    root.tasks.named('verifyRuntime').configure {
+        // Settings retain their complete Contract authentication/materialization.
+        // Reuse qualified metadata instead of invoking its successful producer.
+        setDependsOn([authenticated])
+    }
+}
+"""
+            extra = ["--project-dir", str(root / "runtime"),
+                     "-DcodexAgent.runtimeContractPolicy=" + str(Path(runtime_contract_policy).absolute()),
+                     *("-PcodexAgent." + name + "=" + value for name, value in contract.items()
+                       if name != "schemaVersion")]
         if sdk:
             # The qualified core P/V/M closure already includes the publication
             # verifier and all eleven isolated facade consumers. Replace their
@@ -106,8 +158,11 @@ def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=N
             str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
             "--init-script", str(script), "-DcodexAgent.completedRepositoryPolicy=" + str(policy),
             "-DcodexAgent.repositoryPython=" + sys.executable, *extra,
-            ":verifySdk" if sdk else ":verifyRepository"],
+            ":verifyRuntime" if runtime else ":verifySdk" if sdk else ":verifyRepository"],
             cwd=root, stdout=sys.stderr, check=True)
+    if runtime and read_regular_file_bytes(runtime_contract_policy, max_bytes=8192,
+                                          reject_symlink_parents=True) != contract_raw:
+        raise ValueError("Standalone Contract caller policy changed during verification")
     return load_canonical_json_bytes(read_regular_file_bytes(
         report, max_bytes=1024 * 1024, reject_symlink_parents=True))
 
@@ -172,16 +227,19 @@ def require_repository_completion(plan_path, discovery_root, state_root=None, **
     return _repository_report(inspected["result"])
 
 
-def _repository_report(result):
+def _repository_report(result, *, runtime_only=False):
     from products.aggregate import REPOSITORY_EDGES, REPOSITORY_EVIDENCE_IDENTITIES
 
-    _, selected, records = products._validate_reuse_result(
-        result, tuple(sorted(products.PHASE_INSTANCE_IDS)), require_complete=True)
+    owners = ("contract", "runtime") if runtime_only else ("contract", "runtime", "sdk")
+    _, selected, records = products._validate_reuse_result(result, tuple(sorted(
+        item for item in products.PHASE_INSTANCE_IDS if item.product in owners)), require_complete=True)
     phases = {products._identity(row): row for row in records}
     terminals = {name: products.PhaseInstanceId(name, *identity)
                  for name, identity in REPOSITORY_EVIDENCE_IDENTITIES.items()}
     edges = []
     for producer, consumer in REPOSITORY_EDGES:
+        if producer not in owners or consumer not in owners:
+            continue
         if terminals[producer] not in products._dependency_closure((terminals[consumer],)):
             raise ValueError("Repository terminal phases lack their required dependency path")
         edges.append({
@@ -190,7 +248,7 @@ def _repository_report(result):
             "consumerReceiptSha256": phases[terminals[consumer]]["receiptSha256"],
         })
     return {"schemaVersion": 1, "result": "passed", "phaseCount": len(selected),
-            "products": [phases[terminals[name]] for name in ("contract", "runtime", "sdk")],
+            "products": [phases[terminals[name]] for name in owners],
             "edges": edges, "originalPhases": records}
 
 
@@ -290,9 +348,46 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
         languageCount=11, satisfied=6104, excluded=12, scenarioCount=14)
 
 
+def _bind_runtime_contract(root, result, policy_path, manifest_path, versions):
+    """Bind the configured Contract to current native-qualified original bytes."""
+    raw, policy = _runtime_contract_policy(policy_path)
+    if (policy["contractVersion"] != versions["contract"]
+            or policy["runtimeVersion"] != versions["runtime-release"]):
+        raise ValueError("Standalone Contract/Runtime versions differ from current authority")
+    original = next(row for row in result["phases"] if (
+        row["product"], row["component"], row["phase"], row["target"]) ==
+        ("contract", "contract", "metadata", "common"))
+    receipt_raw = read_regular_file_bytes(policy["contractMetadataReceipt"],
+        max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    if sha256_bytes(receipt_raw) != original["receiptSha256"]:
+        raise ValueError("Configured Contract is not the current authenticated metadata receipt")
+    receipt = products.validate_phase_receipt(load_canonical_json_bytes(receipt_raw))
+    manifest_path = Path(manifest_path).absolute()
+    if (root / "runtime/.gradle/verified-contracts" not in manifest_path.parents
+            or manifest_path.name != "contract-manifest.json"):
+        raise ValueError("Runtime acceptance requires its settings-authenticated Contract manifest")
+    # One bounded read of the consumed archive; no copying/extracting Maven bodies.
+    _, retained, payload = verified_zip_contents(Path(policy["contractPayload"]),
+        max_archive_bytes=512 * 1024 * 1024, max_members=4096,
+        max_total_bytes=1024 * 1024 * 1024, retained_paths=("contract-manifest.json",),
+        max_retained_bytes=16 * 1024 * 1024)
+    if (len(receipt["outputs"]) != 1
+            or any(receipt["outputs"][0][name] != value for name, value in payload.items())
+            or read_regular_file_bytes(manifest_path, max_bytes=16 * 1024 * 1024,
+                reject_symlink_parents=True) != retained.get("contract-manifest.json")
+            or receipt["productVersion"] != policy["contractVersion"]):
+        raise ValueError("Configured Contract manifest/payload differs from the current original")
+    if read_regular_file_bytes(policy_path, max_bytes=8192, reject_symlink_parents=True) != raw:
+        raise ValueError("Runtime Contract caller policy changed during verification")
+    return dict(payloadSha256=payload["sha256"], metadataReceiptSha256=original["receiptSha256"],
+        manifestSha256=sha256_bytes(retained["contract-manifest.json"]), policySha256=sha256_bytes(raw),
+        configurationTarget=policy["target"])
+
+
 @products.measured
 def require_local_repository_completion(repository_root, policy_path, *, environ=None,
-                                       parity_policy=None, parity_archive=None):
+                                       parity_policy=None, parity_archive=None, runtime_only=False,
+                                       runtime_contract_policy=None, runtime_contract_manifest=None):
     """Verify actual current inputs through native original evidence, without a CI identity.
 
     This is a read-only local acceptance report, never a new phase receipt,
@@ -303,6 +398,11 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
     from products.reuse import LookupSession, advance_reuse, _phase_git_inventories
 
     environment = os.environ if environ is None else environ
+    require_boolean(runtime_only, "Runtime-only acceptance")
+    if ((runtime_contract_policy is None) != (runtime_contract_manifest is None)
+            or runtime_contract_policy is not None and not runtime_only
+            or runtime_only and parity_policy is not None):
+        raise ValueError("Standalone Runtime acceptance requires its own complete Contract inputs")
     if (parity_policy is None) != (parity_archive is None):
         raise ValueError("SDK acceptance requires both original parity policy and archive")
     if environment.get("GITHUB_ACTIONS") or environment.get("GITHUB_RUN_ID"):
@@ -318,14 +418,16 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
     token = environment.get("GH_TOKEN") or environment.get("GITHUB_TOKEN")
     if not token:
         raise ValueError("Local repository verification requires an original-evidence observation token")
-    instances = tuple(sorted(products.PHASE_INSTANCE_IDS))
+    instances = tuple(sorted(item for item in products.PHASE_INSTANCE_IDS
+                             if not runtime_only or item.product in {"contract", "runtime"}))
     with tempfile.TemporaryDirectory(prefix="repository-original-evidence-") as temporary, \
             products._ci_observation_batch():
         capability, _ = native.fetch_completed_frozen(
             Path(temporary).resolve() / "native", consumer_commit=revision,
             verifier_policy_sha256=policy["verifierPolicySha256"], repository_root=root,
             revision=revision, token=token,
-            **({"sdk_completion": policy["sdkCompletion"]} if "sdkCompletion" in policy else {}),
+            **({"sdk_completion": policy["sdkCompletion"]}
+               if not runtime_only and "sdkCompletion" in policy else {}),
             **({"requalification_baseline": policy["requalificationBaseline"]}
                if "requalificationBaseline" in policy else {}),
             **native._native_pin_arguments({key: policy[key] for key in (
@@ -349,7 +451,10 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
         result, _ = advance_reuse(instances, values, envelopes,
             LookupSession(repository=native.REPOSITORY, pull_request=31),
             repository_root=root, repository_revision=revision, completed_frozen=capability)
-        report = _repository_report(result)
+        report = _repository_report(result, runtime_only=runtime_only)
+        if runtime_contract_policy is not None:
+            report["runtimeContract"] = _bind_runtime_contract(
+                root, result, runtime_contract_policy, runtime_contract_manifest, versions)
         if parity_policy is not None:
             report["sdkParity"] = _completed_parity(
                 root, revision, result, parity_policy, parity_archive, token)
@@ -396,15 +501,29 @@ def main(argv=None):
                         help="Require the complete authenticated Contract/Runtime/SDK phase DAG")
     parser.add_argument("--sdk", action="store_true",
                         help="Require local current SDK closure and authenticated original full parity")
+    parser.add_argument("--runtime", action="store_true",
+                        help="Require only current Contract/Runtime originals, without SDK acquisition")
+    parser.add_argument("--runtime-contract-policy", type=Path)
+    parser.add_argument("--runtime-contract-manifest", type=Path)
     parser.add_argument("--parity-policy", type=Path)
     parser.add_argument("--parity-archive", type=Path)
     parser.add_argument("--local", action="store_true",
                         help="Verify current local repository inputs through completed original evidence; no CI identity")
     parser.add_argument("--gradle", action="store_true",
-                        help="Run local acceptance through root :verifyRepository or :verifySdk (offline)")
+                        help="Run local repository, SDK or standalone Runtime acceptance through Gradle (offline)")
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
+    if args.runtime:
+        if not args.local or args.repository or args.sdk:
+            parser.error("--runtime requires --local without --repository or --sdk")
+        if args.gradle:
+            if args.runtime_contract_policy is None or args.runtime_contract_manifest is not None:
+                parser.error("Standalone Gradle requires Contract policy; settings supplies its verified manifest")
+        elif (args.runtime_contract_policy is None) != (args.runtime_contract_manifest is None):
+            parser.error("Runtime Contract binding requires both policy and settings-verified manifest")
+    elif args.runtime_contract_policy is not None or args.runtime_contract_manifest is not None:
+        parser.error("Standalone Contract inputs require --runtime --local")
     if args.sdk and (not args.local or args.repository or args.parity_policy is None or args.parity_archive is None):
         parser.error("--sdk requires --local and both original parity inputs, without --repository")
     if not args.sdk and (args.parity_policy is not None or args.parity_archive is not None):
@@ -414,18 +533,25 @@ def main(argv=None):
     if args.gradle and not args.local:
         parser.error("--gradle requires local repository or SDK verification")
     if args.local:
-        if (not (args.repository or args.sdk) or args.completed_frozen_policy is None or any(
+        if (not (args.repository or args.sdk or args.runtime) or args.completed_frozen_policy is None or any(
                 value is not None for name, value in vars(args).items() if name not in {
                     "repository_root", "completed_frozen_policy", "repository", "local", "gradle",
-                    "sdk", "parity_policy", "parity_archive"})):
+                    "sdk", "parity_policy", "parity_archive", "runtime",
+                    "runtime_contract_policy", "runtime_contract_manifest"})):
             parser.error("Local repository verification accepts only its current source and explicit completed policy")
     elif args.plan is None or args.discovery_root is None:
         parser.error("Hosted replay requires --plan and --discovery-root")
     try:
         if args.local:
             gate = run_local_repository_gradle if args.gradle else require_local_repository_completion
-            result = gate(args.repository_root, args.completed_frozen_policy, **(
-                dict(parity_policy=args.parity_policy, parity_archive=args.parity_archive) if args.sdk else {}))
+            options = dict(parity_policy=args.parity_policy, parity_archive=args.parity_archive) if args.sdk else {}
+            if args.runtime:
+                options = {} if args.gradle else dict(runtime_only=True)
+                if args.runtime_contract_policy is not None:
+                    options["runtime_contract_policy"] = args.runtime_contract_policy
+                if args.runtime_contract_manifest is not None:
+                    options["runtime_contract_manifest"] = args.runtime_contract_manifest
+            result = gate(args.repository_root, args.completed_frozen_policy, **options)
             print(canonical_json_bytes(result).decode().strip())
             return 0
         with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
