@@ -268,6 +268,23 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertIn("spec.classifier.substring('c-abi-'.length())", native_init)
                     config = workflow.product_reuse.load_json_bytes(Path(config_path).read_bytes())
                     if ":verifyImportedSdkBindingParity" in command:
+                        self.assertTrue(Path(config["nonNative"]["java"]).is_file())
+                        self.assertIn("deriveCrossLanguageNativeWrapperBindingReceipt(input)", native_init)
+                        self.assertIn("verifyCrossLanguageBindingParity(input)", native_init)
+                        self.assertIn("schema:6", native_init)
+                        self.assertIn("phase.set('M11')", native_init)
+                        self.assertIn("output.list().toList().toSet()", native_init)
+                        self.assertNotIn("evidenceDirectory.set(file(config.finalEvidence))", native_init)
+                        self.assertIn("'candidateCommit', 'candidateTree'", native_init)
+                        self.assertIn("canonical_json_bytes", native_init)
+                        final = Path(config["finalEvidence"])
+                        final.mkdir()
+                        for name in (
+                                "canonical-api.json", "canonical-coverage.json", "binding-obligations-m11.json",
+                                *(language + "-parity.json" for language in (
+                                    "kotlin", "java", "javascript-typescript", "swift", "objective-c", "c-abi",
+                                    "python", "csharp", "rust", "cpp", "dart"))):
+                            (final / name).write_bytes(b"synthetic aggregate evidence, not acceptance\n")
                         Path(config["finalOutput"]).write_bytes(b'{"result":"passed"}\n')
                         if failure == "context":
                             Path(config["native"]["cpp"]["packageReceipt"]).write_bytes(b"changed")
@@ -320,7 +337,9 @@ class SdkWorkflowTest(unittest.TestCase):
                 continue
             audits = [command[command.index("--phase") + 1] for command in commands
                 if "audit-cross-language-bindings" in command]
-            self.assertEqual(["M8", "M9_PYTHON", "M9_CSHARP", "M9_RUST", "M9_CPP", "M9_DART", "M11"], audits)
+            self.assertEqual([], audits)  # One in-memory M11 evaluation, no repeated JVM receipt advancement.
+            self.assertEqual(2, sum("--init-script" in command for command in commands))
+            self.assertFalse(any("-jar" in command for command in commands))
             self.assertEqual(5, sum("verify-native" in command for command in commands))
 
     def test_java_parity_publishes_nothing_when_original_input_exit_check_fails(self):

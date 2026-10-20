@@ -100,10 +100,72 @@ gradle.projectsEvaluated {
     if (sdk == null) return
     def config = new groovy.json.JsonSlurper().parse(new File(System.getProperty('codexAgent.importedNativeParityInputs')))
     def file = { value -> new File(value) }
+    def loader = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
+    def modelClass = { name -> loader.loadClass(name) }
+    def m11 = modelClass('CrossLanguageBindingPhase').enumConstants.find { it.name() == 'M11' }
+    def nativeModels = [:]
+    def freshSeparateFile = { destination, sources ->
+        def path = destination.canonicalFile.toPath()
+        if (java.nio.file.Files.exists(destination.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+            sources.any { source ->
+                def originalPath = file(source).canonicalFile.toPath()
+                path == originalPath || path.startsWith(originalPath) || originalPath.startsWith(path)
+            })
+            throw new GradleException('Parity output must be fresh and separate from original inputs')
+    }
+    // These are newly derived aggregate receipts, never original phase receipts.
+    // All original host fields survive; schema6 removes only single-run assumptions.
+    def nativeDocument = { r ->
+        [schema:6, result:'passed', phase:r.phase.name(), language:r.language.id,
+         canonical:[apiReportSha256:r.canonical.apiReportSha256,
+                    coverageReceiptSha256:r.canonical.coverageReceiptSha256],
+         artifacts:r.artifacts.sort(false) { it.id }.collect { [id:it.id, sha256:it.sha256] },
+         hostConsumerProofs:r.hostConsumerProofs.sort(false) { it.classifier }.collect { proof ->
+             def row = ['classifier', 'runnerOs', 'runnerArch', 'toolchainIdentitySha256',
+                 'packageArtifactId', 'packageSha256', 'nativeLibrarySha256', 'testId',
+                 'candidateCommit', 'candidateTree'].collectEntries { [(it):proof."$it"] }
+             row.status = proof.status.name().toLowerCase(java.util.Locale.ROOT)
+             row
+         },
+         testProgramSha256:r.testProgramSha256, testResultsSha256:r.testResultsSha256,
+         publicSymbols:r.publicSymbols.sort(false),
+         tests:r.bindingTests.sort(false) { it.testId }.collect {
+             [id:it.testId, status:it.status.name().toLowerCase(java.util.Locale.ROOT)] },
+         scenarios:r.scenarioEvidence.sort(false) { it.scenario.id }.collect {
+             [id:it.scenario.id, testIds:it.testIds.sort(false)] },
+         claims:r.projectionClaims.sort(false) { it.capabilityKey }.collect {
+             [capabilityKey:it.capabilityKey, publicSymbols:it.publicSymbols.sort(false),
+              executedTests:it.executedTests.sort(false),
+              sharedScenarios:it.sharedScenarios.collect { it.id }.sort(false)] },
+         exclusions:r.applicabilityExclusions.sort(false) { it.capabilityKey }.collect {
+             [capabilityKey:it.capabilityKey, reason:it.reason] }]
+    }
+    def canonicalBytes = { value ->
+        // Use the one repository canonical writer; this caller has no second codec.
+        def process = new ProcessBuilder('python3', '-B', '-c',
+            'import json,sys; from ci.products.inventory import canonical_json_bytes; ' +
+            'sys.stdout.buffer.write(canonical_json_bytes(json.load(sys.stdin)))')
+            .directory(rootProject.projectDir).start()
+        process.outputStream.withWriter('UTF-8') { it.write(groovy.json.JsonOutput.toJson(value)) }
+        def bytes = process.inputStream.bytes
+        def error = process.errorStream.getText('UTF-8')
+        if (process.waitFor() != 0) throw new GradleException('Parity canonical writer failed: ' + error)
+        bytes
+    }
+    def writeCanonical = { destination, value ->
+        def bytes = canonicalBytes(value)
+        destination.parentFile.mkdirs()
+        destination.bytes = bytes
+        bytes
+    }
     ['python':'Python', 'csharp':'CSharp', 'rust':'Rust', 'cpp':'Cpp', 'dart':'Dart'].each { language, title ->
         def original = config.native[language]
+        freshSeparateFile(file(original.output), [config.api, config.coverage, original.bootstrap,
+            original.claims, original.capability, original.packageStage, original.packageReceipt,
+            original.request, original.runtime, original.validationStages, original.validationReceipts, original.sdks])
         sdk.tasks.named("verify${title}BindingParity").configure {
             setDependsOn([])
+            phase.set('M11')
             apiReport.set(file(config.api))
             canonicalCoverageReceipt.set(file(config.coverage))
             getCAbiBootstrapEvidence().set(file(original.bootstrap))
@@ -123,9 +185,34 @@ gradle.projectsEvaluated {
             importedRepository.set(rootProject.layout.projectDirectory)
             receipt.set(file(original.output))
             outputs.upToDateWhen { false }
+            actions.clear()
+            doLast {
+                def evidence = modelClass('CrossLanguageNativeWrapperBindingEvidenceKt')
+                def binding = modelClass('CrossLanguageBinding').enumConstants.find { it.id == language }
+                def packages = evidence.nativeWrapperPackageArtifacts(binding, packageArtifacts.get().asFile)
+                def imported = modelClass('ImportedNativeWrapperParityHosts').newInstance(
+                    rootProject.projectDir, importedPackageStage.get().asFile,
+                    importedPackageReceipt.get().asFile, importedCompatibilityRequest.get().asFile,
+                    importedRuntimeStages.get().asFile, importedValidationStages.get().asFile,
+                    importedValidationReceipts.get().asFile)
+                def input = modelClass('CrossLanguageNativeWrapperEvidenceInput').newInstance(
+                    m11, binding, apiReport.get().asFile, canonicalCoverageReceipt.get().asFile,
+                    getCAbiBootstrapEvidence().get().asFile, claims.get().asFile,
+                    compilerEvidence.get().asFile, testProgram.get().asFile, testResults.get().asFile,
+                    packages, hostEvidenceDirectory.get().asFile, stagedCAbiSdks.get().asFile, imported)
+                // Unchanged full five-host installed-package and capability gates.
+                def derived = evidence.deriveCrossLanguageNativeWrapperBindingReceipt(input)
+                def document = nativeDocument(derived)
+                if (document.hostConsumerProofs.size() != 5 ||
+                    document.hostConsumerProofs.collect { it.classifier }.toSet().size() != 5 ||
+                    document.artifacts.collect { it.id }.toSet().size() != document.artifacts.size()) {
+                    throw new GradleException('Derived native parity has duplicate or missing identities')
+                }
+                nativeModels[binding] = derived
+                writeCanonical(receipt.get().asFile, document)
+            }
         }
     }
-    def loader = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
     rootProject.tasks.register('verifyImportedCAbiBindingParity') {
         def original = config.native.cpp
         def directory = file(config.cabiOutput)
@@ -189,12 +276,103 @@ gradle.projectsEvaluated {
         }
     }
     rootProject.tasks.named('verifyImportedSdkBindingParity').configure {
-        setDependsOn([])
+        def inputs = [config.api, config.coverage] + config.nonNative.values() +
+            config.native.values().collectMany { original ->
+                [original.packageStage, original.packageReceipt, original.validationStages,
+                 original.validationReceipts, original.bootstrap, original.claims, original.capability]
+            }
+        freshSeparateFile(file(config.finalOutput), inputs + [config.finalEvidence])
+        freshSeparateFile(file(config.finalEvidence), inputs)
+        setDependsOn(['verifyImportedCAbiBindingParity'] +
+            ['Python', 'CSharp', 'Rust', 'Cpp', 'Dart'].collect { ':codex-agent-sdk:verify' + it + 'BindingParity' })
         canonicalApiReport.set(file(config.api))
         canonicalCoverageReceipt.set(file(config.coverage))
-        evidenceDirectory.set(file(config.finalEvidence))
+        // This adapter consumes originals, then emits the new aggregate directory.
+        // Do not declare that not-yet-created output as a required Gradle input.
+        evidenceDirectory.set(file(config.api).parentFile)
         resultFile.set(file(config.finalOutput))
         outputs.upToDateWhen { false }
+        actions.clear()
+        doLast {
+            def receiptIo = modelClass('CrossLanguageBindingReceiptKt')
+            def canonical = modelClass('CrossLanguageApiEvidenceKt')
+                .readCrossLanguageCanonicalApiEvidence(file(config.api), file(config.coverage))
+            def originals = new LinkedHashMap(nativeModels)
+            ['kotlin', 'java', 'javascript-typescript', 'swift', 'objective-c', 'c-abi'].each { name ->
+                def source = name == 'c-abi' ? new File(config.cabiOutput, 'c-abi-parity.json') :
+                    file(config.nonNative[name])
+                def r = receiptIo.readCrossLanguageBindingReceipt(source)
+                // Advance derived phase only. Every original file stays untouched.
+                originals[r.language] = r.copy(m11, r.language, r.canonical, r.artifacts,
+                    r.testProgramSha256, r.testResultsSha256, r.publicSymbols, r.bindingTests,
+                    r.scenarioEvidence, r.projectionClaims, r.applicabilityExclusions, r.hostConsumerProofs)
+            }
+            def languages = modelClass('CrossLanguageBinding').enumConstants.toList()
+            if (originals.keySet() != languages.toSet()) throw new GradleException('Parity lacks exactly eleven languages')
+            originals.each { language, r ->
+                if (r.language != language || r.phase != m11 || r.canonical != canonical.canonical)
+                    throw new GradleException('Parity receipt identity does not match current Contract')
+            }
+            def kotlin = originals.find { key, value -> key.id == 'kotlin' }.value
+            if (kotlin.testProgramSha256 != canonical.compiledTestsSha256 ||
+                kotlin.testResultsSha256 != canonical.testResultsSha256 ||
+                kotlin.publicSymbols.sort(false) != canonical.memberKeys.sort(false))
+                throw new GradleException('Canonical Kotlin proof differs from executed Contract evidence')
+            def receipts = originals.values().toList()
+            def input = modelClass('CrossLanguageBindingParityInput').newInstance(
+                m11, canonical.memberKeys, canonical.memberKeys,
+                receipts.collectMany { it.projectionClaims }, receipts.collectMany { it.applicabilityExclusions },
+                originals.collectEntries { key, value -> [(key):value.publicSymbols] },
+                receipts.collectMany { it.bindingTests }, receipts.collectMany { it.scenarioEvidence })
+            def evaluated = modelClass('CrossLanguageBindingParityKt').verifyCrossLanguageBindingParity(input)
+            def counts = evaluated.obligations.countBy { it.status.name() }
+            if (canonical.memberKeys.size() != 556 || evaluated.obligations.size() != 6116 ||
+                counts != [SATISFIED:6104, EXCLUDED:12])
+                throw new GradleException('Parity obligation matrix is not complete')
+            def output = file(config.finalEvidence)
+            output.mkdirs()
+            def expected = [:]
+            originals.each { language, r ->
+                def path = new File(output, language.id + '-parity.json')
+                if (nativeModels.containsKey(language)) {
+                    expected[path.name] = writeCanonical(path, nativeDocument(r))
+                } else {
+                    receiptIo.writeCrossLanguageBindingReceipt(path, r)
+                    expected[path.name] = path.bytes
+                }
+            }
+            ['canonical-api.json':config.api, 'canonical-coverage.json':config.coverage].each { name, source ->
+                expected[name] = file(source).bytes
+                new File(output, name).bytes = expected[name]
+            }
+            def digest = { bytes -> java.security.MessageDigest.getInstance('SHA-256')
+                .digest(bytes).encodeHex().toString() }
+            def exclusions = receipts.collectMany { it.applicabilityExclusions }
+            def audit = [schema:4, result:'complete', phase:'M11',
+                apiReportSha256:canonical.canonical.apiReportSha256,
+                canonicalCoverageSha256:canonical.canonical.coverageReceiptSha256,
+                languageReceiptSha256:originals.collectEntries { language, r ->
+                    [(language.id):digest(expected[language.id + '-parity.json'])] },
+                summary:[total:6116, active:6104, pending:0, excluded:12, satisfied:6104, missing:0],
+                obligations:evaluated.obligations.collect { row ->
+                    def record = [capabilityKey:row.capabilityKey, language:row.language.id,
+                        applicable:row.applicable, obligationState:row.applicable ? 'active' : 'excluded',
+                        parityStatus:row.status.name().toLowerCase(java.util.Locale.ROOT)]
+                    def exclusion = exclusions.find { it.capabilityKey == row.capabilityKey && it.language == row.language }
+                    if (exclusion != null) record.exclusionReason = exclusion.reason
+                    record
+                }, errors:[]]
+            def auditName = 'binding-obligations-m11.json'
+            expected[auditName] = writeCanonical(new File(output, auditName), audit)
+            if (output.list().toList().toSet() != expected.keySet() ||
+                expected.any { name, bytes -> !java.util.Arrays.equals(new File(output, name).bytes, bytes) })
+                throw new GradleException('Derived parity evidence changed before verification')
+            writeCanonical(file(config.finalOutput), [schemaVersion:2, result:'passed', phase:'M11',
+                capabilityCount:556, languageCount:11, scenarioCount:14,
+                canonicalApiSha256:audit.apiReportSha256, canonicalCoverageSha256:audit.canonicalCoverageSha256,
+                active:6104, pending:0, excluded:12, satisfied:6104, missing:0,
+                evidenceFiles:expected.sort().collect { name, bytes -> [path:name, bytes:bytes.length, sha256:digest(bytes)] }])
+        }
     }
 }
 """
@@ -571,7 +749,7 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                     required_trust_domain=tooling["requiredTrustDomain"],
                     keyring=Path(tooling["keyring"]) if tooling["keyring"] else None,
                     keys_directory=Path(tooling["keysDirectory"]) if tooling["keysDirectory"] else None,
-                    policy_revision=revision) as jar, (result / "consumer.log").open("w+b") as log:
+                    policy_revision=revision), (result / "consumer.log").open("w+b") as log:
             def run(command):
                 start = log.tell()
                 try:
@@ -594,8 +772,11 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
             context_inventory = memoized_file_inventory(contexts)
             config = {"api": str(files["canonical-api.json"]), "coverage": str(files["canonical-coverage.json"]),
                 "native": {}, "cabiOutput": str(private / "cabi"),
-                "finalEvidence": str(result / "m11"), "finalOutput": str(result / "sdk-parity.json")}
-            titles = {"python": "Python", "csharp": "CSharp", "rust": "Rust", "cpp": "Cpp", "dart": "Dart"}
+                "finalEvidence": str(result / "m11"), "finalOutput": str(result / "sdk-parity.json"),
+                "nonNative": {
+                    name: str(files[name + "-parity.json"])
+                    for name in ("kotlin", "javascript-typescript", "swift", "objective-c")
+                } | {"java": str(private / "java/java-parity.json")}}
             for language, hosts in inputs["native"].items():
                 lane = private / language
                 primary = hosts["linux-x64"]
@@ -635,44 +816,10 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                 "--no-build-cache", "--max-workers=4", "--console=plain"]
             native_options = ["--init-script", str(native_script),
                 "-DcodexAgent.importedNativeParityInputs=" + str(config_path)]
-            run(gradle + native_options + [":codex-agent-sdk:verify" + titles[name] + "BindingParity"
-                for name in titles] + [":verifyImportedCAbiBindingParity"])
             run(gradle + ["--init-script", str(java_script),
                 "-DcodexAgent.importedJavaParityInputs=" + str(inputs["java"]),
                 "-DcodexAgent.importedJavaParityOutput=" + str(private / "java/java-parity.json"),
                 ":codex-agent-core:verifyJavaBindingParity"])
-            receipts = private / "m8-receipts"
-            for name in ("kotlin-parity.json", "javascript-typescript-parity.json", "swift-parity.json", "objective-c-parity.json"):
-                copy(files[name], receipts / name)
-            copy(private / "java/java-parity.json", receipts / "java-parity.json")
-            copy(private / "cabi/c-abi-parity.json", receipts / "c-abi-parity.json")
-
-            def tool(command, **options):
-                run([str(tooling["javaExecutable"]), "-jar", str(jar), command] +
-                    [item for key, value in options.items() for item in ("--" + key.replace("_", "-"), str(value))])
-
-            def audit(phase, directory, destination):
-                tool("audit-cross-language-bindings", phase=phase, api_report=files["canonical-api.json"],
-                    coverage_receipt=files["canonical-coverage.json"], receipts=directory, output=destination)
-
-            audit("M8", receipts, result / "binding-obligations-m8.json")
-            for language in titles:
-                phase = "M9_" + language.upper()
-                next_receipts = private / (phase + "-receipts")
-                next_receipts.mkdir()
-                for source in receipts.glob("*-parity.json"):
-                    tool("advance-cross-language-binding-receipt", phase=phase, source=source,
-                        output=next_receipts / source.name)
-                copy(private / (language + "-parity.json"), next_receipts / (language + "-parity.json"))
-                audit(phase, next_receipts, result / ("binding-obligations-" + phase.lower() + ".json"))
-                receipts = next_receipts
-            final = result / "m11"
-            final.mkdir()
-            for source in receipts.glob("*-parity.json"):
-                tool("advance-cross-language-binding-receipt", phase="M11", source=source, output=final / source.name)
-            for name in ("canonical-api.json", "canonical-coverage.json"):
-                copy(files[name], final / name)
-            audit("M11", final, final / "binding-obligations-m11.json")
             run(gradle + native_options + [":verifyImportedSdkBindingParity"])
             if product_reuse.load_json_bytes(read_regular_file_bytes(result / "sdk-parity.json"))["result"] != "passed":
                 raise ValueError("Full imported SDK parity did not pass")
