@@ -28,7 +28,8 @@ def completed_validation_recovery(completed, request, tooling, context):
 
     One private verification session owns shared K/R, package and host categories.
     Only consumed, independently qualified objects and caller-pinned sidecars are
-    fetched. Original receipts are never rewritten; nothing here is persisted as
+    fetched; newly collected hosts use their ordinary full admission instead.
+    Original receipts are never rewritten; nothing here is persisted as
     authentication authority or exported into a product payload.
     """
     from reuse_qualification import CompletedFrozenReuse
@@ -37,7 +38,7 @@ def completed_validation_recovery(completed, request, tooling, context):
     from products.restore import _VERIFICATION_SESSION, restore_object, memoized_file_inventory
     from products.sdk_native import SDK_ROOT_PATH, stage_native_sdk_inputs
     from products.sdk_compatibility import load_sdk_compatibility_request
-    from products.sdk_validation_inputs import sdk_validation_provider
+    from products.sdk_validation_inputs import decode_sdk_validation_records, sdk_validation_provider
     from sdk_native_validation_workflow import capture_runtime_authorization
     from runtime_reference_transport import count, measured
 
@@ -86,6 +87,7 @@ def completed_validation_recovery(completed, request, tooling, context):
         return sha256_bytes(canonical_json_bytes(dict(versions=request["versions"], revision=request["repositoryRevision"],
             plan=plan, producer=producer,
             workflow=context["trusted_workflow_sha"], tooling=policy, files=files,
+            hostEvidence=request.get("sdkValidationEvidence", []),
             source=read_regular_file_bytes(Path(source_path), reject_symlink_parents=True).decode(),
             authorization=environment.get("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"))))
 
@@ -97,8 +99,12 @@ def completed_validation_recovery(completed, request, tooling, context):
         return pool[key]
     private = session["root"] / ("native-sdk-recovery-" + str(len(pool)))
     private.mkdir()
-    stages, authorizations = {}, {}
+    stages, authorizations, captured_authorizations = {}, {}, {}
     common = {}
+    ordinary_records = request.get("sdkValidationEvidence", [])
+    ordinary = decode_sdk_validation_records(root, ordinary_records)
+    ordinary_provider = sdk_validation_provider(root, ordinary_records, repository=root,
+        policy_revision=request["repositoryRevision"], tooling=policy)
 
     def check():
         if _VERIFICATION_SESSION.get() is not session or authority() != original_authority:
@@ -173,25 +179,32 @@ def completed_validation_recovery(completed, request, tooling, context):
         check()
         dependencies = sdk_validation_dependencies(instance)
         package_id = PhaseInstanceId("sdk", instance.component, "package", "desktop")
-        required = (*dependencies, package_id,
+        required = (package_id,
             *((PhaseInstanceId("sdk", "csharp", "binary", "desktop"),) if instance.component == "csharp" else ()))
         if not dependencies or any(identity not in phases for identity in required):
             return None
         if len(envelopes) != len(dependencies):
             raise ValueError("Native SDK recovery requires exactly five selected hosts")
         for identity, envelope in zip((*dependencies, package_id), (*envelopes, package), strict=True):
-            if completed.envelope(phases[identity], envelope["receiptBytes"]) != envelope:
+            if identity not in phases:
+                if envelope["receiptSha256"] not in ordinary:
+                    return None
+            elif completed.envelope(phases[identity], envelope["receiptBytes"]) != envelope:
                 raise ValueError("Native SDK recovery differs from the selected original")
         shared = common_inputs()
         package_value = original(package_id)
         binary = original(required[-1]) if instance.component == "csharp" else None
         records = []
         for identity, envelope in zip(dependencies, envelopes, strict=True):
+            if envelope["receiptSha256"] in ordinary:
+                authorizations[identity.target] = ordinary[envelope["receiptSha256"]]["runtimeAuthorization"]
+                continue
             validation = original(identity)
-            if identity.target not in authorizations:
+            if identity.target not in captured_authorizations:
                 directory = private / "authorizations" / identity.target
                 capture_runtime_authorization(authorization, identity.target, directory, token=context["token"])
-                authorizations[identity.target] = directory
+                captured_authorizations[identity.target] = directory
+            authorizations[identity.target] = captured_authorizations[identity.target]
             paths = dict(packageStage=package_value["stage"], packageReceipt=package_value["receiptPath"],
                 compatibilityRequest=shared["compatibility_request"], runtimeStages=shared["runtime_stages"],
                 stagedSdks=shared["staged_sdks"], validationStage=validation["stage"],
@@ -203,7 +216,8 @@ def completed_validation_recovery(completed, request, tooling, context):
         records.sort(key=lambda record: record["receiptSha256"])
         provider = sdk_validation_provider(private, records, repository=root,
             policy_revision=request["repositoryRevision"], tooling=policy)
-        result = tuple(provider({**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
+        result = tuple((ordinary_provider if envelope["receiptSha256"] in ordinary else provider)(
+                           {**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
                        for envelope in envelopes)
         for proof, envelope in zip(result, envelopes, strict=True):
             proof.output_inventory(envelope["receiptSha256"], envelope["receipt"]["outputs"], identity=envelope["receipt"])

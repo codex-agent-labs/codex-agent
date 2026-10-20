@@ -6274,8 +6274,12 @@ def execute_sdk_metadata(
         _, phases = completed_frozen._values()
         package_id = PhaseInstanceId("sdk", component, "package", "desktop")
         package = original("sdk", component, "package", "desktop")
-        envelopes = tuple(completed_frozen.envelope(phases[dependency], read_regular_file_bytes(value["receiptPath"]))
-                          for dependency, value in zip(dependencies, values, strict=True))
+        envelopes = tuple(
+            completed_frozen.envelope(phases[dependency], read_regular_file_bytes(value["receiptPath"]))
+            if dependency in phases else
+            {"receipt": value["receipt"], "receiptBytes": read_regular_file_bytes(value["receiptPath"]),
+             "receiptSha256": digest, "objectSha256": state.prior_by_instance[dependency]["objectSha256"]}
+            for dependency, value, digest in zip(dependencies, values, digests, strict=True))
         package_envelope = completed_frozen.envelope(phases[package_id], read_regular_file_bytes(package["receiptPath"]))
         projections = recovery["verify"](instance, envelopes, package_envelope)
         if projections is None:

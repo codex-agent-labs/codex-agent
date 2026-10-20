@@ -8,11 +8,11 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ci import sdk_native_metadata_workflow as workflow
 from ci.tests import test_sdk_native_package_execution as fixture
-from products.inventory import canonical_json_bytes, regular_file_inventory, snapshot_regular_tree
+from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, snapshot_regular_tree
 from products.receipt import compute_build_key, write_output_manifest
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from products.restore import finalize_phase_object, verify_phase_shard
@@ -72,6 +72,69 @@ class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
                     self.assertIs(captured, original(binary))
                     self.assertEqual(["capture", "restore", "source"], events)
                     source_gate.assert_called_once_with(root, producer, "fixture")
+                # Composition only: four qualified originals plus a new ordinary
+                # host must call both existing full gates, never capture the new
+                # host as if it belonged to the old qualification.
+                from products.plan import sdk_validation_dependencies
+                from products.sdk_validation import sdk_validation_paths
+                dependencies = sdk_validation_dependencies(identity)
+                package = PhaseInstanceId("sdk", "python", "package", "desktop")
+                originals = {}
+                for phase in (*dependencies, package):
+                    receipt = dict(component=phase.component, target=phase.target, producer=producer, outputs=[])
+                    raw = canonical_json_bytes(receipt)
+                    originals[phase] = dict(receipt=receipt, receiptBytes=raw, receiptSha256=sha256_bytes(raw))
+                    if phase.target != "windows-x64":
+                        phases[phase] = dict(buildKey=phase, receiptSha256=sha256_bytes(raw), objectSha256="fixture")
+                new_host = next(phase for phase in dependencies if phase.target == "windows-x64")
+                request["sdkValidationEvidence"] = [dict(component="python", target=new_host.target,
+                    receiptSha256=originals[new_host]["receiptSha256"],
+                    **{name: "ordinary/" + name for name in sdk_validation_paths("python")})]
+                admissions, captures = [], []
+                proofs = {phase.target: Mock() for phase in dependencies}
+
+                def provider(directory, records, **kwargs):
+                    targets = {record["target"] for record in records}
+                    self.assertEqual({"windows-x64"} if directory == root else
+                                     set(NATIVE_TARGETS) - {"windows-x64"}, targets)
+                    def verify(entry):
+                        self.assertIn(entry["target"], targets)
+                        admissions.append(entry["target"])
+                        return proofs[entry["target"]]
+                    return verify
+
+                def restore_host(obj, stage, **kwargs):
+                    phase = kwargs["build_key"]
+                    captures.append(phase)
+                    stage.mkdir(parents=True)
+                    (stage / "fixture").write_bytes(b"fixture")
+                    return dict(receiptBytes=originals[phase]["receiptBytes"])
+
+                restore.side_effect = restore_host
+                with patch("products.sdk_validation_inputs.sdk_validation_provider", side_effect=provider), \
+                        patch.object(CompletedFrozenReuse, "envelope",
+                                     side_effect=lambda record, raw=None: originals[record["buildKey"]]), \
+                        patch.object(CompletedFrozenReuse, "capture_object"), \
+                        patch("sdk_handoff._ensure_observed_sdk_commit"), \
+                        patch("sdk_native_validation_workflow.capture_runtime_authorization"):
+                    mixed = workflow.completed_validation_recovery(capability, request, tooling, context)
+                    closure = inspect.getclosurevars(inspect.unwrap(mixed["verify"])).nonlocals
+                    common = inspect.getclosurevars(closure["common_inputs"]).nonlocals["common"]
+                    common.update({name: closure["private"] / name
+                                   for name in ("compatibility_request", "runtime_stages", "staged_sdks")})
+                    selected = tuple(originals[phase] for phase in dependencies)
+                    expected = tuple(proofs[phase.target] for phase in dependencies)
+                    self.assertEqual(expected, mixed["verify"](identity, selected, originals[package]))
+                    self.assertEqual(expected, mixed["verify"](identity, selected, originals[package]))
+                    self.assertEqual([phase.target for phase in dependencies] * 2, admissions)
+                    self.assertEqual({package, *(phase for phase in dependencies if phase != new_host)}, set(captures))
+                    self.assertEqual(5, len(captures))  # No repeat originals, no new-host download.
+                    self.assertEqual(root / "ordinary/runtimeAuthorization", mixed["authorizations"]["windows-x64"])
+                    for phase in dependencies:
+                        proofs[phase.target].receipt_value.assert_called_with(originals[phase]["receipt"], originals[package]["receipt"])
+                    altered = [dict(selected[0], receiptBytes=b"wrong-original"), *selected[1:]]
+                    with self.assertRaisesRegex(ValueError, "selected original"):
+                        mixed["verify"](identity, altered, originals[package])
                 context["environ"]["CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"] = '{}'
                 with self.assertRaisesRegex(ValueError, "changed its caller authority"):
                     recovery["verify"](identity, (), {})

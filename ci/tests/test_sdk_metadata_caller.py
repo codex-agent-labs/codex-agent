@@ -183,6 +183,32 @@ class SdkMetadataCallerTest(unittest.TestCase):
             self.invoke()
         execute.assert_not_called()
 
+    def test_mixed_qualified_and_new_host_keeps_original_verified_state_envelope(self):
+        _, materialize, execute = self.seams()
+        new_host = PhaseInstanceId("sdk", "python", "validation", "windows-x64")
+        self.state.rebased_request["sdkValidationEvidence"] = [
+            row for row in self.state.rebased_request["sdkValidationEvidence"] if row["target"] == new_host.target]
+        identities = (PhaseInstanceId("sdk", "python", "package", "desktop"),
+                      *(PhaseInstanceId("sdk", "python", "validation", target) for target in sorted(NATIVE_TARGETS)))
+        capability = Mock()
+        capability._values.return_value = {}, {identity: identity for identity in identities if identity != new_host}
+        capability.envelope.side_effect = lambda identity, raw: (identity, raw)
+        self.state.prior_by_instance = {new_host: {"objectSha256": "sha256:" + "c" * 64}}
+        verify = Mock(return_value=tuple(self.proofs[target] for target in sorted(NATIVE_TARGETS)))
+        with patch("sdk_native_metadata_workflow.completed_validation_recovery",
+                   return_value={"verify": verify, "authorizations": {}}):
+            self.invoke(completed_frozen=capability)
+        materialize.assert_called_once()
+        hosts = verify.call_args.args[1]
+        ordinary, = [host for host in hosts if isinstance(host, dict)]
+        raw = canonical_json_bytes(dict(product="sdk", component="python", phase="validation", target=new_host.target))
+        self.assertEqual({"receipt": {"product": "sdk", "component": "python", "phase": "validation",
+                                     "target": new_host.target}, "receiptBytes": raw,
+                          "receiptSha256": sha256_bytes(raw), "objectSha256": "sha256:" + "c" * 64}, ordinary)
+        self.assertEqual(4, len([host for host in hosts if isinstance(host, tuple)]))
+        self.assertEqual(tuple(self.proofs[target] for target in sorted(NATIVE_TARGETS)),
+                         execute.call_args.kwargs["sdk_validation_projections"])
+
     def test_failed_state_replay_and_existing_destination_never_execute(self):
         replay, _, execute = self.seams()
         replay.side_effect = ValueError("invalid original state")
