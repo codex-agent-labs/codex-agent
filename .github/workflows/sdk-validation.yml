@@ -85,6 +85,10 @@ permissions:
   actions: read
   contents: read
 
+env:
+  CODEX_AGENT_THROUGHPUT_TRACE: '1'
+  CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}
+
 concurrency:
   group: ci-sdk-${{ inputs.validationTree }}
   cancel-in-progress: true

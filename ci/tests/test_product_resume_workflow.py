@@ -280,6 +280,14 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn('sdk_completion --plan', workflow_job(self.workflow, 'sdk-completion'))
 
     def test_sdk_recovery_full_parity_uses_authenticated_state_and_no_legacy_inputs(self):
+        legacy = workflow_job(self.workflow, "sdk-native-wrappers")
+        self.assertIn("always() && !inputs.sdkRecoveryOnly &&", legacy)
+        self.assertIn("needs.plan.outputs.event_authorized == 'true'", legacy)
+        self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", legacy)
+        self.assertNotIn("!inputs.sdkRecoveryOnly", workflow_job(self.workflow, "sdk-native-metadata"))
+        legacy_workflow = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
+        self.assertIn("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", legacy_workflow)
+        self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", legacy_workflow)
         parity = workflow_job(self.workflow, "sdk-parity")
         self.assertIn("needs.sdk-completion.outputs.complete == 'true'", parity)
         self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parity)
