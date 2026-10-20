@@ -14,6 +14,49 @@ import runtime_reference_archive as transport
 
 
 class ReferenceDownloadTest(unittest.TestCase):
+    def test_nested_stored_archive_reads_only_pinned_leaves_and_keeps_digest_and_path_gates(self):
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        from products.inventory import sha256_bytes
+        for defect in (None, "digest", "compressed", "unsafe", "duplicate", "symlink"):
+            import stat
+            import warnings
+            inner = io.BytesIO()
+            body = b"original executed parity receipt"
+            with zipfile.ZipFile(inner, "w") as archive, warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                archive.writestr("unconsumed.bin", b"x" * (8 * 1024**2))
+                name = "../report.json" if defect == "unsafe" else "report.json"
+                entry = zipfile.ZipInfo(name)
+                if defect == "symlink":
+                    entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(entry, body)
+                if defect == "duplicate":
+                    archive.writestr(name, body)
+            outer = io.BytesIO()
+            with zipfile.ZipFile(outer, "w") as archive:
+                archive.writestr("execution.zip", inner.getvalue(), compress_type=(
+                    zipfile.ZIP_DEFLATED if defect == "compressed" else zipfile.ZIP_STORED))
+            raw = outer.getvalue()
+            artifact = dict(id=1, size_in_bytes=len(raw), digest=sha256_bytes(raw),
+                archive_download_url="https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip")
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(transport.urllib.request, "build_opener",
+                        return_value=RangeOpener({1: raw})):
+                def consume():
+                    with transport.open_reference_archive(artifact, "fixture") as (archive, stream), \
+                            transport.open_stored_reference_archive(archive, "execution.zip",
+                                expected_bytes=len(inner.getvalue())) as nested:
+                        output = Path(temporary) / "report.json"
+                        transport.copy_reference_member(nested, "report.json", output, {
+                            "bytes": len(body), "sha256": sha256_bytes(body if defect != "digest" else b"wrong")})
+                        self.assertEqual(body, output.read_bytes())
+                        self.assertLess(stream.transferred, 1024**2)
+                if defect:
+                    with self.assertRaises(ValueError):
+                        consume()
+                else:
+                    consume()
+
     def test_large_directory_requires_explicit_bounded_policy_and_keeps_path_checks(self):
         from ci.tests.test_runtime_reference_transport import RangeOpener
         from products.inventory import sha256_bytes

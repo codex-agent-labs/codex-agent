@@ -28,7 +28,7 @@ from products.inventory import (
     _stat_identity,
 )
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
-from products.restore import verification_scoped
+from products.restore import verification_scoped, verification_session, memoized_file_inventory
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
@@ -243,6 +243,66 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
                            sdk_validation_tooling=None, sdk_original_workflow_sha=None,
                            sdk_apple_validation_policy=None,
                            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
+    # Keep private recovered categories alive through consumption and exit checks.
+    with verification_session(), _verified_parity_inputs(plan, discovery, state,
+            repository_root=repository_root, environ=environ,
+            sdk_validation_tooling=sdk_validation_tooling,
+            sdk_original_workflow_sha=sdk_original_workflow_sha,
+            sdk_apple_validation_policy=sdk_apple_validation_policy,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
+            completed_frozen=completed_frozen) as inputs:
+        yield inputs
+
+
+def _completed_apple_parity_files(verified, destination, *, token):
+    """Recover genuine raw receipts, after native admission and fresh observation."""
+    from reuse_qualification import CompletedFrozenReuse
+    from sdk_apple_upload_locator import (
+        retained_validation_origin, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS,
+    )
+    from runtime_reference_archive import (
+        open_reference_archive, open_stored_reference_archive, copy_reference_member,
+    )
+    from runtime_reference_transport import count
+    completed = verified.completed_frozen
+    if type(completed) is not CompletedFrozenReuse:
+        raise ValueError("Compact Apple parity requires concrete native completion")
+    completed.check_request(verified.rebased_request)
+    completed.check_consumer(verified.consumer)
+    identity = PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
+    row = verified.prior_by_instance[identity]
+    envelope = completed.envelope(row)
+    if envelope is None:
+        raise ValueError("Compact Apple parity lacks its exact qualified original")
+    origin = retained_validation_origin(identity.target, row["buildKey"], verified.producer)
+    if origin is None or envelope["receipt"]["producer"] != origin["producer"]:
+        raise ValueError("Compact Apple parity differs from its reviewed original")
+    _, artifact, observed = completed.observe_extended_sdk(row, producer=verified.producer, token=token)
+    if ((artifact["id"], artifact["digest"]) != (origin["artifact_id"], origin["artifact_sha256"])
+            or not any(job["id"] == origin["job_id"] for observation in observed for job in observation["jobs"])):
+        raise ValueError("Compact Apple parity changes its independently qualified upload")
+    files = {}
+    with open_reference_archive(artifact, token) as (archive, stream), \
+            open_stored_reference_archive(archive, "execution/apple-validation-evidence.zip",
+                expected_bytes=RETAINED_PARITY_ARCHIVE_BYTES) as reports:
+        for record in RETAINED_PARITY_REPORTS:
+            name = Path(record["relativePath"]).name
+            destination_file = destination / name
+            copy_reference_member(reports, record["relativePath"], destination_file, record)
+            files[name] = destination_file
+        if stream is not None:
+            count("appleParityOriginalRangeBytes", stream.transferred)
+    if completed.envelope(row) != envelope:
+        raise ValueError("Compact Apple parity authority changed during recovery")
+    return files
+
+
+@contextmanager
+def _verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
+                           sdk_validation_tooling, sdk_original_workflow_sha,
+                           sdk_apple_validation_policy, sdk_facade_metadata_admission,
+                           sdk_android_metadata_admission, completed_frozen):
     """Borrow completed immutable evidence after one full authenticated replay."""
     root = Path(repository_root).resolve(strict=True)
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
@@ -261,6 +321,41 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
     product_reuse._merge_native_comparison_records(records,
         product_reuse._retained_sdk_handoffs(Path(state), root), key="sdkValidationEvidence")
     native = decode_sdk_validation_records(root, records["sdkValidationEvidence"])
+    recovery = None
+    if any(phases[PhaseInstanceId("sdk", language, "validation", target)]["receiptSha256"] not in native
+           for language in NATIVE_BINDINGS for target in NATIVE_TARGETS):
+        from sdk_native_metadata_workflow import completed_validation_recovery
+        recovery = completed_validation_recovery(verified.completed_frozen,
+            {**verified.rebased_request, **records}, sdk_validation_tooling,
+            product_reuse._apple_package_origin(plan, root, sdk_original_workflow_sha, environ))
+        if recovery is None:
+            raise ValueError("Parity lacks authenticated native recovery authority")
+        from products.plan import sdk_validation_dependencies
+        for language in NATIVE_BINDINGS:
+            instance = PhaseInstanceId("sdk", language, "metadata", "desktop")
+            identities = sdk_validation_dependencies(instance)
+            if all(phases[identity]["receiptSha256"] in native for identity in identities):
+                continue
+            package = PhaseInstanceId("sdk", language, "package", "desktop")
+            def envelope(identity):
+                row = phases[identity]
+                qualified = verified.completed_frozen.envelope(row)
+                if qualified is not None:
+                    return qualified
+                record = native.get(row["receiptSha256"])
+                if record is None:
+                    raise ValueError("Parity lacks an authenticated selected native host")
+                raw = read_regular_file_bytes(record["validationReceipt"], reject_symlink_parents=True)
+                if sha256_bytes(raw) != row["receiptSha256"]:
+                    raise ValueError("Parity native receipt differs from its selected original")
+                return dict(receipt=product_reuse.validate_phase_receipt(load_canonical_json_bytes(raw)),
+                    receiptBytes=raw, receiptSha256=row["receiptSha256"], objectSha256=row["objectSha256"])
+            recovered = recovery["records"](instance,
+                tuple(envelope(identity) for identity in identities),
+                verified.completed_frozen.envelope(phases[package]))
+            if recovered is None:
+                raise ValueError("Parity lacks complete qualified native originals")
+            native.update(recovered[1])
     selected = {}
     protected = set()
     for language in NATIVE_BINDINGS:
@@ -274,12 +369,13 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
             if sha256_bytes(read_regular_file_bytes(record["validationReceipt"], reject_symlink_parents=True)) != digest:
                 raise ValueError("Parity native receipt differs from the selected immutable phase")
             hosts[target] = record
+            protected.add(Path(record["compatibilityRequest"]).parent)
             protected.update(Path(record[name]) for name in (
                 "packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages", "stagedSdks",
-                "validationStage", "validationReceipt",
+                "validationStage", "validationReceipt", "runtimeAuthorization",
                 *(("binaryStage", "binaryReceipt") if language == "csharp" else ())))
         selected[language] = hosts
-    before = {path: (regular_file_inventory(path, allow_empty=True) if path.is_dir()
+    before = {path: (memoized_file_inventory(path, allow_empty=True) if path.is_dir()
         else read_regular_file_bytes(path, reject_symlink_parents=True)) for path in protected}
     with tempfile.TemporaryDirectory(prefix="sdk-parity-originals-") as temporary:
         private = Path(temporary).resolve()
@@ -300,29 +396,36 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
         apple_rows = [row for row in apple["sdkAppleValidationEvidence"]
             if row["target"] == "ios-arm64" and row["receiptSha256"] ==
                 phases[PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")]["receiptSha256"]]
-        if len(apple_rows) != 1:
+        archive, archive_identity = None, None
+        if not apple_rows and verified.completed_frozen is not None:
+            files.update(_completed_apple_parity_files(verified, private,
+                token=environ.get("GITHUB_TOKEN", "")))
+        elif len(apple_rows) != 1:
             raise ValueError("Parity lacks the selected authenticated Apple validation original")
-        archive = root / apple_rows[0]["evidenceRoot"] / "capture/original/execution/apple-validation-evidence.zip"
-        archive_identity = _stat_identity(archive.stat())
-        reports = {name: "reports/" + name
-            for name in ("swift-parity.json", "objective-c-parity.json")}
-        _, extracted, _ = verified_zip_contents(archive, allow_empty_members=True,
-            retained_paths=reports.values(), max_retained_bytes=16 * 1024 * 1024)
-        for name, path in reports.items():
-            destination = private / name
-            destination.write_bytes(extracted[path])
-            files[name] = destination
+        else:
+            archive = root / apple_rows[0]["evidenceRoot"] / "capture/original/execution/apple-validation-evidence.zip"
+            archive_identity = _stat_identity(archive.stat())
+            reports = {name: "reports/" + name
+                for name in ("swift-parity.json", "objective-c-parity.json")}
+            _, extracted, _ = verified_zip_contents(archive, allow_empty_members=True,
+                retained_paths=reports.values(), max_retained_bytes=16 * 1024 * 1024)
+            for name, path in reports.items():
+                destination = private / name
+                destination.write_bytes(extracted[path])
+                files[name] = destination
         imported_inventory = regular_file_inventory(private)
         with _java_parity_inputs(verified, plan, plan_bytes) as java:
             try:
                 yield {"java": java, "native": selected, "files": files, "phases": phases}
             finally:
-                if (_stat_identity(archive.stat()) != archive_identity or
+                if ((archive is not None and _stat_identity(archive.stat()) != archive_identity) or
                         regular_file_inventory(private) != imported_inventory or
-                        any((regular_file_inventory(path, allow_empty=True) if path.is_dir()
+                        any((memoized_file_inventory(path, allow_empty=True) if path.is_dir()
                             else read_regular_file_bytes(path, reject_symlink_parents=True)) != old
                             for path, old in before.items())):
                     raise ValueError("Original parity inputs changed during use")
+                if recovery is not None:
+                    recovery["check"]()
 
 
 def execute_java_parity(plan, discovery, state, destination, *, repository_root, environ, **policies):

@@ -15,6 +15,123 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
+    def test_compact_apple_parity_requires_qualified_original_and_exact_raw_reports(self):
+        from reuse_qualification import CompletedFrozenReuse
+        import sdk_apple_upload_locator as locator
+        import runtime_reference_archive as transport
+        import io
+        cap = object.__new__(CompletedFrozenReuse)
+        identity = workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
+        consumer = dict(repository="codex-agent-labs/codex-agent", workflowPath=".github/workflows/ci.yml",
+                        event="pull_request", pullRequest=31, runId=40000000000, runAttempt=1)
+        key = locator.RETAINED_VALIDATION_UPLOADS["ios-arm64"][0]
+        origin = locator.retained_validation_origin("ios-arm64", key, consumer)
+        row = dict(buildKey=key)
+        envelope = dict(receipt={"producer": origin["producer"]})
+        verified = SimpleNamespace(completed_frozen=cap, consumer={"kind": "ci", "producer": consumer},
+            producer=consumer, rebased_request={}, prior_by_instance={identity: row})
+        inner = io.BytesIO()
+        reports = []
+        with ZipFile(inner, "w") as archive:
+            for name in ("swift-parity.json", "objective-c-parity.json"):
+                raw = b"synthetic raw report, never hosted acceptance"
+                archive.writestr("reports/" + name, raw)
+                reports.append(dict(relativePath="reports/" + name, bytes=len(raw), sha256=workflow.sha256_bytes(raw)))
+        outer = io.BytesIO()
+        with ZipFile(outer, "w") as archive:
+            archive.writestr("execution/apple-validation-evidence.zip", inner.getvalue())
+        artifact = dict(id=origin["artifact_id"], digest=origin["artifact_sha256"])
+        observed = [{"jobs": [{"id": origin["job_id"]}]}]
+        for defect in (None, "authority", "producer", "upload", "job", "report"):
+            destination = self.root / ("apple-parity-" + str(defect))
+            selected = None if defect == "authority" else (
+                dict(receipt={"producer": {}}) if defect == "producer" else envelope)
+            with self.subTest(defect=defect), ExitStack() as stack:
+                for name in ("check_request", "check_consumer"):
+                    stack.enter_context(patch.object(CompletedFrozenReuse, name))
+                stack.enter_context(patch.object(CompletedFrozenReuse, "envelope", return_value=selected))
+                stack.enter_context(patch.object(CompletedFrozenReuse, "observe_extended_sdk", return_value=(None,
+                    {**artifact, "id": 1} if defect == "upload" else artifact,
+                    [{"jobs": [{"id": 1}]}] if defect == "job" else observed)))
+                stack.enter_context(patch.object(locator, "RETAINED_PARITY_ARCHIVE_BYTES", len(inner.getvalue())))
+                stack.enter_context(patch.object(locator, "RETAINED_PARITY_REPORTS",
+                    [{**r, "sha256": workflow.sha256_bytes(b"wrong")} for r in reports] if defect == "report" else reports))
+                archive = stack.enter_context(ZipFile(io.BytesIO(outer.getvalue())))
+                opened = stack.enter_context(patch.object(transport, "open_reference_archive",
+                    return_value=nullcontext((archive, None))))
+                if defect:
+                    with self.assertRaises(ValueError):
+                        workflow._completed_apple_parity_files(verified, destination, token="fixture")
+                    if defect != "report":
+                        opened.assert_not_called()
+                else:
+                    files = workflow._completed_apple_parity_files(verified, destination, token="fixture")
+                    self.assertEqual({"swift-parity.json", "objective-c-parity.json"}, set(files))
+                    self.assertTrue(all(path.read_bytes() == raw for path in files.values()))
+
+    def test_compact_parity_borrows_qualified_categories_for_entire_consumer_lifetime(self):
+        from products.restore import _VERIFICATION_SESSION
+        fields = workflow.product_reuse._IDENTITY_KEYS
+        rows = []
+        native = {}
+        directory = self.root / "categories"
+        directory.mkdir()
+        for identity in workflow.PHASE_INSTANCE_IDS:
+            identity_fields = {name: getattr(identity, name) for name in fields}
+            raw = workflow.canonical_json_bytes(identity_fields)
+            row = {**identity_fields, "state": "retained",
+                   "receiptSha256": workflow.sha256_bytes(raw)}
+            rows.append(row)
+            if identity.product == "sdk" and identity.component in workflow.NATIVE_BINDINGS and identity.phase == "validation":
+                receipt = directory / (identity.component + "-" + identity.target + ".json")
+                receipt.write_bytes(raw)
+                native[row["receiptSha256"]] = dict(component=identity.component, target=identity.target,
+                    receiptSha256=row["receiptSha256"], validationReceipt=receipt,
+                    **{name: directory for name in ("packageStage", "runtimeStages", "stagedSdks",
+                                                   "validationStage", "runtimeAuthorization", "binaryStage")},
+                    **{name: receipt for name in ("packageReceipt", "compatibilityRequest", "binaryReceipt")})
+        cap = SimpleNamespace(envelope=lambda row: row)
+        verified = SimpleNamespace(prior={"phases": rows},
+            sources={workflow.product_reuse._identity(row): object() for row in rows},
+            rebased_request={}, completed_frozen=cap)
+        borrowed = []
+        def records(instance, envelopes, package):
+            self.assertIsNotNone(_VERIFICATION_SESSION.get())
+            self.assertEqual(sorted(workflow.NATIVE_TARGETS), [row["target"] for row in envelopes])
+            self.assertEqual("package", package["phase"])
+            borrowed.append(instance.component)
+            return [], {row["receiptSha256"]: native[row["receiptSha256"]] for row in envelopes}
+        def unchanged():
+            self.assertIsNotNone(_VERIFICATION_SESSION.get())
+        for mutate in (False, True):
+            borrowed.clear()
+            with patch.object(workflow.product_reuse, "_verified_product_state", return_value=verified), \
+                    patch.object(workflow.product_reuse, "_retained_sdk_handoffs", return_value=[]), \
+                    patch.object(workflow.product_reuse, "_retained_apple_handoffs", return_value=[]), \
+                    patch.object(workflow.product_reuse, "_restore_product_objects") as restore, \
+                    patch.object(workflow, "_completed_apple_parity_files", return_value={}) as apple, \
+                    patch.object(workflow, "_java_parity_inputs", return_value=nullcontext(directory)), \
+                    patch("sdk_native_metadata_workflow.completed_validation_recovery",
+                          return_value=dict(records=records, check=unchanged)) as recover:
+                def consume():
+                    with workflow.verified_parity_inputs(self.plan, self.discovery, self.state,
+                            repository_root=self.repository, environ={}, sdk_original_workflow_sha=self.revision,
+                            sdk_validation_tooling={}, completed_frozen=cap) as inputs:
+                        self.assertIsNotNone(_VERIFICATION_SESSION.get())
+                        self.assertEqual(25, sum(len(hosts) for hosts in inputs["native"].values()))
+                        if mutate:
+                            next(iter(native.values()))["validationReceipt"].write_bytes(b"changed during use")
+                if mutate:
+                    with self.assertRaisesRegex(ValueError, "Original parity inputs changed"):
+                        consume()
+                else:
+                    consume()
+                self.assertEqual(list(workflow.NATIVE_BINDINGS), borrowed)
+                recover.assert_called_once()
+                apple.assert_called_once()
+                restore.assert_called_once()  # Native categories are not restored/copied again here.
+            self.assertIsNone(_VERIFICATION_SESSION.get())
+
     def test_java_import_uses_checked_zip_contents_and_rejects_changed_input_after_use(self):
         identities = (workflow.PhaseInstanceId("contract", "contract", "binary", "common"),
             workflow.PhaseInstanceId("runtime", "jvm", "binary", "jvm"),

@@ -76,7 +76,7 @@ class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
                 self.assertIsNone(recovery["verify"](identity, (), {}))  # Missing originals never fetch/build.
                 # Exercise the private original loader itself: fetch source only
                 # after the object/receipt gate, and once per captured category.
-                original = inspect.getclosurevars(inspect.unwrap(recovery["verify"])).nonlocals["original"]
+                original = inspect.getclosurevars(recovery["records"]).nonlocals["original"]
                 binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
                 phases[binary] = dict(buildKey="key", receiptSha256="receipt", objectSha256="object")
                 producer = {"commit": "original", "tree": "original-tree"}
@@ -147,12 +147,18 @@ class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
                         patch("sdk_handoff._ensure_observed_sdk_commit"), \
                         patch("sdk_native_validation_workflow.capture_runtime_authorization"):
                     mixed = workflow.completed_validation_recovery(capability, request, tooling, context)
-                    closure = inspect.getclosurevars(inspect.unwrap(mixed["verify"])).nonlocals
+                    closure = inspect.getclosurevars(mixed["records"]).nonlocals
                     common = inspect.getclosurevars(closure["common_inputs"]).nonlocals["common"]
                     common.update({name: closure["private"] / name
                                    for name in ("compatibility_request", "runtime_stages", "staged_sdks")})
                     selected = tuple(originals[phase] for phase in dependencies)
                     expected = tuple(proofs[phase.target] for phase in dependencies)
+                    # Parity borrows the same categories and runs its own full
+                    # parity gates; recovery itself does not repeat admission.
+                    records, borrowed = mixed["records"](identity, selected, originals[package])
+                    self.assertEqual(4, len(records))
+                    self.assertEqual(set(originals[phase]["receiptSha256"] for phase in dependencies), set(borrowed))
+                    self.assertFalse(admissions)
                     scoped_verify = workflow.collection_admission_scope(mixed["verify"])
                     self.assertEqual(expected, scoped_verify(identity, selected, originals[package]))
                     self.assertEqual(expected, scoped_verify(identity, selected, originals[package]))

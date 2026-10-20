@@ -207,27 +207,85 @@ def open_reference_archive(artifact, token, *, max_bytes=16 * 1024**3, max_membe
             raise ValueError('Reference ZIP directory exceeds the fixed bounds')
         stream.seek(0)
         with zipfile.ZipFile(stream) as archive:
-            names, folded = set(), set()
-            total = 0
-            for entry in archive.infolist():
-                path = require_relative_path(entry.filename.rstrip('/') if entry.is_dir() else entry.filename,
-                                             'Reference ZIP member')
-                mode = stat.S_IFMT(entry.external_attr >> 16)
-                if (path in names or path.casefold() in folded or entry.flag_bits & 1
-                        or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
-                        or mode not in (0, stat.S_IFREG, stat.S_IFDIR)
-                        or (mode == stat.S_IFDIR) != entry.is_dir() and mode != 0
-                        or entry.file_size > 8 * 1024**3
-                        or entry.file_size > max(1, entry.compress_size) * 200):
-                    raise ValueError('Reference ZIP member is duplicate, unsafe or oversized')
-                names.add(path)
-                folded.add(path.casefold())
-                total += entry.file_size
-            if total > max_bytes or len(archive.infolist()) != count:
+            _validate_reference_members(archive, max_bytes=max_bytes, max_members=max_members)
+            if len(archive.infolist()) != count:
                 raise ValueError('Reference ZIP expanded inventory exceeds its fixed bound')
             yield archive, stream
     finally:
         stream.close()
+
+
+def _validate_reference_members(archive, *, max_bytes, max_members):
+    names, folded = set(), set()
+    total = 0
+    for entry in archive.infolist():
+        path = require_relative_path(entry.filename.rstrip('/') if entry.is_dir() else entry.filename,
+                                     'Reference ZIP member')
+        mode = stat.S_IFMT(entry.external_attr >> 16)
+        if (path in names or path.casefold() in folded or entry.flag_bits & 1
+                or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                or mode not in (0, stat.S_IFREG, stat.S_IFDIR)
+                or (mode == stat.S_IFDIR) != entry.is_dir() and mode != 0
+                or entry.file_size > 8 * 1024**3
+                or entry.file_size > max(1, entry.compress_size) * 200):
+            raise ValueError('Reference ZIP member is duplicate, unsafe or oversized')
+        names.add(path)
+        folded.add(path.casefold())
+        total += entry.file_size
+    if total > max_bytes or len(names) > max_members:
+        raise ValueError('Reference ZIP expanded inventory exceeds its fixed bound')
+
+
+class _MemberRange(io.RawIOBase):
+    """Seek within a stored ZIP member without reading unrelated preceding bytes."""
+
+    def __init__(self, stream, start, size):
+        self.stream, self.start, self.size, self.position = stream, start, size, 0
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.position
+
+    def seek(self, offset, whence=0):
+        if whence not in (0, 1, 2):
+            raise ValueError('Invalid stored member seek')
+        position = offset + (0 if whence == 0 else self.position if whence == 1 else self.size)
+        if not 0 <= position <= self.size:
+            raise ValueError('Stored member seek exceeds its immutable size')
+        self.position = position
+        return position
+
+    def read(self, size=-1):
+        size = self.size - self.position if size < 0 else min(size, self.size - self.position)
+        if size > 32 * 1024**2:
+            raise ValueError('Stored member read exceeds the bounded request size')
+        self.stream.seek(self.start + self.position)
+        raw = self.stream.read(size)
+        if len(raw) != size:
+            raise ValueError('Stored member range was truncated')
+        self.position += size
+        return raw
+
+
+@contextmanager
+def open_stored_reference_archive(archive, name, *, expected_bytes):
+    """Transport only: callers must independently authenticate every consumed leaf.
+
+    Opening checks the local header through zipfile. The outer ETag and bounded
+    offsets stay fixed; neither unread archive's whole digest/CRC is claimed.
+    """
+    entry = archive.getinfo(require_relative_path(name, 'Stored reference archive'))
+    if (entry.is_dir() or entry.compress_type != zipfile.ZIP_STORED
+            or entry.file_size != require_integer(expected_bytes, 'Stored archive size', 1)
+            or entry.compress_size != expected_bytes):
+        raise ValueError('Nested reference requires the exact stored archive size')
+    with archive.open(entry):
+        start = archive.fp.tell()
+        with _MemberRange(archive.fp, start, expected_bytes) as stream, zipfile.ZipFile(stream) as nested:
+            _validate_reference_members(nested, max_bytes=16 * 1024**3, max_members=16_384)
+            yield nested
 
 
 def copy_reference_member(archive, name, destination, record):

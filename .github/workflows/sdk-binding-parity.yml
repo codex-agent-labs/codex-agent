@@ -44,6 +44,10 @@ permissions:
   actions: read
   contents: read
 
+env:
+  CODEX_AGENT_THROUGHPUT_TRACE: '1'
+  CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}
+
 jobs:
   sdk-parity:
     runs-on: ubuntu-24.04

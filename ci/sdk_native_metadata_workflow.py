@@ -173,8 +173,8 @@ def completed_validation_recovery(completed, request, tooling, context):
         count("nativeSdkRecoveryCommonCaptures")
         return common
 
-    @measured
-    def verify_completed_sdk_hosts(instance, envelopes, package):
+    def recover_records(instance, envelopes, package):
+        """Borrow original input paths; full semantic admission stays with callers."""
         check()
         dependencies = sdk_validation_dependencies(instance)
         package_id = PhaseInstanceId("sdk", instance.component, "package", "desktop")
@@ -213,6 +213,19 @@ def completed_validation_recovery(completed, request, tooling, context):
             records.append(dict(receiptSha256=envelope["receiptSha256"], component=instance.component,
                 target=identity.target, **{name: path.relative_to(private).as_posix() for name, path in paths.items()}))
         records.sort(key=lambda record: record["receiptSha256"])
+        decoded = decode_sdk_validation_records(private, records)
+        selected = {envelope["receiptSha256"]:
+                    ordinary.get(envelope["receiptSha256"], decoded.get(envelope["receiptSha256"]))
+                    for envelope in envelopes}
+        check()
+        return records, selected
+
+    @measured
+    def verify_completed_sdk_hosts(instance, envelopes, package):
+        recovered = recover_records(instance, envelopes, package)
+        if recovered is None:
+            return None
+        records, _ = recovered
         provider = sdk_validation_provider(private, records, repository=root,
             policy_revision=request["repositoryRevision"], tooling=policy)
         # Recovery categories may outlive a nested admission scope. Bind this
@@ -228,7 +241,8 @@ def completed_validation_recovery(completed, request, tooling, context):
         check()
         return tuple(result)
 
-    result = dict(verify=verify_completed_sdk_hosts, authorizations=authorizations)
+    result = dict(verify=verify_completed_sdk_hosts, records=recover_records,
+                  check=check, authorizations=authorizations)
     pool[key] = result
     return result
 

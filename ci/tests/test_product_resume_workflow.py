@@ -285,6 +285,8 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parity)
         self.assertIn("importedOnly: ${{ inputs.sdkRecoveryOnly }}", parity)
         imported = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
+        self.assertIn("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", imported)
+        self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", imported)
         self.assertIn("python3 -B -m ci.sdk_workflow parity", imported)
         self.assertIn("uses: ./.github/actions/capture-runtime-state", imported)
         self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", imported)

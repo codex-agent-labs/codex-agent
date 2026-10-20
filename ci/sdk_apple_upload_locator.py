@@ -27,6 +27,19 @@ RETAINED_VALIDATION_UPLOADS = {
         11935475988, "sha256:1b4e95d83b250735dd0892127b89769cff1800d54993394bc89f2ffe03d67de8", 116144183702),
 }
 
+# Exact raw receipts in the fully SHA-verified ios-arm64 original 11934933559.
+# These reviewed content pins enable scoped transport, not semantic admission.
+# Consumption additionally requires the matching native-qualified phase and
+# fresh original job/workflow/upload observation. Never derive raw receipts
+# from the deterministic projection, which intentionally omits execution hashes.
+RETAINED_PARITY_ARCHIVE_BYTES = 1610548650
+RETAINED_PARITY_REPORTS = (
+    {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+     "sha256": "sha256:614ed737ce103c271bedcb339afca9add2bf27e2c2a6f2ecbff520ed119b208a"},
+    {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+     "sha256": "sha256:02b59f4974855a394fa8be194cfd3d22d045f6727dac925b9964b4fd274c32b9"},
+)
+
 
 def retained_validation_origin(target, build_key, consumer):
     """Select two reviewed successful uploads; selection grants no admission.
