@@ -84,7 +84,8 @@ def _original_tooling_workflow(producer, current_sha, token, *, repository_root=
         if set(changed.split(b'\0')) - {b'', b'.reuse/approvals.json', b'.reuse/workflow-publication.json',
                                       b'.reuse/completed-reuse.json',
                                       b'.github/workflows/product-validation.yml',
-                                      b'.github/workflows/sdk-validation.yml'}:
+                                      b'.github/workflows/sdk-validation.yml',
+                                      b'.github/workflows/sdk-binding-parity.yml'}:
             raise ValueError('Tooling publisher rotation changes executable or other source bytes')
         metadata_rotation = True
     path = ".github/workflows/contract-validation.yml"
