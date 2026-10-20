@@ -5938,7 +5938,8 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-completion.result == 'success' &&
       needs.sdk-completion.outputs.complete == 'true' &&
-      needs.sdk-completion.outputs.phase_count == '62'
+      needs.sdk-completion.outputs.phase_count == '62' &&
+      needs.plan.outputs.native_resume_full_reuse != 'true'
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: ${{ steps.identity.outputs.name }}
@@ -6114,7 +6115,7 @@ jobs:
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
           SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
           SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
-          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '62' }}
+          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '62' && needs.plan.outputs.native_resume_full_reuse != 'true' }}
           SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}
           SDK_CATALOG_NAME: ${{ needs.sdk-catalog.outputs.artifact_name }}
           SDK_CATALOG_ID: ${{ needs.sdk-catalog.outputs.artifact_id }}
