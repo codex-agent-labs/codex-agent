@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import Mock, patch
 
 from ci import sdk_completion as completion
@@ -253,6 +254,121 @@ class SdkCompletionTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Selected SDK phases remain unresolved") as error:
                         self.call(value)
                     self.assertIn(f"{identity.component}/{identity.phase}/{identity.target}: {state}", str(error.exception))
+
+    def test_original_parity_consumes_held_bytes_and_checks_exact_inputs_not_retrieval_state(self):
+        # Small archive fixture at explicit mocked official observation boundaries.
+        # It is not a hosted proof or an independently admissible success marker.
+        from products.registry import NATIVE_BINDINGS
+        rows = [phase(item) for item in sorted(PHASE_INSTANCE_IDS)]
+        producer = dict(repository="codex-agent-labs/codex-agent", workflowPath=".github/workflows/ci.yml",
+            commit="a" * 40, tree="b" * 40, event="pull_request", pullRequest=31, runId=12, runAttempt=1)
+        job = dict(id=13, name="product-validation / sdk-parity / sdk-parity",
+            started_at="2026-10-20T12:00:00Z", completed_at="2026-10-20T13:00:00Z")
+        observation = dict(run={"head_sha": "c" * 40}, jobs=[job])
+        names = {"canonical-api.json", "canonical-coverage.json", "binding-obligations-m11.json",
+            *(name + "-parity.json" for name in (*NATIVE_BINDINGS, "kotlin", "java",
+                "javascript-typescript", "swift", "objective-c", "c-abi"))}
+        evidence = {name: canonical_json_bytes({"fixture": name}) for name in names}
+        digest = lambda value: completion.sha256_bytes(value).removeprefix("sha256:")
+        baseline = dict(schemaVersion=2, phase="M11", result="passed", capabilityCount=556,
+            languageCount=11, scenarioCount=14, active=6104, pending=0, excluded=12, satisfied=6104, missing=0,
+            canonicalApiSha256=digest(evidence["canonical-api.json"]),
+            canonicalCoverageSha256=digest(evidence["canonical-coverage.json"]),
+            evidenceFiles=[dict(path=name, bytes=len(raw), sha256=digest(raw))
+                           for name, raw in sorted(evidence.items())])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            policy_path, archive = root / "policy.json", root / "original.zip"
+            for mutation in ("none", "retrieval", "key", "receipt", "duplicate", "missing", "count",
+                             "inventory", "extra", "archive", "recipe", "job", "window", "policy", "authentication"):
+                originals, report = deepcopy(rows), deepcopy(baseline)
+                if mutation == "retrieval":
+                    originals[0].update(state="reused", source="stable", transportSource="stable")
+                if mutation in ("key", "receipt"):
+                    originals[0]["buildKey" if mutation == "key" else "receiptSha256"] = "sha256:" + "f" * 64
+                if mutation == "duplicate":
+                    originals.append(originals[-1])
+                if mutation == "count":
+                    report["satisfied"] -= 1
+                if mutation == "inventory":
+                    report["evidenceFiles"][0]["sha256"] = "e" * 64
+                with zipfile.ZipFile(archive, "w") as zipped:
+                    for name, raw in evidence.items():
+                        zipped.writestr("m11/" + name, raw)
+                    zipped.writestr("sdk-parity.json", canonical_json_bytes(report))
+                    if mutation != "missing":
+                        zipped.writestr("original-phase-identities.json", canonical_json_bytes(originals))
+                    zipped.writestr("consumer.log", b"fixture only\n")
+                    if mutation == "extra":
+                        zipped.writestr("unexpected", b"extra")
+                policy = dict(schemaVersion=1, kind="completed-sdk-parity", producer=producer,
+                    workflowSha="d" * 40, jobId=14 if mutation == "job" else 13,
+                    artifactId=15, artifactSha256=completion.sha256_bytes(archive.read_bytes()))
+                policy_path.write_bytes(canonical_json_bytes(policy))
+                metadata = dict(size_in_bytes=archive.stat().st_size, created_at=(
+                    "2026-10-21T12:30:00Z" if mutation == "window" else "2026-10-20T12:30:00Z"))
+                if mutation == "archive":
+                    metadata["size_in_bytes"] += 1
+                def official(*args, **kwargs):
+                    if mutation == "policy":
+                        policy_path.write_bytes(b"{}\n")
+                    return metadata
+                with self.subTest(mutation=mutation), \
+                        patch.object(completion.products, "_observe_ci_producer_jobs",
+                            side_effect=ValueError("failed original") if mutation == "authentication" else None,
+                            return_value=[observation]) as observe, \
+                        patch.object(completion.products, "_contract_ci_upload_metadata", side_effect=official), \
+                        patch.object(completion, "git_inventory",
+                            side_effect=["original", "changed" if mutation == "recipe" else "original"]) as recipe:
+                    if mutation not in ("none", "retrieval"):
+                        with self.assertRaises(ValueError):
+                            completion._completed_parity(root, "e" * 40, inspected(rows)["result"],
+                                                         policy_path, archive, "token")
+                        continue
+                    result = completion._completed_parity(root, "e" * 40, inspected(rows)["result"],
+                                                         policy_path, archive, "token")
+                    self.assertEqual(producer, result["producer"])
+                    self.assertEqual(112, result["phaseCount"])
+                    self.assertEqual(6104, result["satisfied"])
+                    self.assertEqual(policy["artifactSha256"], result["artifactSha256"])
+                    self.assertEqual(producer["tree"], recipe.call_args_list[0].args[1])
+                    self.assertEqual("e" * 40, recipe.call_args_list[1].args[1])
+                    self.assertEqual({"parity": {
+                        "path": ".github/workflows/sdk-binding-parity.yml", "sha": "d" * 40}},
+                        observe.call_args.kwargs["trusted_workflows_by_phase"])
+                    self.assertNotIn("native_job_ids_by_phase", observe.call_args.kwargs)
+
+    def test_local_sdk_routes_root_to_authenticated_closure_and_original_parity_only(self):
+        argv = ["--sdk", "--local", "--repository-root", "/actual/repository",
+            "--completed-frozen-policy", "/actual/completed.json",
+            "--parity-policy", "/actual/parity.json", "--parity-archive", "/actual/parity.zip"]
+        for gradle in (False, True):
+            name = "run_local_repository_gradle" if gradle else "require_local_repository_completion"
+            with patch.object(completion, name, return_value={"result": "passed"}) as verify, \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(0, completion.main(argv + (["--gradle"] if gradle else [])))
+                verify.assert_called_once_with(Path("/actual/repository"), Path("/actual/completed.json"),
+                    parity_policy=Path("/actual/parity.json"), parity_archive=Path("/actual/parity.zip"))
+        for bad in (argv + ["--repository"], argv[:-2], argv[1:], argv + ["--plan", "/unused"]):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main(bad)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            policy = root / "caller.json"
+            policy.write_bytes(b"{}\n")
+            report = root / "build/reports/sdk/completed-sdk-evidence.json"
+            def gradle(command, **options):
+                init = Path(command[command.index("--init-script", command.index("--init-script") + 1) + 1]).read_text()
+                self.assertIn("root.tasks.named('verifySdk').configure", init)
+                self.assertIn("setDependsOn([authenticated])", init)
+                self.assertIn("'--sdk', '--local'", init)
+                self.assertNotIn("verifyRepository", init)
+                self.assertEqual(":verifySdk", command[-1])
+                report.parent.mkdir(parents=True)
+                report.write_bytes(b'{"result":"passed"}\n')
+            with patch.object(completion.subprocess, "run", side_effect=gradle):
+                self.assertEqual({"result": "passed"}, completion.run_local_repository_gradle(root, policy,
+                    parity_policy=root / "parity.json", parity_archive=root / "parity.zip"))
 
     def test_other_product_misses_and_zero_sdk_selection_do_not_claim_sdk_production(self):
         other = next(identity for identity in PHASE_INSTANCE_IDS if identity.product == "runtime")

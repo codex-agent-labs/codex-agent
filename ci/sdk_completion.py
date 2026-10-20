@@ -17,7 +17,7 @@ from reuse_qualification import add_completed_frozen_argument, completed_frozen_
 from products.inventory import (
     canonical_json_bytes, require_array, require_boolean, require_exact_keys,
     require_integer, require_object, require_sha256, require_string, read_regular_file_bytes,
-    load_canonical_json_bytes, sha256_bytes,
+    load_canonical_json_bytes, sha256_bytes, git_inventory, verified_zip_contents,
 )
 from reuse import github_output
 from products.restore import verification_scoped
@@ -57,14 +57,19 @@ gradle.projectsEvaluated {
 """
 
 
-def run_local_repository_gradle(repository_root, policy_path):
+def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=None, parity_archive=None):
     """Use the root verification entry point without changing product/toolkit inputs."""
     root = Path(repository_root).resolve(strict=True)
     policy = Path(policy_path).absolute()
     read_regular_file_bytes(policy, max_bytes=4096, reject_symlink_parents=True)
-    report = root / "build/reports/repository/imported-product-evidence.json"
+    sdk = parity_policy is not None or parity_archive is not None
+    if sdk and (parity_policy is None or parity_archive is None):
+        raise ValueError("SDK acceptance requires both original parity policy and archive")
+    report = root / ("build/reports/sdk/completed-sdk-evidence.json" if sdk else
+                     "build/reports/repository/imported-product-evidence.json")
     from products.sdk_package import _require_capability_output_separate
-    _require_capability_output_separate(report, [policy])
+    _require_capability_output_separate(report, [policy, *(
+        (parity_policy, parity_archive) if sdk else ())])
     # Reject linked output ancestors before the legacy invalidation task can delete anything.
     for path in (report, *report.parents):
         if path.is_symlink():
@@ -72,12 +77,36 @@ def run_local_repository_gradle(repository_root, policy_path):
     report.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="repository-gradle-adapter-") as temporary:
         script = Path(temporary) / "repository.init.gradle"
-        script.write_text(LOCAL_REPOSITORY_INIT, encoding="utf-8")
+        init = LOCAL_REPOSITORY_INIT
+        extra = []
+        if sdk:
+            # The qualified core P/V/M closure already includes the publication
+            # verifier and all eleven isolated facade consumers. Replace their
+            # source-building graph explicitly, not just their task actions.
+            init = init.replace("reports/repository/imported-product-evidence.json",
+                                "reports/sdk/completed-sdk-evidence.json")
+            init = init.replace("verifyCompletedRepositoryEvidence", "verifyCompletedSdkEvidence")
+            init = init.replace("dependsOn root.tasks.named('invalidateImportedRepositoryEvidenceOutput')", "")
+            init = init.replace("'--repository', '--local',", "'--sdk', '--local',")
+            init = init.replace("'--completed-frozen-policy', policy",
+                "'--completed-frozen-policy', policy,\n"
+                "            '--parity-policy', System.getProperty('codexAgent.parityPolicy'),\n"
+                "            '--parity-archive', System.getProperty('codexAgent.parityArchive')")
+            init = init[:init.index("    root.tasks.named('verifyRepository')")] + """\
+    root.tasks.named('verifySdk').configure {
+        setDependsOn([authenticated])
+    }
+}
+"""
+            extra = ["-DcodexAgent.parityPolicy=" + str(Path(parity_policy).absolute()),
+                     "-DcodexAgent.parityArchive=" + str(Path(parity_archive).absolute())]
+        script.write_text(init, encoding="utf-8")
         subprocess.run([str(root / "gradlew"), "--offline", "--no-configuration-cache", "--no-build-cache",
             "--max-workers=4", "--console=plain", "--init-script",
             str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
             "--init-script", str(script), "-DcodexAgent.completedRepositoryPolicy=" + str(policy),
-            "-DcodexAgent.repositoryPython=" + sys.executable, ":verifyRepository"],
+            "-DcodexAgent.repositoryPython=" + sys.executable, *extra,
+            ":verifySdk" if sdk else ":verifyRepository"],
             cwd=root, stdout=sys.stderr, check=True)
     return load_canonical_json_bytes(read_regular_file_bytes(
         report, max_bytes=1024 * 1024, reject_symlink_parents=True))
@@ -165,7 +194,105 @@ def _repository_report(result):
             "edges": edges, "originalPhases": records}
 
 
-def require_local_repository_completion(repository_root, policy_path, *, environ=None):
+@products.measured
+def _completed_parity(root, revision, result, policy_path, archive, token):
+    """Consume original hosted parity, never a serialized success-marker authority.
+
+    Called only after current-key replay inside the live native capability scope.
+    The successful original verifier supplies semantics; current content and
+    unchanged verifier inputs establish applicability without re-running it.
+    """
+    from products.tooling import _COMPILER_INPUTS
+    from products.registry import NATIVE_BINDINGS
+    policy_path = Path(policy_path).absolute()
+    raw = read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True)
+    policy = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "kind", "producer", "workflowSha", "jobId", "artifactId", "artifactSha256",
+    }, "Original SDK parity policy")
+    if (require_integer(policy["schemaVersion"], "Parity policy schema", 1) != 1
+            or policy["kind"] != "completed-sdk-parity"):
+        raise ValueError("Unsupported original SDK parity policy")
+    producer = products.validate_producer(policy["producer"], "Original SDK parity producer")
+    if producer["event"] != "pull_request" or producer["pullRequest"] != 31:
+        raise ValueError("Original SDK parity requires its authorized PR scope")
+    job_name = "product-validation / sdk-parity / sdk-parity"
+    observation, = products._observe_ci_producer_jobs(
+        {"parity": producer}, jobs_by_phase={"parity": job_name}, token=token,
+        trusted_workflows_by_phase={"parity": {
+            "path": ".github/workflows/sdk-binding-parity.yml", "sha": policy["workflowSha"]}})
+    job, = products._matching_ci_jobs(observation["jobs"], job_name)
+    if job["id"] != require_integer(policy["jobId"], "Original parity job ID", 1):
+        raise ValueError("Original SDK parity job differs from caller policy")
+    artifact = products._contract_ci_upload_metadata(
+        policy["artifactId"], policy["artifactSha256"],
+        "codex-agent-sdk-binding-parity-" + producer["tree"], producer, observation["run"], token)
+    products._require_artifact_job_window(observation, job_name, artifact)
+    recipe = (*_COMPILER_INPUTS, "ci/sdk_workflow.py", "ci/products/sdk_package.py")
+    # Official observation binds the tested commit to this exact tree. The tree
+    # may already be held even when GitHub's ephemeral PR merge commit is not.
+    original_recipe = git_inventory(root, producer["tree"], recipe)
+    if not original_recipe or original_recipe != git_inventory(root, revision, recipe):
+        raise ValueError("Original SDK parity verifier recipe differs from current inputs")
+    inventory, retained, transport = verified_zip_contents(Path(archive),
+        max_archive_bytes=32 * 1024 * 1024, max_members=32,
+        max_entry_bytes=16 * 1024 * 1024, max_total_bytes=32 * 1024 * 1024,
+        retained_paths=("sdk-parity.json", "original-phase-identities.json"),
+        max_retained_bytes=1024 * 1024, require_sorted=False)
+    if transport != {"bytes": artifact["size_in_bytes"], "sha256": policy["artifactSha256"]}:
+        raise ValueError("Held SDK parity archive differs from authenticated original upload")
+    if set(retained) != {"sdk-parity.json", "original-phase-identities.json"}:
+        raise ValueError("Original SDK parity archive lacks its report or phase identities")
+    originals = require_array(load_canonical_json_bytes(retained["original-phase-identities.json"]),
+                              "Original SDK parity phases")
+    # Compatibility excludes retrieval/reuse state; original receipts remain exact.
+    fields = (*products._IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256")
+    expected = {tuple(row[key] for key in fields) for row in result["phases"]}
+    actual = {tuple(require_string(require_exact_keys(row, products._REUSE_PHASE_KEYS,
+              "Original SDK parity phase")[key], "Parity original " + key) for key in fields) for row in originals}
+    if len(originals) != len(expected) or actual != expected:
+        raise ValueError("Original SDK parity does not cover the current exact phase identities")
+    report = require_exact_keys(load_canonical_json_bytes(retained["sdk-parity.json"]), {
+        "schemaVersion", "phase", "result", "capabilityCount", "languageCount", "scenarioCount",
+        "active", "pending", "excluded", "satisfied", "missing", "canonicalApiSha256",
+        "canonicalCoverageSha256", "evidenceFiles"}, "Original SDK parity report")
+    counts = dict(schemaVersion=2, capabilityCount=556, languageCount=11, scenarioCount=14,
+                  active=6104, pending=0, excluded=12, satisfied=6104, missing=0)
+    if (any(require_integer(report[key], "Parity " + key, 0) != value for key, value in counts.items())
+            or report["phase"] != "M11" or report["result"] != "passed"):
+        raise ValueError("Original SDK parity did not pass the complete M11 gate")
+    languages = (*NATIVE_BINDINGS, "kotlin", "java", "javascript-typescript", "swift", "objective-c", "c-abi")
+    names = {"binding-obligations-m11.json", "canonical-api.json", "canonical-coverage.json",
+             *(name + "-parity.json" for name in languages)}
+    files = {}
+    for row in require_array(report["evidenceFiles"], "Parity evidence inventory"):
+        row = require_exact_keys(row, {"path", "bytes", "sha256"}, "Parity evidence file")
+        if row["path"] not in names or row["path"] in files:
+            raise ValueError("Unexpected or duplicate SDK parity evidence")
+        files[row["path"]] = dict(relativePath="m11/" + row["path"],
+            bytes=require_integer(row["bytes"], "Parity evidence bytes", 1),
+            sha256=require_sha256("sha256:" + require_string(row["sha256"], "Parity evidence SHA"),
+                                  "Parity evidence digest"))
+    archived = {row["relativePath"]: row for row in inventory}
+    if (set(files) != names or set(archived) != {
+            "consumer.log", "sdk-parity.json", "original-phase-identities.json",
+            *("m11/" + name for name in names)}
+            or any(archived["m11/" + name] != row for name, row in files.items())
+            or any(report[field] != files[name]["sha256"].removeprefix("sha256:") for field, name in (
+                ("canonicalApiSha256", "canonical-api.json"),
+                ("canonicalCoverageSha256", "canonical-coverage.json")))):
+        raise ValueError("SDK parity evidence differs from the original exact report inventory")
+    if read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True) != raw:
+        raise ValueError("Original SDK parity caller policy changed during verification")
+    return dict(result="passed", producer=producer, jobId=job["id"],
+        artifactId=policy["artifactId"], artifactSha256=policy["artifactSha256"],
+        policySha256=sha256_bytes(raw), verifierInputsSha256=sha256_bytes(original_recipe.encode()),
+        reportSha256=sha256_bytes(retained["sdk-parity.json"]), phaseCount=len(originals),
+        languageCount=11, satisfied=6104, excluded=12, scenarioCount=14)
+
+
+@products.measured
+def require_local_repository_completion(repository_root, policy_path, *, environ=None,
+                                       parity_policy=None, parity_archive=None):
     """Verify actual current inputs through native original evidence, without a CI identity.
 
     This is a read-only local acceptance report, never a new phase receipt,
@@ -176,6 +303,8 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
     from products.reuse import LookupSession, advance_reuse, _phase_git_inventories
 
     environment = os.environ if environ is None else environ
+    if (parity_policy is None) != (parity_archive is None):
+        raise ValueError("SDK acceptance requires both original parity policy and archive")
     if environment.get("GITHUB_ACTIONS") or environment.get("GITHUB_RUN_ID"):
         raise ValueError("Local repository verification cannot claim a hosted execution identity")
     root = Path(repository_root).resolve(strict=True)
@@ -221,6 +350,9 @@ def require_local_repository_completion(repository_root, policy_path, *, environ
             LookupSession(repository=native.REPOSITORY, pull_request=31),
             repository_root=root, repository_revision=revision, completed_frozen=capability)
         report = _repository_report(result)
+        if parity_policy is not None:
+            report["sdkParity"] = _completed_parity(
+                root, revision, result, parity_policy, parity_archive, token)
         if read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True) != raw:
             raise ValueError("Local repository caller policy changed during verification")
         if products._git_value(root, "rev-parse", "HEAD^{commit}") != revision:
@@ -262,27 +394,38 @@ def main(argv=None):
     parser.add_argument("--partial-catalog-destination", type=Path)
     parser.add_argument("--repository", action="store_true",
                         help="Require the complete authenticated Contract/Runtime/SDK phase DAG")
+    parser.add_argument("--sdk", action="store_true",
+                        help="Require local current SDK closure and authenticated original full parity")
+    parser.add_argument("--parity-policy", type=Path)
+    parser.add_argument("--parity-archive", type=Path)
     parser.add_argument("--local", action="store_true",
                         help="Verify current local repository inputs through completed original evidence; no CI identity")
     parser.add_argument("--gradle", action="store_true",
-                        help="Run --repository --local through root :verifyRepository (offline, warm build)")
+                        help="Run local acceptance through root :verifyRepository or :verifySdk (offline)")
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
+    if args.sdk and (not args.local or args.repository or args.parity_policy is None or args.parity_archive is None):
+        parser.error("--sdk requires --local and both original parity inputs, without --repository")
+    if not args.sdk and (args.parity_policy is not None or args.parity_archive is not None):
+        parser.error("Original parity inputs require --sdk --local")
     if args.repository and (args.partial_catalog_destination is not None or args.github_output is not None):
         parser.error("Repository verification requires its standalone report, not catalog or routing outputs")
     if args.gradle and not args.local:
-        parser.error("--gradle requires --repository --local")
+        parser.error("--gradle requires local repository or SDK verification")
     if args.local:
-        if (not args.repository or args.completed_frozen_policy is None or any(value is not None for name, value in
-                vars(args).items() if name not in {"repository_root", "completed_frozen_policy", "repository", "local", "gradle"})):
+        if (not (args.repository or args.sdk) or args.completed_frozen_policy is None or any(
+                value is not None for name, value in vars(args).items() if name not in {
+                    "repository_root", "completed_frozen_policy", "repository", "local", "gradle",
+                    "sdk", "parity_policy", "parity_archive"})):
             parser.error("Local repository verification accepts only its current source and explicit completed policy")
     elif args.plan is None or args.discovery_root is None:
         parser.error("Hosted replay requires --plan and --discovery-root")
     try:
         if args.local:
             gate = run_local_repository_gradle if args.gradle else require_local_repository_completion
-            result = gate(args.repository_root, args.completed_frozen_policy)
+            result = gate(args.repository_root, args.completed_frozen_policy, **(
+                dict(parity_policy=args.parity_policy, parity_archive=args.parity_archive) if args.sdk else {}))
             print(canonical_json_bytes(result).decode().strip())
             return 0
         with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
