@@ -909,6 +909,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/contract-phase10-later-record.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/contract-promoted-catalog.yml": set(),
         ".github/workflows/contract-candidate.yml": set(),
+        ".github/workflows/runtime-candidate.yml": set(),
         ".github/workflows/runtime-promoted-catalog.yml": set(),
         ".github/workflows/runtime-library-authorizations.yml": set(),
         ".github/workflows/sdk-promoted-catalog.yml": set(),
@@ -971,6 +972,7 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 def _is_control_only(path: str) -> bool:
     if path in {".github/workflows/contract-phase10-maven.yml",
                 ".github/workflows/contract-candidate.yml",
+                ".github/workflows/runtime-candidate.yml",
                 ".github/workflows/contract-phase10-output-record.yml",
                 ".github/workflows/contract-phase10-later-record.yml",
                 ".github/workflows/contract-promoted-catalog.yml",

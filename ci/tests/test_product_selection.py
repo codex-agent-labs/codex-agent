@@ -374,6 +374,7 @@ class ProductSelectionTest(unittest.TestCase):
                 ("ci/contract_catalog_promotion.py", contract_metadata),
                 (".github/workflows/contract-promoted-catalog.yml", set()),
                 (".github/workflows/contract-candidate.yml", set()),
+                (".github/workflows/runtime-candidate.yml", set()),
                 (".github/workflows/runtime-promoted-catalog.yml", set()),
                 (".github/workflows/runtime-library-authorizations.yml", set()),
                 (".github/workflows/sdk-promoted-catalog.yml", set()),

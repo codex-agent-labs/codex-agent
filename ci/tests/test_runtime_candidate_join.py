@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stdout
+import io
+import json
 from pathlib import Path
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -152,7 +156,7 @@ class RuntimeCandidateJoinTest(unittest.TestCase):
                 "receiptSha256": _RECEIPT, "artifactSha256": _MANIFEST,
                 "productVersion": "0.8.0"}]}
 
-    def run_join(self, *, selection=None, pins=None, side_effect=None):
+    def run_join(self, *, selection=None, pins=None, side_effect=None, aggregate=None, sidecar=None, cli=False):
         selected = self.selection if selection is None else selection
         approved = self.pins if pins is None else pins
         def forward(*args, **kwargs):
@@ -182,8 +186,24 @@ class RuntimeCandidateJoinTest(unittest.TestCase):
                  self.aggregate / "original/retained-release"), \
              patch.object(candidate.transport, "stage_release_catalog"), \
              patch.object(candidate, "forward_verified_runtime_phase10_bytes", side_effect=forward) as forwarder:
+            if cli:
+                _write(self.root / "selection.json", selected)
+                _write(self.root / "pins.json", approved)
+                arguments = []
+                for name, path in (("selection", self.root / "selection.json"),
+                    ("pins", self.root / "pins.json"), ("transports", self.transports),
+                    ("trusted-repository", self.trusted), ("validation-repository", self.validation),
+                    ("landed-repository", self.landed), ("pgp-public-key", self.pgp),
+                    ("destination", self.output)):
+                    arguments.extend(["--" + name, str(path)])
+                arguments.extend(["--expected-selection-sha256", sha256_bytes(canonical_json_bytes(selected)),
+                                  "--expected-pins-sha256", sha256_bytes(canonical_json_bytes(approved))])
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(0, candidate.main(arguments))
+                return json.loads(output.getvalue()), forwarder
             result = candidate.join_runtime_candidate(selected, approved,
-                self.transports, self.aggregate, self.sidecar, self.trusted,
+                self.transports, aggregate or self.aggregate, sidecar or self.sidecar, self.trusted,
                 self.validation, self.landed, self.pgp, self.output,
                 expected_selection_sha256=sha256_bytes(canonical_json_bytes(selected)),
                 expected_pins_sha256=sha256_bytes(canonical_json_bytes(approved)))
@@ -213,6 +233,67 @@ class RuntimeCandidateJoinTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed before final publication"):
             self.run_join(side_effect=mutate)
         self.assertFalse(self.output.exists())
+
+    def retained_captures(self):
+        retained = self.transports / "catalog/original-evidence"
+        shutil.copytree(self.aggregate / "original", retained / "original")
+        shutil.copyfile(self.aggregate / "transport.zip", retained / "upload.zip")
+        shutil.copytree(self.sidecar, self.transports / "sidecar-capture")
+        _zip(self.transports / "sidecar-capture.zip", self.transports / "sidecar-capture")
+        _zip(self.transports / "catalog.zip", self.transports / "catalog")
+        self.selection["schemaVersion"] = 2
+        self.selection["phase10"]["sidecarTransport"] = {"artifactId": 43,
+            "artifactSha256": sha256_file(self.transports / "sidecar-capture.zip")}
+        self.selection["catalog"]["artifactSha256"] = sha256_file(self.transports / "catalog.zip")
+        self.selection["catalog"]["inventorySha256"] = candidate._digest_tree(self.transports / "catalog")
+        custody = json.loads((self.transports / "transport.json").read_bytes())
+        custody["schemaVersion"] = 2
+        custody["selectionSha256"] = sha256_bytes(canonical_json_bytes(self.selection))
+        custody["routes"]["catalog"]["files"] = regular_file_inventory(self.transports / "catalog")
+        custody["routes"]["catalog"]["artifact"]["digest"] = self.selection["catalog"]["artifactSha256"]
+        custody["routes"]["sidecar-capture"] = {
+            "producer": self.selection["phase10"]["recordProducer"],
+            "artifact": {"id": 43, "digest": self.selection["phase10"]["sidecarTransport"]["artifactSha256"]},
+            "files": regular_file_inventory(self.transports / "sidecar-capture")}
+        _write(self.transports / "transport.json", custody)
+        self.pins["transportInventorySha256"] = candidate._digest_tree(self.transports)
+        return retained
+
+    def test_retained_capture_preserves_bytes_and_provenance_without_body_copy(self):
+        retained = self.retained_captures()
+        before = regular_file_inventory(self.transports)
+        view = candidate._catalog_capture(self.transports, self.root / "view", self.pins)
+        for source, target in ((retained / "upload.zip", view / "transport.zip"),
+                               (retained / "original/retained-release/proof.txt",
+                                view / "original/retained-release/proof.txt")):
+            self.assertEqual(source.stat().st_ino, target.stat().st_ino)
+        self.assertEqual((self.aggregate / "capture-transport.json").read_bytes(),
+                         (view / "capture-transport.json").read_bytes())
+        result, forward = self.run_join(aggregate=view, sidecar=self.transports / "sidecar-capture")
+        self.assertEqual("runtime", result["candidate"]["product"])
+        forward.assert_called_once()
+        self.assertEqual(before, regular_file_inventory(self.transports))
+
+    def test_retained_capture_rejects_changed_original_and_symlink(self):
+        retained = self.retained_captures()
+        original = retained / "original/retained-release/proof.txt"
+        original.write_bytes(b"tampered\n")
+        with self.assertRaisesRegex(ValueError, "independently approved original capture"):
+            candidate._catalog_capture(self.transports, self.root / "bad-view", self.pins)
+        original.unlink()
+        original.symlink_to(self.aggregate / "original/retained-release/proof.txt")
+        with self.assertRaises(ValueError):
+            candidate._catalog_capture(self.transports, self.root / "symlink-view", self.pins)
+        self.assertFalse((self.root / "symlink-view").exists())
+
+    def test_cli_joins_retained_captures_without_explicit_recapture(self):
+        self.retained_captures()
+        before = regular_file_inventory(self.transports)
+        result, forward = self.run_join(cli=True)
+        self.assertEqual("runtime", result["candidate"]["product"])
+        forward.assert_called_once()
+        self.assertEqual(before, regular_file_inventory(self.transports))
+        self.assertFalse(list(self.root.glob("runtime-original-view-*")))
 
 
 if __name__ == "__main__":

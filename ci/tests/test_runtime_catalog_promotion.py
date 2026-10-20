@@ -1,6 +1,7 @@
 """Real signed synthetic originals; mocked HTTP is not protected CI authority."""
 
 import copy
+from contextlib import contextmanager
 import io
 import json
 import os
@@ -23,6 +24,69 @@ from products.inventory import (
 from products.index import SignedProductIndex, verify_release_product_index
 from products.restore import object_relative_path
 from products.signatures import generate_development_key
+
+
+class RuntimeCatalogMetadataObjectTest(unittest.TestCase):
+    def test_scoped_object_requires_fresh_original_authority_and_exact_pinned_bytes(self):
+        from ci.tests.test_product_restore import ProductRestoreTest
+        from products.receipt import write_output_manifest, compute_build_key
+        original = ProductRestoreTest()
+        original.setUp()
+        self.addCleanup(original.tearDown)
+        manifest = write_output_manifest(original.stage, "runtime", "runtime-aggregate", "metadata",
+                                         "aggregate", "0.2.0", {"metadata": "outputs"})
+        receipt = original.receipt
+        receipt.update(product="runtime", component="runtime-aggregate", phase="metadata", target="aggregate",
+                       outputs=manifest["outputs"])
+        receipt["buildKey"] = compute_build_key(product="runtime", component="runtime-aggregate",
+            phase="metadata", target="aggregate", inputs=receipt["inputs"])
+        original.receipt_path.write_bytes(canonical_json_bytes(receipt))
+        stored = original.store()
+        relative = object_relative_path(receipt["buildKey"], stored["receiptSha256"])
+        root = original.root
+        proof_path = root / "original-evidence/transport/original-ci-phases.json"
+        proof_path.parent.mkdir(parents=True)
+        artifact = {"id": 1, "digest": "sha256:" + "a" * 64, "name": "original"}
+        observed = {"run": {"id": 12, "run_attempt": 1}, "jobs": []}
+        proof_path.write_bytes(canonical_json_bytes({"observed": [observed],
+            "artifacts": {"runtime-aggregate-metadata-aggregate": artifact}}))
+        proof_path.with_suffix(".sig").write_bytes(b"already verified by the outer handoff gate\n")
+        (root / "caller.json").write_bytes(canonical_json_bytes({"trustedWorkflowSha": "b" * 40}))
+        verified = {"directory": root, "receipts": {caller._METADATA: receipt},
+                    "receiptBytes": {caller._METADATA: original.receipt_path.read_bytes()}}
+        upload = root / "original.zip"
+        with zipfile.ZipFile(upload, "w") as archive:
+            archive.write(stored["path"], "shard/" + relative)
+            archive.writestr("unconsumed.bin", b"never extracted")
+        @contextmanager
+        def reference(*_args):
+            with zipfile.ZipFile(upload) as archive:
+                yield archive, None
+        def acquire(destination, digest=stored["objectSha256"]):
+            caller._capture_metadata_object(verified, destination, receipt["buildKey"],
+                                           stored["receiptSha256"], digest, "token")
+        with patch.object(caller.transport, "_runtime_prior_workflow_sha", return_value="b" * 40), \
+                patch.object(caller.transport, "_observe_ci_producer_jobs", return_value=[observed]) as observe, \
+                patch.object(caller.transport, "_contract_ci_upload_metadata", return_value=artifact), \
+                patch.object(caller.transport, "_require_artifact_job_window") as window, \
+                patch.object(caller, "open_reference_archive", side_effect=reference) as opened, \
+                patch.object(caller, "copy_reference_member", wraps=caller.copy_reference_member) as member:
+            acquire(root / "selected.zip")
+            self.assertEqual(Path(stored["path"]).read_bytes(), (root / "selected.zip").read_bytes())
+            observe.assert_called_once_with({"metadata": receipt["producer"]},
+                jobs_by_phase={"metadata": "product-validation / runtime-runtime-aggregate-metadata-aggregate"},
+                trusted_workflow_sha="b" * 40, token="token")
+            window.assert_called_once()
+            member.assert_called_once()
+            self.assertEqual("shard/" + relative, member.call_args.args[1])
+            with self.assertRaisesRegex(ValueError, "immutable digest"):
+                acquire(root / "wrong-digest.zip", "sha256:" + "f" * 64)
+            opened.reset_mock()
+            observe.side_effect = ValueError("original job failed")
+            with self.assertRaisesRegex(ValueError, "original job failed"):
+                acquire(root / "wrong-job.zip")
+            opened.assert_not_called()
+            self.assertFalse((root / "wrong-job.zip").exists())
 
 
 class RuntimeCatalogPromotionTest(unittest.TestCase):
@@ -57,8 +121,8 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
         cls.receipt = load_canonical_json_bytes((cls.carrier / "aggregate-input/metadata-receipt.json").read_bytes())
         cls.digest = sha256_bytes((cls.carrier / "aggregate-input/metadata-receipt.json").read_bytes())
         relative = object_relative_path(cls.receipt["buildKey"], cls.digest)
-        cls.object_digest = sha256_file(cls.carrier /
-            "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/shard" / relative)
+        cls.original_object = cls.source.root / "full-original-uploads/runtime-aggregate-metadata-aggregate/shard" / relative
+        cls.object_digest = sha256_file(cls.original_object)
         provenance = load_canonical_json_bytes((cls.carrier / "caller.json").read_bytes())
         provenance.update(transportProducer=cls.producer, trustedWorkflowSha=cls.workflow_pin,
                           releaseDirectory="retained-release")
@@ -135,9 +199,20 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             return self.archive
         elif url == base + "/actions/artifacts/920":
             value = self.artifact
+        elif url == base + "/actions/artifacts/" + str(
+                self.source.original_artifacts["runtime-aggregate-metadata-aggregate"]["id"]):
+            value = self.source.original_artifacts["runtime-aggregate-metadata-aggregate"]
         else:
-            raise AssertionError(f"Unexpected HTTP request: {url}")
+            return self.source.api(url, token)  # Original metadata producer, not the later aggregate signer.
         return json.dumps(value).encode()
+
+    @contextmanager
+    def reference(self, artifact, token):
+        name = "runtime-aggregate-metadata-aggregate"
+        self.assertEqual(self.source.original_artifacts[name], artifact)
+        self.assertEqual("synthetic-token", token)
+        with zipfile.ZipFile(io.BytesIO(self.source.original_archives[name])) as archive:
+            yield archive, None
 
     def invoke(self, **changes):
         capture_mutation = changes.pop("_capture_mutation", None)
@@ -154,7 +229,8 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             expected_signature_sha256=self.signature_digest,
             event_payload=self.event, environment=self.environment, token="synthetic-token")
         arguments.update(changes)
-        with patch("reuse.api_request", side_effect=self.api):
+        with patch("reuse.api_request", side_effect=self.api), \
+                patch.object(caller, "open_reference_archive", side_effect=self.reference):
             captured = Path(tempfile.mkdtemp(prefix="capture-", dir=self.work)) / "capture"
             capture_args = {**arguments, "environment": {
                 key: value for key, value in self.environment.values.items() if key != SECRET
@@ -183,8 +259,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             keyring_path=self.source.keyring, keys_directory=self.source.keys)
         self.assertEqual(result, index)
         relative = object_relative_path(self.receipt["buildKey"], self.digest)
-        original = self.carrier / "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/shard" / relative
-        self.assertEqual(original.read_bytes(), (catalog / relative).read_bytes())
+        self.assertEqual(self.original_object.read_bytes(), (catalog / relative).read_bytes())
         self.assertEqual(self.original_inventory, regular_file_inventory(self.carrier, allow_empty=True))
         self.assertEqual(self.source.keyring.read_bytes(), (self.destination / "trust/product-signing-keys.json").read_bytes())
         for row in regular_file_inventory(self.destination, allow_empty=True):

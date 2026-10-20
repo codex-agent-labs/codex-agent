@@ -72,6 +72,11 @@ class RuntimeCandidateTransportTest(unittest.TestCase):
         value["catalog"]["artifactSha256"] = "not-a-digest"
         with self.assertRaisesRegex(ValueError, "sha256:"):
             candidate.validate_selection(value)
+        value = _selection()
+        value["schemaVersion"] = 2
+        value["phase10"]["sidecarTransport"] = {"artifactId": 30, "artifactSha256": _D}
+        with self.assertRaisesRegex(ValueError, "distinct upload"):
+            candidate.validate_selection(value)
 
     def test_cli_rejects_unapproved_selection_before_observation(self):
         with _temporary() as temporary:
@@ -173,6 +178,30 @@ class RuntimeCandidateTransportTest(unittest.TestCase):
                     candidate.capture_runtime_candidate_transports(
                         bad, root / "rejected-signature", token="token", environ={})
                 self.assertFalse((root / "rejected-signature").exists())
+                # Schema 2 consumes the already captured Phase-10 sidecars,
+                # never downloads a second aggregate/plan/original Maven body.
+                sidecar_archive = root / "sidecar.zip"
+                _archive(sidecar_archive, {"plan/impact-plan.json": b"{}\n",
+                    "capture-transport.json": b"{}\n", "transport.zip": b"original zip",
+                    "original/signature.asc": b"original signature"})
+                sources[32] = sidecar_archive
+                selected["schemaVersion"] = 2
+                selected["phase10"]["sidecarTransport"] = {"artifactId": 32,
+                    "artifactSha256": sha256_file(sidecar_archive)}
+                with patch.object(candidate.transport, "_download_contract_ci_upload",
+                                  side_effect=download) as acquire:
+                    second = candidate.capture_runtime_candidate_transports(
+                        selected, root / "retained-v2", token="token", environ={})
+                self.assertFalse(second["admitted"])
+                self.assertEqual([30, 31, 32], [call.args[0] for call in acquire.call_args_list])
+                self.assertEqual(sha256_file(root / "retained-v2/sidecar-capture.zip"),
+                                 selected["phase10"]["sidecarTransport"]["artifactSha256"])
+                _archive(sidecar_archive, {"unexpected": b"not a retained capture"})
+                selected["phase10"]["sidecarTransport"]["artifactSha256"] = sha256_file(sidecar_archive)
+                with self.assertRaisesRegex(ValueError, "sidecar capture has unexpected"):
+                    candidate.capture_runtime_candidate_transports(
+                        selected, root / "rejected-v2", token="token", environ={})
+                self.assertFalse((root / "rejected-v2").exists())
 
     def test_capture_rejects_any_signing_secret_even_empty(self):
         with patch.object(candidate, "_observe_catalog") as observe, \
