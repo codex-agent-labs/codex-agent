@@ -78,23 +78,30 @@ for five matching-host package/consumer receipts or the merge gate.
 
 ## Commands and release status
 
-These verification entry points exist in the current builds:
+For the completed Phase-9 artifacts, use the explicit acceptance adapters below.
+They authenticate current inputs against original receipts and preserve the
+successful products. The legacy direct Gradle readers do not understand every
+current transitive receipt/parity schema; do not pass new evidence to them.
 
 ```sh
 ./gradlew verifyContract
-./gradlew verifySdk \
-  -PcodexAgent.sdkBindingEvidenceDirectory="$M11_EVIDENCE_DIR" \
-  -PcodexAgent.sdkCanonicalApiReport="$CONTRACT_API_REPORT" \
-  -PcodexAgent.sdkCanonicalCoverageReceipt="$CONTRACT_COVERAGE_RECEIPT"
-./gradlew verifyRepository \
-  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
-  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
+python3 -m ci.sdk_completion --runtime --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY" \
+  --runtime-contract-policy "$RUNTIME_CONTRACT_POLICY"
+python3 -m ci.sdk_completion --sdk --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY" \
+  --parity-policy "$PARITY_POLICY" --parity-archive "$PARITY_ARCHIVE"
+python3 -m ci.sdk_completion --repository --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY"
 ```
 
-The variables must name existing, independently verified evidence; these
-commands do not create missing Contract, Runtime, SDK, or host receipts. The
+The variables must name existing, independently reviewed policies and original
+evidence, not self-issued approvals. The three adapters do not create missing
+Contract, Runtime, SDK, or host receipts. For the direct authentication-only
+path, omit `--gradle`; for Runtime, also omit the settings-only
+`--runtime-contract-policy` argument. This still authenticates the original
+Contract/Runtime receipt closure. `verifyContract`
+is a producer/verification entry point, not a zero-work reuse command. The
 standalone Runtime entry point is `./gradlew -p runtime verifyRuntime` with
 explicit `-PcodexAgent.target`, Contract payload, metadata receipt, detached
 attestation, attestation signature, public key, Contract version, and Runtime
@@ -111,8 +118,10 @@ target-independent invocation supplies its required predecessor stages.
 not a whole-graph build command.
 
 The existing combined candidate and publish workflows are a migration baseline,
-not commands for a product-specific `0.8.0` release. None of the six separate
-Contract, Runtime, or SDK candidate/publish workflows exists yet. They remain
+not commands for a product-specific `0.8.0` release. Separate Contract and
+Runtime candidate workflow sources exist; the SDK candidate and three publish
+entry workflows are not yet implemented. Source presence is not activation or
+release acceptance. They remain
 subject to the local, protected, and five-host acceptance gates in
 [releasing](RELEASING.md).
 No candidate tag or publication is asserted here.

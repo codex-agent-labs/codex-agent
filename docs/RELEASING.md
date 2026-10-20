@@ -15,8 +15,10 @@ SDK publication is dependency-ordered and resumable. All three candidates
 must validate before the first irreversible publication. Phase 11 may verify,
 sign external publication-context evidence, forward, and upload exact Phase-10
 bytes; it may not compile, link, run product tests, or repackage reusable
-product payloads. The six product-specific candidate/publish entry workflows
-and their local/hosted acceptance are still pending.
+product payloads. Contract and Runtime candidate workflow sources exist; SDK
+candidate and the three product publish entry workflows remain pending.
+Their protected activation and complete release acceptance are not established
+by the Phase-9 [artifact inventory](ARTIFACT_MATRIX.md).
 
 No API key or stored ChatGPT credential is used by automated verification. A
 real-model check uses interactive ChatGPT sign-in in the iOS Simulator test app.

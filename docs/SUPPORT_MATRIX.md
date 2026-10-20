@@ -5,6 +5,10 @@ The coordinates and asset names below describe the intended release payload,
 not evidence of publication. Until verified release artifacts exist, use
 locally built packages rather than assuming a public registry has them.
 
+The [artifact-derived acceptance matrix](ARTIFACT_MATRIX.md) lists the exact
+versions, Maven coordinates, package filenames, and validation targets found
+in the retained Phase-9 originals. It does not claim public availability.
+
 All language surfaces project the same canonical user-facing
 `CodexHost` → `CodexAgent` → `CodexConversation` contract. Platform/runtime SPI
 is intentionally not part of every language SDK. The first and last columns of
