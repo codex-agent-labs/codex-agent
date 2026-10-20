@@ -181,7 +181,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             "archive_download_url": f"https://api.github.com/repos/{caller.REPOSITORY}/actions/artifacts/920/zip"}
 
     def api(self, url, token):
-        self.assertEqual("synthetic-token", token)
+        self.assertEqual("not-a-real-token", token)
         base = f"https://api.github.com/repos/{caller.REPOSITORY}"
         if url.startswith(base + "/actions/workflows/ci.yml/runs?"):
             value = {"workflow_runs": [self.listed_run]}
@@ -210,7 +210,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
     def reference(self, artifact, token):
         name = "runtime-aggregate-metadata-aggregate"
         self.assertEqual(self.source.original_artifacts[name], artifact)
-        self.assertEqual("synthetic-token", token)
+        self.assertEqual("not-a-real-token", token)
         with zipfile.ZipFile(io.BytesIO(self.source.original_archives[name])) as archive:
             yield archive, None
 
@@ -227,7 +227,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
             expected_carrier_inventory_sha256=self.carrier_digest,
             expected_attestation_sha256=self.attestation_digest,
             expected_signature_sha256=self.signature_digest,
-            event_payload=self.event, environment=self.environment, token="synthetic-token")
+            event_payload=self.event, environment=self.environment, token="not-a-real-token")
         arguments.update(changes)
         with patch("reuse.api_request", side_effect=self.api), \
                 patch.object(caller, "open_reference_archive", side_effect=self.reference):
@@ -287,7 +287,7 @@ class RuntimeCatalogPromotionTest(unittest.TestCase):
                         expected_carrier_inventory_sha256=self.carrier_digest,
                         expected_attestation_sha256=self.attestation_digest,
                         expected_signature_sha256=self.signature_digest,
-                        event_payload=self.event, environment={key: value for key, value in self.environment.values.items() if key != SECRET}, token="synthetic-token")
+                        event_payload=self.event, environment={key: value for key, value in self.environment.values.items() if key != SECRET}, token="not-a-real-token")
             finally:
                 self.environment.values[field] = previous
         tracked = self.candidate / "gradle/release/versions/contract.txt"
