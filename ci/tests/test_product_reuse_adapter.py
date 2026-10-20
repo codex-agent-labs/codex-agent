@@ -3261,7 +3261,7 @@ class ProductReuseAdapterTest(unittest.TestCase):
                 product_reuse._validate_reuse_result({**result, "continuationRequirements": invalid}, (instance,), require_complete=False)
         record = {"receiptSha256": "sha256:" + "a" * 64, "component": "python", "target": "linux-x64",
                   **{field: field for field in ("packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages",
-                                                "stagedSdks", "validationStage", "validationReceipt")}}
+                                                "stagedSdks", "validationStage", "validationReceipt", "runtimeAuthorization")}}
         rebased = product_reuse._rebase_native_request({"sdkValidationEvidence": [record]},
                                                        self.root / "original", self.root)
         self.assertEqual("original/validationStage", rebased["sdkValidationEvidence"][0]["validationStage"])

@@ -1137,6 +1137,7 @@ def plan_reuse_wave(
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
     sdk_javascript_validation_projection_provider=None,
     completed_native_runtime_projection_provider=None,
+    completed_sdk_validation_projection_provider=None,
     completed_frozen=None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
@@ -1489,7 +1490,8 @@ def plan_reuse_wave(
 
         def sdk_projection_provider(instance, envelopes, package):
             if sdk_comparison is None or any(envelope["receiptSha256"] not in sdk_originals for envelope in envelopes):
-                return None
+                return (completed_sdk_validation_projection_provider(instance, envelopes, package)
+                        if completed_sdk_validation_projection_provider is not None else None)
             return tuple(sdk_comparison({**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
                          for envelope in envelopes)
 

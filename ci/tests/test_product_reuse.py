@@ -814,6 +814,7 @@ class ProductReuseTest(unittest.TestCase):
         comparison_provider = mock.Mock()
         adapter_provider = mock.Mock()
         sdk_provider = mock.Mock()
+        completed_sdk_provider = mock.Mock(return_value=("full-gate-proof",))
         (repository / "codex-agent-core/src/commonMain/kotlin/example.kt").write_text(
             "package dirty\n",
             encoding="utf-8",
@@ -830,7 +831,7 @@ class ProductReuseTest(unittest.TestCase):
                 mock.patch("ci.products.reuse.adapter_comparison_provider", return_value=adapter_provider) as adapter_factory, \
                 mock.patch("ci.products.sdk_validation_inputs.sdk_validation_provider", return_value=sdk_provider) as sdk_factory, \
                 mock.patch("ci.products.reuse.AppleValidationAdmission") as apple_factory:
-            result = plan_reuse_wave(request)
+            result = plan_reuse_wave(request, completed_sdk_validation_projection_provider=completed_sdk_provider)
         self.assertIs(expected, result)
         args, kwargs = delegated.call_args
         self.assertEqual((CONTRACT_BINARY,), args[0])
@@ -846,6 +847,9 @@ class ProductReuseTest(unittest.TestCase):
         self.assertIs(adapter_provider, args[3]._adapter_runtime_projection)
         self.assertIs(sdk_provider, args[3]._sdk_validation_projection)
         self.assertTrue(callable(kwargs["sdk_validation_projection_provider"]))
+        hosts = ({"receiptSha256": DIGEST_A},)
+        self.assertEqual(("full-gate-proof",), kwargs["sdk_validation_projection_provider"]("metadata", hosts, "package"))
+        completed_sdk_provider.assert_called_once_with("metadata", hosts, "package")
         self.assertIs(apple_factory.return_value, kwargs["sdk_apple_validation_admission"])
         apple_factory.assert_called_once_with(Path(request["artifactRoot"]), [], repository=repository,
             policy_revision=revision, policy=request["sdkAppleValidationPolicy"])

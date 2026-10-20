@@ -8,7 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ci.tests.test_runtime_phase_execution import adapter
 from products.inventory import canonical_json_bytes, sha256_bytes
@@ -148,6 +148,38 @@ class SdkMetadataCallerTest(unittest.TestCase):
     def test_missing_full_host_provider_never_executes(self):
         _, _, execute = self.seams(provider=False)
         with self.assertRaisesRegex(ValueError, "authenticated original host"):
+            self.invoke()
+        execute.assert_not_called()
+
+    def test_missing_records_recover_exact_original_envelopes_without_rebuilding(self):
+        _, materialize, execute = self.seams(provider=False)
+        self.state.rebased_request["sdkValidationEvidence"] = []
+        identities = (PhaseInstanceId("sdk", "python", "package", "desktop"),
+                      *(PhaseInstanceId("sdk", "python", "validation", target) for target in sorted(NATIVE_TARGETS)))
+        capability = Mock()
+        capability._values.return_value = {}, {identity: identity for identity in identities}
+        capability.envelope.side_effect = lambda identity, raw: (identity, raw)
+        verify = Mock(return_value=tuple(self.proofs[target] for target in sorted(NATIVE_TARGETS)))
+        authorizations = {target: self.root / target for target in NATIVE_TARGETS}
+        with patch("sdk_native_metadata_workflow.completed_validation_recovery",
+                   return_value={"verify": verify, "authorizations": authorizations}) as recovery:
+            self.invoke(completed_frozen=capability)
+        materialize.assert_called_once()
+        self.assertIs(capability, recovery.call_args.args[0])
+        instance, hosts, package = verify.call_args.args
+        self.assertEqual(self.instance, instance)
+        self.assertEqual(identities[1:], tuple(identity for identity, _ in hosts))
+        for identity, raw in (*hosts, package):
+            self.assertEqual(canonical_json_bytes(dict(zip(
+                ("product", "component", "phase", "target"),
+                (identity.product, identity.component, identity.phase, identity.target), strict=True))), raw)
+        self.assertEqual(authorizations, execute.call_args.kwargs["runtime_authorizations"])
+
+    def test_failed_recovery_is_not_replaced_with_an_unverified_projection(self):
+        _, _, execute = self.seams(provider=False)
+        with patch("sdk_native_metadata_workflow.completed_validation_recovery",
+                   side_effect=ValueError("original authentication failed")), \
+                self.assertRaisesRegex(ValueError, "original authentication failed"):
             self.invoke()
         execute.assert_not_called()
 

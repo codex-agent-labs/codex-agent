@@ -1,6 +1,6 @@
 """Native metadata controller composition; full gates are tested separately."""
 
-from contextlib import contextmanager, redirect_stderr
+from contextlib import ExitStack, contextmanager, redirect_stderr
 from copy import deepcopy
 import io
 import os
@@ -15,6 +15,44 @@ from products.inventory import canonical_json_bytes, regular_file_inventory, sna
 from products.receipt import compute_build_key, write_output_manifest
 from products.registry import NATIVE_TARGETS, PhaseInstanceId
 from products.restore import finalize_phase_object, verify_phase_shard
+
+
+class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
+    def test_private_recovery_reuses_one_scope_and_rejects_expired_or_changed_authority(self):
+        # Control/lifetime test only; no mocked object is claimed as authenticated.
+        from reuse_qualification import CompletedFrozenReuse
+        from products.restore import verification_session
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            source = root / "source.json"
+            source.write_bytes(canonical_json_bytes({"fixture": "source"}))
+            for name in ("java", "public.pub"):
+                (root / name).write_bytes(b"fixture")
+            (root / "evidence").mkdir()
+            tooling = dict(evidence=str(root / "evidence"), publicKey=str(root / "public.pub"),
+                javaExecutable=str(root / "java"), requiredTrustDomain="development", keyring=None, keysDirectory=None)
+            context = dict(repository_root=root, plan_path=root / "plan", trusted_workflow_sha="a" * 40,
+                token="fixture", environ=dict(CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=str(source),
+                    CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION='{"fixture":"authorization"}'))
+            request = dict(versions={"sdk": "0.8.0"}, repositoryRevision="b" * 40)
+            capability = object.__new__(CompletedFrozenReuse)
+            for name, value in (("check_request", None), ("check_consumer", None), ("_values", ({}, {})),
+                    ("sdk_original", {"spec": {"sdkInputs": {"source": {"fixture": "source"}, "runtimeSource": {}}}})):
+                stack.enter_context(patch.object(CompletedFrozenReuse, name, return_value=value))
+            stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", return_value={}))
+            stack.enter_context(patch.object(workflow.product_reuse, "_consumer", return_value={"producer": {}}))
+            with verification_session():
+                recovery = workflow.completed_validation_recovery(capability, request, tooling, context)
+                self.assertIs(recovery, workflow.completed_validation_recovery(capability, request, tooling, context))
+                identity = PhaseInstanceId("sdk", "python", "metadata", "desktop")
+                self.assertIsNone(recovery["verify"](identity, (), {}))  # Missing originals never fetch/build.
+                context["environ"]["CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"] = '{}'
+                with self.assertRaisesRegex(ValueError, "changed its caller authority"):
+                    recovery["verify"](identity, (), {})
+            with self.assertRaisesRegex(ValueError, "outlived"):
+                recovery["verify"](identity, (), {})
+            with verification_session(), self.assertRaisesRegex(TypeError, "concrete completed authority"):
+                workflow.completed_validation_recovery(object(), request, tooling, context)
 
 
 class SdkNativeMetadataWorkflowTest(unittest.TestCase):

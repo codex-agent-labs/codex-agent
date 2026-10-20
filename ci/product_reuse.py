@@ -160,7 +160,7 @@ from products.sdk_dotnet_toolchain import load_sdk_dotnet_profile_bytes
 from products.runtime_adapter_content import rebase_adapter_comparison_records
 from products.sdk_validation import rebase_sdk_validation_records
 from products.sdk_release_selection import sdk_runtime_source
-from products.sdk_validation_inputs import load_sdk_validation_evidence, stage_sdk_validation_evidence
+from products.sdk_validation_inputs import collection_admission_scope, load_sdk_validation_evidence, stage_sdk_validation_evidence
 from products.sdk_apple_validation_inputs import (
     capture_sdk_apple_validation_evidence, load_sdk_apple_validation_evidence, rebase_sdk_apple_validation_records,
 )
@@ -3789,6 +3789,7 @@ def _javascript_projection_provider(request, tooling, original_context, *, compl
     return verify
 
 
+@collection_admission_scope
 @measured
 def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package_origin=None, **kwargs):
     # Never serialize invocation authority into retained control or evidence.
@@ -3844,6 +3845,15 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
                 **({"completed_frozen": kwargs["completed_frozen"]} if kwargs.get("completed_frozen") is not None else {}))
             if javascript_provider is not None:
                 kwargs["sdk_javascript_validation_projection_provider"] = javascript_provider
+        completed = kwargs.get("completed_frozen")
+        if (completed is not None and tooling is not None and apple_package_origin is not None
+                and "completed_sdk_validation_projection_provider" not in kwargs
+                and any(sdk_validation_dependencies(identity) and identity not in completed.completed_phases()
+                    for identity in _dependency_closure(tuple(_identity(row) for row in request["requested"])))):
+            from sdk_native_metadata_workflow import completed_validation_recovery
+            recovery = completed_validation_recovery(completed, request, tooling, apple_package_origin)
+            if recovery is not None:
+                kwargs["completed_sdk_validation_projection_provider"] = recovery["verify"]
         result = plan_reuse_wave(invocation,
             **({"sdk_apple_package_admission_factory": factory} if factory is not None else {}), **kwargs)
     if apple_package_origin is not None and needs_package and apple_policy is not None:
@@ -6187,6 +6197,7 @@ def execute_runtime_phase(
         destination=destination / "shard")
 
 
+@collection_admission_scope
 def execute_sdk_metadata(
     plan_path: Path, discovery_root: Path, state_root: Path | None, destination: Path, *,
     component: str, expected_build_key: str, compatibility_request: Path,
@@ -6248,15 +6259,32 @@ def execute_sdk_metadata(
     _merge_native_comparison_records(request, _retained_sdk_handoffs(state_root, root), key="sdkValidationEvidence")
     provider = sdk_validation_provider(root, request.get("sdkValidationEvidence", []), repository=root,
         policy_revision=state.producer["commit"], tooling=sdk_validation_tooling)
-    if provider is None:
-        raise ValueError("SDK metadata requires authenticated original host evidence")
     original_records = decode_sdk_validation_records(root, request.get("sdkValidationEvidence", []))
     projections, authorizations = [], {}
-    for dependency in sdk_validation_dependencies(instance):
-        value = original(dependency.product, dependency.component, dependency.phase, dependency.target)
-        digest = sha256_file(value["receiptPath"])
-        projections.append(provider({**value["receipt"], "receiptSha256": digest}))
-        authorizations[dependency.target] = original_records[digest]["runtimeAuthorization"]
+    dependencies = sdk_validation_dependencies(instance)
+    values = [original(dependency.product, dependency.component, dependency.phase, dependency.target)
+              for dependency in dependencies]
+    digests = [sha256_file(value["receiptPath"]) for value in values]
+    if provider is None or any(digest not in original_records for digest in digests):
+        from sdk_native_metadata_workflow import completed_validation_recovery
+        recovery = completed_validation_recovery(completed_frozen, request, sdk_validation_tooling,
+            _apple_package_origin(plan_path, root, sdk_original_workflow_sha, environment))
+        if recovery is None:
+            raise ValueError("SDK metadata requires authenticated original host evidence")
+        _, phases = completed_frozen._values()
+        package_id = PhaseInstanceId("sdk", component, "package", "desktop")
+        package = original("sdk", component, "package", "desktop")
+        envelopes = tuple(completed_frozen.envelope(phases[dependency], read_regular_file_bytes(value["receiptPath"]))
+                          for dependency, value in zip(dependencies, values, strict=True))
+        package_envelope = completed_frozen.envelope(phases[package_id], read_regular_file_bytes(package["receiptPath"]))
+        projections = recovery["verify"](instance, envelopes, package_envelope)
+        if projections is None:
+            raise ValueError("SDK metadata lacks complete qualified original hosts")
+        authorizations = dict(recovery["authorizations"])
+    else:
+        for dependency, value, digest in zip(dependencies, values, digests, strict=True):
+            projections.append(provider({**value["receipt"], "receiptSha256": digest}))
+            authorizations[dependency.target] = original_records[digest]["runtimeAuthorization"]
     policy = require_exact_keys(dict(sdk_validation_tooling),
         {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain", "keyring", "keysDirectory"},
         "SDK metadata caller tooling policy")

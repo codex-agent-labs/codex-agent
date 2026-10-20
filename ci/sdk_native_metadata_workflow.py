@@ -23,6 +23,196 @@ from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate
 
 
+def completed_validation_recovery(completed, request, tooling, context):
+    """Recover full host gates, not projections asserted by a retained report.
+
+    One private verification session owns shared K/R, package and host categories.
+    Only consumed, independently qualified objects and caller-pinned sidecars are
+    fetched. Original receipts are never rewritten; nothing here is persisted as
+    authentication authority or exported into a product payload.
+    """
+    from reuse_qualification import CompletedFrozenReuse
+    from products.inventory import git_regular_blob_bytes, load_json_bytes, sha256_bytes
+    from products.plan import sdk_validation_dependencies
+    from products.restore import _VERIFICATION_SESSION, restore_object, memoized_file_inventory
+    from products.sdk_native import SDK_ROOT_PATH, stage_native_sdk_inputs
+    from products.sdk_compatibility import load_sdk_compatibility_request
+    from products.sdk_validation_inputs import sdk_validation_provider
+    from sdk_native_validation_workflow import capture_runtime_authorization
+    from runtime_reference_transport import count, measured
+
+    if completed is None or tooling is None or context is None or request.get("sdkRuntimeSource") is not None:
+        return None
+    if type(completed) is not CompletedFrozenReuse:
+        raise TypeError("Native SDK recovery requires concrete completed authority")
+    session = _VERIFICATION_SESSION.get()
+    if session is None:
+        raise ValueError("Native SDK recovery requires a private verification lifetime")
+    environment = context["environ"]
+    source_path = environment.get("CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")
+    authorization_raw = environment.get("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION")
+    if not source_path or not authorization_raw:
+        return None  # Ordinary transported host evidence remains usable.
+    source_raw = read_regular_file_bytes(Path(source_path), max_bytes=16 * 1024**2,
+                                         reject_symlink_parents=True)
+    binding_source = load_canonical_json_bytes(source_raw)
+    authorization = load_json_bytes(authorization_raw.encode())
+    root = Path(context["repository_root"]).resolve(strict=True)
+    plan = product_reuse._validate_plan(context["plan_path"], root,
+        expected_revision=request["repositoryRevision"])
+    producer = product_reuse._consumer(plan, environment)["producer"]
+    completed.check_request(request)
+    completed.check_consumer({"kind": "ci", "producer": producer})
+    _, phases = completed._values()
+    sdk = completed.sdk_original()
+    if sdk is None or binding_source != sdk["spec"]["sdkInputs"]["source"]:
+        raise ValueError("Native SDK recovery input source differs from caller policy")
+    binding = {"source": binding_source, "runtimeSource": sdk["spec"]["sdkInputs"]["runtimeSource"]}
+    # sdk_receipts below additionally joins this signed source to the exact
+    # current Contract and Runtime aggregate admitted by this capability.
+    policy = product_reuse.require_exact_keys(dict(tooling),
+        {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain", "keyring", "keysDirectory"},
+        "Native SDK recovery tooling")
+    arguments = {name: Path(policy[field]) if policy[field] is not None else None for field, name in (
+        ("evidence", "tooling_evidence"), ("publicKey", "tooling_public_key"),
+        ("javaExecutable", "java_executable"), ("keyring", "tooling_keyring"),
+        ("keysDirectory", "tooling_keys_directory"))}
+
+    def authority():
+        files = {name: (None if value is None else
+            memoized_file_inventory(value, allow_empty=True) if name in {"tooling_evidence", "tooling_keys_directory"}
+            else sha256_bytes(read_regular_file_bytes(value, reject_symlink_parents=True)))
+            for name, value in arguments.items()}
+        return sha256_bytes(canonical_json_bytes(dict(versions=request["versions"], revision=request["repositoryRevision"],
+            plan=plan, producer=producer,
+            workflow=context["trusted_workflow_sha"], tooling=policy, files=files,
+            source=read_regular_file_bytes(Path(source_path), reject_symlink_parents=True).decode(),
+            authorization=environment.get("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"))))
+
+    original_authority = authority()
+    pool = session.setdefault("completedNativeSdkRecovery", {})
+    key = completed, original_authority
+    if key in pool:
+        count("nativeSdkRecoveryReuses")
+        return pool[key]
+    private = session["root"] / ("native-sdk-recovery-" + str(len(pool)))
+    private.mkdir()
+    stages, authorizations = {}, {}
+    common = {}
+
+    def check():
+        if _VERIFICATION_SESSION.get() is not session or authority() != original_authority:
+            raise ValueError("Native SDK recovery outlived or changed its caller authority")
+
+    def original(instance):
+        record = phases[instance]
+        envelope = completed.envelope(record)
+        if instance not in stages:
+            directory = private / "originals" / "-".join((instance.product, instance.component, instance.phase, instance.target))
+            directory.mkdir(parents=True)
+            obj = directory / "object.zip"
+            completed.capture_object(record, obj, plan=plan, producer=producer,
+                trusted_workflow_sha=context["trusted_workflow_sha"], token=context["token"])
+            stage = (private / "runtime" / instance.target / instance.phase
+                     if instance.product == "runtime" else directory / "stage")
+            restored = restore_object(obj, stage, build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+            if restored["receiptBytes"] != envelope["receiptBytes"]:
+                raise ValueError("Recovered SDK input differs from its qualified receipt")
+            receipt = directory / "phase-receipt.json"
+            receipt.write_bytes(envelope["receiptBytes"])
+            stages[instance] = (dict(stage=stage, receiptPath=receipt, receipt=envelope["receipt"]),
+                                memoized_file_inventory(stage))
+            count("nativeSdkRecoveryObjects")
+        value, inventory = stages[instance]
+        if (memoized_file_inventory(value["stage"]) != inventory or
+                read_regular_file_bytes(value["receiptPath"], reject_symlink_parents=True) != envelope["receiptBytes"]):
+            raise ValueError("Recovered SDK input changed during its private lifetime")
+        return value
+
+    def common_inputs():
+        if common:
+            return common
+        capture = private / "common"
+        completed.capture_sdk_input_members(binding, capture / "original", context["token"])
+        trust = product_reuse._release_trust(root, request["repositoryRevision"], private / "policy")
+        if trust is None:
+            raise ValueError("Native SDK recovery requires current Git public-key policy")
+        sdk_root = capture / "original/sdk-inputs"
+        contract_path = load_sdk_compatibility_request(sdk_root / REQUEST_NAME)["contract_metadata_receipt"]
+        contract_path.resolve(strict=True).relative_to(sdk_root)
+        contract = completed.envelope(phases[PhaseInstanceId("contract", "contract", "metadata", "common")],
+            read_regular_file_bytes(contract_path, reject_symlink_parents=True))
+        payload, = [row for row in contract["receipt"]["outputs"] if row["kind"] == "contract-bundle"]
+        with sdk_workflow._completed_sdk_inputs(capture, completed_frozen=completed,
+                keyring=trust.keyring, keys_directory=trust.keys, selection_repository_root=root,
+                selection_revision=request["repositoryRevision"], expected_contract_payload_sha256=payload["sha256"]) as inputs:
+            for target in NATIVE_TARGETS:
+                for phase in ("package", "validation"):
+                    identity = PhaseInstanceId("runtime", target, phase, target)
+                    value = original(identity)
+                    if read_regular_file_bytes(value["receiptPath"]) != inputs["runtime"]["receiptBytes"][identity]:
+                        raise ValueError("Native SDK recovery Runtime differs from signed SDK inputs")
+            request_path = inputs["sdk"]["directory"] / REQUEST_NAME
+            compatibility = inputs["sdk"]["compatibility"]
+            stage_native_sdk_inputs(private / "staged-sdks", request_path, private / "runtime",
+                git_regular_blob_bytes(root, request["repositoryRevision"], SDK_ROOT_PATH, max_bytes=4096),
+                identity=dict(libraryVersion=original(PhaseInstanceId("runtime", "macos-arm64", "package", "macos-arm64"))["receipt"]["productVersion"],
+                    runtimeProductVersion=compatibility["runtime"]["defaultRuntimeVersion"], sdkVersion=compatibility["sdkVersion"],
+                    producerCommit=producer["commit"], producerTree=producer["tree"]),
+                expected_compatibility=canonical_json_bytes(compatibility))
+            common.update(compatibility_request=request_path, runtime_stages=private / "runtime", staged_sdks=private / "staged-sdks")
+        count("nativeSdkRecoveryCommonCaptures")
+        return common
+
+    @measured
+    def verify_completed_sdk_hosts(instance, envelopes, package):
+        check()
+        dependencies = sdk_validation_dependencies(instance)
+        package_id = PhaseInstanceId("sdk", instance.component, "package", "desktop")
+        required = (*dependencies, package_id,
+            *((PhaseInstanceId("sdk", "csharp", "binary", "desktop"),) if instance.component == "csharp" else ()))
+        if not dependencies or any(identity not in phases for identity in required):
+            return None
+        if len(envelopes) != len(dependencies):
+            raise ValueError("Native SDK recovery requires exactly five selected hosts")
+        for identity, envelope in zip((*dependencies, package_id), (*envelopes, package), strict=True):
+            if completed.envelope(phases[identity], envelope["receiptBytes"]) != envelope:
+                raise ValueError("Native SDK recovery differs from the selected original")
+        shared = common_inputs()
+        package_value = original(package_id)
+        binary = original(required[-1]) if instance.component == "csharp" else None
+        records = []
+        for identity, envelope in zip(dependencies, envelopes, strict=True):
+            validation = original(identity)
+            if identity.target not in authorizations:
+                directory = private / "authorizations" / identity.target
+                capture_runtime_authorization(authorization, identity.target, directory, token=context["token"])
+                authorizations[identity.target] = directory
+            paths = dict(packageStage=package_value["stage"], packageReceipt=package_value["receiptPath"],
+                compatibilityRequest=shared["compatibility_request"], runtimeStages=shared["runtime_stages"],
+                stagedSdks=shared["staged_sdks"], validationStage=validation["stage"],
+                validationReceipt=validation["receiptPath"], runtimeAuthorization=authorizations[identity.target])
+            if binary is not None:
+                paths.update(binaryStage=binary["stage"], binaryReceipt=binary["receiptPath"])
+            records.append(dict(receiptSha256=envelope["receiptSha256"], component=instance.component,
+                target=identity.target, **{name: path.relative_to(private).as_posix() for name, path in paths.items()}))
+        records.sort(key=lambda record: record["receiptSha256"])
+        provider = sdk_validation_provider(private, records, repository=root,
+            policy_revision=request["repositoryRevision"], tooling=policy)
+        result = tuple(provider({**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
+                       for envelope in envelopes)
+        for proof, envelope in zip(result, envelopes, strict=True):
+            proof.output_inventory(envelope["receiptSha256"], envelope["receipt"]["outputs"], identity=envelope["receipt"])
+            proof.receipt_value(envelope["receipt"], package["receipt"])
+        check()
+        return tuple(result)
+
+    result = dict(verify=verify_completed_sdk_hosts, authorizations=authorizations)
+    pool[key] = result
+    return result
+
+
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             preparation_component, preparation_build_key, preparation_state,
             prepared_artifact_id, prepared_artifact_sha256,
