@@ -23,8 +23,9 @@ else:
 from products.aggregate import validate_product_index
 from products.index import (
     IndexEntrySource, SignedProductIndex, _mint_release_admission,
-    build_product_index, verify_release_product_index,
+    verify_release_product_index,
 )
+from products.sdk_campaign_index import build_product_index
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,

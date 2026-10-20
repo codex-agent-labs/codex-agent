@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 import os
 from pathlib import Path
+import tempfile
 
 from .index import (
     IndexEntrySource, SignedProductIndex, _verify_index_receipt,
@@ -15,7 +16,10 @@ from .index import (
 )
 from . import aggregate, index
 from .aggregate import validate_product_index
-from .inventory import canonical_json_bytes, sha256_bytes, _is_windows, _stat_identity
+from .inventory import (
+    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    sha256_bytes, _is_windows, _stat_identity,
+)
 from .registry import PhaseInstanceId
 from .restore import verify_object, verification_scoped, _open_safe_regular, _VERIFICATION_SESSION
 
@@ -245,3 +249,150 @@ def verify_build_key_output_consistency(receipts, *, sdk_javascript_validation_p
                 continue  # Already compared, not deleted from the caller's evidence.
         remaining.append(receipt)
     verify_other_receipts(remaining, **providers)
+
+
+def _history_comparisons(options, history=None):
+    """Reuse receipt-qualified readers; each exact conflicting original is read once."""
+    references, projections = {}, {}
+    for family, label, verifier in (
+        ("contract", "Contract", None),
+        ("native_runtime", "Native Runtime", index.verify_native_runtime_index_object),
+        ("adapter_runtime", "Adapter Runtime", index.verify_adapter_runtime_index_object),
+        ("sdk_validation", "SDK validation", verify_sdk_validation_index_object),
+    ):
+        name = family + "_objects"
+        references[family] = {
+            **(dict(getattr(history, "_" + name)) if history is not None else {}),
+            **index._contract_object_references(options.get(name), label),
+        }
+        if family == "contract":
+            projections["contract_execution_projection"] = index._contract_object_projection(references[family])
+        else:
+            projections[family + "_projection"] = index._validation_object_projection(
+                references[family], options.get(family + "_projection"), verifier)
+    return references, projections
+
+
+@verification_scoped
+def verify_stable_index_history(sources, *, repository, keyring_path, keys_directory, **options):
+    """Authenticate original signed history with the SDK consumer comparison rules.
+
+    No normalized index or empty-history alias is manufactured. The existing
+    history capability retains the exact signed bytes and original object paths.
+    """
+    unknown = set(options) - {
+        "contract_objects", "native_runtime_objects", "native_runtime_projection",
+        "adapter_runtime_objects", "adapter_runtime_projection",
+        "sdk_validation_objects", "sdk_validation_projection",
+    }
+    if unknown:
+        raise TypeError(f"Unknown index history options: {sorted(unknown)}")
+    references, projections = _history_comparisons(options)
+    keyring = index.load_keyring(Path(keyring_path), Path(keys_directory))
+    authoritative_refs = index._authoritative_stable_refs(repository)
+    originals, indexes, tags = [], [], []
+    for source in sources:
+        value, raw, _ = index._verify_release_product_index_with_keyring(
+            source, keyring, Path(keys_directory))
+        if value["repository"] != repository:
+            raise ValueError("Stable product-index history repository mismatch")
+        index.stable_index_identity(value)
+        tags.append(value["context"]["tag"])
+        for prior in indexes:
+            verify_immutable_product_indexes(prior, value, **projections)
+        indexes.append(value)
+        originals.append(raw)
+    if len(tags) != len(set(tags)) or set(tags) != set(authoritative_refs):
+        raise ValueError("Stable product-index sources do not match the current protected stable-tag inventory")
+    return index.VerifiedStableIndexHistory(repository, tuple(originals), index._HISTORY_TOKEN,
+        *(tuple(references[family].items()) for family in (
+            "contract", "native_runtime", "adapter_runtime", "sdk_validation")))
+
+
+@verification_scoped
+def build_product_index(sources, *, repository, context, trust_domain, signing, producer,
+                        stable_history, **options):
+    """Keep ordinary construction unchanged; compare stable originals as consumers."""
+    arguments = dict(repository=repository, context=context, trust_domain=trust_domain,
+                     signing=signing, producer=producer, stable_history=stable_history, **options)
+    if context.get("kind") != "stable":
+        return index.build_product_index(sources, **arguments)
+    unknown = set(options) - {
+        "contract_objects", "native_runtime_objects", "native_runtime_projection",
+        "adapter_runtime_objects", "adapter_runtime_projection",
+        "sdk_validation_objects", "sdk_validation_projection",
+    }
+    if unknown:
+        raise TypeError(f"Unknown index construction options: {sorted(unknown)}")
+    pairs = sorted((index._entry(source, repository=repository, trust_domain=trust_domain)
+                    for source in sources), key=lambda pair: pair[0]["buildKey"])
+    entries = [entry for entry, _, _ in pairs]
+    if len({entry["buildKey"] for entry in entries}) != len(entries):
+        raise ValueError("Product index entry build keys must be unique")
+    value = validate_product_index(dict(schemaVersion=1, repository=repository,
+        context=context, entries=entries, trustDomain=trust_domain, signing=signing, producer=producer))
+    if any(receipt["producer"]["event"] != "push" and not admitted for _, receipt, admitted in pairs):
+        raise ValueError("Release product index contains a non-push receipt")
+    index.stable_index_identity(value)
+    if (not isinstance(stable_history, index.VerifiedStableIndexHistory)
+            or stable_history._token is not index._HISTORY_TOKEN
+            or stable_history._repository != repository):
+        raise ValueError("Stable product index requires explicit authenticated history")
+    _, projections = _history_comparisons(options, stable_history)
+    for raw in stable_history._index_bytes:
+        verify_immutable_product_indexes(load_canonical_json_bytes(raw), value, **projections)
+    return value
+
+
+@verification_scoped
+def write_signed_product_index(sources, *, private_key, public_key, manifest_path, **arguments):
+    """Publish exact raw stable entries, using the frozen writer's atomic primitives."""
+    if arguments["context"].get("kind") != "stable":
+        return index.write_signed_product_index(sources, private_key=private_key,
+            public_key=public_key, manifest_path=manifest_path, **arguments)
+    value = build_product_index(sources, **arguments)
+    manifest = Path(os.path.abspath(manifest_path))
+    signature = manifest.with_suffix(".sig")
+    if signature == manifest or manifest.parent != signature.parent:
+        raise ValueError("Product index manifest and signature paths must differ in one directory")
+    signing = arguments["signing"]
+    with tempfile.TemporaryDirectory(prefix="sdk-product-index-") as temporary:
+        root = Path(temporary).resolve()
+        key = root / "public-key.pub"
+        key.write_bytes(read_regular_file_bytes(Path(public_key),
+            max_bytes=index._SIGNATURE_LIMIT, reject_symlink_parents=True))
+        candidate = root / manifest.name
+        candidate.write_bytes(canonical_json_bytes(value))
+        detached = index.sign_manifest(candidate, Path(private_key), signing)
+        index.verify_manifest_signature(candidate, detached, key, signing)
+        raw = read_regular_file_bytes(candidate, max_bytes=index._INDEX_LIMIT)
+        sig = read_regular_file_bytes(detached, max_bytes=index._SIGNATURE_LIMIT)
+        if raw != canonical_json_bytes(value):
+            raise ValueError("Signed product index differs from the verified candidate")
+        with index._held_output_parent(manifest.parent) as (descriptor, parent):
+            leaves = ((manifest.name, raw, index._INDEX_LIMIT), (signature.name, sig, index._SIGNATURE_LIMIT))
+            for name, expected, limit in leaves:
+                if index._read_parent_file(descriptor, parent, name, max_bytes=limit) not in (None, expected):
+                    raise ValueError("Immutable product index output conflicts with existing bytes")
+            published = [index._publish_output(expected, descriptor, parent, name, max_bytes=limit)
+                         for name, expected, limit in leaves]
+            with (
+                index._held_parent_file(descriptor, parent, manifest.name) as (raw_fd, raw_stat),
+                index._held_parent_file(descriptor, parent, signature.name) as (sig_fd, sig_stat),
+            ):
+                def unchanged():
+                    if (index._read_held_file(raw_fd, raw_stat, index._INDEX_LIMIT) != raw
+                            or index._read_held_file(sig_fd, sig_stat, index._SIGNATURE_LIMIT) != sig):
+                        raise ValueError("Published product index pair changed during final verification")
+                    index._require_held_leaf_identity(descriptor, parent, manifest.name, raw_fd, raw_stat)
+                    index._require_held_leaf_identity(descriptor, parent, signature.name, sig_fd, sig_stat)
+
+                unchanged()
+                final_manifest, final_signature = root / "published.json", root / "published.sig"
+                final_manifest.write_bytes(raw)
+                final_signature.write_bytes(sig)
+                index.verify_manifest_signature(final_manifest, final_signature, key, signing)
+                unchanged()
+    return dict(status="published" if any(published) else "existing", index=value,
+        manifestPath=manifest, signaturePath=signature,
+        manifestSha256=sha256_bytes(raw), signatureSha256=sha256_bytes(sig))

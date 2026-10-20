@@ -226,6 +226,139 @@ class JavaScriptValidationPhaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflict"):
             catalogs.session(same_pr=[signed[0], different], sdk_javascript_index_projection=provider)
 
+    def test_stable_history_builder_and_writer_keep_signed_raw_originals(self):
+        from dataclasses import replace
+        from ci.products import index, sdk_campaign_index as consumer
+        from ci.products.restore import store_local_object
+        from ci.tests.test_product_index import ProductIndexTest, REPOSITORY, producer
+
+        # Fixture keys and simulated semantic matcher, never production admission.
+        ProductIndexTest.setUpClass()
+        self.addCleanup(ProductIndexTest.tearDownClass)
+        keys = ProductIndexTest
+        policy = dict(repository=REPOSITORY, keyring_path=keys.keyring,
+                      keys_directory=keys.release_keys)
+        support = self.fixture.support
+        support.context["producer"].update(repository=REPOSITORY, event="push",
+            workflowPath=".github/workflows/products.yml", pullRequest=None, runId=7, runAttempt=1)
+        sources, objects, proofs = [], {}, {}
+        for generation in range(2):
+            if generation:
+                (self.arguments["validation_stage"] / "outputs/test-report/packed-tests.xml").write_bytes(
+                    b'<testsuites time="9.9"/>\n')
+                support.context["producer"]["runId"] = 8
+            self.fixture.replan("validation", self.fixture.validation_commit, self.fixture.validation_tree)
+            raw = support.receipt_paths["validation"].read_bytes()
+            receipt = support.receipts["validation"]
+            proofs[sha256_bytes(raw)] = self.verify(operation=verify_sdk_javascript_validation_projection)
+            stored = store_local_object(support.stage_paths["validation"], support.receipt_paths["validation"],
+                                        support.root / "stable-objects")
+            objects[sha256_bytes(raw)] = stored["path"]
+            source = index.IndexEntrySource(raw, receipt["outputs"][0]["relativePath"])
+            sources.append(replace(source, release_admission=index._mint_release_admission(
+                source, receipt, raw, ("sdk", "javascript", "validation", "node"))))
+        calls = []
+
+        def projection(entry, archive):
+            calls.append(entry["receiptSha256"])
+            self.assertEqual(archive, objects[entry["receiptSha256"]])
+            return proofs[entry["receiptSha256"]]
+
+        arguments = dict(repository=REPOSITORY, context={"kind": "stable", "tag": "sdk/v0.3.0"},
+            trust_domain="release", signing=keys.release_signing, producer=producer("release"),
+            sdk_validation_objects=objects, sdk_validation_projection=projection)
+        with patch.object(index, "_authoritative_stable_refs", return_value={}):
+            empty = consumer.verify_stable_index_history([], **policy)
+        first = consumer.write_signed_product_index([sources[0]], **arguments,
+            stable_history=empty, private_key=keys.private_key, public_key=keys.public_key,
+            manifest_path=support.root / "first-index.json")
+        self.assertEqual(calls, [])  # No comparisons mean no object/matcher work.
+        signed = index.SignedProductIndex(first["manifestPath"], first["signaturePath"])
+        retained = [signed.manifest, signed.signature, *objects.values()]
+        before = {path: path.read_bytes() for path in retained}
+        with patch.object(index, "_authoritative_stable_refs", return_value={"sdk/v0.3.0": "c" * 40}):
+            history = consumer.verify_stable_index_history([signed], **policy,
+                sdk_validation_objects=objects, sdk_validation_projection=projection)
+            for invalid_sources in ([], [signed, signed]):
+                with self.subTest(history_sources=len(invalid_sources)), self.assertRaisesRegex(
+                        ValueError, "current protected stable-tag inventory"):
+                    consumer.verify_stable_index_history(invalid_sources, **policy)
+            with self.assertRaisesRegex(ValueError, "repository mismatch"):
+                consumer.verify_stable_index_history([signed], **(policy | {"repository": "other/repository"}))
+        self.assertEqual(history._index_bytes, (before[signed.manifest],))
+        second_arguments = {**arguments, "stable_history": history}
+        same = consumer.build_product_index([sources[0]], **second_arguments)
+        self.assertEqual(same, first["index"])
+        self.assertEqual(calls, [])
+        # The old producer reader remains strict; no alias changes its decision.
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            index.build_product_index([sources[1]], **second_arguments)
+        second = consumer.write_signed_product_index([sources[1]], **second_arguments,
+            private_key=keys.private_key, public_key=keys.public_key,
+            manifest_path=support.root / "second-index.json")
+        self.assertEqual(calls, [sha256_bytes(source.receipt_bytes) for source in sources])
+        verified, raw = index.verify_release_product_index(
+            index.SignedProductIndex(second["manifestPath"], second["signaturePath"]),
+            keyring_path=keys.keyring, keys_directory=keys.release_keys)
+        self.assertEqual(verified, second["index"])
+        self.assertEqual(verified["entries"][0]["outputs"], support.receipts["validation"]["outputs"])
+        self.assertEqual(raw, canonical_json_bytes(second["index"]))
+        self.assertEqual(before, {path: path.read_bytes() for path in retained})
+        retry = consumer.write_signed_product_index([sources[1]], **second_arguments,
+            private_key=keys.private_key, public_key=keys.public_key, manifest_path=second["manifestPath"])
+        self.assertEqual(retry["status"], "existing")
+        with self.assertRaisesRegex(ValueError, "conflicts with existing bytes"):
+            consumer.write_signed_product_index([sources[1]], **second_arguments,
+                private_key=keys.private_key, public_key=keys.public_key, manifest_path=first["manifestPath"])
+        for override, message in (
+            ({"stable_history": None}, "authenticated history"),
+            ({"stable_history": replace(history, _token=object())}, "authenticated history"),
+            ({"stable_history": replace(history, _repository="other/repository")}, "authenticated history"),
+            ({"sdk_validation_projection": None}, "conflicting"),
+            ({"sdk_validation_projection": lambda *_: proofs[sha256_bytes(sources[0].receipt_bytes)]},
+             "original receipt"),
+            ({"sdk_validation_objects": {sha256_bytes(sources[1].receipt_bytes): support.root / "missing.zip"}},
+             "missing|unsafe"),
+        ):
+            with self.subTest(override=list(override)), self.assertRaisesRegex(ValueError, message):
+                consumer.build_product_index([sources[1]], **(second_arguments | override))
+        with self.assertRaisesRegex(ValueError, "trust domain"):
+            consumer.build_product_index([replace(sources[1], release_admission=None)], **second_arguments)
+        original_sign = index.sign_manifest
+
+        def changed_candidate(manifest, private, signing):
+            value = copy.deepcopy(second["index"])
+            value["producer"]["commit"] = "e" * 40
+            manifest.write_bytes(canonical_json_bytes(value))
+            return original_sign(manifest, private, signing)
+
+        rejected = support.root / "changed-candidate.json"
+        with patch.object(index, "sign_manifest", changed_candidate), \
+                self.assertRaisesRegex(ValueError, "differs from the verified candidate"):
+            consumer.write_signed_product_index([sources[1]], **second_arguments,
+                private_key=keys.private_key, public_key=keys.public_key, manifest_path=rejected)
+        self.assertFalse(rejected.exists())
+        self.assertFalse(rejected.with_suffix(".sig").exists())
+        original_publish = index._publish_output
+
+        def changed_leaf(expected, descriptor, parent, name, **kwargs):
+            created = original_publish(expected, descriptor, parent, name, **kwargs)
+            if name.endswith(".json"):
+                (parent / name).write_bytes(b" " * len(expected))
+            return created
+
+        with patch.object(index, "_publish_output", changed_leaf), \
+                self.assertRaisesRegex(ValueError, "changed during final verification"):
+            consumer.write_signed_product_index([sources[1]], **second_arguments,
+                private_key=keys.private_key, public_key=keys.public_key,
+                manifest_path=support.root / "changed-output.json")
+        self.assertEqual(before, {path: path.read_bytes() for path in retained})
+        # Authentic signed bytes and complete tag history are mandatory.
+        signed.signature.write_bytes(b"not a signature\n")
+        with patch.object(index, "_authoritative_stable_refs", return_value={"sdk/v0.3.0": "c" * 40}), \
+                self.assertRaises(ValueError):
+            consumer.verify_stable_index_history([signed], **policy)
+
     def test_metadata_reuse_waits_for_caller_proof_then_preserves_originals(self):
         from ci.products.registry import PhaseInstanceId
         from ci.products.plan import plan_phase
