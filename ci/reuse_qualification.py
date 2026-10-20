@@ -1584,6 +1584,19 @@ def add_completed_frozen_argument(parser):
         help="Independent caller-owned native semantic issuer/consumer pins; never retained product state")
 
 
+def validate_completed_reuse_policy(policy):
+    """One exact caller policy schema for hosted and local read-only consumers."""
+    extra = {name for name in ("sdkCompletion", "requalificationBaseline")
+             if type(policy) is dict and name in policy}
+    require_exact_keys(policy, {
+        "schemaVersion", "kind", "consumerCommit", "verifierPolicySha256", "artifactId", "artifactSha256",
+        "runId", "runAttempt", "signerCommit", "sourceCommit"} | extra, "Caller completed reuse policy")
+    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
+            or policy["kind"] != "completed-frozen-reuse"):
+        raise ValueError("Unsupported completed reuse policy")
+    return extra
+
+
 @contextmanager
 def completed_frozen_options(arguments, *, defer=False):
     """Authenticate explicit CLI policy once for this invocation, without ambient fallback."""
@@ -1609,14 +1622,7 @@ def completed_frozen_options(arguments, *, defer=False):
     original_plan = read_regular_file_bytes(plan_path, max_bytes=LIMIT, reject_symlink_parents=True)
     original_policy = read_regular_file_bytes(path, max_bytes=4096, reject_symlink_parents=True)
     policy = load_canonical_json_bytes(original_policy)
-    extra = {name for name in ("sdkCompletion", "requalificationBaseline")
-             if type(policy) is dict and name in policy}
-    require_exact_keys(policy, {
-        "schemaVersion", "kind", "consumerCommit", "verifierPolicySha256", "artifactId", "artifactSha256",
-        "runId", "runAttempt", "signerCommit", "sourceCommit"} | extra, "Caller completed reuse policy")
-    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
-            or policy["kind"] != "completed-frozen-reuse"):
-        raise ValueError("Unsupported completed reuse policy")
+    extra = validate_completed_reuse_policy(policy)
     plan = products._validate_plan(plan_path, root)
     def unchanged():
         if (read_regular_file_bytes(path, max_bytes=4096, reject_symlink_parents=True) != original_policy

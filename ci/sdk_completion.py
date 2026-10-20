@@ -5,6 +5,7 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,7 +15,8 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
 from products.inventory import (
     canonical_json_bytes, require_array, require_boolean, require_exact_keys,
-    require_integer, require_object, require_sha256, require_string,
+    require_integer, require_object, require_sha256, require_string, read_regular_file_bytes,
+    load_canonical_json_bytes, sha256_bytes,
 )
 from reuse import github_output
 from products.restore import verification_scoped
@@ -76,11 +78,15 @@ def require_repository_completion(plan_path, discovery_root, state_root=None, **
     Inspection owns original object/receipt/provenance, semantic projections and
     current-key verification. This report is external evidence, never reuse authority.
     """
+    inspected = products.inspect_products(plan_path, discovery_root, state_root, **options)
+    return _repository_report(inspected["result"])
+
+
+def _repository_report(result):
     from products.aggregate import REPOSITORY_EDGES, REPOSITORY_EVIDENCE_IDENTITIES
 
-    inspected = products.inspect_products(plan_path, discovery_root, state_root, **options)
     _, selected, records = products._validate_reuse_result(
-        inspected["result"], tuple(sorted(products.PHASE_INSTANCE_IDS)), require_complete=True)
+        result, tuple(sorted(products.PHASE_INSTANCE_IDS)), require_complete=True)
     phases = {products._identity(row): row for row in records}
     terminals = {name: products.PhaseInstanceId(name, *identity)
                  for name, identity in REPOSITORY_EVIDENCE_IDENTITIES.items()}
@@ -96,6 +102,70 @@ def require_repository_completion(plan_path, discovery_root, state_root=None, **
     return {"schemaVersion": 1, "result": "passed", "phaseCount": len(selected),
             "products": [phases[terminals[name]] for name in ("contract", "runtime", "sdk")],
             "edges": edges, "originalPhases": records}
+
+
+def require_local_repository_completion(repository_root, policy_path, *, environ=None):
+    """Verify actual current inputs through native original evidence, without a CI identity.
+
+    This is a read-only local acceptance report, never a new phase receipt,
+    hosted execution claim, or permission to skip the protected workflow.
+    """
+    import reuse_qualification as native
+    from products.registry import PhaseInstanceId
+    from products.reuse import LookupSession, advance_reuse
+    from products.selection import phase_git_inventory
+
+    environment = os.environ if environ is None else environ
+    if environment.get("GITHUB_ACTIONS") or environment.get("GITHUB_RUN_ID"):
+        raise ValueError("Local repository verification cannot claim a hosted execution identity")
+    root = Path(repository_root).resolve(strict=True)
+    policy_path = Path(policy_path).absolute()
+    raw = read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True)
+    policy = load_canonical_json_bytes(raw)
+    native.validate_completed_reuse_policy(policy)
+    revision = products._git_value(root, "rev-parse", "HEAD^{commit}")
+    if policy["consumerCommit"] != revision:
+        raise ValueError("Local repository policy must pin the actual current source")
+    token = environment.get("GH_TOKEN") or environment.get("GITHUB_TOKEN")
+    if not token:
+        raise ValueError("Local repository verification requires an original-evidence observation token")
+    instances = tuple(sorted(products.PHASE_INSTANCE_IDS))
+    with tempfile.TemporaryDirectory(prefix="repository-original-evidence-") as temporary, \
+            products._ci_observation_batch():
+        capability, _ = native.fetch_completed_frozen(
+            Path(temporary).resolve() / "native", consumer_commit=revision,
+            verifier_policy_sha256=policy["verifierPolicySha256"], repository_root=root,
+            revision=revision, token=token,
+            **({"sdk_completion": policy["sdkCompletion"]} if "sdkCompletion" in policy else {}),
+            **({"requalification_baseline": policy["requalificationBaseline"]}
+               if "requalificationBaseline" in policy else {}),
+            **native._native_pin_arguments({key: policy[key] for key in (
+                "artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit")}))
+        if set(capability.completed_phases()) != set(instances):
+            raise ValueError("Local repository acceptance requires every current completed phase")
+        authorities, unavailable = products._authorities(root, revision, instances)
+        if authorities is None or unavailable:
+            raise ValueError(unavailable or "Current repository phase authorities are unavailable")
+        versions = products._versions(root, revision)
+        values = {}
+        for row in authorities:
+            instance = PhaseInstanceId(*(row[key] for key in products._IDENTITY_KEYS))
+            values[instance] = dict(inventory=phase_git_inventory(root, revision, instance),
+                versions=versions, flags_digest=row["flagsDigest"],
+                toolchain_profile_digest=row["toolchainProfileDigest"],
+                output_schema_version=row["outputSchemaVersion"])
+        _, phases = capability._values()
+        envelopes = [capability.envelope(phases[instance]) for instance in instances]
+        result, _ = advance_reuse(instances, values, envelopes,
+            LookupSession(repository=native.REPOSITORY, pull_request=31),
+            repository_root=root, repository_revision=revision, completed_frozen=capability)
+        report = _repository_report(result)
+        if read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True) != raw:
+            raise ValueError("Local repository caller policy changed during verification")
+        if products._git_value(root, "rev-parse", "HEAD^{commit}") != revision:
+            raise ValueError("Local repository source changed during verification")
+    return {**report, "verificationContext": {
+        "kind": "local", "commit": revision, "completedPolicySha256": sha256_bytes(raw)}}
 
 
 def stage_partial_catalog(state, destination):
@@ -122,20 +192,33 @@ def stage_partial_catalog(state, destination):
 @verification_scoped
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    for name in ("plan", "discovery-root", "repository-root"):
-        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--repository-root", type=Path, required=True)
+    for name in ("plan", "discovery-root"):
+        parser.add_argument("--" + name, type=Path)
     for name in ("state-root", "sdk-validation-tooling", "sdk-apple-validation-policy", "github-output"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--sdk-original-workflow-sha")
     parser.add_argument("--partial-catalog-destination", type=Path)
     parser.add_argument("--repository", action="store_true",
                         help="Require the complete authenticated Contract/Runtime/SDK phase DAG")
+    parser.add_argument("--local", action="store_true",
+                        help="Verify current local repository inputs through completed original evidence; no CI identity")
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     if args.repository and (args.partial_catalog_destination is not None or args.github_output is not None):
         parser.error("Repository verification requires its standalone report, not catalog or routing outputs")
+    if args.local:
+        if (not args.repository or args.completed_frozen_policy is None or any(value is not None for name, value in
+                vars(args).items() if name not in {"repository_root", "completed_frozen_policy", "repository", "local"})):
+            parser.error("Local repository verification accepts only its current source and explicit completed policy")
+    elif args.plan is None or args.discovery_root is None:
+        parser.error("Hosted replay requires --plan and --discovery-root")
     try:
+        if args.local:
+            result = require_local_repository_completion(args.repository_root, args.completed_frozen_policy)
+            print(canonical_json_bytes(result).decode().strip())
+            return 0
         with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
             tooling = {} if args.sdk_validation_tooling is None else {"sdk_validation_tooling":
                 products._canonical_control(args.sdk_validation_tooling, "Caller SDK tooling policy")}

@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ci import sdk_completion as completion
 from products.inventory import canonical_json_bytes
@@ -124,6 +124,87 @@ class SdkCompletionTest(unittest.TestCase):
                     redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 completion.main(argv + extra)
             verify.assert_not_called()
+
+    def test_local_repository_uses_current_inputs_and_original_capability_without_ci_identity(self):
+        import reuse_qualification as native
+        from products import reuse, selection
+        instances = tuple(sorted(PHASE_INSTANCE_IDS))
+        revision = "d" * 40
+        policy = dict(schemaVersion=1, kind="completed-frozen-reuse", consumerCommit=revision,
+            verifierPolicySha256="sha256:" + "a" * 64, artifactId=123, artifactSha256="sha256:" + "b" * 64,
+            runId=45, runAttempt=1, signerCommit="e" * 40, sourceCommit="e" * 40)
+        authorities = [dict(zip(completion.products._IDENTITY_KEYS, (
+            item.product, item.component, item.phase, item.target)),
+            flagsDigest="sha256:" + "c" * 64, toolchainProfileDigest="sha256:" + "e" * 64,
+            outputSchemaVersion=1) for item in instances]
+        phases = {item: phase(item) for item in instances}
+        capability = Mock()
+        capability.completed_phases.return_value = instances
+        capability._values.return_value = ({}, phases)
+        capability.envelope.side_effect = lambda row: {"original": row}
+        expected = inspected(list(phases.values()))["result"]
+        with tempfile.TemporaryDirectory(prefix="repository-local-") as temporary:
+            root = Path(temporary).resolve()
+            pinned = root / "policy.json"
+            pinned.write_bytes(canonical_json_bytes(policy))
+            for mutation in ("none", "policy", "source", "incomplete"):
+                pinned.write_bytes(canonical_json_bytes(policy))
+                capability.completed_phases.return_value = instances[:-1] if mutation == "incomplete" else instances
+                def planned(*args, **kwargs):
+                    if mutation == "policy":
+                        pinned.write_bytes(canonical_json_bytes({**policy, "artifactId": 124}))
+                    return deepcopy(expected), {}
+                with patch.object(native, "fetch_completed_frozen", return_value=(capability, {})) as authenticate, \
+                        patch.object(completion.products, "_git_value",
+                            side_effect=[revision, "f" * 40] if mutation == "source" else lambda *_: revision), \
+                        patch.object(completion.products, "_authorities", return_value=(authorities, None)), \
+                        patch.object(completion.products, "_versions", return_value={"current": "Git versions"}), \
+                        patch.object(selection, "phase_git_inventory", return_value=["current Git inventory"]), \
+                        patch.object(reuse, "advance_reuse", side_effect=planned) as advance:
+                    if mutation != "none":
+                        with self.assertRaises(ValueError):
+                            completion.require_local_repository_completion(root, pinned, environ={"GH_TOKEN": "fixture-token"})
+                        if mutation == "incomplete":
+                            advance.assert_not_called()
+                        continue
+                    report = completion.require_local_repository_completion(root, pinned, environ={"GH_TOKEN": "fixture-token"})
+                    self.assertEqual({"kind": "local", "commit": revision,
+                        "completedPolicySha256": completion.sha256_bytes(canonical_json_bytes(policy))},
+                        report["verificationContext"])
+                    self.assertEqual(len(instances), report["phaseCount"])
+                    self.assertEqual(expected["phases"], report["originalPhases"])
+                    self.assertEqual(revision, authenticate.call_args.kwargs["revision"])
+                    self.assertEqual(revision, authenticate.call_args.kwargs["consumer_commit"])
+                    self.assertNotIn("producer", authenticate.call_args.kwargs)
+                    self.assertIs(capability, advance.call_args.kwargs["completed_frozen"])
+                    self.assertEqual(instances, advance.call_args.args[0])
+                    self.assertEqual(set(instances), set(advance.call_args.args[1]))
+                    for row in advance.call_args.args[1].values():
+                        self.assertEqual(["current Git inventory"], row["inventory"])
+                        self.assertEqual({"current": "Git versions"}, row["versions"])
+
+    def test_local_repository_cli_rejects_hosted_or_mixed_controls_and_does_not_emit_failed_proof(self):
+        argv = ["--repository", "--local", "--repository-root", "/actual/repository",
+                "--completed-frozen-policy", "/actual/policy.json"]
+        report = {"result": "passed", "verificationContext": {"kind": "local"}}
+        with patch.object(completion, "require_local_repository_completion", return_value=report) as gate, \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(0, completion.main(argv))
+            self.assertEqual(canonical_json_bytes(report).decode(), output.getvalue())
+            gate.assert_called_once_with(Path("/actual/repository"), Path("/actual/policy.json"))
+        for extra in (["--plan", "/CI/plan"], ["--github-output", "/CI/output"],
+                      ["--sdk-validation-tooling", "/CI/tooling"], ["--discovery-root", "/CI/state"]):
+            with patch.object(completion, "require_local_repository_completion") as gate, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main(argv + extra)
+            gate.assert_not_called()
+        for environment in ({"GITHUB_ACTIONS": "true"}, {"GITHUB_RUN_ID": "123"}):
+            with self.assertRaisesRegex(ValueError, "hosted execution identity"):
+                completion.require_local_repository_completion("/unused", "/unused", environ=environment)
+        with patch.object(completion, "require_local_repository_completion", side_effect=ValueError("bad original")), \
+                redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            completion.main(argv)
+        self.assertEqual("", output.getvalue())
 
     def test_every_unresolved_sdk_identity_rejects_even_when_all_worker_matrices_are_empty(self):
         for identity in self.sdk:
