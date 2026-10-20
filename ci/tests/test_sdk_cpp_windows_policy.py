@@ -39,9 +39,14 @@ endif()
 set_property(TARGET codex_agent_cpp_${kind}_test PROPERTY LINK_LIBRARIES "${libraries}")
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/${kind}.txt" CONTENT "$<TARGET_PROPERTY:codex_agent_cpp_${kind}_test,LINK_LIBRARIES>")
 endforeach()
+add_custom_target(codex_agent_loader_compatibility
+COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/tests"
+COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/fixture.json" "${CMAKE_BINARY_DIR}/tests/sdk-compatibility.json")
+add_custom_target(codex_agent_native_loader_test)
 '''
                 text += 'file(WRITE "${CMAKE_BINARY_DIR}/compiler.txt" "${CMAKE_CXX_COMPILER}|${CMAKE_CXX_FLAGS_INIT}")\n'
                 (source / "CMakeLists.txt").write_text(text)
+                (source / "fixture.json").write_bytes(b'{"fixture":true}\r\n')
                 command = ["cmake", "-S", str(source), "-B", str(build), "-DCMAKE_TOOLCHAIN_FILE=" + str(toolchain),
                            "-DCODEX_AGENT_CPP_BUILD_TESTS=" + ("ON" if enabled else "OFF")]
                 completed = subprocess.run(command, capture_output=True, text=True)
@@ -49,6 +54,11 @@ endforeach()
                 expected = str(compiler if enabled else root / "cl") + "|" + ("" if enabled else "/Zc:preprocessor")
                 self.assertEqual(expected, (build / "compiler.txt").read_text().strip())
                 if name == "CodexAgent":
+                    fixture = build / "tests/sdk-compatibility.json"
+                    normalized = subprocess.run(["cmake", "--build", str(build), "--target",
+                        "codex_agent_native_loader_test", "--parallel", "2"], capture_output=True, text=True)
+                    self.assertEqual(0, normalized.returncode, normalized.stdout + normalized.stderr)
+                    self.assertEqual(b'{"fixture":true}\n', fixture.read_bytes())
                     for kind in ("agent", "host", "leaf"):
                         expected = [f"codex_agent_{kind}_mock", "CodexAgent::CodexAgent", "CodexAgent::C"]
                         if kind != "agent": expected += ["Threads::Threads"]

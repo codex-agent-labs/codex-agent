@@ -45,6 +45,18 @@ function(codex_agent_windows_mock_order)
         list(PREPEND libraries "${mock}")
         set_property(TARGET "${consumer}" PROPERTY LINK_LIBRARIES "${libraries}")
     endforeach()
+    # CMake file(WRITE) uses Windows text mode. Normalize only this generated
+    # test fixture, before loader tests; shipped JSON and strict parsing stay unchanged.
+    set(fixture "${PROJECT_BINARY_DIR}/tests/sdk-compatibility.json")
+    set(normalizer "${PROJECT_BINARY_DIR}/windows-loader-fixture-lf.cmake")
+    file(CONFIGURE OUTPUT "${normalizer}" CONTENT [=[
+file(READ "@fixture@" contents)
+file(CONFIGURE OUTPUT "@fixture@" CONTENT "${contents}" @ONLY NEWLINE_STYLE LF)
+]=] @ONLY NEWLINE_STYLE LF)
+    add_custom_target(codex_agent_windows_fixture_lf
+        COMMAND "${CMAKE_COMMAND}" -P "${normalizer}"
+        DEPENDS codex_agent_loader_compatibility VERBATIM)
+    add_dependencies(codex_agent_native_loader_test codex_agent_windows_fixture_lf)
 endfunction()
 cmake_language(DEFER CALL codex_agent_windows_mock_order)
 '''.replace("@CLANG@", paths[0]).replace("@MSVC@", paths[1])).encode("utf-8")
