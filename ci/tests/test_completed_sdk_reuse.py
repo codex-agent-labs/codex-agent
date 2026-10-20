@@ -41,16 +41,17 @@ def ordinary_spec():
 
 
 class CompletedSdkControlsTest(unittest.TestCase):
-    def test_native_package_and_validation_use_shared_checkpoint_routes(self):
+    def test_native_phases_use_shared_checkpoint_routes(self):
         from sdk_phase import CHECKPOINT_ROUTES, COMPACT_REPLAY_INSTANCES, SDK_FAMILY_INSTANCES
-        for family, wave in (('native-package', 4), ('native-validation', 7)):
+        for family, wave in (('native-package', 4), ('native-validation', 7), ('native-metadata', 8)):
             job = f'product-validation / sdk-collect-{wave}'
             self.assertIn(job, CHECKPOINT_ROUTES)
             self.assertEqual(wave, completed._COLLECTED_WAVES[job])
             self.assertEqual(family, CHECKPOINT_ROUTES[job].family)
             self.assertTrue(SDK_FAMILY_INSTANCES[family] <= set(COMPACT_REPLAY_INSTANCES))
             for instance in SDK_FAMILY_INSTANCES[family]:
-                self.assertEqual(512 * 1024 * 1024, completed._object_limit(instance))
+                self.assertEqual(completed.LIMIT if family == 'native-metadata' else 512 * 1024 * 1024,
+                                 completed._object_limit(instance))
 
     def test_native_validation_object_bound_does_not_expand_json_or_other_phases(self):
         from products.registry import PhaseInstanceId
@@ -206,6 +207,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
         for role, prefix in (('product-validation / product-resume', 'codex-agent-product-resume-'),
                              ('product-validation / plan', 'codex-agent-planned-product-resume-'),
                              ('product-validation / sdk-collect-1', 'codex-agent-sdk-wave-1-state-'),
+                             ('product-validation / sdk-collect-8', 'codex-agent-sdk-wave-8-state-'),
                              ('product-validation / sdk-collect-9', 'codex-agent-sdk-wave-9-state-'),
                              ('product-validation / sdk-collect-10', 'codex-agent-sdk-wave-10-state-'),
                              (completed._CORE_COLLECTOR, 'codex-agent-sdk-wave-11-state-'),
