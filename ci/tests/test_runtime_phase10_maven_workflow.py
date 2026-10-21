@@ -1,9 +1,9 @@
 """The protected Runtime sidecar child keeps observation and signing separate."""
 
 from pathlib import Path
-import re
 import subprocess
 import unittest
+from ci.tests.test_reviewed_workflow_publication import publication
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/runtime-phase10-maven.yml"
@@ -45,13 +45,15 @@ class RuntimePhase10MavenWorkflowTest(unittest.TestCase):
     def test_parent_pins_reviewed_child_and_gates_its_exact_upload(self):
         parent = PARENT.read_text(encoding="utf-8")
         job = parent.split("  runtime-phase10-maven:\n", 1)[1].split("\n  sdk-inputs:", 1)[0]
-        match = re.search(r"uses: codex-agent-labs/codex-agent/\.github/workflows/"
-                          r"runtime-phase10-maven\.yml@([0-9a-f]{40})", job)
-        self.assertIsNotNone(match)
-        pinned = subprocess.check_output(["git", "show",
-            f"{match.group(1)}:.github/workflows/runtime-phase10-maven.yml"],
-            cwd=WORKFLOW.parents[2], text=True)
-        self.assertEqual(self.source, pinned)
+        self.assertIn(f"    uses: {publication.PROJECT}.github/workflows/"
+                      f"{WORKFLOW.name}@{publication.PROTECTED_REF}\n", job)
+        root = WORKFLOW.parents[2]
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        reviewed = publication.reviewed_workflow_closure(root, revision)
+        self.assertEqual(self.source.encode("utf-8"), reviewed[f".github/workflows/{WORKFLOW.name}"])
+        self.assertEqual(PARENT.read_bytes(), reviewed[publication.ENTRYPOINT])
+        self.assertIn("trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}", job)
+        self.assertIn("trustedSourceSha: ${{ needs.plan.outputs.source_sha }}", job)
         self.assertIn("aggregateArtifactId: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}", job)
         self.assertIn("aggregateArtifactSha256: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}", job)
         self.assertIn("expectedPgpKeySha256: ${{ needs.contract-phase10-pgp-authority.outputs.pgp_key_sha256 }}", job)

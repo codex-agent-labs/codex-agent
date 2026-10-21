@@ -1,10 +1,10 @@
 """Parent Contract Phase-10 source wiring is gated before protected jobs."""
 
 from pathlib import Path
-import re
 import subprocess
 import unittest
 from ci.tests.test_contract_attestation_workflow import workflow_job
+from ci.tests.test_reviewed_workflow_publication import publication
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +19,9 @@ class ContractPhase10ParentWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.parent = PARENT.read_text(encoding="utf-8")
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        cls.reviewed = publication.reviewed_workflow_closure(
+            ROOT, revision, entrypoints=(publication.ENTRYPOINT, ".github/workflows/ci.yml"))
 
     def test_immutable_children_and_authorized_contract_only(self):
         jobs = {name: workflow_job(self.parent, name) for name in (
@@ -37,12 +40,12 @@ class ContractPhase10ParentWorkflowTest(unittest.TestCase):
         self.assertIn("environment: product-attestation", jobs["contract-phase10-pgp-authority"])
         for name, child in (("contract-phase10-maven", MAVEN),
                             ("contract-phase10-output-record", RECORD)):
-            match = re.search(r"uses: codex-agent-labs/codex-agent/\.github/workflows/"
-                              + re.escape(child.name) + r"@([0-9a-f]{40})", jobs[name])
-            self.assertIsNotNone(match, name)
-            reviewed = subprocess.run(["git", "show", f"{match.group(1)}:.github/workflows/{child.name}"],
-                                      cwd=ROOT, capture_output=True, text=True, check=True)
-            self.assertEqual(child.read_text(encoding="utf-8"), reviewed.stdout)
+            self.assertIn(f"    uses: {publication.PROJECT}.github/workflows/"
+                          f"{child.name}@{publication.PROTECTED_REF}\n", jobs[name])
+            self.assertEqual(child.read_bytes(), self.reviewed[f".github/workflows/{child.name}"])
+            self.assertIn("trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}", jobs[name])
+        self.assertEqual(PARENT.read_bytes(), self.reviewed[publication.ENTRYPOINT])
+        self.assertIn("trustedSourceSha: ${{ needs.plan.outputs.source_sha }}", jobs["contract-phase10-maven"])
         maven = jobs["contract-phase10-maven"]
         self.assertIn("contractInputsArtifactId: ${{ needs.contract-validation.outputs.contract_attestation_inputs_artifact_id }}", maven)
         self.assertIn("contractInputsArtifactSha256: ${{ needs.contract-validation.outputs.contract_attestation_inputs_artifact_sha256 }}", maven)
@@ -94,12 +97,10 @@ class ContractPhase10ParentWorkflowTest(unittest.TestCase):
         source = CI.read_text(encoding="utf-8")
         job = workflow_job(source, "contract-phase10-record")
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record'", job)
-        match = re.search(r"uses: codex-agent-labs/codex-agent/\.github/workflows/"
-                          r"contract-phase10-later-record\.yml@([0-9a-f]{40})", job)
-        self.assertIsNotNone(match)
-        reviewed = subprocess.run(["git", "show", f"{match.group(1)}:.github/workflows/{LATER.name}"],
-                                  cwd=ROOT, capture_output=True, text=True, check=True)
-        self.assertEqual(LATER.read_text(encoding="utf-8"), reviewed.stdout)
+        self.assertIn(f"    uses: {publication.PROJECT}.github/workflows/"
+                      f"{LATER.name}@{publication.PROTECTED_REF}\n", job)
+        self.assertEqual(LATER.read_bytes(), self.reviewed[f".github/workflows/{LATER.name}"])
+        self.assertEqual(CI.read_bytes(), self.reviewed[".github/workflows/ci.yml"])
         gate = workflow_job(source, "merge-gate")
         self.assertIn("test \"$CONTRACT_RECORD_RESULT\" = success", gate)
         self.assertIn('[[ "$CONTRACT_RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1', gate)
