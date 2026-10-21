@@ -9,6 +9,70 @@ permissions:
   actions: read
 
 jobs:
+  phase9-ios-mutation:
+    if: >-
+      github.event.label.name == 'ci:phase9-ios-mutation' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-kmp
+        with:
+          product-worker: 'true'
+          cache-read-only: 'true'
+          xcode-fingerprint: auto
+      - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          toolchain: '1.95.0'
+          components: rust-src
+      - name: Reuse exact Contract and native originals; execute only the missing mutation binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p build/phase9-ios-lfs
+          python3 -B ci/tests/phase9_ios_mutation.py hosted \
+            "$GITHUB_WORKSPACE/build/phase9-ios-mutation" "$GITHUB_WORKSPACE/build/phase9-ios-lfs"
+      - name: Preserve any genuine new binary before later diagnostic failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-ios-mutation-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/phase9-ios-mutation/source/build/product-stage/sdk/sdk-ios/binary
+          if-no-files-found: warn
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+      - name: Preserve small original authority and real diagnostics, not duplicate native bodies
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-ios-mutation-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/phase9-ios-mutation/*.json
+            build/phase9-ios-mutation/native/*.json
+            build/phase9-ios-mutation/native/*/qualification.json
+            build/phase9-ios-mutation/native/*/lane/lane-receipt.json
+            build/phase9-ios-mutation/source/build/mutation-worker/**/*.json
+            build/phase9-ios-mutation/source/build/mutation-worker/**/*.log
+            build/phase9-ios-mutation/source/build/mutation-worker-dependency-seed/**/*.json
+            build/phase9-ios-mutation/source/build/mutation-worker-dependency-seed/**/*.log
+          if-no-files-found: warn
+          overwrite: false
+          retention-days: 90
+
   github-read-app-proof:
     if: >-
       github.event.label.name == 'ci:github-read-app-proof' &&

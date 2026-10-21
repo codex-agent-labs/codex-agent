@@ -4,6 +4,9 @@ The original Contract receipts stay local-producer evidence. A hosted caller
 records its real workflow/run separately from this private fixture's Git source.
 """
 from concurrent.futures import ThreadPoolExecutor
+from argparse import Namespace
+from contextlib import contextmanager
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -28,6 +31,54 @@ BUILD_KEY = 'sha256:a23e3cb0fcae15b30e488ccf5eb4a7fca8f86e6cc60bdd1a8db5db2c03ef
 INSTANCE = PhaseInstanceId('sdk', 'sdk-ios', 'binary', 'ios')
 STEM = 'codex-agent-contract-0.8.0'
 LFS_URL = 'https://github.com/codex-agent-labs/codex-agent.git/info/lfs'
+NATIVE_PRODUCERS = {
+    'tests': dict(commit='2bc9a1a03d7ec503e60f365fabc76626f75f9b17', tree='3c54c793cb53b2549e41d32464e7e096132c2a39',
+        runId=38823321421, runAttempt=1, event='pull_request', pullRequest=31,
+        repository='codex-agent-labs/codex-agent', workflowPath='.github/workflows/ci.yml'),
+    'rust': dict(commit='0a5c3e6054671b5dd61658a1c735c0b2d9fadd3a', tree='784fb6d005e2c13699da5e64a5a50c5d64310706',
+        runId=38807951170, runAttempt=1, event='pull_request', pullRequest=31,
+        repository='codex-agent-labs/codex-agent', workflowPath='.github/workflows/ci.yml'),
+}
+NATIVE_PINS = {
+    'ios-native-tests': ('tests', 12015585535,
+        'sha256:152b38e9813bd95281d945ca18e844d20f6dee0eed1d8c56c9311bfa782f906b',
+        'e07a185513acf0b73c0ab3114f7694999bab1845'),
+    'ios-rust-device': ('rust', 12011219468,
+        'sha256:80047c768d518b71ad8fcd711974012031aa04b31048fb850d859718d2d321a8',
+        'cdcad0d7bb1be2633ba24ba65ca5e694f0e9222e'),
+    'ios-rust-simulator': ('rust', 12012276513,
+        'sha256:6792faf970fd65420d50877b80e0879a64fbdd2a569af750c85eb7f3b4e3375a',
+        'cdcad0d7bb1be2633ba24ba65ca5e694f0e9222e'),
+}
+# Original observations, not a claim about today's runner. The full original
+# upload/receipt/job gate below must match these independently selected values.
+NATIVE_TOOLCHAIN = dict(cargo='cargo 1.95.0 (f2d3ce0bd 2026-03-21)', gradle='9.7.1',
+    javaRuntime='17.0.20.1+1', javaVendor='Eclipse Adoptium', kotlinPlugin='2.3.10', node='unavailable',
+    rustc='release=1.95.0;commit=59807616e1fa2540724bfbac14d7976d7e4a3860;host=aarch64-apple-darwin',
+    swift='Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101) Target: arm64-apple-macosx26.0',
+    xcode='Xcode 26.6;Build version 17F113')
+
+
+def native_expectations(lane):
+    family = NATIVE_PINS[lane][0]
+    runner = dict(os='macOS', arch='ARM64', image='macos26',
+        imageVersion='20261013.0424.1' if family == 'tests' else '20260907.0351.1')
+    return dict(runner=[f'{key}={value}' for key, value in runner.items()],
+        toolchain=[f'{key}={value}' for key, value in NATIVE_TOOLCHAIN.items()])
+
+
+@contextmanager
+def fixture_environment(environment):
+    previous = {name: os.environ.get(name) for name in environment}
+    try:
+        os.environ.update(environment)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def manifest():
@@ -144,9 +195,7 @@ def prepare(destination, storage, *, client=('git', 'lfs')):
         expected_contract_version='0.8.0', required_components=required_contract_components(INSTANCE))
     verification_ns = time.monotonic_ns() - tick
     fixture, environment = source_fixture(destination, inputs)
-    previous = {name: os.environ.get(name) for name in environment}
-    try:
-        os.environ.update(environment)
+    with fixture_environment(environment):
         plan = plan_phase(INSTANCE,
             inventory=phase_git_inventory(fixture, specification['sourceCommit'], INSTANCE),
             versions=git_product_versions(fixture, specification['sourceCommit']), upstream_receipts=[receipt],
@@ -154,12 +203,6 @@ def prepare(destination, storage, *, client=('git', 'lfs')):
             flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, contract_projection=projection)
         if plan['buildKey'] != BUILD_KEY:
             raise ValueError('Mutation iOS binary no longer matches the preserved missing election')
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
     write_canonical_json(destination / 'plan.json', plan)
     result = dict(schemaVersion=1, sourceCommit=specification['sourceCommit'], sourceTree=specification['sourceTree'],
         environment=environment, originalContractProducer=receipt['producer'], buildKey=plan['buildKey'],
@@ -171,7 +214,164 @@ def prepare(destination, storage, *, client=('git', 'lfs')):
     return result
 
 
+def qualification_module():
+    spec = importlib.util.spec_from_file_location('phase9_native_qualification',
+        ROOT / '.github/actions/run-ci-lane/sdk_native_qualification.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def native_inputs(destination, *, token, lanes=tuple(NATIVE_PINS)):
+    """Authenticate direct original lanes once; do not forward their bulk captures."""
+    import product_reuse as reuse
+    from sdk_apple_native import JOBS, NATIVE_FILES
+    from sdk_apple_source import _PLAN_JOB, _original_upload, _private_original_repository
+    from products.restore import bounded_verify, verification_session
+    from products.inventory import regular_file_inventory
+
+    if not token or not lanes or len(set(lanes)) != len(lanes) or not set(lanes) <= set(NATIVE_PINS):
+        raise ValueError('Mutation native input selection is invalid')
+    destination.mkdir()
+    evidence = destination / 'evidence'
+    evidence.mkdir()
+    helper = qualification_module()
+    started = time.monotonic_ns()
+    # Reuse the original authorized PR plan, never invent a PR plan for the local fixture.
+    consumer = NATIVE_PRODUCERS['tests']
+    workflow = NATIVE_PINS['ios-native-tests'][3]
+    with verification_session(), reuse._ci_observation_batch():
+        observation, = reuse._observe_ci_producer_jobs({'plan': consumer},
+            jobs_by_phase={'plan': _PLAN_JOB}, token=token, trusted_workflow_sha=workflow)
+        artifacts = reuse.paginated_items(
+            f"https://api.github.com/repos/{consumer['repository']}/actions/runs/{consumer['runId']}/artifacts",
+            'artifacts', token)
+        plan_artifact, plan_raw = _original_upload(name=f"codex-agent-ci-plan-{consumer['tree']}",
+            producer=consumer, observation=observation, job=_PLAN_JOB, artifacts=artifacts, token=token)
+        archive = destination / 'original-plan-upload.zip'
+        with archive.open('xb') as output:
+            output.write(plan_raw)
+        helper._extract(archive, destination / 'original-plan')
+        # Fetch each authenticated Git revision once, before parallel readers use it.
+        helper._acquire_original_revision(ROOT, consumer)
+        for family in dict.fromkeys(NATIVE_PINS[lane][0] for lane in lanes):
+            original = NATIVE_PRODUCERS[family]
+            members = [lane for lane in lanes if NATIVE_PINS[lane][0] == family]
+            observed, = reuse._observe_ci_producer_jobs({lane: original for lane in members},
+                jobs_by_phase={lane: JOBS[lane] for lane in members}, token=token,
+                trusted_workflow_sha=NATIVE_PINS[members[0]][3])
+            write_canonical_json(destination / (family + '-observation.json'), observed)
+            helper._acquire_original_revision(ROOT, original)
+        repository = _private_original_repository(ROOT, destination / 'repository',
+            consumer['commit'], consumer['commit'])
+        # Make both already authenticated original revisions available without another remote fetch.
+        for family in dict.fromkeys(NATIVE_PINS[lane][0] for lane in lanes):
+            git('fetch', '--quiet', '--no-tags', str(ROOT), NATIVE_PRODUCERS[family]['commit'], cwd=repository)
+        plan_path = destination / 'original-plan/impact-plan.json'
+
+        def qualify(lane):
+            family, identifier, digest, expected_workflow = NATIVE_PINS[lane]
+            output = destination / lane
+            result = helper.qualify_candidate(Namespace(plan=plan_path, lane=lane, token=token,
+                **native_expectations(lane)), {'id': identifier, 'digest': digest},
+                trusted_workflow_sha=workflow, repository_root=repository, output=output)
+            if (result['originalProducer'] != NATIVE_PRODUCERS[family]
+                    or result['originalWorkflowSha'] != expected_workflow
+                    or result['originalArtifact']['id'] != identifier
+                    or result['originalArtifact']['digest'] != digest):
+                raise ValueError('Native qualification differs from the independently pinned original')
+            for relative, name in NATIVE_FILES[lane].items():
+                os.link(output / 'lane' / relative, evidence / name)
+            return lane, result
+
+        results = dict(bounded_verify(qualify, lanes))
+        inventory = regular_file_inventory(evidence)
+        expected_paths = {name for lane in lanes for name in NATIVE_FILES[lane].values()}
+        if {row['relativePath'] for row in inventory} != expected_paths:
+            raise ValueError('Native fixture intake has incomplete or extra evidence')
+        result = dict(schemaVersion=1, lanes=results, evidenceInventory=inventory,
+            elapsedNs=time.monotonic_ns()-started, originalPlanArtifact=plan_artifact,
+            productExecutions=0, semanticAdmissionRequired=True)
+        write_canonical_json(destination / 'result.json', result)
+    return result
+
+
+def hosted(destination, storage):
+    """Execute only the missing fixture binary, with actual hosted context kept separate."""
+    from products.inventory import regular_file_inventory
+    from sdk_ios_binary import execute
+    specification = manifest()
+    source = git('rev-parse', 'HEAD')
+    event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
+    if (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('GITHUB_EVENT_NAME') != 'pull_request'
+            or os.environ.get('GITHUB_REPOSITORY') != 'codex-agent-labs/codex-agent'
+            or event['pull_request']['number'] != 31
+            or event['pull_request']['head']['repo']['full_name'] != os.environ['GITHUB_REPOSITORY']
+            or event['pull_request']['head']['repo']['fork'] is not False
+            or event['pull_request']['head']['sha'] != source
+            or event['label']['name'] != 'ci:phase9-ios-mutation' or git('diff', 'HEAD', '--')):
+        raise ValueError('Mutation execution requires its exact same-repository labeled PR source')
+    # Reject a wrong runner before transferring the multi-GB native predecessors.
+    from native_wrappers import host_classifier
+    from products.inventory import git_regular_blob_bytes
+    from products.sdk_apple_package_source import _PIN_FILE, _toolchain_expectations
+    from products.sdk_apple_toolchain_evidence import _versions
+    if host_classifier() != 'macos-arm64':
+        raise ValueError('Mutation requires a genuine macOS ARM64 runner')
+    expected_tools = _toolchain_expectations(git_regular_blob_bytes(
+        ROOT, specification['sourcePrerequisite'], _PIN_FILE, max_bytes=1024*1024))
+    xcode = subprocess.check_output(['/usr/bin/xcodebuild', '-version'], text=True)
+    swift = subprocess.check_output(['/usr/bin/xcrun', 'swift', '--version'], text=True)
+    _versions(xcode, swift, expected_tools)
+    rust = subprocess.check_output(['rustc', '-vV'], text=True)
+    provenance = json.loads(git_regular_blob_bytes(ROOT, specification['sourcePrerequisite'],
+        'codex-agent-runtime-ios/native/provenance.json', max_bytes=1024*1024))
+    if ([line for line in rust.splitlines() if line.startswith('release:')] != ['release: ' + provenance['rustToolchain']]
+            or [line for line in rust.splitlines() if line.startswith('host:')] != ['host: aarch64-apple-darwin']):
+        raise ValueError('Mutation Rust compiler differs from the original native policy')
+    started = time.monotonic_ns()
+    prepared = prepare(destination, storage)
+    write_canonical_json(destination / 'observed-toolchain.json', dict(expected=expected_tools,
+        xcode=xcode, swift=swift, rust=rust, runnerOS=os.environ['RUNNER_OS'], runnerArch=os.environ['RUNNER_ARCH']))
+    native = native_inputs(destination / 'native', token=os.environ['GITHUB_TOKEN'])
+    fixture = destination / 'source'
+    evidence = destination / 'native/evidence'
+    helper = qualification_module()
+    with fixture_environment(prepared['environment']):
+        for lane, qualified in native['lanes'].items():
+            helper.compatible_source_inventories(fixture, qualified['originalProducer']['commit'],
+                specification['sourceCommit'], lane)
+        contract = destination / 'inputs/contract'
+        os.link(contract / 'development.pub', contract / 'public-key.pub')
+        # The source actually compiled is private ae8b, NOT the workflow's source commit.
+        # No receipt is issued: normal original-CI admission must not accept this diagnostic.
+        producer = dict(repository=os.environ['GITHUB_REPOSITORY'], workflowPath='.github/workflows/portable-reuse-proof.yml',
+            event='pull_request', pullRequest=31, runId=int(os.environ['GITHUB_RUN_ID']),
+            runAttempt=int(os.environ['GITHUB_RUN_ATTEMPT']), commit=specification['sourceCommit'], tree=specification['sourceTree'])
+        context = dict(workflowSourceCommit=source, workflowSourceTree=git('rev-parse', source + '^{tree}'),
+            workflowEventCommit=os.environ['GITHUB_SHA'], fixtureExecution=producer,
+            originalContractProducer=specification['originalContractProducer'],
+            scope='Actual hosted development fixture execution; no ordinary product or release admission')
+        write_canonical_json(destination / 'hosted-context.json', context)
+        plan = load_canonical_json_bytes(read_regular_file_bytes(destination / 'plan.json'))
+        receipt_path = contract / 'metadata-receipt.json'
+        receipt = load_canonical_json_bytes(read_regular_file_bytes(receipt_path))
+        result = execute(plan, producer=producer, sdk_version='0.8.0',
+            contract_metadata=dict(stage=destination / 'contract-stage', receiptPath=receipt_path, receipt=receipt),
+            verified_contract_handoff=contract, native_evidence=evidence, repository_root=fixture,
+            destination=fixture / 'build/mutation-worker', environ=dict(os.environ))
+        if regular_file_inventory(evidence) != native['evidenceInventory']:
+            raise ValueError('Original native evidence changed during fixture execution')
+        log = (result['diagnostics'] / 'gradle.log').read_text()
+        if any(':buildCodexIos' + target + 'Rust' in log for target in ('Arm64', 'SimulatorArm64')):
+            raise ValueError('Mutation diagnostic rebuilt a completed native Rust predecessor')
+        write_canonical_json(destination / 'result.json', dict(schemaVersion=1,
+            buildKey=plan['buildKey'], outputInventory=result['outputInventory'], context=context,
+            elapsedNs=time.monotonic_ns()-started, intake=prepared['intake'],
+            nativeCaptureNs=native['elapsedNs'], originalReceiptsRewritten=0, baselineAdmission=False))
+
+
 if __name__ == '__main__':
-    if len(sys.argv) != 4 or sys.argv[1] != 'prepare':
-        raise SystemExit('usage: phase9_ios_mutation.py prepare DESTINATION LFS_STORAGE')
-    prepare(Path(sys.argv[2]).absolute(), Path(sys.argv[3]).absolute())
+    if len(sys.argv) != 4 or sys.argv[1] not in {'prepare', 'hosted'}:
+        raise SystemExit('usage: phase9_ios_mutation.py {prepare|hosted} DESTINATION LFS_STORAGE')
+    (prepare if sys.argv[1] == 'prepare' else hosted)(Path(sys.argv[2]).absolute(), Path(sys.argv[3]).absolute())
