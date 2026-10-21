@@ -50,8 +50,7 @@ class SdkPhase11MavenTest(unittest.TestCase):
 
     def _forward(self, **changes):
         def verify_sidecars(stage, receipt, sidecars, public, key_sha):
-            return {"component": Path(stage).parent.name,
-                    "sidecarFiles": regular_file_inventory(sidecars)}
+            return self.fixture._maven_result(stage, sidecars)
         with patch("ci.sdk_phase10_maven_caller.verify_release_product_index",
                    return_value=(self.fixture.signed_index, self.fixture.index.read_bytes())), \
              patch("ci.sdk_phase10_maven_caller.verify_sdk_phase10_maven",
@@ -61,11 +60,18 @@ class SdkPhase11MavenTest(unittest.TestCase):
 
     def test_exact_three_sidecar_sets_and_all_evidence_are_forwarded(self):
         original = regular_file_inventory(self.signed)
-        result = self._forward()
+        from ci.products import restore
+        with patch.object(restore, "_uncached_file_inventory", wraps=restore._uncached_file_inventory) as scans:
+            result = self._forward()
+        self.assertEqual(1, sum(Path(call.args[0]) == self.signed for call in scans.call_args_list))
         self.assertEqual(result["files"], original)
         self.assertEqual(regular_file_inventory(self.destination), original)
         self.assertEqual({"sdk-core", "sdk-android", "sdk-ios"},
             {item["component"] for item in result["uploadSources"]})
+        self.assertEqual(3, len(result["centralBundles"]))
+        for row in result["centralBundles"]:
+            self.assertEqual(row["sha256"], sha256_bytes(
+                (self.destination / "central" / row["fileName"]).read_bytes()))
         for row in original:
             self.assertEqual((self.signed / row["relativePath"]).read_bytes(),
                              (self.destination / row["relativePath"]).read_bytes())
@@ -75,6 +81,24 @@ class SdkPhase11MavenTest(unittest.TestCase):
                    side_effect=AssertionError("verifier must not run")):
             with self.assertRaisesRegex(ValueError, "independent S1048 inventory"):
                 self._forward(expected_signed_inventory_sha256=sha256_bytes(b"wrong"))
+        self.assertFalse(self.destination.exists())
+
+    def test_central_shards_are_required_and_tamper_fails_with_updated_outer_pin(self):
+        import zipfile
+        bundle = next((self.signed / "central").glob("*central-main.zip"))
+        original = bundle.read_bytes()
+        bundle.unlink()
+        inventory_pin = lambda: sha256_bytes(canonical_json_bytes(regular_file_inventory(self.signed)))
+        with self.assertRaisesRegex(ValueError, "shard inventory"):
+            self._forward(expected_signed_inventory_sha256=inventory_pin())
+        bundle.write_bytes(original)
+        with zipfile.ZipFile(bundle) as archive:
+            members = [(info, archive.read(info)) for info in archive.infolist()]
+        with zipfile.ZipFile(bundle, "w") as archive:
+            for number, (info, payload) in enumerate(members):
+                archive.writestr(info, payload + b"changed" if number == 0 else payload)
+        with self.assertRaisesRegex(ValueError, "Central members differ"):
+            self._forward(expected_signed_inventory_sha256=inventory_pin())
         self.assertFalse(self.destination.exists())
 
     def test_no_observation_or_signing_secret_enters_candidate_forwarder(self):
@@ -102,7 +126,7 @@ class SdkPhase11MavenTest(unittest.TestCase):
         from ci.sdk_phase11_maven import snapshot_regular_tree
         def mutate_after_snapshot(source, destination):
             snapshot_regular_tree(source, destination)
-            sidecar = self.signed / "maven-sidecars/sdk-core/payload.asc"
+            sidecar = next((self.signed / "maven-sidecars/sdk-core").rglob("*.asc"))
             sidecar.write_bytes(sidecar.read_bytes() + b"late")
         with patch("ci.sdk_phase11_maven.snapshot_regular_tree",
                    side_effect=mutate_after_snapshot):

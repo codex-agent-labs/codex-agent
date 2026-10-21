@@ -140,7 +140,8 @@ def _central_files(verified_maven: dict) -> tuple[str, list[dict]]:
     return f"codex-agent-contract-{version}-central.zip", records
 
 
-def central_maven_files(maven_files: list[dict], sidecar_files: list[dict]) -> list[dict]:
+def central_maven_files(maven_files: list[dict], sidecar_files: list[dict], *,
+                        max_entry_bytes: int = _LIMIT) -> list[dict]:
     """Shared release-only projection; callers authenticate product/signature bytes."""
     records = []
     for row in [*maven_files, *[
@@ -154,7 +155,7 @@ def central_maven_files(maven_files: list[dict], sidecar_files: list[dict]) -> l
     if not records or len({row["relativePath"] for row in records}) != len(records):
         raise ValueError("Central input inventory is empty or duplicated")
     # Stored ZIP headers have a known size; reject before allocating the output.
-    if len(records) > 16_384 or any(row["bytes"] > _LIMIT for row in records) or 22 + sum(
+    if len(records) > 16_384 or any(row["bytes"] > max_entry_bytes for row in records) or 22 + sum(
             row["bytes"] + 76 + 2 * len(row["relativePath"].encode("utf-8")) for row in records
     ) >= 1_000_000_000:
         raise ValueError("Central envelope exceeds the existing upload limit")
@@ -169,13 +170,13 @@ def verify_contract_central_bundle(bundle: Path, verified_maven: dict) -> dict:
     return verify_central_bundle(bundle, expected)
 
 
-def verify_central_bundle(bundle: Path, expected: list[dict]) -> dict:
+def verify_central_bundle(bundle: Path, expected: list[dict], *, max_entry_bytes: int = _LIMIT) -> dict:
     """Shared bounded verification of an already-finalized release envelope."""
     # The original verified inventory supplies the exact semantic closure; retain
     # no member bodies and do not extract, copy, sign, or repack this envelope.
     actual, _, identity = verified_zip_contents(
         bundle, retained_paths=(), canonical_stored=True, max_archive_bytes=1_000_000_000 - 1,
-        max_total_bytes=1_000_000_000 - 1, max_members=16_384, max_entry_bytes=_LIMIT,
+        max_total_bytes=1_000_000_000 - 1, max_members=16_384, max_entry_bytes=max_entry_bytes,
     )
     if actual != expected:
         raise ValueError("Central members differ from verified Maven bytes")
@@ -183,16 +184,29 @@ def verify_central_bundle(bundle: Path, expected: list[dict]) -> dict:
 
 
 def write_central_bundle(bundle: Path, records: list[dict], read_member) -> None:
-    """Enclose exact selected bytes once; the caller verifies before publication."""
+    """Stream exact selected bytes once; the caller verifies before publication.
+
+    Small archive-backed callers may return bytes; large staged inputs return
+    an already safely opened binary stream, closed here after consumption.
+    """
     with ZipFile(bundle, "x", compression=ZIP_STORED) as archive:
         for row in records:
             contents = read_member("maven/" + row["relativePath"])
-            if len(contents) != row["bytes"] or sha256_bytes(contents) != row["sha256"]:
-                raise ValueError("Central input changed after verification")
             info = ZipInfo(row["relativePath"], (1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o644) << 16
-            archive.writestr(info, contents)
+            info.file_size = row["bytes"]
+            size, digest = 0, hashlib.sha256()
+            with (io.BytesIO(contents) if isinstance(contents, bytes) else contents) as source, \
+                    archive.open(info, "w") as output:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > row["bytes"]:
+                        raise ValueError("Central input changed after verification")
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size != row["bytes"] or "sha256:" + digest.hexdigest() != row["sha256"]:
+                raise ValueError("Central input changed after verification")
 
 
 def produce_contract_central_bundle(

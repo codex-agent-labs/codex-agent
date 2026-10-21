@@ -1,6 +1,7 @@
 """SDK Maven release-sidecar checks use synthetic package stages, not host proof."""
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -19,8 +20,9 @@ from ci.products.inventory import (
 from ci.products.receipt import compute_build_key, write_output_manifest, write_phase_receipt
 from ci.products.sdk_maven import CHECKSUMS, MAVEN_GROUPS, package_sdk_maven
 from ci.products.sdk_phase10_maven import (
-    produce_sdk_phase10_maven_sidecars, verify_sdk_phase10_maven,
+    _central_layout, produce_sdk_phase10_maven_sidecars, verify_sdk_phase10_maven,
 )
+from ci.products.contract_phase10_maven import write_central_bundle, verify_central_bundle
 from ci.tests.test_product_sdk_maven import _repository
 from ci.tests.test_products import phase_receipt, sdk_compatibility
 
@@ -86,6 +88,47 @@ class SdkPhase10MavenTest(unittest.TestCase):
         self.assertEqual("0.2.0", result["sdkVersion"])
         self.assertEqual(5 * sum("--verify" in call.args for call in gpg.call_args_list),
                          len(result["sidecarFiles"]))
+
+    def test_central_streams_large_inputs_in_bounded_reads(self):
+        payload = b"A" * (2 * 1024 * 1024 + 23)
+        reads = []
+
+        class Source(io.BytesIO):
+            def read(self, size=-1):
+                self_test.assertEqual(1024 * 1024, size)
+                reads.append(size)
+                return super().read(size)
+
+        self_test = self
+        source = Source(payload)
+        records = [{"relativePath": "io/github/codex-agent-labs/test/0.8.0/test.klib",
+                    "bytes": len(payload), "sha256": sha256_bytes(payload)}]
+        bundle = self.stage.parent / "streamed.zip"
+        write_central_bundle(bundle, records, lambda _: source)
+        self.assertTrue(source.closed)
+        self.assertEqual(4, len(reads))
+        self.assertEqual(records, verify_central_bundle(bundle, records)["files"])
+
+    def test_central_projects_ios_above_512_mib_but_bounds_each_complete_shard(self):
+        records = []
+        for component, artifacts in {
+            "sdk-core": {"codex-agent": 100},
+            "sdk-android": {"codex-agent-runtime-android": 75_270_350},
+            "sdk-ios": {"codex-agent-runtime-ios": 100,
+                        "codex-agent-runtime-ios-iosarm64": 607_740_113,
+                        "codex-agent-runtime-ios-iossimulatorarm64": 607_745_719},
+        }.items():
+            records.append({"schemaVersion": 1, "product": "sdk", "component": component,
+                            "sdkVersion": "0.8.0", "sidecarFiles": [], "stageFiles": [
+                {"relativePath": f"outputs/maven/io/github/codex-agent-labs/{artifact}/0.8.0/{artifact}.klib",
+                 "bytes": size, "sha256": "sha256:" + "a" * 64}
+                for artifact, size in artifacts.items()]})
+        layout, _ = _central_layout(records)
+        self.assertEqual([3, 1, 1], [len(row["files"]) for row in layout])
+        self.assertEqual(607_740_113, layout[1]["files"][0]["bytes"])
+        records[-1]["stageFiles"][-1]["bytes"] = 1_000_000_000
+        with self.assertRaisesRegex(ValueError, "upload limit"):
+            _central_layout(records)
 
     def test_extra_signature_and_stale_primary_fail_closed(self):
         (self.sidecars / "orphan.asc").write_bytes(b"orphan")

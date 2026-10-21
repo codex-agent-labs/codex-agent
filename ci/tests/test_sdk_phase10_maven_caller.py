@@ -73,9 +73,13 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                 "trustedJobName": "product-validation / plan"})
             source = self.root / (component + "-source")
             source.mkdir()
-            output = source / "outputs/maven/payload.jar"
-            output.parent.mkdir(parents=True)
-            output.write_bytes(component.encode())
+            artifacts = {"sdk-core": ["codex-agent"], "sdk-android": ["codex-agent-runtime-android"],
+                         "sdk-ios": ["codex-agent-runtime-ios", "codex-agent-runtime-ios-iosarm64",
+                                     "codex-agent-runtime-ios-iossimulatorarm64"]}[component]
+            for artifact in artifacts:
+                output = source / f"outputs/maven/io/github/codex-agent-labs/{artifact}/0.8.0/{artifact}-0.8.0.jar"
+                output.parent.mkdir(parents=True)
+                output.write_bytes(component.encode())
             write_output_manifest(source, "sdk", component, "package", target,
                                   "0.8.0", {"maven": "outputs/maven"})
             inputs = phase_receipt()["inputs"]
@@ -213,9 +217,11 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
     def _sign(self, digest, *, control_sha=None):
         def fake_sign(stage, receipt, sidecars, public, key_sha, home, fingerprint, passphrase):
             Path(sidecars).mkdir()
-            (Path(sidecars) / "payload.asc").write_bytes(Path(receipt).read_bytes())
-            return {"component": Path(stage).parent.name,
-                    "sidecarFiles": regular_file_inventory(sidecars)}
+            for row in regular_file_inventory(Path(stage) / "outputs/maven"):
+                path = Path(sidecars) / (row["relativePath"] + ".asc")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(Path(receipt).read_bytes())
+            return self._maven_result(stage, sidecars)
         with patch("ci.sdk_phase10_maven_caller.verify_release_product_index",
                    return_value=(self.signed_index, self.index.read_bytes())), \
              patch("ci.sdk_phase10_maven_caller.produce_sdk_phase10_maven_sidecars",
@@ -228,10 +234,15 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
                 signing_home=self.signing_home, signing_fingerprint="A" * 40,
                 passphrase="passphrase")
 
+    @staticmethod
+    def _maven_result(stage, sidecars):
+        return {"schemaVersion": 1, "product": "sdk", "sdkVersion": "0.8.0",
+                "component": Path(stage).parent.name, "stageFiles": regular_file_inventory(stage),
+                "sidecarFiles": regular_file_inventory(sidecars)}
+
     def _verify(self, digest):
         def fake_verify(stage, receipt, sidecars, public, key_sha):
-            return {"component": Path(stage).parent.name,
-                    "sidecarFiles": regular_file_inventory(sidecars)}
+            return self._maven_result(stage, sidecars)
         with patch("ci.sdk_phase10_maven_caller.verify_release_product_index",
                    return_value=(self.signed_index, self.index.read_bytes())), \
              patch("ci.sdk_phase10_maven_caller.verify_sdk_phase10_maven",
@@ -245,12 +256,17 @@ class SdkPhase10MavenCallerTest(unittest.TestCase):
         prepared = self._prepare()
         result = self._sign(prepared["preparationSha256"])
         self.assertEqual(3, len(result["packages"]))
+        self.assertEqual([f"codex-agent-0.8.0-central-{shard}.zip"
+                          for shard in ("main", "ios-arm64", "ios-simulator-arm64")],
+                         [row["fileName"] for row in result["centralBundles"]])
         for row in self.control["packages"]:
-            self.assertEqual((self.receipts / (row["component"] + ".json")).read_bytes(),
-                (self.signed / "maven-sidecars" / row["component"] / "payload.asc").read_bytes())
+            for signature in (self.signed / "maven-sidecars" / row["component"]).rglob("*.asc"):
+                self.assertEqual((self.receipts / (row["component"] + ".json")).read_bytes(),
+                                 signature.read_bytes())
         self.assertEqual(self.index.read_bytes(),
             (self.signed / "custody/campaign/product-index.json").read_bytes())
         verified = self._verify(prepared["preparationSha256"])
+        self.assertEqual(result["centralBundles"], verified["centralBundles"])
         self.assertEqual(["sdk-core", "sdk-android", "sdk-ios"],
             [entry["component"] for entry in verified["uploadSources"]])
         self.assertEqual([f"maven-sidecars/{entry['component']}"
