@@ -51,6 +51,11 @@ class RuntimePhase11BytesTest(unittest.TestCase):
         self.sidecars = self.root / "phase10-maven"
         self.sidecars.mkdir()
         (self.sidecars / "signature.asc").write_bytes(b"signature\n")
+        central = self.sidecars / "central/codex-agent-runtime-0.8.0-central.zip"
+        central.parent.mkdir()
+        central.write_bytes(b"original finalized envelope (composition fixture)\n")
+        self.central = {"fileName": central.name, "bytes": central.stat().st_size,
+                        "sha256": sha256_bytes(central.read_bytes()), "files": []}
         self.policy = self.root / "product-policy"
         self.policy.mkdir()
         self.keyring = self.policy / "product-signing-keys.json"
@@ -105,7 +110,8 @@ class RuntimePhase11BytesTest(unittest.TestCase):
             self.assertEqual(self.pgp_key.read_bytes(), public_key.read_bytes())
             self.assertEqual(digest, sha256_bytes(public_key.read_bytes()))
             self.assertEqual(regular_file_inventory(self.sidecars), regular_file_inventory(sidecars))
-            return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(manifest.read_bytes())}
+            return {"runtimeVersion": "0.8.0", "manifestSha256": sha256_bytes(manifest.read_bytes()),
+                    "centralBundle": self.central}
 
         with patch.object(candidate, "_landed_tree",
                           side_effect=_landed_trees or (lambda _: self.tree)), \
@@ -126,6 +132,7 @@ class RuntimePhase11BytesTest(unittest.TestCase):
     def test_forwards_only_original_bytes_plus_pinned_public_policy(self):
         result = self.forward()
         self.assertEqual("0.8.0", result["runtimeVersion"])
+        self.assertEqual(self.central, result["centralBundle"])
         self.assertEqual(regular_file_inventory(self.release, allow_empty=True),
                          regular_file_inventory(self.destination / "runtime-release", allow_empty=True))
         self.assertEqual(regular_file_inventory(self.sidecars),

@@ -10,15 +10,17 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from ci.products.inventory import regular_file_inventory, sha256_bytes
 from ci.products.inventory import publish_regular_tree as actual_publish_regular_tree
 from ci.products.inventory import snapshot_regular_tree as actual_snapshot_regular_tree
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES
 from ci.products.runtime_phase10_maven import (
-    _publication_inventory, produce_runtime_phase10_maven_sidecars,
+    _central_layout, _publication_inventory, produce_runtime_phase10_maven_sidecars,
     verify_runtime_phase10_maven,
 )
+from ci.products.contract_phase10_maven import write_central_bundle
 from ci.tests.test_product_runtime_aggregate import Fixture, VERSION
 
 
@@ -50,6 +52,7 @@ class RuntimePhase10MavenTest(unittest.TestCase):
                         (hashlib.new(suffix[1:], path.read_bytes()).hexdigest() + "\n").encode(),
                     )
         self.write_publication_inventory()
+        self.central = self.write_central_bundle(self.sidecars)
         self.key = root / "pgp-key.asc"
         self.key.write_bytes(b"synthetic public key\n")
 
@@ -57,8 +60,17 @@ class RuntimePhase10MavenTest(unittest.TestCase):
         (self.sidecars / "publication-inventory.json").write_bytes(_publication_inventory(
             VERSION, regular_file_inventory(self.payload),
             [item for item in regular_file_inventory(self.sidecars)
-             if item["relativePath"] != "publication-inventory.json"],
+             if item["relativePath"].startswith("maven/")],
         ))
+
+    def write_central_bundle(self, sidecars):
+        path, files, sources = _central_layout(VERSION, regular_file_inventory(self.payload),
+                                              regular_file_inventory(sidecars))
+        bundle = sidecars / path
+        bundle.parent.mkdir(exist_ok=True)
+        write_central_bundle(bundle, files, lambda path: (
+            (sidecars if path.endswith(".asc") else self.payload) / sources[path]).read_bytes())
+        return bundle
 
     @staticmethod
     def fake_gpg(*arguments):
@@ -78,11 +90,50 @@ class RuntimePhase10MavenTest(unittest.TestCase):
         record, calls = self.verify()
         self.assertEqual("runtime", record["product"])
         self.assertEqual(len(self.fixture.maven_inputs) + 1, len(record["payloadFiles"]))
-        self.assertEqual(1 + 5 * sum(source["role"] != "checksum" for source in self.fixture.maven_inputs),
+        self.assertEqual(2, record["schemaVersion"])
+        self.assertEqual(2 + 5 * sum(source["role"] != "checksum" for source in self.fixture.maven_inputs),
                          len(record["sidecarFiles"]))
-        self.assertEqual((len(record["sidecarFiles"]) - 1) // 5,
+        self.assertEqual((len(record["sidecarFiles"]) - 2) // 5,
                          sum("--verify" in call.args for call in calls))
         self.assertEqual(_FINGERPRINT, record["pgpPublicKey"]["fingerprint"])
+        self.assertEqual(sha256_bytes(self.central.read_bytes()), record["centralBundle"]["sha256"])
+        layout = json.loads((self.sidecars / "publication-inventory.json").read_bytes())
+        self.assertEqual(2, layout["schemaVersion"])
+        self.assertEqual(record["centralBundle"]["files"], layout["centralBundle"]["files"])
+        self.assertEqual("central/" + record["centralBundle"]["fileName"],
+                         layout["centralBundle"]["relativePath"])
+
+    def test_central_is_required_exact_and_verified_without_copy_or_extraction(self):
+        original = self.central.read_bytes()
+        self.central.unlink()
+        with self.assertRaisesRegex(ValueError, "signature inventory"):
+            self.verify()
+        self.central.write_bytes(original[:-1])
+        with self.assertRaises(ValueError):
+            self.verify()
+        self.central.write_bytes(original)
+        with patch("ci.products.runtime_phase10_maven.snapshot_regular_tree",
+                   wraps=actual_snapshot_regular_tree) as snapshots:
+            record, _ = self.verify()
+        self.assertEqual(1, snapshots.call_count)
+        self.assertEqual(self.payload, snapshots.call_args.args[0])
+        with ZipFile(self.central) as archive:
+            self.assertEqual(len(self.fixture.maven_inputs) + sum(
+                source["role"] != "checksum" for source in self.fixture.maven_inputs), len(archive.namelist()))
+            self.assertTrue(all(path.startswith("io/github/codex-agent-labs/")
+                                for path in archive.namelist()))
+            self.assertFalse(any(path.endswith(tuple(".asc" + suffix for suffix in CONTRACT_CHECKSUM_SUFFIXES))
+                                 for path in archive.namelist()))
+        repeated = self.sidecars.with_name("repeated-envelope")
+        shutil.copytree(self.sidecars / "maven", repeated / "maven")
+        self.assertEqual(original, self.write_central_bundle(repeated).read_bytes())
+        (repeated / "central" / self.central.name).unlink()
+        next((repeated / "maven").rglob("*.asc")).write_bytes(b"different signature\n")
+        changed = self.write_central_bundle(repeated)
+        self.central.write_bytes(changed.read_bytes())
+        with self.assertRaisesRegex(ValueError, "Central members differ"):
+            self.verify()
+        self.assertNotEqual(record["centralBundle"]["sha256"], sha256_bytes(changed.read_bytes()))
 
     def test_publication_inventory_is_required_and_binds_final_layout(self):
         inventory = self.sidecars / "publication-inventory.json"
@@ -248,6 +299,9 @@ class RuntimePhase10MavenTest(unittest.TestCase):
         )
         self.assertEqual(0, executed.returncode, executed.stderr)
         result = json.loads(executed.stdout)
+        self.assertEqual(2, result["schemaVersion"])
+        self.assertEqual(sha256_bytes((produced / "central" / result["centralBundle"]["fileName"]).read_bytes()),
+                         result["centralBundle"]["sha256"])
         self.assertEqual(original_payload, {path.relative_to(self.payload): path.read_bytes()
                                             for path in self.payload.rglob("*") if path.is_file()})
         self.assertEqual(fingerprint, result["pgpPublicKey"]["fingerprint"])
@@ -282,7 +336,7 @@ class RuntimePhase10MavenTest(unittest.TestCase):
         (produced / "publication-inventory.json").write_bytes(_publication_inventory(
             VERSION, regular_file_inventory(self.payload),
             [item for item in regular_file_inventory(produced)
-             if item["relativePath"] != "publication-inventory.json"],
+             if item["relativePath"].startswith("maven/")],
         ))
         with self.assertRaisesRegex(ValueError, "PGP verification failed"):
             verify_runtime_phase10_maven(

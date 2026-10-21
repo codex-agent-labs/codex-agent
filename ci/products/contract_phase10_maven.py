@@ -136,23 +136,29 @@ def _central_files(verified_maven: dict) -> tuple[str, list[dict]]:
     if verified_maven["schemaVersion"] != 2 or verified_maven["product"] != "contract":
         raise ValueError("Central envelope requires the current verified Contract Maven inventory")
     version = require_semver(verified_maven["contractVersion"], "Contract Central version")
+    records = central_maven_files(verified_maven["mavenFiles"], verified_maven["sidecarFiles"])
+    return f"codex-agent-contract-{version}-central.zip", records
+
+
+def central_maven_files(maven_files: list[dict], sidecar_files: list[dict]) -> list[dict]:
+    """Shared release-only projection; callers authenticate product/signature bytes."""
     records = []
-    for row in [*verified_maven["mavenFiles"], *[
-            row for row in verified_maven["sidecarFiles"] if row["relativePath"].endswith(".asc")]]:
-        path = require_relative_path(row["relativePath"], "Contract Central input")
+    for row in [*maven_files, *[
+            row for row in sidecar_files if row["relativePath"].endswith(".asc")]]:
+        path = require_relative_path(row["relativePath"], "Central input")
         if not path.startswith("maven/"):
-            raise ValueError("Contract Central input is outside Maven")
-        require_integer(row["bytes"], "Contract Central input length", 1)
-        require_sha256(row["sha256"], "Contract Central input digest")
+            raise ValueError("Central input is outside Maven")
+        require_integer(row["bytes"], "Central input length", 1)
+        require_sha256(row["sha256"], "Central input digest")
         records.append({**row, "relativePath": path.removeprefix("maven/")})
     if not records or len({row["relativePath"] for row in records}) != len(records):
-        raise ValueError("Contract Central input inventory is empty or duplicated")
+        raise ValueError("Central input inventory is empty or duplicated")
     # Stored ZIP headers have a known size; reject before allocating the output.
-    if len(records) > 16_384 or 22 + sum(
+    if len(records) > 16_384 or any(row["bytes"] > _LIMIT for row in records) or 22 + sum(
             row["bytes"] + 76 + 2 * len(row["relativePath"].encode("utf-8")) for row in records
     ) >= 1_000_000_000:
-        raise ValueError("Contract Central envelope exceeds the existing upload limit")
-    return f"codex-agent-contract-{version}-central.zip", sorted(records, key=lambda row: row["relativePath"])
+        raise ValueError("Central envelope exceeds the existing upload limit")
+    return sorted(records, key=lambda row: row["relativePath"])
 
 
 def verify_contract_central_bundle(bundle: Path, verified_maven: dict) -> dict:
@@ -160,6 +166,11 @@ def verify_contract_central_bundle(bundle: Path, verified_maven: dict) -> dict:
     name, expected = _central_files(verified_maven)
     if bundle.name != name:
         raise ValueError("Contract Central filename differs from its release identity")
+    return verify_central_bundle(bundle, expected)
+
+
+def verify_central_bundle(bundle: Path, expected: list[dict]) -> dict:
+    """Shared bounded verification of an already-finalized release envelope."""
     # The original verified inventory supplies the exact semantic closure; retain
     # no member bodies and do not extract, copy, sign, or repack this envelope.
     actual, _, identity = verified_zip_contents(
@@ -167,8 +178,21 @@ def verify_contract_central_bundle(bundle: Path, verified_maven: dict) -> dict:
         max_total_bytes=1_000_000_000 - 1, max_members=16_384, max_entry_bytes=_LIMIT,
     )
     if actual != expected:
-        raise ValueError("Contract Central members differ from verified Maven bytes")
-    return {"fileName": name, **identity, "files": actual}
+        raise ValueError("Central members differ from verified Maven bytes")
+    return {"fileName": bundle.name, **identity, "files": actual}
+
+
+def write_central_bundle(bundle: Path, records: list[dict], read_member) -> None:
+    """Enclose exact selected bytes once; the caller verifies before publication."""
+    with ZipFile(bundle, "x", compression=ZIP_STORED) as archive:
+        for row in records:
+            contents = read_member("maven/" + row["relativePath"])
+            if len(contents) != row["bytes"] or sha256_bytes(contents) != row["sha256"]:
+                raise ValueError("Central input changed after verification")
+            info = ZipInfo(row["relativePath"], (1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, contents)
 
 
 def produce_contract_central_bundle(
@@ -195,18 +219,11 @@ def produce_contract_central_bundle(
         raise ValueError("Contract Central payload differs from verified bytes")
     with tempfile.TemporaryDirectory(prefix="ct-central-", dir=destination.parent) as temporary:
         prepared = Path(temporary)
-        with ZipFile(io.BytesIO(raw)) as source, ZipFile(prepared / name, "x", compression=ZIP_STORED) as archive:
-            for row in records:
-                path = "maven/" + row["relativePath"]
-                contents = (read_regular_file_bytes(sidecars / path, max_bytes=1024 * 1024,
-                                                    reject_symlink_parents=True)
-                            if path.endswith(".asc") else source.read(path))
-                if len(contents) != row["bytes"] or sha256_bytes(contents) != row["sha256"]:
-                    raise ValueError("Contract Central input changed after verification")
-                info = ZipInfo(row["relativePath"], (1980, 1, 1, 0, 0, 0))
-                info.create_system = 3
-                info.external_attr = (stat.S_IFREG | 0o644) << 16
-                archive.writestr(info, contents)
+        with ZipFile(io.BytesIO(raw)) as source:
+            write_central_bundle(prepared / name, records, lambda path: (
+                read_regular_file_bytes(sidecars / path, max_bytes=1024 * 1024,
+                                        reject_symlink_parents=True)
+                if path.endswith(".asc") else source.read(path)))
         result = verify_contract_central_bundle(prepared / name, verified_maven)
         if (sha256_file(payload, reject_symlink_parents=True) != verified_maven["payloadSha256"]
                 or regular_file_inventory(sidecars) != verified_maven["sidecarFiles"]):

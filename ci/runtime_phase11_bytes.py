@@ -190,6 +190,7 @@ def forward_verified_runtime_phase10_bytes(
         publish_regular_tree(prepared, destination, expected_inventory=prepared_inventory)
         return {"product": "runtime", "runtimeVersion": maven["runtimeVersion"],
                 "manifestSha256": maven["manifestSha256"],
+                "centralBundle": maven["centralBundle"],
                 "protectedInventorySha256": expected_protected_inventory_sha256,
                 "sidecarInventorySha256": expected_sidecar_inventory_sha256,
                 "candidateInventory": prepared_inventory}
