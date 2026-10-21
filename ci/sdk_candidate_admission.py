@@ -18,10 +18,12 @@ if not __package__:
 from ci.products.index import SignedProductIndex, verify_release_product_index
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, require_exact_keys, require_semver, require_sha256,
+    require_exact_keys, require_semver, require_sha256,
     sha256_bytes, sha256_file,
 )
-from ci.products.restore import object_relative_path
+from ci.products.restore import (
+    memoized_file_inventory as regular_file_inventory, object_relative_path, verification_scoped,
+)
 from ci.products.sdk_campaign_index import verify_release_sdk_campaign_objects
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from ci.products.signing_isolation import require_no_signing_secret
@@ -37,6 +39,7 @@ _OBJECT_PIN_FIELDS = {"product", "component", "phase", "target", "buildKey",
                       "receiptSha256", "objectSha256", "relativePath"}
 
 
+@verification_scoped
 def verify_sdk_candidate_join(
     promoted_catalog: Path, forwarded_objects: Path, forwarded_maven: Path, *,
     expected_promoted_inventory_sha256: str, expected_promoted_index_sha256: str,

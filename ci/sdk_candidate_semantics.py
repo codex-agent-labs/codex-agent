@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
+import zipfile
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -21,12 +21,15 @@ from ci.sdk_completion import verify_completed_parity_archive
 from ci.products.aggregate import validate_sdk_compatibility
 from ci.products.index import SignedProductIndex, verify_release_product_index
 from ci.products.inventory import (
-    load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
+    load_canonical_json_bytes, read_regular_file_bytes,
     require_array, require_exact_keys, require_integer, require_semver, require_sha256,
     sha256_bytes, sha256_file,
 )
 from ci.products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
-from ci.products.restore import object_relative_path, restore_object
+from ci.products.restore import (
+    _verified_object_snapshot, memoized_file_inventory as regular_file_inventory,
+    object_relative_path, verification_scoped,
+)
 from ci.products.signing_isolation import require_no_signing_secret
 
 
@@ -104,6 +107,28 @@ def verify_candidate_sdk_parity(archive, phase_identities, parity_pins, entries,
         expected_bytes=parity_pins["archiveBytes"], expected_sha256=parity_pins["archiveSha256"])
 
 
+def _package_compatibility(archive: Path, entry: dict, object_sha256: str, sdk_version: str) -> bytes:
+    """Read only the consumed member from an exact, fully verified object."""
+    with _verified_object_snapshot(archive, build_key=entry["buildKey"],
+            receipt_sha256=entry["receiptSha256"], object_sha256=object_sha256) as (snapshot, verified):
+        receipt = verified["receipt"]
+        outputs = [item for item in receipt["outputs"]
+                   if item["relativePath"] == _RESOURCE and item["kind"] == "evidence"]
+        if (len(outputs) != 1 or receipt["productVersion"] != sdk_version
+                or any(receipt[field] != entry[field]
+                       for field in ("product", "component", "phase", "target"))):
+            raise ValueError("SDK candidate Maven package lacks exact compatibility evidence")
+        size = outputs[0]["bytes"]
+        if not 0 < size <= 16 * 1024 * 1024:
+            raise ValueError("SDK candidate compatibility exceeds its size bound")
+        with zipfile.ZipFile(snapshot) as zipped, zipped.open("stage/" + _RESOURCE) as member:
+            raw = member.read(size + 1)
+        if len(raw) != size or sha256_bytes(raw) != outputs[0]["sha256"]:
+            raise ValueError("SDK candidate compatibility differs from original package receipt")
+        return raw
+
+
+@verification_scoped
 def verify_sdk_candidate_semantics(promoted_catalog: Path, forwarded_objects: Path,
                                    forwarded_maven: Path, selection: dict, *,
                                    parity_archive: Path, parity_phase_identities: Path) -> dict:
@@ -138,27 +163,12 @@ def verify_sdk_candidate_semantics(promoted_catalog: Path, forwarded_objects: Pa
         raise ValueError("SDK candidate lacks the three exact Maven package objects")
     originals = regular_file_inventory(forwarded_objects)
     contents = []
-    with tempfile.TemporaryDirectory(prefix="sdk-candidate-semantics-") as temporary:
-        root = Path(temporary).resolve()
-        for instance in sorted(_PACKAGES):
-            entry = entries[instance]
-            archive = (Path(forwarded_objects) / "objects" /
-                       object_relative_path(entry["buildKey"], entry["receiptSha256"]))
-            stage = root / instance.component
-            restored = restore_object(archive, stage,
-                build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
-            receipt = restored["receipt"]
-            evidence_outputs = [item for item in receipt["outputs"]
-                if item["relativePath"] == _RESOURCE and item["kind"] == "evidence"]
-            if (len(evidence_outputs) != 1 or receipt["productVersion"] != pins["expected_sdk_version"]
-                    or receipt["phase"] != "package" or receipt["component"] != instance.component
-                    or receipt["target"] != instance.target):
-                raise ValueError("SDK candidate Maven package lacks exact compatibility evidence")
-            raw = read_regular_file_bytes(stage / _RESOURCE, max_bytes=16 * 1024 * 1024,
-                                          reject_symlink_parents=True)
-            if sha256_bytes(raw) != evidence_outputs[0]["sha256"]:
-                raise ValueError("SDK candidate compatibility differs from original package receipt")
-            contents.append(raw)
+    for instance in sorted(_PACKAGES):
+        entry = entries[instance]
+        archive = (Path(forwarded_objects) / "objects" /
+                   object_relative_path(entry["buildKey"], entry["receiptSha256"]))
+        contents.append(_package_compatibility(archive, entry, objects[instance]["objectSha256"],
+                                               pins["expected_sdk_version"]))
     if (len(set(contents)) != 1
             or sha256_bytes(contents[0]) != dependencies["sdkCompatibilitySha256"]):
         raise ValueError("SDK candidate packages differ from approved compatibility bytes")

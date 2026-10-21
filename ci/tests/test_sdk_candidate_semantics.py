@@ -10,8 +10,10 @@ import zipfile
 from unittest.mock import patch
 
 from ci import sdk_candidate_semantics as candidate
+from ci.products import restore
 from ci.products.aggregate import RUNTIME_TARGETS
 from ci.products.inventory import canonical_json_bytes, sha256_bytes, sha256_file
+from ci.products.receipt import compute_build_key, write_output_manifest, write_phase_receipt
 from ci.products.registry import NATIVE_BINDINGS, PHASE_INSTANCE_IDS, PhaseInstanceId
 from ci.products.restore import object_relative_path
 from ci.tests.test_sdk_completion import phase
@@ -119,25 +121,18 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
     def _verify(self, *, raw=None, selection=None, per_component=None):
         raw = self.raw if raw is None else raw
         selection = self.selected if selection is None else selection
-        def restore(_archive, stage, **_kwargs):
-            package_bytes = (per_component or {}).get(stage.name, raw)
-            (stage / "outputs/evidence").mkdir(parents=True)
-            (stage / candidate._RESOURCE).write_bytes(package_bytes)
-            return {"receipt": {"productVersion": "0.8.0", "phase": "package",
-                    "component": stage.name, "target": next(instance.target
-                        for instance in candidate._PACKAGES if instance.component == stage.name),
-                    "outputs": [{"kind": "evidence", "relativePath": candidate._RESOURCE,
-                                 "sha256": sha256_bytes(package_bytes)}]}}
+        def compatibility(_archive, entry, _digest, _version):
+            return (per_component or {}).get(entry["component"], raw)
         with patch.object(candidate, "verify_sdk_candidate_join",
                           return_value={"product": "sdk", "originalObjectCount": 62}) as join, \
              patch.object(candidate, "verify_release_product_index",
                           return_value=({"entries": self.entries}, self.index_bytes)), \
-             patch.object(candidate, "restore_object", side_effect=restore) as restored:
+             patch.object(candidate, "_package_compatibility", side_effect=compatibility) as consumed:
             result = candidate.verify_sdk_candidate_semantics(
                 self.root / "promoted", self.objects, self.root / "maven", selection,
                 parity_archive=self.parity_archive, parity_phase_identities=self.parity_phases)
         self.assertEqual(1, join.call_count)
-        self.assertEqual(3, restored.call_count)
+        self.assertEqual(3, consumed.call_count)
         return result
 
     def test_three_original_maven_packages_bind_exact_krs_dependencies(self):
@@ -225,6 +220,51 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
         (self.objects / "object-pins.json").write_bytes(b"{}\n")
         with self.assertRaisesRegex(ValueError, "object pins changed"):
             self._verify()
+
+
+class SdkCandidatePackageReadTest(unittest.TestCase):
+    def test_verified_scoped_member_reuse_without_stage_extraction(self):
+        # Real object/receipt/manifest checks; not a release or hosted fixture.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            stage = root / "stage"
+            resource = stage / candidate._RESOURCE
+            resource.parent.mkdir(parents=True)
+            raw = canonical_json_bytes(_compatibility())
+            resource.write_bytes(raw)
+            (resource.parent / "unconsumed.bin").write_bytes(b"unconsumed package evidence")
+            identity = dict(product="sdk", component="sdk-core", phase="package", target="common")
+            inputs = dict(inventory=[], phaseInputDigest=sha256_bytes(canonical_json_bytes([])),
+                versionIdentity="0.8.0", upstreamArtifacts=[], toolchainProfileDigest=_DIGEST,
+                flagsDigest=_DIGEST, outputSchemaVersion=1)
+            producer = dict(repository="example/fixture", workflowPath=".github/workflows/ci.yml",
+                commit="a" * 40, tree="b" * 40, event="pull_request", runId=1, runAttempt=1, pullRequest=1)
+            key = compute_build_key(**identity, inputs=inputs)
+            write_output_manifest(stage, *identity.values(), "0.8.0", {"evidence": "outputs/evidence"})
+            write_phase_receipt(stage, root, *identity.values(), "0.8.0", key, inputs, producer, "development")
+            stored = restore.store_local_object(stage, root / "phase-receipt.json", root / "cache")
+            entry = dict(identity, buildKey=key, receiptSha256=stored["receiptSha256"])
+            with restore.verification_session() as session, \
+                 patch.object(restore, "_verify_snapshot", wraps=restore._verify_snapshot) as scan, \
+                 patch.object(restore, "_extract_verified_stage", side_effect=AssertionError("full extraction")), \
+                 patch.object(zipfile.ZipFile, "extractall", side_effect=AssertionError("full extraction")):
+                for _ in range(2):
+                    self.assertEqual(raw, candidate._package_compatibility(
+                        stored["path"], entry, stored["objectSha256"], "0.8.0"))
+                self.assertEqual(1, scan.call_count)
+                self.assertEqual(1, session["hits"])
+                for changed, digest, version in (
+                    (dict(entry, component="sdk-android"), stored["objectSha256"], "0.8.0"),
+                    (entry, stored["objectSha256"], "0.8.1"),
+                    (entry, _DIGEST, "0.8.0"),
+                    (dict(entry, receiptSha256=_DIGEST), stored["objectSha256"], "0.8.0")):
+                    with self.subTest(entry=changed, digest=digest, version=version), self.assertRaises(ValueError):
+                        candidate._package_compatibility(stored["path"], changed, digest, version)
+                original = stored["path"].read_bytes()
+                stored["path"].chmod(0o600)
+                stored["path"].write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+                with self.assertRaises(ValueError):
+                    candidate._package_compatibility(stored["path"], entry, stored["objectSha256"], "0.8.0")
 
 
 if __name__ == "__main__":
