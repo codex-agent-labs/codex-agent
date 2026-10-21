@@ -224,9 +224,14 @@ def _verify_sdk_apple_with_tooling(
         expected.mkdir()
         for name, data in expected_bytes.items():
             (expected / name).write_bytes(data)
+        # A development product may use the caller's explicitly pinned release
+        # verifier. Product trust stays unchanged; release verification never downgrades.
+        tooling_trust = ("release" if required_trust_domain == "development"
+                         and tooling_keyring is not None and tooling_keys_directory is not None
+                         else required_trust_domain)
         with verified_tooling_capture(
             tooling_evidence, repository, tooling_public_key,
-            required_trust_domain=required_trust_domain, keyring=tooling_keyring,
+            required_trust_domain=tooling_trust, keyring=tooling_keyring,
             keys_directory=tooling_keys_directory, policy_revision=policy_revision,
         ) as jar:
             private_expected = {name: expected / name for name in expected_paths}

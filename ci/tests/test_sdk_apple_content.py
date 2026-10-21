@@ -221,6 +221,38 @@ class SdkAppleContentTest(unittest.TestCase):
                 patch("ci.products.sdk_apple_content.subprocess.run", side_effect=self.execute):
             return verify_sdk_apple_validation_binding_content(**{**arguments, **changes})
 
+    def test_development_product_can_use_explicit_release_tooling_without_downgrade(self):
+        keyring, keys = self.root / "keyring.json", self.root / "keys"
+        for requested, ring, directory, expected in (
+            ("development", keyring, keys, "release"),
+            ("development", None, None, "development"),
+            ("development", keyring, None, "development"),
+            ("development", None, keys, "development"),
+            ("release", keyring, keys, "release"),
+            ("release", None, None, "release"),
+            ("invalid", keyring, keys, "invalid"),
+        ):
+            @contextmanager
+            def capture(evidence, repository, public_key, **policy):
+                self.assertEqual(dict(required_trust_domain=expected, keyring=ring,
+                    keys_directory=directory, policy_revision="a" * 40), policy)
+                if requested == "invalid" or (requested == "release" and ring is None) or ((ring is None) != (directory is None)):
+                    raise ValueError("unchanged tooling gate rejects incomplete or invalid policy")
+                yield self.jar
+
+            calls_before = len(self.calls)
+            before = regular_file_inventory(self.root, allow_empty=True)
+            with self.subTest(requested=requested, ring=ring, directory=directory), patch.object(self, "capture", capture):
+                arguments = dict(required_trust_domain=requested, tooling_keyring=ring, tooling_keys_directory=directory)
+                rejected = requested == "invalid" or (requested == "release" and ring is None) or ((ring is None) != (directory is None))
+                if rejected:
+                    with self.assertRaisesRegex(ValueError, "unchanged tooling gate"):
+                        self.verify_binary(**arguments)
+                else:
+                    self.verify_binary(**arguments)
+                self.assertEqual(calls_before + (not rejected), len(self.calls))
+                self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+
     def test_validation_binding_replay_uses_private_selected_inputs_and_no_output(self):
         self.validation_binding_inputs()
         before = regular_file_inventory(self.root, allow_empty=True)
