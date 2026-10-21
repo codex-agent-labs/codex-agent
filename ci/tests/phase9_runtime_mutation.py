@@ -18,7 +18,8 @@ from ci.tests import phase9_ios_mutation as mutation
 from ci.tests.phase9_ios_package_check import receive
 from native_wrappers import host_classifier
 from product_reuse import _runtime_worker_environment, _provision_runtime_native_toolchain
-from products.inventory import git_regular_blob_bytes, sha256_file, write_canonical_json
+from products.inventory import (git_regular_blob_bytes, git_product_versions,
+    sha256_file, write_canonical_json)
 from products.signing_isolation import require_no_signing_secret
 from products.toolchain import load_toolchain_profile_bytes, observe_producer, verify_toolchain_profile
 
@@ -130,6 +131,46 @@ def hosted(target, role, destination, storage):
         print(json.dumps(result), flush=True)
         if error:
             raise ValueError(error)
+
+
+def prepare_binary(target, destination, storage):
+    """One exact Contract/source intake; no other Runtime or SDK bodies."""
+    from products.plan import plan_phase
+    from products.registry import PhaseInstanceId
+    from products.runtime_flags import load_runtime_binary_flags_bytes
+    from products.runtime_identity import derive_runtime_identity_from_git
+    from products.selection import phase_git_inventory
+
+    if target != 'linux-x64':
+        raise ValueError('Binary fixture currently elects only missing Linux x64')
+    started = time.monotonic_ns()
+    destination.mkdir()
+    spec = mutation.manifest()
+    intake = receive(spec['files'], destination / 'inputs', storage)
+    write_canonical_json(destination / 'intake.json', intake)
+    instance = PhaseInstanceId('runtime', target, 'binary', target)
+    receipt, projection, verification_ns = mutation.contract_inputs(destination, destination / 'inputs', instance)
+    fixture, environment = mutation.source_fixture(destination, destination / 'inputs')
+    revision = spec['sourceCommit']
+    with mutation.fixture_environment(environment):
+        profile = load_toolchain_profile_bytes(git_regular_blob_bytes(fixture, revision,
+            f'gradle/release/toolchains/runtime/{target}.json', max_bytes=1024*1024), target)
+        flags = load_runtime_binary_flags_bytes(git_regular_blob_bytes(fixture, revision,
+            'codex-agent-runtime-desktop/native/c-api/binary-flags.json', max_bytes=1024*1024))
+        plan = plan_phase(instance, inventory=phase_git_inventory(fixture, revision, instance),
+            versions=git_product_versions(fixture, revision), upstream_receipts=[receipt],
+            toolchain_profile_digest=profile.digest, flags_digest=flags[target].digest,
+            contract_projection=projection)
+        if plan['buildKey'] != KEYS[target]:
+            raise ValueError('Native mutation binary differs from the missing reviewed key')
+        plan['runtimeBinaryIdentity'] = derive_runtime_identity_from_git(fixture, revision, plan, projection)
+    write_canonical_json(destination / 'plan.json', plan)
+    prepared = dict(environment=environment, sourceCommit=revision, sourceTree=spec['sourceTree'],
+        originalContractProducer=receipt['producer'], buildKey=plan['buildKey'], profileDigest=profile.digest,
+        contractVerificationNs=verification_ns, elapsedNs=time.monotonic_ns()-started, intake=intake,
+        productExecutions=0, baselineAdmission=False)
+    write_canonical_json(destination / 'prepared.json', prepared)
+    return prepared, profile, plan
 
 
 if __name__ == '__main__':

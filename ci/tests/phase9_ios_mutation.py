@@ -166,13 +166,8 @@ def source_fixture(destination, inputs):
         ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_ALTERNATE_OBJECT_DIRECTORIES')}
 
 
-def prepare(destination, storage, *, client=('git', 'lfs')):
-    """Authenticate exact transported originals and reproduce only the missing key."""
-    started = time.monotonic_ns()
-    destination.mkdir()
-    require_regular_directory(destination, 'Mutation diagnostic directory')
-    inputs = destination / 'inputs'
-    intake = receive(inputs, storage, client=client)
+def contract_inputs(destination, inputs, instance):
+    """Shared exact development Contract authentication for mutation consumers."""
     specification = manifest()
     contract = inputs / 'contract'
     receipt_path = contract / 'metadata-receipt.json'
@@ -192,8 +187,19 @@ def prepare(destination, storage, *, client=('git', 'lfs')):
     projection = verify_contract_component_projection(stage, receipt_path,
         contract / (STEM + '.attestation.json'), contract / (STEM + '.attestation.sig'),
         contract / 'development.pub', expected_trust_domain='development',
-        expected_contract_version='0.8.0', required_components=required_contract_components(INSTANCE))
-    verification_ns = time.monotonic_ns() - tick
+        expected_contract_version='0.8.0', required_components=required_contract_components(instance))
+    return receipt, projection, time.monotonic_ns() - tick
+
+
+def prepare(destination, storage, *, client=('git', 'lfs')):
+    """Authenticate exact transported originals and reproduce only the missing key."""
+    started = time.monotonic_ns()
+    destination.mkdir()
+    require_regular_directory(destination, 'Mutation diagnostic directory')
+    inputs = destination / 'inputs'
+    intake = receive(inputs, storage, client=client)
+    specification = manifest()
+    receipt, projection, verification_ns = contract_inputs(destination, inputs, INSTANCE)
     fixture, environment = source_fixture(destination, inputs)
     with fixture_environment(environment):
         plan = plan_phase(INSTANCE,

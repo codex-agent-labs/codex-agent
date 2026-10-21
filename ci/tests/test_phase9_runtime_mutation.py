@@ -64,7 +64,8 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
     def test_scope_excludes_all_product_inventories_and_completed_mac(self):
         from products.registry import PHASE_INSTANCE_IDS
         from products.selection import phase_inventory_paths
-        paths = ['ci/tests/phase9_runtime_mutation.py', 'ci/tests/test_phase9_runtime_mutation.py',
+        paths = ['ci/tests/phase9_runtime_mutation.py', 'ci/tests/phase9_ios_mutation.py',
+                 'ci/tests/test_phase9_runtime_mutation.py',
                  '.github/workflows/portable-reuse-proof.yml']
         self.assertTrue(all(not phase_inventory_paths(paths, phase) for phase in PHASE_INSTANCE_IDS))
         workflow = (fixture.ROOT / paths[-1]).read_text().split('  phase9-ios-package-check:')[0]
@@ -76,6 +77,8 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
         with patch.object(fixture, 'receive') as receive:
             with self.assertRaisesRegex(ValueError, 'existing target'):
                 fixture.prepare('macos-arm64', Path('unused'), Path('unused-cache'))
+            with self.assertRaisesRegex(ValueError, 'only missing Linux x64'):
+                fixture.prepare_binary('macos-arm64', Path('unused'), Path('unused-cache'))
             receive.assert_not_called()
 
     def test_profile_mismatch_is_preserved_and_never_grants_admission(self):
