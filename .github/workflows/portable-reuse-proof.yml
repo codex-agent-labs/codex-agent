@@ -9,6 +9,36 @@ permissions:
   actions: read
 
 jobs:
+  phase9-xcode-probe:
+    if: >-
+      github.event.label.name == 'ci:phase9-xcode-probe' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Inspect the matching Apple-signed installation without building or exporting it
+        run: python3 -B ci/tests/phase9_xcode_probe.py "$RUNNER_TEMP/phase9-xcode-probe"
+      - name: Retain small original observations even when signature verification fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-xcode-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase9-xcode-probe
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+
   phase9-ios-mutation:
     if: >-
       github.event.label.name == 'ci:phase9-ios-mutation' &&
