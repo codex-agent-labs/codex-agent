@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack
+import json
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +15,9 @@ from zipfile import ZipFile
 
 from ci import sdk_candidate_catalog as candidate
 from ci.products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes, sha256_file
+from ci.products.registry import PHASE_INSTANCE_IDS
+from ci.tests.test_sdk_candidate_semantics import _parity_fixture
+from ci.tests.test_sdk_completion import phase
 
 
 _A, _B, _C = "a" * 40, "b" * 40, "c" * 40
@@ -135,6 +140,112 @@ class SdkCandidateCatalogTest(unittest.TestCase):
                     selected, root / "secret", token="token",
                     environ={"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": "private"})
             observer.assert_not_called()
+
+
+class SdkCandidateParityTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.archive, self.phases = _parity_fixture(self.root, [phase(item) for item in sorted(PHASE_INSTANCE_IDS)])
+        self.selected = dict(schemaVersion=1, producer=dict(repository=candidate._REPOSITORY,
+            workflowPath=".github/workflows/ci.yml", event="pull_request", pullRequest=31,
+            commit=_A, tree=_B, runId=10, runAttempt=1), trustedWorkflowSha=_C, jobId=22,
+            artifactId=20, artifactSha256=sha256_file(self.archive), artifactBytes=self.archive.stat().st_size,
+            phaseIdentitiesSha256=sha256_file(self.phases))
+        self.run = dict(id=10, run_attempt=1, path=".github/workflows/ci.yml", event="pull_request",
+            status="completed", conclusion="failure", head_sha=_A, pull_requests=[{"number": 31}],
+            referenced_workflows=[dict(path=f"{candidate._REPOSITORY}/{candidate._PARITY_WORKFLOW}@{_C}", sha=_C)],
+            repository=dict(full_name=candidate._REPOSITORY, fork=False),
+            head_repository=dict(full_name=candidate._REPOSITORY, fork=False))
+        self.job = dict(id=22, run_id=10, head_sha=_A, name=candidate._PARITY_JOB,
+            status="completed", conclusion="success", started_at="2026-10-20T12:00:00Z",
+            completed_at="2026-10-20T13:00:00Z")
+        self.artifact = dict(id=20, digest=self.selected["artifactSha256"], expired=False,
+            name="codex-agent-sdk-binding-parity-" + _B,
+            archive_download_url=f"https://api.github.com/repos/{candidate._REPOSITORY}/actions/artifacts/20/zip",
+            workflow_run=dict(id=10, head_sha=_A), size_in_bytes=self.selected["artifactBytes"],
+            created_at="2026-10-20T12:30:00Z")
+        self.stack = self.enterContext(ExitStack())
+        self.stack.enter_context(patch.object(candidate.transport, "_original_ci_run", return_value=self.run))
+        self.stack.enter_context(patch.object(candidate.transport, "_observe_tested_commit",
+            return_value=dict(sha=_A, tree=dict(sha=_B))))
+        self.jobs = self.stack.enter_context(patch.object(candidate.transport, "paginated_items", return_value=[self.job]))
+        self.metadata = self.stack.enter_context(patch.object(candidate.transport, "api_json", return_value=self.artifact))
+        self.acquire = self.stack.enter_context(patch.object(candidate.transport, "_reuse_contract_ci_upload",
+            side_effect=AssertionError("held archive must not download")))
+        self.extract = self.stack.enter_context(patch.object(candidate, "safe_extract",
+            side_effect=AssertionError("parity capture must not extract the full archive")))
+
+    def capture(self, name="out", **kwargs):
+        return candidate.capture_sdk_candidate_parity(self.selected, self.archive, self.root / name,
+                                                       token="observation-only", environ={}, **kwargs)
+
+    def test_held_success_survives_failed_parent_and_keeps_original_bytes_without_copy(self):
+        before = self.archive.stat()
+        result = self.capture()
+        self.assertFalse(result["admitted"])
+        self.assertTrue(result["heldArchive"])
+        self.assertEqual(self.archive.stat(), before)
+        self.assertEqual(self.phases.read_bytes(), (self.root / "out/original-phase-identities.json").read_bytes())
+        self.assertEqual({"transport.json", "original-phase-identities.json"},
+                         {item.name for item in (self.root / "out").iterdir()})
+        record = json.loads((self.root / "out/transport.json").read_bytes())
+        self.assertEqual(self.selected["producer"], record["producer"])
+        self.assertEqual([self.job], record["observed"]["jobs"])
+        self.capture("second")
+        self.assertEqual(2, self.metadata.call_count)  # fresh custody on each call
+        self.assertEqual(2, self.jobs.call_count)
+        self.acquire.assert_not_called()
+        self.extract.assert_not_called()
+
+    def test_missing_archive_downloads_once_after_metadata_and_window_admission(self):
+        destination = self.root / "missing.zip"
+        def acquire(*args, **kwargs):
+            self.assertEqual(1, self.metadata.call_count)
+            self.assertEqual(self.artifact, args[0])
+            self.assertEqual(candidate._PARITY_LIMIT, kwargs["limit"])
+            shutil.copyfile(self.archive, kwargs["destination"])
+        self.acquire.side_effect = acquire
+        result = candidate.capture_sdk_candidate_parity(self.selected, destination, self.root / "out",
+                                                       token="observation-only", environ={})
+        self.assertFalse(result["heldArchive"])
+        self.assertEqual(self.selected["artifactSha256"], sha256_file(destination))
+        self.acquire.assert_called_once()
+        self.metadata.assert_called_once()
+        self.extract.assert_not_called()
+
+    def test_invalid_source_job_window_size_and_phase_pins_fail_without_download(self):
+        mutations = [(self.run, {"event": "push"}), (self.run, {"head_repository": {"fork": True}}),
+            (self.run["referenced_workflows"][0], {"sha": _A}), (self.job, {"conclusion": "failure"}),
+            (self.job, {"id": 23}), (self.artifact, {"created_at": "2026-10-21T12:30:00Z"}),
+            (self.artifact, {"digest": _D}), (self.artifact, {"expired": True}),
+            (self.artifact, {"size_in_bytes": self.selected["artifactBytes"] + 1}),
+            (self.selected, {"phaseIdentitiesSha256": _D})]
+        for target, change in mutations:
+            with self.subTest(change=change), patch.dict(target, change), self.assertRaises(ValueError):
+                self.capture()
+            self.assertFalse((self.root / "out").exists())
+        self.acquire.assert_not_called()
+
+    def test_corrupt_held_original_and_signing_secrets_never_trigger_replacement(self):
+        self.archive.write_bytes(b"corrupt original retained for diagnosis")
+        with self.assertRaises(ValueError):
+            self.capture()
+        self.assertEqual(b"corrupt original retained for diagnosis", self.archive.read_bytes())
+        self.acquire.assert_not_called()
+        self.metadata.reset_mock()
+        for name in (*candidate._SECRETS, "CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"):
+            with patch.dict(os.environ, {name: "forbidden"}), self.assertRaisesRegex(ValueError, "secret"):
+                self.capture()
+        self.metadata.assert_not_called()
+        path = self.root / "selection.json"
+        path.write_bytes(canonical_json_bytes(self.selected))
+        with self.assertRaisesRegex(ValueError, "S1048 digest"):
+            candidate.main(["--kind", "parity", "--archive", str(self.archive),
+                "--selection", str(path), "--expected-selection-sha256", _D,
+                "--destination", str(self.root / "cli")])
+        self.metadata.assert_not_called()
 
 
 if __name__ == "__main__":
