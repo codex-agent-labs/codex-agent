@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -52,6 +53,13 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
                 with patch.dict(os.environ, GITHUB_EVENT_NAME='push'):
                     with self.assertRaisesRegex(ValueError, 'same-repository'):
                         fixture.hosted_context('linux-arm64', 'cross-builder')
+                payload = json.loads(event.read_bytes())
+                payload['label']['name'] = fixture.WINDOWS_LABEL
+                event.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(ValueError, 'same-repository'):
+                    fixture.hosted_context('linux-arm64', 'cross-builder')
+                host.return_value = 'windows-x64'
+                self.assertEqual('windows-x64', fixture.hosted_context('windows-x64', 'builder')['target'])
 
     def test_scope_excludes_all_product_inventories_and_completed_mac(self):
         from products.registry import PHASE_INSTANCE_IDS
@@ -59,6 +67,12 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
         paths = ['ci/tests/phase9_runtime_mutation.py', 'ci/tests/test_phase9_runtime_mutation.py',
                  '.github/workflows/portable-reuse-proof.yml']
         self.assertTrue(all(not phase_inventory_paths(paths, phase) for phase in PHASE_INSTANCE_IDS))
+        workflow = (fixture.ROOT / paths[-1]).read_text().split('  phase9-ios-package-check:')[0]
+        retry, original = [json.loads(value) for value in re.findall(r"fromJSON\('([^']+)'\)", workflow)]
+        self.assertEqual([dict(target='windows-x64', role='builder', runner='windows-2025')], retry)
+        self.assertEqual({('macos-x64', 'builder'), ('linux-x64', 'builder'), ('windows-x64', 'builder'),
+                          ('linux-arm64', 'cross-builder'), ('linux-arm64', 'supervisor-builder')},
+                         {(row['target'], row['role']) for row in original})
         with patch.object(fixture, 'receive') as receive:
             with self.assertRaisesRegex(ValueError, 'existing target'):
                 fixture.prepare('macos-arm64', Path('unused'), Path('unused-cache'))
@@ -74,6 +88,8 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
             observation = dict(producer=dict(role='supervisor-builder', runner=dict(os='Linux', arch='ARM64'), tools=[]),
                                imageProvenance={'image': 'test', 'imageVersion': 'test'})
             def observe(*args, **kwargs):
+                # dict(os.environ) loses Windows' native case-insensitive lookup.
+                self.assertIs(kwargs['environment'], os.environ)
                 self.assertEqual('', os.environ['GH_TOKEN'])
                 self.assertEqual('', os.environ['GITHUB_TOKEN'])
                 return observation

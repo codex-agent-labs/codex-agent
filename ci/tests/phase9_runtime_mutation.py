@@ -23,6 +23,7 @@ from products.signing_isolation import require_no_signing_secret
 from products.toolchain import load_toolchain_profile_bytes, observe_producer, verify_toolchain_profile
 
 LABEL = 'ci:phase9-runtime-mutation-preflight'
+WINDOWS_LABEL = 'ci:phase9-runtime-windows-preflight'
 KEYS = {
     'linux-arm64': 'sha256:7ed7ab6469633c492228bcca5d4cbd49b7965f573acc1c8ecd530400e88bf03b',
     'linux-x64': 'sha256:209247419e5bb5d4cd4fe2fbe76126a85f617159079ba94a2e6c2dd01d6d74fe',
@@ -49,7 +50,8 @@ def hosted_context(target, role):
     if (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('GITHUB_EVENT_NAME') != 'pull_request'
             or os.environ.get('GITHUB_REPOSITORY') != repository or pr.get('number') != 31
             or head.get('repo', {}).get('full_name') != repository or head.get('repo', {}).get('fork') is not False
-            or head.get('sha') != source or event.get('label', {}).get('name') != LABEL
+            or head.get('sha') != source or event.get('label', {}).get('name') not in
+                ({LABEL, WINDOWS_LABEL} if target == 'windows-x64' else {LABEL})
             or mutation.git('diff', 'HEAD', '--')):
         raise ValueError('Preflight requires its exact same-repository labeled PR source')
     if host_classifier() != expected_host:
@@ -109,7 +111,7 @@ def hosted(target, role, destination, storage):
             observation = observe_producer(fixture, prepared['sourceCommit'], target, role, target,
                 konan_data_dir=Path(environment['KONAN_DATA_DIR']) if tools else None,
                 kotlin_plugin_jar=Path(tools['codexAgent.kotlinPluginJar']) if tools else None,
-                native_archive=Path(tools['codexAgent.nativeArchive']) if tools else None, environment=environment)
+                native_archive=Path(tools['codexAgent.nativeArchive']) if tools else None, environment=os.environ)
         write_canonical_json(destination / 'toolchain-observation.json', observation)
         actual = observation['producer']
         error = None

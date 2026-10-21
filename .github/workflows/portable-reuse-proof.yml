@@ -11,7 +11,8 @@ permissions:
 jobs:
   phase9-runtime-mutation-preflight:
     if: >-
-      github.event.label.name == 'ci:phase9-runtime-mutation-preflight' &&
+      (github.event.label.name == 'ci:phase9-runtime-mutation-preflight' ||
+       github.event.label.name == 'ci:phase9-runtime-windows-preflight') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -19,22 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: macos-x64
-            role: builder
-            runner: macos-26-intel
-          - target: linux-x64
-            role: builder
-            runner: ubuntu-24.04
-          - target: windows-x64
-            role: builder
-            runner: windows-2025
-          - target: linux-arm64
-            role: cross-builder
-            runner: ubuntu-24.04
-          - target: linux-arm64
-            role: supervisor-builder
-            runner: ubuntu-24.04-arm
+        include: >-
+          ${{ github.event.label.name == 'ci:phase9-runtime-windows-preflight' &&
+              fromJSON('[{"target":"windows-x64","role":"builder","runner":"windows-2025"}]') ||
+              fromJSON('[{"target":"macos-x64","role":"builder","runner":"macos-26-intel"},
+                         {"target":"linux-x64","role":"builder","runner":"ubuntu-24.04"},
+                         {"target":"windows-x64","role":"builder","runner":"windows-2025"},
+                         {"target":"linux-arm64","role":"cross-builder","runner":"ubuntu-24.04"},
+                         {"target":"linux-arm64","role":"supervisor-builder","runner":"ubuntu-24.04-arm"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
