@@ -18,7 +18,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.contract_phase10_inventory import capture_contract_phase10_inventory
-from products.contract_phase10_maven import verify_contract_phase10_maven
+from products.contract_phase10_maven import verify_contract_central_bundle, verify_contract_phase10_maven
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
@@ -26,7 +26,7 @@ from products.inventory import (
 )
 
 
-_CONTROL = {"schemaVersion", "releaseCaller", "releaseFiles", "contractInventory", "mavenSidecars"}
+_CONTROL = {"schemaVersion", "releaseCaller", "releaseFiles", "contractInventory", "mavenSidecars", "centralBundle"}
 
 
 def _inventory_digest(directory: Path) -> str:
@@ -130,7 +130,7 @@ def forward_verified_contract_phase10_bytes(
             prepared / "sidecar-selection.json", max_bytes=16 * 1024 * 1024,
             reject_symlink_parents=True,
         )), _CONTROL, "Contract Phase-10 sidecar selection")
-        if (control["schemaVersion"] != 1 or control["releaseCaller"] != caller
+        if (control["schemaVersion"] != 2 or control["releaseCaller"] != caller
                 or control["releaseFiles"] != regular_file_inventory(release)):
             raise ValueError("Contract Phase-10 sidecar selection differs from release evidence")
         with tempfile.TemporaryDirectory(prefix="ct-phase11-verify-") as verification:
@@ -149,8 +149,13 @@ def forward_verified_contract_phase10_bytes(
         if (control["mavenSidecars"] != maven
                 or maven["payloadSha256"] != expected_payload_sha256):
             raise ValueError("Contract Phase-10 Maven sidecars differ from selected payload")
+        central_name = f"codex-agent-contract-{expected_contract_version}-central.zip"
+        central = verify_contract_central_bundle(prepared / "central" / central_name, maven)
+        if control["centralBundle"] != central:
+            raise ValueError("Contract Phase-10 Central envelope differs from selected bytes")
         expected_paths = {
             "sidecar-selection.json", "publication-pgp-public-key.asc",
+            f"central/{central_name}",
             *(f"contract-release-evidence/{row['relativePath']}" for row in control["releaseFiles"]),
             *(f"maven-sidecars/{row['relativePath']}" for row in maven["sidecarFiles"]),
         }
@@ -166,6 +171,7 @@ def forward_verified_contract_phase10_bytes(
                 "payloadSha256": expected_payload_sha256,
                 "metadataBuildKey": expected_metadata_build_key,
                 "phase10InventorySha256": expected_inventory_sha256,
+                "centralBundle": central,
                 "candidateInventory": pinned_inventory}
 
 

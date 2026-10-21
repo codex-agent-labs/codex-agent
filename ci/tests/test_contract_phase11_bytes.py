@@ -66,6 +66,9 @@ class ContractPhase11BytesTest(unittest.TestCase):
         self.assertEqual(regular_file_inventory(source), regular_file_inventory(destination))
         self.assertEqual(payload.read_bytes(),
                          (destination / "contract-release-evidence/contract-input" / payload.name).read_bytes())
+        central = source / "central" / control["centralBundle"]["fileName"]
+        self.assertEqual(control["centralBundle"], result["centralBundle"])
+        self.assertEqual(central.read_bytes(), (destination / "central" / central.name).read_bytes())
         cli_destination = phase10.fixture.root / "contract-candidate-cli"
         arguments = ["--protected-output", str(source), "--destination", str(cli_destination)]
         for name, value in pins.items():
@@ -126,6 +129,18 @@ class ContractPhase11BytesTest(unittest.TestCase):
             )
         self.assertFalse((phase10.fixture.root / "bad-signature").exists())
         sidecar.write_bytes(original_signature)
+
+        central_bytes = central.read_bytes()
+        central.write_bytes(b"not the finalized Central ZIP\n")
+        with self.assertRaises(ValueError):
+            candidate.forward_verified_contract_phase10_bytes(
+                source, phase10.fixture.root / "bad-central", **{
+                    **pins, "expected_inventory_sha256": sha256_bytes(canonical_json_bytes(
+                        regular_file_inventory(source))),
+                },
+            )
+        self.assertFalse((phase10.fixture.root / "bad-central").exists())
+        central.write_bytes(central_bytes)
 
         def tamper_before_publish(prepared, output, *, expected_inventory):
             (prepared / "contract-release-evidence/contract-input" / payload.name).write_bytes(b"changed\n")

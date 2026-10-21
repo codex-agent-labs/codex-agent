@@ -26,7 +26,8 @@ from product_reuse import _release_trust, capture_contract_ci_artifact, capture_
 from products.contract_attestation import build_contract_attestation
 from products.contract_phase10_inventory import capture_contract_phase10_inventory
 from products.contract_phase10_maven import (
-    produce_contract_phase10_maven_sidecars, verify_contract_phase10_maven,
+    produce_contract_central_bundle, produce_contract_phase10_maven_sidecars,
+    verify_contract_central_bundle, verify_contract_phase10_maven,
 )
 from products.inventory import (
     canonical_json_bytes, load_canonical_json, load_json_bytes, publish_regular_tree,
@@ -243,11 +244,14 @@ def sign_contract_phase10_maven_handoff(
         ):
             raise ValueError("Contract PGP signatures differ from the attested payload")
         (published / "publication-pgp-public-key.asc").write_bytes(pgp_key)
+        central = produce_contract_central_bundle(
+            payload, published / "maven-sidecars", published / "central", signed,
+        )
         control = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "releaseCaller": load_canonical_json(prepared / "caller.json"),
             "releaseFiles": regular_file_inventory(release),
-            "contractInventory": record, "mavenSidecars": signed,
+            "contractInventory": record, "mavenSidecars": signed, "centralBundle": central,
         }
         write_canonical_json(published / "sidecar-selection.json", control)
         expected_output = regular_file_inventory(published)
@@ -258,6 +262,7 @@ def sign_contract_phase10_maven_handoff(
         ], key=lambda item: item["relativePath"])
                 or verify_contract_phase10_maven(payload, published / "maven-sidecars",
                                                   pgp_public_key, expected_pgp_key_sha256) != signed
+                or verify_contract_central_bundle(published / "central" / central["fileName"], signed) != central
                 or regular_file_inventory(published) != expected_output):
             raise ValueError("Contract Maven prepared or signed files changed before publication")
         publish_regular_tree(published, destination, expected_inventory=expected_output)

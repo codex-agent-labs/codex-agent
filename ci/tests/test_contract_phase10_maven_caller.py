@@ -107,7 +107,10 @@ class ContractPhase10MavenCallerTest(unittest.TestCase):
         self.assertEqual(self.fixture.public_key.read_bytes(),
                          (release / "contract-input/public-key.pub").read_bytes())
         self.assertEqual({"schemaVersion", "releaseCaller", "releaseFiles",
-                          "contractInventory", "mavenSidecars"}, set(result))
+                          "contractInventory", "mavenSidecars", "centralBundle"}, set(result))
+        self.assertEqual(2, result["schemaVersion"])
+        self.assertEqual(result["centralBundle"]["sha256"], sha256_bytes(
+            (self.destination / "central" / result["centralBundle"]["fileName"]).read_bytes()))
 
     def test_no_secret_prepare_and_no_token_sign(self) -> None:
         with self.assertRaisesRegex(ValueError, "forbidden credentials"):

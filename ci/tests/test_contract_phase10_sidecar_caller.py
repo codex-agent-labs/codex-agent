@@ -116,6 +116,10 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
         with mock.patch.object(caller, "produce_contract_phase10_maven_sidecars", side_effect=signed), \
                 mock.patch.object(caller, "verify_contract_phase10_maven",
                                   side_effect=lambda *_: captured["signed"]), \
+                mock.patch.object(caller, "produce_contract_central_bundle",
+                                  return_value={"fileName": "fixture-central.zip"}), \
+                mock.patch.object(caller, "verify_contract_central_bundle",
+                                  return_value={"fileName": "fixture-central.zip"}), \
                 mock.patch.object(caller, "publish_regular_tree", side_effect=mutate_then_publish):
             with self.assertRaisesRegex(ValueError, "pinned inventory"):
                 self.invoke("A" * 40)
@@ -141,6 +145,10 @@ class ContractPhase10SidecarCallerTest(unittest.TestCase):
         with mock.patch.object(caller, "produce_contract_phase10_maven_sidecars", side_effect=signed), \
                 mock.patch.object(caller, "verify_contract_phase10_maven",
                                   side_effect=lambda *_: captured["signed"]), \
+                mock.patch.object(caller, "produce_contract_central_bundle",
+                                  return_value={"fileName": "fixture-central.zip"}), \
+                mock.patch.object(caller, "verify_contract_central_bundle",
+                                  return_value={"fileName": "fixture-central.zip"}), \
                 mock.patch.object(caller, "write_canonical_json", side_effect=altered_control), \
                 mock.patch.object(caller, "publish_regular_tree") as publish:
             with self.assertRaisesRegex(ValueError, "original or PGP key changed"):

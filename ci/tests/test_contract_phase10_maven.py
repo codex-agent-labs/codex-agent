@@ -12,10 +12,12 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from zipfile import ZipFile
 
 from ci.products.contract_model import CONTRACT_CHECKSUM_SUFFIXES, verify_contract_bundle
 from ci.products.contract_phase10_maven import (
-    produce_contract_phase10_maven_sidecars, verify_contract_phase10_maven,
+    produce_contract_central_bundle, produce_contract_phase10_maven_sidecars,
+    verify_contract_central_bundle, verify_contract_phase10_maven,
 )
 from ci.products.inventory import sha256_bytes
 from ci.tests.test_contract_attestation import VERSION, _payload
@@ -42,6 +44,16 @@ class ContractPhase10MavenTest(unittest.TestCase):
                 )
             signer.assert_not_called()
         self.assertFalse(self.sidecars.exists())
+
+    def test_central_size_limit_rejects_before_reading_or_allocating(self) -> None:
+        record = {"schemaVersion": 2, "product": "contract", "contractVersion": VERSION,
+                  "mavenFiles": [{"relativePath": "maven/oversized.jar", "bytes": 1_000_000_000,
+                                  "sha256": "sha256:" + "a" * 64}], "sidecarFiles": []}
+        with mock.patch("ci.products.contract_phase10_maven.read_regular_file_bytes") as read, \
+                self.assertRaisesRegex(ValueError, "upload limit"):
+            produce_contract_central_bundle(self.payload, self.sidecars, self.root / "oversized", record)
+        read.assert_not_called()
+        self.assertFalse((self.root / "oversized").exists())
 
     @unittest.skipUnless(shutil.which("gpg"), "GnuPG is required")
     def test_real_gpg_external_sidecars_and_tamper_rejection(self) -> None:
@@ -95,6 +107,27 @@ class ContractPhase10MavenTest(unittest.TestCase):
         self.assertEqual(5 * primaries, len(result["sidecarFiles"]))
         self.assertEqual(result, verify_contract_phase10_maven(
             self.payload, self.sidecars, self.key, sha256_bytes(self.key.read_bytes())))
+        central = produce_contract_central_bundle(self.payload, self.sidecars, self.root / "central", result)
+        bundle = self.root / "central" / central["fileName"]
+        self.assertEqual(central, verify_contract_central_bundle(bundle, result))
+        second = produce_contract_central_bundle(self.payload, self.sidecars, self.root / "repeat", result)
+        self.assertEqual(central, second)
+        self.assertEqual(bundle.read_bytes(), (self.root / "repeat" / central["fileName"]).read_bytes())
+        self.assertEqual(original, self.payload.read_bytes())
+        with ZipFile(bundle) as archive:
+            self.assertEqual(len(result["mavenFiles"]) + primaries, len(archive.namelist()))
+            self.assertTrue(all(path.startswith("io/github/codex-agent-labs/") for path in archive.namelist()))
+            self.assertFalse(any(path.endswith(tuple(".asc" + suffix for suffix in CONTRACT_CHECKSUM_SUFFIXES))
+                                 for path in archive.namelist()))
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            produce_contract_central_bundle(self.payload, self.sidecars, self.root / "central", result)
+        with self.assertRaisesRegex(ValueError, "differs from verified bytes"):
+            produce_contract_central_bundle(self.payload, self.sidecars, self.root / "wrong", {
+                **result, "payloadSha256": "sha256:" + "0" * 64})
+        self.assertFalse((self.root / "wrong").exists())
+        bundle.write_bytes(bundle.read_bytes()[:-1])
+        with self.assertRaises(ValueError):
+            verify_contract_central_bundle(bundle, result)
         with self.assertRaisesRegex(ValueError, "already exists"):
             produce_contract_phase10_maven_sidecars(
                 self.payload, self.sidecars, self.key, sha256_bytes(self.key.read_bytes()),
@@ -110,6 +143,9 @@ class ContractPhase10MavenTest(unittest.TestCase):
             verify_contract_phase10_maven(
                 self.payload, self.sidecars, self.key, sha256_bytes(self.key.read_bytes()),
             )
+        with self.assertRaisesRegex(ValueError, "changed after verification"):
+            produce_contract_central_bundle(self.payload, self.sidecars, self.root / "bad-sidecar", result)
+        self.assertFalse((self.root / "bad-sidecar").exists())
 
 
 if __name__ == "__main__":
