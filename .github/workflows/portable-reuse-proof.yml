@@ -9,6 +9,73 @@ permissions:
   actions: read
 
 jobs:
+  phase9-runtime-mutation-preflight:
+    if: >-
+      github.event.label.name == 'ci:phase9-runtime-mutation-preflight' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-x64
+            role: builder
+            runner: macos-26-intel
+          - target: linux-x64
+            role: builder
+            runner: ubuntu-24.04
+          - target: windows-x64
+            role: builder
+            runner: windows-2025
+          - target: linux-arm64
+            role: cross-builder
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            role: supervisor-builder
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: ${{ matrix.target == 'macos-x64' && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc
+      - uses: ./.github/actions/setup-kmp
+        with:
+          product-worker: 'true'
+          cache-read-only: 'true'
+          xcode-fingerprint: ${{ runner.os == 'macOS' && 'auto' || 'none' }}
+      - name: Observe actual missing-target tools; no product or release work
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MUTATION_TARGET: ${{ matrix.target }}
+          MUTATION_ROLE: ${{ matrix.role }}
+        run: |
+          mkdir -p build/phase9-runtime-lfs
+          python3 -B ci/tests/phase9_runtime_mutation.py hosted "$MUTATION_TARGET" "$MUTATION_ROLE" \
+            "$GITHUB_WORKSPACE/build/phase9-runtime-mutation" "$GITHUB_WORKSPACE/build/phase9-runtime-lfs"
+      - name: Retain actual observations and original context even on profile mismatch
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-runtime-preflight-${{ matrix.target }}-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/phase9-runtime-mutation/*.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+
   phase9-ios-package-check:
     if: >-
       github.event.label.name == 'ci:phase9-ios-package-check' &&
