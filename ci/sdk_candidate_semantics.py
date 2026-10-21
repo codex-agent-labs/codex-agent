@@ -16,7 +16,7 @@ import zipfile
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ci.sdk_candidate_admission import verify_sdk_candidate_join
+from ci.sdk_candidate_admission import candidate_object_root, verify_sdk_candidate_join
 from ci.sdk_completion import verify_completed_parity_archive
 from ci.products.aggregate import validate_sdk_compatibility
 from ci.products.index import SignedProductIndex, verify_release_product_index
@@ -131,12 +131,15 @@ def _package_compatibility(archive: Path, entry: dict, object_sha256: str, sdk_v
 @verification_scoped
 def verify_sdk_candidate_semantics(promoted_catalog: Path, forwarded_objects: Path,
                                    forwarded_maven: Path, selection: dict, *,
-                                   parity_archive: Path, parity_phase_identities: Path) -> dict:
+                                   parity_archive: Path, parity_phase_identities: Path,
+                                   use_promoted_objects: bool = False) -> dict:
     """Require exact original package resources to name selected Contract/Runtime."""
     require_no_signing_secret(os.environ)
     pins, dependencies, parity_pins = _selection(selection)
     joined = verify_sdk_candidate_join(
-        promoted_catalog, forwarded_objects, forwarded_maven, **pins)
+        promoted_catalog, forwarded_objects, forwarded_maven,
+        use_promoted_objects=use_promoted_objects, **pins)
+    object_root = candidate_object_root(promoted_catalog, forwarded_objects, use_promoted_objects)
     campaign = Path(forwarded_objects) / "signed-campaign"
     evidence = campaign / "replay-evidence"
     index, raw_index = verify_release_product_index(
@@ -162,11 +165,11 @@ def verify_sdk_candidate_semantics(promoted_catalog: Path, forwarded_objects: Pa
     if not _PACKAGES <= entries.keys():
         raise ValueError("SDK candidate lacks the three exact Maven package objects")
     originals = regular_file_inventory(forwarded_objects)
+    catalog_files = regular_file_inventory(promoted_catalog) if use_promoted_objects else None
     contents = []
     for instance in sorted(_PACKAGES):
         entry = entries[instance]
-        archive = (Path(forwarded_objects) / "objects" /
-                   object_relative_path(entry["buildKey"], entry["receiptSha256"]))
+        archive = object_root / object_relative_path(entry["buildKey"], entry["receiptSha256"])
         contents.append(_package_compatibility(archive, entry, objects[instance]["objectSha256"],
                                                pins["expected_sdk_version"]))
     if (len(set(contents)) != 1
@@ -182,7 +185,8 @@ def verify_sdk_candidate_semantics(promoted_catalog: Path, forwarded_objects: Pa
             or compatibility["runtime"]["defaultManifestSha256"] !=
                 dependencies["runtimeManifestSha256"]):
         raise ValueError("SDK candidate K/R/S dependency identity differs from approval")
-    if regular_file_inventory(forwarded_objects) != originals:
+    if (regular_file_inventory(forwarded_objects) != originals
+            or use_promoted_objects and regular_file_inventory(promoted_catalog) != catalog_files):
         raise ValueError("SDK candidate original objects changed during semantic join")
     return {**joined, "admitted": False, "contractDigest": dependencies["contractDigest"],
             "runtimeManifestSha256": dependencies["runtimeManifestSha256"],
@@ -192,6 +196,7 @@ def verify_sdk_candidate_semantics(promoted_catalog: Path, forwarded_objects: Pa
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--use-promoted-objects", action="store_true")
     for name in ("promoted-catalog", "forwarded-objects", "forwarded-maven", "selection",
                  "parity-archive", "parity-phase-identities"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -205,7 +210,8 @@ def main(argv=None) -> int:
     result = verify_sdk_candidate_semantics(
         args.promoted_catalog, args.forwarded_objects, args.forwarded_maven,
         load_canonical_json_bytes(raw), parity_archive=args.parity_archive,
-        parity_phase_identities=args.parity_phase_identities)
+        parity_phase_identities=args.parity_phase_identities,
+        use_promoted_objects=args.use_promoted_objects)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

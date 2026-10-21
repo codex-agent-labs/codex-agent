@@ -118,10 +118,13 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
             archiveBytes=self.parity_archive.stat().st_size,
             phaseIdentitiesSha256=sha256_file(self.parity_phases))
 
-    def _verify(self, *, raw=None, selection=None, per_component=None):
+    def _verify(self, *, raw=None, selection=None, per_component=None,
+                use_promoted_objects=False, mutate_catalog=False):
         raw = self.raw if raw is None else raw
         selection = self.selected if selection is None else selection
-        def compatibility(_archive, entry, _digest, _version):
+        def compatibility(archive, entry, _digest, _version):
+            if mutate_catalog:
+                archive.write_bytes(b"changed after admission")
             return (per_component or {}).get(entry["component"], raw)
         with patch.object(candidate, "verify_sdk_candidate_join",
                           return_value={"product": "sdk", "originalObjectCount": 62}) as join, \
@@ -130,10 +133,21 @@ class SdkCandidateSemanticsTest(unittest.TestCase):
              patch.object(candidate, "_package_compatibility", side_effect=compatibility) as consumed:
             result = candidate.verify_sdk_candidate_semantics(
                 self.root / "promoted", self.objects, self.root / "maven", selection,
-                parity_archive=self.parity_archive, parity_phase_identities=self.parity_phases)
+                parity_archive=self.parity_archive, parity_phase_identities=self.parity_phases,
+                use_promoted_objects=use_promoted_objects)
         self.assertEqual(1, join.call_count)
+        self.assertIs(use_promoted_objects, join.call_args.kwargs["use_promoted_objects"])
         self.assertEqual(3, consumed.call_count)
+        object_root = self.root / "promoted" if use_promoted_objects else self.objects / "objects"
+        self.assertTrue(all(call.args[0].is_relative_to(object_root) for call in consumed.call_args_list))
         return result
+
+    def test_shared_catalog_consumes_original_packages_and_rejects_late_mutation(self):
+        (self.objects / "objects").rename(self.root / "promoted")
+        self.assertEqual(112, self._verify(use_promoted_objects=True)["parity"]["phaseCount"])
+        self.assertFalse((self.objects / "objects").exists())
+        with self.assertRaisesRegex(ValueError, "objects changed"):
+            self._verify(use_promoted_objects=True, mutate_catalog=True)
 
     def test_three_original_maven_packages_bind_exact_krs_dependencies(self):
         result = self._verify()

@@ -84,7 +84,7 @@ class SdkCandidateAdmissionTest(unittest.TestCase):
     def _inventory(path):
         return sha256_bytes(canonical_json_bytes(regular_file_inventory(path)))
 
-    def _verify(self, *, original_entries=None, **changes):
+    def _verify(self, *, original_entries=None, after_object_verification=None, **changes):
         promoted = {"repository": candidate._REPOSITORY, "trustDomain": "release",
             "context": {"kind": "promoted-main", "tree": self.tree},
             "entries": self.entries}
@@ -93,15 +93,53 @@ class SdkCandidateAdmissionTest(unittest.TestCase):
         with patch.object(candidate, "verify_release_product_index",
                           side_effect=[(promoted, self.promoted_index),
                                        (original, self.phase10_index)]) as signature, \
-             patch.object(candidate, "verify_release_sdk_campaign_objects") as originals:
+             patch.object(candidate, "verify_release_sdk_campaign_objects",
+                          side_effect=after_object_verification) as originals:
             result = candidate.verify_sdk_candidate_join(
                 self.promoted, self.objects, self.maven, **{**self.pins, **changes})
         self.assertEqual(2, signature.call_count)
         originals.assert_called_once()
+        self.assertEqual({row["buildKey"]: self.promoted / row["relativePath"] for row in self.rows},
+                         originals.call_args.args[1])
         return result
 
     def test_exact_62_originals_join_promoted_campaign_and_maven(self):
         self.assertEqual(62, self._verify()["originalObjectCount"])
+
+    def test_shared_catalog_admits_all_objects_without_duplicate_tree_or_rehash(self):
+        def controls_only(path, *args, **kwargs):
+            self.assertNotEqual(".zip", Path(path).suffix, "object digest must reuse checked inventory")
+            return sha256_file(path, *args, **kwargs)
+        with patch.object(candidate, "sha256_file", side_effect=controls_only):
+            self.assertEqual(62, self._verify()["originalObjectCount"])
+            (self.objects / "objects").rename(self.root / "unused-legacy-objects")
+            before = regular_file_inventory(self.root)
+            self.assertEqual(62, self._verify(use_promoted_objects=True)["originalObjectCount"])
+        self.assertEqual(before, regular_file_inventory(self.root))
+        self.assertFalse((self.objects / "objects").exists())
+
+    def test_shared_catalog_rejects_wrong_layout_missing_extra_and_late_mutation(self):
+        with self.assertRaisesRegex(ValueError, "another object tree"):
+            self._verify(use_promoted_objects=True)
+        with self.assertRaisesRegex(ValueError, "explicitly selected"):
+            self._verify(use_promoted_objects=1)
+        (self.objects / "objects").rename(self.root / "unused-legacy-objects")
+        original = self.promoted / self.rows[0]["relativePath"]
+        content = original.read_bytes()
+        original.unlink()
+        with self.assertRaisesRegex(ValueError, "differs across releases"):
+            self._verify(use_promoted_objects=True,
+                         expected_promoted_inventory_sha256=self._inventory(self.promoted))
+        original.write_bytes(content)
+        extra = self.promoted / "unexpected.zip"
+        extra.write_bytes(b"extra")
+        with self.assertRaisesRegex(ValueError, "inventory is incomplete"):
+            self._verify(use_promoted_objects=True,
+                         expected_promoted_inventory_sha256=self._inventory(self.promoted))
+        extra.unlink()
+        with self.assertRaisesRegex(ValueError, "inputs changed"):
+            self._verify(use_promoted_objects=True,
+                         after_object_verification=lambda *_args, **_kwargs: original.write_bytes(b"changed"))
 
     def test_independent_pin_and_original_mutations_reject(self):
         with self.assertRaisesRegex(ValueError, "independent S1048 inventory"):

@@ -89,7 +89,8 @@ class SdkCandidateJoinTest(unittest.TestCase):
     def inventory(self):
         return sha256_bytes(canonical_json_bytes(candidate.regular_file_inventory(self.runtime)))
 
-    def verify(self, *, bad_root_for=None, wrong_binary=False, verifier=verify_external_library_authorization):
+    def verify(self, *, bad_root_for=None, wrong_binary=False, verifier=verify_external_library_authorization,
+               use_promoted_objects=False):
         originals = {PhaseInstanceId(*(row[field] for field in ("product", "component", "phase", "target"))):
             {"receipt": {**row, "productVersion": "0.8.0", "inputs": {"inventory": [{
                 "relativePath": "gradle/release/keys/sdk-runtime-root.pub",
@@ -110,12 +111,25 @@ class SdkCandidateJoinTest(unittest.TestCase):
              patch.object(candidate, "_package_compatibility", return_value=self.compatibility) as resource, \
              patch.object(candidate, "verify_external_library_authorization", side_effect=verifier) as signatures:
             result = candidate.join_sdk_candidate(self.promoted, self.objects, self.maven, self.runtime,
-                self.selection, parity_archive=self.parity, parity_phase_identities=self.phases)
+                self.selection, parity_archive=self.parity, parity_phase_identities=self.phases,
+                use_promoted_objects=use_promoted_objects)
         self.assertEqual(1, sdk.call_count)
+        self.assertIs(use_promoted_objects, sdk.call_args.kwargs["use_promoted_objects"])
         self.assertEqual(1, objects.call_count)
         self.assertEqual(1, resource.call_count)
+        object_root = self.promoted if use_promoted_objects else self.objects / "objects"
+        self.assertTrue(resource.call_args.args[0].is_relative_to(object_root))
         self.assertEqual(5, signatures.call_count)
         return result
+
+    def test_shared_catalog_keeps_exact_runtime_root_and_default_checks(self):
+        (self.objects / "objects/v1").rename(self.promoted / "v1")
+        (self.objects / "objects").rmdir()
+        before = candidate.regular_file_inventory(self.root)
+        self.assertEqual(list(NATIVE_TARGETS), self.verify(use_promoted_objects=True)["runtimeAuthorizationTargets"])
+        self.assertEqual(before, candidate.regular_file_inventory(self.root))
+        with self.assertRaisesRegex(ValueError, "exact root-owning binary"):
+            self.verify(use_promoted_objects=True, wrong_binary=True)
 
     def test_all_five_signed_defaults_and_original_producer_roots_are_required(self):
         before = candidate.regular_file_inventory(self.root)

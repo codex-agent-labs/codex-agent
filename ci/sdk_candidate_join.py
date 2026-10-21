@@ -16,7 +16,7 @@ import sys
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ci.sdk_candidate_admission import _REPOSITORY, _SECRETS, _TOKENS
+from ci.sdk_candidate_admission import _REPOSITORY, _SECRETS, _TOKENS, candidate_object_root
 from ci.sdk_candidate_semantics import _package_compatibility, _selection, verify_sdk_candidate_semantics
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -61,7 +61,8 @@ def _verify_default_runtime(library: Path, evidence: Path, root_bytes: bytes,
 @verification_scoped
 def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarded_maven: Path,
                        forwarded_runtime: Path, selection: dict, *,
-                       parity_archive: Path, parity_phase_identities: Path) -> dict:
+                       parity_archive: Path, parity_phase_identities: Path,
+                       use_promoted_objects: bool = False) -> dict:
     require_no_signing_secret(os.environ)
     if (_TOKENS | _SECRETS) & os.environ.keys():
         raise ValueError("SDK candidate join must not receive token or signing secret")
@@ -76,6 +77,7 @@ def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarde
     for field, digest in runtime_pins.items():
         require_sha256(digest, "SDK candidate Runtime " + field)
     runtime, objects = Path(forwarded_runtime), Path(forwarded_objects)
+    object_root = candidate_object_root(promoted_catalog, objects, use_promoted_objects)
     original_files = {Path(path): regular_file_inventory(path)
                       for path in (promoted_catalog, objects, forwarded_maven)}
     runtime_files = regular_file_inventory(runtime)
@@ -88,7 +90,8 @@ def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarde
     # Complete SDK admission stays unscoped, including all62 originals/all112
     # parity identities. Only the following resource consumption is narrow.
     joined = verify_sdk_candidate_semantics(promoted_catalog, objects, forwarded_maven,
-        selection["sdk"], parity_archive=parity_archive, parity_phase_identities=parity_phase_identities)
+        selection["sdk"], parity_archive=parity_archive, parity_phase_identities=parity_phase_identities,
+        use_promoted_objects=use_promoted_objects)
     raw_pins = _read(objects / "object-pins.json")
     if sha256_bytes(raw_pins) != pins["expected_object_pins_sha256"]:
         raise ValueError("SDK candidate original pins changed after semantic verification")
@@ -121,7 +124,7 @@ def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarde
             if _upstream_record(receipt) not in package["inputs"]["upstreamArtifacts"]:
                 raise ValueError("SDK candidate package does not consume the exact root-owning binary")
     core = by_id[PhaseInstanceId("sdk", "sdk-core", "package", "common")]
-    raw = _package_compatibility(objects / "objects" / object_relative_path(core["buildKey"], core["receiptSha256"]),
+    raw = _package_compatibility(object_root / object_relative_path(core["buildKey"], core["receiptSha256"]),
                                  core, core["objectSha256"], pins["expected_sdk_version"])
     if sha256_bytes(raw) != dependencies["sdkCompatibilitySha256"]:
         raise ValueError("SDK candidate compatibility changed after semantic verification")
@@ -157,6 +160,7 @@ def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarde
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--use-promoted-objects", action="store_true")
     for name in ("promoted-catalog", "forwarded-objects", "forwarded-maven", "forwarded-runtime",
                  "selection", "parity-archive", "parity-phase-identities"):
         parser.add_argument("--" + name, type=Path, required=True)
