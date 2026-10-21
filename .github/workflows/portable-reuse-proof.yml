@@ -11,13 +11,14 @@ permissions:
 jobs:
   phase9-xcode-probe:
     if: >-
-      github.event.label.name == 'ci:phase9-xcode-probe' &&
+      (github.event.label.name == 'ci:phase9-xcode-probe' ||
+       github.event.label.name == 'ci:phase9-xcode-provision') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: macos-26
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       PYTHONDONTWRITEBYTECODE: '1'
@@ -28,16 +29,32 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Inspect the matching Apple-signed installation without building or exporting it
+        if: github.event.label.name == 'ci:phase9-xcode-probe'
         run: python3 -B ci/tests/phase9_xcode_probe.py "$RUNNER_TEMP/phase9-xcode-probe"
+      - name: Provision only the matching Apple-signed toolchain through private encrypted transport
+        if: github.event.label.name == 'ci:phase9-xcode-provision'
+        run: python3 -B ci/tests/phase9_xcode_probe.py "$RUNNER_TEMP/phase9-xcode-probe" --provision
       - name: Retain small original observations even when signature verification fails
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: phase9-xcode-probe-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/phase9-xcode-probe
+          path: |
+            ${{ runner.temp }}/phase9-xcode-probe/observations.json
+            ${{ runner.temp }}/phase9-xcode-probe/provisioning.json
           if-no-files-found: error
           overwrite: false
           retention-days: 90
+      - name: Retain encrypted delivery only; the recipient private key stays on the local Mac
+        if: success() && github.event.label.name == 'ci:phase9-xcode-provision'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-xcode-private-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phase9-xcode-probe/xcode-26.6.dmg.cms
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 7
 
   phase9-ios-mutation:
     if: >-

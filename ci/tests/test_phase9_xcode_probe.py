@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -72,8 +73,52 @@ class XcodeProbeTest(unittest.TestCase):
         self.assertIn('retention-days: 90', block)
         for forbidden in ('setup-kmp', 'rust-toolchain', 'gradlew', 'cargo', 'secrets.', 'GITHUB_TOKEN'):
             self.assertNotIn(forbidden, block)
-        paths = (workflow, 'ci/tests/phase9_xcode_probe.py', 'ci/tests/test_phase9_xcode_probe.py')
+        self.assertIn("if: success() && github.event.label.name == 'ci:phase9-xcode-provision'", block)
+        self.assertIn('path: ${{ runner.temp }}/phase9-xcode-probe/xcode-26.6.dmg.cms', block)
+        self.assertNotIn('path: ${{ runner.temp }}/xcode-26.6.dmg', block)
+        paths = (workflow, 'ci/tests/phase9_xcode_probe.py', 'ci/tests/test_phase9_xcode_probe.py',
+                 'ci/tests/fixtures/phase9-xcode-recipient.pem')
         self.assertTrue(all(not phase_inventory_paths(paths, phase) for phase in PHASE_INSTANCE_IDS))
+
+    def test_private_transport_rejects_identity_changes_and_never_publishes_partial_encryption(self):
+        details = {'signature-details': {'stderr': 'CandidateCDHashFull sha256=' +
+            '502eca5e95e1b8eaaf52e9b38617e8e7d23f46db1d7122169443c05837c40cff'}}
+        with patch.object(probe.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'Apple code identity'):
+                probe.export_private_image(Path('/unused'), Path('/unused.app'),
+                    {'signature-details': {'stderr': 'wrong identity'}})
+            with patch.object(probe, 'sha256_file', return_value='sha256:' + '0'*64):
+                with self.assertRaisesRegex(ValueError, 'recipient'):
+                    probe.export_private_image(Path('/unused'), Path('/unused.app'), details)
+            run.assert_not_called()
+        for failed in (False, True):
+            with self.subTest(encryption_failed=failed), tempfile.TemporaryDirectory() as temporary:
+                destination = Path(temporary) / 'observations'
+                destination.mkdir()
+                (destination / 'observations.json').write_text('{}\n')
+                def run(command, **kwargs):
+                    if command[0].endswith('hdiutil'):
+                        Path(command[-1]).write_bytes(b'fixture image, not a toolchain')
+                    else:
+                        self.assertIn('-aes256', command)
+                        self.assertIn('-stream', command)
+                        self.assertNotIn('-inkey', command)
+                        Path(command[command.index('-out') + 1]).write_bytes(b'fixture cipher')
+                        if failed:
+                            raise subprocess.CalledProcessError(1, command)
+                with patch.object(probe.subprocess, 'run', side_effect=run):
+                    if failed:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            probe.export_private_image(destination, Path('/Applications/Xcode_26.6.app'), details)
+                    else:
+                        probe.export_private_image(destination, Path('/Applications/Xcode_26.6.app'), details)
+                self.assertEqual((destination / 'xcode-26.6.dmg.cms').exists(), not failed)
+                self.assertEqual((destination / 'provisioning.json').exists(), not failed)
+                if not failed:
+                    evidence = json.loads((destination / 'provisioning.json').read_bytes())
+                    self.assertFalse(evidence['privateKeyTransferred'])
+                    self.assertFalse(evidence['plaintextUploaded'])
+                    self.assertEqual(evidence['productExecutions'], 0)
 
 
 if __name__ == '__main__':
