@@ -9,6 +9,49 @@ permissions:
   actions: read
 
 jobs:
+  phase9-native-artifact-validation:
+    if: >-
+      github.event.label.name == 'ci:phase9-native-artifact-validation' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: macos-26-intel
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate only the preserved Mac x64 package on genuine Intel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          JAVA_HOME=$(/usr/libexec/java_home -v 17)
+          export JAVA_HOME
+          export PATH="$JAVA_HOME/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/phase9-native-lfs"
+          python3 -B ci/tests/phase9_native_validation.py \
+            "$RUNNER_TEMP/phase9-native-validation" "$RUNNER_TEMP/phase9-native-lfs"
+      - name: Preserve validation evidence and raw diagnostics, never duplicate input bodies
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-native-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/phase9-native-validation/*.json
+            ${{ runner.temp }}/phase9-native-validation/*.log
+            ${{ runner.temp }}/phase9-native-validation/reports
+            ${{ runner.temp }}/phase9-native-validation/raw
+            ${{ runner.temp }}/phase9-native-validation/stage
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+
   phase9-runtime-mutation-preflight:
     if: >-
       (github.event.label.name == 'ci:phase9-runtime-mutation-preflight' ||
