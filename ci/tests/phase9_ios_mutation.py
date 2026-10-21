@@ -266,7 +266,7 @@ def native_inputs(destination, *, token, lanes=tuple(NATIVE_PINS)):
             consumer['commit'], consumer['commit'])
         # Make both already authenticated original revisions available without another remote fetch.
         for family in dict.fromkeys(NATIVE_PINS[lane][0] for lane in lanes):
-            git('fetch', '--quiet', '--no-tags', str(ROOT), NATIVE_PRODUCERS[family]['commit'], cwd=repository)
+            git('fetch', '--quiet', '--no-tags', '--depth=1', str(ROOT), NATIVE_PRODUCERS[family]['commit'], cwd=repository)
         plan_path = destination / 'original-plan/impact-plan.json'
 
         def qualify(lane):

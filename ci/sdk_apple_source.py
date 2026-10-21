@@ -139,7 +139,9 @@ def _private_original_repository(
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         subprocess.run(
-            ["git", "-C", str(destination), "fetch", "--quiet", "--no-tags", str(source),
+            # Only these exact trees are consumed; their historical parents may
+            # intentionally be absent after authenticated depth-one acquisition.
+            ["git", "-C", str(destination), "fetch", "--quiet", "--no-tags", "--depth=1", str(source),
              revision, policy_revision],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )

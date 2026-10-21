@@ -28,7 +28,8 @@ class ApplePrerequisiteQualificationTest(unittest.TestCase):
             (source / "ci/lanes").mkdir(parents=True)
             (source / "ci/lanes/fixture.json").write_bytes(b"{}\n")
             git(source, "add", "ci/lanes/fixture.json")
-            for _ in range(2):
+            # Both requested commits have an unavailable parent in the fresh runner.
+            for _ in range(4):
                 git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
                     "commit", "--allow-empty", "--quiet", "-m", "fixture")
             current, original = git(source, "rev-parse", "HEAD"), git(source, "rev-parse", "HEAD~1")
@@ -56,7 +57,12 @@ class ApplePrerequisiteQualificationTest(unittest.TestCase):
             self.assertEqual(current, git(checkout, "rev-parse", "HEAD"))
             replay = helper._private_original_repository(checkout, root / "after", original, current)
             self.assertEqual(original, git(replay, "rev-parse", "HEAD"))
+            self.assertEqual(git(source, "rev-parse", current + "^{tree}"),
+                             git(replay, "rev-parse", current + "^{tree}"))
             self.assertEqual(b"{}\n", (replay / "ci/lanes/fixture.json").read_bytes())
+            original_only = helper._private_original_repository(checkout, root / "original-only", original, original)
+            self.assertEqual(git(source, "rev-parse", original + "^{tree}"),
+                             git(original_only, "rev-parse", "HEAD^{tree}"))
 
     def test_complete_registered_inputs_and_test_inputs_are_required(self):
         inventory = [{"relativePath": "native/input", "bytes": 1, "sha256": "sha256:" + "1" * 64}]
