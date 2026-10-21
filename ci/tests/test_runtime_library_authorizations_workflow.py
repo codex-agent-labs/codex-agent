@@ -153,6 +153,33 @@ class RuntimeLibraryAuthorizationsWorkflowTest(unittest.TestCase):
             self.assertIn("if-no-files-found: error", job)
             self.assertIn("include-hidden-files: true", job)
 
+    def test_full_authorization_dispatch_is_distinct_and_requires_all_three_uploads(self):
+        caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
+        child = workflow_job(caller, "runtime-library-authorizations")
+        self.assertIn("inputs.purpose == 'runtime-library-authorizations'", child)
+        self.assertIn("runtime-library-authorizations.yml@reuse-authority", child)
+        self.assertIn("validation-only: false", child)
+        self.assertIn("!inputs.validation-only && github.event.inputs.purpose == 'runtime-library-authorizations'",
+                      self.delegate)
+        gate = workflow_job(caller, "merge-gate")
+        self.assertIn("'Runtime library authorizations / complete'", gate)
+        script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+        results = {name: "skipped" for name in re.findall(r"\b([A-Z_]+_RESULT):", gate)}
+        env = {**os.environ, **results, "EVENT": "workflow_dispatch",
+               "PURPOSE": "runtime-library-authorizations", "RUNTIME_LIBRARY_RESULT": "success"}
+        uploads = ("RUNTIME_LIBRARY_ROOT", "RUNTIME_LIBRARY_CAPTURE", "RUNTIME_LIBRARY")
+        env.update({prefix + suffix: value for prefix in uploads
+                    for suffix, value in (("_ID", "123"), ("_SHA256", "sha256:" + "a" * 64))})
+        cases = [{}, {"RUNTIME_LIBRARY_RESULT": "failure"}, {"EVENT": "pull_request"},
+                 {"PURPOSE": "sdk-runtime-library-validation"},
+                 *({name: "success"} for name in results if name != "RUNTIME_LIBRARY_RESULT"),
+                 *({prefix + suffix: ""} for prefix in uploads for suffix in ("_ID", "_SHA256"))]
+        for change in cases:
+            with self.subTest(change=change):
+                result = subprocess.run(["bash", "-e", "-c", script], env={**env, **change},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(0 if not change else 1, result.returncode, result.stderr)
+
     def test_substituted_plan_zip_fails_approved_digest_before_extraction(self):
         with tempfile.TemporaryDirectory(prefix="runtime-library-plan-zip-") as temporary:
             root = Path(temporary)

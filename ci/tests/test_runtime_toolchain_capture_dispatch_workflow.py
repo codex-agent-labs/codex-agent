@@ -50,6 +50,7 @@ class RuntimeToolchainCaptureDispatchTest(unittest.TestCase):
             "SDK_RECORD_RESULT": "skipped",
             "SDK_MAVEN_RESULT": "skipped",
             "SDK_RUNTIME_TRUST_RESULT": "skipped",
+            "RUNTIME_LIBRARY_RESULT": "skipped",
         }
         for capture, product, expected in (
             ("success", "skipped", 0),

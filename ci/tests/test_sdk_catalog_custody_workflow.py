@@ -22,7 +22,7 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
         caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
         dispatch = caller.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertIn("default: validation", dispatch)
-        self.assertIn("options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]", dispatch)
+        self.assertIn("options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]", dispatch)
         self.assertEqual(10, len(re.findall(r"^      [A-Za-z][A-Za-z0-9]*:\s*$", dispatch, re.MULTILINE)))
         validation = workflow_job(caller, "product-validation")
         custody = workflow_job(caller, "sdk-failed-catalog-custody")
@@ -31,7 +31,7 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody'", custody)
         self.assertIn("'SDK custody / complete' ||", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]", gate)
+        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]", gate)
         gate_script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         for event, purpose, product, custody_result, accepted in (
                 ("pull_request", "", "success", "skipped", True),
@@ -45,7 +45,8 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
                 "TOOLCHAIN_CAPTURE_RESULT": "skipped", "DIAGNOSTICS_RESULT": "skipped",
                 "RUNTIME_RECORD_RESULT": "skipped", "CONTRACT_RECORD_RESULT": "skipped",
                 "SDK_AUTHORITY_RESULT": "skipped", "SDK_RECORD_RESULT": "skipped",
-                "SDK_MAVEN_RESULT": "skipped", "SDK_RUNTIME_TRUST_RESULT": "skipped"}
+                "SDK_MAVEN_RESULT": "skipped", "SDK_RUNTIME_TRUST_RESULT": "skipped",
+                "RUNTIME_LIBRARY_RESULT": "skipped"}
             result = subprocess.run(["bash", "-e", "-c", gate_script], env=environment,
                 capture_output=True, text=True, timeout=10)
             self.assertEqual(0 if accepted else 1, result.returncode,

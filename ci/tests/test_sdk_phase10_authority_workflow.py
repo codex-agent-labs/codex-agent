@@ -20,12 +20,12 @@ class SdkPhase10AuthorityWorkflowTest(unittest.TestCase):
         caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
         child = caller.split("  sdk-phase10-authority:\n", 1)[1].split("\n  merge-gate:", 1)[0]
         self.assertIn("inputs.purpose == 'sdk-phase10-authority'", child)
-        match = re.search(r"sdk-phase10-later-authority\.yml@([0-9a-f]{40})", child)
-        self.assertIsNotNone(match)
-        committed = subprocess.check_output(
-            ["git", "show", f"{match.group(1)}:.github/workflows/sdk-phase10-later-authority.yml"],
-            cwd=WORKFLOW.parents[2], text=True)
-        self.assertEqual(WORKFLOW.read_text(encoding="utf-8"), committed)
+        from ci.tests.test_reviewed_workflow_publication import publication
+        self.assertIn("sdk-phase10-later-authority.yml@reuse-authority", child)
+        root = WORKFLOW.parents[2]
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        closure = publication.reviewed_workflow_closure(root, head, entrypoints=(".github/workflows/ci.yml",))
+        self.assertEqual(WORKFLOW.read_bytes(), closure[WORKFLOW.relative_to(root).as_posix()])
         gate = caller.split("  merge-gate:\n", 1)[1]
         script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         environment = {**os.environ, "EVENT": "workflow_dispatch", "PURPOSE": "sdk-phase10-authority",
@@ -36,6 +36,7 @@ class SdkPhase10AuthorityWorkflowTest(unittest.TestCase):
             "SDK_AUTHORITY_ARTIFACT_SHA256": "sha256:" + "a" * 64,
             "SDK_RECORD_RESULT": "skipped", "SDK_MAVEN_RESULT": "skipped",
             "SDK_RUNTIME_TRUST_RESULT": "skipped",
+            "RUNTIME_LIBRARY_RESULT": "skipped",
             "TOOLCHAIN_CAPTURE_RESULT": "skipped"}
         for changed in ({}, {"SDK_AUTHORITY_RESULT": "failure"},
                         {"SDK_AUTHORITY_ARTIFACT_ID": ""},

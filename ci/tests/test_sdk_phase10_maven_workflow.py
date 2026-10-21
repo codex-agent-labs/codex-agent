@@ -159,10 +159,12 @@ class SdkPhase10MavenWorkflowTest(unittest.TestCase):
         caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
         child = caller.split("  sdk-phase10-maven-sidecars:\n", 1)[1].split("\n  merge-gate:", 1)[0]
         self.assertIn("inputs.purpose == 'sdk-phase10-maven-sidecars'", child)
-        pin = re.search(r"sdk-phase10-maven-sidecars\.yml@([0-9a-f]{40})", child)
-        self.assertIsNotNone(pin)
-        committed = subprocess.check_output(["git", "show", pin.group(1) + ":.github/workflows/sdk-phase10-maven-sidecars.yml"], cwd=WORKFLOW.parents[2], text=True)
-        self.assertEqual(self.source, committed)
+        from ci.tests.test_reviewed_workflow_publication import publication
+        self.assertIn("sdk-phase10-maven-sidecars.yml@reuse-authority", child)
+        root = WORKFLOW.parents[2]
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        closure = publication.reviewed_workflow_closure(root, head, entrypoints=(".github/workflows/ci.yml",))
+        self.assertEqual(self.source.encode(), closure[WORKFLOW.relative_to(root).as_posix()])
         gate = caller.split("  merge-gate:\n", 1)[1]
         script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
         env = {**os.environ, "EVENT": "workflow_dispatch", "PURPOSE": "sdk-phase10-maven-sidecars",
@@ -171,7 +173,7 @@ class SdkPhase10MavenWorkflowTest(unittest.TestCase):
                "TOOLCHAIN_CAPTURE_RESULT": "skipped", "RUNTIME_RECORD_RESULT": "skipped",
                "CONTRACT_RECORD_RESULT": "skipped", "SDK_AUTHORITY_RESULT": "skipped",
                "SDK_RECORD_RESULT": "skipped", "SDK_MAVEN_RESULT": "success",
-               "SDK_RUNTIME_TRUST_RESULT": "skipped"}
+               "SDK_RUNTIME_TRUST_RESULT": "skipped", "RUNTIME_LIBRARY_RESULT": "skipped"}
         for label in ("CORE", "ANDROID", "IOS", "RECORD", "INDEX"):
             env["SDK_MAVEN_" + label + "_ID"] = "123"
             env["SDK_MAVEN_" + label + "_SHA256"] = "sha256:" + "a" * 64

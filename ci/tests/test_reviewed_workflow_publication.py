@@ -24,9 +24,12 @@ class ReviewedWorkflowPublicationTest(unittest.TestCase):
         self.assertIn("source_sha: ${{ steps.publication.outputs.source-sha", plan)
         self.assertNotIn("inputs.trustedWorkflowSha", plan)
         lint = text.split("\n  workflow-lint:\n", 1)[1].split("\n  plan:\n", 1)[0]
-        self.assertIn("ref: ${{ needs.plan.outputs.source_sha }}", lint)
-        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}", lint)
-        self.assertIn('--trusted-source-sha "$TRUSTED_SOURCE_SHA"', lint)
+        checks = text.split("\n  recovery-controls:\n", 1)[1].split("\n  workflow-lint:\n", 1)[0]
+        self.assertIn("ref: ${{ steps.publication.outputs.source-sha }}", checks)
+        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}", checks)
+        self.assertIn('--trusted-source-sha "$TRUSTED_SOURCE_SHA"', checks)
+        self.assertIn('test "$PLAN_SOURCE" = "$CHECKS_SOURCE"', lint)
+        self.assertIn('test "$PLAN_PUBLISHER" = "$CHECKS_PUBLISHER"', lint)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="reviewed-workflow-publication-")
