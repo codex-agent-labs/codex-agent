@@ -134,8 +134,8 @@ CONTROL_FILES |= CACHE_FIXED_FILES
 # Exact completed product closure, not the historical acceptance producer.
 SDK_FROZEN_REVISION = "969b272984b91f4dcf467a05319132e2bca3b52a"
 SDK_REGISTRY = "ci/products/registry.py"
-# Reviewed Windows C++ validation policy adds one SDK owner; frozen inputs stay exact.
-SDK_SELECTION_REVISION = "f9281a0cd53642fb00b5a6a22cd5d8af94aa75bc"
+# Reviewed candidate control classifications preserve all 112 product inventories.
+SDK_SELECTION_REVISION = "97f64bdb8b0c966c5f26ff5fca7d781436ab2f93"
 SDK_SELECTOR = "ci/products/selection.py"
 # Reviewed canonical LF writer correction. Historical acceptance never admits
 # the resulting new aggregate key; ordinary production/signature gates do that.
