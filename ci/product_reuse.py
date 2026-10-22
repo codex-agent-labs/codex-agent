@@ -675,6 +675,7 @@ def _require_ci_workflow_reference(run, workflow, sha):
 def _runtime_prior_workflow_sha(run, current_sha):
     # Prior genuine phases retain their original reviewed workflow authority after a pin rotation.
     for sha in dict.fromkeys((current_sha, _PRIOR_RUNTIME_WORKFLOW_SHA,
+                             "ce17b18d7f87bb8a4a580af7cf7b734518c6cace",
                              "d2243aac89368df2776b6617fd5a623bd6754cb2",
                              "91b7a372429014f791c731aabb2adcb017a41f16",
                              "d7b4f066d75b00b29dfdc10c768641e3e6d9c93b",
@@ -7999,7 +8000,11 @@ def _qualified_original_projection(locator):
         except reuse_qualification.QualificationIncompatible:
             # Verified but incompatible claims cannot create a witness. The
             # unchanged original authentication path still owns this evidence.
-            return None
+            qualified = None
+    if (qualified is None and session is not None and session.get("restoreCheckpointProjection")
+            and session["referenceCheckpoint"][2] == _source_identity()):
+        session["restoreCheckpointProjection"](locator)
+        qualified = session.get("qualifiedOriginalProjections", {}).get(key)
     if qualified is not None:
         source, fingerprint, _files, policy = qualified
         if policy != _source_identity():
@@ -8007,6 +8012,109 @@ def _qualified_original_projection(locator):
         if _stage_fingerprint(source.parent) != fingerprint:
             raise ValueError(f"Authenticated original projection custody changed: {source}")
     return qualified
+
+
+@measured
+def _prepare_prior_runtime_checkpoint(plan, producer, work, artifacts, *, trusted_workflow_sha,
+                                      token, completed_frozen):
+    """Authenticate prior routing controls, not its plan or cached phase verdicts.
+
+    Original bodies remain lazy: the existing exact-key discovery asks for one
+    freshly authenticated locator at a time. Never restore an entire old state.
+    """
+    from products.restore import _VERIFICATION_SESSION
+    from products.verified_evidence import _source_identity
+    from runtime_reference_transport import ORIGINAL_REFERENCE_NAME, validate_original_references
+    session = _VERIFICATION_SESSION.get()
+    if session is None:
+        raise ValueError("Prior checkpoint requires private verification custody")
+    candidates = [row for row in artifacts if row.get("expired") is False
+        and re.fullmatch(r"codex-agent-planned-product-resume-[0-9a-f]{40}", row.get("name", ""))
+        and isinstance(row.get("workflow_run"), dict)
+        and type(row["workflow_run"].get("id")) is int
+        and 0 < row["workflow_run"]["id"] <= producer["runId"]]
+    for candidate in sorted(candidates, key=lambda row: row["workflow_run"]["id"], reverse=True):
+        run_id = candidate["workflow_run"]["id"]
+        run = api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/{run_id}", token)
+        if (run.get("status") != "completed" or run.get("event") != "pull_request"
+                or run.get("path") != ".github/workflows/ci.yml" or not run_matches_pr(run, plan["pullRequest"])
+                or any(run.get(field, {}).get("full_name") != plan["repository"]
+                       or run.get(field, {}).get("fork") is not False
+                       for field in ("repository", "head_repository"))):
+            continue
+        workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
+        if workflow is None:
+            continue
+        work.mkdir()
+        archive = work / "carrier.zip"
+        artifact, _ = _download_contract_ci_upload(candidate["id"], candidate["digest"], candidate["name"],
+            {"runId": run_id}, run, token, destination=archive,
+            max_bytes=_PLANNED_RESUME_ZIP_LIMITS["max_archive_bytes"])
+        plan_member = "product-resume-inputs/plan/impact-plan.json"
+        physical, controls, _ = verified_zip_contents(archive,
+            retained_paths=(plan_member, ORIGINAL_REFERENCE_NAME), max_retained_bytes=32 * 1024**2,
+            allow_empty_members=True, **_PLANNED_RESUME_ZIP_LIMITS)
+        old_plan = require_exact_keys(load_json_bytes(controls[plan_member]), _PLAN_KEYS, "Prior checkpoint plan")
+        if type(old_plan["schemaVersion"]) is not int or old_plan["schemaVersion"] != 1:
+            raise ValueError("Unsupported prior checkpoint plan schema")
+        validate_remote_build_authorization(old_plan)
+        original = validate_producer(_consumer(old_plan, {}, original_run_id=run_id,
+            original_run_attempt=run["run_attempt"])["producer"])
+        job = "product-validation / plan"
+        original = _retry_upload_producer(original, artifact["id"], artifact["digest"], artifact["name"],
+            job, token, named_attempt=False)
+        if (old_plan["remoteBuildAuthorized"] is not True or original["repository"] != plan["repository"]
+                or original["event"] != plan["event"] or original["pullRequest"] != producer["pullRequest"]
+                or artifact["name"] != f"codex-agent-planned-product-resume-{original['tree']}"
+                or (original["runId"], original["runAttempt"]) >= (producer["runId"], producer["runAttempt"])):
+            raise ValueError("Prior checkpoint is not an authorized earlier producer of this PR")
+        observed = _observe_ci_producer_jobs({"plan": original}, jobs_by_phase={"plan": job},
+            trusted_workflow_sha=workflow, token=token)
+        _require_artifact_job_window(observed[0], job, artifact)
+        refs = validate_original_references(load_canonical_json_bytes(controls[ORIGINAL_REFERENCE_NAME]))
+        inventory = {row["relativePath"]: row for row in refs["inventory"]}
+        inherited = {row["relativePath"] for row in refs["references"]}
+        declared = {path: row for path, row in inventory.items() if path not in inherited}
+        actual = {row["relativePath"]: row for row in physical if row["relativePath"] != ORIGINAL_REFERENCE_NAME}
+        if actual != declared:
+            raise ValueError("Prior checkpoint changes its physical control inventory")
+        directory = work / "original"
+        safe_extract(archive, directory)
+        if regular_file_inventory(directory, allow_empty=True) != physical:
+            raise ValueError("Prior checkpoint controls changed during extraction")
+        session["referenceCheckpoint"] = directory, refs, _source_identity()
+        session["restoreCheckpointProjection"] = partial(_restore_checkpoint_projection,
+            plan=plan, producer=producer, original=directory, refs=refs,
+            trusted_workflow_sha=trusted_workflow_sha, token=token, completed_frozen=completed_frozen)
+        count("priorCheckpointControlBytes", artifact["size_in_bytes"])
+        return
+
+
+def _restore_checkpoint_projection(locator, *, plan, producer, original, refs,
+                                   trusted_workflow_sha, token, completed_frozen):
+    """Populate only a requested original; downstream discovery still admits it."""
+    sources = [source for source in refs["sources"] if source["kind"] == "phase"
+        and _identity(source["receipt"]) == _identity(locator["instance"])
+        and source["artifactId"] == locator["artifact"]["id"]
+        and source["artifactSha256"] == locator["artifact"]["digest"]]
+    if not sources:
+        return
+    if len(sources) != 1:
+        raise ValueError("Prior checkpoint has ambiguous original projections")
+    source = sources[0]
+    observation = original / Path(source["relativePath"]).parents[2] / "transport/original-ci-phases.json"
+    raw = read_regular_file_bytes(observation, max_bytes=16 * 1024**2, reject_symlink_parents=True)
+    record = {"relativePath": observation.relative_to(original).as_posix(),
+              "bytes": len(raw), "sha256": sha256_bytes(raw)}
+    if record not in refs["inventory"]:
+        raise ValueError("Prior checkpoint original observation changed")
+    rows = [row for row in refs["references"] if row["source"] == source["relativePath"]
+            and row["relativePath"].startswith(source["relativePath"] + "/")]
+    transport = _capture_runtime_original_reference_members(plan, producer, source, rows, original,
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    _register_qualified_original_projections(original, {**refs, "sources": sources}, [transport],
+        trusted_workflow_sha=trusted_workflow_sha, completed_frozen=completed_frozen)
+    count("restoredCheckpointProjections")
 
 
 @measured
@@ -9906,6 +10014,9 @@ def resume_products(
                     "artifact_inventory": paginated_items(
                         f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
                         "artifacts", environment["GITHUB_TOKEN"])}
+                _prepare_prior_runtime_checkpoint(plan, current_producer, private / "prior-reference-checkpoint",
+                    recovery_hints["artifact_inventory"], trusted_workflow_sha=sdk_original_workflow_sha,
+                    token=environment["GITHUB_TOKEN"], completed_frozen=completed_frozen)
             attempts = (_prior_failed_pr_attempts(
                 plan, _consumer(plan, environment)["producer"], environment["GITHUB_TOKEN"], **recovery_hints)
                 if recoverable else [])

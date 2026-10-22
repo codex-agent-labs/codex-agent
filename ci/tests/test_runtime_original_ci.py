@@ -1035,6 +1035,83 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 self.assertGreaterEqual(len(observations), 2)
                 self.assertFalse((destination / TARGET / "binary" / TARGET).exists())
 
+    def test_prior_planner_recovers_only_requested_original_without_whole_phase_transfers(self):
+        from products.restore import verification_session
+        from runtime_reference_transport import stage_original_reference_handoff
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        original = self.root / 'old-planner'
+        state = original / 'product-resume-state'
+        sources = []
+        with mock.patch('reuse.api_request', side_effect=self.api(run=self.failed_run())):
+            for phase in ('binary', 'package'):
+                capture = state / f'prior-failed-runtime/{TARGET}/{phase}/{TARGET}'
+                adapter.capture_runtime_original_ci_phases({phase: self.receipts[phase]}, capture,
+                    target=TARGET, trusted_workflow_sha=self.pin, token='not-a-real-token', recovery_projection=True)
+                sources.append(dict(kind='phase', relativePath=(capture / f'phases/{phase}/original').relative_to(original).as_posix(),
+                    receipt=fixture.load_canonical_json_bytes(self.receipts[phase].read_bytes()),
+                    artifactId=self.artifacts[phase]['id'], artifactSha256=self.artifacts[phase]['digest']))
+        plan = dict.fromkeys(adapter._PLAN_KEYS)
+        plan.update(schemaVersion=1, repository=fixture.REPOSITORY, event='pull_request', pullRequest=31,
+            validationCommit=self.producer['commit'], validationTree=self.producer['tree'],
+            remoteBuildAuthorized=True, mergeReady=True, remoteBuildAuthorizationReason='pull-request-final')
+        inputs = original / 'product-resume-inputs'
+        (inputs / 'plan').mkdir(parents=True)
+        (inputs / 'plan/impact-plan.json').write_bytes(fixture.canonical_json_bytes(plan))
+        carrier = self.root / 'small-planner-carrier'
+        stage_original_reference_handoff({'product-resume-inputs': inputs, 'product-resume-state': state}, sources, carrier)
+        raw = fixture.archive_tree(carrier)
+        artifact = {**self.artifacts['binary'], 'id':900,
+            'name':f"codex-agent-planned-product-resume-{self.producer['tree']}",
+            'workflow_run':{'id':72, 'head_sha':self.run['head_sha']},
+            'digest':fixture.sha256_bytes(raw), 'size_in_bytes':len(raw),
+            'archive_download_url':f'https://api.github.com/repos/{fixture.REPOSITORY}/actions/artifacts/900/zip'}
+        job = {**self.jobs[0], 'id':900, 'run_id':72, 'name':'product-validation / plan'}
+        base_api = self.two_attempt_api({'plan':artifact}, [job], {'plan':raw})
+        def api(url, token):
+            if url.endswith(('/runs/72', '/runs/72/attempts/1')):
+                return json.dumps(self.failed_run(72, 1)).encode()
+            if '/runs/72/attempts/1/jobs?' in url:
+                return json.dumps({'jobs':[job]}).encode()
+            return base_api(url, token)
+        def download(upload, _token, destination, **_):
+            self.assertEqual(900, upload['id'], 'whole original phase must never be transferred')
+            Path(destination).write_bytes(raw)
+        current = {**self.producer, 'runId':100, 'runAttempt':1}
+        instance = PhaseInstanceId('runtime', TARGET, 'binary', TARGET)
+        requested = {instance:sources[0]['receipt']['buildKey']}
+        ranges = RangeOpener({self.artifacts['binary']['id']:self.archives['binary']})
+        with mock.patch.dict(os.environ, {'CODEX_AGENT_HYDRATED_EVIDENCE':str(self.root / 'storage')}), \
+                mock.patch('products.verified_evidence.runtime_original_cache', return_value=None), \
+                mock.patch.object(adapter, 'download_artifact_to_file', side_effect=download) as whole, \
+                mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
+                mock.patch('reuse.api_request', side_effect=api), verification_session() as session:
+            work = self.root / 'new-planner'
+            adapter._prepare_prior_runtime_checkpoint(plan, current, work, [artifact],
+                trusted_workflow_sha=self.pin, token='not-a-real-token', completed_frozen=None)
+            self.assertFalse(session.get('qualifiedOriginalProjections'))
+            self.assertEqual([], ranges.requests)  # Only controls until an exact original is requested.
+            recovered = self.root / 'new-capture'
+            result = adapter.capture_prior_failed_runtime_phases(plan, current, requested, recovered,
+                trusted_workflow_sha=self.pin, token='not-a-real-token', attempts=(self.failed_run(),))
+            self.assertEqual({instance}, set(result))
+            self.assertEqual(1, whole.call_count)
+            self.assertEqual({self.artifacts['binary']['id']}, {row[0] for row in ranges.requests})
+            self.assertEqual(self.receipts['binary'].read_bytes(),
+                (recovered / TARGET / 'binary' / TARGET / 'phases/binary/original/shard/phase-receipt.json').read_bytes())
+            self.assertFalse((work / 'original' / sources[1]['relativePath']).exists())
+            observation = work / 'original' / Path(sources[0]['relativePath']).parents[2] / 'transport/original-ci-phases.json'
+            observation.write_bytes(b'changed private controls')
+            session['qualifiedOriginalProjections'].clear()
+            locator = adapter._runtime_original_locator(self.artifacts['binary'], self.pin, instance, self.jobs[0])
+            with self.assertRaisesRegex(ValueError, 'observation changed'):
+                adapter._qualified_original_projection(locator)
+        job['conclusion'] = 'failure'
+        with mock.patch('reuse.api_request', side_effect=api), \
+                mock.patch.object(adapter, 'download_artifact_to_file', side_effect=download), verification_session():
+            with self.assertRaises(ValueError):
+                adapter._prepare_prior_runtime_checkpoint(plan, current, self.root / 'failed-planner', [artifact],
+                    trusted_workflow_sha=self.pin, token='not-a-real-token', completed_frozen=None)
+
     def test_candidate_zip_replacement_after_download_rejects_official_digest_mismatch(self):
         upload = self.root / "runtime-uploads/binary"
         (upload / "raw-validation").mkdir()
