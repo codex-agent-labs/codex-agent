@@ -4881,7 +4881,7 @@ def _verified_product_state(
                 raise ValueError("Prior JavaScript replay requires caller-pinned workflow authority and token")
             from sdk_ios_binary_recovery import replay_prior_javascript_package
             sdk_replays.append((instance, partial(replay_prior_javascript_package, capture, discovery_root,
-                plan=plan, consumer_producer=consumer["producer"],
+                plan=plan, consumer_producer=consumer["producer"], repository_root=root,
                 **({"phase": phase} if phase != "package" else {}),
                 **({"component": component} if component != "javascript" else {}),
                 target=target,
@@ -10108,6 +10108,7 @@ def resume_products(
                     "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
                 records = capture_prior_javascript_package(plan,
                     _consumer(plan, environment)["producer"], misses[0]["buildKey"], capture, prepared,
+                    repository_root=root,
                     **({"phase": phase} if phase != "package" else {}),
                     **({"component": component} if component != "javascript" else {}),
                     environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,

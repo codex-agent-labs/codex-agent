@@ -68,7 +68,7 @@ def _javascript_package_record(capture, artifact_root, phase="package", *, compo
 
 
 def _capture_javascript_package(prior, artifact, destination, *, plan, consumer_producer,
-        build_key, trusted_workflow_sha, token, phase="package", component="javascript"):
+        build_key, trusted_workflow_sha, token, phase="package", component="javascript", repository_root=None):
     """Authenticate a fixed successful original worker, not its failed collector."""
     instance = _javascript_instance(phase, component)
     run, attempt = _require_prior(plan, consumer_producer, prior)
@@ -111,12 +111,15 @@ def _capture_javascript_package(prior, artifact, destination, *, plan, consumer_
             or regular_file_inventory(original, allow_empty=True) != zipped
             or read_regular_file_bytes(original / "shard/phase-receipt.json") != raw):
         raise ValueError("Original JavaScript package capture changed during authentication")
+    if repository_root is not None:
+        from sdk_handoff import _ensure_observed_sdk_commit
+        _ensure_observed_sdk_commit(repository_root, producer, token)
     return receipt
 
 
 def capture_prior_javascript_package(plan, consumer_producer, build_key, destination, artifact_root,
         *, trusted_workflow_sha, token, environ, attempts=None,
-        artifacts_by_run=None, jobs_by_attempt=None, phase="package", component="javascript"):
+        artifacts_by_run=None, jobs_by_attempt=None, phase="package", component="javascript", repository_root=None):
     """Recover an exact-key JS phase from successful original workers."""
     instance = _javascript_instance(phase, component)
     require_no_signing_secret(environ)
@@ -170,7 +173,7 @@ def capture_prior_javascript_package(plan, consumer_producer, build_key, destina
             source = private / f"{run}-{attempt}"
             receipt = _capture_javascript_package(prior, artifact, source, plan=plan,
                 consumer_producer=consumer_producer, build_key=build_key,
-                trusted_workflow_sha=workflow, token=token,
+                trusted_workflow_sha=workflow, token=token, repository_root=repository_root,
                 **({"component": component} if component != "javascript" else {}),
                 **({"phase": phase} if phase != "package" else {}))
             found.append((source, receipt))
@@ -189,7 +192,8 @@ def capture_prior_javascript_package(plan, consumer_producer, build_key, destina
 
 
 def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consumer_producer,
-        trusted_workflow_sha, token, environ, phase="package", component="javascript", target=None, completed_frozen=None):
+        trusted_workflow_sha, token, environ, phase="package", component="javascript", target=None, completed_frozen=None,
+        repository_root=None):
     """Freshly authenticate the small original upload; never admit failed state ZIPs."""
     require_no_signing_secret(environ)
     context = canonical_json_bytes({"plan": plan, "consumer": consumer_producer})
@@ -248,7 +252,7 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
         fresh = Path(temporary).resolve() / "capture"
         _capture_javascript_package(prior, transport["artifact"], fresh, plan=plan,
             consumer_producer=consumer_producer, build_key=receipt["buildKey"],
-            trusted_workflow_sha=workflow, token=token,
+            trusted_workflow_sha=workflow, token=token, repository_root=repository_root,
             **({"component": component} if component != "javascript" else {}),
             **({"phase": phase} if phase != "package" else {}))
         observed = products._canonical_control(fresh / "capture-transport.json", "Fresh JS transport")

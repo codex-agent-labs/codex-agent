@@ -550,10 +550,11 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
         self.files["execution/diagnostic.log"] = b""
         self.archive()
 
-    def capture(self):
+    def capture(self, **options):
         return recovery.capture_prior_javascript_package(self.plan, {**self.producer, "runId": 72},
             self.key, self.output, self.work, trusted_workflow_sha=self.pin,
-            token="synthetic-token", environ={}, attempts=(self.run,), phase=self.javascript_phase, component=self.recovery_component)
+            token="synthetic-token", environ={}, attempts=(self.run,), phase=self.javascript_phase,
+            component=self.recovery_component, **options)
 
     def replay(self, **options):
         return recovery.replay_prior_javascript_package(self.output, self.work, plan=self.plan,
@@ -612,6 +613,29 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
                 self.assertEqual(original, recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
                 run["referenced_workflows"][0]["sha"] = "f" * 40
                 self.assertIsNone(recovery.products._runtime_prior_workflow_sha(run, "e" * 40))
+
+    def test_cold_source_is_provisioned_only_after_original_authentication(self):
+        with self.gates(), verification_session(), \
+                patch("sdk_handoff._ensure_observed_sdk_commit") as source:
+            self.jobs[0]["conclusion"] = "failure"
+            self.assertEqual([], self.capture(repository_root=self.work))
+            source.assert_not_called()
+            self.jobs[0]["conclusion"] = "success"
+            source.side_effect = ValueError("authenticated Git unavailable")
+            with self.assertRaisesRegex(ValueError, "authenticated Git unavailable"):
+                self.capture(repository_root=self.work)
+            self.assertFalse(self.output.exists())
+            source.reset_mock(side_effect=True)
+            records = self.capture(repository_root=self.work)
+            source.assert_called_once_with(self.work, self.producer, "synthetic-token")
+            source.reset_mock()
+            self.assertEqual(records, self.replay(repository_root=self.work))
+            source.assert_called_once_with(self.work, self.producer, "synthetic-token")
+            source.reset_mock()
+            self.jobs[0]["conclusion"] = "failure"
+            with self.assertRaises(ValueError):
+                self.replay(repository_root=self.work)
+            source.assert_not_called()
 
     def test_failed_or_live_job_is_not_admitted_and_wrong_key_is_a_miss(self):
         with self.gates():
