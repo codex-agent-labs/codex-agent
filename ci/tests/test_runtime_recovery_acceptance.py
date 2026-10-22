@@ -84,10 +84,24 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             self.assertNotIn('!inputs.runtimeRecoveryOnly', worker)
             self.assertIn("runtime_workers_required == 'true'", worker)
             self.assertIn('build-key: ${{ matrix.buildKey }}', worker)
-        caller = (HELPER.parents[3] / recovery.CI).read_text()
-        self.assertIn('runtimeRecoveryOnly: true\n      sdkRecoveryOnly: false', caller)
+
+    def test_sdk_caller_reuses_the_current_signed_runtime_without_requalification(self):
+        root = HELPER.parents[3]
+        caller = (root / recovery.CI).read_text()
+        self.assertIn('runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true', caller)
+        self.assertIn('runtimeAggregateRequalification: false', caller)
         self.assertNotIn('runtimeNativeHandoffRecovery:', caller)
-        self.assertNotIn('runtimeAggregateHandoffRecovery:', caller)
+        locator, = re.findall(r"^      runtimeAggregateHandoffRecovery: '(.*)'$", caller, re.MULTILINE)
+        locator = json.loads(locator)
+        self.assertEqual(12433452038, locator['artifactId'])
+        self.assertEqual('sha256:a51cad9fe390a6579b6ce40f1245f5020730db5b44c44ff2a2453472982ab225',
+                         locator['artifactSha256'])
+        self.assertEqual('d2243aac89368df2776b6617fd5a623bd6754cb2', locator['trustedWorkflowSha'])
+        self.assertEqual('c8400811dca2e4f8c23f7c459b1abe6ad78d5348', recovery.SDK_FROZEN_REVISION)
+        self.assertEqual(recovery.SDK_FROZEN_REVISION, locator['originalProducer']['commit'])
+        instances = tuple(p for p in recovery.PHASE_INSTANCE_IDS if p.product != 'sdk')
+        self.assertEqual(recovery._phase_git_inventories(root, recovery.SDK_FROZEN_REVISION, instances),
+                         recovery._phase_git_inventories(root, self.git(root, 'rev-parse', 'HEAD').strip(), instances))
 
     def test_runtime_recovery_skips_all_sdk_jobs_even_with_successful_runtime(self):
         source = (HELPER.parents[3] / '.github/workflows/product-validation.yml').read_text()
@@ -118,8 +132,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.assertIn(b'trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}', caller)
         self.assertEqual(caller, recovery._activated_ci(caller, "b" * 40))
         for name in (b'trustedWorkflowSha', b'trustedSourceSha'):
-            invalid = caller.replace(b'      sdkRecoveryOnly: false\n',
-                b'      sdkRecoveryOnly: false\n      ' + name + b': ' + b'a' * 40 + b'\n')
+            invalid = caller.replace(b'      sdkRecoveryOnly: true\n',
+                b'      sdkRecoveryOnly: true\n      ' + name + b': ' + b'a' * 40 + b'\n')
             with self.subTest(name=name), self.assertRaises(ValueError):
                 recovery._activated_ci(invalid, "b" * 40)
 

@@ -131,8 +131,9 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
 CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES | REFERENCE_TRANSPORT_FILES
 CONTROL_FILES |= CACHE_FIXED_FILES
 
-# Exact completed product closure, not the historical acceptance producer.
-SDK_FROZEN_REVISION = "969b272984b91f4dcf467a05319132e2bca3b52a"
+# Current signed Runtime closure from 39745656910/1; original receipt/signature
+# gates still authenticate every artifact. This is not full-head acceptance.
+SDK_FROZEN_REVISION = "c8400811dca2e4f8c23f7c459b1abe6ad78d5348"
 SDK_REGISTRY = "ci/products/registry.py"
 # Reviewed candidate control classifications preserve all 112 product inventories.
 SDK_SELECTION_REVISION = "97f64bdb8b0c966c5f26ff5fca7d781436ab2f93"
