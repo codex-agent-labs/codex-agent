@@ -218,8 +218,15 @@ def _verify_sdk_apple_with_tooling(
         for name, (source, allow_empty) in normalized_sources.items():
             private_sources[name] = root / name
             _snapshot_apple_tree(source, private_sources[name], allow_empty=allow_empty)
-            if _input_inventory(private_sources[name], allow_empty=allow_empty) != before[name]:
-                raise ValueError("Apple SDK original input changed during capture")
+            captured = _input_inventory(private_sources[name], allow_empty=allow_empty)
+            if captured != before[name]:
+                expected_files = {row["relativePath"]: row for row in before[name]}
+                captured_files = {row["relativePath"]: row for row in captured}
+                changed = next(path for path in sorted(expected_files.keys() | captured_files.keys())
+                               if expected_files.get(path) != captured_files.get(path))
+                raise ValueError(
+                    f"Apple SDK original input changed during capture: {name}/{changed}; "
+                    f"expected={expected_files.get(changed)!r}; captured={captured_files.get(changed)!r}")
         expected = root / "expected"
         expected.mkdir()
         for name, data in expected_bytes.items():

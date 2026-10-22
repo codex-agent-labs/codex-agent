@@ -394,6 +394,29 @@ class SdkAppleContentTest(unittest.TestCase):
         self.assertEqual("raw stderr", diagnostics.getvalue())
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
 
+    def test_capture_mismatch_names_the_first_different_input_without_running_tooling(self):
+        snapshot = content._snapshot_apple_tree
+        before = regular_file_inventory(self.product)
+        for change in ("modified", "missing", "extra"):
+            def changed_snapshot(source, destination, **options):
+                snapshot(source, destination, **options)
+                if source == self.product:
+                    target = destination / ("extra.zip" if change == "extra" else before[0]["relativePath"])
+                    if change == "missing":
+                        target.unlink()
+                    else:
+                        target.write_bytes(b"private changed bytes, never printed")
+            with self.subTest(change=change), patch.object(content, "_snapshot_apple_tree", changed_snapshot), \
+                    patch.object(content, "verified_tooling_capture", side_effect=AssertionError("tooling")), \
+                    self.assertRaisesRegex(ValueError, "input changed during capture: product/") as caught:
+                verify_sdk_apple_package_content(**self.args)
+            self.assertIn("sha256:", str(caught.exception))
+            self.assertIn("expected=", str(caught.exception))
+            self.assertIn("captured=", str(caught.exception))
+            self.assertNotIn("private changed bytes", str(caught.exception))
+            self.assertEqual(before, regular_file_inventory(self.product))
+        self.assertEqual([], self.calls)
+
     def test_original_or_private_mutation_prevents_inventory_return(self):
         for option, source in (("--product-directory", self.product / "CodexAgentPackage-0.2.0.zip"),
                                ("--validation-evidence-directory", self.validation / "original-receipt.json"),
