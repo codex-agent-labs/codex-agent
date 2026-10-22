@@ -131,9 +131,10 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
 CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES | REFERENCE_TRANSPORT_FILES
 CONTROL_FILES |= CACHE_FIXED_FILES
 
-# Current signed Runtime closure from 39745656910/1; original receipt/signature
-# gates still authenticate every artifact. This is not full-head acceptance.
-SDK_FROZEN_REVISION = "c8400811dca2e4f8c23f7c459b1abe6ad78d5348"
+# Current signed Runtime closure from 39745656910/1: this source ancestor has
+# the exact c8400811 producer tree and is present in fresh full branch checkouts.
+# Original receipt/signature gates retain c8400811; no full-head acceptance.
+SDK_FROZEN_REVISION = "ca7dd6d02193df66c1bcba9867255321e74a1fe6"
 SDK_REGISTRY = "ci/products/registry.py"
 # Reviewed candidate control classifications preserve all 112 product inventories.
 SDK_SELECTION_REVISION = "97f64bdb8b0c966c5f26ff5fca7d781436ab2f93"

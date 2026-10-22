@@ -97,8 +97,11 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.assertEqual('sha256:a51cad9fe390a6579b6ce40f1245f5020730db5b44c44ff2a2453472982ab225',
                          locator['artifactSha256'])
         self.assertEqual('d2243aac89368df2776b6617fd5a623bd6754cb2', locator['trustedWorkflowSha'])
-        self.assertEqual('c8400811dca2e4f8c23f7c459b1abe6ad78d5348', recovery.SDK_FROZEN_REVISION)
-        self.assertEqual(recovery.SDK_FROZEN_REVISION, locator['originalProducer']['commit'])
+        self.assertEqual('ca7dd6d02193df66c1bcba9867255321e74a1fe6', recovery.SDK_FROZEN_REVISION)
+        self.assertEqual('c8400811dca2e4f8c23f7c459b1abe6ad78d5348', locator['originalProducer']['commit'])
+        self.git(root, 'merge-base', '--is-ancestor', recovery.SDK_FROZEN_REVISION, 'HEAD')
+        self.assertEqual(locator['originalProducer']['tree'],
+                         self.git(root, 'rev-parse', recovery.SDK_FROZEN_REVISION + '^{tree}').strip())
         instances = tuple(p for p in recovery.PHASE_INSTANCE_IDS if p.product != 'sdk')
         self.assertEqual(recovery._phase_git_inventories(root, recovery.SDK_FROZEN_REVISION, instances),
                          recovery._phase_git_inventories(root, self.git(root, 'rev-parse', 'HEAD').strip(), instances))
