@@ -140,6 +140,9 @@ SDK_SELECTOR = "ci/products/selection.py"
 # Reviewed canonical LF writer correction. Historical acceptance never admits
 # the resulting new aggregate key; ordinary production/signature gates do that.
 SDK_AGGREGATE_CORRECTION = "1b33491ad273aa42ba0d6b4cd7d7b98562141ad8"
+# Phase9 Runtime recovery may execute only this separately reviewed product
+# correction. This never broadens SDK-only recovery or admits its new outputs.
+RUNTIME_POSIX_CORRECTION = "43860b0b3acdb51d23c69b1a01df8716bd2257d1"
 
 
 def _tree(root, revision):
@@ -184,6 +187,9 @@ def _reviewed_scope(trusted, candidate, sha):
     if (caller.splitlines().count(b"      sdkRecoveryOnly: true") == 1
             and caller.splitlines().count(b"      runtimeRecoveryOnly: false") == 1):
         return _sdk_reviewed_scope(trusted, candidate, sha)
+    if (caller.splitlines().count(b"      runtimeRecoveryOnly: true") == 1
+            and caller.splitlines().count(b"      sdkRecoveryOnly: false") == 1):
+        return _sdk_reviewed_scope(trusted, candidate, sha, allow_posix_correction=True)
     baseline = _tree(trusted, BASELINE_PRODUCER["tree"])
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys() if baseline.get(path) != reviewed.get(path)}
@@ -225,8 +231,8 @@ def _reviewed_scope(trusted, candidate, sha):
         raise ValueError("Recovery candidate caller has changes beyond exact activation pins")
 
 
-def _sdk_reviewed_scope(trusted, candidate, sha):
-    """Preserve frozen inputs, allowing only the reviewed aggregate correction."""
+def _sdk_reviewed_scope(trusted, candidate, sha, *, allow_posix_correction=False):
+    """Keep SDK recovery frozen; Runtime mode additionally pins four binary inputs."""
     baseline = _tree(trusted, SDK_FROZEN_REVISION)
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys()
@@ -247,11 +253,17 @@ def _sdk_reviewed_scope(trusted, candidate, sha):
     instances = tuple(instance for instance in PHASE_INSTANCE_IDS if instance.product != "sdk")
     before = _phase_git_inventories(trusted, SDK_FROZEN_REVISION, instances)
     after = _phase_git_inventories(trusted, sha, instances)
+    corrected = _phase_git_inventories(trusted, RUNTIME_POSIX_CORRECTION, tuple(
+        PhaseInstanceId("runtime", target, "binary", target)
+        for target in ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64")
+    )) if allow_posix_correction else {}
     for instance in instances:
         if before[instance] != after[instance]:
             aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
             if instance == aggregate and after[instance] == _phase_git_inventories(
                     trusted, SDK_AGGREGATE_CORRECTION, (aggregate,))[aggregate]:
+                continue
+            if instance in corrected and after[instance] == corrected[instance]:
                 continue
             raise ValueError(f"SDK recovery changes frozen product inputs: {instance}")
     current = _tree(candidate, "HEAD")

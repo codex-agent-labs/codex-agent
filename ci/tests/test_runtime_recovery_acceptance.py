@@ -60,6 +60,56 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
                          (root / recovery.SDK_SELECTOR).read_bytes())
 
+    def test_runtime_posix_pin_matches_the_four_current_binary_inputs(self):
+        root = HELPER.parents[3]
+        instances = tuple(recovery.PhaseInstanceId("runtime", target, "binary", target)
+                          for target in ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64"))
+        self.assertEqual("43860b0b3acdb51d23c69b1a01df8716bd2257d1", recovery.RUNTIME_POSIX_CORRECTION)
+        self.assertEqual(recovery._phase_git_inventories(root, recovery.RUNTIME_POSIX_CORRECTION, instances),
+                         recovery._phase_git_inventories(root, self.git(root, "rev-parse", "HEAD").strip(), instances))
+
+    def test_runtime_recovery_stops_before_phase10_sdk_and_legacy_builds(self):
+        source = (HELPER.parents[3] / '.github/workflows/product-validation.yml').read_text()
+        for name in ('contract-phase10-pgp-authority', 'contract-phase10-maven',
+                     'contract-phase10-output-record', 'runtime-phase10-maven',
+                     'product', 'android', 'apple', 'sdk-native-wrappers', 'sdk-inputs',
+                     'sdk-ios-binary-plan', 'sdk-plan', 'sdk-parity'):
+            with self.subTest(job=name):
+                job = workflow_job(source, name)
+                condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
+                                      job, re.MULTILINE | re.DOTALL).group(1)
+                self.assertRegex(condition, r"^(?:>-\s*|')?!inputs\.runtimeRecoveryOnly &&")
+        for wave in range(1, 5):
+            worker = workflow_job(source, f'runtime-workers-{wave}')
+            self.assertNotIn('!inputs.runtimeRecoveryOnly', worker)
+            self.assertIn("runtime_workers_required == 'true'", worker)
+            self.assertIn('build-key: ${{ matrix.buildKey }}', worker)
+        caller = (HELPER.parents[3] / recovery.CI).read_text()
+        self.assertIn('runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true', caller)
+
+    def test_runtime_recovery_skips_all_sdk_jobs_even_with_successful_runtime(self):
+        source = (HELPER.parents[3] / '.github/workflows/product-validation.yml').read_text()
+        jobs = re.findall(r'^  (sdk-[a-z0-9-]+):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
+                          source, re.MULTILINE | re.DOTALL)
+        self.assertEqual(63, len(jobs))
+        for name, job in jobs:
+            with self.subTest(job=name):
+                condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
+                                      job, re.MULTILINE | re.DOTALL).group(1)
+                expression = ' '.join(condition.removeprefix('>-').split())
+                expression = expression.replace('inputs.runtimeRecoveryOnly', 'True')
+                expression = expression.replace('inputs.sdkRecoveryOnly', 'False')
+                expression = expression.replace('inputs.runtimeAggregateRequalification', 'False')
+                expression = expression.replace('needs.*.result', "['success', 'skipped']")
+                expression = re.sub(r'needs\.([a-z0-9-]+)\.(result|outputs\.[a-z0-9_]+)',
+                    lambda m: repr(('skipped' if m[2] == 'result' else '') if m[1].startswith('sdk-')
+                                   else ('success' if m[2] == 'result' else 'true')), expression)
+                expression = expression.replace('github.event_name', "'pull_request'")
+                expression = re.sub(r'!(?!=)', 'not ', expression).replace('&&', 'and').replace('||', 'or')
+                self.assertFalse(eval(expression, {'__builtins__': {},
+                    'always': lambda: True, 'cancelled': lambda: False,
+                    'contains': lambda values, value: value in values}))
+
     def test_current_full_caller_preserves_historical_transport_assertions(self):
         root = Path(__file__).resolve().parents[2]
         caller = (root / '.github/workflows/ci.yml').read_bytes()
@@ -269,7 +319,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.event["pull_request"]["head"]["sha"] = self.activation
         self.environment["GITHUB_SHA"] = self.merge
 
-    def sdk_mode(self, *, product_change=False, sdk_change=False, executable_mode=None, aggregate_correction=None):
+    def sdk_mode(self, *, product_change=False, sdk_change=False, executable_mode=None,
+                 aggregate_correction=None, runtime_recovery=False, posix_correction=None):
         # Real Git trees exercise the shared inventory policy; API identities
         # remain explicit fixtures, never genuine hosted acceptance evidence.
         self.git(self.trusted, "checkout", "--quiet", "--detach", self.reviewed)
@@ -280,7 +331,18 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             (self.trusted / "ci/run-lane.sh").chmod(0o755)
         if aggregate_correction is not None:
             self.write(self.trusted, "ci/products/sdk_maven.py", "original Maven writer\n")
+        posix = "codex-agent-runtime-desktop/native/include/codex_desktop_posix.h"
+        if posix_correction is not None:
+            self.write(self.trusted, posix, "original POSIX permission helper\n")
         frozen = self.commit(self.trusted, "frozen SDK registry and product inputs")
+        if posix_correction is not None:
+            self.write(self.trusted, posix, "reviewed idempotent permission helper\n")
+            correction = self.commit(self.trusted, "independently reviewed POSIX correction")
+            patcher = mock.patch.object(recovery, "RUNTIME_POSIX_CORRECTION", correction, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            if posix_correction == "unreviewed":
+                self.write(self.trusted, posix, "different unreviewed permission helper\n")
         if aggregate_correction is not None:
             self.write(self.trusted, "ci/products/sdk_maven.py", "reviewed canonical Maven writer\n")
             correction = self.commit(self.trusted, "independently reviewed aggregate correction")
@@ -292,8 +354,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         if executable_mode is not None:
             self.write(self.trusted, "ci/run-lane.sh", "#!/bin/sh\n# reviewed tooling producer\n")
             (self.trusted / "ci/run-lane.sh").chmod(executable_mode)
-        self.write(self.trusted, recovery.CI, self.ci
-            + "      runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true\n")
+        self.write(self.trusted, recovery.CI, self.ci + (
+            "      runtimeRecoveryOnly: true\n      sdkRecoveryOnly: false\n" if runtime_recovery else
+            "      runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true\n"))
         self.write(self.trusted, ".github/actions/run-ci-lane/sdk-current-control.py", "reviewed control-only continuation\n")
         if product_change:
             self.write(self.trusted, "runtime/product.txt", "changed product\n")
@@ -330,6 +393,28 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_sdk_reviewed_product_input_change_is_rejected(self):
         self.sdk_mode(product_change=True)
+        with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_runtime_posix_mode_admits_exact_correction_without_claiming_acceptance(self):
+        self.sdk_mode(runtime_recovery=True, posix_correction="reviewed")
+        result = self.verify()
+        self.assertTrue(result["recovery_control_admitted"])
+        self.assertFalse(result["full_acceptance_current"])
+        self.assertEqual(self.producer, result["historical_acceptance_producer"])
+
+    def test_runtime_posix_mode_rejects_other_runtime_inputs(self):
+        self.sdk_mode(runtime_recovery=True, posix_correction="reviewed", product_change=True)
+        with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_runtime_posix_mode_rejects_unreviewed_header(self):
+        self.sdk_mode(runtime_recovery=True, posix_correction="unreviewed")
+        with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
+            self.verify()
+
+    def test_sdk_mode_still_rejects_even_reviewed_posix_correction(self):
+        self.sdk_mode(posix_correction="reviewed")
         with self.assertRaisesRegex(ValueError, "changes frozen product inputs"):
             self.verify()
 
