@@ -85,7 +85,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
             self.assertIn("runtime_workers_required == 'true'", worker)
             self.assertIn('build-key: ${{ matrix.buildKey }}', worker)
         caller = (HELPER.parents[3] / recovery.CI).read_text()
-        self.assertIn('runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true', caller)
+        self.assertIn('runtimeRecoveryOnly: true\n      sdkRecoveryOnly: false', caller)
+        self.assertNotIn('runtimeNativeHandoffRecovery:', caller)
+        self.assertNotIn('runtimeAggregateHandoffRecovery:', caller)
 
     def test_runtime_recovery_skips_all_sdk_jobs_even_with_successful_runtime(self):
         source = (HELPER.parents[3] / '.github/workflows/product-validation.yml').read_text()
@@ -116,8 +118,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.assertIn(b'trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}', caller)
         self.assertEqual(caller, recovery._activated_ci(caller, "b" * 40))
         for name in (b'trustedWorkflowSha', b'trustedSourceSha'):
-            invalid = caller.replace(b'      sdkRecoveryOnly: true\n',
-                b'      sdkRecoveryOnly: true\n      ' + name + b': ' + b'a' * 40 + b'\n')
+            invalid = caller.replace(b'      sdkRecoveryOnly: false\n',
+                b'      sdkRecoveryOnly: false\n      ' + name + b': ' + b'a' * 40 + b'\n')
             with self.subTest(name=name), self.assertRaises(ValueError):
                 recovery._activated_ci(invalid, "b" * 40)
 

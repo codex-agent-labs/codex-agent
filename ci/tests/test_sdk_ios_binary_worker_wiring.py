@@ -16,6 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 KEY = "sha256:" + "a" * 64
 TREE = "b" * 40
+SDK_RECOVERY_SOURCE = "3f0ad7552e45ab2047dd8751d3c89d20de2e9d15"
 
 
 class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
@@ -23,6 +24,11 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
     def setUpClass(cls):
         cls.action = (ROOT / ".github/actions/sdk-ios-binary-worker/action.yml").read_text()
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
+        # Preserve exact deployed SDK handoff coverage while the current caller
+        # intentionally elects only corrected Runtime phases, not old handoffs.
+        cls.sdk_caller = subprocess.check_output(
+            ["git", "show", SDK_RECOVERY_SOURCE + ":.github/workflows/ci.yml"],
+            cwd=ROOT, text=True)
         matches = re.findall(
             r"^        python3 -B - <<'PY'\n(.*?)^        PY$",
             cls.action, re.MULTILINE | re.DOTALL,
@@ -254,7 +260,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         continuation = self.job("runtime-continuation")
         self.assertIn("if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification", continuation)
         self.assertIn("if: inputs.sdkRecoveryOnly != true || inputs.runtimeAggregateRequalification", continuation)
-        caller = (ROOT / '.github/workflows/ci.yml').read_text()
+        caller = self.sdk_caller
         self.assertIn("sdkRecoveryOnly: true\n      runtimeAggregateRequalification: false", caller)
         original = json.loads(re.search(r"(?m)^      runtimeNativeHandoffRecovery: '([^']+)'$", caller)[1])
         self.assertEqual(37081083913, original["producer"]["runId"])
@@ -263,7 +269,7 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
                          {row["artifactId"] for row in original["artifacts"]})
 
     def test_sdk_recovery_preserves_original_handoff_and_separates_replay_authority(self):
-        caller = (ROOT / '.github/workflows/ci.yml').read_text()
+        caller = self.sdk_caller
         locator = json.loads(re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])
         self.assertEqual({'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, set(locator))
         qualified = json.loads((ROOT / 'ci/tests/data/requalified-frozen-reuse.json').read_bytes())
