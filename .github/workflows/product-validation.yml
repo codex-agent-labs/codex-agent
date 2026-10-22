@@ -896,6 +896,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -950,6 +953,7 @@ jobs:
           if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
           if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
           echo "key_hex=${BUILD_KEY#sha256:}" >> "$GITHUB_OUTPUT"
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
           python3 -B ci/product_reuse.py execute-runtime-supervisor ${tooling[@]+"${tooling[@]}"} \
             --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
             --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
@@ -1003,6 +1007,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1092,6 +1099,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1154,6 +1164,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1241,6 +1254,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1303,6 +1319,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1390,6 +1409,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1452,6 +1474,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -1539,6 +1564,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
