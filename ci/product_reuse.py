@@ -227,6 +227,7 @@ _WAVE_REQUEST_KEYS = {
 _NATIVE_REQUEST_KEYS = {"nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence"}
 _ADAPTER_REQUEST_KEY = "adapterRuntimeComparisonEvidence"
 _AGGREGATE_REQUEST_KEY = "runtimeAggregateReleaseEvidence"
+_NATIVE_PROJECTION_SOURCE = "nativeRuntimeProjectionSource"
 _RECOVERABLE_RUNTIME_COMPONENTS = (*RUNTIME_COMPONENTS, "runtime-aggregate")
 _SDK_REQUEST_KEYS = {"sdkValidationEvidence", "sdkAppleValidationEvidence", "sdkRuntimeSource"}
 _KEYRING_PATH = "gradle/release/product-signing-keys.json"
@@ -3051,6 +3052,12 @@ def _wave_request(
     }
     if source is not None:
         request["sdkRuntimeSource"] = source
+    else:
+        from products.plan import native_runtime_validation_dependencies
+        if any(native_runtime_validation_dependencies(instance) for instance in closure):
+            # Activate only newly constructed requests. Historical requests keep
+            # their exact replay semantics; this route still requires full gates.
+            request[_NATIVE_PROJECTION_SOURCE] = "selected-aggregate"
     records = {}
     for catalog in sorted(catalogs, key=lambda value: SOURCES.index(value.source)):
         for record in catalog.native_runtime_evidence:
@@ -3677,14 +3684,18 @@ def _rebase_native_request(request, source_root, artifact_root):
     if _AGGREGATE_REQUEST_KEY in request:
         result[_AGGREGATE_REQUEST_KEY] = rebase_runtime_aggregate_release_records(
             request[_AGGREGATE_REQUEST_KEY], source_root, artifact_root)
+    if _NATIVE_PROJECTION_SOURCE in request:
+        result[_NATIVE_PROJECTION_SOURCE] = request[_NATIVE_PROJECTION_SOURCE]
     return result
 
 
 def _wave_control(path, label):
     value = _canonical_control(path, label)
-    value = require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY} | _SDK_REQUEST_KEYS)), label)
+    value = require_exact_keys(value, _WAVE_REQUEST_KEYS | (value.keys() & (_NATIVE_REQUEST_KEYS | {_ADAPTER_REQUEST_KEY, _AGGREGATE_REQUEST_KEY, _NATIVE_PROJECTION_SOURCE} | _SDK_REQUEST_KEYS)), label)
     if "sdkRuntimeSource" in value and value["sdkRuntimeSource"] != "released-default":
         raise ValueError("Unsupported SDK Runtime dependency source")
+    if _NATIVE_PROJECTION_SOURCE in value and value[_NATIVE_PROJECTION_SOURCE] != "selected-aggregate":
+        raise ValueError("Unsupported native Runtime projection source")
     return value
 
 

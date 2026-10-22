@@ -1110,6 +1110,34 @@ def _native_comparison_provider(root, value, *, keyring=None, keys_directory=Non
     return verify if records else None
 
 
+@contextmanager
+def _current_native_runtime_projections(request, available, contract_evidence):
+    """Consume the selected full signed carrier, not metadata-only authority."""
+    aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+    selected = [item for item in available if _identity(item["receipt"]) == aggregate]
+    if not selected or contract_evidence is None or contract_evidence["expectedTrustDomain"] != "release":
+        yield None
+        return
+    if len(selected) != 1:
+        raise ValueError("Current native projection requires one selected aggregate")
+    original = selected[0]
+    records = [record for record in request.get("runtimeAggregateReleaseEvidence", [])
+               if record["receiptSha256"] == original["receiptSha256"]]
+    if not records:
+        yield None
+        return
+    if len(records) != 1:
+        raise ValueError("Current native projection has ambiguous aggregate evidence")
+    from .runtime_aggregate_handoff import verified_runtime_aggregate_handoff
+    carrier = _artifact_path(Path(request["artifactRoot"]), records[0]["handoffRoot"],
+                             "Current native aggregate handoff")
+    with verified_runtime_aggregate_handoff(carrier, keyring=contract_evidence["keyring"],
+            keys_directory=contract_evidence["keysDirectory"]) as verified:
+        if verified["receiptBytes"][aggregate] != original["receiptBytes"]:
+            raise ValueError("Current native aggregate differs from its selected original receipt")
+        yield verified["nativeRuntimeProjections"]
+
+
 def _phase_git_inventories(root, revision, instances):
     """Read exact shared Git inputs once; return independent per-phase records."""
     if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
@@ -1173,7 +1201,7 @@ def plan_reuse_wave(
         } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence",
                              "sdkValidationEvidence", "sdkValidationTooling", "runtimeAggregateReleaseEvidence",
                              "sdkAppleValidationEvidence", "sdkAppleValidationPolicy",
-                             "sdkRuntimeSource") if key in value}
+                             "sdkRuntimeSource", "nativeRuntimeProjectionSource") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
     )
@@ -1181,6 +1209,9 @@ def plan_reuse_wave(
         raise ValueError("Unsupported reuse-wave request schemaVersion")
     if request["requestType"] != "reuse-wave":
         raise ValueError("Unsupported plan requestType")
+    if ("nativeRuntimeProjectionSource" in request
+            and request["nativeRuntimeProjectionSource"] != "selected-aggregate"):
+        raise ValueError("Unsupported native Runtime projection source")
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
     # External transport only: validate paths without introducing producer or
@@ -1496,6 +1527,7 @@ def plan_reuse_wave(
         consumed_runtime_validation_evidence: set[PhaseInstanceId] = set()
         consumed_native_evidence: set[str] = set()
         native_projection_cache: dict[tuple[str, str], VerifiedNativeRuntimeProjection] = {}
+        current_native_projections, current_native_checked = None, False
 
         def sdk_projection_provider(instance, envelopes, package):
             if sdk_comparison is None or any(envelope["receiptSha256"] not in sdk_originals for envelope in envelopes):
@@ -1505,13 +1537,29 @@ def plan_reuse_wave(
                          for envelope in envelopes)
 
         def native_runtime_projection_provider(instance, envelopes, projection):
+            nonlocal current_native_projections, current_native_checked
             targets = [dependency.target for dependency in native_runtime_validation_dependencies(instance)]
             selected = [(sdk_native_evidence.get(target) if external_sdk_runtime and instance.product == "sdk" else None)
                         or native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
                         for target, envelope in zip(targets, envelopes, strict=True)]
             if any(record is None for record in selected):
-                return (completed_native_runtime_projection_provider(instance, envelopes, projection)
+                completed = (completed_native_runtime_projection_provider(instance, envelopes, projection)
                         if not external_sdk_runtime and completed_native_runtime_projection_provider is not None else None)
+                # Old saved requests must replay their original wait decision.
+                # This option selects a full reader, never grants admission.
+                if (completed is not None or external_sdk_runtime
+                        or request.get("nativeRuntimeProjectionSource") != "selected-aggregate"):
+                    return completed
+                if not current_native_checked:
+                    current_native_projections = captures.enter_context(
+                        _current_native_runtime_projections(request, available, contract_evidence))
+                    current_native_checked = True
+                if current_native_projections is None:
+                    return None
+                proofs = tuple(current_native_projections[target] for target in targets)
+                for proof, envelope in zip(proofs, envelopes, strict=True):
+                    proof.receipt_value(envelope["receipt"], projection)
+                return proofs
             if master_projection is None or master_contract_stage is None or contract_evidence is None:
                 raise ValueError("Native Runtime reuse lacks authenticated Contract evidence")
             # Released-default records already carry their selected catalog's

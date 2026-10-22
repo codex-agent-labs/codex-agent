@@ -23,7 +23,7 @@ from .registry import NATIVE_TARGETS, PhaseInstanceId
 from .restore import verify_phase_shard, verification_session, memoized_file_inventory as regular_file_inventory
 from .runtime_aggregate import _adapter_receipt_identities
 from .runtime_attestation import read_runtime_variant_handoff
-from .sdk_runtime_content import verify_native_runtime_validation_content
+from .sdk_runtime_content import verify_native_runtime_projection
 from .signatures import load_keyring, public_key_path, verify_manifest_signature
 
 
@@ -265,6 +265,7 @@ def _verify_captured(root, keyring, keys_directory):
         contract_args["contract_public_key"], expected_trust_domain="release", expected_contract_version=version,
         required_components=("common", *NATIVE_TARGETS), keyring=keyring, keys_directory=keys_directory)
     signatures = {name: {} for name in ("variant_attestations", "variant_attestation_signatures", "variant_public_keys")}
+    native_projections = {}
     for target in NATIVE_TARGETS:
         native = root / "variant-inputs" / target
         verified = read_runtime_variant_handoff(native, target=target, keyring=keyring, keys_directory=keys_directory)
@@ -283,7 +284,8 @@ def _verify_captured(root, keyring, keys_directory):
             staged = root / "runtime-stages" / target / phase
             if tree(staged) != regular_file_inventory(original(target, phase, target)["stage"]):
                 raise ValueError("Retained native raw stage differs from selected original")
-        verify_native_runtime_validation_content(target, root / "runtime-stages", records["variant_phase_receipts"][target],
+        native_projections[target] = verify_native_runtime_projection(
+            target, root / "runtime-stages", records["variant_phase_receipts"][target],
             records["variant_bundles"][target], signatures["variant_attestations"][target],
             signatures["variant_attestation_signatures"][target], signatures["variant_public_keys"][target],
             projection, contract_args["contract_payload"], required_trust_domain="release",
@@ -343,6 +345,7 @@ def _verify_captured(root, keyring, keys_directory):
         raise ValueError("Aggregate handoff contains missing or unexpected files")
     return {"manifest": value, "attestation": _json(attestation_path), "receipts": receipts,
             "receiptBytes": receipt_bytes, "inventory": inventory,
+            "nativeRuntimeProjections": native_projections,
             "originalPhases": {PhaseInstanceId(*identity): original for identity, original in originals.items()},
             "nativeRuntimeEvidence": {target: {
                 "target": target, "stageRoot": str(root / "runtime-stages"),
@@ -384,6 +387,10 @@ def verified_runtime_aggregate_handoff(root: Path, *, keyring: Path, keys_direct
     records from these same originals and the caller's captured public policy.
     Its absolute paths are valid only inside this context; a consumer must still
     invoke the existing projector with its own authenticated Contract projection.
+    ``nativeRuntimeProjections`` reuses the five full native gates above without
+    recapturing or rechecking each target for every SDK language. Consumers must
+    bind each proof to their exact original receipt and Contract; these opaque
+    proofs are invocation-local, not serialized authority.
     """
     root = Path(root).absolute()
     for path in (root, *root.parents):

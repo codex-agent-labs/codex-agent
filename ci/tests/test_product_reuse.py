@@ -858,6 +858,49 @@ class ProductReuseTest(unittest.TestCase):
         sdk_factory.assert_called_once_with(Path(request["artifactRoot"]), [], repository=repository,
                                             policy_revision=revision, tooling=None)
 
+    def test_native_current_carrier_fallback_is_shared_and_keeps_qualified_fast_path(self) -> None:
+        # Controller wiring only; the signed-carrier suite proves the real gate.
+        from contextlib import contextmanager
+        repository, revision = self.reuse_wave_repository()
+        request = self.reuse_wave_request(repository, revision)
+        proofs = {target: mock.Mock() for target in NATIVE_TARGETS}
+        originals = tuple({"receipt": {"target": target}, "receiptSha256": sha256_bytes(target.encode())}
+                          for target in NATIVE_TARGETS)
+        expected = {"phases": [], "matrices": {}, "continuationRequirements": []}
+        for mode in ("legacy", "fallback", "completed", "unavailable"):
+            current = dict(request)
+            if mode != "legacy":
+                current["nativeRuntimeProjectionSource"] = "selected-aggregate"
+            closed = []
+            @contextmanager
+            def capture(*args):
+                try:
+                    yield None if mode == "unavailable" else proofs
+                finally:
+                    closed.append(mode)
+            completed = mock.Mock(return_value=tuple(proofs.values()) if mode == "completed" else None)
+            def advance(*args, **kwargs):
+                provider = kwargs["native_runtime_projection_provider"]
+                for language in ("python", "csharp", "cpp", "rust", "dart"):
+                    value = provider(PhaseInstanceId("sdk", language, "package", "desktop"), originals, "contract")
+                    self.assertEqual(None if mode in {"legacy", "unavailable"} else tuple(proofs.values()), value)
+                return expected, ()
+            with self.subTest(mode=mode), mock.patch("ci.products.reuse.advance_reuse", side_effect=advance), \
+                    mock.patch("ci.products.reuse._current_native_runtime_projections", side_effect=capture) as carrier:
+                self.assertIs(expected, plan_reuse_wave(current,
+                    completed_native_runtime_projection_provider=completed))
+                self.assertEqual(5, completed.call_count)
+                self.assertEqual(0 if mode in {"legacy", "completed"} else 1, carrier.call_count)
+                self.assertEqual([] if mode in {"legacy", "completed"} else [mode], closed)
+            for target, proof in proofs.items():
+                if mode == "fallback":
+                    self.assertEqual([mock.call({"target": target}, "contract")] * 5,
+                                     proof.receipt_value.call_args_list)
+                proof.reset_mock()
+        for bad in (None, True, "metadata-only"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "Unsupported native Runtime projection source"):
+                plan_reuse_wave({**request, "nativeRuntimeProjectionSource": bad})
+
     def test_reuse_wave_rejects_unpaired_apple_evidence_and_caller_policy(self) -> None:
         repository, revision = self.reuse_wave_repository()
         for field, value in (("sdkAppleValidationEvidence", []), ("sdkAppleValidationPolicy", {})):

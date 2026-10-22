@@ -115,6 +115,25 @@ class NativeReuseAdapterTest(unittest.TestCase):
             ordinary = adapter._wave_request(*arguments, [plain], None)
         self.assertEqual([], ordinary.get("nativeRuntimeComparisonEvidence", []))
         self.assertEqual((), plain.native_runtime_evidence)
+        field = "nativeRuntimeProjectionSource"
+        self.assertEqual("selected-aggregate", ordinary[field])
+        self.assertEqual({field: ordinary[field]}, adapter._rebase_native_request(ordinary, self.discovery, self.root))
+        control = self.discovery / "request.json"
+        control.write_bytes(canonical_json_bytes(ordinary))
+        self.assertEqual(ordinary, adapter._wave_control(control, "Current native request"))
+        legacy = {key: value for key, value in ordinary.items() if key != field}
+        original = canonical_json_bytes(legacy)
+        control.write_bytes(original)
+        self.assertEqual(legacy, adapter._wave_control(control, "Original native request"))
+        self.assertEqual({}, adapter._rebase_native_request(legacy, self.discovery, self.root))
+        self.assertEqual(original, control.read_bytes())
+        for bad in (None, True, "metadata-only"):
+            control.write_bytes(canonical_json_bytes({**ordinary, field: bad}))
+            with self.assertRaisesRegex(ValueError, "Unsupported native Runtime projection source"):
+                adapter._wave_control(control, "Invalid native request")
+        with patch.object(adapter, "sdk_runtime_source", return_value="released-default"):
+            external = adapter._wave_request(*arguments, [plain], None)
+        self.assertNotIn(field, external)
 
     def test_advance_products_forwards_both_fields_before_any_planning_or_materialization(self):
         # Stop at the planner boundary. This deliberately does not claim a complete continuation.

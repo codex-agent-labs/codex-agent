@@ -53,8 +53,8 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
         before = regular_file_inventory(self.carrier, allow_empty=True)
         with patch("reuse.api_request", side_effect=AssertionError("retained read contacted CI")), \
                 patch("products.runtime_aggregate.sign_manifest", side_effect=AssertionError("retained read signed")), \
-                patch.object(reader, "verify_native_runtime_validation_content",
-                             wraps=reader.verify_native_runtime_validation_content) as native, \
+                patch.object(reader, "verify_native_runtime_projection",
+                             wraps=reader.verify_native_runtime_projection) as native, \
                 patch.object(reader, "verify_runtime_aggregate_artifacts",
                              wraps=reader.verify_runtime_aggregate_artifacts) as aggregate, \
                 patch.object(reader, "verify_contract_component_projection",
@@ -71,6 +71,7 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
             self.assertEqual(25, len(verified["attestation"]["adapterReceipts"]))
             native_evidence = verified["nativeRuntimeEvidence"]
             self.assertEqual(list(NATIVE_TARGETS), list(native_evidence))
+            self.assertEqual(list(NATIVE_TARGETS), list(verified["nativeRuntimeProjections"]))
             for target, record in native_evidence.items():
                 self.assertEqual(NATIVE_RUNTIME_EVIDENCE_KEYS, set(record))
                 self.assertEqual(target, record["target"])
@@ -154,6 +155,12 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
                 proof = _native_runtime_projection_from_record(record, projection, contract["payload"], "release")
                 receipt = verified["receipts"][PhaseInstanceId("runtime", target, "validation", target)]
                 value = proof.receipt_value(receipt, projection)
+                retained_proof = verified["nativeRuntimeProjections"][target]
+                self.assertEqual(value, retained_proof.receipt_value(receipt, projection))
+                with self.assertRaisesRegex(ValueError, "another original receipt"):
+                    retained_proof.receipt_value({**receipt, "productVersion": "99.0.0"}, projection)
+                self.assertEqual(proof.output_inventory(value["receiptSha256"], receipt["outputs"]),
+                                 retained_proof.output_inventory(value["receiptSha256"], receipt["outputs"]))
                 from products.inventory import sha256_bytes
                 self.assertEqual(sha256_bytes(verified["receiptBytes"][PhaseInstanceId("runtime", target, "validation", target)]),
                                  value["receiptSha256"])
@@ -164,6 +171,37 @@ class RuntimeAggregateHandoffTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _native_runtime_projection_from_record(record, projection, contract["payload"], "development")
         self.assertEqual(before, regular_file_inventory(self.carrier, allow_empty=True))
+
+    def test_current_native_planning_reuses_full_carrier_without_metadata_shortcut(self):
+        from products.reuse import _current_native_runtime_projections
+        from products.inventory import sha256_bytes
+        raw = (self.carrier / "aggregate-input/metadata-receipt.json").read_bytes()
+        receipt = reader._json(self.carrier / "aggregate-input/metadata-receipt.json")
+        original = {"receipt": receipt, "receiptBytes": raw, "receiptSha256": sha256_bytes(raw)}
+        request = {"artifactRoot": str(self.carrier.parent), "runtimeAggregateReleaseEvidence": [
+            {"receiptSha256": original["receiptSha256"], "handoffRoot": self.carrier.name}]}
+        policy = {"expectedTrustDomain": "release", "keyring": self.keyring, "keysDirectory": self.keys}
+        with patch.object(reader, "verify_native_runtime_projection",
+                          wraps=reader.verify_native_runtime_projection) as native:
+            with _current_native_runtime_projections(request, [original], policy) as proofs:
+                self.assertEqual(set(NATIVE_TARGETS), set(proofs))
+                self.assertEqual(5, native.call_count)
+                for _language in ("python", "csharp", "cpp", "rust", "dart"):
+                    self.assertEqual(tuple(NATIVE_TARGETS), tuple(proofs))
+                self.assertEqual(5, native.call_count)
+        # An absent matching carrier remains waiting, never a receipt-only proof.
+        for available, changes in (([], {}), ([original], {"runtimeAggregateReleaseEvidence": []})):
+            with patch.object(reader, "verified_runtime_aggregate_handoff",
+                              side_effect=AssertionError("unselected carrier read")):
+                with _current_native_runtime_projections({**request, **changes}, available, policy) as proofs:
+                    self.assertIsNone(proofs)
+        with self.assertRaisesRegex(ValueError, "selected original receipt"):
+            with _current_native_runtime_projections(request, [{**original, "receiptBytes": raw + b"\n"}], policy):
+                self.fail("Different original accepted")
+        with self.assertRaisesRegex(ValueError, "ambiguous aggregate evidence"):
+            with _current_native_runtime_projections({**request, "runtimeAggregateReleaseEvidence":
+                    request["runtimeAggregateReleaseEvidence"] * 2}, [original], policy):
+                self.fail("Ambiguous original accepted")
 
     def test_context_index_inputs_reuse_real_admission_and_preserve_exact_private_originals(self):
         from products.index import IndexEntrySource, ReleaseIndexAdmission, release_attested_runtime_aggregate_admission
