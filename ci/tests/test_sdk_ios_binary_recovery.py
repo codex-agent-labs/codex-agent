@@ -603,6 +603,7 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
 
     def test_reviewed_original_publisher_remains_selectable_after_rotation(self):
         for original in ("53d6ad1e4d7cfba9267894af9b302e07f7cb6656",
+                         "288f994ff7d4fd4aaa09317db5a4c30cf8205a7f",
                          "d31b16736102f634665c351e6d0ed139250e8e48"):
             with self.subTest(original=original):
                 run = {**self.run, "referenced_workflows": [{
