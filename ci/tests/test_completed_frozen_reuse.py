@@ -791,6 +791,9 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     tuple(phases), [{**row, "objectPath": sources[identity].relative_to(root).as_posix()}
                                     for identity, row in phases.items()],
                     root, root / "reports", root, completed_frozen=cap))
+                with patch.object(product_reuse, 'regular_file_inventory', side_effect=AssertionError('redundant scan')):
+                    self.assertEqual([], product_reuse._replay_initial_runtime_validation_handoffs(
+                        [], tuple(phases), list(phases.values()), root, root, completed_frozen=cap))
             self.assertFalse((root / "reports").exists())
 
     def test_deferred_consumption_fetches_one_bound_member_after_fresh_original_checks(self):
@@ -877,7 +880,7 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 qualification._COMPLETED_FROZEN, revision='d' * 40)
             captured = []
             def capture(record, destination):
-                self.assertEqual(phases[deferred], record)
+                self.assertEqual(phases[deferred], {key: value for key, value in record.items() if key != 'objectPath'})
                 captured.append(record['receiptSha256'])
                 destination.write_bytes(self.objects[deferred])
             def report(_metadata, _dependency, stage, receipt):
@@ -900,6 +903,36 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     product_reuse._materialize_runtime_validation_handoffs(
                         (metadata,), phases, sources, root / 'corrupt', root,
                         completed_frozen=cap, capture_deferred_object=corrupt)
+                # Replay mixes new authenticated reports with an already-qualified
+                # metadata locator, without treating the new reports as qualified.
+                discovery = root / 'discovery'
+                discovery.mkdir()
+                retained = discovery / 'initial-runtime-validation-handoffs'
+                (root / 'reports').rename(retained)
+                # Production object paths are normalized relative to discovery.
+                for identity, source in sources.items():
+                    if source.exists():
+                        source.rename(discovery / source.name)
+                objects = [{**row, 'objectPath': sources[identity].name}
+                           for identity, row in phases.items()]
+                qualified = next(row for row in self.spec['expectedResult']['phases']
+                                 if row['component']=='node-js' and row['phase']=='metadata')
+                objects.append({**qualified, 'objectPath': 'absent-qualified.zip'})
+                locator = {**{name: qualified[name] for name in FIELDS}, 'reports': ['qualified/node-js.json']}
+                closure = (metadata, product_reuse._identity(qualified))
+                expected = [{**result[0], 'reports': [path.replace('reports/', 'initial-runtime-validation-handoffs/', 1)
+                                                     for path in result[0]['reports']]}, locator]
+                captured.clear()
+                actual = product_reuse._replay_initial_runtime_validation_handoffs(
+                    expected, closure, objects, discovery, root, completed_frozen=cap,
+                    capture_deferred_object=capture)
+                self.assertEqual(expected, actual)
+                self.assertEqual([phases[deferred]['receiptSha256']], captured)
+                (retained / 'jvm-jvm/projection.json').write_bytes(b'tampered')
+                with self.assertRaisesRegex(ValueError, 'differs from authenticated original objects'):
+                    product_reuse._replay_initial_runtime_validation_handoffs(
+                        expected, closure, objects, discovery, root, completed_frozen=cap,
+                        capture_deferred_object=capture)
 
     def test_resume_seeds_exact_original_controls_without_download_or_extraction(self):
         import threading

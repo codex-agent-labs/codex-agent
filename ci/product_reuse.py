@@ -4371,6 +4371,52 @@ def _initial_runtime_validation_handoffs(closure, objects, object_root, destinat
     )
 
 
+def _replay_initial_runtime_validation_handoffs(
+    locators, closure, objects, discovery_root, root, *, completed_frozen=None,
+    capture_deferred_object=None, requested_scope=None,
+):
+    """Keep qualified locators; derive all others from independently authenticated objects."""
+    qualified = set()
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed report reuse requires native semantic evidence")
+        qualified = {_identity(row) for row in objects
+                     if runtime_validation_dependencies(_identity(row))
+                     and completed_frozen.envelope(row) is not None}
+    records = [row for row in require_array(locators, "Runtime report locators")
+               if _identity(row) in qualified and _identity(row) in closure]
+    ordinary = tuple(instance for instance in closure
+                     if instance not in qualified and runtime_validation_dependencies(instance))
+    if not ordinary and completed_frozen is not None:
+        return records  # No body reads or scans for an entirely qualified report set.
+    with tempfile.TemporaryDirectory(prefix="codex-agent-initial-runtime-evidence-", dir=root) as temporary:
+        derived = Path(temporary).resolve() / "initial-runtime-validation-handoffs"
+        evidence = _initial_runtime_validation_handoffs(
+            ordinary, objects, discovery_root, derived, root,
+            completed_frozen=completed_frozen, capture_deferred_object=capture_deferred_object,
+        )
+        prefix = derived.relative_to(root).as_posix()
+        records.extend({**record, "reports": [
+            "initial-runtime-validation-handoffs/" + path.removeprefix(prefix + "/")
+            for path in record["reports"]
+        ]} for record in evidence)
+        qualified_prefixes = {f"{instance.component}-{instance.target}" for instance in qualified}
+        ordinary_prefixes = {f"{instance.component}-{instance.target}" for instance in ordinary}
+
+        def scoped_inventory(path):
+            if not path.exists() and not path.is_symlink():
+                return []
+            return [record for record in regular_file_inventory(path, allow_empty=True)
+                    if record["relativePath"].split("/", 1)[0] not in qualified_prefixes
+                    and (requested_scope is None
+                         or record["relativePath"].split("/", 1)[0] in ordinary_prefixes)]
+
+        if scoped_inventory(derived) != scoped_inventory(discovery_root / "initial-runtime-validation-handoffs"):
+            raise ValueError("Initial Runtime validation evidence differs from authenticated original objects")
+    return sorted(records, key=_identity)
+
+
 def advance_contract(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     shard_roots: list[Path], destination: Path,
@@ -4873,43 +4919,11 @@ def _verified_product_state(
             if requested_scope is None or _identity(record) in closure), key=_identity)
     elif prior_records:
         raise ValueError("Prior failed Runtime capture lacks its available object request")
-    if completed_frozen is not None:
-        # These retained report locators grant no trust. The native completed
-        # proof covers exactly their phase identities; the ordinary decoder
-        # still validates paths and rejects unrelated/duplicate evidence.
-        initial_evidence = [record for record in require_array(
-            request["runtimeValidationEvidence"], "Completed Runtime report locators")
-            if requested_scope is None or _identity(record) in closure]
-        for record in initial_evidence:
-            instance = _identity(record)
-            phase = next((row for row in initial_objects if _identity(row) == instance), None)
-            if phase is None or completed_frozen.envelope(phase) is None:
-                raise ValueError("Completed Runtime report locator has no exact native semantic proof")
-    else:
-        with tempfile.TemporaryDirectory(prefix="codex-agent-initial-runtime-evidence-", dir=root) as temporary:
-            derived = Path(temporary).resolve() / "initial-runtime-validation-handoffs"
-            evidence = _initial_runtime_validation_handoffs(
-                closure, initial_objects, discovery_root, derived, root,
-            )
-            prefix = derived.relative_to(root).as_posix()
-            initial_evidence = [{**record, "reports": [
-                "initial-runtime-validation-handoffs/" + path.removeprefix(prefix + "/")
-                for path in record["reports"]
-            ]} for record in evidence]
-            retained = discovery_root / "initial-runtime-validation-handoffs"
-            def scoped_inventory(path):
-                if not path.exists() and not path.is_symlink():
-                    return []
-                records = regular_file_inventory(path, allow_empty=True)
-                if requested_scope is None:
-                    return records
-                prefixes = {f"{instance.component}-{instance.target}" for instance in closure}
-                return [record for record in records if record["relativePath"].split("/", 1)[0] in prefixes]
-            if (derived.exists() or retained.exists() or retained.is_symlink()) and (
-                (requested_scope is None and (not derived.exists() or not retained.exists()))
-                or scoped_inventory(derived) != scoped_inventory(retained)
-            ):
-                raise ValueError("Initial Runtime validation evidence differs from authenticated original objects")
+    initial_evidence = _replay_initial_runtime_validation_handoffs(
+        request["runtimeValidationEvidence"], closure, initial_objects, discovery_root, root,
+        completed_frozen=completed_frozen, capture_deferred_object=capture_deferred_object,
+        requested_scope=requested_scope,
+    )
     expected_fixed = {
         "schemaVersion": 1,
         "requestType": "reuse-wave",
