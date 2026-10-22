@@ -9,7 +9,7 @@ on:
         default: ''
         type: string
       runtimeRecoveryOnly:
-        description: Authenticate historical acceptance and verify reviewed control changes; never satisfy final acceptance
+        description: Phase9-only pinned Runtime recovery; no Phase10, SDK builds or full acceptance claim
         required: false
         default: false
         type: boolean
@@ -571,7 +571,7 @@ jobs:
 
   product:
     name: product-${{ matrix.lane }}
-    if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.product_matrix != '[]'
+    if: '!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'' && needs.plan.outputs.validation_reused != ''true'' && needs.plan.outputs.product_matrix != ''[]'''
     needs: [workflow-lint, plan]
     strategy:
       fail-fast: false
@@ -613,7 +613,7 @@ jobs:
     name: contract-phase10-pgp-authority
     needs: [plan, contract-validation]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -642,7 +642,7 @@ jobs:
     name: contract-phase10-maven
     needs: [plan, contract-validation, contract-phase10-pgp-authority]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -666,7 +666,7 @@ jobs:
     name: contract-phase10-output-record
     needs: [plan, contract-phase10-maven]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2402,7 +2402,7 @@ jobs:
     name: runtime-phase10-maven
     needs: [plan, contract-phase10-pgp-authority, runtime-aggregate-attestation]
     if: >-
-      !inputs.sdkRecoveryOnly &&
+      !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2424,6 +2424,7 @@ jobs:
     name: sdk-inputs
     needs: [workflow-lint, plan, product-resume, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.workflow-lint.result == 'success' &&
@@ -2579,7 +2580,7 @@ jobs:
           retention-days: 90
 
   android:
-    if: inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true'
+    if: '!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'' && needs.plan.outputs.validation_reused != ''true'' && needs.plan.outputs.lane_android == ''true'''
     needs: [workflow-lint, plan]
     runs-on: ubuntu-24.04
     outputs:
@@ -2644,7 +2645,7 @@ jobs:
 
   sdk-native-wrappers:
     if: >-
-      always() && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' &&
+      !inputs.runtimeRecoveryOnly && always() && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       needs.plan.outputs.native_wrappers == 'true' &&
@@ -2685,6 +2686,7 @@ jobs:
 
   apple:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && needs.workflow-lint.result == 'success' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' &&
       ((!inputs.sdkRecoveryOnly && needs.plan.outputs.any_apple == 'true') ||
@@ -2712,6 +2714,7 @@ jobs:
   sdk-ios-binary-plan:
     needs: [plan, product-resume, contract-validation]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       needs.product-resume.outputs.native_sdk_direct != 'true' &&
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -2881,6 +2884,7 @@ jobs:
   sdk-plan:
     needs: [workflow-lint, plan, product-resume, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.workflow-lint.result == 'success' &&
@@ -3218,6 +3222,7 @@ jobs:
 
   sdk-javascript:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success'
@@ -3442,6 +3447,7 @@ jobs:
     name: sdk-csharp-binary-result
     needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
@@ -3708,6 +3714,7 @@ jobs:
 
   sdk-native-packages:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
@@ -3934,6 +3941,7 @@ jobs:
 
   sdk-ios-packages:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package, sdk-collect-5]
@@ -4121,6 +4129,7 @@ jobs:
 
   sdk-javascript-metadata-result:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
@@ -4401,6 +4410,7 @@ jobs:
 
   sdk-native-validation-result:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
@@ -4600,6 +4610,7 @@ jobs:
 
   sdk-native-result:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     needs: [plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata, sdk-collect-8, sdk-plan, sdk-javascript, sdk-javascript-metadata-result, sdk-csharp-binary-result, sdk-native-packages, sdk-ios-packages]
@@ -4984,6 +4995,7 @@ jobs:
   sdk-ios-validation-result:
     needs: [plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
@@ -5179,6 +5191,7 @@ jobs:
   sdk-ios-metadata-result:
     needs: [plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-collect-10]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
     runs-on: ubuntu-24.04
@@ -5618,6 +5631,7 @@ jobs:
   sdk-completion:
     needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result]
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success'
@@ -6053,6 +6067,7 @@ jobs:
 
   sdk-parity:
     if: >-
+      !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&

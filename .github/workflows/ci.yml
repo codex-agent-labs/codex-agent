@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         default: validation
-        options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]
+        options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]
       baseCommit:
         description: Exact base commit SHA
         required: false
@@ -114,11 +114,9 @@ jobs:
       id-token: write
     uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority
     with:
-      runtimeRecoveryOnly: false
-      sdkRecoveryOnly: true
+      runtimeRecoveryOnly: true
+      sdkRecoveryOnly: false
       runtimeAggregateRequalification: false
-      runtimeAggregateHandoffRecovery: '{"artifactId":12021053682,"artifactSha256":"sha256:c4de19acd6e52ab33bef962e2d091bf780c5d5f9b81a4cf4664721f1c79e770c","originalProducer":{"commit":"b1f647efebe105abba89bcb31de3a8d25b580406","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":38835706077,"tree":"3fe366739c0dbf3c11f305d77609e9509262093d","workflowPath":".github/workflows/ci.yml"},"trustedWorkflowSha":"b0947995481dec088fce8e9490a17a3399e9dc2b"}'
-      runtimeNativeHandoffRecovery: '{"producer":{"commit":"db38c174a2db6f02ff6b6e2091e809681d83a4d9","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":37081083913,"tree":"9e500ae9373416a16f09fb4a264cd0c9c22513e8","workflowPath":".github/workflows/ci.yml"},"trustedWorkflowSha":"cec458a479c0556d39aa6a75b18311500ce66d71","artifacts":[{"target":"linux-x64","artifactId":11265028687,"artifactSha256":"sha256:5439399cc545371fe535eadfc5882741437fde1f19b9717ee438b9310ebc3884"},{"target":"linux-arm64","artifactId":11264924644,"artifactSha256":"sha256:b8efecc9dd1c19069b1cea2ecfe58d5fe6b74943225bf6b24250b3a38460d672"},{"target":"macos-x64","artifactId":11265498341,"artifactSha256":"sha256:4fdcf01eee7db8302b45ecddbfb64e0438746ebf253d15af47023c51b2ba008a"},{"target":"macos-arm64","artifactId":11265627180,"artifactSha256":"sha256:892cd3ab3dbb2d6d1b2e0a33342097e77a4d52b024250fb8be20746d1704bb85"},{"target":"windows-x64","artifactId":11265542901,"artifactSha256":"sha256:b97b5a0e3c5d6c8e31f45e47cd4e9e01e692800bed67238bf0b670f1526dde80"}]}'
       baseCommit: ${{ inputs.baseCommit || '' }}
       validationCommit: ${{ inputs.validationCommit || '' }}
       validationTree: ${{ inputs.validationTree || '' }}
@@ -204,10 +202,21 @@ jobs:
       attestationJson: ${{ inputs.producerJson }}
     secrets: inherit
 
+  runtime-library-authorizations:
+    if: github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-library-authorizations'
+    permissions:
+      actions: read
+      contents: read
+    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-library-authorizations.yml@reuse-authority
+    with:
+      validation-only: false
+      attestationJson: ${{ inputs.producerJson }}
+    secrets: inherit
+
   merge-gate:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-runtime-library-validation' && 'SDK Runtime trust / complete' || 'CI / merge-gate' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-runtime-library-validation' && 'SDK Runtime trust / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-library-authorizations' && 'Runtime library authorizations / complete' || 'CI / merge-gate' }}
     if: always()
-    needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]
+    needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]
     runs-on: ubuntu-24.04
     steps:
       - name: Require exactly the selected trusted workflow
@@ -247,6 +256,13 @@ jobs:
           SDK_RUNTIME_TRUST_RESULT: ${{ needs.sdk-runtime-library-validation.result }}
           SDK_RUNTIME_TRUST_ID: ${{ needs.sdk-runtime-library-validation.outputs.authorizationsArtifactId }}
           SDK_RUNTIME_TRUST_SHA256: ${{ needs.sdk-runtime-library-validation.outputs.authorizationsArtifactSha256 }}
+          RUNTIME_LIBRARY_RESULT: ${{ needs.runtime-library-authorizations.result }}
+          RUNTIME_LIBRARY_ROOT_ID: ${{ needs.runtime-library-authorizations.outputs.delegationArtifactId }}
+          RUNTIME_LIBRARY_ROOT_SHA256: ${{ needs.runtime-library-authorizations.outputs.delegationArtifactSha256 }}
+          RUNTIME_LIBRARY_CAPTURE_ID: ${{ needs.runtime-library-authorizations.outputs.captureArtifactId }}
+          RUNTIME_LIBRARY_CAPTURE_SHA256: ${{ needs.runtime-library-authorizations.outputs.captureArtifactSha256 }}
+          RUNTIME_LIBRARY_ID: ${{ needs.runtime-library-authorizations.outputs.authorizationsArtifactId }}
+          RUNTIME_LIBRARY_SHA256: ${{ needs.runtime-library-authorizations.outputs.authorizationsArtifactSha256 }}
         run: |
           if [ "$PURPOSE" = build-logic-diagnostics ]; then
             test "$EVENT" = workflow_dispatch
@@ -263,6 +279,9 @@ jobs:
           fi
           if [ "$PURPOSE" != sdk-runtime-library-validation ]; then
             test "$SDK_RUNTIME_TRUST_RESULT" = skipped
+          fi
+          if [ "$PURPOSE" != runtime-library-authorizations ]; then
+            test "$RUNTIME_LIBRARY_RESULT" = skipped
           fi
           if [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = build-logic-diagnostics ]; then
             test "$SDK_CUSTODY_RESULT" = skipped
@@ -335,6 +354,20 @@ jobs:
               [[ "$id" =~ ^[1-9][0-9]*$ ]] || exit 1
             done
             for digest in "$SDK_MAVEN_CORE_SHA256" "$SDK_MAVEN_ANDROID_SHA256" "$SDK_MAVEN_IOS_SHA256" "$SDK_MAVEN_RECORD_SHA256" "$SDK_MAVEN_INDEX_SHA256"; do
+              [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            done
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = runtime-library-authorizations ]; then
+            test "$PRODUCT_VALIDATION_RESULT" = skipped
+            test "$SDK_CUSTODY_RESULT" = skipped
+            test "$RUNTIME_RECORD_RESULT" = skipped
+            test "$CONTRACT_RECORD_RESULT" = skipped
+            test "$SDK_AUTHORITY_RESULT" = skipped
+            test "$SDK_RECORD_RESULT" = skipped
+            test "$RUNTIME_LIBRARY_RESULT" = success
+            for id in "$RUNTIME_LIBRARY_ROOT_ID" "$RUNTIME_LIBRARY_CAPTURE_ID" "$RUNTIME_LIBRARY_ID"; do
+              [[ "$id" =~ ^[1-9][0-9]*$ ]] || exit 1
+            done
+            for digest in "$RUNTIME_LIBRARY_ROOT_SHA256" "$RUNTIME_LIBRARY_CAPTURE_SHA256" "$RUNTIME_LIBRARY_SHA256"; do
               [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             done
           elif [ "$EVENT" = workflow_dispatch ] && [ "$PURPOSE" = sdk-runtime-library-validation ]; then
