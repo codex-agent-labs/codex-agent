@@ -2,6 +2,7 @@
 import copy
 from contextlib import ExitStack, contextmanager
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -823,17 +824,24 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             # Factory fixture uses small synthetic locators. Native metadata
             # observations are mocked; member CRC/SHA verification is real.
             expected_locator = {**{name: row[name] for name in FIELDS}, "artifact": {"id": 71, "digest": POLICY}}
-            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source",
+            copy_cached = hydrated_evidence.copy
+            with patch.dict(os.environ, {"CODEX_AGENT_HYDRATED_EVIDENCE": str(root / "cache")}), \
+                    patch.object(product_reuse, "_authenticate_runtime_original_reference_source",
                     return_value=({}, {}, [{"jobs": [{}]}], "a" * 40)) as authenticate, \
                     patch.object(product_reuse, "_matching_ci_jobs", return_value=[{}]), \
                     patch.object(product_reuse, "_runtime_original_locator", return_value=expected_locator) as locator, \
-                    patch.object(hydrated_evidence, "copy", return_value=False), \
+                    patch.object(hydrated_evidence, "copy", return_value=False) as cached, \
                     patch.object(runtime_reference_archive, "open_reference_archive", side_effect=archive):
                 options = dict(plan={}, producer=producer, trusted_workflow_sha="a" * 40, token="fixture")
                 cap.capture_object(row, root / "object.zip", **options)
                 self.assertEqual(payload, (root / "object.zip").read_bytes())
                 self.assertEqual([member], reads)
-                authenticate.assert_called_once()
+                cached.side_effect = copy_cached
+                cap.capture_object(row, root / "cached-object.zip", **options)
+                self.assertEqual(payload, (root / "cached-object.zip").read_bytes())
+                self.assertEqual([member], reads)  # Fresh authentication, no second network body read.
+                self.assertEqual(2, authenticate.call_count)
+                cached.side_effect = None
                 locator.return_value = {"changed": True}
                 with self.assertRaisesRegex(ValueError, "Fresh original locator"):
                     cap.capture_object(row, root / "wrong-original.zip", **options)
@@ -842,6 +850,56 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 payload = b"x" * len(payload)
                 with self.assertRaisesRegex(ValueError, "immutable digest"):
                     cap.capture_object(row, root / "tampered-object.zip", **options)
+
+    def test_mixed_validation_handoff_fetches_only_missing_qualified_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            metadata = PhaseInstanceId("runtime", "jvm", "metadata", "jvm")
+            dependencies = product_reuse.runtime_validation_dependencies(metadata)
+            phases = {PhaseInstanceId(*(row[field] for field in FIELDS)): row
+                      for row in self.spec["expectedResult"]["phases"]
+                      if PhaseInstanceId(*(row[field] for field in FIELDS)) in dependencies}
+            sources = {instance: root / (instance.target + '.zip') for instance in dependencies}
+            deferred = PhaseInstanceId("runtime", "jvm", "validation", "windows-x64")
+            for instance in dependencies:
+                receipt = self.receipts[instance]
+                stage = root / ('stage-' + instance.target)
+                payload = stage / 'payload/value.bin'
+                payload.parent.mkdir(parents=True)
+                payload.write_bytes(b'a')
+                inventory.write_canonical_json(stage / 'output-manifest.json', {'schemaVersion': 1,
+                    **{field: receipt[field] for field in (*FIELDS, 'productVersion', 'outputs')}})
+                restore._write_object(stage, canonical_json_bytes(receipt), sources[instance])
+                self.objects[instance] = sources[instance].read_bytes()
+                phases[instance]['objectSha256'] = sha256_bytes(self.objects[instance])
+            sources[deferred].unlink()  # Only this fixture-owned original is deferred.
+            cap = qualification.CompletedFrozenReuse(self.spec, self.receipts.values(),
+                qualification._COMPLETED_FROZEN, revision='d' * 40)
+            captured = []
+            def capture(record, destination):
+                self.assertEqual(phases[deferred], record)
+                captured.append(record['receiptSha256'])
+                destination.write_bytes(self.objects[deferred])
+            def report(_metadata, _dependency, stage, receipt):
+                return stage / receipt['outputs'][0]['relativePath']
+            with patch.object(product_reuse, '_runtime_report_output', side_effect=report), \
+                    patch.object(product_reuse, 'derive_authenticated_runtime_validation_projection', return_value={}) as derive:
+                result = product_reuse._materialize_runtime_validation_handoffs(
+                    (metadata,), phases, sources, root / 'reports', root,
+                    completed_frozen=cap, capture_deferred_object=capture)
+                self.assertEqual(1, len(result))
+                self.assertEqual([phases[deferred]['receiptSha256']], captured)
+                self.assertEqual([self.receipts[identity] for identity in dependencies], derive.call_args.args[2])
+                self.assertFalse(sources[deferred].exists())  # Never mutate the verified input tree.
+                with self.assertRaisesRegex(ValueError, 'authenticated original materializer'):
+                    product_reuse._materialize_runtime_validation_handoffs(
+                        (metadata,), phases, sources, root / 'missing-authority', root, completed_frozen=cap)
+                def corrupt(record, destination):
+                    destination.write_bytes(b'not the qualified object')
+                with self.assertRaises(ValueError):
+                    product_reuse._materialize_runtime_validation_handoffs(
+                        (metadata,), phases, sources, root / 'corrupt', root,
+                        completed_frozen=cap, capture_deferred_object=corrupt)
 
     def test_resume_seeds_exact_original_controls_without_download_or_extraction(self):
         import threading

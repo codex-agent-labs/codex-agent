@@ -4283,6 +4283,7 @@ def _materialize_runtime_validation_handoffs(
     destination: Path,
     artifact_root: Path,
     original_inventory: list[dict[str, Any]] | None = None, *, completed_frozen=None,
+    capture_deferred_object=None,
 ) -> list[dict[str, Any]]:
     if completed_frozen is not None:
         from reuse_qualification import CompletedFrozenReuse
@@ -4302,13 +4303,20 @@ def _materialize_runtime_validation_handoffs(
         handoff_inventory = []
         for dependency in dependencies:
             dependency_root = handoff / "validation" / f"{dependency.component}-{dependency.target}"
-            restored = restore_object(
-                sources[dependency],
-                dependency_root / "stage",
-                build_key=phases[dependency]["buildKey"],
-                receipt_sha256=phases[dependency]["receiptSha256"],
-                object_sha256=phases[dependency]["objectSha256"],
-            )
+            source = sources[dependency]
+            with tempfile.TemporaryDirectory(prefix="runtime-report-object-") as temporary:
+                if not source.exists() and not source.is_symlink() and completed_frozen is not None:
+                    if completed_frozen.envelope(phases[dependency]) is None or capture_deferred_object is None:
+                        raise ValueError("Deferred Runtime report lacks its authenticated original materializer")
+                    source = Path(temporary).resolve() / "object.zip"
+                    capture_deferred_object(phases[dependency], source)
+                restored = restore_object(
+                    source,
+                    dependency_root / "stage",
+                    build_key=phases[dependency]["buildKey"],
+                    receipt_sha256=phases[dependency]["receiptSha256"],
+                    object_sha256=phases[dependency]["objectSha256"],
+                )
             receipt_root = dependency_root / "receipt"
             receipt_root.mkdir()
             (receipt_root / "phase-receipt.json").write_bytes(restored["receiptBytes"])
@@ -4353,11 +4361,12 @@ def _materialize_runtime_validation_handoffs(
 
 
 def _initial_runtime_validation_handoffs(closure, objects, object_root, destination, artifact_root, *,
-                                        completed_frozen=None):
+                                        completed_frozen=None, capture_deferred_object=None):
     phases = {_identity(record): record for record in objects}
     sources = {instance: object_root / record["objectPath"] for instance, record in phases.items()}
     return _materialize_runtime_validation_handoffs(
         closure, phases, sources, destination, artifact_root, completed_frozen=completed_frozen,
+        capture_deferred_object=capture_deferred_object,
     )
 
 
@@ -4730,6 +4739,9 @@ def _verified_product_state(
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Completed state requires the concrete native semantic verifier")
         completed_frozen.check_request(request)
+    capture_deferred_object = (None if completed_frozen is None else partial(
+        completed_frozen.capture_object, plan=plan, producer=current_consumer["producer"],
+        trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN")))
     requested = tuple(
         _identity(value)
         for value in require_array(request["requested"], "Reuse-wave request.requested")
@@ -5012,6 +5024,7 @@ def _verified_product_state(
             evidence = _materialize_runtime_validation_handoffs(
                 closure, phase_records, sources,
                 temporary_root / "runtime-validation-handoffs", root,
+                capture_deferred_object=capture_deferred_object,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
             )
             state_request = dict(rebased_request)
@@ -5064,10 +5077,7 @@ def _verified_product_state(
         prior_carrier_phases=prior_carrier_phases,
         prior_ready_plans=prior_ready_plans,
         completed_frozen=completed_frozen,
-        capture_deferred_object=(None if completed_frozen is None else
-            lambda record, destination: completed_frozen.capture_object(record, destination,
-                plan=plan, producer=current_consumer["producer"],
-                trusted_workflow_sha=sdk_original_workflow_sha, token=environment.get("GITHUB_TOKEN"))),
+        capture_deferred_object=capture_deferred_object,
         ensure_original_source=(None if not environment.get("GITHUB_TOKEN") else
             lambda original: _ensure_observed_sdk_commit(root, original, environment["GITHUB_TOKEN"])),
     )
@@ -5939,7 +5949,9 @@ def _prepare_runtime_phase(state, instance, destination, expected_build_key, roo
                 validation_files = []
                 _materialize_runtime_validation_handoffs(
                     (instance,), state.prior_by_instance, state.sources,
-                    prepared / "runtime-validation", root, original_inventory=validation_files)
+                    prepared / "runtime-validation", root, original_inventory=validation_files,
+                    completed_frozen=state.completed_frozen,
+                    capture_deferred_object=state.capture_deferred_object)
                 expected_files.extend({**record, "relativePath": f"runtime-validation/{record['relativePath']}"}
                                       for record in validation_files)
                 validation_handoff = prepared / f"runtime-validation/{instance.component}-{instance.target}"
@@ -7223,6 +7235,7 @@ def advance_products(
         evidence = _materialize_runtime_validation_handoffs(
             closure, phase_records, sources,
             temporary_root / "runtime-validation-handoffs", root,
+            capture_deferred_object=state.capture_deferred_object,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         )
         advanced_request = dict(rebased_request)
@@ -7363,6 +7376,7 @@ def advance_products(
             sources,
             staged_destination / "runtime-validation-handoffs",
             staged_destination,
+            capture_deferred_object=state.capture_deferred_object,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         )
         staged_prefix = staged_destination.relative_to(root).as_posix()
@@ -9784,6 +9798,9 @@ def resume_products(
                               if instance not in completed_evidence),
                         wave["availableObjects"], prepared,
                         prepared / "initial-runtime-validation-handoffs", prepared,
+                        capture_deferred_object=(None if completed_frozen is None else partial(
+                            completed_frozen.capture_object, plan=plan, producer=current_producer,
+                            trusted_workflow_sha=sdk_original_workflow_sha, token=environment["GITHUB_TOKEN"])),
                         **semantic,
                     ),
                 ], key=_identity)

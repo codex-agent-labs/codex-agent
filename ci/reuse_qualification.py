@@ -290,9 +290,9 @@ def _authenticate_native_subject(raw, signature, name, *, signer_commit, source_
             except subprocess.CalledProcessError as error:
                 if error.stderr:
                     print(error.stderr.decode("utf-8", errors="replace"), file=sys.stderr, end="")
-                if (attempt or error.returncode != 1 or
-                        b"public good verifier is not available (initialization may have failed)"
-                        not in (error.stderr or b"")):
+                if (attempt or error.returncode != 1 or not any(message in (error.stderr or b"") for message in (
+                        b"public good verifier is not available (initialization may have failed)",
+                        b"error creating Sigstore verifier: no valid Sigstore verifiers could be initialized"))):
                     raise
                 # Retry only verifier startup, never an invalid attestation.
                 # The same private bytes, identity pins and full crypto gate run
@@ -1167,6 +1167,7 @@ class CompletedFrozenReuse:
         if not hydrated_evidence.copy(body["member"], destination):
             with open_reference_archive(artifact, token) as (archive, _stream):
                 copy_reference_member(archive, body["member"]["relativePath"], destination, body["member"])
+            hydrated_evidence.retain(body["member"], destination)
         # The caller still performs ordinary object/receipt/manifest verification
         # and extraction before exposing any bytes to a product worker.
 

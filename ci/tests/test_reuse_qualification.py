@@ -375,10 +375,13 @@ class QualificationTransportTest(unittest.TestCase):
         import contextlib
         import io
         startup = b"public good verifier is not available (initialization may have failed)"
+        unavailable = b"error creating Sigstore verifier: no valid Sigstore verifiers could be initialized"
         success = subprocess.CompletedProcess([], 0, b'[{"verificationResult":{"fixture":true}}]', b"")
         for stderr, final, calls, accepted in (
             (startup, success, 2, True),
             (startup, subprocess.CalledProcessError(1, "gh", stderr=startup), 2, False),
+            (unavailable, success, 2, True),
+            (unavailable, subprocess.CalledProcessError(1, "gh", stderr=unavailable), 2, False),
             (b"signature verification failed", success, 1, False),
         ):
             with self.subTest(stderr=stderr, accepted=accepted), \
