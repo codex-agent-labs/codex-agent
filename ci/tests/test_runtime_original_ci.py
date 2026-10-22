@@ -918,6 +918,77 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                     self.root / "rejected-physical", target=TARGET, trusted_workflow_sha=self.pin,
                     token="not-a-real-token", recovery_projection=True)
 
+    def test_original_carrier_restores_cross_process_and_later_wave_projection_without_rebuilding(self):
+        from products.restore import verification_session
+        from runtime_reference_transport import stage_original_reference_handoff
+        import hydrated_evidence
+        original = self.root / "later-wave/original"
+        state = original / "product-resume-state"
+        captured = state / f"prior-failed-runtime/{TARGET}/binary/{TARGET}"
+        with mock.patch("reuse.api_request", side_effect=self.api(run=self.failed_run())), \
+                mock.patch("products.verified_evidence.runtime_original_cache", return_value=None):
+            adapter.capture_runtime_original_ci_phases({"binary": self.receipts["binary"]}, captured,
+                target=TARGET, trusted_workflow_sha=self.pin, token="not-a-real-token", recovery_projection=True)
+        receipt = fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())
+        producer = {**self.producer, "runId": 72, "runAttempt": 3}
+        plan = {"repository": fixture.REPOSITORY, "event": "pull_request", "pullRequest": 31,
+                "validationCommit": producer["commit"], "validationTree": producer["tree"]}
+        inputs = original / "product-resume-inputs"
+        (inputs / "plan").mkdir(parents=True)
+        (inputs / "plan/impact-plan.json").write_bytes(fixture.canonical_json_bytes(plan))
+        source = {"relativePath": (captured / "phases/binary/original").relative_to(original).as_posix(),
+                  "kind": "phase", "receipt": receipt, "artifactId": self.artifacts["binary"]["id"],
+                  "artifactSha256": self.artifacts["binary"]["digest"]}
+        carrier = self.root / "reference-carrier"
+        stage_original_reference_handoff({"product-resume-inputs": inputs, "product-resume-state": state},
+            [source], carrier)
+        raw = fixture.archive_tree(carrier)
+        artifact = {**self.artifacts["binary"], "id": 900,
+            "name": f"codex-agent-product-resume-{producer['tree']}",
+            "workflow_run": {"id": 72, "head_sha": self.run["head_sha"]},
+            "digest": fixture.sha256_bytes(raw), "size_in_bytes": len(raw),
+            "archive_download_url": f"https://api.github.com/repos/{fixture.REPOSITORY}/actions/artifacts/900/zip"}
+        job = {**self.jobs[0], "id": 900, "run_id": 72, "name": "product-validation / product-resume"}
+        originals = fixture.regular_file_inventory(state)
+        api = self.two_attempt_api({"resume": artifact}, [job], {"resume": raw})
+        downloads = []
+        def download(upload, _token, destination, **_):
+            self.assertEqual(900, upload["id"], "must never redownload the original phase")
+            downloads.append(upload["id"])
+            Path(destination).write_bytes(raw)
+        def replay():
+            return adapter._prior_failed_runtime_objects(state / "prior-failed-runtime", state,
+                plan=plan, consumer_producer=producer, trusted_workflow_sha=self.pin, token="not-a-real-token")
+        with mock.patch.dict(os.environ, {"CODEX_AGENT_HYDRATED_EVIDENCE": str(self.root / "byte-storage")}), \
+                mock.patch("products.verified_evidence.runtime_original_cache", return_value=None), \
+                mock.patch.object(adapter, "download_artifact_to_file", side_effect=download), \
+                mock.patch("reuse.api_request", side_effect=api) as http:
+            for _ in range(2):
+                with verification_session() as session:
+                    self.assertNotIn("qualifiedOriginalProjections", session)
+                    records = replay()
+                    self.assertEqual(receipt["buildKey"], records[0]["buildKey"])
+                    self.assertEqual(1, len(session["qualifiedOriginalProjections"]))
+                self.assertEqual(originals, fixture.regular_file_inventory(state))
+            self.assertEqual([900], downloads)
+            self.assertEqual(2, sum('/runs/72/attempts/3/jobs?' in call.args[0] for call in http.call_args_list))
+            self.assertFalse((self.root / "persistent-cache/v1/verified-runtime-originals/records").exists())
+            observation = captured / "transport/original-ci-phases.json"
+            saved = observation.read_bytes()
+            observation.write_bytes(saved.replace(b'"target":"linux-x64"', b'"target":"wrong-x64"'))
+            with verification_session(), self.assertRaisesRegex(ValueError, "observation differs"):
+                replay()
+            observation.write_bytes(saved)
+            failed = {**job, "conclusion": "failure"}
+            with mock.patch("reuse.api_request", side_effect=self.two_attempt_api(
+                    {"resume": artifact}, [failed], {"resume": raw})), verification_session(), self.assertRaises(ValueError):
+                replay()
+            blob = hydrated_evidence.blob({"sha256": artifact["digest"]})
+            blob.write_bytes(raw[:-1] + b"x")
+            with verification_session(), self.assertRaises(ValueError):
+                replay()
+            self.assertEqual([900], downloads)
+
     def test_completed_candidate_mutation_rejects_after_fresh_origin_authentication(self):
         from products.restore import verification_session
         instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)

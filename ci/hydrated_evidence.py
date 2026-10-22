@@ -14,6 +14,10 @@ from runtime_reference_transport import _copy_exact
 
 def root():
     value = os.environ.get("CODEX_AGENT_HYDRATED_EVIDENCE")
+    if value is None and os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_TEMP"):
+        # Same-job byte storage survives the capture action's child process.
+        # No cache path or cached byte conveys authentication authority.
+        value = str(Path(os.environ["RUNNER_TEMP"]) / "hydrated-evidence")
     if value is None:
         return None
     path = Path(value)

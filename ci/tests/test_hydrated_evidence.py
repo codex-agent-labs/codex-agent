@@ -12,6 +12,18 @@ from products.inventory import sha256_bytes
 
 
 class HydratedEvidenceTest(unittest.TestCase):
+    def test_hosted_storage_path_survives_child_without_creating_authority(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(cache.root())
+            os.environ.update(GITHUB_ACTIONS="true", RUNNER_TEMP=str(Path(tempfile.gettempdir()).resolve()))
+            expected = Path(os.environ["RUNNER_TEMP"]) / "hydrated-evidence"
+            self.assertEqual(expected, cache.root())
+            os.environ["CODEX_AGENT_HYDRATED_EVIDENCE"] = str(expected / "explicit")
+            self.assertEqual(expected / "explicit", cache.root())
+            os.environ["CODEX_AGENT_HYDRATED_EVIDENCE"] = "relative"
+            with self.assertRaisesRegex(ValueError, "must be absolute"):
+                cache.root()
+
     def test_windows_retention_uses_verified_bytes_and_atomic_no_replace(self):
         # Exercise the Windows branch locally; no claim of genuine Windows execution.
         with tempfile.TemporaryDirectory() as temporary:

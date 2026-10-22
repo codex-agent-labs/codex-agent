@@ -1458,6 +1458,7 @@ def capture_runtime_original_ci_phases(
     original_instance: PhaseInstanceId | None = None,
     recovery_projection: bool = False,
     original_archives: Mapping[str, Path] | None = None,
+    restore_projections=None,
 ) -> dict[str, Any]:
     """Bind original receipts to CI or retained release trust, never new signing."""
     if bool(release_handoffs) != (keyring is not None and keys_directory is not None) or \
@@ -1639,6 +1640,9 @@ def capture_runtime_original_ci_phases(
                 # Only this process's freshly authenticated reference envelope
                 # can supply a projection. No restored marker is admission.
                 qualified = _qualified_original_projection(locator)
+                if qualified is None and restore_projections is not None:
+                    restore_projections()
+                    qualified = _qualified_original_projection(locator)
                 if qualified is not None:
                     source, fingerprint, zipped, policy = qualified
                     candidate = source, fingerprint, zipped
@@ -2027,6 +2031,14 @@ def _prior_failed_runtime_objects(
         raise ValueError("Prior failed Runtime capture is empty")
     records, pending = [], []
     prior_runs = {}  # Fresh for this readmission only; every receipt still checks its exact original job/upload.
+    projections_restored = False
+
+    def restore_projections():
+        nonlocal projections_restored
+        if not projections_restored and plan is not None:
+            projections_restored = True
+            _restore_runtime_original_projections(plan, consumer_producer, artifact_root,
+                trusted_workflow_sha=trusted_workflow_sha, token=token, completed_frozen=completed_frozen)
 
     def authenticate_completed(value):
         instance, phase, shard, receipt, observation, original_workflow_sha = value
@@ -2112,7 +2124,8 @@ def _prior_failed_runtime_objects(
                                 {phase: shard / PHASE_RECEIPT_NAME}, replay, target=member.name,
                                 trusted_workflow_sha=original_workflow_sha, token=token,
                                 original_instance=instance,
-                                recovery_projection="recoveryProjection" in observation)
+                                recovery_projection="recoveryProjection" in observation,
+                                restore_projections=restore_projections)
                             observation_path = "transport/original-ci-phases.json"
                             replay_files = [record for record in regular_file_inventory(replay, allow_empty=True)
                                             if record["relativePath"] != observation_path]
@@ -7986,6 +7999,107 @@ def _qualified_original_projection(locator):
     return qualified
 
 
+@measured
+def _restore_runtime_original_projections(plan, producer, state, *, trusted_workflow_sha, token,
+                                          completed_frozen=None):
+    """Recreate private witnesses from the original carrier, never a cached verdict.
+
+    Later collectors preserve the initial state's original projections. Authenticate
+    that producer's initial carrier directly; replaying every intervening carrier
+    or downloading the original phase uploads again adds no authority.
+    """
+    import hydrated_evidence
+    from products.restore import _VERIFICATION_SESSION
+    from runtime_reference_transport import ORIGINAL_REFERENCE_NAME, validate_original_references
+    if (_VERIFICATION_SESSION.get() is None or hydrated_evidence.root() is None
+            or Path(state).name != "product-resume-state" or Path(state).parent.name != "original"
+            or not {"validationCommit", "validationTree"} <= plan.keys()):
+        return  # Legacy/library consumers retain their original authentication path.
+    if (plan["validationCommit"], plan["validationTree"]) != (producer["commit"], producer["tree"]):
+        raise ValueError("Projection carrier producer differs from its validated plan")
+    name = f"codex-agent-product-resume-{producer['tree']}"
+    candidates = [row for row in paginated_items(
+        f"https://api.github.com/repos/{plan['repository']}/actions/runs/{producer['runId']}/artifacts",
+        "artifacts", token) if row.get("name") == name]
+    if not candidates:
+        return  # Planned native-only state has no unqualified physical originals.
+    if len(candidates) != 1:
+        raise ValueError("Original projection carrier is ambiguous")
+    candidate = candidates[0]
+    observed = _observe_ci_producer_jobs({"resume": producer},
+        jobs_by_phase={"resume": "product-validation / product-resume"},
+        trusted_workflow_sha=trusted_workflow_sha, token=token)
+    artifact = _contract_ci_upload_metadata(candidate["id"], candidate["digest"], name,
+        producer, observed[0]["run"], token)
+    _require_artifact_job_window(observed[0], "product-validation / product-resume", artifact)
+    # ponytail: bounded reference carriers only; large legacy full states keep
+    # their existing cold original verification instead of another bulk transfer.
+    if artifact["size_in_bytes"] > 256 * 1024**2:
+        return
+    identity = {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}
+    plan_member = "product-resume-inputs/plan/impact-plan.json"
+    with tempfile.TemporaryDirectory(prefix="runtime-projection-carrier-") as temporary:
+        archive = Path(temporary).resolve() / "transport.zip"
+        cached = hydrated_evidence.copy(identity, archive)
+        if not cached:
+            _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
+                destination=archive, limit=256 * 1024**2,
+                artifact_sha256=identity["sha256"], size=identity["bytes"])
+        zipped, controls, verified = verified_zip_contents(archive,
+            retained_paths=(ORIGINAL_REFERENCE_NAME, plan_member), max_retained_bytes=32 * 1024**2,
+            allow_empty_members=True, **_CATALOG_ZIP_LIMITS)
+        if verified != identity:
+            raise ValueError("Original projection carrier differs from its official digest")
+        if ORIGINAL_REFERENCE_NAME not in controls:
+            return  # An old full upload is not an original-reference authority.
+        if plan_member not in controls or load_json_bytes(controls[plan_member]) != plan:
+            raise ValueError("Original projection carrier changes the validated plan")
+        references = validate_original_references(load_canonical_json_bytes(controls[ORIGINAL_REFERENCE_NAME]))
+        inventory = {row["relativePath"]: row for row in references["inventory"]}
+        mappings = {row["relativePath"] for row in references["references"]}
+        if {row["relativePath"] for row in zipped} - {ORIGINAL_REFERENCE_NAME} != set(inventory) - mappings:
+            raise ValueError("Original projection carrier has a different declared inventory")
+        original = Path(state).parent
+        sources, transports = [], []
+        for source in references["sources"]:
+            if source["kind"] != "phase":
+                continue
+            projected = original / source["relativePath"]
+            if not projected.exists() and not projected.is_symlink():
+                continue  # This consumer may have materialized a narrower scope.
+            instance = _identity(source["receipt"])
+            shard = verify_phase_shard(projected / "shard", instance,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+            if shard["receipt"] != source["receipt"]:
+                raise ValueError("Restored projection changes its carrier-bound receipt")
+            if completed_frozen is not None and completed_frozen.envelope(shard, shard["receiptBytes"]) is not None:
+                continue  # Preserve the existing native-qualified, body-free path.
+            observation_path = projected.parents[2] / "transport/original-ci-phases.json"
+            raw = read_regular_file_bytes(observation_path, max_bytes=16 * 1024**2, reject_symlink_parents=True)
+            path = observation_path.relative_to(original).as_posix()
+            if inventory.get(path) != {"relativePath": path, "bytes": len(raw), "sha256": sha256_bytes(raw)}:
+                raise ValueError("Restored original observation differs from the authenticated carrier")
+            observation = load_canonical_json_bytes(raw)
+            if "recoveryProjection" not in observation:
+                continue
+            prefix = source["relativePath"] + "/"
+            declared = [{**row, "relativePath": row["relativePath"].removeprefix(prefix)}
+                        for row in references["inventory"] if row["relativePath"].startswith(prefix)]
+            expected = [row for row in observation["recoveryProjection"]["originalFiles"][instance.phase]
+                        if not row["relativePath"].startswith("inputs/")]
+            if declared != expected:
+                raise ValueError("Restored projection inventory differs from the authenticated carrier")
+            upload, origin, fresh, _ = _authenticate_runtime_original_reference_source(plan, producer, source,
+                trusted_workflow_sha=trusted_workflow_sha, token=token)
+            sources.append(source)
+            transports.append({"artifact": upload, "captureProducer": origin, "observed": fresh})
+        _register_qualified_original_projections(original, {**references, "sources": sources}, transports,
+            trusted_workflow_sha=trusted_workflow_sha, completed_frozen=completed_frozen)
+        if not cached:
+            hydrated_evidence.retain(identity, archive)
+        count("restoredOriginalProjectionWitnesses", len(sources))
+
+
 def _register_qualified_original_projections(original, references, transports, *, trusted_workflow_sha,
                                             completed_frozen=None):
     """Private custody from a freshly SHA-authenticated reviewed carrier.
@@ -8293,6 +8407,8 @@ def capture_runtime_resume_upload(
                     trusted_workflow_sha=trusted_workflow_sha, token=token))
             original_references = _canonical_control(original_reference_path, "Runtime original references")
             validate_original_references(original_references)
+            import hydrated_evidence
+            hydrated_evidence.retain({"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}, archive)
             if omit_ios or completed_frozen is not None:
                 selected_paths = selected_reference_paths(original_references, omit_sdk_ios_binary=omit_ios,
                     omit_resume_input_aliases=requested_scope is not None,
