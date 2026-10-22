@@ -98,6 +98,7 @@ runs:
         if [ -n "$ARCHIVE" ]; then extra+=(--app-server-archive "$ARCHIVE"); fi
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then extra+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then extra+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then extra+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         if [ "$COMPONENT" = linux-arm64 ] && [ "$PHASE" = binary ]; then
           test -n "$SUPERVISOR_ID"
           test -n "$SUPERVISOR_SHA256"

@@ -48,13 +48,13 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
         write_canonical_json(Path(self.properties["codexAgent.runtimeBinaryPlan"]), self.ready)
         return dict(self.properties), self.manifest
 
-    def execute_supervisor(self, key=None):
+    def execute_supervisor(self, key=None, **options):
         return worker.execute_runtime_supervisor(
             self.root / "plan", self.root / "discovery", None, self.destination,
             expected_build_key=self.ready["buildKey"] if key is None else key,
-            repository_root=self.root, environ={})
+            repository_root=self.root, environ={}, **options)
 
-    def execute_binary(self, upload=None):
+    def execute_binary(self, upload=None, **options):
         self.host.return_value = "linux-x64"
         with mock.patch("runtime_native_phase.route", return_value={
             "runnerOs": "Linux", "runnerArch": "X64", "supervisor": {"runnerArch": "ARM64"},
@@ -62,7 +62,38 @@ class RuntimeSupervisorWorkerTest(unittest.TestCase):
             return worker.execute_runtime_phase(
                 self.root / "plan", self.root / "discovery", None, self.instance, self.destination,
                 expected_build_key=self.ready["buildKey"], repository_root=self.root, environ={},
-                supervisor_upload=upload, app_server_archive=self.root / "pinned-archive")
+                supervisor_upload=upload, app_server_archive=self.root / "pinned-archive", **options)
+
+    def test_runtime_entry_points_forward_live_authority_to_existing_replay(self):
+        # This checks argument composition only; the real replay owns admission.
+        authority = object()
+        self.execute_supervisor(completed_frozen=authority)
+        self.assertIs(authority, self.replay.call_args.kwargs['completed_frozen'])
+        self.destination = self.root / 'binary-worker'
+        self.properties = {'codexAgent.runtimeBinaryPlan': str(self.destination/'inputs/full-plan.json')}
+        self.execute_binary(self.upload, completed_frozen=authority)
+        self.assertIs(authority, self.replay.call_args.kwargs['completed_frozen'])
+        worker.prepare_runtime_phase(self.root/'plan', self.root/'discovery', None,
+            self.instance, self.root/'prepared-only', expected_build_key=self.ready['buildKey'],
+            repository_root=self.root, environ={}, completed_frozen=authority)
+        self.assertIs(authority, self.replay.call_args.kwargs['completed_frozen'])
+
+    def test_runtime_cli_forwards_explicit_authenticated_policy(self):
+        from contextlib import contextmanager
+        authority = object()
+        @contextmanager
+        def policy(arguments, **_):
+            self.assertEqual(Path('/caller/policy.json'), arguments.completed_frozen_policy)
+            yield {'completed_frozen': authority}
+        for name in ('execute-runtime-supervisor', 'execute-runtime-phase', 'prepare-runtime-phase'):
+            with self.subTest(command=name), mock.patch('reuse_qualification.completed_frozen_options', policy), \
+                    mock.patch.object(worker, name.replace('-', '_'), return_value={}) as execute:
+                identity = ([] if name == 'execute-runtime-supervisor' else
+                    ['--product', 'runtime', '--component', 'jvm', '--phase', 'binary', '--target', 'jvm'])
+                worker.main([name, '--plan', 'plan', '--discovery-root', 'discovery',
+                    '--destination', 'destination', '--expected-build-key', self.ready['buildKey'],
+                    '--completed-frozen-policy', '/caller/policy.json', *identity])
+            self.assertIs(authority, execute.call_args.kwargs['completed_frozen'])
 
     def test_supervisor_entry_uses_elected_key_and_in_memory_manifest(self):
         with self.assertRaisesRegex(ValueError, "elected build key"):

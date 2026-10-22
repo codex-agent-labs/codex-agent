@@ -5562,7 +5562,7 @@ def prepare_runtime_phase(
     sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, str]:
     """Prepare original worker inputs; never execute or grant hosted acceptance."""
     if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" or instance.component == "runtime-aggregate":
@@ -5574,6 +5574,7 @@ def prepare_runtime_phase(
         plan_path, discovery_root, state_root, root,
         os.environ if environ is None else environ, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     return _prepare_runtime_phase(state, instance, destination, expected_build_key, root)[0]
@@ -6097,7 +6098,7 @@ def execute_runtime_supervisor(
     environ: Mapping[str, str] | None = None, sdk_validation_tooling: Mapping[str, Any] | None = None,
     sdk_apple_validation_policy: Mapping[str, Any] | None = None,
     sdk_original_workflow_sha: str | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     from native_wrappers import host_classifier
     from runtime_supervisor import execute_supervisor
@@ -6109,6 +6110,7 @@ def execute_runtime_supervisor(
     environment = dict(os.environ if environ is None else environ)
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     instance = PhaseInstanceId("runtime", "linux-arm64", "binary", "linux-arm64")
@@ -6137,7 +6139,7 @@ def execute_runtime_phase(
     sdk_original_workflow_sha: str | None = None,
     supervisor_upload: Mapping[str, Any] | None = None,
     app_server_archive: Path | None = None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Execute the fixed phase, retaining diagnostics separately from its shard.
 
@@ -6157,6 +6159,7 @@ def execute_runtime_phase(
     environment = dict(os.environ if environ is None else environ)
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
         sdk_original_workflow_sha=sdk_original_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     ready = state.prior_ready_plans.get(instance)
@@ -10603,7 +10606,8 @@ def parser() -> argparse.ArgumentParser:
     from reuse_qualification import add_completed_frozen_argument
     for name in ("discover", "capture-product-resume-inputs", "resume-products", "advance-products", "collect-runtime-workers",
                  "capture-runtime-resume-upload", "runtime-worker-matrix",
-                 "materialize-product-predecessors", "prepare-contract-resume-controls", "execute-runtime-aggregate"):
+                 "materialize-product-predecessors", "prepare-contract-resume-controls", "execute-runtime-aggregate",
+                 "prepare-runtime-phase", "execute-runtime-phase", "execute-runtime-supervisor"):
         add_completed_frozen_argument(commands.choices[name])
     return result
 
@@ -10721,7 +10725,7 @@ def main(argv: list[str] | None = None) -> int:
                 execute_runtime_supervisor(
                     arguments.plan, arguments.discovery_root, arguments.state_root, arguments.destination,
                     expected_build_key=arguments.expected_build_key, sdk_validation_tooling=tooling,
-                    sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options)
+                    sdk_original_workflow_sha=arguments.sdk_original_workflow_sha, **apple_options, **semantic)
             elif arguments.command == "capture-runtime-supervisor-upload":
                 capture_runtime_supervisor_upload(
                     arguments.plan, arguments.destination, artifact_id=arguments.artifact_id,

@@ -55,13 +55,16 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
                 "SUPERVISOR_ID": "", "SUPERVISOR_SHA256": "",
                 "TRUSTED_WORKFLOW_SHA": "b" * 40,
             }
-            for (policy, status), apple in product((("", 0), ("/caller policy/with spaces.json", 0),
+            for (policy, status), apple, completed in product((("", 0), ("/caller policy/with spaces.json", 0),
                                                     ("/caller/policy.json", 17)),
-                                                   (None, "", "/caller policy/apple with spaces.json")):
-                with self.subTest(policy=policy, status=status, apple=apple):
+                                                   (None, "", "/caller policy/apple with spaces.json"),
+                                                   (None, "", "/caller policy/completed with spaces.json")):
+                with self.subTest(policy=policy, status=status, apple=apple, completed=completed):
                     environment = dict(base, SDK_VALIDATION_TOOLING=policy, PYTHON_EXIT=str(status))
                     if apple is not None:
                         environment["SDK_APPLE_VALIDATION_POLICY"] = apple
+                    if completed is not None:
+                        environment["CODEX_AGENT_COMPLETED_REUSE_POLICY"] = completed
                     result = subprocess.run(
                         [self.shell, "--noprofile", "--norc", "-c", script], cwd=root,
                         env=environment,
@@ -81,6 +84,8 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
                         expected += ["--sdk-validation-tooling", policy]
                     if apple:
                         expected += ["--sdk-apple-validation-policy", apple]
+                    if completed:
+                        expected += ["--completed-frozen-policy", completed]
                     self.assertEqual(expected, recorded.read_bytes().decode().split("\0")[:-1])
 
 

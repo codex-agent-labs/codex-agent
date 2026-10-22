@@ -18,6 +18,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeContinuationWorkflowTest(unittest.TestCase):
+    def test_all_runtime_reference_consumers_restore_caller_authority_before_capture(self):
+        jobs = ['runtime-linux-arm64-supervisor', 'runtime-continuation', 'runtime-aggregate',
+                'runtime-aggregate-continuation', 'runtime-collect-5']
+        jobs += [f'runtime-{role}-{wave}' for wave in range(1, 5) for role in ('workers', 'collect')]
+        restore = 'uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority'
+        for name in jobs:
+            with self.subTest(job=name):
+                job = workflow_job(self.workflow, name)
+                self.assertEqual(1, job.count(restore))
+                self.assertIn('authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}', job)
+                self.assertLess(job.index(restore), job.index('uses: ./.github/actions/capture-sdk-tooling'))
+        supervisor = workflow_job(self.workflow, 'runtime-linux-arm64-supervisor')
+        self.assertIn('tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', supervisor)
+
     def test_retained_signed_handoffs_cover_ready_and_recovered_aggregate(self):
         step = self.job.split("      - id: retained\n", 1)[1].split("        env:", 1)[0]
         expression = " ".join(step.split("if: >-\n", 1)[1].split())
