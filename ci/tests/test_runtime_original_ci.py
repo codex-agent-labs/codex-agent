@@ -19,6 +19,18 @@ TARGET = "linux-x64"
 class RuntimeOriginalCiTest(unittest.TestCase):
     api = fixture.ContractOriginalCiCaptureTest.api
 
+    def test_current_runtime_publisher_remains_exactly_admitted_after_rotation(self):
+        publisher = "d2243aac89368df2776b6617fd5a623bd6754cb2"
+        reference = {"path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@reuse-authority",
+                     "ref": "refs/heads/reuse-authority", "sha": publisher}
+        run = {"referenced_workflows": [reference]}
+        self.assertEqual(publisher, adapter._runtime_prior_workflow_sha(run, "a" * 40))
+        for changed in ({"sha": "b" * 40}, {"ref": "refs/heads/unreviewed"},
+                        {"path": "other/repository/.github/workflows/product-validation.yml@reuse-authority"}):
+            with self.subTest(changed=changed):
+                self.assertIsNone(adapter._runtime_prior_workflow_sha(
+                    {"referenced_workflows": [{**reference, **changed}]}, "a" * 40))
+
     def download_fixture(self, artifact, token, destination, **_):
         phase = next(phase for phase, value in self.artifacts.items() if value["id"] == artifact["id"])
         Path(destination).write_bytes(self.archives[phase])
