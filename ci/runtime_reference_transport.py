@@ -508,17 +508,25 @@ def sdk_runtime_reference_inventory(archive, physical):
     return value
 
 
-def resolve_reference_handoff(original, base_root, value, *, state_wave, sdk_state_wave=None, selected_paths=None):
+def resolve_reference_handoff(original, base_root, value, *, state_wave, sdk_state_wave=None,
+                              selected_paths=None, capture_source=None):
     """Resolve a freshly authenticated base; caller must still admit all phases."""
+    if (base_root is None) != (capture_source is not None):
+        raise ValueError("Runtime references require exactly one private source")
     value = validate_references(value, state_wave, sdk_state_wave=sdk_state_wave)
     referenced = {record["relativePath"] for record in value["references"]}
     materialized = regular_file_inventory(original, allow_empty=True, excluded_paths=(REFERENCE_NAME,))
     if materialized != [record for record in value["inventory"] if record["relativePath"] not in referenced]:
         raise ValueError("Runtime reference delta has missing, overlapping or unexpected files")
-    for record in value["references"]:
-        if selected_paths is not None and record['relativePath'] not in selected_paths:
-            continue
-        _copy_exact(Path(base_root) / record["sourcePath"], Path(original) / record["relativePath"], record)
+    selected = [record for record in value["references"]
+                if selected_paths is None or record['relativePath'] in selected_paths]
+    if capture_source is not None:
+        # The same authenticated reader may write straight into private custody;
+        # the complete inventory below still rejects missing or altered bytes.
+        capture_source(selected, Path(original))
+    else:
+        for record in selected:
+            _copy_exact(Path(base_root) / record["sourcePath"], Path(original) / record["relativePath"], record)
     (Path(original) / REFERENCE_NAME).unlink()
     inventory = [row for row in value['inventory'] if selected_paths is None or row['relativePath'] in selected_paths]
     if regular_file_inventory(original, allow_empty=True) != inventory:

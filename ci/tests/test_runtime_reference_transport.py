@@ -422,6 +422,8 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         root = fixture.root
         base, handoff = root / 'reference-base', root / 'reference-full'
+        body_path = 'product-resume-state/alias-source.bin'
+        fixture.contents[body_path] = b'one remote read' * (32 * 1024)
         for directory in (base, handoff):
             for name, raw in fixture.contents.items():
                 target = directory / name
@@ -429,6 +431,7 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                 target.write_bytes(raw)
         (handoff / 'runtime-state').mkdir()
         (handoff / 'runtime-state/reuse-wave-result.json').write_bytes(b'untrusted phase state')
+        (handoff / 'runtime-state/alias.bin').write_bytes(fixture.contents[body_path])
         capture = root / 'base-transport.json'
         # A genuine source upload may contain a large unrelated body. Its source
         # metadata/job must be authenticated, but that body must never transfer.
@@ -457,6 +460,12 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                  ('product-validation / runtime-collect-1', 'product-validation / product-resume'))]
 
         def run_capture(destination, original=base_artifact):
+            from runtime_reference_archive import copy_reference_member
+            from runtime_reference_transport import _copy_exact
+            def copy_alias(source, target, record):
+                self.assertIn('original', source.parts)
+                self.assertIn('original', target.parts)
+                return _copy_exact(source, target, record)
             ranges = RangeOpener({101: base_raw})
             with mock.patch.object(product_reuse, 'api_json', side_effect=[
                     fixture.run, fixture.commit, artifact,
@@ -466,12 +475,23 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                     mock.patch.object(product_reuse, 'download_artifact_to_file',
                         side_effect=lambda item, token, path, **kwargs:
                         path.write_bytes(raw if item['id'] == 102 else base_raw)) as downloads, \
-                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges):
+                    mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
+                    mock.patch('runtime_reference_transport._copy_exact',
+                        side_effect=copy_alias), \
+                    mock.patch('runtime_reference_archive.copy_reference_member',
+                        wraps=copy_reference_member) as remote_members, \
+                    mock.patch.object(product_reuse, '_capture_runtime_reference_members',
+                        wraps=product_reuse._capture_runtime_reference_members) as capture_members:
                 result = product_reuse.capture_runtime_resume_upload(
                     fixture.plan_path, destination, artifact_id=102, artifact_sha256=artifact['digest'],
                     trusted_workflow_sha=fixture.pin, state_wave=0 if sdk else 1, sdk_state_wave=4 if sdk else None,
                     repository_root=root,
                     environ=fixture.environment, token='synthetic-token')
+                # Restore into the unpublished final layout, never an additional
+                # reference-base tree followed by another full copy.
+                self.assertEqual('original', capture_members.call_args.args[4].name)
+                self.assertIn('_targets', capture_members.call_args.kwargs)
+                self.assertEqual(1, sum(call.args[1] == body_path for call in remote_members.call_args_list))
                 return result, downloads.call_count, ranges
         destination = root / 'build/reference-capture'
         result, downloads, ranges = run_capture(destination)
@@ -562,6 +582,19 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             self.assertEqual(before, resolve_reference_handoff(resolved, base, value, state_wave=2))
             self.assertEqual(before, regular_file_inventory(resolved, allow_empty=True))
             self.assertFalse((resolved / REFERENCE_NAME).exists())
+            direct = root / 'direct'
+            snapshot_regular_tree(delta, direct, allow_empty=True)
+            def capture_source(records, target):
+                from runtime_reference_transport import _copy_exact
+                for row in records:
+                    _copy_exact(base / row['sourcePath'], target / row['relativePath'], row)
+            self.assertEqual(before, resolve_reference_handoff(
+                direct, None, value, state_wave=2, capture_source=capture_source))
+            incomplete = root / 'incomplete'
+            snapshot_regular_tree(delta, incomplete, allow_empty=True)
+            with self.assertRaisesRegex(ValueError, 'inventory differs'):
+                resolve_reference_handoff(incomplete, None, value, state_wave=2,
+                    capture_source=lambda records, target: None)
             for invalid in ('../escape', '/absolute', 'unexpected/file'):
                 altered = copy.deepcopy(value)
                 altered['references'][0]['sourcePath'] = invalid

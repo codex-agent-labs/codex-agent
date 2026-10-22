@@ -7734,6 +7734,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     resolved_paths = set()
 
     def copy_targets(archive, source, path, row):
+        copied = None
         for target in targets[path]:
             if path == plan_path and target == plan_path and (destination / target).exists():
                 if (archive.getinfo(source).file_size != len(plan_bytes)
@@ -7741,7 +7742,12 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
                         or read_regular_file_bytes(destination / target, reject_symlink_parents=True) != plan_bytes):
                     raise ValueError("Original Runtime reference source changes the validated plan")
             else:
-                copy_reference_member(archive, source, destination / target, row)
+                if copied is None:
+                    copy_reference_member(archive, source, destination / target, row)
+                    copied = destination / target
+                else:
+                    from runtime_reference_transport import _copy_exact
+                    _copy_exact(copied, destination / target, row)
         resolved_paths.add(path)
     with open_reference_archive(artifact, token) as (archive, stream):
         names = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
@@ -8549,13 +8555,20 @@ def capture_runtime_resume_upload(
                 selected_paths = selected_reference_paths(references, omit_sdk_ios_binary=omit_ios,
                     omit_resume_input_aliases=requested_scope is not None,
                     **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
-            wanted = {record["sourcePath"]: {"relativePath": record["sourcePath"],
-                "bytes": record["bytes"], "sha256": record["sha256"]} for record in references["references"]
-                if selected_paths is None or record['relativePath'] in selected_paths}
-            reference_transport = _capture_runtime_reference_members(plan, plan_bytes, producer,
-                base, private / "reference-base", trusted_workflow_sha=trusted_workflow_sha,
-                token=token, wanted=wanted)
-            zipped = resolve_reference_handoff(original, private / "reference-base", references,
+            def capture_base(records, target):
+                nonlocal reference_transport
+                wanted, targets = {}, {}
+                for record in records:
+                    source = record['sourcePath']
+                    wanted[source] = {'relativePath': source,
+                                      'bytes': record['bytes'], 'sha256': record['sha256']}
+                    targets.setdefault(source, []).append(record['relativePath'])
+                targets.setdefault('product-resume-inputs/plan/impact-plan.json',
+                                   ['product-resume-inputs/plan/impact-plan.json'])
+                reference_transport = _capture_runtime_reference_members(plan, plan_bytes, producer,
+                    base, target, trusted_workflow_sha=trusted_workflow_sha, token=token,
+                    wanted=wanted, _targets={path: tuple(paths) for path, paths in targets.items()})
+            zipped = resolve_reference_handoff(original, None, references, capture_source=capture_base,
                 state_wave=state_wave, sdk_state_wave=sdk_state_wave,
                 **({'selected_paths': selected_paths} if selected_paths is not None else {}))
         expected_roots = {"product-resume-inputs", "product-resume-state"} | (
