@@ -410,11 +410,16 @@ class ContractProductResumeTest(unittest.TestCase):
         observed = [{'run': {'head_sha': self.commit}, 'jobs': [{
             'name': 'product-validation / plan', 'started_at': '2026-10-14T00:00:00Z',
             'completed_at': '2026-10-14T00:01:00Z'}]}]
-        for case in ('valid', 'bytes', 'plan', 'window', 'origin'):
+        for case in ('valid', 'large-controls', 'bytes', 'plan', 'window', 'origin', 'archive-limit', 'member-limit'):
             with self.subTest(case=case):
                 members = dict(files)
                 if case == 'plan':
                     members['product-resume-inputs/plan/impact-plan.json'] = b'{}\n'
+                if case == 'large-controls':
+                    for label in ('a', 'b'):
+                        members[f'observations-{label}.json'] = b'"' + label.encode() * (9 * 1024**2) + b'"\n'
+                if case == 'member-limit':
+                    members['oversized-observation.json'] = b'"' + b'a' * (16 * 1024**2) + b'"\n'
                 body = archive(members)
                 artifact = {'id': 772, 'digest': sha256_bytes(body), 'size_in_bytes': len(body),
                     'name': 'codex-agent-planned-product-resume-' + self.producer['tree'],
@@ -425,6 +430,8 @@ class ContractProductResumeTest(unittest.TestCase):
                     artifact['created_at'] = '2026-10-13T00:00:30Z'
                 if case == 'origin':
                     artifact['workflow_run']['id'] += 1
+                if case == 'archive-limit':
+                    artifact['size_in_bytes'] = 32 * 1024**2 + 1
                 forwarded = self.scratch / ('forwarded-' + case)
                 with self.control_seams(), \
                         mock.patch.object(adapter, '_observe_ci_producer_jobs', return_value=observed) as observe, \
@@ -435,9 +442,10 @@ class ContractProductResumeTest(unittest.TestCase):
                         adapter.capture_planned_native_resume(self.plan_path, forwarded,
                             artifact_id=772, artifact_sha256=artifact['digest'], trusted_workflow_sha='c' * 40,
                             token='fixture', repository_root=self.repository, environ=self.environment)
-                    if case == 'valid':
+                    if case in ('valid', 'large-controls'):
                         capture()
-                        self.assertEqual(regular_file_inventory(handoff), regular_file_inventory(forwarded))
+                        self.assertEqual(members, {row['relativePath']: (forwarded / row['relativePath']).read_bytes()
+                            for row in regular_file_inventory(forwarded)})
                     else:
                         with self.assertRaises(ValueError):
                             capture()

@@ -132,10 +132,16 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
         (roots['product-resume-state'] / 'duplicate-plan.json').write_bytes(self.plan_path.read_bytes())
+        # Mixed-producer original observations can exceed 16 MiB in aggregate,
+        # without a large member or any product body in the transport.
+        for label in ('a', 'b'):
+            (roots['product-resume-state'] / f'observations-{label}.json').write_bytes(
+                b'"' + label.encode() * (9 * 1024**2) + b'"\n')
         thin = self.root / 'thin-planned'
         stage_original_reference_handoff(roots, [], thin)
         physical = {path.relative_to(thin).as_posix(): path.read_bytes()
                     for path in thin.rglob('*') if path.is_file()}
+        self.assertGreater(len(archive(physical)), 16 * 1024**2)
         self.job.update(name='product-validation / plan', started_at='2026-01-01T01:00:00Z',
                         completed_at='2026-01-01T01:02:00Z')
         self.artifact.update(name=f"codex-agent-planned-product-resume-{self.producer['tree']}",
@@ -156,7 +162,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             self.capture_members(self.root / 'build/planned-unbounded-format', self.contents)
         with self.assertRaisesRegex(ValueError, 'transport limit'):
             self.capture(self.root / 'build/planned-oversized',
-                         artifact={**self.artifact, 'size_in_bytes': 16 * 1024**2 + 1})
+                         artifact={**self.artifact, 'size_in_bytes': 32 * 1024**2 + 1})
 
     def test_late_original_mutation_cannot_publish(self):
         destination = self.root / "build/rejected-resume-late-copy"

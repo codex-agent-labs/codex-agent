@@ -246,6 +246,13 @@ _CATALOG_ZIP_LIMITS = {
     "max_total_bytes": _CATALOG_LIMIT,
     "max_compression_ratio": 200,
 }
+_PLANNED_RESUME_ZIP_LIMITS = {
+    **_CATALOG_ZIP_LIMITS,
+    # A complete mixed-producer control carrier is ~25 MB; product bodies stay referenced.
+    "max_archive_bytes": 32 * 1024**2,
+    "max_entry_bytes": 16 * 1024**2,
+    "max_total_bytes": 64 * 1024**2,
+}
 _APPLE_UPLOAD_LIMIT = 8 * 1024 * 1024 * 1024
 _APPLE_UPLOAD_ZIP_LIMITS = {
     **_CATALOG_ZIP_LIMITS,
@@ -8373,12 +8380,12 @@ def capture_runtime_resume_upload(
         artifact, _ = _download_contract_ci_upload(
             artifact_id, artifact_sha256, artifact_name,
             producer, observed[0]["run"], token, destination=archive,
-            **({"max_bytes": 16 * 1024**2} if job_name == "product-validation / plan" else {}))
+            **({"max_bytes": _PLANNED_RESUME_ZIP_LIMITS["max_archive_bytes"]}
+               if job_name == "product-validation / plan" else {}))
         if sdk_state_wave is not None or allow_earlier_attempt or job_name == "product-validation / plan":
             _require_artifact_job_window(observed[0], job_name, artifact)
-        limits = (_CATALOG_ZIP_LIMITS if job_name != "product-validation / plan" else
-                  {**_CATALOG_ZIP_LIMITS, "max_archive_bytes": 16 * 1024**2,
-                   "max_entry_bytes": 16 * 1024**2, "max_total_bytes": 64 * 1024**2})
+        limits = (_PLANNED_RESUME_ZIP_LIMITS if job_name == "product-validation / plan"
+                  else _CATALOG_ZIP_LIMITS)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True, **limits)
         prepared = private / "captured"
         original = prepared / "original"
@@ -10171,15 +10178,14 @@ def capture_planned_native_resume(plan_path, destination, *, artifact_id, artifa
         trusted_workflow_sha=trusted_workflow_sha, token=token)
     artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256,
         f"codex-agent-planned-product-resume-{producer['tree']}", producer, observed[0]["run"], token,
-        max_bytes=16 * 1024 * 1024)
+        max_bytes=_PLANNED_RESUME_ZIP_LIMITS["max_archive_bytes"])
     _require_artifact_job_window(observed[0], job, artifact)
     with tempfile.TemporaryDirectory(prefix="planned-native-resume-") as temporary:
         private = Path(temporary).resolve()
         archive = private / "transport.zip"
         archive.write_bytes(raw)
         verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-            **{**_CATALOG_ZIP_LIMITS, "max_archive_bytes": 16 * 1024 * 1024,
-               "max_entry_bytes": 16 * 1024 * 1024, "max_total_bytes": 64 * 1024 * 1024})
+            **_PLANNED_RESUME_ZIP_LIMITS)
         source = private / "source"
         safe_extract(archive, source)
         validate_original_references(_canonical_control(source / "runtime-original-references.json",
