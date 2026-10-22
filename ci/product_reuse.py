@@ -7716,7 +7716,8 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
     artifact = _contract_ci_upload_metadata(base["artifactId"], base["artifactSha256"], name,
         producer, observed[0]["run"], token)
     _require_artifact_job_window(observed[0], job, artifact)
-    if job == "product-validation / plan" and artifact["size_in_bytes"] > 16 * 1024**2:
+    if (job == "product-validation / plan"
+            and artifact["size_in_bytes"] > _PLANNED_RESUME_ZIP_LIMITS["max_archive_bytes"]):
         raise ValueError("Planned native state exceeds its original upload bound")
     plan_path = "product-resume-inputs/plan/impact-plan.json"
     wanted = dict(wanted)
@@ -7745,8 +7746,9 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
         names = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
         if job == "product-validation / plan" and (
                 ORIGINAL_REFERENCE_NAME not in names or "runtime-references.json" in names
-                or any(entry.file_size > 16 * 1024**2 for entry in archive.infolist())
-                or sum(entry.file_size for entry in archive.infolist()) > 64 * 1024**2):
+                or any(entry.file_size > _PLANNED_RESUME_ZIP_LIMITS["max_entry_bytes"]
+                       for entry in archive.infolist())
+                or sum(entry.file_size for entry in archive.infolist()) > _PLANNED_RESUME_ZIP_LIMITS["max_total_bytes"]):
             raise ValueError("Planned native state requires its original-reference envelope")
         roots = {"product-resume-inputs", "product-resume-state"} | ({"runtime-state"} if wave or sdk_wave is not None else set())
         if any(path not in {"runtime-references.json", ORIGINAL_REFERENCE_NAME}

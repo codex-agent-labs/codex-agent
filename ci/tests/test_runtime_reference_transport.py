@@ -159,6 +159,9 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             target.write_bytes(raw)
         duplicate = roots['product-resume-state'] / 'duplicate-plan.json'
         duplicate.write_bytes(fixture.plan_path.read_bytes())
+        # Mixed original producers exceed 16 MiB in total, not per member.
+        for name, byte in (('first', b'a'), ('second', b'b')):
+            (roots['product-resume-state'] / f'{name}-observations.json').write_bytes(byte * (8 * 1024**2))
         destination = fixture.root / 'build/thin-initial'
         value = stage_original_reference_handoff(roots, [], destination)
         self.assertEqual(1, len(value['references']))
@@ -172,6 +175,7 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
         # Later wave envelopes must resolve this initial format as an ancestor,
         # including aliases whose source path differs from the requested path.
         raw = archive(physical)
+        self.assertGreater(len(raw), 16 * 1024**2)
         artifact = {**fixture.artifact, 'digest': sha256_bytes(raw), 'size_in_bytes': len(raw)}
         base = {'artifactId': artifact['id'], 'artifactSha256': artifact['digest'], 'stateWave': 0,
                 'referenceControlSha256': result['referenceControlSha256']}
@@ -196,6 +200,17 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             self.assertEqual({'resume': role}, observe.call_args.kwargs['jobs_by_phase'])
             self.assertEqual(metadata['name'], source.call_args.args[2])
             self.assertEqual(value['inventory'], regular_file_inventory(resolved, allow_empty=True))
+            if planned:
+                metadata['size_in_bytes'] = 32 * 1024**2 + 1
+                with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observation), \
+                        mock.patch.object(product_reuse, 'api_json', return_value=metadata), \
+                        mock.patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=metadata), \
+                        mock.patch('runtime_reference_archive.open_reference_archive') as unopened:
+                    with self.assertRaisesRegex(ValueError, 'original upload bound'):
+                        product_reuse._capture_runtime_reference_members({}, fixture.plan_path.read_bytes(),
+                            fixture.producer, base, resolved, trusted_workflow_sha=fixture.pin,
+                            token='not-a-real-token', wanted=wanted)
+                unopened.assert_not_called()
         changed = copy.deepcopy(value)
         changed['references'][0]['sourcePath'] = changed['references'][0]['relativePath']
         with self.assertRaisesRegex(ValueError, 'cyclic'):
