@@ -8838,6 +8838,45 @@ def verify_retained_sdk_ios_upload(capture, receipt_bytes):
         raise ValueError("Retained Apple shard differs from its selected receipt")
 
 
+def _capture_sdk_runtime_reference(plan, producer, reference, original, *, token):
+    """Reuse qualified member bytes, never the previous consumer's trust verdict."""
+    from products.sdk_inputs import REQUEST_NAME
+    from products.sdk_protected_runtime import _original_carrier
+    source = reference["source"]
+    request_path = original / "sdk-inputs" / REQUEST_NAME
+    if source["producer"] == producer or not (request_path.exists() or request_path.is_symlink()):
+        return False  # Same-run and legacy transports keep their complete-upload reader.
+    request = require_object(_canonical_control(request_path, "SDK Runtime input request"), "SDK input request")
+    receipt_path = original / "sdk-inputs" / require_relative_path(
+        request.get("runtimeMetadataReceipt"), "SDK Runtime metadata receipt path")
+    raw = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(raw))
+    if (_identity(receipt) != PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+            or sha256_bytes(raw) != source["metadataReceiptSha256"]
+            or receipt["buildKey"] != source["buildKey"]):
+        raise ValueError("SDK Runtime reference differs from its original aggregate receipt")
+    if receipt["producer"] != source["producer"]:
+        return False  # Re-attested carriers retain their distinct transport producer and full reader.
+    prefix = "runtime-capture/original/"
+    rows = [{**row, "relativePath": row["relativePath"][len(prefix):],
+             "sourcePath": row["relativePath"][len(prefix):]}
+            for row in reference["inventory"] if row["relativePath"].startswith(prefix)]
+    target = original / "runtime-capture/original"
+    if target.exists() or target.is_symlink():
+        raise ValueError("SDK Runtime reference overlaps concrete original bytes")
+    _capture_runtime_original_reference_members(plan, producer,
+        {"kind": "aggregate", "receipt": receipt, "artifactId": source["artifactId"],
+         "artifactSha256": source["artifactSha256"]}, rows, target,
+        trusted_workflow_sha=source["workflowSha"], token=token)
+    caller = _canonical_control(target / "caller.json", "SDK referenced Runtime caller")
+    if (caller.get("transportProducer") != source["producer"] or caller.get("target") != "aggregate"
+            or caller.get("trustedWorkflowSha") != source["workflowSha"]
+            or caller.get("metadataReceiptSha256") != source["metadataReceiptSha256"]):
+        raise ValueError("SDK referenced Runtime caller differs from its observed original")
+    _original_carrier(target, source["metadataReceiptSha256"], source["buildKey"])
+    return True
+
+
 def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, expected_source, repository_root=None, environ=None, token,
         original_package_receipt_path=None, retained_sdk_inputs_source=None, completed_frozen=None):
@@ -8979,7 +9018,14 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
                 f"codex-agent-runtime-aggregate-release-handoff-{source['producer']['tree']}"
                 f"-attempt-{source['producer']['runAttempt']}", source['producer'], runtime_observed[0]['run'], token)
             _require_artifact_job_window(runtime_observed[0], runtime_job, runtime_artifact)
-        if reference is not None and completed_frozen is None:
+        if (reference is not None and completed_frozen is None
+                and expected_source == 'current-runtime'
+                and _capture_sdk_runtime_reference(plan, producer, reference, original, token=token)):
+            # The complete SDK upload authenticated these exact member hashes.
+            # Fresh original source gates and full downstream content gates remain.
+            (original / SDK_REFERENCE_NAME).unlink()
+            zipped = reference['inventory']
+        elif reference is not None and completed_frozen is None:
             if expected_source != 'current-runtime':
                 raise ValueError('SDK Runtime references cannot replace a released-default source')
             source = reference['source']

@@ -99,6 +99,19 @@ class SdkInputsUploadTest(unittest.TestCase):
         (self.output / 'original' / member).write_bytes(b'changed original')
         with self.assertRaisesRegex(ValueError, 'differs from its original archive'):
             capture._verify_retained_sdk_upload_archive(self.output, self.artifact)
+        self.output = self.work / 'member-reference'
+        def member_capture(plan, producer, reference, original_root, **kwargs):
+            # Routing only; the member test exercises actual authentication.
+            path = original_root / member
+            path.parent.mkdir(parents=True)
+            path.write_bytes(body)
+            return True
+        with patch.object(capture, '_capture_sdk_runtime_reference', side_effect=member_capture) as members, \
+                patch.object(capture, 'capture_runtime_aggregate_release_upload', side_effect=AssertionError('Duplicate aggregate capture')):
+            self.call()
+        members.assert_called_once()
+        self.assertEqual(inventory, regular_file_inventory(self.output / 'original', allow_empty=True))
+        capture._verify_retained_sdk_upload_archive(self.output, self.artifact)
         self.output = self.work / 'rejected-reference'
         with patch.object(capture, 'capture_runtime_aggregate_release_upload', side_effect=ValueError('failed original source')):
             with self.assertRaisesRegex(ValueError, 'failed original source'):
@@ -112,6 +125,64 @@ class SdkInputsUploadTest(unittest.TestCase):
         self.assertEqual(self.producer, result["captureProducer"])
         self.assertEqual(before, environment)
         self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+
+    def test_prior_runtime_reference_reuses_hydrated_members_with_fresh_original_checks(self):
+        import os
+        import hydrated_evidence
+        from products.sdk_inputs import REQUEST_NAME
+        origin = fixture.RuntimeAggregateUploadTest()
+        origin.setUp()
+        self.addCleanup(origin.doCleanups)
+        origin.files["body.bin"] = b"x" * (16 * 1024 * 1024)
+        origin.archive()
+        source = dict(artifactId=701, artifactSha256=origin.artifact["digest"], producer=origin.producer,
+            workflowSha=origin.pin, buildKey=origin.key, metadataReceiptSha256=origin.digest)
+        rows = [dict(relativePath="runtime-capture/original/" + name, bytes=len(raw), sha256=sha256_bytes(raw))
+                for name, raw in sorted(origin.files.items())]
+        reference = dict(source=source, inventory=rows)
+        consumer = {**origin.producer, "runId": 72, "runAttempt": 1}
+
+        def inputs(name):
+            original = self.work / name
+            sdk = original / "sdk-inputs"
+            sdk.mkdir(parents=True)
+            (sdk / REQUEST_NAME).write_bytes(canonical_json_bytes({"runtimeMetadataReceipt": "receipt.json"}))
+            (sdk / "receipt.json").write_bytes(origin.files["aggregate-input/metadata-receipt.json"])
+            return original
+
+        with patch.dict(os.environ, {"CODEX_AGENT_HYDRATED_EVIDENCE": str(self.work / "hydrated")}), \
+                patch("reuse.api_request", side_effect=origin.api), \
+                patch("runtime_reference_archive.open_reference_archive", side_effect=AssertionError("Repeated Runtime transfer")), \
+                patch.object(capture, "_observe_ci_producer_jobs", wraps=capture._observe_ci_producer_jobs) as observe:
+            for row in rows:
+                path = self.work / "seed" / row["relativePath"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(origin.files[row["relativePath"].removeprefix("runtime-capture/original/")])
+                hydrated_evidence.retain(row, path)
+            original = inputs("warm")
+            self.assertTrue(capture._capture_sdk_runtime_reference(origin.plan, consumer, reference, original,
+                                                                   token="synthetic-token"))
+            observe.assert_called_once()
+            self.assertEqual(origin.files, {row["relativePath"]: (original / "runtime-capture/original" / row["relativePath"]).read_bytes()
+                for row in regular_file_inventory(original / "runtime-capture/original", allow_empty=True)})
+            with self.assertRaisesRegex(ValueError, "original aggregate receipt"):
+                capture._capture_sdk_runtime_reference(origin.plan, consumer,
+                    {**reference, "source": {**source, "metadataReceiptSha256": "sha256:" + "e" * 64}},
+                    inputs("wrong-receipt"), token="synthetic-token")
+            origin.jobs[0]["conclusion"] = "failure"
+            with self.assertRaises(ValueError):
+                capture._capture_sdk_runtime_reference(origin.plan, consumer, reference, inputs("failed-original"),
+                                                      token="synthetic-token")
+            origin.jobs[0]["conclusion"] = "success"
+            hydrated_evidence.blob(next(row for row in rows if row["relativePath"].endswith("/body.bin"))).write_bytes(b"corrupt")
+            with self.assertRaises(ValueError):
+                capture._capture_sdk_runtime_reference(origin.plan, consumer, reference, inputs("corrupt-cache"),
+                                                      token="synthetic-token")
+            self.assertFalse(capture._capture_sdk_runtime_reference(origin.plan, origin.producer, reference,
+                inputs("same-run"), token="synthetic-token"))
+            self.assertFalse(capture._capture_sdk_runtime_reference(origin.plan, consumer,
+                {**reference, "source": {**source, "producer": {**origin.producer, "runId": 70}}},
+                inputs("reattested"), token="synthetic-token"))
 
     def original_package_receipt(self, *, product="sdk", component="sdk-ios", phase="package", target="ios"):
         path = self.work / "original-package" / f"{product}-{component}-{phase}-{target}.json"
