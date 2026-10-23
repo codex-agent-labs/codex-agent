@@ -35,9 +35,14 @@ RETAINED_ANDROID_BINARY_KEY = "sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c61
 RETAINED_ANDROID_METADATA_KEY = "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"
 
 
-def retained_native_validation_records():
-    """Reviewed locators only; successful original jobs and bodies are rechecked."""
-    path = Path(__file__).parent / "tests/data/retained-native-sdk-validations.json"
+_RETAINED_NATIVE_VALIDATION_COHORTS = (
+    "retained-native-sdk-validations.json",
+    "retained-native-sdk-validations-39943202903.json",
+)
+
+
+def _retained_native_validation_cohort(filename):
+    path = Path(__file__).parent / "tests/data" / filename
     value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(path,
         max_bytes=128 * 1024, reject_symlink_parents=True)), {"schemaVersion", "producer", "originals"},
         "Retained native SDK originals")
@@ -67,6 +72,21 @@ def retained_native_validation_records():
     return value
 
 
+def retained_native_validation_records():
+    """Reviewed locators only; successful original jobs and bodies are rechecked."""
+    rows = []
+    identities = set()
+    for filename in _RETAINED_NATIVE_VALIDATION_COHORTS:
+        cohort = _retained_native_validation_cohort(filename)
+        for row in cohort["originals"]:
+            identity = row["component"], row["target"], row["buildKey"]
+            if identity in identities:
+                raise ValueError("Retained native SDK original key is ambiguous across cohorts")
+            identities.add(identity)
+            rows.append({**row, "producer": dict(cohort["producer"])})
+    return {"originals": rows}
+
+
 def retained_core_binary_origin(build_key, consumer):
     """Select one successful original; collection still authenticates/adopts it."""
     producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
@@ -90,10 +110,12 @@ def retained_core_origin(phase, build_key, consumer, *, target="common", compone
     """Keep reviewed SDK originals separate from current admission (legacy API name)."""
     if component in NATIVE_BINDINGS and phase == "validation":
         value = retained_native_validation_records()
-        producer = value["producer"]
         selected = next((row for row in value["originals"]
                          if (row["component"], row["target"], row["buildKey"]) == (component, target, build_key)), None)
-        if (selected is None or any(consumer.get(name) != producer[name]
+        if selected is None:
+            return None
+        producer = selected["producer"]
+        if (any(consumer.get(name) != producer[name]
                 for name in ("repository", "workflowPath", "event", "pullRequest"))
                 or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
                 or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):

@@ -1,6 +1,8 @@
 """Official SDK original lookup: synthetic API, exact fresh shard bytes."""
 
+from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -17,21 +19,65 @@ from products.registry import PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS, finalize_phase_object
 
 
+class NativeValidationCohortTest(TestCase):
+    def test_additive_cohort_preserves_all_originals_and_distinct_keys(self):
+        directory = Path(locator.__file__).parent / "tests/data"
+        old_raw = (directory / "retained-native-sdk-validations.json").read_bytes()
+        self.assertEqual("sha256:524334a1398d55110639fdc42e0a3f61eb7b78ebe207a49cf752540427be5b63",
+                         sha256_bytes(old_raw))
+        old = load_canonical_json_bytes(old_raw)
+        new = load_canonical_json_bytes(
+            (directory / "retained-native-sdk-validations-39943202903.json").read_bytes())
+        rows = locator.retained_native_validation_records()["originals"]
+        self.assertEqual(22, len(old["originals"]))
+        self.assertEqual(23, len(rows))
+        self.assertEqual([{**row, "producer": old["producer"]} for row in old["originals"]]
+                         + [{**row, "producer": new["producer"]} for row in new["originals"]], rows)
+        dart = [row for row in rows if (row["component"], row["target"]) == ("dart", "macos-arm64")]
+        self.assertEqual(2, len(dart))
+        self.assertEqual(2, len({row["buildKey"] for row in dart}))
+        self.assertEqual((39943202903, 12512225187, 120429656410),
+            (dart[-1]["producer"]["runId"], dart[-1]["artifactId"], dart[-1]["jobId"]))
+
+    def test_cohort_scope_schema_and_duplicate_keys_fail_closed(self):
+        directory = Path(locator.__file__).parent / "tests/data"
+        old = load_canonical_json_bytes((directory / "retained-native-sdk-validations.json").read_bytes())
+        new = load_canonical_json_bytes(
+            (directory / "retained-native-sdk-validations-39943202903.json").read_bytes())
+        mutations = (
+            lambda value: value["producer"].update(pullRequest=32),
+            lambda value: value["producer"].update(repository="other/repository"),
+            lambda value: value.update(schemaVersion=True),
+            lambda value: value["originals"][0].update(unexpected="field"),
+            lambda value: value["originals"].append(deepcopy(value["originals"][0])),
+            lambda value: value.update(originals=[deepcopy(old["originals"][0])]),
+        )
+        for number, mutate in enumerate(mutations):
+            candidate = deepcopy(new)
+            mutate(candidate)
+            with self.subTest(mutation=number), patch.object(locator, "read_regular_file_bytes",
+                    side_effect=lambda path, **_: canonical_json_bytes(
+                        old if path.name == "retained-native-sdk-validations.json" else candidate)):
+                with self.assertRaises(ValueError):
+                    locator.retained_native_validation_records()
+
+
 class SdkCampaignOriginalLocatorTest(TestCase):
     def test_native_validation_recovers_exact_originals_without_product_download(self):
         reviewed = locator.retained_native_validation_records()
-        consumer = {**reviewed["producer"], "runId": 40000000000, "runAttempt": 1}
+        consumer = {**reviewed["originals"][0]["producer"], "runId": 40000000000, "runAttempt": 1}
         for row in reviewed["originals"]:
             options = {"component": row["component"], "target": row["target"], "phase": "validation"}
             origin = locator.retained_core_origin(build_key=row["buildKey"], consumer=consumer, **options)
             with self.subTest(component=row["component"], target=row["target"]):
-                self.assertEqual(reviewed["producer"], origin["producer"])
+                self.assertEqual(row["producer"], origin["producer"])
                 for public, internal in (("artifactId", "artifact_id"), ("jobId", "job_id"),
                         ("receiptSha256", "receipt_sha256"), ("objectSha256", "object_sha256")):
                     self.assertEqual(row[public], origin[internal])
                 for change, key in (({}, "sha256:" + "0" * 64), ({"pullRequest": 32}, row["buildKey"]),
                         ({"event": "merge_group"}, row["buildKey"]), ({"runId": True}, row["buildKey"]),
-                        ({"runId": reviewed["producer"]["runId"]}, row["buildKey"]),
+                        ({"runId": row["producer"]["runId"]}, row["buildKey"]),
+                        ({"runId": row["producer"]["runId"] - 1}, row["buildKey"]),
                         ({"repository": "other/repository"}, row["buildKey"])):
                     self.assertIsNone(locator.retained_core_origin(build_key=key,
                         consumer={**consumer, **change}, **options))
