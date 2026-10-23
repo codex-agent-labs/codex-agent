@@ -70,12 +70,12 @@ def _primary_rate_limit_delay(error):
     return max(0, delay) + 2
 
 
-def _retry_github_get(operation):
+def _retry_github_get(operation, *, retry_delays=(1, 2, 4)):
     """Retry transient recovery GETs; every attempt retains full authentication."""
     @wraps(operation)
     def retry(*args, **kwargs):
         waited_for_reset = False
-        for attempt in range(4):
+        for attempt in range(len(retry_delays) + 1):
             try:
                 return operation(*args, **kwargs)
             except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
@@ -84,7 +84,7 @@ def _retry_github_get(operation):
                     or isinstance(error, urllib.error.HTTPError) and error.code in {500, 502, 503, 504}
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (socket.gaierror, TimeoutError, ConnectionError)))
-                if attempt == 3 or not transient and delay is None:
+                if attempt == len(retry_delays) or not transient and delay is None:
                     raise
                 if delay is not None:
                     report_api_error(error)
@@ -97,12 +97,13 @@ def _retry_github_get(operation):
                     count('transientGetRetries')
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
-                time.sleep(2 ** attempt if delay is None else delay)
+                time.sleep(retry_delays[attempt] if delay is None else delay)
     return retry
 
 
-api_json = _retry_github_get(api_json)
-paginated_items = _retry_github_get(paginated_items)
+# Retry only the failing metadata GET, not earlier pages or expensive product work.
+api_json = _retry_github_get(api_json, retry_delays=(1, 2, 4, 8, 16, 30, 30))
+paginated_items = partial(paginated_items, request_json=api_json)
 download_artifact = _retry_github_get(download_artifact)
 download_artifact_to_file = _retry_github_get(download_artifact_to_file)
 from products.aggregate import RUNTIME_EVIDENCE_TARGETS, RUNTIME_TARGETS, validate_product_index

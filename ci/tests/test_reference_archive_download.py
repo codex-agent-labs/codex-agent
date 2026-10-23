@@ -14,6 +14,60 @@ import runtime_reference_archive as transport
 
 
 class ReferenceDownloadTest(unittest.TestCase):
+    def test_parallel_full_archive_bounds_work_and_preserves_order_etag_and_cleanup(self):
+        from threading import Barrier, Lock
+        from products.inventory import sha256_bytes
+        raw = bytes(range(64))
+        artifact = dict(id=1, size_in_bytes=len(raw), digest=sha256_bytes(raw),
+            archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip')
+        for defect in (None, 'etag', 'digest'):
+            barrier, lock = Barrier(4), Lock()
+            active = peak = 0
+            requests = []
+            def open_range(request, timeout):
+                nonlocal active, peak
+                begin, end = map(int, request.get_header('Range')[6:].split('-'))
+                with lock:
+                    requests.append(request)
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    if 8 <= begin < 40:
+                        barrier.wait(timeout=10)  # Four independent ranges must overlap.
+                    if begin:
+                        self.assertEqual('"same"', request.get_header('If-match'))
+                        self.assertIsNone(request.get_header('Authorization'))
+                    response = io.BytesIO(raw[begin:end + 1])
+                    response.status = 206
+                    response.headers = {'ETag': '"other"' if defect == 'etag' and begin == 8 else '"same"',
+                                        'Content-Range': f'bytes {begin}-{end}/{len(raw)}'}
+                    response.geturl = lambda: 'https://blob.example.invalid/pinned-download'
+                    return response
+                finally:
+                    with lock:
+                        active -= 1
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(transport.urllib.request, 'build_opener') as factory, \
+                    mock.patch.object(transport, '_READ_AHEAD', 0), \
+                    mock.patch.object(transport, '_DOWNLOAD_BLOCK_BYTES', 8), \
+                    mock.patch.object(transport, '_PARALLEL_DOWNLOAD_MIN_BYTES', 0):
+                factory.return_value.open.side_effect = open_range
+                output = Path(temporary) / 'original.zip'
+                selected = {**artifact, 'digest': 'sha256:' + '0' * 64} if defect == 'digest' else artifact
+                if defect:
+                    with self.assertRaisesRegex(ValueError, 'identity changed|full transport digest'):
+                        transport.download_archive(selected, 'exact-token', output, max_bytes=len(raw))
+                    self.assertFalse(output.exists())
+                else:
+                    transport.download_archive(selected, 'exact-token', output, max_bytes=len(raw))
+                    self.assertEqual(raw, output.read_bytes())
+                    self.assertEqual([f'bytes={begin}-{begin+7}' for begin in range(0, 64, 8)],
+                                     sorted((r.get_header('Range') for r in requests),
+                                            key=lambda r: int(r[6:].split('-')[0])))
+                self.assertEqual(4, peak)
+                self.assertEqual(artifact['archive_download_url'], requests[0].full_url)
+                self.assertEqual('Bearer exact-token', requests[0].get_header('Authorization'))
+
     def test_nested_stored_archive_reads_only_pinned_leaves_and_keeps_digest_and_path_gates(self):
         from ci.tests.test_runtime_reference_transport import RangeOpener
         from products.inventory import sha256_bytes

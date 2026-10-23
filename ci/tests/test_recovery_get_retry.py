@@ -16,6 +16,39 @@ import reuse
 
 
 class RecoveryGetRetryTest(unittest.TestCase):
+    def test_metadata_retries_only_failed_page_and_retains_exact_request(self):
+        prefix = [{'id': number} for number in range(100)]
+        calls = []
+        def request(url, token):
+            calls.append((url, token))
+            if url.endswith('page=1'):
+                return {'jobs': prefix}
+            if len(calls) <= 5:
+                raise urllib.error.HTTPError(url, 502, 'transient gateway', {}, io.BytesIO())
+            return {'jobs': [{'id': 100}]}
+        with mock.patch('runtime_reference_transport.reuse.api_json', side_effect=request), \
+                mock.patch.object(recovery.time, 'sleep') as sleep:
+            self.assertEqual(prefix + [{'id': 100}], recovery.paginated_items(
+                'https://api.github.com/repos/a/b/actions/jobs', 'jobs', 'exact-token'))
+        self.assertEqual(1, sum(url.endswith('page=1') for url, _ in calls))
+        self.assertEqual(5, sum(url.endswith('page=2') for url, _ in calls))
+        self.assertEqual({'exact-token'}, {token for _, token in calls})
+        self.assertEqual([mock.call(1), mock.call(2), mock.call(4), mock.call(8)], sleep.call_args_list)
+
+    def test_metadata_retry_budget_is_bounded_and_denials_still_fail_immediately(self):
+        for status, attempts in ((502, 8), (401, 1), (403, 1), (404, 1)):
+            with self.subTest(status=status), \
+                    mock.patch('runtime_reference_transport.reuse.api_json') as request, \
+                    mock.patch.object(recovery.time, 'sleep') as sleep:
+                request.side_effect = lambda url, token: (_ for _ in ()).throw(
+                    urllib.error.HTTPError(url, status, 'failure', {}, io.BytesIO()))
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    recovery.api_json('https://api.github.com/repos/a/b/actions/jobs', 'exact-token')
+                caught.exception.close()
+                self.assertEqual(attempts, request.call_count)
+                self.assertEqual([mock.call(delay) for delay in (1, 2, 4, 8, 16, 30, 30)]
+                                 if attempts == 8 else [], sleep.call_args_list)
+
     def test_primary_exhaustion_waits_once_for_reset_without_changing_request(self):
         headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
                    'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}

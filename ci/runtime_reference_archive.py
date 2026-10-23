@@ -6,6 +6,9 @@ those member bytes, never asserts that an unread outer ZIP body was hashed,
 and never admits a phase or replaces its signature/receipt/provenance gates.
 """
 from contextlib import contextmanager
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import hashlib
 import http.client
 import io
@@ -25,6 +28,7 @@ from runtime_reference_transport import token_for, report_api_error
 
 _READ_AHEAD = 256 * 1024
 _DOWNLOAD_BLOCK_BYTES = 32 * 1024 * 1024
+_PARALLEL_DOWNLOAD_MIN_BYTES = 256 * 1024 * 1024
 
 
 class _Archive(io.RawIOBase):
@@ -164,10 +168,38 @@ def download_archive(artifact, token, destination, *, max_bytes):
         identity = os.fstat(output.fileno())
         try:
             digest = hashlib.sha256()
-            while stream.tell() < stream.size:
-                chunk = stream.read(min(_DOWNLOAD_BLOCK_BYTES, stream.size - stream.tell()))
+            def write(chunk):
                 output.write(chunk)
                 digest.update(chunk)
+
+            # The first authenticated range pins the ETag and signed download URL.
+            write(stream.read(min(_DOWNLOAD_BLOCK_BYTES, stream.size)))
+            if stream.size < _PARALLEL_DOWNLOAD_MIN_BYTES:
+                while stream.tell() < stream.size:
+                    write(stream.read(min(_DOWNLOAD_BLOCK_BYTES, stream.size - stream.tell())))
+            else:
+                stream.buffer = b''
+                def read_range(begin, url):
+                    with _Archive(artifact, token, max_bytes=max(16 * 1024**3, max_bytes)) as reader:
+                        reader.etag, reader.download_url = stream.etag, url
+                        raw = reader._read_range(begin, min(_DOWNLOAD_BLOCK_BYTES, stream.size - begin))
+                        return raw, reader.download_url
+
+                # Four in-flight blocks bound memory; ordered writes preserve the full SHA.
+                offsets = iter(range(stream.tell(), stream.size, _DOWNLOAD_BLOCK_BYTES))
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    pending = deque()
+                    def submit():
+                        begin = next(offsets, None)
+                        if begin is not None:
+                            pending.append(pool.submit(copy_context().run, read_range, begin, stream.download_url))
+                    for _ in range(4):
+                        submit()
+                    while pending:
+                        chunk, stream.download_url = pending.popleft().result()
+                        write(chunk)
+                        del chunk
+                        submit()
             if 'sha256:' + digest.hexdigest() != artifact['digest']:
                 raise ValueError('Original archive differs from its full transport digest')
             output.flush()

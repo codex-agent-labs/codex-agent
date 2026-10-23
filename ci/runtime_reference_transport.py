@@ -150,12 +150,13 @@ def api_json(url, token):
     return reuse.api_json(url, token_for(url, token))
 
 
-def paginated_items(url, key, token):
+def paginated_items(url, key, token, *, request_json=None):
     # Renew at each page, not merely at the beginning of a long discovery call.
     result, page = [], 1
     separator = '&' if '?' in url else '?'
     while True:
-        value = api_json(f'{url}{separator}per_page=100&page={page}', token).get(key)
+        value = (api_json if request_json is None else request_json)(
+            f'{url}{separator}per_page=100&page={page}', token).get(key)
         if not isinstance(value, list):
             raise ValueError(f'GitHub response is missing {key}')
         result.extend(value)
