@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -44,8 +45,46 @@ def regular(path, maximum=16 * 1024 * 1024):
 
 
 def git(root, *args, data=None):
-    return subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args],
-                          input=data, check=True, capture_output=True, timeout=120).stdout
+    for attempt in range(2):
+        try:
+            return subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args],
+                                  input=data, check=True, capture_output=True, timeout=120).stdout
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            if args[:1] != ("fetch",):
+                raise
+            raw = error.stderr or b""
+            text = raw.lower()
+            kind = "unknown"
+            for category, markers in (
+                ("authentication", (b"authentication failed", b"could not read username",
+                                    b"permission denied", b"repository not found")),
+                ("certificate", (b"certificate", b"ssl peer")),
+                ("object-unavailable", (b"not our ref", b"couldn't find remote ref",
+                                        b"unadvertised object", b"bad object", b"not a valid object")),
+            ):
+                if any(marker in text for marker in markers):
+                    kind = category
+                    break
+            status = re.findall(rb"requested url returned error: ([0-9]{3})(?:\D|$)", text)
+            if kind == "unknown":
+                if status:
+                    transient = all(int(code) == 429 or 500 <= int(code) <= 599 for code in status)
+                    kind = "http-transient" if transient else "http-permanent"
+                elif isinstance(error, subprocess.TimeoutExpired) or any(message in text for message in (
+                        b"operation timed out", b"connection timed out")):
+                    kind = "transport-timeout"
+                elif any(message in text for message in (
+                        b"connection reset by peer", b"recv failure: connection was reset",
+                        b"send failure: connection was reset")):
+                    kind = "transport-reset"
+            retry = attempt == 0 and kind in {"http-transient", "transport-timeout", "transport-reset"}
+            # Never echo Git's untrusted stderr, URLs, headers or credentials.
+            print(json.dumps({"gitFetchFailure": kind, "attempt": attempt + 1,
+                "exitCode": getattr(error, "returncode", None), "retry": retry,
+                "stderrSha256": "sha256:" + hashlib.sha256(raw).hexdigest()}, sort_keys=True), file=sys.stderr)
+            if not retry:
+                raise
+            time.sleep(2)
 
 
 def blobs(root, objects):

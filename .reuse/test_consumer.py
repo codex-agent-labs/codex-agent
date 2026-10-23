@@ -403,6 +403,82 @@ class AcquisitionTests(unittest.TestCase):
             consumer.history(Path("unused"), producer)
             self.assertEqual(operation.call_args_list[1].args[-2:], (consumer.REPOSITORY_URL + ".git", "b" * 40))
 
+    def test_fetch_retries_recognized_transport_once_without_exposing_stderr(self):
+        command = ("fetch", "--no-tags", consumer.REPOSITORY_URL + ".git", "b" * 40)
+        for raw in (b"fatal: requested URL returned error: 502", b"fatal: requested URL returned error: 429",
+                    b"Recv failure: Connection was reset", b"Connection reset by peer", b"Operation timed out"):
+            secret = raw + b"\nAuthorization: secret-value\n::error::untrusted"
+            failure = subprocess.CalledProcessError(128, ["git"], stderr=secret)
+            with self.subTest(raw=raw), patch.object(consumer.subprocess, "run", side_effect=[
+                    failure, subprocess.CompletedProcess([], 0, stdout=b"fetched")]) as run, \
+                    patch.object(consumer.time, "sleep") as sleep, contextlib.redirect_stderr(io.StringIO()) as log:
+                self.assertEqual(b"fetched", consumer.git(Path("unused"), *command))
+            self.assertEqual(2, run.call_count)
+            self.assertEqual(run.call_args_list[0], run.call_args_list[1])
+            self.assertEqual(list(command), run.call_args.args[0][-4:])
+            sleep.assert_called_once_with(2)
+            diagnostic = json.loads(log.getvalue())
+            self.assertTrue(diagnostic["retry"])
+            self.assertEqual("sha256:" + consumer.hashlib.sha256(secret).hexdigest(), diagnostic["stderrSha256"])
+            self.assertNotIn("secret-value", log.getvalue())
+            self.assertNotIn("::error::", log.getvalue())
+
+    def test_fetch_retry_exhaustion_and_timeout_remain_fatal(self):
+        for failure in (subprocess.CalledProcessError(128, ["git"], stderr=b"Connection reset by peer"),
+                        subprocess.TimeoutExpired(["git"], 120)):
+            with self.subTest(error=type(failure)), patch.object(consumer.subprocess, "run", side_effect=failure) as run, \
+                    patch.object(consumer.time, "sleep") as sleep, contextlib.redirect_stderr(io.StringIO()) as log, \
+                    self.assertRaises(type(failure)) as result:
+                consumer.git(Path("unused"), "fetch", "--no-tags", consumer.REPOSITORY_URL + ".git", "b" * 40)
+            self.assertIs(failure, result.exception)
+            self.assertEqual(2, run.call_count)
+            sleep.assert_called_once_with(2)
+            self.assertEqual([True, False], [json.loads(line)["retry"] for line in log.getvalue().splitlines()])
+
+    def test_fetch_permanent_and_unknown_failures_do_not_retry(self):
+        for raw, kind in ((b"Authentication failed\nConnection reset by peer", "authentication"),
+                          (b"SSL certificate problem\nrequested URL returned error: 503", "certificate"),
+                          (b"fatal: not our ref bbbbbbbbb\nOperation timed out", "object-unavailable"),
+                          (b"requested URL returned error: 403", "http-permanent"),
+                          (b"requested URL returned error: 404", "http-permanent"),
+                          (b"requested URL returned error: 503\nrequested URL returned error: 401", "http-permanent"),
+                          (b"unclassified server response secret-value", "unknown")):
+            failure = subprocess.CalledProcessError(128, ["git"], stderr=raw)
+            with self.subTest(raw=raw), patch.object(consumer.subprocess, "run", side_effect=failure) as run, \
+                    patch.object(consumer.time, "sleep") as sleep, contextlib.redirect_stderr(io.StringIO()) as log, \
+                    self.assertRaises(subprocess.CalledProcessError):
+                consumer.git(Path("unused"), "fetch", "--no-tags", consumer.REPOSITORY_URL + ".git", "b" * 40)
+            run.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(kind, json.loads(log.getvalue())["gitFetchFailure"])
+            self.assertFalse(json.loads(log.getvalue())["retry"])
+            self.assertNotIn("secret-value", log.getvalue())
+
+    def test_local_git_failure_never_retries_or_emits_transport_diagnostics(self):
+        for failure in (subprocess.CalledProcessError(128, ["git"], stderr=b"Connection reset by peer"),
+                        subprocess.TimeoutExpired(["git"], 120)):
+            with self.subTest(error=type(failure)), patch.object(consumer.subprocess, "run", side_effect=failure) as run, \
+                    patch.object(consumer.time, "sleep") as sleep, contextlib.redirect_stderr(io.StringIO()) as log, \
+                    self.assertRaises(type(failure)):
+                consumer.git(Path("unused"), "rev-parse", "b" * 40 + "^{tree}")
+            run.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual("", log.getvalue())
+
+    def test_history_rejects_wrong_tree_after_successful_fetch_retry(self):
+        producer = {"repository": consumer.authority.REPOSITORY, "commit": "b" * 40, "tree": "c" * 40}
+        missing = subprocess.CalledProcessError(128, ["git"], stderr=b"unknown revision")
+        reset = subprocess.CalledProcessError(128, ["git"], stderr=b"Connection reset by peer")
+        with patch.object(consumer.subprocess, "run", side_effect=[missing, reset,
+                subprocess.CompletedProcess([], 0, stdout=b""), subprocess.CompletedProcess([], 0, stdout=b"wrong\n")]) as run, \
+                patch.object(consumer.time, "sleep") as sleep, contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, "Historical Git tree differs"):
+            consumer.history(Path("unused"), producer)
+        self.assertEqual(4, run.call_count)
+        self.assertEqual(run.call_args_list[1], run.call_args_list[2])
+        self.assertEqual("b" * 40 + "^{tree}", run.call_args.args[0][-1])
+        sleep.assert_called_once_with(2)
+
     def test_snapshot_rejects_unapproved_code_and_preserves_product_head(self):
         source = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(prefix="approved-source-test-") as temporary:
