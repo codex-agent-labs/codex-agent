@@ -162,13 +162,31 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
         return self.result
 
     def invoke(self, **changes):
-        with patch.object(workflow, "verified_inputs", side_effect=self.verified) as context, \
+        with workflow.verification_session(), \
+                patch.object(workflow, "verified_inputs", side_effect=self.verified) as context, \
                 patch.object(workflow.product_reuse, "materialize_product_predecessors", side_effect=self.materialize) as materialize, \
                 patch.object(worker, "execute", side_effect=self.prepare) as prepare, \
                 patch.object(workflow.product_reuse, "finalize_phase_object", side_effect=AssertionError("preparation cannot finalize")):
             self.context_mock, self.materialize_mock, self.worker_mock = context, materialize, prepare
             return workflow.prepare_native(self.plan_path, self.discovery, self.state, self.destination,
                                            **{**self.arguments, **changes})
+
+    @unittest.skipIf(os.name == "nt", "Linux preparation uses the scoped POSIX reader")
+    def test_unchanged_predecessors_and_runtime_hash_once_in_verified_lifetime(self):
+        from products import restore
+        trees = {self.destination / "inputs", self.destination / "runtime-stages"}
+        scans = {tree: 0 for tree in trees}
+        uncached = restore._uncached_file_inventory
+
+        def inventory(root, **kwargs):
+            if Path(root) in scans:
+                scans[Path(root)] += 1
+            return uncached(root, **kwargs)
+
+        with patch.object(restore, "_uncached_file_inventory", side_effect=inventory), \
+                patch.object(workflow, "regular_file_inventory", side_effect=inventory):
+            self.invoke()
+        self.assertEqual({tree: 1 for tree in trees}, scans)
 
     def test_returns_exact_prepared_result_only_after_verified_context_exit(self):
         result = self.invoke()

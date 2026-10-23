@@ -1447,7 +1447,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
                 ("contract", "contract", "metadata", "common") or len(bundles) != 1
                 or bundles[0]["sha256"] != selection["contractPayloadSha256"]):
             raise ValueError("Elected current Contract differs from verified native SDK inputs")
-        before = regular_file_inventory(prepared, allow_empty=True)
+        before = memoized_file_inventory(prepared, allow_empty=True)
 
         def original(product, runtime_component, phase, target):
             identity = PhaseInstanceId(product, runtime_component, phase, target)
@@ -1472,11 +1472,11 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
             for phase in ("package", "validation"):
                 record = original("runtime", target, phase, target)
                 snapshot_regular_tree(record["stage"], runtime_stages / target / phase)
-        runtime_before = regular_file_inventory(runtime_stages)
+        runtime_before = memoized_file_inventory(runtime_stages)
 
         def unchanged():
-            if (regular_file_inventory(prepared, allow_empty=True) != before
-                    or regular_file_inventory(runtime_stages) != runtime_before):
+            if (memoized_file_inventory(prepared, allow_empty=True) != before
+                    or memoized_file_inventory(runtime_stages) != runtime_before):
                 raise ValueError("Native preparation original predecessor inputs changed")
 
         unchanged()
