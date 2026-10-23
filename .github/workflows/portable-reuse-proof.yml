@@ -9,6 +9,142 @@ permissions:
   actions: read
 
 jobs:
+  storage-diagnostics:
+    if: >-
+      github.event.label.name == 'ci:storage-diagnostics' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: macos-arm64
+            runner: macos-26
+          - profile: macos-x64
+            runner: macos-26-intel
+          - profile: linux-arm64
+            runner: ubuntu-24.04-arm
+          - profile: linux-x64
+            runner: ubuntu-24.04
+          - profile: windows-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - id: storage
+        name: Observe actual staging filesystems and isolated copy behavior
+        continue-on-error: true
+        shell: python
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+          STORAGE_PROFILE: ${{ matrix.profile }}
+        run: |
+          import contextlib, json, os, pathlib, platform, subprocess, sys, tempfile, time, unittest
+          root = pathlib.Path.cwd().resolve()
+          sys.path.insert(0, str(root))
+          output = pathlib.Path(os.environ['RUNNER_TEMP']).resolve() / 'storage-diagnostics'
+          output.mkdir(mode=0o700, exist_ok=False)
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert source == os.environ['EXPECTED_SOURCE']
+          assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'])
+          report = {'diagnosticOnly': True, 'productExecuted': False, 'source': source,
+              'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'workflowRef': os.environ['GITHUB_WORKFLOW_REF'], 'workflowSha': os.environ['GITHUB_WORKFLOW_SHA'],
+              'runId': os.environ['GITHUB_RUN_ID'], 'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'job': os.environ['GITHUB_JOB'], 'profile': os.environ['STORAGE_PROFILE'],
+              'python': sys.version, 'executable': sys.executable, 'platform': platform.platform(),
+              'machine': platform.machine(), 'runnerTemp': os.environ['RUNNER_TEMP'], 'volumes': [],
+              'limits': 'Tiny local fixtures on observed hosted volumes; skips are not native-clone proof. '
+                        'No product admission, original-body reuse, physical extents or hosted throughput claim.'}
+          selectors = {
+              'darwin': [
+                  'ApplePrivateSnapshotTest.test_native_snapshot_has_independent_files_and_preserves_bytes_modes_empty_directories',
+                  'ApplePrivateSnapshotTest.test_partial_clone_falls_back_only_for_supported_filesystem_errors',
+                  'ApplePrivateSnapshotTest.test_single_file_clone_and_fallback_preserve_original_and_exclusive_destination'],
+              'linux': [
+                  'LinuxPrivateSnapshotTest.test_real_linux_reflink_is_independent_when_filesystem_supports_it',
+                  'LinuxPrivateSnapshotTest.test_unsupported_ioctl_removes_only_created_leaf_then_uses_existing_fallback'],
+              'win32': ['WindowsPrivateSnapshotTest.test_ordinary_copy_preserves_bytes_and_independent_writes']}
+          tests = ['ci.tests.test_sdk_apple_content.' + name for name in selectors[sys.platform]]
+          workspace_staging = root / 'build'
+          workspace_staging.mkdir(exist_ok=True)
+          parents = [('default-temp', pathlib.Path(tempfile.gettempdir()).resolve()),
+                     ('workspace-staging', workspace_staging)]
+          successful = True
+          try:
+              for label, parent in parents:
+                  scratch = pathlib.Path(tempfile.mkdtemp(prefix='codex-storage-probe-', dir=parent))
+                  value = scratch.stat()
+                  observation = {'scope': label, 'parent': str(parent), 'scratch': str(scratch),
+                      'device': value.st_dev, 'inode': value.st_ino, 'mode': value.st_mode,
+                      'tests': tests, 'filesystemCommands': []}
+                  report['volumes'].append(observation)
+                  commands = {
+                      'darwin': [['/usr/sbin/diskutil', 'info', '-plist', str(scratch)]],
+                      'linux': [['findmnt', '--json', '--target', str(scratch), '--output', 'TARGET,SOURCE,FSTYPE,OPTIONS']],
+                      'win32': [['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                          '$ErrorActionPreference="Stop"; Get-Volume -FilePath $env:STORAGE_PROBE | '
+                          'Select-Object DriveLetter,FileSystemType,Path,UniqueId,HealthStatus | ConvertTo-Json -Depth 4']]}
+                  for index, command in enumerate(commands[sys.platform]):
+                      completed = subprocess.run(command, capture_output=True, timeout=30,
+                          env={**os.environ, 'STORAGE_PROBE': str(scratch)})
+                      prefix = output / (label + '-filesystem-' + str(index))
+                      prefix.with_suffix('.stdout').write_bytes(completed.stdout)
+                      prefix.with_suffix('.stderr').write_bytes(completed.stderr)
+                      observation['filesystemCommands'].append({'args': command, 'returncode': completed.returncode})
+                      successful = successful and completed.returncode == 0 and bool(completed.stdout.strip())
+                  saved_tempdir = tempfile.tempdir
+                  try:
+                      tempfile.tempdir = str(scratch)
+                      with (output / (label + '-tests.log')).open('x', encoding='utf-8') as log:
+                          with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+                              suite = unittest.defaultTestLoader.loadTestsFromNames(tests)
+                              started = time.monotonic_ns()
+                              result = unittest.TextTestRunner(stream=log, verbosity=2).run(suite)
+                              elapsed = time.monotonic_ns() - started
+                      observation.update({'elapsedNs': elapsed, 'testsRun': result.testsRun,
+                          'successful': result.wasSuccessful(),
+                          'skipped': [{'test': test.id(), 'reason': reason} for test, reason in result.skipped],
+                          'failures': [test.id() for test, _ in result.failures],
+                          'errors': [test.id() for test, _ in result.errors]})
+                      successful = successful and result.wasSuccessful() and result.testsRun == len(tests)
+                  finally:
+                      tempfile.tempdir = saved_tempdir
+          finally:
+              with (output / 'observations.json').open('x', encoding='utf-8') as stream:
+                  json.dump(report, stream, sort_keys=True, indent=2)
+                  stream.write('\n')
+          assert successful, 'Storage diagnostics failed; inspect preserved raw observations and test outcomes'
+      - name: Preserve filesystem observations and all test outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: storage-diagnostics-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/storage-diagnostics
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+      - name: Require diagnostic collection without claiming product acceptance
+        if: always()
+        shell: python
+        env:
+          STORAGE_OUTCOME: ${{ steps.storage.outcome }}
+        run: |
+          import os
+          assert os.environ['STORAGE_OUTCOME'] == 'success'
+
   phase9-native-artifact-validation:
     if: >-
       github.event.label.name == 'ci:phase9-native-artifact-validation' &&

@@ -15,6 +15,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from runtime_reference_transport import measured
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
     canonical_json_bytes, read_regular_file_bytes,
@@ -73,6 +74,7 @@ def _recover_validation(plan, phase, producer, inputs, destination, *, repositor
             "outputInventory": regular_file_inventory(stage), "content": content}
 
 
+@measured
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
             package_artifact_id=None, package_artifact_sha256=None, trusted_workflow_sha,
             binary_artifact_id=None, binary_artifact_sha256=None, rust_host,

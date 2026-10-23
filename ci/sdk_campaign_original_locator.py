@@ -38,6 +38,7 @@ RETAINED_ANDROID_METADATA_KEY = "sha256:a0b5893e50c08d2f0386781d732032a075d40327
 _RETAINED_NATIVE_VALIDATION_COHORTS = (
     "retained-native-sdk-validations.json",
     "retained-native-sdk-validations-39943202903.json",
+    "retained-native-sdk-validations-39995416657.json",
 )
 
 

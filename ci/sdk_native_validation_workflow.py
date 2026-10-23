@@ -570,15 +570,12 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
             outputs_unchanged()
         unchanged()
         outputs_unchanged()
-        snapshot_regular_tree(capture, publication / "prepared-upload", allow_empty=True)
-        if _inventory(publication / "prepared-upload", allow_empty=True) != capture_inventory:
-            raise ValueError("Native validation retained upload differs from its original")
-        unchanged()
-        outputs_unchanged()
         # External evidence alone is not success. The standard root shard is
         # published last, after all source contexts and retained-byte checks.
         publish_regular_tree(evidence, destination / "sdk-validation-evidence", allow_empty=True)
-        publish_regular_tree(publication / "prepared-upload", destination / "prepared-upload", allow_empty=True)
+        # The original private capture stays alive through the final guards.
+        publish_regular_tree(capture, destination / "prepared-upload", allow_empty=True,
+                             expected_inventory=capture_inventory)
         unchanged()
         outputs_unchanged()
         if (_inventory(destination / "sdk-validation-evidence", allow_empty=True) != evidence_inventory

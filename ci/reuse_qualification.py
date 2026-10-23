@@ -1436,6 +1436,8 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         return report, qualified, phases, proof
 
     sdk = None
+    sdk_frozen = (spec if sdk_completion is None else
+                  _sdk_parent_frozen_spec(root, sdk_completion, spec, original["token"]))
     if sdk_completion is None:
         report, qualified, phases, proof = authenticate_frozen()
     else:
@@ -1443,7 +1445,7 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         frozen_result, sdk = bounded_verify(lambda verify: verify(), (
             authenticate_frozen,
             lambda: _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
-                root=root, revision=revision, frozen=spec, token=original["token"],
+                root=root, revision=revision, frozen=sdk_frozen, token=original["token"],
                 consumer_revision=current_revision)))
         report, qualified, phases, proof = frozen_result
 
@@ -1458,7 +1460,7 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         receipts.extend(_capture_completed_contract_receipts(spec, sdk, qualified["originals"],
             Path(destination).parent / "contract-controls", original["token"]))
         request, phase, receipt, _ = _completed_sdk_controls(
-            sdk["spec"], sdk["proof"]["controls"], spec, sdk["original"])
+            sdk["spec"], sdk["proof"]["controls"], sdk_frozen, sdk["original"])
         instance = products._identity(receipt)
         for field in ("availableObjects", "phaseAuthorities"):
             spec["request"][field] = sorted([*spec["request"][field],
@@ -1466,9 +1468,10 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         spec["expectedResult"]["phases"] = sorted([*spec["expectedResult"]["phases"], phase], key=products._identity)
         receipts.append(receipt)
         if "extension" in sdk:
-            from completed_sdk_reuse import validate_controls
+            from completed_sdk_reuse import _base, validate_controls
             extension = sdk["extension"]
-            request, additions, added_receipts = validate_controls(extension["spec"], extension["proof"]["controls"], spec)
+            request, additions, added_receipts = validate_controls(
+                extension["spec"], extension["proof"]["controls"], _base(sdk_frozen, sdk))
             identities = {products._identity(row) for row in additions}
             for field in ("availableObjects", "phaseAuthorities"):
                 spec["request"][field] = sorted([*spec["request"][field],
@@ -1536,6 +1539,26 @@ def _native_pin_arguments(value):
     return {argument: value[field] for argument, field in (
         ("artifact_id", "artifactId"), ("artifact_sha256", "artifactSha256"), ("run_id", "runId"),
         ("run_attempt", "runAttempt"), ("signer_commit", "signerCommit"), ("source_commit", "sourceCommit"))}
+
+
+def _sdk_parent_frozen_spec(root, pins, current, token):
+    """Keep a signed SDK proof's historical Runtime context out of current authority."""
+    from products.inventory import git_regular_blob_bytes
+    signer = _native_pin_arguments(pins)["signer_commit"]
+    _ensure_native_issuer_commit(root, signer, token)
+    historical = load_canonical_json_bytes(git_regular_blob_bytes(
+        root, signer, _frozen_spec_path(root, signer), max_bytes=LIMIT))
+    if any(historical["request"][field] != current["request"][field]
+           for field in ("repository", "pullRequest", "versions", "catalogs")):
+        raise QualificationIncompatible("SDK historical base changes current repository, versions or catalogs")
+    def contracts(spec):
+        return {instance: tuple(row[field] for field in _OBJECT_FIELDS)
+                for instance, row in _phase_records(spec["expectedResult"]["phases"],
+                                                   "SDK historical base").items()
+                if instance.product == "contract"}
+    if len(contracts(historical)) != 4 or contracts(historical) != contracts(current):
+        raise QualificationIncompatible("SDK historical base changes current Contract originals")
+    return historical
 
 
 def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token, consumer_revision=None):
@@ -1936,19 +1959,53 @@ _REQUALIFIED_FROZEN_SPEC = "ci/tests/data/requalified-frozen-reuse.json"
 _REQUALIFIED_AGGREGATE = _RequalifiedPhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
 
 
-def _inherit_requalified_originals(parent, cap, current, *, policy):
+def _inherit_requalified_originals(parent, cap, current, *, policy, expected_phases=None):
     """Reissue only unchanged native records; preserve every original identity."""
     import product_reuse as products
     if type(cap) is not CompletedFrozenReuse:
         raise ValueError("Requalification requires concrete independently authenticated native authority")
     parent, current = validate(parent), validate(current)
     expected = set(cap.completed_phases())
-    if len(expected) != 49 or _REQUALIFIED_AGGREGATE in expected or any(row.product == "sdk" for row in expected):
-        raise ValueError("Requalified issuer requires exactly unchanged native49")
-    if (len(current["originals"]) != 1
-            or products._identity(current["originals"][0]["receipt"]) != _REQUALIFIED_AGGREGATE
-            or current["verifierPolicySha256"] != policy):
-        raise ValueError("Requalified issuer requires one fully authenticated current aggregate")
+    if expected_phases is None:
+        if len(expected) != 49 or _REQUALIFIED_AGGREGATE in expected or any(row.product == "sdk" for row in expected):
+            raise ValueError("Requalified issuer requires exactly unchanged native49")
+        if (len(current["originals"]) != 1
+                or products._identity(current["originals"][0]["receipt"]) != _REQUALIFIED_AGGREGATE
+                or current["verifierPolicySha256"] != policy):
+            raise ValueError("Requalified issuer requires one fully authenticated current aggregate")
+    else:
+        # The issuer supplies its Git-pinned fifty-phase recipe, never a caller
+        # request or SDK source-context rows. SDK authority stays separate.
+        fixed = _phase_records(expected_phases, "Requalified fixed phases")
+        contracts = {instance for instance in fixed if instance.product == "contract"}
+        runtime = {instance for instance in fixed if instance.product == "runtime"}
+        if (len(fixed) != 50 or len(contracts) != 4 or len(runtime) != 46
+                or _REQUALIFIED_AGGREGATE not in runtime
+                or any(row.get("state") != "retained" for row in fixed.values())):
+            raise ValueError("Requalified fixed scope must contain exactly four Contract and forty-six Runtime phases")
+        expected = {instance for instance in expected if instance.product != "sdk"}
+        if not contracts <= expected <= set(fixed):
+            raise ValueError("Requalification must inherit every exact Contract predecessor")
+        for instance in expected:
+            row = fixed[instance]
+            if cap.envelope(row) is None:
+                raise ValueError("Inherited phase differs from its fixed current identity")
+        current_rows = _phase_records([row["receipt"] for row in current["originals"]],
+                                      "Requalified current originals")
+        if (set(current_rows) != runtime - expected
+                or current["verifierPolicySha256"] != policy):
+            raise ValueError("Requalified current originals must be exactly the missing Runtime complement")
+        old_outputs = {(products._identity(row["receipt"]), row["receipt"]["buildKey"]):
+                       row["receipt"]["outputs"] for row in parent["originals"]}
+        for row in current["originals"]:
+            receipt = row["receipt"]
+            instance = products._identity(receipt)
+            if (receipt["buildKey"] != fixed[instance]["buildKey"]
+                    or any(row[field] != fixed[instance][field] for field in ("receiptSha256", "objectSha256"))):
+                raise ValueError("New original differs from its fixed current identity")
+            prior = old_outputs.get((instance, receipt["buildKey"]))
+            if prior is not None and prior != receipt["outputs"]:
+                raise ValueError("Same phase key has conflicting parent and current outputs")
     inherited = []
     for row in parent["originals"]:
         instance = products._identity(row["receipt"])
@@ -1965,7 +2022,7 @@ def _inherit_requalified_originals(parent, cap, current, *, policy):
         inherited.append({**row, "identity": {**row["identity"], "policy": policy}})
     if ({products._identity(row["receipt"]) for row in inherited}
             != {instance for instance in expected if instance.product == "runtime"}):
-        raise ValueError("Native parent lacks the exact forty-five unchanged originals")
+        raise ValueError("Native parent lacks the exact unchanged Runtime originals")
     return validate({**current, "schemaVersion": 1,
         "originals": sorted([*inherited, *current["originals"]],
                             key=lambda row: products._identity(row["receipt"]))})
@@ -2015,7 +2072,7 @@ def _requalified_signed_checkpoint(spec, work, root, token):
 
 
 def issue_requalified_frozen(work, token):
-    """One full changed-original gate, native49, real planner, independent signature."""
+    """Authenticate only fixed missing originals, then reprove the exact native closure."""
     import copy
     import io
     import os
@@ -2036,11 +2093,21 @@ def issue_requalified_frozen(work, token):
     if read_regular_file_bytes(root / _REQUALIFIED_FROZEN_SPEC, reject_symlink_parents=True) != raw:
         raise ValueError("Requalified fixed fixture differs from native issuer Git")
     spec = load_canonical_json_bytes(raw)
+    scoped = "currentOriginals" in spec["requalification"]
     inputs = require_exact_keys(spec["requalification"], {
-        "parent", "parentQualificationSha256", "stateSource", "aggregateOriginal", "signedSource"},
-        "Fixed requalification inputs")
+        "parent", "parentQualificationSha256", "stateSource", "signedSource",
+        "currentOriginals" if scoped else "aggregateOriginal"}, "Fixed requalification inputs")
     source, parent = inputs["stateSource"], inputs["parent"]
-    producer = source["producer"]
+    producer = products.validate_producer(source["producer"])
+    if scoped:
+        require_exact_keys(source, {"producer", "workflowSha", "artifactId", "artifactSha256",
+            "sourceRole", "jobId", "artifactBytes"}, "Fixed planned state source")
+        if source["sourceRole"] != "plan":
+            raise ValueError("Scoped Runtime requalification requires its fixed successful planner")
+        products.require_integer(source["jobId"], "Fixed planner job", 1)
+        size = products.require_integer(source["artifactBytes"], "Fixed planner bytes", 1)
+        if size > products._PLANNED_RESUME_ZIP_LIMITS["max_archive_bytes"]:
+            raise ValueError("Scoped Runtime planner exceeds the existing planned-source bound")
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
     started = time.perf_counter()
@@ -2050,7 +2117,8 @@ def issue_requalified_frozen(work, token):
     subprocess.run(["git", "-C", str(candidate), "checkout", "--detach", producer["commit"]], check=True)
     if subprocess.check_output(["git", "-C", str(candidate), "rev-parse", "HEAD^{tree}"], text=True).strip() != producer["tree"]:
         raise ValueError("Requalified state Git differs from its fixed producer")
-    with verification_session() as session:
+    with verification_session() as session, products._ci_observation_batch(
+            (os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]), share_nested=True):
         if session.get("portableQualificationInputs"):
             raise ValueError("Requalified issuer must authenticate its explicit native parent")
         cap, native_report = fetch_completed_frozen(work / "parent",
@@ -2063,37 +2131,51 @@ def issue_requalified_frozen(work, token):
         if sha256_bytes(parent_raw) != inputs["parentQualificationSha256"]:
             raise ValueError("Native parent qualification differs from its fixed identity")
         parent_value = load_canonical_json_bytes(parent_raw)
-        current_source = inputs["aggregateOriginal"]
-        receipt = products.validate_phase_receipt(current_source["receipt"])
-        if products._identity(receipt) != _REQUALIFIED_AGGREGATE:
-            raise ValueError("Requalification may replace only the aggregate original")
-        expected = next(row for row in spec["expectedResult"]["phases"] if products._identity(row) == _REQUALIFIED_AGGREGATE)
-        if (receipt["buildKey"] != expected["buildKey"]
-                or sha256_bytes(canonical_json_bytes(receipt)) != expected["receiptSha256"]):
-            raise ValueError("Changed original differs from the fixed current phase")
-        receipt_path = work / "aggregate-receipt.json"
-        write_canonical_json(receipt_path, receipt)
-        # Before any reference projection exists, the ordinary capture must
-        # complete its whole-original gate and create verifier-owned custody.
-        products.capture_runtime_original_ci_phases({"metadata": receipt_path}, work / "aggregate",
-            target="runtime-aggregate", original_instance=_REQUALIFIED_AGGREGATE,
-            trusted_workflow_sha=current_source["workflowSha"], token=token, recovery_projection=True)
-        current = export_originals([{"kind": "phase", "receipt": receipt,
-            "artifactId": current_source["artifactId"], "artifactSha256": current_source["artifactSha256"]}],
-            work / "current-original.json", plan={"repository": REPOSITORY, "event": "pull_request"},
-            producer={"pullRequest": 31, "runId": int(os.environ["GITHUB_RUN_ID"]),
-                      "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"])},
-            source_commit=commit, trusted_workflow_sha=current_source["workflowSha"], token=token)
-        policy = _source_identity()
-        qualified = _inherit_requalified_originals(parent_value, cap, current, policy=policy)
-        if next(row for row in qualified["originals"]
-                if products._identity(row["receipt"]) == _REQUALIFIED_AGGREGATE)["objectSha256"] != expected["objectSha256"]:
-            raise ValueError("New aggregate original changes its fixed object")
-        job, name = "product-validation / product-resume", f"codex-agent-product-resume-{producer['tree']}"
+        fixed = _phase_records(spec["expectedResult"]["phases"], "Fixed current phases")
+        current_sources = (require_array(inputs["currentOriginals"], "Fixed current originals")
+                           if scoped else [inputs["aggregateOriginal"]])
+        sources_by_instance = {}
+        for item in current_sources:
+            require_exact_keys(item, {"receipt", "artifactId", "artifactSha256", "workflowSha"},
+                               "Fixed current original")
+            receipt = products.validate_phase_receipt(item["receipt"])
+            instance = products._identity(receipt)
+            if (instance in sources_by_instance or instance not in fixed or instance.product != "runtime"
+                    or not scoped and instance != _REQUALIFIED_AGGREGATE):
+                raise ValueError("Requalified original scope is duplicate, unknown or outside Runtime")
+            expected = fixed[instance]
+            if (receipt["buildKey"] != expected["buildKey"]
+                    or sha256_bytes(canonical_json_bytes(receipt)) != expected["receiptSha256"]):
+                raise ValueError("Changed original differs from the fixed current phase")
+            products.require_integer(item["artifactId"], "Fixed Runtime upload", 1)
+            require_sha256(item["artifactSha256"], "Fixed Runtime upload digest")
+            _commit(item["workflowSha"])
+            sources_by_instance[instance] = item
+        inherited = {instance for instance in cap.completed_phases() if instance.product != "sdk"}
+        sdk_inherited = set(cap.completed_phases()) - inherited
+        if scoped:
+            contracts = {instance for instance in fixed if instance.product == "contract"}
+            runtime = {instance for instance in fixed if instance.product == "runtime"}
+            if (len(fixed) != 50 or len(contracts) != 4 or len(runtime) != 46
+                    or not contracts <= inherited <= set(fixed)
+                    or not sources_by_instance or set(sources_by_instance) != runtime - inherited):
+                raise ValueError("Scoped capture must cover exactly the missing fixed Runtime complement")
+            for instance in inherited:
+                if cap.envelope(fixed[instance]) is None:
+                    raise ValueError("Inherited phase differs from its fixed current identity")
+        job = "product-validation / " + ("plan" if scoped else "product-resume")
+        name = f"codex-agent-{'planned-' if scoped else ''}product-resume-{producer['tree']}"
         observed = products._observe_ci_producer_jobs({"state": producer}, jobs_by_phase={"state": job},
             trusted_workflow_sha=source["workflowSha"], token=token)
+        if scoped:
+            jobs = products._matching_ci_jobs(observed[0]["jobs"], job)
+            if len(jobs) != 1 or jobs[0]["id"] != source["jobId"]:
+                raise ValueError("Scoped Runtime state differs from its fixed successful planner job")
         artifact, carrier = products._download_contract_ci_upload(source["artifactId"], source["artifactSha256"],
-            name, producer, observed[0]["run"], token, max_bytes=16 * 1024**2)
+            name, producer, observed[0]["run"], token,
+            max_bytes=products._PLANNED_RESUME_ZIP_LIMITS["max_archive_bytes"] if scoped else LIMIT)
+        if scoped and artifact["size_in_bytes"] != source["artifactBytes"]:
+            raise ValueError("Scoped Runtime state differs from its fixed transport size")
         products._require_artifact_job_window(observed[0], job, artifact)
         plan = candidate / "build/requalified-plan.json"
         plan.parent.mkdir(exist_ok=True)
@@ -2102,23 +2184,71 @@ def issue_requalified_frozen(work, token):
             if entry.file_size > LIMIT:
                 raise ValueError("Requalified source plan exceeds its control bound")
             plan.write_bytes(archive.read(entry))
+        if scoped:
+            validated = products._validate_plan(plan, candidate, expected_revision=producer["commit"])
+            if (validated["remoteBuildAuthorized"] is not True
+                    or products._consumer(validated, {}, original_run_id=producer["runId"],
+                        original_run_attempt=producer["runAttempt"])["producer"] != producer):
+                raise ValueError("Scoped Runtime source plan changes its authorized original producer")
+        policy, current_records = _source_identity(), []
+        for number, (instance, item) in enumerate(sorted(sources_by_instance.items())):
+            receipt = item["receipt"]
+            receipt_path = work / (f"current-receipt-{number}.json" if scoped else "aggregate-receipt.json")
+            write_canonical_json(receipt_path, receipt)
+            # Ordinary full-original admission creates private verifier-owned
+            # custody once. Later reference resolution reuses that exact custody.
+            products.capture_runtime_original_ci_phases({instance.phase: receipt_path},
+                work / (f"current-capture-{number}" if scoped else "aggregate"),
+                target=instance.component, original_instance=instance,
+                trusted_workflow_sha=item["workflowSha"], token=token, recovery_projection=True)
+            exported = export_originals([{"kind": "phase", "receipt": receipt,
+                "artifactId": item["artifactId"], "artifactSha256": item["artifactSha256"]}],
+                work / (f"current-original-{number}.json" if scoped else "current-original.json"),
+                plan={"repository": REPOSITORY, "event": "pull_request"},
+                producer={"pullRequest": 31, "runId": int(os.environ["GITHUB_RUN_ID"]),
+                          "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"])},
+                source_commit=commit, trusted_workflow_sha=item["workflowSha"], token=token)
+            current_records.extend(exported["originals"])
+        current = validate({"schemaVersion": 1, "sourceCommit": commit,
+                            "verifierPolicySha256": policy, "originals": current_records})
+        qualified = _inherit_requalified_originals(parent_value, cap, current, policy=policy,
+            **({"expected_phases": spec["expectedResult"]["phases"]} if scoped else {}))
+        if not scoped and next(row for row in qualified["originals"]
+                if products._identity(row["receipt"]) == _REQUALIFIED_AGGREGATE)["objectSha256"] != fixed[_REQUALIFIED_AGGREGATE]["objectSha256"]:
+            raise ValueError("New aggregate original changes its fixed object")
         environment = {**os.environ, "GITHUB_TOKEN": token, "GITHUB_RUN_ID": str(producer["runId"]),
                        "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])}
         captured = candidate / "build/requalified-state"
-        products.capture_runtime_resume_upload(plan, captured,
+        captured_source = products.capture_runtime_resume_upload(plan, captured,
             artifact_id=source["artifactId"], artifact_sha256=source["artifactSha256"],
             trusted_workflow_sha=source["workflowSha"], repository_root=candidate,
             environ=environment, token=token, completed_frozen=cap)
+        if scoped and (captured_source["artifact"] != artifact or captured_source["captureProducer"] != producer):
+            raise ValueError("Scoped Runtime capture changes its authenticated original upload")
         state = captured / "original/product-resume-state"
         verified = products._verified_product_state(plan, state, state, candidate, environment, None,
             sdk_original_workflow_sha=source["workflowSha"], completed_frozen=cap)
-        wanted = set(cap.completed_phases()) | {_REQUALIFIED_AGGREGATE}
-        if set(verified.prior_carrier_phases) != wanted:
-            raise ValueError("Requalified source must retain exactly fifty current phases")
+        wanted = set(fixed) if scoped else set(cap.completed_phases()) | {_REQUALIFIED_AGGREGATE}
+        source_scope = wanted | sdk_inherited if scoped else wanted
+        if set(verified.prior_carrier_phases) != source_scope:
+            raise ValueError("Requalified source changes its exact independently qualified retained scope")
+        if scoped:
+            for instance, record in verified.prior_carrier_phases.items():
+                if instance in wanted:
+                    if any(record[field] != fixed[instance][field] for field in _OBJECT_FIELDS):
+                        raise ValueError("Scoped Runtime source changes its fixed current phase identity")
+                elif cap.envelope(record) is None:
+                    raise ValueError("Scoped Runtime source has an unqualified SDK original")
         request = copy.deepcopy(verified.rebased_request)
         request["requested"] = [products._identity_record(_REQUALIFIED_AGGREGATE)]
         for field in ("phaseAuthorities", "availableObjects", "runtimeValidationEvidence"):
             request[field] = [row for row in request[field] if products._identity(row) in wanted]
+        if scoped:
+            # Project only verified K/R dependencies. Preserve the original
+            # fifty-eight-phase source and separate SDK proof without rewriting.
+            for field in ("sdkValidationEvidence", "sdkValidationTooling",
+                          "sdkAppleValidationEvidence", "sdkAppleValidationPolicy"):
+                request.pop(field, None)
         normalized = {**request, "artifactRoot": ".", "repositoryRoot": "."}
         if normalized != spec["request"]:
             raise ValueError("Requalified request differs from its fixed original controls")
@@ -2153,7 +2283,11 @@ def issue_requalified_frozen(work, token):
             raise ValueError("Requalified issuer changed during verification")
         report = {"mode": "native-parent-requalification", "parent": parent,
             "parentQualificationSha256": inputs["parentQualificationSha256"],
-            "nativeParent": native_report, "inheritedOriginals": 45, "fullyAuthenticatedNewOriginals": 1,
+            "nativeParent": native_report,
+            "inheritedOriginals": sum(instance.product == "runtime" for instance in inherited),
+            "fullyAuthenticatedNewOriginals": len(current_records),
+            "inheritedContractPhases": sum(instance.product == "contract" for instance in inherited),
+            "separatelyQualifiedSdkPhases": len(sdk_inherited), "sourceRetainedPhases": len(source_scope),
             "downloadedArtifactCount": session.get("downloadedArtifactCount", 0),
             "downloadedArtifactBytes": session.get("downloadedArtifactBytes", 0),
             "signedCheckpointRangeBytes": signed_range_bytes,

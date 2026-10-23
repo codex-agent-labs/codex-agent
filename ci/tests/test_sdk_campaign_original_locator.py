@@ -28,11 +28,18 @@ class NativeValidationCohortTest(TestCase):
         old = load_canonical_json_bytes(old_raw)
         new = load_canonical_json_bytes(
             (directory / "retained-native-sdk-validations-39943202903.json").read_bytes())
+        current = load_canonical_json_bytes(
+            (directory / "retained-native-sdk-validations-39995416657.json").read_bytes())
         rows = locator.retained_native_validation_records()["originals"]
         self.assertEqual(22, len(old["originals"]))
-        self.assertEqual(24, len(rows))
+        self.assertEqual(23, len(current["originals"]))
+        self.assertEqual(47, len(rows))
         self.assertEqual([{**row, "producer": old["producer"]} for row in old["originals"]]
-                         + [{**row, "producer": new["producer"]} for row in new["originals"]], rows)
+                         + [{**row, "producer": new["producer"]} for row in new["originals"]]
+                         + [{**row, "producer": current["producer"]} for row in current["originals"]], rows)
+        self.assertEqual(39995416657, current["producer"]["runId"])
+        self.assertTrue(all(row["workflowSha"] == "4552e2da1684d5af0b86386bf94e5113326761c5"
+                            for row in current["originals"]))
         dart = [row for row in rows if (row["component"], row["target"]) == ("dart", "macos-arm64")]
         self.assertEqual(2, len(dart))
         self.assertEqual(2, len({row["buildKey"] for row in dart}))

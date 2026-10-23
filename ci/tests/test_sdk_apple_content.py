@@ -836,5 +836,35 @@ class LinuxPrivateSnapshotTest(unittest.TestCase):
         self.assertEqual(b"private", self.destination.read_bytes())
 
 
+@unittest.skipUnless(sys.platform == "win32", "Ordinary-copy isolation requires an actual Windows host")
+class WindowsPrivateSnapshotTest(unittest.TestCase):
+    def test_ordinary_copy_preserves_bytes_and_independent_writes(self):
+        with tempfile.TemporaryDirectory(prefix="windows-private-snapshot-") as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source"
+            source.mkdir()
+            original = source / "body"
+            original.write_bytes(b"original Windows copy bytes\n")
+            destination = root / "private"
+            before = regular_file_inventory(source)
+            self.assertIsNone(content._apple_clone_operation())
+            with patch.object(content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
+                content._snapshot_apple_tree(source, destination)
+            fallback.assert_called_once_with(source, destination, allow_empty=False)
+            private = destination / "body"
+            self.assertEqual(original.read_bytes(), private.read_bytes())
+            self.assertEqual(before, regular_file_inventory(destination))
+            self.assertFalse(os.path.samefile(original, private))
+            self.assertEqual(1, private.stat().st_nlink)
+            with self.assertRaisesRegex(ValueError, "destination must not exist"):
+                content._snapshot_apple_tree(source, destination)
+            self.assertEqual(before, regular_file_inventory(source))
+            self.assertEqual(before, regular_file_inventory(destination))
+            private.write_bytes(b"private change")
+            self.assertEqual(before, regular_file_inventory(source))
+            original.write_bytes(b"source change")
+            self.assertEqual(b"private change", private.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()
