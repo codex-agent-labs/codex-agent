@@ -30,7 +30,7 @@ class NativeValidationCohortTest(TestCase):
             (directory / "retained-native-sdk-validations-39943202903.json").read_bytes())
         rows = locator.retained_native_validation_records()["originals"]
         self.assertEqual(22, len(old["originals"]))
-        self.assertEqual(23, len(rows))
+        self.assertEqual(24, len(rows))
         self.assertEqual([{**row, "producer": old["producer"]} for row in old["originals"]]
                          + [{**row, "producer": new["producer"]} for row in new["originals"]], rows)
         dart = [row for row in rows if (row["component"], row["target"]) == ("dart", "macos-arm64")]
@@ -38,6 +38,9 @@ class NativeValidationCohortTest(TestCase):
         self.assertEqual(2, len({row["buildKey"] for row in dart}))
         self.assertEqual((39943202903, 12512225187, 120429656410),
             (dart[-1]["producer"]["runId"], dart[-1]["artifactId"], dart[-1]["jobId"]))
+        windows = [row for row in rows if (row["component"], row["target"]) == ("dart", "windows-x64")]
+        self.assertEqual((39943202903, 12514902456, 120429656372),
+            (windows[-1]["producer"]["runId"], windows[-1]["artifactId"], windows[-1]["jobId"]))
 
     def test_cohort_scope_schema_and_duplicate_keys_fail_closed(self):
         directory = Path(locator.__file__).parent / "tests/data"
