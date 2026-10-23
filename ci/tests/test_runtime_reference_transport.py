@@ -201,7 +201,7 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
             self.assertEqual(metadata['name'], source.call_args.args[2])
             self.assertEqual(value['inventory'], regular_file_inventory(resolved, allow_empty=True))
             if planned:
-                metadata['size_in_bytes'] = 32 * 1024**2 + 1
+                metadata['size_in_bytes'] = 64 * 1024**2 + 1
                 with mock.patch.object(product_reuse, '_observe_ci_producer_jobs', return_value=observation), \
                         mock.patch.object(product_reuse, 'api_json', return_value=metadata), \
                         mock.patch.object(product_reuse, '_contract_ci_upload_metadata', return_value=metadata), \
