@@ -462,7 +462,8 @@ class SdkNativeValidationWorkerActionTest(unittest.TestCase):
         self.assertIn("product-worker: 'true'", action)
         self.assertIn("cache-read-only: 'true'", action)
         self.assertIn('path: |\n          build/sdk-worker\n', action)
-        for name in ('inputs', 'runtime-stages', 'package-inputs', 'prepared-upload/original'):
+        for name in ('inputs', 'runtime-stages', 'package-inputs', 'prepared-upload/original',
+                     'prepared-upload/transport.zip'):
             self.assertIn("${{ steps.execute.outcome == 'success' && '!build/sdk-worker/" + name + "' || '' }}", action)
         for kept in ('shard', 'sdk-validation-evidence', 'prepared-upload/capture-transport.json', 'worker', 'failed-validation'):
             self.assertNotIn('!build/sdk-worker/' + kept, action)

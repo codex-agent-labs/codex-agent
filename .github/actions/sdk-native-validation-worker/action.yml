@@ -415,6 +415,7 @@ runs:
           ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/runtime-stages' || '' }}
           ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/package-inputs' || '' }}
           ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/prepared-upload/original' || '' }}
+          ${{ steps.execute.outcome == 'success' && '!build/sdk-worker/prepared-upload/transport.zip' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true
