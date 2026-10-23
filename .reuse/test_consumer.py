@@ -23,7 +23,7 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -34,7 +34,7 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(138)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(141)]
                     elif fault == "duplicate": rows.append(dict(rows[0]))
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
@@ -50,15 +50,30 @@ class AcquisitionTests(unittest.TestCase):
         original = {"schemaVersion": 1, "sdkInputs": {"source": "exact original"}}
         extension = {"schemaVersion": 3, "parent": {"signerCommit": parent, "sourceCommit": parent},
                      "completedPhases": [{"phase": "package"}]}
-        for inherited in (False, True):
-            rows = [canonical_json_bytes(extension), canonical_json_bytes(original)] if inherited else [canonical_json_bytes(original)]
-            with self.subTest(inherited=inherited), \
+        for version in (1, 2, 3, 4):
+            current = {**extension, "schemaVersion": version}
+            if version == 4:
+                # Source observations are validated by _spec; none adds a claim.
+                current["sourcePredecessors"] = [{"observed": index} for index in range(51)]
+            inherited = version != 1
+            rows = [canonical_json_bytes(current), canonical_json_bytes(original)] if inherited else [canonical_json_bytes(original)]
+            with self.subTest(version=version), \
                     patch("reuse_qualification._sdk_completed_spec_path", side_effect=lambda root, commit: commit + ".json") as select, \
                     patch("products.inventory.git_regular_blob_bytes", side_effect=rows) as read, \
-                    patch("completed_sdk_reuse._spec"):
+                    patch("completed_sdk_reuse._spec") as validate:
                 self.assertEqual((original, 2 if inherited else 1), consumer.completed_sdk_spec(root, document, value))
                 self.assertEqual([issuer, parent] if inherited else [issuer], [call.args[1] for call in select.call_args_list])
                 self.assertEqual([call.args[1] + ".json" for call in read.call_args_list], [call.args[2] for call in read.call_args_list])
+                if inherited:
+                    validate.assert_called_once_with(current)
+                else:
+                    validate.assert_not_called()
+        with patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
+                patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(current)) as read, \
+                patch("completed_sdk_reuse._spec", side_effect=ValueError("invalid source context")), \
+                self.assertRaisesRegex(ValueError, "invalid source context"):
+            consumer.completed_sdk_spec(root, document, value)
+        self.assertEqual(1, read.call_count)
         with patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
                 patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(extension)) as read, \
                 patch("completed_sdk_reuse._spec"), self.assertRaisesRegex(ValueError, "independently approved"):

@@ -311,7 +311,7 @@ def completed_descriptor(raw, value):
         raise ValueError("Completed frozen proof differs from preserved qualification identity")
     validate_sdk_input_source(document["retainedSdkInputsSource"])
     records = document["gitHistory"]
-    if not isinstance(records, list) or not 1 <= len(records) <= 137:
+    if not isinstance(records, list) or not 1 <= len(records) <= 140:
         raise ValueError("Completed reuse Git history is missing or excessive")
     seen = set()
     for record in records:
@@ -335,7 +335,7 @@ def completed_sdk_spec(root, document, value):
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
         issuer, _sdk_completed_spec_path(root, issuer), max_bytes=16 * 1024 * 1024))
     count = 1
-    if spec.get("schemaVersion") in (2, 3):
+    if spec.get("schemaVersion") in (2, 3, 4):
         from completed_sdk_reuse import _spec
         _spec(spec)
         if any(spec["parent"][field] not in value["approvedVerifiers"] for field in ("signerCommit", "sourceCommit")):
