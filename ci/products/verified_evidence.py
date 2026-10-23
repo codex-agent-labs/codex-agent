@@ -152,6 +152,10 @@ def _source_identity(*, portable=False):
                                          "defaults": defaults})
                     function = getattr(function, "__wrapped__", None)
             if not symbol.startswith("__"):
+                # A renewed read credential is execution state, not verifier
+                # policy. Its validating code and permission constants stay bound.
+                if name == "runtime_reference_transport" and symbol == "_cached":
+                    continue
                 try:
                     policy_value = _policy_value(value, checkout=root if portable else None)
                 except TypeError:

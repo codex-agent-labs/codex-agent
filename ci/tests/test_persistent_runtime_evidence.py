@@ -84,6 +84,31 @@ def probe(shared, mode):
 
 
 class PersistentRuntimeEvidenceTest(unittest.TestCase):
+    def test_read_credential_renewal_preserves_policy_but_code_and_scope_changes_fail(self):
+        import runtime_reference_transport as transport
+        from products.verified_evidence import _source_identity, runtime_original_cache
+        from products.restore import verification_session
+        with tempfile.TemporaryDirectory(prefix="persistent-credential-renewal-") as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch("products.verified_evidence._authority_root", return_value=root / "authority"), \
+                    mock.patch("products.verified_evidence.native_cache_root", return_value=root / "cas"), \
+                    mock.patch.object(transport, "_cached", None), verification_session():
+                policy = _source_identity()
+                portable = _source_identity(portable=True)
+                original = runtime_original_cache()
+                for token, expires in (("first-test-read-token", 1000.0), ("renewed-test-read-token", 4600.0)):
+                    transport._cached = (("123", "456", "/private/read-key.pem"), token, expires)
+                    self.assertEqual(policy, _source_identity())
+                    self.assertEqual(portable, _source_identity(portable=True))
+                    self.assertIs(original, runtime_original_cache())
+                with mock.patch.dict(transport.PERMISSIONS, {"actions": "write"}):
+                    with self.assertRaisesRegex(ValueError, "policy changed"):
+                        runtime_original_cache()
+                with mock.patch.object(transport, "_mint", lambda configuration: ("changed-code", 4600.0)):
+                    with self.assertRaisesRegex(ValueError, "policy changed"):
+                        runtime_original_cache()
+                self.assertIs(original, runtime_original_cache())
+
     def test_immutable_code_cache_keeps_filename_and_loaded_mutation_identity(self):
         from products.verified_evidence import _code_identity, _source_identity
         from products.inventory import canonical_json_bytes, sha256_bytes
