@@ -92,7 +92,7 @@ jobs:
                       'tests': tests, 'filesystemCommands': []}
                   report['volumes'].append(observation)
                   commands = {
-                      'darwin': [['/usr/sbin/diskutil', 'info', '-plist', str(scratch)]],
+                      'darwin': [['/bin/df', '-P', str(scratch)]],
                       'linux': [['findmnt', '--json', '--target', str(scratch), '--output', 'TARGET,SOURCE,FSTYPE,OPTIONS']],
                       'win32': [['powershell', '-NoProfile', '-NonInteractive', '-Command',
                           '$ErrorActionPreference="Stop"; Get-Volume -FilePath $env:STORAGE_PROBE | '
@@ -105,6 +105,12 @@ jobs:
                       prefix.with_suffix('.stderr').write_bytes(completed.stderr)
                       observation['filesystemCommands'].append({'args': command, 'returncode': completed.returncode})
                       successful = successful and completed.returncode == 0 and bool(completed.stdout.strip())
+                      if sys.platform == 'darwin' and index == 0:
+                          rows = completed.stdout.decode().splitlines()
+                          assert completed.returncode == 0 and len(rows) == 2
+                          device = rows[1].split()[0]
+                          assert device.startswith('/dev/') and pathlib.Path(device).stat().st_rdev == value.st_dev
+                          commands['darwin'].append(['/usr/sbin/diskutil', 'info', '-plist', device])
                   saved_tempdir = tempfile.tempdir
                   try:
                       tempfile.tempdir = str(scratch)

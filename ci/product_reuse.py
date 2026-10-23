@@ -7937,11 +7937,12 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
         name = f"codex-agent-runtime-aggregate-release-handoff-{original['tree']}-attempt-{original['runAttempt']}"
     if source["kind"] in {"sdk-binary", "sdk-package"}:
         sdk_phase = "binary" if source["kind"] == "sdk-binary" else "package"
-        if _identity(receipt) != PhaseInstanceId("sdk", "sdk-ios", sdk_phase, "ios"):
+        instance = _identity(receipt)
+        if (instance != PhaseInstanceId("sdk", "sdk-ios", sdk_phase, "ios")
+                and not (sdk_phase == "package" and instance in SDK_FAMILY_INSTANCES["native-package"])):
             raise ValueError("Unsupported SDK original qualification identity")
-        base_job = f"product-validation / sdk-sdk-ios-{sdk_phase}-ios"
-        job = base_job
-        name = (f"codex-agent-sdk-worker-sdk-ios-{sdk_phase}-ios-{receipt['buildKey'][7:]}-"
+        job = f"product-validation / sdk-{instance.component}-{sdk_phase}-{instance.target}"
+        name = (_worker_artifact_prefix("sdk", instance) + f"{receipt['buildKey'][7:]}-"
                 f"{original['tree']}-attempt-{original['runAttempt']}")
     keyed = source["kind"] in {"sdk-binary", "sdk-package"}
     observed = _observe_ci_producer_jobs({"source": original}, jobs_by_phase={"source": job},
@@ -7951,7 +7952,8 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
         job = _matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=receipt["buildKey"])[0]["name"]
     artifact = _contract_ci_upload_metadata(source["artifactId"], source["artifactSha256"], name,
         original, observed[0]["run"], token,
-        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package" else {}))
+        **({"upload_limit": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package"
+               and _identity(source["receipt"]) == PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {}))
     _require_artifact_job_window(observed[0], job, artifact)
     return artifact, original, observed, workflow
 
@@ -7994,7 +7996,8 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
         return {"artifact": artifact, "captureProducer": original, "observed": observed,
                 "verification": "qualified-reference-members", "rangeBytes": 0, "memberETag": None}
     with open_reference_archive(artifact, token,
-            **({"max_bytes": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package" else {})) as (archive, stream):
+            **({"max_bytes": _IOS_PACKAGE_UPLOAD_LIMIT} if source["kind"] == "sdk-package"
+               and _identity(source["receipt"]) == PhaseInstanceId("sdk", "sdk-ios", "package", "ios") else {})) as (archive, stream):
         resolved = {}
         for row in missing:
             source_path = row["sourcePath"]
@@ -8342,19 +8345,22 @@ def _publish_runtime_original_reference_handoff(inputs, state, destination, *, c
             sources.append({"relativePath": "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original",
                 "kind": "sdk-binary", "receipt": receipt,
                 "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
-    package = Path(state) / "prior-failed-sdk-ios-package/sdk-ios/package/ios"
-    if package.exists() or package.is_symlink():
-        verified = verify_phase_shard(package / "original/shard",
-            PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
+    for instance in (PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
+                     *sorted(SDK_FAMILY_INSTANCES["native-package"])):
+        relative = f"{completed_recovery_folder(instance)}/{instance.component}/package/{instance.target}"
+        package = Path(state) / relative
+        if not package.exists() and not package.is_symlink():
+            continue
+        verified = verify_phase_shard(package / "original/shard", instance,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         receipt = verified["receipt"]
-        captured = _canonical_control(package / "capture-transport.json", "Original iOS package reference")
+        captured = _canonical_control(package / "capture-transport.json", "Original SDK package reference")
         if (captured.get("captureProducer") != receipt["producer"]
                 or captured.get("packageReceiptSha256") != sha256_bytes(canonical_json_bytes(receipt))):
             raise ValueError("SDK package reference changes its original producer or receipt")
         artifact = captured["artifact"]
         if completed_frozen is None or completed_frozen.envelope(verified) is None:
-            sources.append({"relativePath": "product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original",
+            sources.append({"relativePath": "product-resume-state/" + relative + "/original",
                 "kind": "sdk-package", "receipt": receipt,
                 "artifactId": artifact["id"], "artifactSha256": artifact["digest"]})
     prior = Path(state) / "prior-failed-runtime"

@@ -712,7 +712,10 @@ class NativePackageRecoveryTest(unittest.TestCase):
                 case.replay()
 
     def test_five_original_packages_replay_across_runs_and_attempts_without_rewriting_receipts(self):
-        from sdk_phase import SDK_FAMILY_INSTANCES
+        from sdk_phase import SDK_FAMILY_INSTANCES, completed_recovery_folder
+        from products.inventory import snapshot_regular_tree
+        from runtime_reference_transport import resolve_original_reference_handoff, validate_original_references
+        from ci.tests.test_runtime_reference_transport import RangeOpener
         for instance in sorted(SDK_FAMILY_INSTANCES["native-package"]):
             with self.subTest(component=instance.component):
                 case = JavascriptPackageRecoveryTest()
@@ -735,10 +738,84 @@ class NativePackageRecoveryTest(unittest.TestCase):
                     self.assertEqual(inventory, regular_file_inventory(case.output, allow_empty=True))
                     self.assertEqual(1, download.call_count)
                     self.assertEqual(3, observe.call_count)
-                capture = case.output / f"{instance.component}/package/{instance.target}"
-                self.assertEqual(case.receipt_bytes,
-                                 (capture / "original/shard/phase-receipt.json").read_bytes())
-                self.assertEqual(case.raw, (capture / "transport.zip").read_bytes())
+                    capture = case.output / f"{instance.component}/package/{instance.target}"
+                    self.assertFalse((capture / "transport.zip").exists())
+                    for name, contents in case.files.items():
+                        self.assertEqual(contents, (capture / "original" / name).read_bytes())
+                    roots = {name: case.work / "reference-inputs" / name for name in
+                             ("product-resume-inputs", "product-resume-state")}
+                    roots["product-resume-inputs"].mkdir(parents=True)
+                    (roots["product-resume-inputs"] / "control").write_bytes(b"current plan")
+                    snapshot_regular_tree(case.output,
+                        roots["product-resume-state"] / completed_recovery_folder(instance), allow_empty=True)
+                    thin = case.work / "thin-native-package"
+                    value = recovery.products._publish_runtime_original_reference_handoff(
+                        roots["product-resume-inputs"], roots["product-resume-state"], thin)
+                    prefix = ("product-resume-state/" + completed_recovery_folder(instance)
+                              + f"/{instance.component}/package/{instance.target}/original")
+                    self.assertEqual(3, value["schemaVersion"])
+                    self.assertEqual(1, len(value["sources"]))
+                    self.assertEqual(load_canonical_json_bytes(case.receipt_bytes), value["sources"][0]["receipt"])
+                    self.assertFalse((thin / prefix / "shard").exists())
+                    self.assertTrue((thin / prefix / "execution/diagnostic.log").is_file())
+                    self.assertFalse(any(row["relativePath"].endswith(".zip")
+                                         for row in regular_file_inventory(thin, allow_empty=True)))
+                    self.assertTrue(all(row["sourcePath"].startswith("shard/")
+                                        for row in value["references"] if row["source"] is not None))
+                    with self.assertRaises(ValueError):
+                        validate_original_references({**value, "schemaVersion": 2})
+                    ranges = RangeOpener({case.artifact["id"]: case.raw})
+                    def resolve(source, references, destination):
+                        return recovery.products._capture_runtime_original_reference_members(case.plan,
+                            {**case.producer, "runId": 72}, source, references, destination,
+                            trusted_workflow_sha=case.pin, token="synthetic-token")
+                    import runtime_reference_archive
+                    with patch("runtime_reference_archive.urllib.request.build_opener", return_value=ranges), \
+                            patch.object(runtime_reference_archive, "open_reference_archive",
+                                         wraps=runtime_reference_archive.open_reference_archive) as opened, \
+                            patch.object(recovery.products, "_contract_ci_upload_metadata",
+                                         wraps=recovery.products._contract_ci_upload_metadata) as metadata, \
+                            patch.object(recovery.products, "download_artifact",
+                                         side_effect=AssertionError("whole package downloaded while resolving references")):
+                        resolve_original_reference_handoff(thin, value, resolve)
+                    self.assertEqual(1, metadata.call_count)
+                    self.assertNotIn("upload_limit", metadata.call_args.kwargs)
+                    self.assertEqual(1, opened.call_count)
+                    self.assertNotIn("max_bytes", opened.call_args.kwargs)
+                    self.assertTrue(ranges.requests)
+                    self.assertEqual(value["inventory"], regular_file_inventory(thin, allow_empty=True))
+                    fresh = recovery.replay_prior_javascript_package(
+                        thin / "product-resume-state" / completed_recovery_folder(instance), thin,
+                        plan=case.plan, consumer_producer={**case.producer, "runId": 72},
+                        trusted_workflow_sha=case.pin, token="synthetic-token", environ={},
+                        component=instance.component, target=instance.target)
+                    self.assertEqual({key: records[0][key] for key in records[0] if key != "objectPath"},
+                                     {key: fresh[0][key] for key in fresh[0] if key != "objectPath"})
+                    self.assertEqual(case.receipt_bytes, (thin / prefix / "shard/phase-receipt.json").read_bytes())
+                    self.assertEqual(inventory, regular_file_inventory(case.output, allow_empty=True))
+                    self.assertEqual(1, download.call_count)
+
+    def test_legacy_native_package_archive_requires_exact_official_bytes(self):
+        case = JavascriptPackageRecoveryTest()
+        case.recovery_component, case.recovery_target = "python", "desktop"
+        self.addCleanup(case.doCleanups)
+        case.setUp()
+        with case.gates(), verification_session():
+            records = case.capture()
+            archive = case.output / "python/package/desktop/transport.zip"
+            self.assertFalse(archive.exists())
+            archive.write_bytes(case.raw)
+            inventory = regular_file_inventory(case.output, allow_empty=True)
+            self.assertEqual(records, case.replay())
+            self.assertEqual(inventory, regular_file_inventory(case.output, allow_empty=True))
+            for altered in (bytes([case.raw[0] ^ 1]) + case.raw[1:], case.raw + b"extra"):
+                archive.write_bytes(altered)
+                with patch.object(recovery.products, "api_json", side_effect=AssertionError("legacy mismatch observed remotely")), \
+                        self.assertRaisesRegex(ValueError, "envelope differs from its original upload"):
+                    case.replay()
+            archive.write_bytes(case.raw)
+            self.assertEqual(case.receipt_bytes,
+                             (archive.parent / "original/shard/phase-receipt.json").read_bytes())
 
 
 class CsharpBinaryRecoveryTest(JavascriptPackageRecoveryTest):
@@ -823,6 +900,23 @@ class IosSuccessfulPackageRecoveryTest(unittest.TestCase):
         self.assertTrue(all(row['sourcePath'].startswith('shard/') for row in manifest['references']))
         changed={**manifest,'schemaVersion':2}
         with self.assertRaises(ValueError):validate_original_references(changed)
+        from runtime_reference_transport import resolve_original_reference_handoff
+        from ci.tests.test_runtime_reference_transport import RangeOpener
+        import runtime_reference_archive
+        ranges = RangeOpener({self.artifact['id']: self.raw})
+        def capture(source, records, destination):
+            return recovery.products._capture_runtime_original_reference_members(self.plan,
+                {**self.producer, 'runId': 72}, source, records, destination,
+                trusted_workflow_sha=self.pin, token='synthetic-token')
+        with self.gates(), patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
+                patch.object(runtime_reference_archive, 'open_reference_archive',
+                             wraps=runtime_reference_archive.open_reference_archive) as opened, \
+                patch.object(recovery.products, '_contract_ci_upload_metadata',
+                             wraps=recovery.products._contract_ci_upload_metadata) as metadata:
+            resolve_original_reference_handoff(target, manifest, capture)
+        self.assertEqual(32 * 1024**3, metadata.call_args.kwargs['upload_limit'])
+        self.assertEqual(32 * 1024**3, opened.call_args.kwargs['max_bytes'])
+        self.assertEqual(manifest['inventory'], regular_file_inventory(target, allow_empty=True))
 
 
 if __name__ == "__main__":

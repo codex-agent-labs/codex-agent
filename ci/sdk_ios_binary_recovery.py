@@ -119,6 +119,10 @@ def _capture_javascript_package(prior, artifact, destination, *, plan, consumer_
     if repository_root is not None:
         from sdk_handoff import _ensure_observed_sdk_commit
         _ensure_observed_sdk_commit(repository_root, producer, token)
+    if instance in SDK_FAMILY_INSTANCES["native-package"]:
+        # The exact original upload has passed every gate above. Keep its immutable
+        # observation and full extracted contents; do not forward a second envelope.
+        archive.unlink()
     return receipt
 
 
@@ -225,6 +229,12 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
         {"artifact", "captureProducer", "observed", f"{phase}ReceiptSha256"}, "Prior JS transport")
     if transport["captureProducer"] != producer or transport[f"{phase}ReceiptSha256"] != sha256_bytes(raw):
         raise ValueError("Prior JavaScript transport changes its original receipt or producer")
+    native_package = instance in SDK_FAMILY_INSTANCES["native-package"]
+    legacy_archive = next((row for row in inventory if row["relativePath"] == "transport.zip"), None)
+    if native_package and legacy_archive is not None and legacy_archive != {
+            "relativePath": "transport.zip", "bytes": transport["artifact"]["size_in_bytes"],
+            "sha256": transport["artifact"]["digest"]}:
+        raise ValueError("Prior native package envelope differs from its original upload")
     if completed_frozen is not None:
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
@@ -265,7 +275,8 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
                 for field in ("id", "name", "digest", "size_in_bytes", "created_at", "archive_download_url", "workflow_run"))
                 or [row for row in regular_file_inventory(fresh, allow_empty=True)
              if row["relativePath"] != "capture-transport.json"] !=
-                [row for row in inventory if row["relativePath"] != "capture-transport.json"]):
+                [row for row in inventory if row["relativePath"] != "capture-transport.json"
+                 and not (native_package and row["relativePath"] == "transport.zip")]):
             raise ValueError("Prior JavaScript capture differs from its authenticated original upload")
     record = _javascript_package_record(parent, Path(artifact_root), phase, component=component)
     if (_stage_fingerprint(root) != fingerprint or regular_file_inventory(parent, allow_empty=True) != inventory

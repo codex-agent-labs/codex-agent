@@ -620,6 +620,7 @@ def validate_original_references(value):
     """Validate locators only; caller authenticates the enclosing upload first."""
     from products.receipt import validate_phase_receipt
     from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
+    from sdk_phase import SDK_FAMILY_INSTANCES, completed_recovery_folder
     value = require_exact_keys(value, {"schemaVersion", "inventory", "sources", "references"},
                                "Runtime original references")
     if value["schemaVersion"] not in (1, 2, 3) or type(value["schemaVersion"]) is not int:
@@ -637,7 +638,7 @@ def validate_original_references(value):
             or any(row["bytes"] > 8 * 1024**3 for row in inventory)):
         raise ValueError("Original reference inventory exceeds the transport byte bounds")
     sources = require_sorted_unique_records(value["sources"], "Original reference sources")
-    if len(sources) > {1: 47, 2: 48, 3: 49}[value["schemaVersion"]]:
+    if len(sources) > {1: 47, 2: 48, 3: 49 + len(SDK_FAMILY_INSTANCES["native-package"])}[value["schemaVersion"]]:
         raise ValueError("Original references exceed the registered Runtime source bound")
     by_source = {}
     for source in sources:
@@ -648,13 +649,15 @@ def validate_original_references(value):
         sdk_binary = (value["schemaVersion"] in (2, 3) and source["kind"] == "sdk-binary"
                       and instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
         sdk_package = (value["schemaVersion"] == 3 and source["kind"] == "sdk-package"
-                       and instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"))
+                       and (instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+                            or instance in SDK_FAMILY_INSTANCES["native-package"]))
         if instance not in PHASE_INSTANCE_IDS or instance.product != "runtime" and not (sdk_binary or sdk_package):
             raise ValueError("Original reference is not a registered Runtime phase")
         if sdk_binary:
             prefix = "product-resume-state/prior-failed-sdk/sdk-ios/binary/ios/original"
         elif sdk_package:
-            prefix = "product-resume-state/prior-failed-sdk-ios-package/sdk-ios/package/ios/original"
+            prefix = (f"product-resume-state/{completed_recovery_folder(instance)}/"
+                      f"{instance.component}/package/{instance.target}/original")
         elif source["kind"] == "phase":
             prefix = (f"product-resume-state/prior-failed-runtime/{instance.component}/{instance.phase}/"
                       f"{instance.target}/phases/{instance.phase}/original")
@@ -724,14 +727,16 @@ def stage_original_reference_handoff(roots, sources, destination):
     upstream = {}
     for row in inventory:
         prefix = next((source["relativePath"] for source in sources
-                       if row["relativePath"].startswith(source["relativePath"] + "/")), None)
+                       if row["relativePath"].startswith(source["relativePath"] +
+                           ("/shard/" if source["kind"] in {"sdk-binary", "sdk-package"} else "/"))), None)
         if prefix is not None:
             upstream.setdefault((row["bytes"], row["sha256"]),
                                 (prefix, row["relativePath"][len(prefix) + 1:]))
     references, concrete, contents, used = [], [], {}, set()
     for row in inventory:
         prefix = next((source["relativePath"] for source in sources
-                       if row["relativePath"].startswith(source["relativePath"] + "/")), None)
+                       if row["relativePath"].startswith(source["relativePath"] +
+                           ("/shard/" if source["kind"] in {"sdk-binary", "sdk-package"} else "/"))), None)
         identity = row["bytes"], row["sha256"]
         if prefix is not None:
             references.append({**row, "source": prefix,

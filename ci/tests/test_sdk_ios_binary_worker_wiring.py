@@ -272,11 +272,20 @@ class SdkIosBinaryWorkerWiringTest(unittest.TestCase):
         caller = self.sdk_caller
         locator = json.loads(re.search(r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", caller, re.MULTILINE)[1])
         self.assertEqual({'artifactId', 'artifactSha256', 'originalProducer', 'trustedWorkflowSha'}, set(locator))
-        qualified = json.loads((ROOT / 'ci/tests/data/requalified-frozen-reuse.json').read_bytes())
+        # Historical SDK inputs retain the recipe from their original caller.
+        qualified = json.loads(subprocess.check_output(
+            ['git', 'show', SDK_RECOVERY_SOURCE + ':ci/tests/data/requalified-frozen-reuse.json'], cwd=ROOT))
         original = qualified['requalification']['signedSource']
         self.assertEqual({**{key: original[key] for key in ('artifactId', 'artifactSha256')},
                           'originalProducer': original['producer'],
                           'trustedWorkflowSha': original['workflowSha']}, locator)
+        current = (ROOT / '.github/workflows/ci.yml').read_text()
+        current_locator = json.loads(re.search(
+            r"^      runtimeAggregateHandoffRecovery: '([^']+)'$", current, re.MULTILINE)[1])
+        current_source = json.loads((ROOT / 'ci/tests/data/requalified-frozen-reuse.json').read_bytes())['requalification']['signedSource']
+        self.assertEqual({**{key: current_source[key] for key in ('artifactId', 'artifactSha256')},
+                          'originalProducer': current_source['producer'],
+                          'trustedWorkflowSha': current_source['workflowSha']}, current_locator)
         inputs = self.job('sdk-inputs')
         # Execute the real writer/strict reader with the preserved caller locator.
         block = re.search(
