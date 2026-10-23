@@ -549,6 +549,7 @@ def write_carrier(
                 build_key=phase["buildKey"],
                 receipt_sha256=phase["receiptSha256"],
                 object_sha256=phase["objectSha256"],
+                require_snapshot=object_root is None,
             )) as (snapshot, verification):
                 object_relative = object_relative_path(phase["buildKey"], phase["receiptSha256"])
                 if object_root is None:

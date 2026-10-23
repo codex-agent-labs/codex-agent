@@ -626,6 +626,52 @@ class ProductRestoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inventory"):
             verify_carrier(carrier_root, (instance,), consumer)
 
+    @unittest.skipIf(os.name == "nt", "Private verification reuse is POSIX-only")
+    def test_reference_carrier_reuses_oversized_object_proof_without_another_copy(self):
+        stored = self.store()
+        instance = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+        phase = {**{field: getattr(instance, field) for field in ("product", "component", "phase", "target")},
+                 **{field: stored[field] for field in ("buildKey", "receiptSha256", "objectSha256")},
+                 "state": "reused", "source": "stable", "misses": [],
+                 "transportSource": self.remote_transport()["source"]}
+        resolution = {"schemaVersion": 1, "result": "complete", "fullReuse": True,
+                      "phases": [phase], "matrices": {"contract": [], "runtime": [], "sdk": []}}
+        arguments = {"build_key": stored["buildKey"], "receipt_sha256": stored["receiptSha256"],
+                     "object_sha256": stored["objectSha256"]}
+        consumer = self.remote_transport()["consumer"]
+        for warm, references in ((False, True), (True, True), (True, False)):
+            with self.subTest(warm=warm, references=references), \
+                    mock.patch.object(product_restore, "_VERIFICATION_CACHE_BYTES", 1), \
+                    product_restore.verification_session() as session:
+                if warm:
+                    verify_object(stored["path"], **arguments)
+                self.assertEqual(0, session["bytes"])
+                destination = self.root / f"carrier-{warm}-{references}"
+                with mock.patch.object(product_restore, "_snapshot_archive",
+                                       wraps=product_restore._snapshot_archive) as snapshot:
+                    value = write_carrier(destination, resolution, (instance,), {instance: stored["path"]},
+                        consumer, **({"object_root": self.root} if references else {}))
+                self.assertEqual(self.receipt_bytes, value["objects"][0]["receiptBytes"])
+                if references:
+                    self.assertEqual(0 if warm else 1, snapshot.call_count)
+                    self.assertFalse(list(destination.rglob("*.zip")))
+                else:
+                    self.assertGreater(snapshot.call_count, 0)
+                    payload = destination / object_relative_path(stored["buildKey"], stored["receiptSha256"])
+                    self.assertEqual(stored["path"].read_bytes(), payload.read_bytes())
+        with mock.patch.object(product_restore, "_VERIFICATION_CACHE_BYTES", 1), \
+                product_restore.verification_session():
+            verify_object(stored["path"], **arguments)
+            before = stored["path"].stat()
+            stored["path"].chmod(0o600)
+            with stored["path"].open("r+b") as stream:
+                stream.write(b"BAD!")
+            os.utime(stored["path"], ns=(before.st_atime_ns, before.st_mtime_ns))
+            with self.assertRaises(CacheObjectError):
+                write_carrier(self.root / "mutated-carrier", resolution, (instance,),
+                    {instance: stored["path"]}, consumer, object_root=self.root)
+        self.assertEqual(self.receipt_bytes, self.receipt_path.read_bytes())
+
     def test_selected_carrier_checks_only_selected_bytes_but_keeps_full_admission_strict(self):
         identities = (PhaseInstanceId("sdk", "javascript", "package", "node"),
                       PhaseInstanceId("sdk", "sdk-core", "package", "common"))

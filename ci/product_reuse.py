@@ -38,7 +38,7 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 
 from impact import validate_legacy_lane_projection, validate_remote_build_authorization
 from receipt import safe_extract
-from runtime_reference_transport import measured, count, report_api_error
+from runtime_reference_transport import measured, measured_volume, count, report_api_error
 from reuse import github_output, run_matches_pr
 from runtime_reference_transport import api_json, download_artifact, download_artifact_to_file, paginated_items
 
@@ -9261,7 +9261,8 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
     if expected_plan_revision is not None and (phase != "package" or bootstrap or compact_recovery
             or qualify_original or expected_plan_revision != producer["commit"]):
         raise ValueError("Historical Apple capture requires its exact selected package revision")
-    with tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
+    with measured_volume("_captured_sdk_ios_upload", tempfile.gettempdir()), \
+            tempfile.TemporaryDirectory(prefix=f"sdk-ios-{phase}-upload-") as temporary:
         prepared = Path(temporary).resolve() / "capture"
         captured_plan = (prepared.parent if compact_recovery else prepared) / "plan/impact-plan.json"
         captured_plan.parent.mkdir(parents=True)

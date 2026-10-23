@@ -35,6 +35,105 @@ class RangeOpener:
 
 
 class RuntimeReferenceTransportTest(unittest.TestCase):
+    def test_volume_sampling_is_opt_in_and_nested_contexts_share_one_sampler(self):
+        import json
+        import os
+        from contextlib import redirect_stderr
+        from contextvars import copy_context
+        from types import SimpleNamespace
+        import runtime_reference_transport as transport
+        with mock.patch.dict(os.environ, {'CODEX_AGENT_THROUGHPUT_TRACE': '0'}), \
+                mock.patch.object(transport, 'Path', side_effect=AssertionError('unexpected filesystem read')), \
+                mock.patch.object(transport, 'Thread', side_effect=AssertionError('unexpected sampler')):
+            with transport.measured_volume('disabled', object()):
+                pass
+        output, stop = io.StringIO(), mock.Mock()
+        stop.wait.side_effect = [False, True]  # One periodic sample, no sleeping.
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.dict(os.environ, {'CODEX_AGENT_THROUGHPUT_TRACE': '1'}), \
+                mock.patch.object(transport, 'Event', return_value=stop), \
+                mock.patch.object(transport.shutil, 'disk_usage', side_effect=[
+                    SimpleNamespace(free=1000), SimpleNamespace(free=700), SimpleNamespace(free=900)]) as usage, \
+                redirect_stderr(output):
+            def nested():
+                with transport.measured_volume('nested', temporary):
+                    pass
+            with transport.measured_volume('outer', temporary):
+                nested()
+                copy_context().run(nested)
+            self.assertEqual(3, usage.call_count)
+        rows = output.getvalue().splitlines()
+        self.assertEqual(1, len(rows))
+        value = json.loads(rows[0].removeprefix('throughput-volume '))
+        self.assertEqual('outer', value['operation'])
+        self.assertTrue(value['success'])
+        self.assertTrue(value['samplerStopped'])
+        self.assertEqual((1000, 900, 700, -100, 300, 3, 0), tuple(value[key] for key in (
+            'freeBytesAtStart', 'freeBytesAtEnd', 'minimumObservedFreeBytes',
+            'observedFreeBytesDelta', 'maximumObservedFreeBytesDecrease', 'sampleCount', 'sampleErrors')))
+        self.assertEqual([mock.call(1), mock.call(1)], stop.wait.call_args_list)
+        stop.set.assert_called_once_with()
+        self.assertEqual((), transport._VOLUMES.get())
+        self.assertNotIn('inclusiveCounters', value)
+        self.assertNotIn(temporary, output.getvalue())
+
+    def test_volume_sampling_failures_preserve_original_operation_exception(self):
+        import json
+        import os
+        from contextlib import redirect_stderr
+        import runtime_reference_transport as transport
+        for case in ('sample', 'path', 'output'):
+            error = ValueError('original operation failure')
+            output, stop = io.StringIO(), mock.Mock()
+            stop.wait.return_value = True
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.dict(os.environ, {'CODEX_AGENT_THROUGHPUT_TRACE': '1'}), \
+                    mock.patch.object(transport, 'Event', return_value=stop), \
+                    mock.patch.object(transport.shutil, 'disk_usage', side_effect=OSError('private path')) as usage, \
+                    redirect_stderr(output):
+                root = Path(temporary) / 'missing' if case == 'path' else Path(temporary)
+                from contextlib import nullcontext
+                broken_output = mock.patch.object(transport, 'print', create=True,
+                    side_effect=OSError('broken stderr')) if case == 'output' else nullcontext()
+                with broken_output, self.assertRaises(ValueError) as caught:
+                    with transport.measured_volume('failed', root):
+                        raise error
+                self.assertIs(error, caught.exception)
+                self.assertEqual((), transport._VOLUMES.get())
+                if case == 'path': usage.assert_not_called()
+            if case == 'output':
+                self.assertEqual('', output.getvalue())
+                continue
+            value = json.loads(output.getvalue().removeprefix('throughput-volume '))
+            self.assertFalse(value['success'])
+            self.assertEqual(1 if case == 'path' else 2, value['sampleErrors'])
+            self.assertEqual(0, value['sampleCount'])
+            self.assertIsNone(value['observedFreeBytesDelta'])
+            self.assertNotIn('private path', output.getvalue())
+
+    def test_volume_sampling_stops_with_bounded_join(self):
+        import json
+        import os
+        from contextlib import redirect_stderr
+        from types import SimpleNamespace
+        import runtime_reference_transport as transport
+        output, thread = io.StringIO(), mock.Mock()
+        thread.is_alive.return_value = True  # A stuck diagnostic cannot hold the caller.
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.dict(os.environ, {'CODEX_AGENT_THROUGHPUT_TRACE': '1'}), \
+                mock.patch.object(transport, 'Thread', return_value=thread) as factory, \
+                mock.patch.object(transport.shutil, 'disk_usage', return_value=SimpleNamespace(free=100)) as usage, \
+                redirect_stderr(output):
+            with transport.measured_volume('bounded', temporary):
+                pass
+        thread.join.assert_called_once_with(timeout=2)
+        self.assertTrue(factory.call_args.kwargs['daemon'])
+        self.assertEqual(1, usage.call_count)
+        value = json.loads(output.getvalue().removeprefix('throughput-volume '))
+        self.assertFalse(value['samplerStopped'])
+        self.assertIsNone(value['freeBytesAtEnd'])
+        self.assertEqual((), transport._VOLUMES.get())
+
     def test_parallel_measurement_counters_remain_exact_in_parent_scope(self):
         from concurrent.futures import ThreadPoolExecutor
         from contextvars import copy_context

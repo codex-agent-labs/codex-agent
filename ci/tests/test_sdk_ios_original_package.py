@@ -5,9 +5,10 @@ exercise byte pairing. Mocked upload, Git selection, signed SDK context, and fin
 package gate are not claims of CI, signature, host, or semantic acceptance.
 """
 
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -449,6 +450,44 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
         self.assertIn("signed-closed", self.events)
         self.assertTrue(all(not path.exists() for path in self.private_paths))
 
+    def test_volume_scopes_include_original_and_completed_consumers_and_full_cleanup(self):
+        from ci.tests.test_sdk_ios_completed_inputs import CompletedAppleInputsTest
+        completed = CompletedAppleInputsTest()
+        self.addCleanup(completed.doCleanups)
+        completed.setUp()
+        class ConsumerFailure(Exception):
+            pass
+        for operation, context, seams in (
+                ("_verified_ios_package", self.original_context, nullcontext),
+                ("verified_completed_ios_package", completed.inputs, completed.seams)):
+            for failed in (False, True):
+                events, roots = [], []
+                @contextmanager
+                def measured_volume(actual_operation, volume):
+                    self.assertEqual(operation, actual_operation)
+                    self.assertEqual(tempfile.gettempdir(), volume)
+                    events.append("start")
+                    try:
+                        yield
+                    finally:
+                        self.assertEqual(1, len(roots))
+                        self.assertFalse(roots[0].exists())
+                        events.append("after-cleanup")
+                with self.subTest(operation=operation, failed=failed), seams(), \
+                        patch.object(workflow, "measured_volume", side_effect=measured_volume) as measure:
+                    with self.assertRaisesRegex(ConsumerFailure, "consumer failed") if failed else nullcontext():
+                        with context() as value:
+                            root = (value["completedCapture"].parent if "completedCapture" in value
+                                    else value["stage"].parent)
+                            roots.append(root)
+                            self.assertTrue(root.is_dir())
+                            self.assertEqual(["start"], events)
+                            events.append("consumer")
+                            if failed:
+                                raise ConsumerFailure("consumer failed")
+                    measure.assert_called_once()
+                    self.assertEqual(["start", "consumer", "after-cleanup"], events)
+
     def test_original_binary_git_is_acquired_before_sdk_bytes_and_full_gate(self):
         context = self.original_context()
         def acquire(repository, producer, token):
@@ -552,6 +591,28 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
             private = value["stage"].parent
         self.assertFalse(private.exists())
         self.assertEqual(["signed-enter", "full-gate", "signed-exit", "signed-closed"], self.events)
+        self.assertEqual(before, {path: regular_file_inventory(path, allow_empty=True) for path in before})
+
+    @unittest.skipUnless(sys.platform == "darwin", "Exercises actual APFS retained-capture clones")
+    def test_retained_captures_clone_both_private_trees_without_byte_copy(self):
+        from products import sdk_apple_content as content
+
+        self.prepare_retained()
+        before = {path: regular_file_inventory(path, allow_empty=True)
+                  for path in (self.retained_package, self.retained_sdk)}
+        with patch.object(content, "_clone_apple_file", wraps=content._clone_apple_file) as clone, \
+                patch.object(content, "snapshot_regular_tree", side_effect=AssertionError("byte copy")):
+            with self.retained_context() as value:
+                for source, captured in ((self.retained_package, value["packageCapture"]),
+                                         (self.retained_sdk, value["sdkCapture"])):
+                    self.assertEqual(before[source], regular_file_inventory(captured, allow_empty=True))
+                    for record in before[source]:
+                        original = source / record["relativePath"]
+                        private = captured / record["relativePath"]
+                        self.assertNotEqual(original.stat().st_ino, private.stat().st_ino)
+                        self.assertEqual(1, private.stat().st_nlink)
+                self.assertEqual(self.receipt_bytes, value["receiptBytes"])
+            self.assertEqual(sum(map(len, before.values())), clone.call_count)
         self.assertEqual(before, {path: regular_file_inventory(path, allow_empty=True) for path in before})
 
     def test_retained_original_private_and_context_exit_mutation_reject(self):

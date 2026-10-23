@@ -6,7 +6,7 @@ not treat retained execution or descriptor bytes as package-content admission.
 """
 
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import io
 from pathlib import Path
@@ -270,6 +270,38 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             with self.held_package() as held:
                 (held / "original/worker/stderr.bin").write_bytes(b"tampered")
         self.assertFalse(held.exists())
+
+    def test_held_admission_volume_scope_includes_consumer_and_temporary_cleanup(self):
+        if self.phase != "package":
+            self.skipTest("held admission is package-only")
+        class ConsumerFailure(Exception):
+            pass
+        for failed in (False, True):
+            events, held_parents = [], []
+            @contextmanager
+            def measured_volume(operation, root):
+                self.assertEqual("_captured_sdk_ios_upload", operation)
+                self.assertEqual(capture.tempfile.gettempdir(), root)
+                events.append("start")
+                try:
+                    yield
+                finally:
+                    self.assertEqual(1, len(held_parents))
+                    self.assertFalse(held_parents[0].exists())
+                    events.append("after-cleanup")
+            with self.subTest(failed=failed), \
+                    patch.object(capture, "measured_volume", side_effect=measured_volume) as measure:
+                with self.assertRaisesRegex(ConsumerFailure, "consumer failed") if failed else nullcontext():
+                    with self.held_package() as held:
+                        held_parents.append(held.parent)
+                        self.assertTrue(held.parent.is_dir())
+                        self.assertEqual(["start"], events)
+                        events.append("consumer")
+                        if failed:
+                            raise ConsumerFailure("consumer failed")
+                measure.assert_called_once()
+                self.assertEqual(["start", "consumer", "after-cleanup"], events)
+                self.assertFalse(self.output.exists())
 
     def test_fresh_and_retained_outer_bounds_are_phase_specific(self):
         # Only outer transport differs: native-input copies make the binary

@@ -11,11 +11,13 @@ import base64
 from datetime import datetime, timezone
 import re
 import subprocess
-from threading import Lock
+from threading import Event, Lock, Thread
 import os
 import json
 import sys
 import time
+import shutil
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
@@ -181,6 +183,7 @@ SDK_INPUT_REFERENCE_NAME = 'sdk-input-reference.json'
 _ROOTS = {"product-resume-inputs", "product-resume-state", "runtime-state"}
 _MEASUREMENTS = ContextVar('throughput_measurements', default=())
 _MEASUREMENT_LOCK = Lock()
+_VOLUMES = ContextVar('throughput_volumes', default=())
 
 
 def count(name, amount=1):
@@ -237,6 +240,84 @@ def measured(operation):
                 processCpuSeconds=round(time.process_time() - cpu, 6),
                 inclusiveCounters=counters), sort_keys=True), file=sys.stderr)
     return timed
+
+
+@contextmanager
+def measured_volume(operation, root):
+    """Observe volume free space, not attributable bytes or unique APFS extents.
+
+    Periodic sampling is at most 1 Hz, plus explicit operation endpoints.
+    Nested contexts on this volume share the outer sampler and its observation.
+    """
+    if os.environ.get('CODEX_AGENT_THROUGHPUT_TRACE') != '1':
+        yield
+        return
+    started, succeeded = time.perf_counter(), False
+    lock, stop = Lock(), Event()
+    state = {'sampleCount': 0, 'sampleErrors': 0, 'minimumObservedFreeBytes': None}
+    token, thread, first, last, path = None, None, None, None, None
+
+    def sample():
+        try:
+            free = shutil.disk_usage(path).free
+        except Exception:
+            with lock:
+                state['sampleErrors'] += 1
+            return None
+        with lock:
+            state['sampleCount'] += 1
+            minimum = state['minimumObservedFreeBytes']
+            state['minimumObservedFreeBytes'] = free if minimum is None else min(minimum, free)
+        return free
+
+    def poll():
+        while not stop.wait(1):
+            sample()
+
+    try:
+        path = Path(root)
+        device = path.stat().st_dev
+    except Exception:
+        state['sampleErrors'] += 1
+        path = None
+    else:
+        if device in _VOLUMES.get():
+            yield
+            return
+        token = _VOLUMES.set((*_VOLUMES.get(), device))
+        first = sample()
+        try:
+            thread = Thread(target=poll, name='throughput-volume', daemon=True)
+            thread.start()
+        except Exception:
+            with lock:
+                state['sampleErrors'] += 1
+            thread = None
+    try:
+        yield
+        succeeded = True
+    finally:
+        try:
+            stop.set()
+            if thread is not None:
+                thread.join(timeout=2)
+            stopped = thread is None or not thread.is_alive()
+            if path is not None and stopped:
+                last = sample()
+            with lock:
+                observation = dict(state)
+            minimum = observation['minimumObservedFreeBytes']
+            observation.update(operation=operation, success=succeeded, samplerStopped=stopped,
+                elapsedSeconds=round(time.perf_counter() - started, 6), sampleIntervalSeconds=1,
+                freeBytesAtStart=first, freeBytesAtEnd=last,
+                observedFreeBytesDelta=None if first is None or last is None else last - first,
+                maximumObservedFreeBytesDecrease=None if first is None or minimum is None else first - minimum)
+            print('throughput-volume ' + json.dumps(observation, sort_keys=True), file=sys.stderr)
+        except Exception:
+            pass  # Diagnostics must never replace the operation's result or original exception.
+        finally:
+            if token is not None:
+                _VOLUMES.reset(token)
 
 
 def _path(value):

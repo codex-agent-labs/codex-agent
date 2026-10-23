@@ -12,7 +12,7 @@ if __package__:
 import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
-    read_regular_file_bytes, require_exact_keys, sha256_bytes, snapshot_regular_tree,
+    read_regular_file_bytes, require_exact_keys, sha256_bytes,
 )
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
@@ -20,9 +20,11 @@ from products.registry import PhaseInstanceId
 from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
 from products.restore import memoized_file_inventory as regular_file_inventory
 from products.restore import _verified_object_snapshot, _extract_verified_stage
-from runtime_reference_transport import measured, count
+from runtime_reference_transport import measured, measured_volume, count
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
-from products.sdk_apple_content import _borrow_private_apple_execution, _input_inventory
+from products.sdk_apple_content import (
+    _borrow_private_apple_execution, _input_inventory, _snapshot_apple_tree as snapshot_regular_tree,
+)
 from products.sdk_apple_package_execution import verify_apple_package_execution_context
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
@@ -123,7 +125,8 @@ def verified_completed_ios_package(plan, package_receipt_path, *, completed_froz
             raise ValueError("Retained completed Apple controls differ from native authority")
 
     controls_unchanged()  # Reject forged routing controls before requesting bodies.
-    with tempfile.TemporaryDirectory(prefix="completed-ios-inputs-") as temporary:
+    with measured_volume("verified_completed_ios_package", tempfile.gettempdir()), \
+            tempfile.TemporaryDirectory(prefix="completed-ios-inputs-") as temporary:
         private = Path(temporary).resolve()
         _require_capability_output_separate(private, [root, plan_path, receipt_path,
                                                       *([] if retained is None else [retained])])
@@ -241,7 +244,8 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
             "sdk", "sdk-ios", "package", "ios"):
         raise ValueError("Original Apple package requires an exact selected package receipt")
     producer = receipt["producer"]
-    with tempfile.TemporaryDirectory(prefix="original-ios-package-") as temporary, ExitStack() as captures:
+    with measured_volume("_verified_ios_package", tempfile.gettempdir()), \
+            tempfile.TemporaryDirectory(prefix="original-ios-package-") as temporary, ExitStack() as captures:
         private = Path(temporary).resolve()
         _require_capability_output_separate(private, [root, plan, package_receipt_path, Path(keyring),
             Path(keys_directory), Path(tooling_evidence), Path(tooling_public_key), Path(java_executable),
