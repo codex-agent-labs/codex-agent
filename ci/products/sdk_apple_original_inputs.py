@@ -6,8 +6,9 @@ import tempfile
 
 from .inventory import (
     load_canonical_json_bytes, read_regular_file_bytes,
-    require_regular_directory, sha256_bytes, snapshot_regular_tree,
+    require_regular_directory, sha256_bytes,
 )
+from .sdk_apple_content import _snapshot_apple_tree
 from .registry import PhaseInstanceId
 from .runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
 from .sdk_inputs_verification import _borrow_private_sdk_inputs, verified_sdk_inputs
@@ -47,7 +48,7 @@ def verified_apple_original_inputs(capture_root: Path, *, expected_source: str,
         _require_capability_output_separate(private,
             [original, Path(keyring), Path(keys_directory), Path(selection_repository_root)])
         captured, policy = private / "capture", private / "policy"
-        snapshot_regular_tree(original, captured, allow_empty=True)
+        _snapshot_apple_tree(original, captured, allow_empty=True)
         policy_paths, policy_bytes = _public_policy(keyring, keys_directory, policy)
         policy_before = regular_file_inventory(policy)
 

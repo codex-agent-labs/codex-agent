@@ -691,6 +691,7 @@ class ApplePrivateSnapshotTest(unittest.TestCase):
         self.assertFalse((self.root / "fifo").exists())
 
     def test_empty_files_and_unavailable_clone_use_existing_rules(self):
+        import fcntl
         (self.source / "empty").touch()
         with self.assertRaises(ValueError):
             content._snapshot_apple_tree(self.source, self.destination)
@@ -698,10 +699,141 @@ class ApplePrivateSnapshotTest(unittest.TestCase):
         self.assertEqual(regular_file_inventory(self.source, allow_empty=True),
                          regular_file_inventory(self.destination, allow_empty=True))
         for index, platform in enumerate(("darwin", "linux", "win32")):
-            with patch.object(content.sys, "platform", platform), self.replacement(None), patch.object(
+            with patch.object(content.sys, "platform", platform), self.replacement(None), \
+                    patch.object(fcntl, "FICLONE", None, create=True), patch.object(
                     content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
                 content._snapshot_apple_tree(self.source, self.root / str(index), allow_empty=True)
                 fallback.assert_called_once()
+
+
+@unittest.skipIf(sys.platform == "win32", "Uses POSIX descriptors; Windows retains ordinary copies")
+class LinuxPrivateSnapshotTest(unittest.TestCase):
+    def setUp(self):
+        import fcntl
+        self.fcntl = fcntl
+        temporary = tempfile.TemporaryDirectory(prefix="linux-clone-test-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.source = self.root / "source"
+        (self.source / "empty-directory").mkdir(parents=True)
+        self.body = self.source / "body"
+        self.body.write_bytes(b"original bytes\n" * 128)
+        self.body.chmod(0o751)
+        self.destination = self.root / "destination"
+        self.operation = object()  # Mock-only marker, never a fabricated native ioctl number.
+
+    @contextmanager
+    def linux(self, operation):
+        with patch.object(content.sys, "platform", "linux"), \
+                patch.object(self.fcntl, "FICLONE", self.operation, create=True), \
+                patch.object(self.fcntl, "ioctl", side_effect=operation) as ioctl:
+            yield ioctl
+
+    def copy_ioctl(self, target, operation, source):
+        # Exercise the real descriptor/destination lifetime, not native Linux storage sharing.
+        self.assertIs(operation, self.operation)
+        self.assertEqual(0, os.fstat(target).st_size)
+        self.assertNotEqual(os.fstat(source).st_ino, os.fstat(target).st_ino)
+        while chunk := os.read(source, 1024):
+            os.write(target, chunk)
+        return 0
+
+    def test_linux_dispatch_preserves_bytes_modes_and_independent_writes(self):
+        before = regular_file_inventory(self.source)
+        with self.linux(self.copy_ioctl) as ioctl, \
+                patch("runtime_reference_transport.count") as count, \
+                patch.object(content, "snapshot_regular_tree", side_effect=AssertionError("byte fallback")):
+            content._snapshot_apple_tree(self.source, self.destination)
+        ioctl.assert_called_once()
+        self.assertEqual([("nativeCloneFiles",), ("nativeCloneBytes", self.body.stat().st_size)],
+                         [call.args for call in count.call_args_list])
+        self.assertEqual(before, regular_file_inventory(self.destination))
+        self.assertTrue((self.destination / "empty-directory").is_dir())
+        private = self.destination / "body"
+        self.assertNotEqual(self.body.stat().st_ino, private.stat().st_ino)
+        self.assertEqual(1, private.stat().st_nlink)
+        private.write_bytes(b"private change")
+        self.assertEqual(before, regular_file_inventory(self.source))
+        self.body.write_bytes(b"source change")
+        self.assertEqual(b"private change", private.read_bytes())
+
+    def test_unsupported_ioctl_removes_only_created_leaf_then_uses_existing_fallback(self):
+        before = regular_file_inventory(self.source)
+        for code in (errno.ENOTTY, errno.EOPNOTSUPP, errno.EXDEV):
+            for tree in (False, True):
+                target = self.root / f"{code}-{tree}"
+                with self.subTest(code=code, tree=tree), self.linux(OSError(code, "unsupported")), \
+                        patch.object(content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
+                    if tree:
+                        content._snapshot_apple_tree(self.source, target)
+                        fallback.assert_called_once()
+                        self.assertEqual(before, regular_file_inventory(target))
+                        target = target / "body"
+                    else:
+                        content.copy_apple_file(self.body, target)
+                    self.assertEqual(self.body.read_bytes(), target.read_bytes())
+                    self.assertNotEqual(self.body.stat().st_ino, target.stat().st_ino)
+                    target.write_bytes(b"private")
+                    self.assertEqual(before, regular_file_inventory(self.source))
+
+    def test_invalid_permission_integrity_capacity_and_existing_leaf_do_not_fall_back(self):
+        for code in (errno.EINVAL, errno.EPERM, errno.EACCES, errno.EIO, errno.ENOSPC):
+            with self.subTest(code=code), self.linux(OSError(code, "fatal")), \
+                    patch.object(content.shutil, "copyfileobj", side_effect=AssertionError("fallback")), \
+                    self.assertRaises(OSError) as failure:
+                content.copy_apple_file(self.body, self.root / str(code))
+            self.assertEqual(code, failure.exception.errno)
+        self.destination.write_bytes(b"preserve")
+        with self.linux(self.copy_ioctl) as ioctl, self.assertRaises(FileExistsError):
+            content.copy_apple_file(self.body, self.destination)
+        ioctl.assert_not_called()
+        self.assertEqual(b"preserve", self.destination.read_bytes())
+
+    def test_linux_source_mutation_with_restored_mtime_is_rejected(self):
+        def mutate(target, operation, source):
+            self.copy_ioctl(target, operation, source)
+            before = self.body.stat()
+            self.body.write_bytes(b"!" * before.st_size)
+            os.utime(self.body, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return 0
+        with self.linux(mutate), patch("runtime_reference_transport.count") as count, \
+                self.assertRaisesRegex(ValueError, "changed during capture"):
+            content.copy_apple_file(self.body, self.destination)
+        count.assert_not_called()
+
+    def test_linux_fallback_rejects_replaced_destination_without_removing_it(self):
+        def replace(*_):
+            self.destination.rename(self.root / "held-created-leaf")
+            self.destination.write_bytes(b"unrelated")
+            raise OSError(errno.EXDEV, "unsupported")
+        with self.linux(replace), self.assertRaisesRegex(ValueError, "destination changed"):
+            content.copy_apple_file(self.body, self.destination)
+        self.assertEqual(b"unrelated", self.destination.read_bytes())
+        self.assertTrue((self.root / "held-created-leaf").exists())
+
+    def test_linux_without_stdlib_constant_keeps_ordinary_copy(self):
+        with patch.object(content.sys, "platform", "linux"), \
+                patch.object(self.fcntl, "FICLONE", None, create=True), \
+                patch.object(content, "snapshot_regular_tree", wraps=content.snapshot_regular_tree) as fallback:
+            content._snapshot_apple_tree(self.source, self.destination)
+        fallback.assert_called_once()
+        self.assertEqual(regular_file_inventory(self.source), regular_file_inventory(self.destination))
+
+    @unittest.skipUnless(sys.platform == "linux", "Actual Linux filesystem proof requires a Linux host")
+    def test_real_linux_reflink_is_independent_when_filesystem_supports_it(self):
+        if getattr(self.fcntl, "FICLONE", None) is None:
+            self.skipTest("Python does not expose the official FICLONE constant")
+        with patch.object(content.shutil, "copyfileobj", side_effect=NotImplementedError("ordinary fallback")):
+            try:
+                content.copy_apple_file(self.body, self.destination)
+            except NotImplementedError:
+                self.skipTest("Current source/destination filesystem does not support FICLONE")
+        self.assertEqual(self.body.read_bytes(), self.destination.read_bytes())
+        self.assertNotEqual(self.body.stat().st_ino, self.destination.stat().st_ino)
+        self.destination.write_bytes(b"private")
+        self.assertNotEqual(b"private", self.body.read_bytes())
+        self.body.write_bytes(b"source")
+        self.assertEqual(b"private", self.destination.read_bytes())
 
 
 if __name__ == "__main__":

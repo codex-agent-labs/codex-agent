@@ -72,7 +72,8 @@ class AppleOriginalInputsTest(unittest.TestCase):
             self.capture = self.work / source
             self.stage(source)
             before = regular_file_inventory(self.capture, allow_empty=True)
-            with self.subTest(source=source), patch("reuse.api_request", side_effect=AssertionError("no network")):
+            with self.subTest(source=source), patch("reuse.api_request", side_effect=AssertionError("no network")), \
+                    patch.object(verifier, "_snapshot_apple_tree", wraps=verifier._snapshot_apple_tree) as snapshot:
                 with self.verify() as value:
                     self.assertEqual({"sdk", "runtime"}, set(value))
                     sdk, runtime = value["sdk"], value["runtime"]
@@ -87,6 +88,10 @@ class AppleOriginalInputsTest(unittest.TestCase):
                     paths = (sdk["directory"], runtime["directory"], sdk["arguments"]["runtime_keyring"])
                     self.assertTrue(all(path.exists() and not path.is_relative_to(self.capture) for path in paths))
                 self.assertTrue(all(not path.exists() for path in paths))
+                snapshot.assert_called_once()
+                self.assertEqual((self.capture, True),
+                                 (snapshot.call_args.args[0], snapshot.call_args.kwargs["allow_empty"]))
+                self.assertFalse(snapshot.call_args.args[1].exists())
             self.assertEqual(before, regular_file_inventory(self.capture, allow_empty=True))
 
     def test_wrong_or_missing_original_authority_does_not_fall_back_to_current_selection(self):

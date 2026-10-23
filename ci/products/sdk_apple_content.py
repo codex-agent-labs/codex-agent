@@ -30,6 +30,35 @@ from .sdk_apple_package_source import capture_apple_package_sources
 
 
 def _apple_clone_operation():
+    if sys.platform == "linux":
+        import fcntl
+        operation = getattr(fcntl, "FICLONE", None)
+        if operation is None:
+            return None
+
+        def clone(source, destination, name, _flags):
+            # FICLONE operates on an already-created file, unlike fclonefileat.
+            target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=destination)
+            try:
+                try:
+                    fcntl.ioctl(target, operation, source)
+                except OSError as error:
+                    if error.errno not in {errno.ENOTTY, errno.EOPNOTSUPP, errno.EXDEV}:
+                        raise
+                    held = os.fstat(target)
+                    named = os.stat(name, dir_fd=destination, follow_symlinks=False)
+                    if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+                        raise ValueError("Linux clone destination changed before fallback") from error
+                    os.unlink(name, dir_fd=destination)
+                    from runtime_reference_transport import count
+                    count("linuxCloneFallbacks")
+                    raise OSError(errno.ENOTSUP, "Linux file clone is unavailable") from error
+            finally:
+                os.close(target)
+            return 0
+
+        return clone
     clone = (getattr(ctypes.CDLL(None, use_errno=True), "fclonefileat", None)
              if sys.platform == "darwin" else None)
     if clone is not None:
@@ -43,9 +72,9 @@ def _clone_apple_file(source: int, destination: int, name: str, clone) -> None:
     if not stat.S_ISREG(metadata.st_mode) or _is_reparse_point(metadata):
         raise ValueError("Apple snapshot source is not a regular file")
     # Keep the byte-copy behavior for immutable/other special file flags.
-    if metadata.st_flags:
+    if getattr(metadata, "st_flags", 0):
         raise OSError(errno.ENOTSUP, "Flagged Apple input requires byte copy")
-    # fclonefileat: held regular source, held private parent, exclusive leaf.
+    # Held regular source, held private parent, exclusive leaf. On macOS,
     # CLONE_NOOWNERCOPY; no directory cloning, hardlinks or trust from xattrs.
     if clone(source, destination, os.fsencode(name), 0x2) != 0:
         code = ctypes.get_errno()
@@ -62,6 +91,9 @@ def _clone_apple_file(source: int, destination: int, name: str, clone) -> None:
         os.close(target)
     if _stat_identity(os.fstat(source)) != _stat_identity(metadata):
         raise ValueError("Apple snapshot source changed during capture")
+    from runtime_reference_transport import count
+    count("nativeCloneFiles")
+    count("nativeCloneBytes", metadata.st_size)
 
 
 def copy_apple_file(source: Path, destination: Path) -> None:
@@ -130,7 +162,7 @@ def _clone_apple_directory(source: int, destination: int, clone, *, allow_empty:
 def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
     """Private copies with the caller's unchanged before/after byte inventories.
 
-    APFS clones avoid rewriting large payloads while preserving independent files.
+    Native clones avoid rewriting large payloads while preserving independent files.
     Other hosts/filesystems retain the frozen descriptor-based byte-copy path.
     """
     clone = _apple_clone_operation()
