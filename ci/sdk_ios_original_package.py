@@ -22,7 +22,7 @@ from products.restore import memoized_file_inventory as regular_file_inventory
 from products.restore import _verified_object_snapshot, _extract_verified_stage
 from runtime_reference_transport import measured, count
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
-from products.sdk_apple_content import _input_inventory
+from products.sdk_apple_content import _borrow_private_apple_execution, _input_inventory
 from products.sdk_apple_package_execution import verify_apple_package_execution_context
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
@@ -427,10 +427,13 @@ def _verified_ios_package(plan, package_receipt_path, *, package_capture, sdk_ca
                     evidence_directory=original / "package-execution/events",
                     execution_binding_file=original / "package-execution/input-binding.json",
                     expected_binding_sha256=binding_digest, expected_execution_files=expected_events)
-                verified, raw = verify_sdk_package_inputs(root, stage, selected_receipt,
-                    joined["sdk"]["directory"] / REQUEST_NAME, binary_stage_root=binary_stage,
-                    binary_receipt_path=binary_receipt, binary_contract_evidence=evidence,
-                    apple_original_verification=policy)
+                # The authenticated original upload is already privately owned
+                # through captures/unchanged(). Do not copy its multi-GB events again.
+                with _borrow_private_apple_execution(original / "package-execution/events"):
+                    verified, raw = verify_sdk_package_inputs(root, stage, selected_receipt,
+                        joined["sdk"]["directory"] / REQUEST_NAME, binary_stage_root=binary_stage,
+                        binary_receipt_path=binary_receipt, binary_contract_evidence=evidence,
+                        apple_original_verification=policy)
                 if verified != receipt or raw != receipt_bytes:
                     raise ValueError("Original Apple package gate returned a different receipt")
                 unchanged()

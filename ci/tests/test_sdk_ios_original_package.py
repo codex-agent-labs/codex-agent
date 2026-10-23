@@ -230,6 +230,8 @@ class SdkIosOriginalPackageTest(unittest.TestCase):
 
     def gate(self, repository, stage, receipt_path, request, **arguments):
         self.events.append("full-gate")
+        from products.sdk_apple_content import _PRIVATE_EXECUTION
+        self.assertEqual(self.last_original / "package-execution/events", _PRIVATE_EXECUTION.get())
         if self.gate_failure:
             raise ValueError("synthetic full original package rejection")
         self.assertEqual(self.root, repository)

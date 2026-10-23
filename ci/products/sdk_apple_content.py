@@ -6,6 +6,8 @@ host, receipt, or reuse authority. No Maven output exception is defined here.
 """
 
 import ctypes
+from contextlib import contextmanager
+from contextvars import ContextVar
 import errno
 import os
 from pathlib import Path
@@ -177,6 +179,28 @@ def _input_inventory(path: Path, *, allow_empty: bool):
     return regular_file_inventory(path, allow_empty=allow_empty)
 
 
+_PRIVATE_EXECUTION = ContextVar("private_apple_package_execution", default=None)
+
+
+@contextmanager
+def _borrow_private_apple_execution(root: Path):
+    """Hold the outer verifier's private original events, never transported authority.
+
+    As with private SDK inputs, the owning capture retains every authentication
+    and lifetime check. Only the exact original-package replay can borrow this
+    tree; other inputs and all direct callers retain independent snapshots.
+    """
+    root = Path(root).absolute()
+    before = _input_inventory(root, allow_empty=True)
+    token = _PRIVATE_EXECUTION.set(root)
+    try:
+        yield
+    finally:
+        _PRIVATE_EXECUTION.reset(token)
+        if _input_inventory(root, allow_empty=True) != before:
+            raise ValueError("Private Apple package execution changed during use")
+
+
 def _verify_sdk_apple_with_tooling(
     *, sources: dict[str, tuple[Path, bool]], expected_paths: dict[str, Path],
     command_name: str, argument_builder,
@@ -216,8 +240,15 @@ def _verify_sdk_apple_with_tooling(
                 raise ValueError("Apple SDK private verification work overlaps an original input")
         private_sources = {}
         for name, (source, allow_empty) in normalized_sources.items():
-            private_sources[name] = root / name
-            _snapshot_apple_tree(source, private_sources[name], allow_empty=allow_empty)
+            if (command_name == "verify-original-apple-package-execution" and name == "execution"
+                    and _PRIVATE_EXECUTION.get() == source.absolute()):
+                private_sources[name] = source
+                from runtime_reference_transport import count
+                count("applePrivateExecutionBorrows")
+                count("applePrivateExecutionCopyBytesAvoided", sum(row["bytes"] for row in before[name]))
+            else:
+                private_sources[name] = root / name
+                _snapshot_apple_tree(source, private_sources[name], allow_empty=allow_empty)
             captured = _input_inventory(private_sources[name], allow_empty=allow_empty)
             if captured != before[name]:
                 expected_files = {row["relativePath"]: row for row in before[name]}

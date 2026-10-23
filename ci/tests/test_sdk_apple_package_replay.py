@@ -57,6 +57,7 @@ class SdkApplePackageReplayTest(unittest.TestCase):
         self.mutate = lambda _fields: None
         self.after_tooling = lambda: None
         self.process_failure = None
+        self.borrowed_execution = False
 
     def sources(self, repository, revision, output):
         self.assertEqual(self.root, repository)
@@ -105,7 +106,10 @@ class SdkApplePackageReplayTest(unittest.TestCase):
             ("--source-snapshot", self.source, False),
             ("--evidence-directory", self.evidence, True),
         ):
-            self.assertNotEqual(original, fields[option])
+            if self.borrowed_execution and option == "--evidence-directory":
+                self.assertEqual(original, fields[option])
+            else:
+                self.assertNotEqual(original, fields[option])
             self.assertEqual(
                 regular_file_inventory(original, allow_empty=allow_empty),
                 regular_file_inventory(fields[option], allow_empty=allow_empty),
@@ -157,6 +161,47 @@ class SdkApplePackageReplayTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises((TypeError, ValueError)):
                 self.verify(**{name: value})
             self.assertEqual([], self.calls)
+
+    def test_private_execution_is_borrowed_only_in_scope_with_full_tooling_replay(self):
+        snapshot = content._snapshot_apple_tree
+        copied = []
+        def capture(source, destination, **options):
+            copied.append(source)
+            return snapshot(source, destination, **options)
+        before = regular_file_inventory(self.root, allow_empty=True)
+        with content._borrow_private_apple_execution(self.evidence), \
+                mock.patch.object(content, "_snapshot_apple_tree", side_effect=capture), \
+                mock.patch("runtime_reference_transport.count") as count:
+            self.borrowed_execution = True
+            self.assertEqual(regular_file_inventory(self.product), self.verify())
+            self.assertNotIn(self.evidence, copied)
+            self.assertEqual({self.product, self.binary, self.source}, set(copied))
+            count.assert_any_call("applePrivateExecutionBorrows")
+            count.assert_any_call("applePrivateExecutionCopyBytesAvoided",
+                sum(row["bytes"] for row in regular_file_inventory(self.evidence, allow_empty=True)))
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+        self.borrowed_execution = False
+        self.verify()  # Scope exit restores independent snapshots, not persisted authority.
+        with content._borrow_private_apple_execution(self.binary):
+            self.verify()  # Another path cannot authorize the execution tree.
+        self.assertEqual(3, len(self.calls))
+
+    def test_borrowed_execution_mutation_and_failure_do_not_escape_custody(self):
+        original = (self.evidence / "execution.json").read_bytes()
+        for fail_process in (False, True):
+            self.borrowed_execution = True
+            self.mutate = lambda fields: (fields["--evidence-directory"] / "execution.json").write_bytes(b"tampered")
+            self.process_failure = subprocess.CalledProcessError(1, "replay") if fail_process else None
+            with self.subTest(fail_process=fail_process), \
+                    self.assertRaisesRegex(ValueError, "Private Apple package execution changed"), \
+                    content._borrow_private_apple_execution(self.evidence):
+                self.verify()
+            self.assertIsNone(content._PRIVATE_EXECUTION.get())
+            (self.evidence / "execution.json").write_bytes(original)
+        self.borrowed_execution = False
+        self.mutate = lambda _fields: None
+        self.process_failure = None
+        self.verify()
 
     def test_tooling_and_process_failures_never_return_product_inventory(self):
         with mock.patch.object(replay, "capture_apple_package_sources", side_effect=self.sources), \

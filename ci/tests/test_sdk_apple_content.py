@@ -476,7 +476,8 @@ class SdkAppleContentTest(unittest.TestCase):
 
     def test_original_execution_uses_only_private_caller_bound_inputs_and_returns_no_authority(self):
         before = regular_file_inventory(self.root, allow_empty=True)
-        self.assertIsNone(self.verify_original())
+        with content._borrow_private_apple_execution(self.execution):
+            self.assertIsNone(self.verify_original())  # A different gate must still snapshot.
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
         self.assertEqual("verify-original-apple-execution", self.calls[-1][3])
 
