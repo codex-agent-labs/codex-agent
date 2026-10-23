@@ -10074,7 +10074,9 @@ def resume_products(
                 phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
                 or _identity(phase) in FULL_ORIGINAL_REPLAY_INSTANCES
                 or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
-                    PhaseInstanceId("sdk", "sdk-ios", "package", "ios")}) for phase in reuse["phases"])
+                    PhaseInstanceId("sdk", "sdk-ios", "package", "ios")})
+                or phase["state"] == "waiting" and _identity(phase) in SDK_FAMILY_INSTANCES["native-package"]
+                for phase in reuse["phases"])
             recovery_hints = {}
             if recoverable and completed_frozen is not None:
                 # The fresh global index bounds discovery for every unfinished
@@ -10132,6 +10134,36 @@ def resume_products(
                     apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
                     build_plan_consumer=retain,
                     **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+            # Signed aggregate evidence unlocks SDK keys. Recover it before
+            # scanning SDK originals, using the already prepared checkpoint.
+            aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+            aggregate_phase = next((row for row in reuse["phases"]
+                                    if _identity(row) == aggregate and row["state"] == "retained"), None)
+            if (aggregate_phase is not None and not wave.get(_AGGREGATE_REQUEST_KEY)
+                    and (completed_frozen is None or completed_frozen.envelope(aggregate_phase) is None)
+                    and environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha):
+                _, selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
+                    sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
+                by_id = {_identity(phase): phase for phase in phases}
+                elected = _elected_prior_runtime_records(
+                    [*prior_records, *prior_sdk_records], selected, by_id)
+                records = (_recover_prior_runtime_aggregate_release(captured_plan, plan, by_id[aggregate],
+                    prepared / elected[aggregate]["objectPath"], prepared, repository_root=root, environ=environment,
+                    trusted_workflow_sha=sdk_original_workflow_sha) if aggregate in elected else [])
+                if records:
+                    _merge_native_comparison_records(wave, records, key=_AGGREGATE_REQUEST_KEY)
+                    ready_plans.clear()
+                    reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy, **semantic,
+                        apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
+                        build_plan_consumer=retain,
+                        **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
+                    _, release_selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
+                        sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
+                    release_by_id = {_identity(phase): phase for phase in phases}
+                    if (release_selected != selected or any(any(release_by_id[identity][field] != by_id[identity][field]
+                            for field in ("buildKey", "receiptSha256", "objectSha256")) for identity in selected)):
+                        raise ValueError("Retained aggregate release changes the selected immutable phase closure")
+                    by_id = release_by_id
             ios_binary = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
             ios_misses = [phase for phase in reuse["phases"]
                           if _identity(phase) == ios_binary and phase["state"] == "build"]
@@ -10219,27 +10251,6 @@ def resume_products(
             if instance not in sources:
                 phase = by_id[instance]
                 sources[instance] = remote_sources[(phase["source"], phase["transportSource"]["indexSha256"], phase["buildKey"])]
-        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
-        if (aggregate in elected_prior and not wave.get(_AGGREGATE_REQUEST_KEY)
-                and (completed_frozen is None or completed_frozen.envelope(by_id[aggregate]) is None)
-                and environment.get("GITHUB_TOKEN") and sdk_original_workflow_sha):
-            records = _recover_prior_runtime_aggregate_release(captured_plan, plan, by_id[aggregate],
-                sources[aggregate], prepared, repository_root=root, environ=environment,
-                trusted_workflow_sha=sdk_original_workflow_sha)
-            if records:
-                _merge_native_comparison_records(wave, records, key=_AGGREGATE_REQUEST_KEY)
-                ready_plans.clear()
-                reuse = _plan_with_sdk_tooling(wave, sdk_validation_tooling, apple_policy=sdk_apple_validation_policy, **semantic,
-                    apple_package_origin=_apple_package_origin(captured_plan, root, sdk_original_workflow_sha, environment),
-                    build_plan_consumer=retain,
-                    **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-                _, release_selected, phases = _validate_reuse_result(reuse, requested, require_complete=False,
-                    sdk_runtime_external=wave.get("sdkRuntimeSource") == "released-default")
-                release_by_id = {_identity(phase): phase for phase in phases}
-                if (release_selected != selected or any(any(release_by_id[identity][field] != by_id[identity][field]
-                        for field in ("buildKey", "receiptSha256", "objectSha256")) for identity in selected)):
-                    raise ValueError("Retained aggregate release changes the selected immutable phase closure")
-                by_id = release_by_id
         carrier_phases = []
         for instance in selected:
             if instance in originals:

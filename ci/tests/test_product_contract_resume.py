@@ -932,6 +932,94 @@ class ContractProductResumeTest(unittest.TestCase):
         discover.assert_called_once_with(self.plan, self.producer, "synthetic")
         captured.assert_called_once()
 
+    def test_signed_aggregate_unlocks_discovery_and_original_native_package_recovery(self):
+        # Real Contract/discovery; synthetic aggregate authority and SDK election.
+        # Original upload authentication is covered by native recovery fixtures.
+        import sdk_ios_binary_recovery as recovery
+        aggregate = adapter.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        native = sorted(adapter.SDK_FAMILY_INSTANCES["native-package"])
+        keys = {instance: "sha256:" + str(index + 1) * 64 for index, instance in enumerate(native)}
+        aggregate_record = {**adapter._identity_record(aggregate), "buildKey": "sha256:" + "a" * 64,
+            "receiptSha256": "sha256:" + "b" * 64, "objectSha256": "sha256:" + "c" * 64,
+            "objectPath": "prior-runtime/" + adapter.object_relative_path("sha256:" + "a" * 64, "sha256:" + "b" * 64)}
+        prior = {"id": 6, "run_attempt": 1, "event": "pull_request", "path": ".github/workflows/ci.yml",
+            "status": "completed", "conclusion": "failure", "pull_requests": [{"number": 31}],
+            "repository": {"full_name": "codex-agent-labs/codex-agent", "fork": False},
+            "head_repository": {"full_name": "codex-agent-labs/codex-agent", "fork": False}}
+        original_wave, original_validate = adapter._plan_with_sdk_tooling, adapter._validate_reuse_result
+        class Recovered(Exception):
+            pass
+        for initially_retained in (True, False):
+            events = []
+            def elect(wave, *args, **kwargs):
+                if all(row["product"] == "contract" for row in wave["requested"]):
+                    return original_wave(wave, *args, **kwargs)
+                available = {adapter._identity(row) for row in wave["availableObjects"]}
+                if set(native) <= available:
+                    raise Recovered
+                retained = initially_retained or aggregate in available
+                phases = [{**row, "state": "retained"} for row in wave["availableObjects"]
+                          if row["product"] == "contract"]
+                phases.append({**aggregate_record, "state": "retained" if retained else "build"})
+                phases.extend({**adapter._identity_record(instance), "buildKey": keys[instance],
+                    "state": "retained" if instance in available else
+                        "build" if wave.get(adapter._AGGREGATE_REQUEST_KEY) else "waiting"} for instance in native)
+                return {"phases": phases}
+            def validate(result, requested, **kwargs):
+                if all(row["product"] == "contract" for row in result["phases"]):
+                    return original_validate(result, requested, **kwargs)
+                return result, tuple(adapter._identity(row) for row in result["phases"]
+                                     if row["state"] == "retained"), result["phases"]
+            def observe(url, token):
+                self.assertEqual("synthetic", token)
+                if url.endswith("/runs/7/attempts/1"):
+                    return {**prior, "id": 7, "conclusion": "success"}
+                self.assertTrue(url.endswith("/runs/6/attempts/1"), url)
+                events.append("discovery")
+                return prior
+            def signed_handoff(_captured, _plan, phase, source, destination, **kwargs):
+                self.assertEqual(["discovery"] if initially_retained else ["discovery", "runtime"], events)
+                self.assertEqual(aggregate_record["objectPath"], source.relative_to(destination).as_posix())
+                for field in ("buildKey", "receiptSha256", "objectSha256"):
+                    self.assertEqual(aggregate_record[field], phase[field])
+                events.append("signed-handoff")
+                return [{"receiptSha256": aggregate_record["receiptSha256"], "handoffRoot": "synthetic-authority"}]
+            def capture_runtime(_plan, _producer, wanted, _destination, **kwargs):
+                self.assertEqual({aggregate: aggregate_record["buildKey"]}, wanted)
+                self.assertEqual((prior,), kwargs["attempts"])
+                events.append("runtime")
+                return {aggregate: {}}
+            def capture_native(_plan, _producer, key, destination, _root, **kwargs):
+                instance = adapter.PhaseInstanceId("sdk", kwargs["component"], "package", "desktop")
+                self.assertIn("signed-handoff", events)
+                self.assertEqual((prior,), kwargs["attempts"])
+                self.assertEqual(keys[instance], key)
+                self.assertEqual(adapter.completed_recovery_folder(instance), destination.name)
+                events.append(instance.component)
+                return [{**adapter._identity_record(instance), "buildKey": key}]
+            with self.subTest(initially_retained=initially_retained), self.control_seams(), \
+                    mock.patch.object(adapter, "_plan_with_sdk_tooling", side_effect=elect), \
+                    mock.patch.object(adapter, "_validate_reuse_result", side_effect=validate), \
+                    mock.patch.object(adapter, "api_json", side_effect=observe), \
+                    mock.patch.object(adapter, "paginated_items", return_value=[prior]), \
+                    mock.patch.object(adapter, "_elected_prior_runtime_records", side_effect=lambda _r, _s, phases:
+                        {aggregate: aggregate_record} if phases[aggregate]["state"] == "retained" else {}), \
+                    mock.patch.object(adapter, "_recover_prior_runtime_aggregate_release", side_effect=signed_handoff) as hydrate, \
+                    mock.patch.object(adapter, "capture_prior_failed_runtime_phases", side_effect=capture_runtime) as runtime, \
+                    mock.patch.object(adapter, "_prior_failed_runtime_objects", return_value=[aggregate_record]), \
+                    mock.patch.object(adapter, "_initial_runtime_validation_handoffs", return_value=[]), \
+                    mock.patch.object(recovery, "capture_prior_javascript_package", side_effect=capture_native) as capture, \
+                    self.assertRaises(Recovered):
+                adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff,
+                    self.scratch / f"aggregate-order-{initially_retained}",
+                    self.scratch / f"aggregate-order-output-{initially_retained}", repository_root=self.repository,
+                    environ={**self.environment, "GITHUB_TOKEN": "synthetic"}, sdk_original_workflow_sha="a" * 40)
+            hydrate.assert_called_once()
+            self.assertEqual(0 if initially_retained else 1, runtime.call_count)
+            self.assertEqual(5, capture.call_count)
+            self.assertEqual(["discovery", *([] if initially_retained else ["runtime"]),
+                              "signed-handoff", *(instance.component for instance in native)], events)
+
     def test_future_attempt_and_different_run_contract_snapshots_reject(self):
         for field, value in (("GITHUB_RUN_ATTEMPT", "1"), ("GITHUB_RUN_ID", "8")):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Contract.*consumer"):
