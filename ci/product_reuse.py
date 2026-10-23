@@ -5191,6 +5191,7 @@ def inspect_products(
     sdk_original_workflow_sha: str | None = None,
     include_sdk_selection: bool = False, requested_scope=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
+    _verified_state_consumer=None,
 ) -> dict[str, Any]:
     """Re-elect ready plans before target setup without admitting new shards."""
     if type(include_sdk_selection) is not bool:
@@ -5213,11 +5214,15 @@ def inspect_products(
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     request = dict(state.rebased_request)
     _merge_native_comparison_records(request, _retained_aggregate_handoffs(state_root, root), key=_AGGREGATE_REQUEST_KEY)
-    return {"result": state.prior,
+    result = {"result": state.prior,
             **({"sdkInputSelection": _sdk_input_selection(state, root,
                 include_completed=requested_scope is not None)} if include_sdk_selection else {}),
             _AGGREGATE_REQUEST_KEY: request.get(_AGGREGATE_REQUEST_KEY, []),
             "readyPlans": [state.prior_ready_plans[instance] for instance in sorted(state.prior_ready_plans)]}
+    if _verified_state_consumer is not None:
+        # Private synchronous continuation, never serialized caller evidence.
+        _verified_state_consumer(state)
+    return result
 
 
 def _sdk_javascript_worker_instance(instance):

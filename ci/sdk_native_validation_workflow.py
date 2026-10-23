@@ -380,8 +380,10 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
         private = Path(temporary).resolve()
         publication, capture = private / "publication", private / "prepared-upload"
         candidate, evidence = publication / "shard", publication / "sdk-validation-evidence"
+        current_replays = []
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 requested_scope=(instance,),
+                _product_state_consumer=current_replays.append,
                 artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, sdk_validation_tooling=tooling, **apple,
@@ -408,11 +410,25 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                 repository_root=root, environ=environ, token=token)
             capture_inventory = _inventory(capture, allow_empty=True)
             prepared = destination / "inputs"
-            ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-                expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                materialized_scope=native_consumed_predecessors(instance),
-                sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple,
-                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+            controls_unchanged()
+            if current_replays and selection["source"] == "current-runtime":
+                replay, = current_replays
+                if (type(replay) is not product_reuse._VerifiedProductState or replay.requested != (instance,)
+                        or replay.rebased_request.get("sdkRuntimeSource") == "released-default"):
+                    raise ValueError("Native validation retained replay differs from its current selection")
+                # The selection's exact replay remains inside this guarded input
+                # lifetime. Restore still verifies each receipt/object; no Windows
+                # filesystem memo or serialized trust marker is enabled.
+                ready = product_reuse._materialize_product_predecessors(replay, instance, prepared,
+                    expected_build_key, root, materialized_scope=native_consumed_predecessors(instance))
+            else:
+                # Released defaults additionally capture their external Runtime
+                # predecessors inside the existing authenticated callback.
+                ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
+                    expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                    materialized_scope=native_consumed_predecessors(instance),
+                    sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha, **apple,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             prepared_inventory = _inventory(prepared, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(prepared / "producer.json", "Native validation producer"))
             ready_bytes, producer_bytes = canonical_json_bytes(ready), canonical_json_bytes(producer)

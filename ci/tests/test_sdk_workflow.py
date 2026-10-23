@@ -16,17 +16,19 @@ from ci import sdk_workflow as workflow
 
 
 class SdkWorkflowTest(unittest.TestCase):
-    def test_compact_apple_pins_select_current_completion_not_legacy_recovery_hint(self):
+    def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        def selected(row):
-            return (row["product"], row["component"], row["phase"], row["target"]) == (
-                "sdk", "sdk-ios", "validation", "ios-arm64")
-        phase, = [row for row in spec["completedPhases"] if selected(row)]
-        original, = [row for row in spec["originals"] if selected(row)]
+        # Schema4 lists current additions; these exact Apple pins belong to the
+        # preserved completion it references, not its new completedPhases rows.
+        self.assertEqual((12258354267, "e3e1a2dd335f1d0bd432d21a0d22c976b37afb54"),
+            (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
         self.assertEqual(
-            {**{field: phase[field] for field in ("buildKey", "receiptSha256")},
-             **{field: original[field] for field in ("artifactId", "artifactSha256", "jobId")}},
+            {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
+             "receiptSha256": "sha256:a9aa3a319595b754bc06ad843ff0142a4c7527824768a91cb131a3610c51adab",
+             "artifactId": 12036959536,
+             "artifactSha256": "sha256:835b2c7641fb225ff2a35f8f8f326746b6bf456cdffc45a2ff07c12ede280202",
+             "jobId": 116893614838},
             locator.RETAINED_PARITY_SOURCE)
 
     def test_compact_apple_parity_requires_qualified_original_and_exact_raw_reports(self):

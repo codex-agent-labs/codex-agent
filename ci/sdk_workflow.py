@@ -844,13 +844,14 @@ def _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy, *,
 def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None,
                sdk_apple_validation_policy=None, *, trusted_workflow_sha=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, requested_scope=None,
-    completed_frozen=None):
+    completed_frozen=None, _product_state_consumer=None):
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     validated = product_reuse._validate_plan(plan, repository_root)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ, include_sdk_selection=True,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"requested_scope": requested_scope} if requested_scope is not None else {}),
+        **({"_verified_state_consumer": _product_state_consumer} if _product_state_consumer is not None else {}),
         **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -962,7 +963,7 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                     trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
                     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, requested_scope=None,
-    retained_sdk_inputs_source=None, completed_frozen=None):
+    retained_sdk_inputs_source=None, completed_frozen=None, _product_state_consumer=None):
     """Keep upload, SDK policy and raw Runtime originals verified through consumer use.
 
     Returned paths expire on exit. Consumers must finish using them inside the
@@ -973,6 +974,8 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
     validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ,
                                                 sdk_validation_tooling=sdk_validation_tooling,
                                                 requested_scope=requested_scope,
+                                                **({"_product_state_consumer": _product_state_consumer}
+                                                   if _product_state_consumer is not None else {}),
                                                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                                                 trusted_workflow_sha=trusted_workflow_sha,
                                                 **_caller_policies(None, sdk_apple_validation_policy,

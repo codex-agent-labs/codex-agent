@@ -247,6 +247,76 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertFalse(self.capture_path.exists())
         self.assertEqual(self.package_before, regular_file_inventory(self.package_stage.parent))
 
+    def test_current_runtime_reuses_selection_replay_and_rejects_changed_controls(self):
+        # Real selection/callback composition; source/semantic gates remain the
+        # explicit fixture seams. This is not hosted or Windows acceptance.
+        actual_inputs = workflow.sdk_workflow.verified_inputs
+        actual_inspect = workflow.product_reuse.inspect_products
+        old_inspect, old_capture = self.inspect, self.capture
+        self.selection["source"] = "current-runtime"
+        identity = PhaseInstanceId("sdk", "python", "validation", "linux-x64")
+        context = workflow.product_reuse._VerifiedProductState(
+            plan={"validationCommit": self.arguments["policy_revision"]}, producer=self.producer,
+            consumer={}, requested=(identity,), closure=(identity,), expected_fixed={},
+            rebased_request={}, prior={}, prior_by_instance={}, sources={},
+            prior_carrier_phases={}, prior_ready_plans={identity: self.ready})
+
+        def inspect(*args, **kwargs):
+            return (actual_inspect(*args, **kwargs) if kwargs.get("include_sdk_selection")
+                    else old_inspect(*args, **kwargs))
+
+        @contextmanager
+        def verified(*args, **kwargs):
+            self.live = True
+            try:
+                with actual_inputs(*args, **kwargs) as inputs:
+                    yield inputs
+            finally:
+                self.live = False
+
+        def materialize(state, instance, destination, key, root, **kwargs):
+            self.assertIs(context, state)
+            self.assertEqual(self.root, root)
+            return self.materialize(self.plan_path, self.discovery, self.state, instance, destination,
+                expected_build_key=key, sdk_validation_tooling=self.tooling,
+                sdk_original_workflow_sha=self.arguments["trusted_workflow_sha"], **kwargs)
+
+        def captured_inputs(plan, destination, **kwargs):
+            destination.mkdir()
+
+        @contextmanager
+        def original_inputs(*args, **kwargs):
+            yield {name: self.verified_inputs[name] for name in ("sdk", "runtime")}
+
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                self.destination = self.root / ("replayed-" + str(changed))
+                def captured_preparation(*args, **kwargs):
+                    result = old_capture(*args, **kwargs)
+                    if changed:
+                        (self.state / "changed-control.json").write_bytes(b"mutation after replay\n")
+                    return result
+                with patch.object(self, "inspect", side_effect=inspect), \
+                        patch.object(self, "verified", side_effect=verified), \
+                        patch.object(self, "capture", side_effect=captured_preparation), \
+                        patch.object(workflow.product_reuse, "_validate_plan", return_value=context.plan), \
+                        patch.object(workflow.product_reuse, "_verified_product_state", return_value=context) as replay, \
+                        patch.object(workflow.product_reuse, "_retained_aggregate_handoffs", return_value=[]), \
+                        patch.object(workflow.product_reuse, "_sdk_input_selection", return_value=self.selection), \
+                        patch.object(workflow.product_reuse, "capture_sdk_inputs_upload", side_effect=captured_inputs), \
+                        patch.object(workflow.sdk_workflow, "verified_apple_original_inputs", side_effect=original_inputs), \
+                        patch.object(workflow.product_reuse, "_materialize_product_predecessors", side_effect=materialize) as restored:
+                    if changed:
+                        with self.assertRaisesRegex(ValueError, "original election or caller policy changed"):
+                            self.invoke()
+                        restored.assert_not_called()
+                        self.worker_mock.assert_not_called()
+                        self.assertFalse((self.destination / "shard").exists())
+                    else:
+                        self.invoke()
+                        restored.assert_called_once()
+                    replay.assert_called_once()
+
     def test_csharp_worker_and_retained_carrier_receive_unchanged_original_binary(self):
         self.ready["component"] = self.arguments["component"] = "csharp"
         self.ready["buildKey"] = compute_build_key(**{name: self.ready[name] for name in
