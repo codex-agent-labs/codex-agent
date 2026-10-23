@@ -805,7 +805,7 @@ class CompletedFrozenReuse:
     private product state. Bodies remain digest-checked when actually consumed.
     Only fetch_completed_frozen can create it after fresh native authentication.
     """
-    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible")
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible", "_sdk_context")
 
     def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None):
         if verified is not _COMPLETED_FROZEN:
@@ -817,6 +817,15 @@ class CompletedFrozenReuse:
         self._revision = revision
         self._eligible = None
         self._sdk = None if sdk is None else canonical_json_bytes(sdk)
+        self._sdk_context = None
+        extension = sdk.get("extension") if sdk is not None else None
+        if extension is not None and extension["spec"].get("schemaVersion") == 4:
+            from completed_sdk_reuse import source_predecessors
+            context_spec = extension["spec"]
+            context = source_predecessors(context_spec)
+            self._sdk_context = (context_spec["source"]["inventoryCommit"],
+                frozenset(_phase_records(context_spec["completedPhases"], "Context-qualified SDK phases")),
+                canonical_json_bytes([context[key] for key in sorted(context)]))
         self._body_cache = None if body_cache is None else str(Path(body_cache))
         self._originals = frozenset((canonical_json_bytes(record["identity"]["locator"]),
             sha256_bytes(canonical_json_bytes(record["receipt"]))) for record in originals)
@@ -1346,6 +1355,22 @@ class CompletedFrozenReuse:
             raise QualificationIncompatible("Completed phase has changed current inputs")
         from products.registry import phase_instance_dependencies
         actual = _phase_records([value["receipt"] for value in upstream], "Current upstream receipts")
+        if self._sdk_context is not None and instance in self._sdk_context[1]:
+            # Observation-only predecessors never become native claims. The
+            # planner must resolve their ordinary authentication gates first.
+            context = _phase_records(load_canonical_json_bytes(self._sdk_context[2]), "SDK source predecessors")
+            dependencies = {**phases, **context}
+            if set(actual) != set(phase_instance_dependencies(instance)):
+                raise QualificationIncompatible("Completed SDK has changed source dependencies")
+            for value in upstream:
+                identity = PhaseInstanceId(*(value["receipt"][field] for field in _PHASE_FIELDS))
+                expected = dependencies.get(identity)
+                if (expected is None or value["receipt"]["buildKey"] != expected["buildKey"]
+                        or sha256_bytes(canonical_json_bytes(value["receipt"])) != expected["receiptSha256"]
+                        or value.get("receiptSha256") != expected["receiptSha256"]
+                        or value.get("objectSha256") != expected["objectSha256"]):
+                    raise QualificationIncompatible("Completed SDK has changed source dependencies")
+            return {field: receipt[field] for field in PHASE_PLAN_KEYS}
         if set(actual) != set(phase_instance_dependencies(instance)) or any(
                 dependency not in phases or sha256_bytes(canonical_json_bytes(original)) !=
                 phases[dependency]["receiptSha256"] for dependency, original in actual.items()):
@@ -1418,7 +1443,8 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         frozen_result, sdk = bounded_verify(lambda verify: verify(), (
             authenticate_frozen,
             lambda: _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
-                root=root, revision=revision, frozen=spec, token=original["token"])))
+                root=root, revision=revision, frozen=spec, token=original["token"],
+                consumer_revision=current_revision)))
         report, qualified, phases, proof = frozen_result
 
     receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
@@ -1481,8 +1507,19 @@ def _restrict_completed_reuse(cap, root, revision):
             or products._versions(root, revision) != spec["request"]["versions"]):
         raise QualificationIncompatible("Requalification changes current authorities or versions")
     eligible = {instance for instance in phases if not phase_inventory_paths(changed, instance)}
+    contextual, context_dependencies = frozenset(), frozenset()
+    if cap._sdk_context is not None:
+        baseline, contextual, raw_context = cap._sdk_context
+        source = dict(tree_entries(root, baseline))
+        sdk_changed = _changed_inventory_paths(source, after)
+        eligible.difference_update(contextual)
+        eligible.update(instance for instance in contextual if instance in phases
+                        and not phase_inventory_paths(sdk_changed, instance))
+        context_dependencies = frozenset(_phase_records(load_canonical_json_bytes(raw_context),
+                                                       "SDK source predecessors"))
     while True:
-        retained = {instance for instance in eligible if set(phase_instance_dependencies(instance)) <= eligible}
+        retained = {instance for instance in eligible if set(phase_instance_dependencies(instance)) <=
+                    (eligible | context_dependencies if instance in contextual else eligible)}
         if retained == eligible:
             break
         eligible = retained
@@ -1501,7 +1538,7 @@ def _native_pin_arguments(value):
         ("run_attempt", "runAttempt"), ("signer_commit", "signerCommit"), ("source_commit", "sourceCommit"))}
 
 
-def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token):
+def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token, consumer_revision=None):
     import product_reuse as products
     from products.inventory import git_regular_blob_bytes, tree_entries
     from products.selection import phase_inventory_paths
@@ -1510,10 +1547,11 @@ def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token):
     _authenticate_native_subject(captured["completion.json"], captured["bundle.jsonl"], "completion.json",
         signer_commit=arguments["signer_commit"], source_commit=arguments["source_commit"])
     proof = load_canonical_json_bytes(captured["completion.json"])
-    return _validate_completed_sdk(proof, arguments, root=root, revision=revision, frozen=frozen, token=token)
+    return _validate_completed_sdk(proof, arguments, root=root, revision=revision, frozen=frozen, token=token,
+        **({"consumer_revision": consumer_revision} if consumer_revision is not None else {}))
 
 
-def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
+def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token, consumer_revision=None):
     """Validate only after native subject admission (or an admitted native parent)."""
     import product_reuse as products
     from products.inventory import git_regular_blob_bytes, tree_entries
@@ -1522,9 +1560,10 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token):
     raw = git_regular_blob_bytes(root, arguments["signer_commit"],
         _sdk_completed_spec_path(root, arguments["signer_commit"]), max_bytes=LIMIT)
     spec = load_canonical_json_bytes(raw)
-    if spec.get("schemaVersion") in (2, 3):
+    if spec.get("schemaVersion") in (2, 3, 4):
         from completed_sdk_reuse import validate_extension
-        return validate_extension(spec, proof, arguments, root=root, revision=revision, frozen=frozen, token=token)
+        return validate_extension(spec, proof, arguments, root=root, revision=revision, frozen=frozen, token=token,
+            **({"consumer_revision": consumer_revision} if spec["schemaVersion"] == 4 else {}))
     proof = require_exact_keys(proof, {
         "schemaVersion", "kind", "issuerCommit", "specSha256", "source", "original", "controls", "member", "sdkInputs"},
         "Native completed SDK proof")
@@ -1757,7 +1796,7 @@ def issue_completed_sdk(work, token):
         _sdk_completed_spec_path(root, commit), _sdk_original_spec_path(root, commit), _frozen_spec_path(root, commit)))
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
-    if spec.get("schemaVersion") in (2, 3):
+    if spec.get("schemaVersion") in (2, 3, 4):
         from completed_sdk_reuse import issue_extension
         return issue_extension(spec, work, root=root, revision=commit, frozen=frozen, token=token)
     artifact, observed, locator = _observe_completed_sdk_resume(spec, token)

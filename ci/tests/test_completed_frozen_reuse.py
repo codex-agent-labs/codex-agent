@@ -560,6 +560,100 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual(50, len(cap.completed_phases()))
                 self.assertEqual("d" * 40, cap._revision)
 
+    def test_context_qualified_sdk_uses_exact_upstream_without_claiming_native_completion(self):
+        # Synthetic admitted controls exercise consumer semantics, not hosted trust.
+        package = PhaseInstanceId("sdk", "python", "package", "desktop")
+        changed = PhaseInstanceId("runtime", "linux-x64", "package", "linux-x64")
+        source_revision, current_revision = "e" * 40, "f" * 40
+        spec = copy.deepcopy(self.spec)
+        receipts = copy.deepcopy(self.receipts)
+        context = [{field: row[field] for field in (*FIELDS, *qualification._OBJECT_FIELDS)}
+                   for row in spec["expectedResult"]["phases"]]
+        current = receipts[changed]
+        current["inputs"]["flagsDigest"] = sha256_bytes(b"changed Runtime input")
+        current["buildKey"] = compute_build_key(**{field: current[field] for field in FIELDS},
+                                               inputs=current["inputs"])
+        validate_phase_receipt(current)
+        changed_context = next(row for row in context if product_reuse._identity(row) == changed)
+        changed_context.update(buildKey=current["buildKey"],
+            receiptSha256=sha256_bytes(canonical_json_bytes(current)),
+            objectSha256=sha256_bytes(b"current Runtime object"))
+        by_id = {product_reuse._identity(row): row for row in context}
+        upstream = [{"receipt": receipts[identity],
+            "receiptBytes": canonical_json_bytes(receipts[identity]),
+            **{field: by_id[identity][field] for field in ("receiptSha256", "objectSha256")}}
+            for identity in phase_instance_dependencies(package)]
+        receipt = phase_receipt()
+        receipt.update(product="sdk", component="python", phase="package", target="desktop",
+                       productVersion=spec["request"]["versions"]["sdk"])
+        receipt["inputs"]["versionIdentity"] = _phase_version_identity(package, spec["request"]["versions"])
+        receipt["buildKey"] = compute_build_key(**{field: receipt[field] for field in FIELDS},
+                                               inputs=receipt["inputs"])
+        validate_phase_receipt(receipt)
+        row = {**{field: receipt[field] for field in (*FIELDS, "buildKey")},
+            "receiptSha256": sha256_bytes(canonical_json_bytes(receipt)),
+            "objectSha256": sha256_bytes(b"qualified Python package"),
+            "state": "retained", "source": None, "transportSource": None, "misses": []}
+        spec["expectedResult"]["phases"].append(row)
+        spec["request"]["phaseAuthorities"].append({**{field: receipt[field] for field in FIELDS},
+            **{field: receipt["inputs"][field] for field in
+               ("flagsDigest", "toolchainProfileDigest", "outputSchemaVersion")}})
+        sdk = {"extension": {"spec": {"schemaVersion": 4,
+            "source": {"inventoryCommit": source_revision}, "sourcePredecessors": context,
+            "completedPhases": [{**{field: row[field] for field in (*FIELDS, *qualification._OBJECT_FIELDS)},
+                                 "receiptPath": "product-resume-state/python/phase-receipt.json"}]}}}
+        cap = qualification.CompletedFrozenReuse(spec, [*self.receipts.values(), receipt],
+            qualification._COMPLETED_FROZEN, revision="d" * 40,
+            originals=self.qualified["originals"], sdk=sdk)
+        python_input = "codex-agent-bindings/python/src/codex_agent/__init__.py"
+        runtime_input = "codex-agent-runtime-desktop/src/linuxX64Main/gradle/runtime.gradle.kts"
+        trees = {"d" * 40: {python_input: "100644 blob old-sdk", runtime_input: "100644 blob old-runtime"},
+            source_revision: {python_input: "100644 blob new-sdk", runtime_input: "100644 blob new-runtime"}}
+        trees[current_revision] = dict(trees[source_revision])
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(inventory, "tree_entries", side_effect=lambda _root, revision: trees[revision]), \
+                patch.object(product_reuse, "_authorities", side_effect=lambda _root, _revision, phases:
+                    ([authority for authority in spec["request"]["phaseAuthorities"]
+                      if product_reuse._identity(authority) in phases], None)), \
+                patch.object(product_reuse, "_versions", return_value=spec["request"]["versions"]):
+            root = Path(temporary).resolve()
+            removed = qualification._restrict_completed_reuse(cap, root, current_revision)
+            self.assertIn(changed, removed)
+            self.assertIn(package, cap.completed_phases())
+            self.assertEqual(51 - len(removed), len(cap.completed_phases()))
+            for identity in removed:
+                if identity in by_id:
+                    self.assertIsNone(cap.envelope(by_id[identity]))
+                    self.assertNotIn(by_id[identity]["objectSha256"], cap.deferred_objects())
+            self.assertNotIn(changed, {product_reuse._identity(value["receipt"]) for value in cap.runtime_sources()})
+            envelope = cap.envelope(row, canonical_json_bytes(receipt))
+            values = {"inventory": receipt["inputs"]["inventory"], "versions": spec["request"]["versions"],
+                "flags_digest": receipt["inputs"]["flagsDigest"],
+                "toolchain_profile_digest": receipt["inputs"]["toolchainProfileDigest"], "output_schema_version": 1}
+            self.assertEqual(receipt["buildKey"], cap.phase_plan(package, values, envelope, upstream)["buildKey"])
+            for field in ("buildKey", "receiptSha256", "objectSha256", "missing"):
+                with self.subTest(upstream=field):
+                    altered = copy.deepcopy(upstream)
+                    target = next(value for value in altered if product_reuse._identity(value["receipt"]) == changed)
+                    if field == "missing":
+                        altered.remove(target)
+                    elif field == "buildKey":
+                        target["receipt"][field] = POLICY
+                    else:
+                        target[field] = POLICY
+                    with self.assertRaisesRegex(qualification.QualificationIncompatible, "source dependencies"):
+                        cap.phase_plan(package, values, envelope, altered)
+            for field, value in (("inventory", []), ("versions", {}), ("flags_digest", POLICY)):
+                with self.subTest(own_input=field), \
+                        self.assertRaisesRegex(qualification.QualificationIncompatible, "current inputs"):
+                    cap.phase_plan(package, {**values, field: value}, envelope, upstream)
+            later = "a" * 40
+            trees[later] = {**trees[current_revision], python_input: "100644 blob later-sdk"}
+            self.assertEqual((package,), qualification._restrict_completed_reuse(cap, root, later))
+            self.assertIsNone(cap.envelope(row))
+            self.assertNotIn(row["objectSha256"], cap.deferred_objects())
+            self.assertIsNone(cap.phase_plan(package, values, envelope, upstream))
+
     def test_requalification_authenticates_baseline_then_restricts_before_return(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

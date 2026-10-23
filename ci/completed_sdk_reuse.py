@@ -9,7 +9,7 @@ from pathlib import Path
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, require_exact_keys,
-    require_relative_path, sha256_bytes, validate_file_record,
+    require_relative_path, require_sha256, sha256_bytes, validate_file_record,
 )
 from products.receipt import validate_phase_receipt, validate_producer
 from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
@@ -44,8 +44,27 @@ def _identity(record):
 
 
 def original_worker_member(spec):
-    """V3 compact states omit bodies; consumption uses exact original workers."""
-    return spec["schemaVersion"] == 3
+    """Compact states omit bodies; consumption uses exact original workers."""
+    return spec["schemaVersion"] in (3, 4)
+
+
+def source_predecessor_context(spec):
+    return type(spec) is dict and type(spec.get("schemaVersion")) is int and spec["schemaVersion"] == 4
+
+
+def source_predecessors(spec):
+    """Observed source context, never additional native completion claims."""
+    if not source_predecessor_context(spec):
+        return {}
+    rows = spec.get("sourcePredecessors")
+    if type(rows) is not list or not rows or len(rows) > len(PHASE_INSTANCE_IDS):
+        raise ValueError("Planned SDK completion requires bounded source predecessors")
+    result = _records(rows, "Planned SDK source predecessors")
+    for row in result.values():
+        require_exact_keys(row, set(IDENTITY + OBJECT), "Planned SDK source predecessor")
+        for field in OBJECT:
+            require_sha256(row[field], "Planned SDK predecessor " + field)
+    return result
 
 
 def collected_validation(spec):
@@ -139,7 +158,10 @@ def validate_controls(spec, controls, base):
     frozen = _records(base["expectedResult"]["phases"], "Native completed predecessors")
     if set(selected) & set(frozen):
         raise ValueError("Incremental SDK completion replaces an existing native phase")
-    expected = {**frozen, **selected}
+    context = source_predecessors(spec)
+    if source_predecessor_context(spec) and set(context) & set(selected):
+        raise ValueError("Planned SDK source context overlaps selected native claims")
+    expected = {**(context if source_predecessor_context(spec) else frozen), **selected}
     if (set(available) != set(expected)
             or {instance for instance, row in phases.items() if row["state"] in {"retained", "reused"}}
             != set(expected) or result["matrices"]["contract"] or result["matrices"]["runtime"]):
@@ -150,8 +172,16 @@ def validate_controls(spec, controls, base):
         if any(phases[instance].get(field) != expected_phase[field]
                or available[instance].get(field) != expected_phase[field] for field in OBJECT):
             raise ValueError("Incremental SDK completion changes an admitted original")
-        if instance in frozen and authorities.get(instance) != original_authorities[instance]:
+        if (instance in frozen and (not source_predecessor_context(spec)
+                or all(context.get(instance, {}).get(field) == frozen[instance][field] for field in OBJECT))
+                and authorities.get(instance) != original_authorities[instance]):
             raise ValueError("Incremental SDK completion changes a native predecessor authority")
+    if source_predecessor_context(spec):
+        from products.reuse import _dependency_closure
+        if not set(_dependency_closure(tuple(selected))) <= set(expected):
+            raise ValueError("Planned SDK source context lacks a selected dependency closure")
+        if any(instance not in authorities for instance in expected):
+            raise ValueError("Planned SDK source context lacks its phase authorities")
     receipts = []
     receipt_prefixes = (prefix, "product-resume-state/") if collected_validation(spec) else (prefix,)
     for instance, phase in selected.items():
@@ -294,14 +324,21 @@ def _base(frozen, sdk):
 def _spec(spec):
     import reuse_qualification as native
     collected = collected_validation(spec)
-    reuse = collected and "reuseCompletion" in spec
+    context = source_predecessor_context(spec)
+    reuse = (collected or context) and "reuseCompletion" in spec
     require_exact_keys(spec, {"schemaVersion", "parent", "parentProofSha256", "source", "stateRoot",
         "controls", "completedPhases", "originals", "contractControls", "contractFiles"}
         | ({"sourcePlan"} if collected else set())
         | ({"receiptObjects"} if collected and "receiptObjects" in spec else set())
+        | ({"sourcePredecessors"} if context else set())
         | ({"reuseCompletion", "reuseCompletionProofSha256"} if reuse else set()), "Incremental SDK spec")
-    if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3):
+    if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3, 4):
         raise ValueError("Unsupported incremental SDK spec")
+    if context:
+        source_predecessors(spec)
+        if (collected or spec["source"].get("jobName") != "product-validation / plan"
+                or spec["stateRoot"] != "product-resume-state"):
+            raise ValueError("Planned SDK source context requires the exact successful plan role")
     native._native_pin_arguments(spec["parent"])
     native.require_sha256(spec["parentProofSha256"], "Approved native parent subject")
     selected = _records(spec["completedPhases"], "Incremental SDK phases")
@@ -318,7 +355,9 @@ def _spec(spec):
         for field in ("jobId", "artifactId", "artifactBytes"):
             if type(source[field]) is not int or source[field] <= 0:
                 raise ValueError("Incremental native source has invalid positive identity")
-        if source["artifactBytes"] > (16 * 1024**3 if collected and not contract else LIMIT):
+        bound = (64 * 1024**2 if context and not contract else
+                 16 * 1024**3 if collected and not contract else LIMIT)
+        if source["artifactBytes"] > bound:
             raise ValueError("Incremental controls exceed the bounded original upload")
     if (spec["stateRoot"] != ("runtime-state" if collected else "product-resume-state")
             or type(spec["source"]["jobName"]) is not str
@@ -396,10 +435,14 @@ def _contract_files(spec, files, sdk):
     return files
 
 
-def validate_extension(spec, proof, arguments, *, root, revision, frozen, token):
+def validate_extension(spec, proof, arguments, *, root, revision, frozen, token, consumer_revision=None):
     """The caller has authenticated this exact new native subject first."""
     import reuse_qualification as native
     originals = _spec(spec)
+    if source_predecessor_context(spec):
+        if consumer_revision is None:
+            raise ValueError("Planned SDK completion requires an explicit current consumer revision")
+        native._commit(consumer_revision)
     require_exact_keys(proof, {"schemaVersion", "kind", "issuerCommit", "specSha256", "parentProof",
         "controls", "source", "originals", "members", "contractSource", "contractFiles"},
         "Incremental native completion")
@@ -442,7 +485,8 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token)
         raise ValueError("Incremental SDK original native observations changed")
     # A fresh runner may lack the original PR merge even with full branch history.
     # Acquire only the exact native-pinned tree after its live source checks pass.
-    validate_current(request, phases, receipts, root=root, revision=revision,
+    validate_current(request, phases, receipts, root=root,
+                     revision=consumer_revision if source_predecessor_context(spec) else revision,
                      original_revision=_inventory_revision(spec, root, token=token))
     available = _records(request["availableObjects"], "Incremental original objects")
     if type(proof["members"]) is not list or len(proof["members"]) != len(phases):
@@ -493,7 +537,10 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None):
         before, after = (dict(tree_entries(root, _inventory_revision(subject, root)))
                          for subject in (old, spec))
         changed = _changed_inventory_paths(before, after)
-        if any(not phase_inventory_paths(changed, instance) for instance in omitted):
+        from products.reuse import _dependency_closure
+        if any(not any(phase_inventory_paths(changed, dependency) for dependency in
+                       (_dependency_closure((instance,)) if source_predecessor_context(spec) else (instance,)))
+               for instance in omitted):
             raise ValueError("Reused native completion drops an unchanged SDK phase")
     qualified = {}
     for instance, member, locator in zip(sorted(earlier), proof["members"], proof["originals"], strict=True):
@@ -502,6 +549,10 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None):
             # Its old proof/receipt remains immutable in reuseCompletion. Changed
             # inputs invalidate this key; no replacement receives body authority.
             continue
+        if source_predecessor_context(spec) and instance not in (
+                PhaseInstanceId("sdk", "sdk-core", "binary", "common"),
+                PhaseInstanceId("sdk", "sdk-android", "binary", "android")):
+            continue  # Only these unchanged SDK bodies are inherited by this source checkpoint.
         if phase['buildKey'] != selected[instance]['buildKey']:
             # A changed key inherits no qualification: the issuer below verifies
             # its new successful original and complete object independently.

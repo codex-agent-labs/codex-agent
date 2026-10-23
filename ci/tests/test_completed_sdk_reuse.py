@@ -105,6 +105,89 @@ class CompletedSdkControlsTest(unittest.TestCase):
         self.spec['controls'] = [{'relativePath': path, 'bytes': len(control_bytes(path, value)),
             'sha256': sha256_bytes(control_bytes(path, value))} for path, value in sorted(self.controls.items())]
 
+    def enable_planned_context(self):
+        from products.reuse import _dependency_closure
+        prefix = 'product-resume-state/'
+        request = self.controls[prefix + 'reuse-wave-request.json']
+        result = self.controls[prefix + 'reuse-wave-result.json']
+        selected = completed._records(self.spec['completedPhases'], 'Selected fixture SDK phases')
+        available = completed._records(request['availableObjects'], 'Fixture available phases')
+        for instance in _dependency_closure(tuple(selected)):
+            if instance in available:
+                continue
+            identity = {name: getattr(instance, name) for name in completed.IDENTITY}
+            row = {**identity, **{name: sha256_bytes((str(instance) + name).encode())
+                                 for name in completed.OBJECT}}
+            request['availableObjects'].append(row)
+            result['phases'].append({**row, 'state': 'retained'})
+            request['phaseAuthorities'].append({**request['phaseAuthorities'][0], **identity})
+        self.spec.update(schemaVersion=4, sourcePredecessors=[
+            {name: row[name] for name in (*completed.IDENTITY, *completed.OBJECT)}
+            for row in request['availableObjects'] if completed._identity(row) not in selected])
+        self.spec['source']['jobName'] = 'product-validation / plan'
+        self.bind_controls()
+
+    def test_planned_context_observes_changed_runtime_without_claiming_its_completion(self):
+        self.enable_planned_context()
+        runtime = next(row for row in self.spec['sourcePredecessors'] if row['product'] == 'runtime')
+        old = {**runtime, 'buildKey': sha256_bytes(b'old runtime key')}
+        self.base['expectedResult']['phases'].append(old)
+        authority = next(row for row in self.controls['product-resume-state/reuse-wave-request.json']['phaseAuthorities']
+                         if completed._identity(row) == completed._identity(runtime))
+        self.base['request']['phaseAuthorities'].append(authority)
+        original = canonical_json_bytes(self.base)
+        request, additions, receipts = self.validate()
+        self.assertEqual([self.receipt], receipts)
+        self.assertEqual([completed._identity(self.receipt)], [completed._identity(row) for row in additions])
+        self.assertGreater(len(request['availableObjects']), len(additions))
+        self.assertEqual(original, canonical_json_bytes(self.base))
+        context = completed.source_predecessors(self.spec)
+        self.assertEqual(runtime, context[completed._identity(runtime)])
+        saved_spec, saved_controls = deepcopy(self.spec), deepcopy(self.controls)
+        for case in ('tuple', 'overlap', 'missing-dependency', 'failed-source', 'extra-authority', 'runtime-claim'):
+            self.spec, self.controls = deepcopy(saved_spec), deepcopy(saved_controls)
+            if case == 'tuple': self.spec['sourcePredecessors'][0]['objectSha256'] = sha256_bytes(b'wrong')
+            elif case == 'overlap':
+                self.spec['sourcePredecessors'].append({k: self.spec['completedPhases'][0][k]
+                                                       for k in (*completed.IDENTITY, *completed.OBJECT)})
+            elif case == 'missing-dependency':
+                removed = completed._identity(self.spec['sourcePredecessors'].pop())
+                for key, field in (('reuse-wave-request.json', 'availableObjects'), ('reuse-wave-result.json', 'phases')):
+                    self.controls['product-resume-state/' + key][field] = [row for row in
+                        self.controls['product-resume-state/' + key][field] if completed._identity(row) != removed]
+            elif case == 'failed-source':
+                self.controls['product-resume-state/reuse-wave-result.json']['phases'][-1]['state'] = 'failed'
+            elif case == 'extra-authority': self.spec['sourcePredecessors'][0]['authority'] = 'not a claim'
+            else: self.spec['completedPhases'][0].update(product='runtime', component='jvm', target='jvm')
+            self.bind_controls()
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.validate()
+
+    def test_schema4_requires_fixed_plan_source_and_separate_archive_control_limits(self):
+        self.enable_planned_context()
+        spec = ordinary_spec()
+        spec.update({key: deepcopy(self.spec[key]) for key in
+                     ('schemaVersion', 'sourcePredecessors', 'completedPhases', 'controls')})
+        spec['originals'] = [{**spec['originals'][0], **{field: self.spec['completedPhases'][0][field]
+                                                      for field in completed.IDENTITY}}]
+        spec['source']['jobName'] = 'product-validation / plan'
+        spec['source']['artifactBytes'] = 64 * 1024**2
+        completed._spec(spec)
+        self.assertTrue(completed.original_worker_member(spec))
+        self.assertEqual(16 * 1024**2, completed.LIMIT)
+        for case in ('outer-bound', 'contract-bound', 'source-role', 'state-root', 'unknown-key', 'legacy'):
+            changed = deepcopy(spec)
+            if case == 'outer-bound': changed['source']['artifactBytes'] += 1
+            elif case == 'contract-bound': changed['contractControls']['artifactBytes'] = completed.LIMIT + 1
+            elif case == 'source-role': changed['source']['jobName'] = 'product-validation / product-resume'
+            elif case == 'state-root': changed['stateRoot'] = 'runtime-state'
+            elif case == 'unknown-key': changed['sourcePredecessors'][0]['producer'] = {}
+            else: changed['schemaVersion'] = 3
+            with self.subTest(case=case), self.assertRaises(ValueError): completed._spec(changed)
+        with self.assertRaisesRegex(ValueError, 'explicit current consumer revision'):
+            completed.validate_extension(spec, {}, {}, root=Path.cwd(), revision='a' * 40,
+                                         frozen={}, token='synthetic')
+
     def test_native_sdk_capture_and_replay_keep_only_exact_controls(self):
         from sdk_phase import COMPACT_REPLAY_INSTANCES
         for instance in COMPACT_REPLAY_INSTANCES:
@@ -136,7 +219,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             stack.enter_context(patch.object(recovery.products, '_runtime_prior_workflow_sha', return_value='a' * 40))
             records = recovery.capture_completed_javascript(root, root, completed_frozen=cap,
                 producer=consumer, token='synthetic')
-            from sdk_phase import completed_recovery_folder, LEGACY_REPLAY_INSTANCES
+            from sdk_phase import completed_recovery_folder, FULL_ORIGINAL_REPLAY_INSTANCES
             instance = recovery._javascript_instance(phase, component, target)
             capture = root / completed_recovery_folder(instance)
             def replay(authority):
@@ -152,7 +235,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             shard = capture / f'{component}/{phase}/{target}/original/shard'
             self.assertEqual({PHASE_SHARD_NAME, 'phase-receipt.json'}, {p.name for p in shard.iterdir()})
             with patch.object(recovery, '_capture_javascript_package', side_effect=ValueError('ordinary whole upload required')):
-                with self.assertRaisesRegex(ValueError, 'whole upload required' if instance in LEGACY_REPLAY_INSTANCES else 'exact native authority'):
+                with self.assertRaisesRegex(ValueError, 'whole upload required' if instance in FULL_ORIGINAL_REPLAY_INSTANCES else 'exact native authority'):
                     replay(None)
             with self.assertRaisesRegex(ValueError, 'concrete native authority'):
                 replay(object())
@@ -912,29 +995,43 @@ class CompletedSdkControlsTest(unittest.TestCase):
         original = canonical_json_bytes(prior)
         path = 'codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py'
         before = {path: ('100644', '1' * 40)}
-        for case in ('owning', 'unrelated', 'unchanged', 'wrong-tree'):
+        for case in ('owning', 'unrelated', 'unchanged', 'wrong-tree', 'planned-upstream', 'legacy-upstream'):
+            pins = deepcopy(spec)
             after = dict(before)
             if case in ('owning', 'wrong-tree'): after[path] = ('100644', '2' * 40)
             if case == 'unrelated': after['README.md'] = ('100644', '2' * 40)
+            if case.endswith('-upstream'):
+                after['codex-agent-runtime-desktop/src/nativeMain/kotlin/Changed.kt'] = ('100644', '2' * 40)
+            if case == 'planned-upstream': pins['schemaVersion'] = 4
             trees = {'a' * 40 + '^{tree}': 'b' * 40, 'c' * 40 + '^{tree}': 'd' * 40}
             if case == 'wrong-tree': trees['a' * 40 + '^{tree}'] = 'e' * 40
             with self.subTest(case=case), \
                     patch('products.inventory.run_git', side_effect=lambda root, command, ref: trees[ref]), \
                     patch('products.inventory.tree_entries', side_effect=[list(before.items()), list(after.items())]):
-                if case == 'owning':
-                    self.assertEqual({completed._identity(phase): (members[0], locators[0])},
-                        completed._qualified_members(spec, prior, [phase], [self.receipt], root=Path('/fixture')))
+                if case in ('owning', 'planned-upstream'):
+                    expected = {} if case == 'planned-upstream' else {completed._identity(phase): (members[0], locators[0])}
+                    self.assertEqual(expected,
+                        completed._qualified_members(pins, prior, [phase], [self.receipt], root=Path('/fixture')))
                 else:
                     with self.assertRaises(ValueError):
-                        completed._qualified_members(spec, prior, [phase], [self.receipt], root=Path('/fixture'))
+                        completed._qualified_members(pins, prior, [phase], [self.receipt], root=Path('/fixture'))
             self.assertEqual(original, canonical_json_bytes(prior))
 
     def test_historical_qualification_keeps_issuer_identity_and_current_consumer_gate(self):
         self.check_v3_issuer_original_member('dart', 'package', 'desktop', collected=True,
             collected_wave=4, receipt_hint=True, reused=True, issuer_revision='d' * 40)
 
+    def test_schema4_issuer_authenticates_one_original_object_and_separate_consumer_revision(self):
+        self.check_v3_issuer_original_member('sdk-ios', 'package', 'ios', planned_context=True,
+                                             issuer_revision='d' * 40)
+
+    def test_schema4_issuer_inherits_matching_core_body_without_reading_it(self):
+        self.check_v3_issuer_original_member('sdk-core', 'binary', 'common', planned_context=True,
+                                             reused=True, issuer_revision='d' * 40)
+
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
-                                      collected_wave=9, receipt_hint=False, issuer_revision='a' * 40):
+                                      collected_wave=9, receipt_hint=False, issuer_revision='a' * 40,
+                                      planned_context=False):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -976,10 +1073,15 @@ class CompletedSdkControlsTest(unittest.TestCase):
             plan_text = json.dumps(plan, indent=2) + '\n'
             self.controls[completed.SOURCE_PLAN] = plan_text
         self.spec['completedPhases'] = [phase]
+        if planned_context:
+            self.enable_planned_context()
         self.bind_controls()
         spec = ordinary_spec()
         spec.update(schemaVersion=3, completedPhases=[phase], controls=self.spec['controls'])
         spec['source']['producer'] = self.controls[prefix + 'producer.json']
+        if planned_context:
+            spec.update(schemaVersion=4, sourcePredecessors=deepcopy(self.spec['sourcePredecessors']))
+            spec['source']['jobName'] = 'product-validation / plan'
         if collected:
             spec.update(stateRoot='runtime-state', sourcePlan=plan_text)
             spec['source'].update(jobName=next(job for job, wave in completed._COLLECTED_WAVES.items()
@@ -1114,7 +1216,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     else:
                         report = completed.issue_extension(spec, work, root=fixture.repository, revision=issuer_revision, frozen={}, token='synthetic')
                         result = json.loads((work / 'completion.json').read_bytes())
-                        self.assertEqual(3, result['schemaVersion'])
+                        self.assertEqual(spec['schemaVersion'], result['schemaVersion'])
                         self.assertEqual(issuer_revision, result['issuerCommit'])
                         self.assertEqual('a' * 40, current.call_args.kwargs['revision'])
                         self.assertEqual('a' * 40, current.call_args.kwargs['original_revision'])
@@ -1125,17 +1227,19 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertEqual(len(body) if reused else 0, report['reusedObjectBytes'])
                         self.assertEqual(0 if reused else len(body), report['verifiedObjectBytes'])
                         self.assertEqual(0, report['productPhasesExecuted'])
-                        with patch.object(native, '_validate_completed_sdk', return_value={}), \
+                        with patch.object(native, '_validate_completed_sdk', return_value={}) as parent_validation, \
                                 patch.object(completed, '_base', return_value=self.base):
                             def validate(value, revision=issuer_revision):
                                 return completed.validate_extension(spec, value, {'signer_commit': issuer_revision},
-                                    root=fixture.repository, revision=revision, frozen={}, token='synthetic')
+                                    root=fixture.repository, revision=revision, frozen={}, token='synthetic',
+                                    **({'consumer_revision': 'e' * 40} if planned_context else {}))
                             # Prior body qualification uses its admitted product
                             # baseline, not the later native signing commit.
                             self.assertEqual(spec, validate(result, revision=None)['extension']['spec'])
-                            self.assertEqual('a' * 40, current.call_args.kwargs['revision'])
+                            self.assertEqual(('e' if planned_context else 'a') * 40, current.call_args.kwargs['revision'])
                             self.assertEqual(spec, validate(result)['extension']['spec'])
-                            self.assertEqual(issuer_revision, current.call_args.kwargs['revision'])
+                            self.assertEqual('e' * 40 if planned_context else issuer_revision, current.call_args.kwargs['revision'])
+                            self.assertEqual(issuer_revision, parent_validation.call_args.kwargs['revision'])
                             with patch.object(completed, 'validate_current',
                                     side_effect=QualificationIncompatible('current owning inputs changed')):
                                 with self.assertRaisesRegex(QualificationIncompatible, 'current owning inputs'):
@@ -1170,7 +1274,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         completed.issue_extension(spec, work, root=fixture.repository,
                             revision='a' * 40, frozen={}, token='synthetic')
                     if case == 'native-signature': observe_original.assert_not_called()
-                    downloads.assert_not_called()
+                    if planned_context:
+                        self.assertEqual(1, downloads.call_count)  # Small source controls, never an object body.
+                    else:
+                        downloads.assert_not_called()
                     self.assertFalse((work / 'completion.json').exists())
                 fetched.side_effect = native_completion
                 observe_original.return_value = {'id': 71}, [], {'original': 71}
