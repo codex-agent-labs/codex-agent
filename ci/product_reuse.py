@@ -1565,9 +1565,7 @@ def capture_runtime_original_ci_phases(
             producer = receipts[phase]["producer"]
             identity = producer["runId"], producer["runAttempt"]
             if identity not in original_workflows:
-                original_run = api_json(
-                    f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/"
-                    f"{identity[0]}/attempts/{identity[1]}", token)
+                original_run = _original_ci_run(producer, token)
                 original_workflows[identity] = _runtime_prior_workflow_sha(original_run, trusted_workflow_sha)
             original_sha = original_workflows[identity]
             if original_sha is None:
@@ -1584,16 +1582,22 @@ def capture_runtime_original_ci_phases(
             receipt = receipts[phase]
             producer = receipt["producer"]
             run_id = producer["runId"]
+            attempt = attempts[(run_id, producer["runAttempt"])]
             if run_id not in inventories:
-                inventories[run_id] = paginated_items(
-                    f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
-                    "artifacts", token)
+                # Share complete historical discovery, never its per-receipt
+                # admission verdict. Current/live attempts still refresh.
+                inventories[run_id] = _historical_ci_observation(
+                    _CI_OBSERVATIONS.get() or {},
+                    ("artifacts", token, canonical_json_bytes(producer)),
+                    (str(run_id), str(producer["runAttempt"])),
+                    lambda: {"run": attempt["run"], "artifacts": paginated_items(
+                        f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run_id}/artifacts",
+                        "artifacts", token)})["artifacts"]
             name = (f"codex-agent-runtime-worker-{target}-{phase}-{instances[phase].target}-"
                     f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
             candidates = [item for item in inventories[run_id] if isinstance(item, dict) and item.get("name") == name]
             if len(candidates) != 1:
                 raise ValueError("Original Runtime upload is missing or ambiguous")
-            attempt = attempts[(run_id, producer["runAttempt"])]
             candidate = candidates[0]
             artifact = _contract_ci_upload_metadata(
                 candidate.get("id"), candidate.get("digest"), name, producer, attempt["run"], token)

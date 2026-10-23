@@ -465,6 +465,68 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                         jobs_by_phase={'binary': self.jobs[0]['name']}, trusted_workflow_sha='0' * 40,
                         token='not-a-real-token')
 
+    def test_single_phase_captures_share_historical_lists_with_warm_metadata_batch(self):
+        later_receipt, artifact, raw, job = self.second_attempt_phase('package')
+        original = self.two_attempt_api({'package': artifact}, [job], {'package': raw})
+        warm = [{**self.artifacts['binary'], 'id': 1000 + index, 'name': f'warm-original-{index}',
+                 'archive_download_url': f'https://api.github.com/repos/{fixture.REPOSITORY}/actions/artifacts/{1000 + index}/zip'}
+                for index in range(32)]
+        def request(url, token):
+            for row in warm:
+                if url == row['archive_download_url'].removesuffix('/zip'):
+                    return json.dumps(row).encode()
+            return original(url, token)
+        with adapter._ci_observation_batch(('100', '1')), \
+                mock.patch('reuse.api_request', side_effect=request) as http:
+            for row in warm:
+                adapter._contract_ci_upload_metadata(row['id'], row['digest'], row['name'],
+                    self.producer, self.failed_run(), 'not-a-real-token')
+            for index in range(32):
+                phase, receipt = ('binary', self.receipts['binary']) if index % 2 == 0 else ('package', later_receipt)
+                destination = self.root / f'shared-single-phase-{index}'
+                adapter.capture_runtime_original_ci_phases({phase: receipt}, destination,
+                    target=TARGET, trusted_workflow_sha=self.pin, token='not-a-real-token')
+                self.assertEqual(receipt.read_bytes(),
+                    (destination / f'phases/{phase}/original/shard/phase-receipt.json').read_bytes())
+            urls = [call.args[0] for call in http.call_args_list]
+            for run, attempt in ((71, 2), (72, 3)):
+                self.assertEqual(1, sum(url.endswith(f'/actions/runs/{run}/attempts/{attempt}') for url in urls))
+                self.assertEqual(1, sum(f'/actions/runs/{run}/artifacts?' in url for url in urls))
+            pending = adapter._CI_OBSERVATIONS.get()['observationGuards'][1]
+            self.assertGreaterEqual(len(pending), 32)
+            self.assertLess(len(pending), 64)
+
+    def test_single_phase_capture_lists_refresh_for_current_and_live_attempts(self):
+        for current, status in ((('71', '2'), 'completed'), (('100', '1'), 'in_progress')):
+            with self.subTest(current=current, status=status), adapter._ci_observation_batch(current), \
+                    mock.patch('reuse.api_request', side_effect=self.api(run={**self.run, 'status': status})) as http:
+                for index in range(2):
+                    adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                        self.root / f'fresh-single-phase-{status}-{index}', target=TARGET,
+                        trusted_workflow_sha=self.pin, token='not-a-real-token')
+                urls = [call.args[0] for call in http.call_args_list]
+                self.assertEqual(4, sum(url.endswith('/actions/runs/71/attempts/2') for url in urls))
+                self.assertEqual(2, sum('/actions/runs/71/artifacts?' in url for url in urls))
+
+    def test_shared_historical_capture_keeps_workflow_and_ambiguous_list_checks(self):
+        with adapter._ci_observation_batch(('100', '1')), mock.patch('reuse.api_request', side_effect=self.api()):
+            adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                self.root / 'known-original', target=TARGET, trusted_workflow_sha=self.pin,
+                token='not-a-real-token')
+            with self.assertRaisesRegex(ValueError, 'reviewed producer workflow'):
+                adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                    self.root / 'wrong-workflow', target=TARGET, trusted_workflow_sha='0' * 40,
+                    token='not-a-real-token')
+        ambiguous = {**self.artifacts, 'duplicate': {**self.artifacts['binary'], 'id': 999}}
+        with adapter._ci_observation_batch(('100', '1')), \
+                mock.patch('reuse.api_request', side_effect=self.api(artifacts=ambiguous)) as http:
+            for index in range(2):
+                with self.assertRaisesRegex(ValueError, 'missing or ambiguous'):
+                    adapter.capture_runtime_original_ci_phases({'binary': self.receipts['binary']},
+                        self.root / f'ambiguous-original-{index}', target=TARGET,
+                        trusted_workflow_sha=self.pin, token='not-a-real-token')
+            self.assertEqual(1, sum('/actions/runs/71/artifacts?' in call.args[0] for call in http.call_args_list))
+
     def test_parallel_original_reads_share_completed_attempt_but_refresh_current_attempt(self):
         from threading import Barrier
         import time
