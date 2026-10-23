@@ -15,7 +15,10 @@ from products.inventory import (
     require_regular_directory, require_sha256, sha256_bytes,
 )
 from products.registry import PhaseInstanceId
-from sdk_phase import COMPACT_REPLAY_INSTANCES, LEGACY_REPLAY_INSTANCES, completed_recovery_folder
+from sdk_phase import (
+    COMPACT_REPLAY_INSTANCES, FULL_ORIGINAL_REPLAY_INSTANCES, SDK_FAMILY_INSTANCES,
+    completed_recovery_folder,
+)
 from products.restore import (
     _VERIFICATION_SESSION, _stage_fingerprint, verify_phase_shard, PHASE_SHARD_NAME,
     memoized_file_inventory as regular_file_inventory,
@@ -50,7 +53,9 @@ def _capture_ios_original(phase, plan_path, capture, selected, **options):
 def _javascript_instance(phase, component="javascript", target=None):
     # Keep legacy default targets; newer compact readers require exact targets.
     if target is None:
-        target = {"javascript": "node", "csharp": "desktop"}.get(component)
+        native_package = PhaseInstanceId("sdk", component, phase, "desktop")
+        target = ("desktop" if native_package in SDK_FAMILY_INSTANCES["native-package"]
+                  else {"javascript": "node", "csharp": "desktop"}.get(component))
     instance = PhaseInstanceId("sdk", component, phase, target)
     if instance not in COMPACT_REPLAY_INSTANCES:
         raise ValueError("Unsupported SDK original recovery phase")
@@ -240,7 +245,7 @@ def replay_prior_javascript_package(capture_root, artifact_root, *, plan, consum
                 raise ValueError("Completed SDK controls changed during native readmission")
             require_no_signing_secret(environ)
             return [record]
-    if instance not in LEGACY_REPLAY_INSTANCES:
+    if instance not in FULL_ORIGINAL_REPLAY_INSTANCES:
         raise ValueError("Completed iOS/Core controls require exact native authority")
     prior = products.api_json(f"https://api.github.com/repos/{plan['repository']}/actions/runs/"
         f"{producer['runId']}/attempts/{producer['runAttempt']}", token)

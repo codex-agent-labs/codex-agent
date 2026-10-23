@@ -90,6 +90,7 @@ SDK_FAMILY_INSTANCES = {row.family: frozenset(_family_instances(row.family)) for
 CHECKPOINT_ROUTES = {row.collector_job: row for row in SDK_FAMILY_ROUTES if row.checkpoint}
 LEGACY_REPLAY_INSTANCES = tuple(PhaseInstanceId("sdk", "javascript", phase, "node")
     for phase in ("package", "validation", "metadata")) + (PhaseInstanceId("sdk", "csharp", "binary", "desktop"),)
+FULL_ORIGINAL_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(sorted(SDK_FAMILY_INSTANCES["native-package"]))
 COMPACT_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(
     instance for row in SDK_FAMILY_ROUTES if row.checkpoint for instance in sorted(SDK_FAMILY_INSTANCES[row.family]))
 

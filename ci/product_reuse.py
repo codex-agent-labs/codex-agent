@@ -250,8 +250,9 @@ _CATALOG_ZIP_LIMITS = {
 }
 _PLANNED_RESUME_ZIP_LIMITS = {
     **_CATALOG_ZIP_LIMITS,
-    # A complete mixed-producer control carrier is ~25 MB; product bodies stay referenced.
-    "max_archive_bytes": 32 * 1024**2,
+    # Growing mixed-producer provenance can exceed 32 MiB, including ZIP headers.
+    # Keep the archive within the existing total-content budget.
+    "max_archive_bytes": 64 * 1024**2,
     "max_entry_bytes": 16 * 1024**2,
     "max_total_bytes": 64 * 1024**2,
 }
@@ -477,18 +478,14 @@ def _same_pr_run(
 def _resume_recovery_artifact_prefixes(phases):
     # Blocked descendants can become ready after recovering a predecessor.
     # Keep their candidates, while completed Runtime phases need no history scan.
-    prefixes = {
-        "codex-agent-sdk-worker-javascript-package-node-",
-        "codex-agent-sdk-worker-javascript-validation-node-",
-        "codex-agent-sdk-worker-javascript-metadata-node-",
-        "codex-agent-sdk-worker-sdk-csharp-binary-desktop-",
-        "codex-agent-sdk-worker-sdk-ios-package-ios-",
-    }
+    prefixes = set()
     for phase in phases:
         if phase["state"] in {"build", "waiting"} and (
                 phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
-                or _identity(phase) == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")):
-            prefixes.add(f"codex-agent-{phase['product']}-worker-{phase['component']}-{phase['phase']}-{phase['target']}-")
+                or _identity(phase) in FULL_ORIGINAL_REPLAY_INSTANCES
+                or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", kind, "ios")
+                                       for kind in ("binary", "package")}):
+            prefixes.add(_worker_artifact_prefix(phase["product"], _identity(phase)))
     return tuple(sorted(prefixes))
 
 
@@ -5229,7 +5226,8 @@ def _sdk_ios_binary_worker_instance(instance):
     return instance == PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
 
 
-from sdk_phase import SDK_FAMILY_INSTANCES, COMPACT_REPLAY_INSTANCES, completed_recovery_folder
+from sdk_phase import (SDK_FAMILY_INSTANCES, COMPACT_REPLAY_INSTANCES, LEGACY_REPLAY_INSTANCES,
+                       FULL_ORIGINAL_REPLAY_INSTANCES, completed_recovery_folder)
 
 SDK_WORKER_FAMILIES = tuple(SDK_FAMILY_INSTANCES)
 
@@ -10073,12 +10071,9 @@ def resume_products(
                                    trusted_workflow_sha=sdk_original_workflow_sha)
             recoverable = any(phase["state"] == "build" and (
                 phase["product"] == "runtime" and phase["component"] in _RECOVERABLE_RUNTIME_COMPONENTS
+                or _identity(phase) in FULL_ORIGINAL_REPLAY_INSTANCES
                 or _identity(phase) in {PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"),
-                    PhaseInstanceId("sdk", "sdk-ios", "package", "ios"),
-                    PhaseInstanceId("sdk", "javascript", "package", "node"),
-                    PhaseInstanceId("sdk", "javascript", "validation", "node"),
-                    PhaseInstanceId("sdk", "javascript", "metadata", "node"),
-                    PhaseInstanceId("sdk", "csharp", "binary", "desktop")}) for phase in reuse["phases"])
+                    PhaseInstanceId("sdk", "sdk-ios", "package", "ios")}) for phase in reuse["phases"])
             recovery_hints = {}
             if recoverable and completed_frozen is not None:
                 # The fresh global index bounds discovery for every unfinished
@@ -10156,24 +10151,26 @@ def resume_products(
                         apple_package_origin=_apple_package_origin(captured_plan, root,
                             sdk_original_workflow_sha, environment), build_plan_consumer=retain,
                         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
-            for component, phase, target in (("javascript", "package", "node"), ("javascript", "validation", "node"),
-                                             ("javascript", "metadata", "node"), ("csharp", "binary", "desktop")):
-                instance = PhaseInstanceId("sdk", component, phase, target)
-                misses = [row for row in reuse["phases"]
-                          if _identity(row) == instance and row["state"] == "build"]
-                if not misses:
-                    continue
-                from sdk_ios_binary_recovery import capture_prior_javascript_package
-                capture = prepared / ("prior-failed-sdk-csharp" if component == "csharp" else
-                    "prior-failed-sdk-javascript" + ("" if phase == "package" else "-" + phase))
-                records = capture_prior_javascript_package(plan,
-                    _consumer(plan, environment)["producer"], misses[0]["buildKey"], capture, prepared,
-                    repository_root=root,
-                    **({"phase": phase} if phase != "package" else {}),
-                    **({"component": component} if component != "javascript" else {}),
-                    environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
-                    token=environment["GITHUB_TOKEN"], attempts=attempts,
-                    artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt)
+            # Legacy successors need a fresh key after each predecessor. The
+            # five independent native packages share one replan, before iOS P.
+            for group in (*((instance,) for instance in LEGACY_REPLAY_INSTANCES),
+                          tuple(sorted(SDK_FAMILY_INSTANCES["native-package"]))):
+                records = []
+                for instance in group:
+                    misses = [row for row in reuse["phases"]
+                              if _identity(row) == instance and row["state"] == "build"]
+                    if not misses:
+                        continue
+                    from sdk_ios_binary_recovery import capture_prior_javascript_package
+                    records.extend(capture_prior_javascript_package(plan,
+                        current_producer, misses[0]["buildKey"],
+                        prepared / completed_recovery_folder(instance), prepared,
+                        repository_root=root,
+                        **({"phase": instance.phase} if instance.phase != "package" else {}),
+                        **({"component": instance.component} if instance.component != "javascript" else {}),
+                        environ=environment, trusted_workflow_sha=sdk_original_workflow_sha,
+                        token=environment["GITHUB_TOKEN"], attempts=attempts,
+                        artifacts_by_run=artifacts_by_run, jobs_by_attempt=jobs_by_attempt))
                 prior_sdk_records.extend(records)
                 if records:
                     wave["availableObjects"] = sorted(

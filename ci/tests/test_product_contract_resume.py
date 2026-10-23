@@ -416,11 +416,14 @@ class ContractProductResumeTest(unittest.TestCase):
                 if case == 'plan':
                     members['product-resume-inputs/plan/impact-plan.json'] = b'{}\n'
                 if case == 'large-controls':
-                    for label in ('a', 'b'):
+                    for label in ('a', 'b', 'c', 'd'):
                         members[f'observations-{label}.json'] = b'"' + label.encode() * (9 * 1024**2) + b'"\n'
                 if case == 'member-limit':
                     members['oversized-observation.json'] = b'"' + b'a' * (16 * 1024**2) + b'"\n'
                 body = archive(members)
+                if case == 'large-controls':
+                    self.assertGreater(len(body), 32 * 1024**2)
+                    self.assertLess(len(body), 64 * 1024**2)
                 artifact = {'id': 772, 'digest': sha256_bytes(body), 'size_in_bytes': len(body),
                     'name': 'codex-agent-planned-product-resume-' + self.producer['tree'],
                     'expired': False, 'created_at': '2026-10-14T00:00:30Z',
@@ -431,7 +434,7 @@ class ContractProductResumeTest(unittest.TestCase):
                 if case == 'origin':
                     artifact['workflow_run']['id'] += 1
                 if case == 'archive-limit':
-                    artifact['size_in_bytes'] = 32 * 1024**2 + 1
+                    artifact['size_in_bytes'] = 64 * 1024**2 + 1
                 forwarded = self.scratch / ('forwarded-' + case)
                 with self.control_seams(), \
                         mock.patch.object(adapter, '_observe_ci_producer_jobs', return_value=observed) as observe, \
@@ -849,12 +852,15 @@ class ContractProductResumeTest(unittest.TestCase):
                          (original / "phase-receipt.json").read_bytes())
         self.assertTrue(result["targetJobsRequired"])
 
-    def test_independent_csharp_recovery_precedes_expensive_ios_admission(self):
+    def test_independent_native_recovery_is_batched_before_expensive_ios_admission(self):
         # Real Contract setup; synthetic SDK selection stops before publication.
         import sdk_ios_binary_recovery as recovery
         package = adapter.PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
         csharp = adapter.PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+        native = sorted(adapter.SDK_FAMILY_INSTANCES["native-package"])
         key = "sha256:" + "a" * 64
+        keys = {instance: "sha256:" + str(index + 1) * 64 for index, instance in enumerate(native)}
+        keys.update({package: key, csharp: key})
         events = []
         original_wave = adapter._plan_with_sdk_tooling
         class Recovered(Exception):
@@ -866,21 +872,65 @@ class ContractProductResumeTest(unittest.TestCase):
             if package in available:
                 events.append("package-gate")
                 self.assertIn(csharp, available)
+                self.assertTrue(set(native).issubset(available))
                 raise Recovered
-            return {"phases": [{**adapter._identity_record(instance), "buildKey": key,
-                "state": "retained" if instance in available else "build"} for instance in (package, csharp)]}
+            if set(native).intersection(available):
+                # No partial native batch triggers another full planner replay.
+                self.assertTrue(set(native).issubset(available))
+            return {"phases": [{**adapter._identity_record(instance), "buildKey": keys[instance],
+                "state": "retained" if instance in available else "waiting"
+                if instance.component == "csharp" and instance.phase == "package" and csharp not in available
+                else "build"} for instance in (package, csharp, *native)]}
         def captured(instance):
-            events.append(instance.component)
-            return [{**adapter._identity_record(instance), "buildKey": key}]
+            events.append((instance.component, instance.phase))
+            return [{**adapter._identity_record(instance), "buildKey": keys[instance]}]
+        def capture_native(_plan, _producer, actual_key, destination, _root, **kwargs):
+            instance = adapter.PhaseInstanceId("sdk", kwargs["component"], kwargs.get("phase", "package"), "desktop")
+            self.assertEqual(keys[instance], actual_key)
+            self.assertEqual(adapter.completed_recovery_folder(instance), destination.name)
+            return captured(instance)
         with self.control_seams(), mock.patch.object(adapter, "_plan_with_sdk_tooling", side_effect=elect), \
                 mock.patch.object(adapter, "_prior_failed_pr_attempts", return_value=[]), \
-                mock.patch.object(recovery, "capture_prior_javascript_package", side_effect=lambda *_a, **_k: captured(csharp)), \
+                mock.patch.object(recovery, "capture_prior_javascript_package", side_effect=capture_native), \
                 mock.patch.object(recovery, "capture_prior_ios_binary", side_effect=lambda *_a, **_k: captured(package)), \
                 self.assertRaises(Recovered):
             adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff,
                 self.scratch / "cold-order", self.scratch / "cold-order-output", repository_root=self.repository,
                 environ={**self.environment, "GITHUB_TOKEN": "synthetic"}, sdk_original_workflow_sha="a" * 40)
-        self.assertEqual(["csharp", "sdk-ios", "package-gate"], events)
+        self.assertEqual([("csharp", "binary"), *((row.component, "package") for row in native),
+                          ("sdk-ios", "package"), "package-gate"], events)
+
+    def test_native_package_only_miss_discovers_prior_attempts(self):
+        # No legacy, iOS or Runtime miss may conceal the native-package guard.
+        import sdk_ios_binary_recovery as recovery
+        package = adapter.PhaseInstanceId("sdk", "python", "package", "desktop")
+        key = "sha256:" + "b" * 64
+        attempts = (mock.sentinel.original_attempt,)
+        original_wave = adapter._plan_with_sdk_tooling
+        class Recovered(Exception):
+            pass
+        def elect(wave, *args, **kwargs):
+            if all(row["product"] == "contract" for row in wave["requested"]):
+                return original_wave(wave, *args, **kwargs)
+            if any(adapter._identity(row) == package for row in wave["availableObjects"]):
+                raise Recovered
+            return {"phases": [{**adapter._identity_record(package), "buildKey": key, "state": "build"}]}
+        def capture(_plan, _producer, actual_key, destination, _root, **kwargs):
+            self.assertEqual(key, actual_key)
+            self.assertEqual(package.component, kwargs["component"])
+            self.assertEqual(package.phase, kwargs.get("phase", "package"))
+            self.assertEqual(adapter.completed_recovery_folder(package), destination.name)
+            self.assertIs(attempts, kwargs["attempts"])
+            return [{**adapter._identity_record(package), "buildKey": key}]
+        with self.control_seams(), mock.patch.object(adapter, "_plan_with_sdk_tooling", side_effect=elect), \
+                mock.patch.object(adapter, "_prior_failed_pr_attempts", return_value=attempts) as discover, \
+                mock.patch.object(recovery, "capture_prior_javascript_package", side_effect=capture) as captured, \
+                self.assertRaises(Recovered):
+            adapter.resume_products(self.plan_path, self.discovery, self.state, self.handoff,
+                self.scratch / "native-only", self.scratch / "native-only-output", repository_root=self.repository,
+                environ={**self.environment, "GITHUB_TOKEN": "synthetic"}, sdk_original_workflow_sha="a" * 40)
+        discover.assert_called_once_with(self.plan, self.producer, "synthetic")
+        captured.assert_called_once()
 
     def test_future_attempt_and_different_run_contract_snapshots_reject(self):
         for field, value in (("GITHUB_RUN_ATTEMPT", "1"), ("GITHUB_RUN_ID", "8")):

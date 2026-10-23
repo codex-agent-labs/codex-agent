@@ -462,12 +462,17 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
         phases = [dict(product="runtime", component="runtime-aggregate", phase="metadata", target="aggregate", state="build"),
                   dict(product="sdk", component="sdk-ios", phase="binary", target="ios", state="waiting"),
                   dict(product="runtime", component="linux-x64", phase="binary", target="linux-x64", state="retained")]
+        native = sorted(product_reuse.SDK_FAMILY_INSTANCES["native-package"])
+        phases.extend({**product_reuse._identity_record(instance), "state": "build" if index % 2 else "waiting"}
+                      for index, instance in enumerate(native))
         prefixes = product_reuse._resume_recovery_artifact_prefixes(phases)
         aggregate = "codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-"
         ios = "codex-agent-sdk-worker-sdk-ios-binary-ios-"
         self.assertIn(aggregate, prefixes)
         self.assertIn(ios, prefixes)
         self.assertNotIn("codex-agent-runtime-worker-linux-x64-binary-linux-x64-", prefixes)
+        for instance in native:
+            self.assertIn(product_reuse._worker_artifact_prefix("sdk", instance), prefixes)
         older = {**self.run, "id": 80, "run_attempt": 1}
         rows = [{"name": prefix + "key-tree-attempt-" + str(attempt), "expired": False,
                  "workflow_run": {"id": run}} for prefix, run, attempt in
@@ -481,6 +486,9 @@ class PriorFailedPrAttemptTest(unittest.TestCase):
             self.assertEqual(2, exact.call_count)
         phases[0]["state"] = "retained"
         self.assertNotIn(aggregate, product_reuse._resume_recovery_artifact_prefixes(phases))
+        phases[-1]["state"] = "retained"
+        self.assertNotIn(product_reuse._worker_artifact_prefix("sdk", native[-1]),
+                         product_reuse._resume_recovery_artifact_prefixes(phases))
 
     def test_contract_candidate_index_avoids_unrelated_attempt_queries(self):
         older = {**self.run, "id": 80, "run_attempt": 1}

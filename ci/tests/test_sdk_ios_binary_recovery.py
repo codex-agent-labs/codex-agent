@@ -698,6 +698,49 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
 
+class NativePackageRecoveryTest(unittest.TestCase):
+    def test_other_compact_native_phases_still_require_qualified_authority(self):
+        case = JavascriptPackageRecoveryTest()
+        case.recovery_component, case.recovery_target = "csharp", "desktop"
+        case.javascript_phase = "metadata"
+        self.addCleanup(case.doCleanups)
+        case.setUp()
+        with case.gates():
+            case.capture()
+            with patch.object(recovery.products, "api_json", side_effect=AssertionError("unqualified replay")), \
+                    self.assertRaisesRegex(ValueError, "exact native authority"):
+                case.replay()
+
+    def test_five_original_packages_replay_across_runs_and_attempts_without_rewriting_receipts(self):
+        from sdk_phase import SDK_FAMILY_INSTANCES
+        for instance in sorted(SDK_FAMILY_INSTANCES["native-package"]):
+            with self.subTest(component=instance.component):
+                case = JavascriptPackageRecoveryTest()
+                case.recovery_component, case.recovery_target = instance.component, instance.target
+                self.addCleanup(case.doCleanups)
+                case.setUp()
+                with case.gates(), verification_session(), \
+                        patch.object(recovery.products, "download_artifact",
+                                     wraps=recovery.products.download_artifact) as download, \
+                        patch.object(recovery.products, "_observe_ci_producer_jobs",
+                                     wraps=recovery.products._observe_ci_producer_jobs) as observe:
+                    records = case.capture()
+                    inventory = regular_file_inventory(case.output, allow_empty=True)
+                    self.assertEqual(records, case.replay())
+                    self.assertEqual(records, recovery.replay_prior_javascript_package(
+                        case.output, case.work, plan=case.plan,
+                        consumer_producer={**case.producer, "runAttempt": case.producer["runAttempt"] + 1},
+                        trusted_workflow_sha=case.pin, token="synthetic-token", environ={},
+                        component=instance.component, target=instance.target))
+                    self.assertEqual(inventory, regular_file_inventory(case.output, allow_empty=True))
+                    self.assertEqual(1, download.call_count)
+                    self.assertEqual(3, observe.call_count)
+                capture = case.output / f"{instance.component}/package/{instance.target}"
+                self.assertEqual(case.receipt_bytes,
+                                 (capture / "original/shard/phase-receipt.json").read_bytes())
+                self.assertEqual(case.raw, (capture / "transport.zip").read_bytes())
+
+
 class CsharpBinaryRecoveryTest(JavascriptPackageRecoveryTest):
     """Preserve the exact successful C# binary after a failed collection job."""
     javascript_phase = "binary"
