@@ -135,4 +135,43 @@ class SdkCheckpointEntryTest(unittest.TestCase):
             self.core.assert_not_called()
 
 
+
+class CheckpointWorkflowPermissionsTest(unittest.TestCase):
+    def test_native_issuer_permissions_cross_every_existing_caller_edge(self):
+        import re
+        workflows = Path(__file__).resolve().parents[2] / '.github/workflows'
+        sources = {name: (workflows / (name + '.yml')).read_text() for name in (
+            'ci', 'product-validation', 'sdk-core-binary-validation',
+            'sdk-core-package-validation', 'reuse-qualification', 'portable-reuse-proof')}
+        def job(workflow, name):
+            match = re.search(r'^  ' + re.escape(name) + r':\n(.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)',
+                              sources[workflow], re.M | re.S)
+            self.assertIsNotNone(match, (workflow, name))
+            return match.group(1)
+        signing = {'contents': 'read', 'actions': 'read', 'id-token': 'write', 'attestations': 'write'}
+        for workflow, names in (
+            ('ci', ('product-validation',)),
+            ('product-validation', ('sdk-checkpoint-9', 'sdk-checkpoint-10', 'sdk-core-binary-wave')),
+            ('sdk-core-binary-validation', ('sdk-checkpoint-11',)),
+            ('reuse-qualification', ('qualify', 'completed-sdk', 'completed-sdk-checkpoint')),
+            ('portable-reuse-proof', ('cold', 'completion')),
+        ):
+            for name in names:
+                with self.subTest(workflow=workflow, job=name):
+                    block = re.search(r'^    permissions:\n((?:^      [a-z-]+: (?:read|write|none)\n)+)',
+                                      job(workflow, name), re.M)
+                    self.assertIsNotNone(block)
+                    actual = dict(re.findall(r'^      ([a-z-]+): (read|write|none)$', block.group(1), re.M))
+                    expected = dict(signing, deployments='read') if workflow == 'ci' else signing
+                    self.assertEqual(expected, actual)
+        # Core package consumes the forwarded checkpoint; it has no native issuer yet.
+        package = sources['sdk-core-package-validation']
+        self.assertNotIn('uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml', package)
+        self.assertIn('CODEX_AGENT_SDK_CHECKPOINT: ${{ fromJSON(inputs.binaryWave).outputs.checkpoint }}', package)
+        self.assertNotIn('attestations:', job('product-validation', 'sdk-core-package-wave'))
+        top = sources['ci'].split('\npermissions:\n', 1)[1].split('\nconcurrency:', 1)[0]
+        self.assertEqual({'actions': 'read', 'contents': 'read'},
+                         dict(re.findall(r'^  ([a-z-]+): (read|write|none)$', top, re.M)))
+
+
 if __name__=='__main__':unittest.main()

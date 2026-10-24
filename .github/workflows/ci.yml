@@ -112,6 +112,7 @@ jobs:
       contents: read
       deployments: read
       id-token: write
+      attestations: write
     uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority
     with:
       runtimeRecoveryOnly: false
