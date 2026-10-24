@@ -12,6 +12,7 @@ if __package__:
 
 import product_reuse
 import sdk_workflow
+from runtime_reference_transport import measured
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
@@ -39,6 +40,7 @@ def _read(path):
     return read_regular_file_bytes(Path(path), max_bytes=_LIMIT, reject_symlink_parents=True)
 
 
+@measured
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, binary_contract_evidence, binary_original_context,

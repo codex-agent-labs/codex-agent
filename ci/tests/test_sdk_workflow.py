@@ -15,6 +15,19 @@ from types import SimpleNamespace
 from ci import sdk_workflow as workflow
 
 
+_SDK_INPUT_RECOVERY_FIXTURE = json.loads(
+    (Path(__file__).parent / "data/sdk-input-recovery.json").read_bytes())
+
+
+def _sdk_input_recovery_arguments(source, runtime):
+    return dict(retained_sdk_inputs_source=source, reference_sdk_inputs=True,
+        artifact_id=runtime["artifactId"], artifact_sha256=runtime["artifactSha256"],
+        expected_build_key=runtime["buildKey"],
+        expected_metadata_receipt_sha256=runtime["metadataReceiptSha256"],
+        runtime_original_producer=runtime["producer"],
+        runtime_original_workflow_sha=runtime["workflowSha"])
+
+
 class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
@@ -1010,6 +1023,96 @@ class SdkWorkflowTest(unittest.TestCase):
             workflow.main(argv)
         self.assertEqual(2, failed.exception.code)
 
+
+    def test_exact_pair_uses_concrete_capture_and_preserves_current_policy(self):
+        pins = _SDK_INPUT_RECOVERY_FIXTURE
+        source, runtime = deepcopy(pins["historicalSource"]), deepcopy(pins["runtimeSource"])
+        before = deepcopy((source, runtime, self.selection))
+        marker = object()
+        with patch.object(workflow.sdk_handoff, "capture_reused_sdk_handoff", return_value=marker) as capture, \
+                patch.object(workflow.sdk_handoff, "stage_sdk_input_binding") as binding:
+            result = self.stage(trusted_workflow_sha=self.upload["trusted_workflow_sha"],
+                                **_sdk_input_recovery_arguments(source, runtime))
+            self.assertIs(result, marker)
+            capture.assert_called_once_with(self.plan, self.destination,
+                sdk_inputs_source=pins["compatibleSource"],
+                artifact_id=runtime["artifactId"], artifact_sha256=runtime["artifactSha256"],
+                trusted_workflow_sha=runtime["workflowSha"],
+                expected_build_key=runtime["buildKey"],
+                expected_metadata_receipt_sha256=runtime["metadataReceiptSha256"],
+                original_producer=runtime["producer"],
+                sdk_version=self.selection["sdkVersion"],
+                compatible_release_range=self.selection["compatibleReleaseRange"],
+                compatible_runtime_compatibility_range=self.selection["compatibleRuntimeCompatibilityRange"],
+                expected_contract_payload_sha256=self.selection["contractPayloadSha256"],
+                reference_runtime=True, keyring=self.arguments["keyring"],
+                keys_directory=self.arguments["keys_directory"], selection_repository_root=self.repository,
+                selection_revision=self.revision, repository_root=self.repository,
+                environ=self.arguments["environ"], token=self.arguments["token"])
+            binding.assert_not_called()
+            self.assertEqual(self.upload["trusted_workflow_sha"],
+                             self.inspect.call_args.kwargs["sdk_original_workflow_sha"])
+            failure = ValueError("original capture gate rejected the upload")
+            capture.side_effect = failure
+            with self.assertRaises(ValueError) as raised:
+                self.stage(trusted_workflow_sha=self.upload["trusted_workflow_sha"],
+                           **_sdk_input_recovery_arguments(source, runtime))
+            self.assertIs(raised.exception, failure)
+            binding.assert_not_called()
+        self.assertEqual(before, (source, runtime, self.selection))
+        self.assertEqual({name: pins[name] for name in
+            ("historicalSource", "runtimeSource", "compatibleSource")}, workflow._RETAINED_SDK_INPUT_RECOVERY)
+        self.fresh.assert_not_called()
+        self.released.assert_not_called()
+
+    def test_every_selector_pin_mutation_keeps_original_reference_route(self):
+        pins = _SDK_INPUT_RECOVERY_FIXTURE
+
+        def leaves(value, prefix=()):
+            for name, member in value.items():
+                if isinstance(member, dict):
+                    yield from leaves(member, (*prefix, name))
+                else:
+                    yield (*prefix, name)
+
+        cases = []
+        for which in ("historicalSource", "runtimeSource"):
+            for path in leaves(pins[which]):
+                pair = deepcopy(pins)
+                parent = pair[which]
+                for part in path[:-1]:
+                    parent = parent[part]
+                old = parent[path[-1]]
+                parent[path[-1]] = old + 1 if type(old) is int else old + "-changed"
+                cases.append((which + "." + ".".join(path), pair))
+            pair = deepcopy(pins)
+            pair[which]["extra"] = "must not override"
+            cases.append((which + ".extra", pair))
+        # The genuine historical pair must remain the historical reference route.
+        pair = deepcopy(pins)
+        pair["runtimeSource"] = deepcopy(pins["historicalRuntime"])
+        cases.append(("matching historical Runtime", pair))
+        self.assertEqual(27, len(cases))
+        for label, pair in cases:
+            source, runtime = pair["historicalSource"], pair["runtimeSource"]
+            with self.subTest(pin=label), \
+                    patch.object(workflow.sdk_handoff, "capture_reused_sdk_handoff") as capture, \
+                    patch.object(workflow.sdk_handoff, "stage_sdk_input_binding", return_value=label) as binding:
+                options = _sdk_input_recovery_arguments(source, runtime)
+                # API shape has exactly six Runtime fields: an extra field cannot
+                # be expressed there, so exercise its real producer object instead.
+                if label == "runtimeSource.extra":
+                    options["runtime_original_producer"] = {**runtime["producer"], "extra": "changed"}
+                    runtime = {**runtime, "producer": options["runtime_original_producer"]}
+                    runtime.pop("extra")
+                self.assertEqual(label, self.stage(trusted_workflow_sha=self.upload["trusted_workflow_sha"],
+                                                  **options))
+                binding.assert_called_once_with(self.plan, self.destination,
+                    sdk_inputs_source=source, runtime_source=runtime,
+                    repository_root=self.repository, environ=self.arguments["environ"])
+                capture.assert_not_called()
+        self.fresh.assert_not_called()
+        self.released.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

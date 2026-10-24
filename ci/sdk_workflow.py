@@ -882,6 +882,45 @@ def _routed_selection(plan, repository_root, environ, trusted_workflow_sha, rout
     return validated, selection
 
 
+# Reviewed transport locators only; the ordinary capture below authenticates
+# the complete original upload and current Runtime/SDK compatibility afresh.
+_RETAINED_SDK_INPUT_RECOVERY = {'historicalSource': {'artifactId': 12020869488,
+                      'artifactSha256': 'sha256:6d01390908eccb403a068ef4717d6d3f9a3a68dea07bea7a252877c159d89f27',
+                      'producer': {'commit': 'b1f647efebe105abba89bcb31de3a8d25b580406',
+                                   'event': 'pull_request',
+                                   'pullRequest': 31,
+                                   'repository': 'codex-agent-labs/codex-agent',
+                                   'runAttempt': 1,
+                                   'runId': 38835706077,
+                                   'tree': '3fe366739c0dbf3c11f305d77609e9509262093d',
+                                   'workflowPath': '.github/workflows/ci.yml'},
+                      'workflowSha': 'b0947995481dec088fce8e9490a17a3399e9dc2b'},
+ 'runtimeSource': {'artifactId': 12433452038,
+                   'artifactSha256': 'sha256:a51cad9fe390a6579b6ce40f1245f5020730db5b44c44ff2a2453472982ab225',
+                   'buildKey': 'sha256:38f5f548b4fc926e8be981bc5df81569e3422820c37a83b024f2772b46da6a45',
+                   'metadataReceiptSha256': 'sha256:eb826c1b4634c5ba010e3fec385f27393310af5252ccb98ab6aaff644dfb3a26',
+                   'producer': {'commit': 'c8400811dca2e4f8c23f7c459b1abe6ad78d5348',
+                                'event': 'pull_request',
+                                'pullRequest': 31,
+                                'repository': 'codex-agent-labs/codex-agent',
+                                'runAttempt': 1,
+                                'runId': 39745656910,
+                                'tree': 'e2c1b2686acbd4471f9f5d3ef7a78df3e9a505c7',
+                                'workflowPath': '.github/workflows/ci.yml'},
+                   'workflowSha': 'd2243aac89368df2776b6617fd5a623bd6754cb2'},
+ 'compatibleSource': {'artifactId': 12521408629,
+                      'artifactSha256': 'sha256:824a00f4f54cbd37103031c8d0ef5a2ff7a82bdd57cf4e748ba2d4be2e2368d6',
+                      'producer': {'commit': 'fc5b6c5ad9d4912d27b9c63e5a1627d4a13bef1b',
+                                   'event': 'pull_request',
+                                   'pullRequest': 31,
+                                   'repository': 'codex-agent-labs/codex-agent',
+                                   'runAttempt': 1,
+                                   'runId': 39995416657,
+                                   'tree': 'c04648a952d38c9fc2d67c2cfc4ae1e5d3591e26',
+                                   'workflowPath': '.github/workflows/ci.yml'},
+                      'workflowSha': '4552e2da1684d5af0b86386bf94e5113326761c5'}}
+
+
 @measured
 def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
@@ -919,12 +958,18 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
                                       expected_build_key, expected_metadata_receipt_sha256)):
         raise ValueError("Current Runtime SDK handoff requires complete authenticated upload identity")
     if reference_sdk_inputs:
-        return sdk_handoff.stage_sdk_input_binding(plan, destination,
-            sdk_inputs_source=retained_sdk_inputs_source,
-            runtime_source=dict(artifactId=artifact_id, artifactSha256=artifact_sha256,
-                producer=runtime_original_producer, workflowSha=runtime_original_workflow_sha,
-                buildKey=expected_build_key, metadataReceiptSha256=expected_metadata_receipt_sha256),
-            repository_root=repository_root, environ=environ)
+        runtime_source = dict(artifactId=artifact_id, artifactSha256=artifact_sha256,
+            producer=runtime_original_producer, workflowSha=runtime_original_workflow_sha,
+            buildKey=expected_build_key, metadataReceiptSha256=expected_metadata_receipt_sha256)
+        if (retained_sdk_inputs_source == _RETAINED_SDK_INPUT_RECOVERY["historicalSource"]
+                and runtime_source == _RETAINED_SDK_INPUT_RECOVERY["runtimeSource"]):
+            # SDK8 keeps its historical member authority. This newer input upload
+            # takes the existing full-authentication route, never that shortcut.
+            retained_sdk_inputs_source = _RETAINED_SDK_INPUT_RECOVERY["compatibleSource"]
+        else:
+            return sdk_handoff.stage_sdk_input_binding(plan, destination,
+                sdk_inputs_source=retained_sdk_inputs_source, runtime_source=runtime_source,
+                repository_root=repository_root, environ=environ)
     capture = (sdk_handoff.capture_sdk_handoff if retained_sdk_inputs_source is None
                else sdk_handoff.capture_reused_sdk_handoff)
     retained_arguments = ({} if retained_sdk_inputs_source is None
