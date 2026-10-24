@@ -8975,6 +8975,10 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
             if expected_source != 'current-runtime' or retained_sdk_inputs_source is None:
                 raise ValueError('SDK binding requires an independently selected original SDK source')
             pinned = validate_sdk_input_source(load_canonical_json_bytes(canonical_json_bytes(retained_sdk_inputs_source)))
+            from sdk_workflow import retained_sdk_input_source
+            selected = retained_sdk_input_source(pinned, binding['runtimeSource'])
+            replacement_source = selected != pinned
+            pinned = selected
             if binding['source'] != pinned or binding['planSha256'] != sha256_bytes(plan_bytes):
                 raise ValueError('SDK binding differs from independently selected source or current plan')
             for source in (pinned, binding['runtimeSource']):
@@ -8987,7 +8991,7 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
                 trusted_workflow_sha=pinned['workflowSha'], token=token)
             from sdk_handoff import _ensure_observed_sdk_commit
             _ensure_observed_sdk_commit(root, prior, token)
-            qualified_members = (completed_frozen is not None
+            qualified_members = (not replacement_source and completed_frozen is not None
                                  and completed_frozen.sdk_input_members(binding) is not None)
             if qualified_members:
                 zipped, source_artifact, source_observed = completed_frozen.capture_sdk_input_members(

@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -49,6 +51,26 @@ class CoreValidationWorkerActionTest(unittest.TestCase):
             "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
             "SDK_ANDROID_METADATA_POLICY": "", "NATIVE_COMPILER_ARCHIVE": "",
             "GITHUB_OUTPUT": str(root / "output")}
+
+    def test_dependency_launcher_reaches_request_validation_without_external_pythonpath(self):
+        command = re.search(r'(?m)^        (.*python3 -B -m ci\.products\.gradle_bootstrap) ', self.action)
+        self.assertIsNotNone(command)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            missing = root / "missing-facade-request.json"
+            destination = root / "dependencies"
+            arguments = ["--request", str(missing), "--repository", str(ROOT),
+                         "--revision", "HEAD", "--target", "jvm", "--destination", str(destination)]
+            result = subprocess.run(["bash", "-c", command[1] + " " + shlex.join(arguments)],
+                cwd=ROOT, env={"PATH": os.environ["PATH"], "GITHUB_WORKSPACE": str(ROOT),
+                               "PYTHONNOUSERSITE": "1"}, text=True, capture_output=True, timeout=30)
+            # The real CLI must import its full request verifier, then reject the absent request.
+            # This boundary precedes every Gradle, compiler, download and product operation.
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("ModuleNotFoundError", result.stderr)
+            self.assertIn("FileNotFoundError", result.stderr)
+            self.assertIn(str(missing), result.stderr)
+            self.assertFalse(destination.exists())
 
     def test_retained_original_skips_only_production_after_exact_lookup(self):
         self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))

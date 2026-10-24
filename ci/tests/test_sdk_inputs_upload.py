@@ -711,6 +711,66 @@ class SdkBindingTest(unittest.TestCase):
                 self.call(completed_frozen=cap)
             self.assertFalse(self.output.exists())
 
+    def test_reviewed_replacement_uses_full_original_and_keeps_native_member_authority(self):
+        import sdk_workflow
+        import reuse_qualification as qualification
+        from ci.tests.test_completed_frozen_reuse import CompletedFrozenReuseTest
+        native = CompletedFrozenReuseTest()
+        native.setUp()
+        initial_jobs = deepcopy(self.jobs)
+        for case in ('valid', 'wrong-source', 'wrong-runtime', 'source-digest', 'failed-original'):
+            with self.subTest(case=case):
+                self.jobs = deepcopy(initial_jobs)
+                self.prepare(thin=True)
+                self.output = self.work / ('replacement-' + case)
+                self.downloads = []
+                historical = {**deepcopy(self.source), 'artifactId': 700,
+                              'artifactSha256': 'sha256:' + '3' * 64}
+                mapping = dict(historicalSource=historical, runtimeSource=deepcopy(self.runtime_source),
+                               compatibleSource=deepcopy(self.source))
+                sdk, _, _, _ = native.sdk_fixture()
+                sdk['spec']['sdkInputs'] = dict(source=historical, runtimeSource=deepcopy(self.runtime_source),
+                    bytes=len(self.raw), jobId=self.jobs[0]['id'])
+                cap = qualification.CompletedFrozenReuse(native.spec, native.receipts.values(),
+                    qualification._COMPLETED_FROZEN, revision='d' * 40,
+                    originals=native.qualified['originals'], sdk=sdk)
+                original = deepcopy((self.source, sdk, mapping))
+                if case == 'wrong-source':
+                    self.binding['source']['artifactId'] = 999
+                elif case == 'wrong-runtime':
+                    self.binding['runtimeSource']['buildKey'] = 'sha256:' + '0' * 64
+                elif case == 'source-digest':
+                    self.raw += b'changed'
+                elif case == 'failed-original':
+                    self.jobs[0]['conclusion'] = 'failure'
+                self.wrapper()
+                # Real exact selector, qualified-capability type/consumer gate,
+                # archive/receipt binding and publication; synthetic HTTP and
+                # plan validation retain the existing fixture boundary.
+                with patch.object(sdk_workflow, '_RETAINED_SDK_INPUT_RECOVERY', mapping), \
+                        patch.object(qualification.CompletedFrozenReuse, 'capture_sdk_input_members',
+                            side_effect=AssertionError('replacement cannot claim historical native members')):
+                    if case != 'valid':
+                        with self.assertRaises(ValueError):
+                            self.call(retained_sdk_inputs_source=historical, completed_frozen=cap)
+                        self.assertFalse(self.output.exists())
+                        continue
+                    transport = self.call(retained_sdk_inputs_source=historical, completed_frozen=cap)
+                    self.assertEqual('completed-frozen-runtime', transport['readScope'])
+                    self.assertEqual([702, 701], self.downloads)
+                    self.assertEqual(self.raw, (self.output / 'plan/sdk-input-source.zip').read_bytes())
+                    origin = json.loads((self.output / 'plan/sdk-input-source-transport.json').read_bytes())
+                    self.assertEqual(self.source['producer'], origin['captureProducer'])
+                    self.assertEqual(self.source['artifactSha256'], origin['artifact']['digest'])
+                    self.assertEqual(self.plan_path.read_bytes(),
+                        (self.output / 'original/runtime-capture/plan/impact-plan.json').read_bytes())
+                    self.assertEqual(self.files['sdk-inputs/content'],
+                        (self.output / 'original/sdk-inputs/content').read_bytes())
+                    self.assertFalse((self.output / 'original/runtime-capture/original').exists())
+                    with self.assertRaises(qualification.QualificationIncompatible):
+                        cap.sdk_input_members(self.binding)  # Historical claim still rejects this source.
+                    self.assertEqual(original, (self.source, sdk, mapping))
+
     def test_pin_and_native_origin_failures_never_publish(self):
         for case in ('no-pin','wrong-pin','source-failed','source-window','runtime-failed','wrong-runtime','source-digest','old-plan'):
             self.prepare();self.output=self.work/case

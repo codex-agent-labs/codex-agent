@@ -34,7 +34,7 @@ class SdkWorkflowTest(unittest.TestCase):
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
         # Schema4 lists current additions; these exact Apple pins belong to the
         # preserved completion it references, not its new completedPhases rows.
-        self.assertEqual((12495518581, "095c00076f7eb73349ff58b3eff6b3772822db69"),
+        self.assertEqual((12564750112, "dbb333097878fa669b2dbb56f7a1cff701fc708d"),
             (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
         self.assertEqual(
             {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
@@ -1024,41 +1024,28 @@ class SdkWorkflowTest(unittest.TestCase):
         self.assertEqual(2, failed.exception.code)
 
 
-    def test_exact_pair_uses_concrete_capture_and_preserves_current_policy(self):
+    def test_exact_pair_routes_binding_without_capture_and_preserves_current_policy(self):
         pins = _SDK_INPUT_RECOVERY_FIXTURE
         source, runtime = deepcopy(pins["historicalSource"]), deepcopy(pins["runtimeSource"])
         before = deepcopy((source, runtime, self.selection))
         marker = object()
-        with patch.object(workflow.sdk_handoff, "capture_reused_sdk_handoff", return_value=marker) as capture, \
-                patch.object(workflow.sdk_handoff, "stage_sdk_input_binding") as binding:
-            result = self.stage(trusted_workflow_sha=self.upload["trusted_workflow_sha"],
-                                **_sdk_input_recovery_arguments(source, runtime))
-            self.assertIs(result, marker)
-            capture.assert_called_once_with(self.plan, self.destination,
-                sdk_inputs_source=pins["compatibleSource"],
-                artifact_id=runtime["artifactId"], artifact_sha256=runtime["artifactSha256"],
-                trusted_workflow_sha=runtime["workflowSha"],
-                expected_build_key=runtime["buildKey"],
-                expected_metadata_receipt_sha256=runtime["metadataReceiptSha256"],
-                original_producer=runtime["producer"],
-                sdk_version=self.selection["sdkVersion"],
-                compatible_release_range=self.selection["compatibleReleaseRange"],
-                compatible_runtime_compatibility_range=self.selection["compatibleRuntimeCompatibilityRange"],
-                expected_contract_payload_sha256=self.selection["contractPayloadSha256"],
-                reference_runtime=True, keyring=self.arguments["keyring"],
-                keys_directory=self.arguments["keys_directory"], selection_repository_root=self.repository,
-                selection_revision=self.revision, repository_root=self.repository,
-                environ=self.arguments["environ"], token=self.arguments["token"])
-            binding.assert_not_called()
+        with patch.object(workflow.sdk_handoff, "capture_reused_sdk_handoff") as capture, \
+                patch.object(workflow.sdk_handoff, "stage_sdk_input_binding", return_value=marker) as binding:
+            self.assertIs(marker, self.stage(trusted_workflow_sha=self.upload["trusted_workflow_sha"],
+                **_sdk_input_recovery_arguments(source, runtime)))
+            binding.assert_called_once_with(self.plan, self.destination,
+                sdk_inputs_source=pins["compatibleSource"], runtime_source=runtime,
+                repository_root=self.repository, environ=self.arguments["environ"])
+            capture.assert_not_called()
             self.assertEqual(self.upload["trusted_workflow_sha"],
                              self.inspect.call_args.kwargs["sdk_original_workflow_sha"])
-            failure = ValueError("original capture gate rejected the upload")
-            capture.side_effect = failure
+            failure = ValueError("routing plan changed")
+            binding.side_effect = failure
             with self.assertRaises(ValueError) as raised:
                 self.stage(trusted_workflow_sha=self.upload["trusted_workflow_sha"],
                            **_sdk_input_recovery_arguments(source, runtime))
             self.assertIs(raised.exception, failure)
-            binding.assert_not_called()
+            capture.assert_not_called()
         self.assertEqual(before, (source, runtime, self.selection))
         self.assertEqual({name: pins[name] for name in
             ("historicalSource", "runtimeSource", "compatibleSource")}, workflow._RETAINED_SDK_INPUT_RECOVERY)

@@ -970,14 +970,9 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
             producer=runtime_original_producer, workflowSha=runtime_original_workflow_sha,
             buildKey=expected_build_key, metadataReceiptSha256=expected_metadata_receipt_sha256)
         selected_source = retained_sdk_input_source(retained_sdk_inputs_source, runtime_source)
-        if selected_source != retained_sdk_inputs_source:
-            # SDK8 keeps its historical member authority. This newer input upload
-            # takes the existing full-authentication route, never that shortcut.
-            retained_sdk_inputs_source = selected_source
-        else:
-            return sdk_handoff.stage_sdk_input_binding(plan, destination,
-                sdk_inputs_source=retained_sdk_inputs_source, runtime_source=runtime_source,
-                repository_root=repository_root, environ=environ)
+        return sdk_handoff.stage_sdk_input_binding(plan, destination,
+            sdk_inputs_source=selected_source, runtime_source=runtime_source,
+            repository_root=repository_root, environ=environ)
     capture = (sdk_handoff.capture_sdk_handoff if retained_sdk_inputs_source is None
                else sdk_handoff.capture_reused_sdk_handoff)
     retained_arguments = ({} if retained_sdk_inputs_source is None
