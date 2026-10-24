@@ -198,6 +198,40 @@ class MavenPackageWorkflowTest(unittest.TestCase):
                 repository_root=self.root, environ={}, token="fixture-token"),
                **changes})
 
+    @unittest.skipUnless(__import__("sys").platform == "darwin", "Requires actual macOS native clone")
+    def test_capture_retention_clones_independently_and_keeps_mutation_gate(self):
+        from products import sdk_apple_content as apple
+        with patch.object(workflow, "_snapshot_apple_tree", wraps=apple._snapshot_apple_tree) as snapshots, \
+                patch.object(apple, "_clone_apple_file", wraps=apple._clone_apple_file) as clones, \
+                patch.object(apple, "snapshot_regular_tree", side_effect=AssertionError("Unexpected byte-copy fallback")):
+            self.invoke()
+        self.assertEqual(2, snapshots.call_count)
+        self.assertEqual(4, clones.call_count)
+        for source, copied in ((self.binary_capture / "transport.zip",
+                self.destination / "binary-original/capture/transport.zip"),
+                (self.capture / "original-upload.zip",
+                 self.destination / "sdk-inputs-original/original-upload.zip")):
+            original = source.read_bytes()
+            self.assertEqual(original, copied.read_bytes())
+            self.assertNotEqual((source.stat().st_dev, source.stat().st_ino),
+                                (copied.stat().st_dev, copied.stat().st_ino))
+            self.assertEqual(1, copied.stat().st_nlink)
+            copied.write_bytes(b"private clone mutation")
+            self.assertEqual(original, source.read_bytes())
+            source.write_bytes(b"private source mutation")
+            self.assertEqual(b"private clone mutation", copied.read_bytes())
+        fixture = MavenPackageWorkflowTest(methodName="runTest")
+        fixture.setUp()
+        try:
+            fixture.exit_mutation = lambda: (fixture.destination /
+                "sdk-inputs-original/original-upload.zip").write_bytes(b"late change")
+            with self.assertRaisesRegex(ValueError, "retained evidence changed"):
+                fixture.invoke()
+            fixture.publish.assert_not_called()
+            self.assertFalse((fixture.destination / "shard").exists())
+        finally:
+            fixture.doCleanups()
+
     def test_original_workflow_pin_reaches_state_replay(self):
         self.invoke()
         self.assertEqual("e" * 40, self.materialized.call_args.kwargs["sdk_original_workflow_sha"])

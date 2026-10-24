@@ -30,6 +30,7 @@ from sdk_ios_package import _record
 from sdk_maven_phase import execute as execute_package
 from sdk_phase import maven_consumed_predecessors
 from sdk_maven_original import _context, _inventory, verified_original_maven_phase, verified_retained_maven_phase
+from products.sdk_apple_content import _snapshot_apple_tree
 
 
 _TARGETS = {"sdk-core": "common", "sdk-android": "android"}
@@ -210,7 +211,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 binary_capture = Path(original_binary["capture"])
                 binary_capture_inventory = _inventory(binary_capture, allow_empty=True)
                 binary_original = destination / "binary-original"
-                snapshot_regular_tree(binary_capture, binary_original / "capture", allow_empty=True)
+                _snapshot_apple_tree(binary_capture, binary_original / "capture", allow_empty=True)
                 write_canonical_json(binary_original / "context.json", binary_original_context)
                 if (_inventory(binary_capture, allow_empty=True) != binary_capture_inventory
                         or _inventory(binary_original / "capture", allow_empty=True) != binary_capture_inventory
@@ -221,7 +222,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
                 capture = Path(sdk_inputs["capture"])
                 capture_inventory = _inventory(capture, allow_empty=True)
-                snapshot_regular_tree(capture, destination / "sdk-inputs-original", allow_empty=True)
+                _snapshot_apple_tree(capture, destination / "sdk-inputs-original", allow_empty=True)
                 if _inventory(capture, allow_empty=True) != capture_inventory:
                     raise ValueError("Maven package SDK capture changed during retention")
                 retained[destination / "sdk-inputs-original"] = capture_inventory
