@@ -685,6 +685,7 @@ class CompletedFrozenReuseTest(unittest.TestCase):
 
             with self.subTest(rejected=rejected), tempfile.TemporaryDirectory() as temporary, \
                     patch.object(qualification, '_fetch_completed_sdk', side_effect=sdk_auth), \
+                    patch.object(qualification, '_sdk_parent_frozen_spec', return_value=self.spec), \
                     patch.object(qualification, '_capture_completed_contract_receipts', return_value=contract) as captured, \
                     patch.object(qualification, 'CompletedFrozenReuse', wraps=qualification.CompletedFrozenReuse) as capability:
                 def fetch():

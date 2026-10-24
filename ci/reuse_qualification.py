@@ -1546,6 +1546,17 @@ def _sdk_parent_frozen_spec(root, pins, current, token):
     from products.inventory import git_regular_blob_bytes
     signer = _native_pin_arguments(pins)["signer_commit"]
     _ensure_native_issuer_commit(root, signer, token)
+    sdk_spec = load_canonical_json_bytes(git_regular_blob_bytes(
+        root, signer, _sdk_completed_spec_path(root, signer), max_bytes=LIMIT))
+    if sdk_spec.get("schemaVersion") in (2, 3, 4):
+        # Extensions carry the exact schema-one parent subject. Its historical
+        # Runtime context must not become current Runtime completion authority.
+        signer = _native_pin_arguments(sdk_spec["parent"])["signer_commit"]
+        _ensure_native_issuer_commit(root, signer, token)
+        parent = load_canonical_json_bytes(git_regular_blob_bytes(
+            root, signer, _sdk_completed_spec_path(root, signer), max_bytes=LIMIT))
+        if type(parent.get("schemaVersion")) is not int or parent["schemaVersion"] != 1:
+            raise ValueError("SDK historical context requires its exact schema-one parent")
     historical = load_canonical_json_bytes(git_regular_blob_bytes(
         root, signer, _frozen_spec_path(root, signer), max_bytes=LIMIT))
     if any(historical["request"][field] != current["request"][field]

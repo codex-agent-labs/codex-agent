@@ -1040,10 +1040,10 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
             expected_source=selection["source"], repository_root=repository_root, environ=environ, token=token,
             **({"completed_frozen": input_completion} if input_completion is not None else {}),
             **({'retained_sdk_inputs_source': retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}))
-        inventory = regular_file_inventory(capture, allow_empty=True)
+        inventory = memoized_file_inventory(capture, allow_empty=True)
 
         def unchanged():
-            if (regular_file_inventory(capture, allow_empty=True) != inventory
+            if (memoized_file_inventory(capture, allow_empty=True) != inventory
                     or read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes):
                 raise ValueError("SDK consumer original plan or captured upload changed during use")
 

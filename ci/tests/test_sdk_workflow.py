@@ -1114,5 +1114,62 @@ class SdkWorkflowTest(unittest.TestCase):
         self.fresh.assert_not_called()
         self.released.assert_not_called()
 
+    def test_private_capture_inventory_reuses_only_unchanged_guarded_bytes(self):
+        from products import restore
+        from contextlib import nullcontext
+        import os
+        for session_enabled, defect in ((True, None), (False, None),
+                                        (True, "bytes-restored-mtime"), (True, "symlink"),
+                                        (True, "during-scan")):
+            cache_enabled = session_enabled and not restore._is_windows()
+            captured = {}
+            def capture(plan, destination, **kwargs):
+                destination.mkdir()
+                body = destination / "body.bin"
+                body.write_bytes(b"fixture private authenticated content")
+                captured.update(root=destination, body=body)
+            original_scanner = restore._uncached_file_inventory
+            def scan(path, **kwargs):
+                records = original_scanner(path, **kwargs)
+                if defect == "during-scan":
+                    captured["body"].write_bytes(b"changed during first captured scan")
+                return records
+            with self.subTest(session=session_enabled, defect=defect), \
+                    patch.object(workflow, "_selection", return_value=(
+                        {"validationCommit": self.revision},
+                        {"source": "current-runtime", "contractPayloadSha256": "sha256:" + "a" * 64},
+                        self.plan.read_bytes())), \
+                    patch.object(workflow.product_reuse, "capture_sdk_inputs_upload", side_effect=capture), \
+                    patch.object(workflow, "verified_apple_original_inputs", side_effect=lambda *a, **k: nullcontext({})), \
+                    patch.object(restore, "_uncached_file_inventory", side_effect=scan) as scanner, \
+                    patch.object(workflow, "regular_file_inventory", side_effect=lambda path, **kw: restore._uncached_file_inventory(path, **kw)), \
+                    (restore.verification_session() if session_enabled else nullcontext()):
+                def consume():
+                    with workflow.verified_inputs(self.plan, self.discovery, self.state,
+                            **self.arguments, **self.upload_for_capture()) as inputs:
+                        self.assertEqual(captured["root"], inputs["capture"])
+                        self.assertTrue(inputs["capture"].exists())
+                        body = captured["body"]
+                        if defect == "bytes-restored-mtime":
+                            before = body.stat()
+                            body.write_bytes(b"x" * before.st_size)
+                            os.utime(body, ns=(before.st_atime_ns, before.st_mtime_ns))
+                        elif defect == "symlink":
+                            target = self.root / "outside-capture.bin"
+                            target.write_bytes(body.read_bytes())
+                            body.unlink()
+                            body.symlink_to(target)
+                if defect is None:
+                    consume()
+                    self.assertEqual(1 if cache_enabled else 3, scanner.call_count)
+                else:
+                    with self.assertRaises(ValueError):
+                        consume()
+                    self.assertGreaterEqual(scanner.call_count, 1)
+                    if defect == "bytes-restored-mtime":
+                        self.assertEqual(2 if cache_enabled else 3, scanner.call_count)
+                self.assertFalse(captured["root"].exists())
+            self.assertIsNone(restore._VERIFICATION_SESSION.get())
+
 if __name__ == "__main__":
     unittest.main()

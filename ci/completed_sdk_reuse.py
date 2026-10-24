@@ -336,9 +336,9 @@ def _spec(spec):
         raise ValueError("Unsupported incremental SDK spec")
     if context:
         source_predecessors(spec)
-        if (collected or spec["source"].get("jobName") != "product-validation / plan"
+        if not collected and (spec["source"].get("jobName") != "product-validation / plan"
                 or spec["stateRoot"] != "product-resume-state"):
-            raise ValueError("Planned SDK source context requires the exact successful plan role")
+            raise ValueError("SDK source context requires an exact successful plan or registered collector role")
     native._native_pin_arguments(spec["parent"])
     native.require_sha256(spec["parentProofSha256"], "Approved native parent subject")
     selected = _records(spec["completedPhases"], "Incremental SDK phases")
@@ -355,14 +355,14 @@ def _spec(spec):
         for field in ("jobId", "artifactId", "artifactBytes"):
             if type(source[field]) is not int or source[field] <= 0:
                 raise ValueError("Incremental native source has invalid positive identity")
-        bound = (64 * 1024**2 if context and not contract else
+        bound = (64 * 1024**2 if context and not collected and not contract else
                  16 * 1024**3 if collected and not contract else LIMIT)
         if source["artifactBytes"] > bound:
             raise ValueError("Incremental controls exceed the bounded original upload")
     if (spec["stateRoot"] != ("runtime-state" if collected else "product-resume-state")
             or type(spec["source"]["jobName"]) is not str
             or spec["source"]["jobName"] not in _SOURCE_UPLOADS
-            or collected and spec["schemaVersion"] != 3):
+            or collected and spec["schemaVersion"] not in (3, 4)):
         raise ValueError("Incremental native source changes its successful resume contract")
     if collected:
         _receipt_objects(spec)
@@ -520,7 +520,7 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None):
     if extension is None:
         raise ValueError("Object reuse requires an earlier incremental native completion")
     old, proof = extension["spec"], extension["proof"]
-    if (old["schemaVersion"] != 3 or old["parent"] != spec["parent"]
+    if (old["schemaVersion"] not in (3, 4) or old["parent"] != spec["parent"]
             or sha256_bytes(canonical_json_bytes(prior["proof"])) != spec["parentProofSha256"]
             or sha256_bytes(canonical_json_bytes(proof)) != spec["reuseCompletionProofSha256"]):
         raise ValueError("Reused native completion differs from its pinned subject or parent")
@@ -549,7 +549,7 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None):
             # Its old proof/receipt remains immutable in reuseCompletion. Changed
             # inputs invalidate this key; no replacement receives body authority.
             continue
-        if source_predecessor_context(spec) and instance not in (
+        if source_predecessor_context(spec) and not collected_validation(spec) and instance not in (
                 PhaseInstanceId("sdk", "sdk-core", "binary", "common"),
                 PhaseInstanceId("sdk", "sdk-android", "binary", "android")):
             continue  # Only these unchanged SDK bodies are inherited by this source checkpoint.
@@ -579,8 +579,9 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
     # Qualify the pinned successful producer's bytes, not the issuer's newer
     # product source. validate_extension still gates each consumer's inputs.
     inventory_revision = _inventory_revision(spec, root, token=token)
+    parent_frozen = native._sdk_parent_frozen_spec(root, spec["parent"], frozen, token)
     sdk = native._fetch_completed_sdk(work / "parent", spec["parent"],
-        root=root, revision=inventory_revision, frozen=frozen, token=token)
+        root=root, revision=inventory_revision, frozen=parent_frozen, token=token)
     if sha256_bytes(canonical_json_bytes(sdk["proof"])) != spec["parentProofSha256"]:
         raise ValueError("Incremental issuer parent differs from its fixed subject")
 
@@ -695,13 +696,15 @@ def issue_extension(spec, work, *, root, revision, frozen, token):
 
             controls = {row["relativePath"]: load_canonical_json_bytes(retained(row["relativePath"]))
                         for row in spec["controls"]}
-        request, phases, receipts = validate_controls(spec, controls, _base(frozen, sdk))
+        request, phases, receipts = validate_controls(spec, controls, _base(parent_frozen, sdk))
         validate_current(request, phases, receipts, root=root, revision=inventory_revision,
                          original_revision=inventory_revision)
         qualified = {}
         if "reuseCompletion" in spec:
+            previous_frozen = native._sdk_parent_frozen_spec(root, spec["reuseCompletion"], frozen, token)
             prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
-                root=root, revision=None, frozen=frozen, token=token)
+                root=root, revision=None, frozen=previous_frozen, token=token,
+                consumer_revision=inventory_revision)
             # Both subjects bind their original product source; only exact
             # matching keys/receipts/objects inherit body qualification.
             qualified = _qualified_members(spec, prior, phases, receipts, root=root)

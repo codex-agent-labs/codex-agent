@@ -107,7 +107,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def enable_planned_context(self):
         from products.reuse import _dependency_closure
-        prefix = 'product-resume-state/'
+        prefix = self.spec['stateRoot'] + '/'
         request = self.controls[prefix + 'reuse-wave-request.json']
         result = self.controls[prefix + 'reuse-wave-result.json']
         selected = completed._records(self.spec['completedPhases'], 'Selected fixture SDK phases')
@@ -930,11 +930,17 @@ class CompletedSdkControlsTest(unittest.TestCase):
             PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android')))
 
     def test_reused_members_require_exact_native_subject_parent_and_original_identity(self):
+        self.check_reused_members_identity(3)
+
+    def test_schema4_reused_members_preserve_parent_receipt_and_subject_rejections(self):
+        self.check_reused_members_identity(4)
+
+    def check_reused_members_identity(self, schema):
         parent = {'schemaVersion': 1}
         phase = self.spec['completedPhases'][0]
         member = {'relativePath': 'synthetic member', 'bytes': 8, 'sha256': phase['objectSha256']}
         spec = {'parent': {'artifactId': 7}, 'parentProofSha256': sha256_bytes(canonical_json_bytes(parent))}
-        prior = {'proof': parent, 'extension': {'spec': {'schemaVersion': 3, 'parent': spec['parent'],
+        prior = {'proof': parent, 'extension': {'spec': {'schemaVersion': schema, 'parent': spec['parent'],
             'completedPhases': [deepcopy(phase)]}, 'proof': {'members': [member],
             'originals': [{'original': 71}], 'controls': deepcopy(self.controls)}}}
         spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(prior['extension']['proof']))
@@ -1029,9 +1035,18 @@ class CompletedSdkControlsTest(unittest.TestCase):
         self.check_v3_issuer_original_member('sdk-core', 'binary', 'common', planned_context=True,
                                              reused=True, issuer_revision='d' * 40)
 
+    def test_schema4_collector_validation_inherits_exact_prior_schema4_object(self):
+        self.check_v3_issuer_original_member('python', 'validation', 'linux-x64', collected=True,
+            collected_wave=7, planned_context=True, reused=True, previous_schema=4, issuer_revision='d' * 40)
+
+    def test_schema4_collector_metadata_inherits_exact_prior_schema4_object(self):
+        self.check_v3_issuer_original_member('python', 'metadata', 'desktop', collected=True,
+            collected_wave=8, receipt_hint=True, planned_context=True, reused=True,
+            previous_schema=4, issuer_revision='d' * 40)
+
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
                                       collected_wave=9, receipt_hint=False, issuer_revision='a' * 40,
-                                      planned_context=False):
+                                      planned_context=False, previous_schema=3):
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -1073,6 +1088,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
             plan_text = json.dumps(plan, indent=2) + '\n'
             self.controls[completed.SOURCE_PLAN] = plan_text
         self.spec['completedPhases'] = [phase]
+        self.spec['stateRoot'] = prefix.rstrip('/')
         if planned_context:
             self.enable_planned_context()
         self.bind_controls()
@@ -1133,22 +1149,37 @@ class CompletedSdkControlsTest(unittest.TestCase):
         if reused:
             spec['reuseCompletion'] = {'artifactId': 8, 'artifactSha256': 'sha256:' + 'c' * 64,
                 'runId': 2, 'runAttempt': 1, 'signerCommit': 'b' * 40, 'sourceCommit': 'b' * 40}
-            previous = {'proof': parent, 'extension': {'spec': {'schemaVersion': 3,
+            previous = {'proof': parent, 'extension': {'spec': {'schemaVersion': previous_schema,
                 'parent': spec['parent'], 'completedPhases': [phase]}, 'proof': {
                 'controls': deepcopy(self.controls), 'originals': [{'original': 71}],
                 'members': [{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}]}}}
             spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(previous['extension']['proof']))
+        current_frozen, historical_frozen = deepcopy(self.base), deepcopy(self.base)
+        if planned_context:
+            for row in spec['sourcePredecessors']:
+                if row['product'] == 'runtime':
+                    current_frozen['expectedResult']['phases'].append(deepcopy(row))
+                    historical_frozen['expectedResult']['phases'].append({**row,
+                        'buildKey': sha256_bytes(('historical ' + str(completed._identity(row))).encode())})
+        previous_bytes = canonical_json_bytes(previous) if previous else None
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            def select_parent(root, pins, frozen, token):
+                self.assertEqual(current_frozen, frozen)
+                self.assertIn(pins, (spec['parent'], spec.get('reuseCompletion')))
+                return historical_frozen
+            stack.enter_context(patch.object(native, '_sdk_parent_frozen_spec', side_effect=select_parent))
             def native_completion(destination, pins, **arguments):
+                self.assertEqual(historical_frozen, arguments['frozen'])
                 if reused and pins == spec['reuseCompletion']:
                     self.assertEqual('previous', destination.name)
                     self.assertIsNone(arguments['revision'])
+                    self.assertEqual('a' * 40, arguments['consumer_revision'])
                     return previous
                 self.assertEqual(spec['parent'], pins)
                 self.assertEqual('a' * 40, arguments['revision'])
                 return {'proof': parent}
             fetched = stack.enter_context(patch.object(native, '_fetch_completed_sdk', side_effect=native_completion))
-            stack.enter_context(patch.object(completed, '_base', return_value=self.base))
+            stack.enter_context(patch.object(completed, '_base', return_value=historical_frozen))
             current = stack.enter_context(patch.object(completed, 'validate_current'))
             stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
             stack.enter_context(patch.object(completed, '_contract_files'))
@@ -1211,10 +1242,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with patch('runtime_reference_archive.open_reference_archive', opened):
                     if tampered:
                         with self.assertRaisesRegex(ValueError, 'collected declaration' if tampered == 'declared-size' else 'immutable digest'):
-                            completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen={}, token='synthetic')
+                            completed.issue_extension(spec, work, root=fixture.repository, revision='a' * 40, frozen=current_frozen, token='synthetic')
                         self.assertFalse((work / 'completion.json').exists())
                     else:
-                        report = completed.issue_extension(spec, work, root=fixture.repository, revision=issuer_revision, frozen={}, token='synthetic')
+                        report = completed.issue_extension(spec, work, root=fixture.repository, revision=issuer_revision, frozen=current_frozen, token='synthetic')
                         result = json.loads((work / 'completion.json').read_bytes())
                         self.assertEqual(spec['schemaVersion'], result['schemaVersion'])
                         self.assertEqual(issuer_revision, result['issuerCommit'])
@@ -1228,10 +1259,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertEqual(0 if reused else len(body), report['verifiedObjectBytes'])
                         self.assertEqual(0, report['productPhasesExecuted'])
                         with patch.object(native, '_validate_completed_sdk', return_value={}) as parent_validation, \
-                                patch.object(completed, '_base', return_value=self.base):
+                                patch.object(completed, '_base', return_value=historical_frozen):
                             def validate(value, revision=issuer_revision):
                                 return completed.validate_extension(spec, value, {'signer_commit': issuer_revision},
-                                    root=fixture.repository, revision=revision, frozen={}, token='synthetic',
+                                    root=fixture.repository, revision=revision, frozen=historical_frozen, token='synthetic',
                                     **({'consumer_revision': 'e' * 40} if planned_context else {}))
                             # Prior body qualification uses its admitted product
                             # baseline, not the later native signing commit.
@@ -1240,6 +1271,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                             self.assertEqual(spec, validate(result)['extension']['spec'])
                             self.assertEqual('e' * 40 if planned_context else issuer_revision, current.call_args.kwargs['revision'])
                             self.assertEqual(issuer_revision, parent_validation.call_args.kwargs['revision'])
+                            self.assertEqual(historical_frozen, parent_validation.call_args.kwargs['frozen'])
                             with patch.object(completed, 'validate_current',
                                     side_effect=QualificationIncompatible('current owning inputs changed')):
                                 with self.assertRaisesRegex(QualificationIncompatible, 'current owning inputs'):
@@ -1255,6 +1287,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
                             self.assertEqual(spec['source']['producer']['commit'],
                                              validate_plan.call_args.kwargs['expected_revision'])
                             self.assertEqual(1, capture_controls.call_count)
+            if previous is not None:
+                self.assertEqual(previous_bytes, canonical_json_bytes(previous))
             if embedded:
                 spec['receiptObjects'][0]['bytes'] -= 1
             if reused:
@@ -1272,9 +1306,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     with patch('runtime_reference_archive.open_reference_archive', side_effect=AssertionError('body read')), \
                             self.assertRaisesRegex(ValueError, 'native signature|freshly observed original locator'):
                         completed.issue_extension(spec, work, root=fixture.repository,
-                            revision='a' * 40, frozen={}, token='synthetic')
+                            revision='a' * 40, frozen=current_frozen, token='synthetic')
                     if case == 'native-signature': observe_original.assert_not_called()
-                    if planned_context:
+                    if planned_context and not collected:
                         self.assertEqual(1, downloads.call_count)  # Small source controls, never an object body.
                     else:
                         downloads.assert_not_called()
@@ -1291,7 +1325,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with patch('runtime_reference_archive.open_reference_archive', side_effect=AssertionError('body read')):
                     with self.assertRaisesRegex(ValueError, 'exact original bytes'):
                         completed.issue_extension(spec, work, root=fixture.repository,
-                            revision='a' * 40, frozen={}, token='synthetic')
+                            revision='a' * 40, frozen=current_frozen, token='synthetic')
                 observe_original.assert_not_called()
                 downloads.assert_not_called()
                 self.assertFalse((work / 'completion.json').exists())
@@ -1306,7 +1340,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with patch('runtime_reference_archive.open_reference_archive', side_effect=AssertionError('body read')):
                     with self.assertRaisesRegex(ValueError, 'successful original scope'):
                         completed.issue_extension(spec, work, root=fixture.repository,
-                            revision='a' * 40, frozen={}, token='synthetic')
+                            revision='a' * 40, frozen=current_frozen, token='synthetic')
                 observe_original.assert_not_called()
                 downloads.assert_not_called()
                 self.assertFalse((work / 'completion.json').exists())

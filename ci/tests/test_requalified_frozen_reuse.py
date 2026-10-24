@@ -23,6 +23,95 @@ class RequalifiedFrozenReuseTest(unittest.TestCase):
         self.fixture = fixtures.CompletedFrozenReuseTest()
         self.fixture.setUp()
 
+    def test_new_sdk_issuer_uses_pinned_historical_parent_without_replacing_current_runtime(self):
+        from contextlib import ExitStack
+        from products import inventory
+        current = copy.deepcopy(self.fixture.spec)
+        historical = copy.deepcopy(current)
+        historical_rows = [row for row in historical['expectedResult']['phases'] if row['product'] == 'runtime'][:32]
+        for row in historical_rows:
+            for field in qualification._OBJECT_FIELDS:
+                row[field] = sha256_bytes(('old ' + str(products._identity(row)) + field).encode())
+            available = next(value for value in historical['request']['availableObjects']
+                             if products._identity(value) == products._identity(row))
+            available.update({field: row[field] for field in qualification._OBJECT_FIELDS})
+        self.fixture.spec = historical
+        sdk, sdk_phase, _, _ = self.fixture.sdk_fixture()
+        self.fixture.spec = current
+        old_sdk_bytes, old_frozen_bytes = canonical_json_bytes(sdk), canonical_json_bytes(historical)
+        new_signer, parent_signer = 'e' * 40, 'a' * 40
+        pins = {'artifactId': 81, 'artifactSha256': 'sha256:' + '8' * 64, 'runId': 82,
+                'runAttempt': 1, 'signerCommit': new_signer, 'sourceCommit': 'f' * 40}
+        parent_pins = {**pins, 'artifactId': 71, 'signerCommit': parent_signer}
+        sdk_recipe = {'schemaVersion': 4, 'parent': parent_pins}
+        parent_recipe = {'schemaVersion': 1}
+        captured = {'qualification.json': b'fixture subject', 'bundle.jsonl': b'fixture signature seam',
+                    'proof.json': canonical_json_bytes(self.fixture.proof)}
+        reads = []
+        def blob(root, commit, path, **kwargs):
+            reads.append((commit, path))
+            return canonical_json_bytes({
+                ('b' * 40, 'frozen.json'): current,
+                (new_signer, 'sdk.json'): sdk_recipe,
+                (new_signer, 'frozen.json'): current,
+                (parent_signer, 'sdk.json'): parent_recipe,
+                (parent_signer, 'frozen.json'): historical,
+            }[commit, path])
+        def sdk_auth(destination, actual_pins, **arguments):
+            self.assertEqual(pins, actual_pins)
+            self.assertEqual(historical, arguments['frozen'])
+            self.assertEqual('d' * 40, arguments['consumer_revision'])
+            return copy.deepcopy(sdk)
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            stack.enter_context(patch.object(qualification, '_compatible_verifier', return_value=True))
+            history = stack.enter_context(patch.object(qualification, '_ensure_native_issuer_commit'))
+            stack.enter_context(patch.object(qualification, '_frozen_spec_path', return_value='frozen.json'))
+            stack.enter_context(patch.object(qualification, '_sdk_completed_spec_path', return_value='sdk.json'))
+            stack.enter_context(patch.object(inventory, 'git_regular_blob_bytes', side_effect=blob))
+            stack.enter_context(patch.object(inventory, 'tree_entries', return_value=()))
+            stack.enter_context(patch.object(qualification, '_fetch_qualification_archive', return_value=({}, captured)))
+            stack.enter_context(patch.object(qualification, '_authenticate_bytes', return_value=self.fixture.qualified))
+            sdk_fetch = stack.enter_context(patch.object(qualification, '_fetch_completed_sdk', side_effect=sdk_auth))
+            stack.enter_context(patch.object(qualification, '_capture_completed_contract_receipts', return_value=[
+                receipt for identity, receipt in self.fixture.receipts.items() if identity.product == 'contract']))
+            stack.enter_context(patch.object(products, '_authorities', return_value=(current['request']['phaseAuthorities'], None)))
+            stack.enter_context(patch.object(products, '_versions', return_value=current['request']['versions']))
+            with self.assertRaises(ValueError):
+                qualification._completed_sdk_controls(sdk['spec'], sdk['proof']['controls'], current, sdk['original'])
+            cap, report = qualification.fetch_completed_frozen(root / 'capture', consumer_commit='c' * 40,
+                verifier_policy_sha256=fixtures.POLICY, repository_root=root, revision='d' * 40,
+                sdk_completion=pins, signer_commit='b' * 40, source_commit='a' * 40, artifact_id=71,
+                artifact_sha256='sha256:' + 'e' * 64, run_id=72, run_attempt=1, token='fixture')
+            self.assertEqual((50, 1, 0), (report['completedFrozenPhases'], report['completedSdkPhases'], report['productBodiesDownloaded']))
+            self.assertEqual(51, len(cap.completed_phases()))
+            self.assertEqual(sdk_phase['objectSha256'], cap.envelope(sdk_phase)['objectSha256'])
+            for old in historical_rows:
+                row = next(value for value in current['expectedResult']['phases'] if products._identity(value) == products._identity(old))
+                self.assertEqual(row['objectSha256'], cap.envelope(row)['objectSha256'])
+                with self.assertRaisesRegex(ValueError, 'exact proved identity'):
+                    cap.envelope(old)
+            self.assertIn((new_signer, 'sdk.json'), reads)
+            self.assertIn((parent_signer, 'sdk.json'), reads)
+            self.assertIn((parent_signer, 'frozen.json'), reads)
+            self.assertNotIn((new_signer, 'frozen.json'), reads)
+            history.assert_any_call(root, parent_signer, 'fixture')
+            sdk_fetch.assert_called_once()
+            for field in ('repository', 'pullRequest', 'versions', 'catalogs'):
+                changed = copy.deepcopy(current)
+                changed['request'][field] = 'changed'
+                with self.subTest(field=field), self.assertRaises(qualification.QualificationIncompatible):
+                    qualification._sdk_parent_frozen_spec(root, pins, changed, 'fixture')
+            changed = copy.deepcopy(current)
+            next(row for row in changed['expectedResult']['phases'] if row['product'] == 'contract')['objectSha256'] = 'sha256:' + '0' * 64
+            with self.assertRaisesRegex(qualification.QualificationIncompatible, 'Contract'):
+                qualification._sdk_parent_frozen_spec(root, pins, changed, 'fixture')
+            parent_recipe['schemaVersion'] = 4
+            with self.assertRaisesRegex(ValueError, 'schema-one parent'):
+                qualification._sdk_parent_frozen_spec(root, pins, current, 'fixture')
+        self.assertEqual(old_sdk_bytes, canonical_json_bytes(sdk))
+        self.assertEqual(old_frozen_bytes, canonical_json_bytes(historical))
+
     def test_native49_delegation_preserves_originals_and_rejects_changed_identity(self):
         parent = copy.deepcopy(self.fixture.qualified)
         parent.update(schemaVersion=1, sourceCommit="a" * 40)
