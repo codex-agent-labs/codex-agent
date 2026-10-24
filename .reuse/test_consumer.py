@@ -23,7 +23,9 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140):
+            self.assertEqual(len(original["gitHistory"]), 142)
+            self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL), original)
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -34,8 +36,8 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(141)]
-                    elif fault == "duplicate": rows.append(dict(rows[0]))
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(143)]
+                    elif fault == "duplicate": rows[-1] = dict(rows[0])
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
                     with self.assertRaises(ValueError):
@@ -83,7 +85,7 @@ class AcquisitionTests(unittest.TestCase):
     def test_requalification_requires_an_approved_baseline_with_exact_git_custody(self):
         from products.inventory import canonical_json_bytes
         original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
-        baseline = original["policy"].get("requalificationBaseline", APPROVAL["activeVerifier"])
+        baseline = original["policy"].get("requalificationBaseline", next(row["commit"] for row in original["gitHistory"] if row["commit"] in APPROVAL["approvedVerifiers"]))
         original["policy"]["requalificationBaseline"] = baseline
         if not any(row["commit"] == baseline for row in original["gitHistory"]):
             original["gitHistory"].append({"repository": consumer.authority.REPOSITORY,
