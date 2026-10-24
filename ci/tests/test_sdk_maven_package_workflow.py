@@ -232,6 +232,67 @@ class MavenPackageWorkflowTest(unittest.TestCase):
         finally:
             fixture.doCleanups()
 
+
+    def test_volume_scope_keeps_private_cleanup_and_original_result(self):
+        import json
+        import os
+        from runtime_reference_transport import measured_volume
+        for component, failed in (("sdk-core", False), ("sdk-android", True)):
+            with self.subTest(component=component, failed=failed):
+                fixture = MavenPackageWorkflowTest(methodName="runTest")
+                fixture.setUp()
+                try:
+                    if component == "sdk-android": fixture.configure(component)
+                    events, output = [], io.StringIO()
+                    failure = ValueError("original package gate failed")
+                    def gate(*args, **kwargs):
+                        result = fixture.full_gate(*args, **kwargs)
+                        if failed: raise failure
+                        return result
+                    fixture.gate.side_effect = gate
+                    @contextmanager
+                    def observe(operation, root):
+                        events.append(("enter", operation, Path(root)))
+                        self.assertFalse(fixture.events)
+                        with measured_volume(operation, root):
+                            try:
+                                yield
+                            finally:
+                                self.assertFalse(fixture.candidate.parent.exists())
+                                self.assertFalse(fixture.binary_held)
+                                self.assertEqual(not failed, (fixture.destination / "shard").is_dir())
+                                events.append(("exit", operation, Path(root)))
+                    with patch.dict(os.environ, {"CODEX_AGENT_THROUGHPUT_TRACE": "1"}), \
+                            patch.object(workflow, "measured_volume", side_effect=observe), redirect_stderr(output):
+                        if failed:
+                            with self.assertRaises(ValueError) as caught: fixture.invoke()
+                            self.assertIs(failure, caught.exception)
+                        else:
+                            result = fixture.invoke()
+                            self.assertEqual(component, result["receipt"]["component"])
+                    checkout, temporary = component + "-package-checkout", component + "-package-temporary"
+                    self.assertEqual([("enter", checkout, fixture.root),
+                        ("enter", temporary, Path(tempfile.gettempdir())),
+                        ("exit", temporary, Path(tempfile.gettempdir())),
+                        ("exit", checkout, fixture.root)], events)
+                    rows = [json.loads(line.removeprefix("throughput-volume ")) for line in output.getvalue().splitlines()
+                            if line.startswith("throughput-volume ")]
+                    same_device = fixture.root.stat().st_dev == Path(tempfile.gettempdir()).stat().st_dev
+                    self.assertEqual(1 if same_device else 2, len(rows))
+                    self.assertEqual({checkout} if same_device else {checkout, temporary}, {r["operation"] for r in rows})
+                    for row in rows:
+                        self.assertEqual(not failed, row["success"])
+                        self.assertTrue(row["samplerStopped"])
+                        self.assertEqual(0, row["sampleErrors"])
+                        self.assertGreaterEqual(row["sampleCount"], 2)
+                        self.assertLessEqual(row["minimumObservedFreeBytes"], min(row["freeBytesAtStart"], row["freeBytesAtEnd"]))
+                    for original, retained in ((fixture.binary_capture / "transport.zip",
+                            fixture.destination / "binary-original/capture/transport.zip"),
+                            (fixture.capture / "original-upload.zip", fixture.destination / "sdk-inputs-original/original-upload.zip")):
+                        self.assertEqual(original.read_bytes(), retained.read_bytes())
+                finally:
+                    fixture.doCleanups()
+
     def test_original_workflow_pin_reaches_state_replay(self):
         self.invoke()
         self.assertEqual("e" * 40, self.materialized.call_args.kwargs["sdk_original_workflow_sha"])

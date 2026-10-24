@@ -85,7 +85,7 @@ class SdkNativeMetadataWorkerActionTest(unittest.TestCase):
                     env={**environment, "SDK_STATE_WAVE": wave, "SDK_APPLE_VALIDATION_POLICY": apple_policy},
                     capture_output=True, text=True, check=False)
                 self.assertEqual(0, result.returncode, result.stderr)
-                expected = ["-B", "-m", "ci.sdk_workflow", "capture", "--family", "native-package",
+                expected = ["-B", "-m", "ci.sdk_workflow", "capture", "--scope-inputs", "--family", "native-package",
                     "--plan", environment["PLAN"], "--destination", str(self.root / "build/native-preparation-input"),
                     "--repository-root", str(self.root), "--artifact-id", "71", "--artifact-sha256", environment["ARTIFACT_SHA256"],
                     "--state-wave", "4", "--sdk-validation-tooling", environment["SDK_VALIDATION_TOOLING"],

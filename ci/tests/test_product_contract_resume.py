@@ -734,6 +734,18 @@ class ContractProductResumeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Prior SDK replay requires"):
                 adapter._verified_product_state(self.plan_path, resumed, resumed,
                     self.repository, self.environment, None)
+            # Collection needs only this family's election and dependencies.
+            # The full continuation must still reject unrelated invalid state.
+            collected = adapter.collect_runtime_workers(self.plan_path, resumed, resumed,
+                self.scratch / "scoped-collection", repository_root=self.repository,
+                environ=self.environment, token="synthetic", trusted_workflow_sha="a" * 40,
+                sdk_family="javascript-metadata")
+            self.assertEqual([], collected["rows"])
+            with self.assertRaisesRegex(ValueError, "Prior SDK replay requires"):
+                adapter.advance_products(self.plan_path, resumed, resumed, [],
+                    self.scratch / "full-continuation", self.scratch / "continuation-output",
+                    repository_root=self.repository, environ=self.environment,
+                    sdk_family="javascript-metadata")
             (resumed / "prior-failed-sdk").rmdir()
             (resumed / "prior-failed-sdk-javascript").mkdir()
             with self.assertRaisesRegex(ValueError, "Prior JavaScript replay requires"):

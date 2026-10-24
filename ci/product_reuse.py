@@ -6765,6 +6765,8 @@ def collect_runtime_workers(
     environment = os.environ if environ is None else environ
     state = _verified_product_state(plan_path, discovery_root, state_root, root, environment, sdk_validation_tooling,
         sdk_original_workflow_sha=trusted_workflow_sha,
+        # The collector reads its family; advance_products still verifies the full continuation.
+        **({"requested_scope": tuple(sorted(SDK_FAMILY_INSTANCES[sdk_family]))} if sdk_family is not None else {}),
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy} if sdk_apple_validation_policy is not None else {}),
         **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))

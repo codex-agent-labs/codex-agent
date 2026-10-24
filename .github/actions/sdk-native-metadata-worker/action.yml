@@ -148,7 +148,7 @@ runs:
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         reuse=()
         if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-        python3 -B -m ci.sdk_workflow capture --family "$family" --plan "$PLAN" \
+        python3 -B -m ci.sdk_workflow capture --scope-inputs --family "$family" --plan "$PLAN" \
           --destination "$GITHUB_WORKSPACE/build/native-preparation-input" \
           --repository-root "$GITHUB_WORKSPACE" --artifact-id "$ARTIFACT_ID" \
           --artifact-sha256 "$ARTIFACT_SHA256" --state-wave "$STATE_WAVE" \

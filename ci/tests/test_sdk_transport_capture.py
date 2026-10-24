@@ -2,6 +2,12 @@
 
 from pathlib import Path
 import os
+import json
+import io
+import zipfile
+import re
+import subprocess
+import textwrap
 import sys
 import tempfile
 import unittest
@@ -143,6 +149,160 @@ class SdkTransportCaptureTest(unittest.TestCase):
                 patch.object(sdk_workflow, "capture_transport") as capture:
             self.assertEqual(0, sdk_workflow.main(arguments))
         capture.assert_called_once()
+
+    def test_external_caller_plan_keeps_exact_capture_and_path_guards(self):
+        from products.inventory import sha256_bytes
+        with tempfile.TemporaryDirectory() as checkout, tempfile.TemporaryDirectory() as runner:
+            root, external = Path(checkout).resolve(), Path(runner).resolve()
+            plan = external / "plan/impact-plan.json"
+            plan.parent.mkdir()
+            output = external / "github-output"
+            output.touch()
+            producer = {"tree": "c" * 40, "runAttempt": 1}
+            for case in ("valid", "wrong-upload-plan", "late-plan-change", "symlink-plan", "external-destination", "plan-output", "plan-output-alias"):
+                with self.subTest(case=case):
+                    plan.write_bytes(b"exact caller plan\n")
+                    destination = (external if case == "external-destination" else root) / case
+                    selected_plan = plan if case != "plan-output-alias" else plan.parent / ".." / "plan" / plan.name
+                    if case == "symlink-plan":
+                        selected_plan = external / "alias.json"
+                        selected_plan.symlink_to(plan)
+                    stream = io.BytesIO()
+                    with zipfile.ZipFile(stream, "w") as archive:
+                        for name, raw in {"product-resume-inputs/plan/impact-plan.json":
+                                b"wrong plan\n" if case == "wrong-upload-plan" else plan.read_bytes(),
+                                "product-resume-state/state.json": b"fixture discovery\n",
+                                "runtime-state/state.json": b"fixture state, not an admission\n"}.items():
+                            archive.writestr(name, raw)
+                    raw = stream.getvalue()
+                    artifact = {"digest": sha256_bytes(raw), "size_in_bytes": len(raw)}
+                    def download(*args, **kwargs):
+                        kwargs["destination"].write_bytes(raw)
+                        if case == "late-plan-change":
+                            plan.write_bytes(b"changed caller plan\n")
+                        return artifact, None
+                    with patch.object(product_reuse, "_validate_plan",
+                            return_value={"remoteBuildAuthorized": True, "event": "pull_request"}), \
+                            patch.object(product_reuse, "_consumer", return_value={"producer": producer}), \
+                            patch.object(product_reuse, "_retry_upload_producer", return_value=producer), \
+                            patch.object(product_reuse, "_observe_ci_producer_jobs", return_value=[{"run": {}}]), \
+                            patch.object(product_reuse, "_download_contract_ci_upload", side_effect=download) as fetched, \
+                            patch.object(product_reuse, "_require_artifact_job_window") as window, \
+                            patch.object(sdk_workflow, "matrix", side_effect=AssertionError("premature election")):
+                        def capture():
+                            return sdk_workflow.capture_transport(selected_plan, destination,
+                                plan if case in {"plan-output", "plan-output-alias"} else output, artifact_id=71,
+                                artifact_sha256=artifact["digest"], trusted_workflow_sha="b" * 40,
+                                sdk_state_wave=7, repository_root=root, environ={}, token="synthetic")
+                        if case == "valid":
+                            paths = capture()
+                            self.assertEqual(plan, paths["plan_path"])
+                            self.assertEqual(plan.read_bytes(),
+                                (paths["input_root"] / "product-resume-inputs/plan/impact-plan.json").read_bytes())
+                            fetched.assert_called_once()
+                            window.assert_called_once()
+                        else:
+                            with self.assertRaises(ValueError):
+                                capture()
+                            self.assertFalse(destination.exists())
+                            if case in {"symlink-plan", "external-destination", "plan-output", "plan-output-alias"}:
+                                fetched.assert_not_called()
+                    if case != "late-plan-change":
+                        self.assertEqual(b"exact caller plan\n", plan.read_bytes())
+
+    def test_collector_capture_uses_transport_but_preserves_worker_routes(self):
+        root = Path(__file__).resolve().parents[2]
+        action = (root / ".github/actions/capture-runtime-state/action.yml").read_text()
+        step = action.split("    - id: capture\n", 1)[1]
+        script = textwrap.dedent(step.split("        script: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary).resolve()
+            binary = scratch / "python3"
+            binary.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                "with open(os.environ['COMMAND_LOG'], 'w') as stream:\n"
+                "    json.dump(sys.argv[1:], stream)\n")
+            binary.chmod(0o700)
+            log = scratch / "command.json"
+            env = dict(os.environ, PATH=str(scratch) + os.pathsep + os.environ["PATH"],
+                COMMAND_LOG=str(log), GITHUB_WORKSPACE=str(scratch),
+                GITHUB_OUTPUT=str(scratch / "output"), CODEX_AGENT_COMPLETED_REUSE_POLICY="signed-policy.json")
+            env.update({name: "" for name in re.findall(r"^        (\w+):", step, re.M)})
+            env.update(PLAN_DIRECTORY="plan directory", ARTIFACT_ID="71", ARTIFACT_SHA256="sha256:" + "a" * 64,
+                TRUSTED_WORKFLOW_SHA="b" * 40, STATE_WAVE="0", PREPARATION_STATE_WAVE="0",
+                SDK_VALIDATION_TOOLING="tooling.json", SDK_APPLE_VALIDATION_POLICY="apple.json")
+            cases = (("sdk", "native-metadata", "8", "7"),
+                     ("sdk", "ios-validation", "9", "8"),
+                     ("sdk", "core-package", "12", "11"), ("sdk", "", "1", ""),
+                     ("sdk", "native-metadata", "", "7"),
+                     ("runtime", "", "2", ""), ("sdk-ios-binary", "", "3", "2"))
+            for product, family, preflight, predecessor in cases:
+                with self.subTest(product=product, family=family, preflight=preflight):
+                    env.update(STATE_PRODUCT=product, SDK_FAMILY=family,
+                        PREFLIGHT_WAVE=preflight, SDK_STATE_WAVE=predecessor)
+                    result = subprocess.run(["bash", "-c", script], cwd=scratch, env=env,
+                        capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    argv = json.loads(log.read_text())
+                    selected = product == "sdk" and bool(preflight)
+                    self.assertEqual("capture-transport" if selected else "capture", argv[3 if product != "runtime" else 2])
+                    for flag, value in (("--plan", "plan directory/impact-plan.json"),
+                            ("--artifact-id", "71"), ("--artifact-sha256", env["ARTIFACT_SHA256"]),
+                            ("--trusted-workflow-sha", env["TRUSTED_WORKFLOW_SHA"]),
+                            ("--github-output", env["GITHUB_OUTPUT"]),
+                            ("--completed-frozen-policy", "signed-policy.json")):
+                        self.assertEqual(value, argv[argv.index(flag) + 1])
+                    if predecessor:
+                        self.assertEqual(predecessor, argv[argv.index("--sdk-state-wave") + 1])
+                    if selected:
+                        self.assertEqual(str(scratch), argv[argv.index("--repository-root") + 1])
+                        for flag in ("--family", "--scope-inputs", "--sdk-validation-tooling", "--sdk-apple-validation-policy"):
+                            self.assertNotIn(flag, argv)
+                    else:
+                        self.assertIn("--sdk-validation-tooling", argv)
+                        self.assertIn("--sdk-apple-validation-policy", argv)
+                        if product == "sdk":
+                            self.assertEqual(family, argv[argv.index("--family") + 1])
+                            self.assertIn("--scope-inputs", argv)
+                        elif product == "sdk-ios-binary":
+                            self.assertIn("--ios-binary", argv)
+
+            env.update(STATE_PRODUCT="sdk", SDK_FAMILY="native-metadata", PREFLIGHT_WAVE="8", SDK_STATE_WAVE="7")
+            for key, value in (("COMPONENT", "python"), ("PHASE", "metadata"), ("TARGET", "desktop"),
+                    ("BUILD_KEY", "sha256:" + "c" * 64), ("CONTINUATION", "selected"),
+                    ("SDK_FAMILY", "unknown"), ("PREPARATION_PHASE", "validation")):
+                with self.subTest(rejected=key):
+                    log.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-c", script], cwd=scratch,
+                        env={**env, key: value}, capture_output=True, text=True)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse(log.exists(), "invalid input reached capture command")
+
+    def test_collector_still_requires_full_replay_before_advancement(self):
+        for family, wave in (("native-metadata", 8), ("ios-validation", 9), ("core-package", 12)):
+            with self.subTest(family=family), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                original = root / "original"
+                (original / "runtime-state").mkdir(parents=True)
+                (original / "product-resume-state").mkdir()
+                tooling, apple, frozen = {"caller": "tooling"}, {"caller": "apple"}, object()
+                with patch.object(product_reuse, "_verified_product_state",
+                        side_effect=ValueError("mandatory full replay rejected")) as verified, \
+                        patch.object(product_reuse, "advance_products") as advance, \
+                        self.assertRaisesRegex(ValueError, "mandatory full replay rejected"):
+                    sdk_workflow.collect(original, root / "next", root / "output", wave=wave,
+                        family=family, trusted_workflow_sha="b" * 40, repository_root=root,
+                        environ={}, token="synthetic", sdk_validation_tooling=tooling,
+                        sdk_apple_validation_policy=apple, completed_frozen=frozen)
+                verified.assert_called_once()
+                self.assertEqual(original / "product-resume-inputs/plan/impact-plan.json", verified.call_args.args[0])
+                self.assertEqual(original / "runtime-state", verified.call_args.args[2])
+                self.assertIs(tooling, verified.call_args.args[5])
+                self.assertIs(apple, verified.call_args.kwargs["sdk_apple_validation_policy"])
+                self.assertIs(frozen, verified.call_args.kwargs["completed_frozen"])
+                self.assertEqual("b" * 40, verified.call_args.kwargs["sdk_original_workflow_sha"])
+                self.assertEqual(tuple(sorted(product_reuse.SDK_FAMILY_INSTANCES[family])),
+                                 verified.call_args.kwargs["requested_scope"])
+                advance.assert_not_called()
 
     def test_composite_runs_only_official_transport_capture(self):
         source = (Path(__file__).resolve().parents[2] /

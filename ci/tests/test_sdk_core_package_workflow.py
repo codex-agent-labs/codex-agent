@@ -17,6 +17,20 @@ CHILD = WORKFLOW.with_name("sdk-core-package-validation.yml")
 
 
 class CorePackageWorkflowTest(unittest.TestCase):
+    def test_nested_maven_callers_preserve_runtime_validation_authorization(self):
+        # Reusable workflows do not inherit the caller workflow's env block.
+        name = "CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"
+        expected = "  " + name + ": ${{ vars." + name + " }}"
+        parent_env = WORKFLOW.read_text().split("\nenv:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn(expected, parent_env.splitlines())
+        for child in ("core-binary-validation", "core-package-validation", "core-validation",
+                      "core-metadata-validation", "android-binary-validation", "android-package-validation",
+                      "android-validation", "android-metadata-validation"):
+            with self.subTest(child=child):
+                source = WORKFLOW.with_name("sdk-" + child + ".yml").read_text()
+                env = source.split("\nenv:\n", 1)[1].split("\njobs:\n", 1)[0]
+                self.assertEqual([expected], [line for line in env.splitlines() if name in line])
+
     def test_package_wave_requires_independent_original_binary_and_contract(self):
         source = CHILD.read_text()
 

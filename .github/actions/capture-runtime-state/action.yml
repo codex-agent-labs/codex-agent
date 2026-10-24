@@ -245,6 +245,15 @@ runs:
                 selected+=(--preparation-sdk-state-wave "$PREPARATION_SDK_STATE_WAVE")
               fi
             fi
+            if [ "$STATE_PRODUCT" = sdk ] && [ -n "$PREFLIGHT_WAVE" ]; then
+              # The collector replays full state with its caller-owned policies.
+              command=(python3 -B -m ci.sdk_workflow capture-transport)
+              selected=(--repository-root "$GITHUB_WORKSPACE")
+              if [ -n "$SDK_STATE_WAVE" ]; then selected+=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+              if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+                selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+              fi
+            fi
             "${command[@]}" \
               --plan "$PLAN_DIRECTORY/impact-plan.json" --destination build/runtime-input \
               --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \

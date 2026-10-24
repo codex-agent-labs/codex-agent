@@ -36,7 +36,8 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "admission stop"):
                 workflow.execute(self.plan, discovery, None, self.destination, **self.arguments,
                     **forwarded)
-            self.assertEqual({*forwarded, "sdk_original_workflow_sha"}, set(gate.call_args.kwargs))
+            self.assertEqual({*forwarded, "sdk_original_workflow_sha", "requested_scope"},
+                             set(gate.call_args.kwargs))
             self.assertEqual(self.arguments["trusted_workflow_sha"],
                              gate.call_args.kwargs["sdk_original_workflow_sha"])
             for name, value in forwarded.items():
@@ -270,6 +271,40 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
                 stack.enter_context(patch.object(owner, name, **options))
             return workflow.execute(self.plan, self.root, self.root, self.destination,
                                     **{**self.arguments, **changes})
+
+    def test_execution_scope_omits_unrelated_sdk_hosts_but_keeps_original_and_ready_gates(self):
+        from products.plan import native_runtime_validation_dependencies
+        selected = (self.instance,)
+        closure = workflow.product_reuse._dependency_closure(selected)
+        native_hosts = {identity for identity in workflow.product_reuse.PHASE_INSTANCE_IDS
+                        if native_runtime_validation_dependencies(identity)}
+        self.assertTrue(native_hosts)
+        self.assertFalse(native_hosts.intersection(closure))
+        self.assertIn(self.package, closure)
+        self.assertIn(workflow.PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"), closure)
+        self.assertIn(workflow.PhaseInstanceId("contract", "contract", "binary", "common"), closure)
+        self.assertIn(workflow.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate"), closure)
+        original_state = self.verified_state
+
+        def scoped_state(*args, **options):
+            # Delegate authentication at the existing fixture seam; the real
+            # dependency graph establishes which host admissions can be selected.
+            self.assertEqual(selected, options.get("requested_scope"))
+            return original_state(*args, **options)
+
+        with patch.object(self, "verified_state", side_effect=scoped_state):
+            result = self.execute()
+            self.assertEqual({"fixture": "finalized"}, result["shard"])
+            self.assertIn("replay", self.events)
+            self.reset_outputs()
+            with self.assertRaisesRegex(ValueError, "elected build key"):
+                self.execute(expected_build_key="sha256:" + "9" * 64)
+            self.assertEqual([], self.events)
+            self.verified.sources.pop(self.package)
+            with self.assertRaisesRegex(ValueError, "selected original package"):
+                self.execute()
+            self.assertEqual([], self.events)
+            self.assertFalse((self.destination / "shard").exists())
 
     @unittest.skipIf(os.name == "nt", "Guarded byte inventory reuse is POSIX-only")
     def test_archive_retention_reuses_byte_inventory(self):

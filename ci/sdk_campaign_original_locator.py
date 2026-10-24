@@ -32,6 +32,8 @@ RETAINED_CORE_PACKAGE_KEY = "sha256:6179fe876ee780222026ed9aaea33369fae8a65b9275
 RETAINED_CORE_METADATA_KEY = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
 RETAINED_CORE_ANDROID_VALIDATION_KEY = "sha256:671c8786babf765a4260487e0e7c0f189e32baad1f58f12be68baaf14aaddda0"
 RETAINED_ANDROID_BINARY_KEY = "sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c"
+REQUALIFIED_CORE_BINARY_KEY = "sha256:5df96b66dc741a5cb29a8e9dc9ee3315f5fe83f761f7a5a733e57ecec39ac39c"
+REQUALIFIED_ANDROID_BINARY_KEY = "sha256:9995b997f0e946e4d84f927e01adbb5bc5facbbab24159c7bfcb5b68a9ddd84c"
 RETAINED_ANDROID_METADATA_KEY = "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"
 
 
@@ -93,18 +95,29 @@ def retained_core_binary_origin(build_key, consumer):
     producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
         "commit": "91993201e0421db2ae419f183fc84a99318fbd3b", "tree": "b5c395d2de21c9c21ca800470635579266bcb4c9",
         "event": "pull_request", "runId": 38687858579, "runAttempt": 1, "pullRequest": 31}
-    if (build_key != RETAINED_CORE_BINARY_KEY
+    current = build_key == REQUALIFIED_CORE_BINARY_KEY
+    if current:
+        producer.update(commit="10ff035ee3c7d122067c2a6f65ce7bc86a2c82cb",
+            tree="eb290ed3d74147ac28447bd6ff3fed03e5727c72", runId=38898687246)
+    if (build_key not in (RETAINED_CORE_BINARY_KEY, REQUALIFIED_CORE_BINARY_KEY)
             or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
             or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
             or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
         return None
-    return {"producer": producer, "artifact_id": 11951616809,
+    origin = {"producer": producer, "artifact_id": 11951616809,
         "artifact_sha256": "sha256:86563e64953aafc96835c1ce849b8aee7ce55520d1f53466a70f08c43517ab74",
         "job_id": 116269992538, "workflow_sha": "128c9dda322497674ba9d2cbef9963010f26e2dc",
         "workflow_path": ".github/workflows/sdk-core-binary-validation.yml",
         "job_name": "product-validation / sdk-core-binary-wave / sdk-core-binary-common",
         "context": {"repositoryRoot": "/Users/runner/work/codex-agent/codex-agent",
             "workerRoot": "/Users/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker"}}
+    if current:
+        origin.update(artifact_id=12047025486,
+            artifact_sha256="sha256:8c504b3b5fba0a4eb955cdde4f9f3a53fb485713688da803a7a6cbdf2d9a50d9",
+            receipt_sha256="sha256:87651283dfe5b0f03f862ce7acacf384243484cc70cba8ed67248f93aafc4322",
+            object_sha256="sha256:e84f6739b6db11649f0686c04797264a6f2bc8edd5bea0eb572c4daf205c9cce",
+            job_id=116969956407, workflow_sha="1dfb48e6ce8e5c042ebc13ad1c1969f326354371")
+    return origin
 
 
 def retained_core_origin(phase, build_key, consumer, *, target="common", component="sdk-core"):
@@ -162,13 +175,17 @@ def retained_core_origin(phase, build_key, consumer, *, target="common", compone
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "47dd53e4ad943208484290515ba399423d78f53d", "tree": "bb8855454b8aba1b6ae12b60e4286c08bf3ebf49",
             "event": "pull_request", "runId": 38977473655, "runAttempt": 1, "pullRequest": 31}
+        current = build_key == REQUALIFIED_ANDROID_BINARY_KEY
+        if current:
+            producer.update(commit="986d173ae4c05cf3ec456bef463641376a65e6d3",
+                tree="554dee42106c5c00e0114d166fb2c52b2a5aa1e0", runId=39012954522)
         if (component != "sdk-android" or (phase, target) != ("binary", "android")
-                or build_key != RETAINED_ANDROID_BINARY_KEY
+                or build_key not in (RETAINED_ANDROID_BINARY_KEY, REQUALIFIED_ANDROID_BINARY_KEY)
                 or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
                 or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
                 or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
             return None
-        return {"producer": producer, "artifact_id": 12079777755,
+        origin = {"producer": producer, "artifact_id": 12079777755,
             "artifact_sha256": "sha256:57ab3563ec043027be009616c60285d1dcaa84c3fc18cde71919113151bdbb40",
             "receipt_sha256": "sha256:8b88dffbf56855d08960e08e60adb8522d97f60d89601f6e1d8b8de238e8d355",
             "job_id": 117231503731, "workflow_sha": "8b1fa9a28d9a5f951e287d07985e532a485be36e",
@@ -176,6 +193,13 @@ def retained_core_origin(phase, build_key, consumer, *, target="common", compone
             "job_name": "product-validation / sdk-android-binary-result / sdk-android-binary-android",
             "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
                 "workerRoot": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-maven-worker"}}
+        if current:
+            origin.update(artifact_id=12093573697,
+                artifact_sha256="sha256:2ebd26e9acb523c6674aae94ca80e899ee41bfc82e2613596ea493ac235e1aeb",
+                receipt_sha256="sha256:f1b7c4c2e1cb91b07fbdb30fab6e4bc60d567642dd14770a1050419b6c8f0572",
+                object_sha256="sha256:fd5e4ea879cba15f6c229e9ae58faf0e8b0af074038a05c2eb66b5771fbd8f9e",
+                job_id=117339946431, workflow_sha="26622ad8247c4c411890d22bc3519332ad11fb25")
+        return origin
     if phase == "validation":
         # Exact successful originals; metadata lookup never grants admission.
         selected = {

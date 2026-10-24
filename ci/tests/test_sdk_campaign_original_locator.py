@@ -270,6 +270,75 @@ class SdkCampaignOriginalLocatorTest(TestCase):
                 locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
                     expected_build_key=key, token='synthetic-token', environ={}, **options)
 
+    def test_requalified_maven_binaries_keep_exact_originals_and_lookup_guards(self):
+        consumer = {**self.fixture.producer, "runId": 40056247062, "runAttempt": 1}
+        originals = (
+            ("sdk-core", "common",
+             "sha256:5df96b66dc741a5cb29a8e9dc9ee3315f5fe83f761f7a5a733e57ecec39ac39c",
+             "10ff035ee3c7d122067c2a6f65ce7bc86a2c82cb", "eb290ed3d74147ac28447bd6ff3fed03e5727c72", 38898687246,
+             12047025486, "sha256:8c504b3b5fba0a4eb955cdde4f9f3a53fb485713688da803a7a6cbdf2d9a50d9",
+             "sha256:87651283dfe5b0f03f862ce7acacf384243484cc70cba8ed67248f93aafc4322",
+             "sha256:e84f6739b6db11649f0686c04797264a6f2bc8edd5bea0eb572c4daf205c9cce",
+             116969956407, "1dfb48e6ce8e5c042ebc13ad1c1969f326354371",
+             "product-validation / sdk-core-binary-wave / sdk-core-binary-common",
+             "/Users/runner/work/codex-agent/codex-agent"),
+            ("sdk-android", "android",
+             "sha256:9995b997f0e946e4d84f927e01adbb5bc5facbbab24159c7bfcb5b68a9ddd84c",
+             "986d173ae4c05cf3ec456bef463641376a65e6d3", "554dee42106c5c00e0114d166fb2c52b2a5aa1e0", 39012954522,
+             12093573697, "sha256:2ebd26e9acb523c6674aae94ca80e899ee41bfc82e2613596ea493ac235e1aeb",
+             "sha256:f1b7c4c2e1cb91b07fbdb30fab6e4bc60d567642dd14770a1050419b6c8f0572",
+             "sha256:fd5e4ea879cba15f6c229e9ae58faf0e8b0af074038a05c2eb66b5771fbd8f9e",
+             117339946431, "26622ad8247c4c411890d22bc3519332ad11fb25",
+             "product-validation / sdk-android-binary-result / sdk-android-binary-android",
+             "/home/runner/work/codex-agent/codex-agent"),
+        )
+        for (component, target, key, commit, tree, run, artifact, digest, receipt, obj,
+             job, workflow, job_name, root) in originals:
+            with self.subTest(component=component):
+                producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+                    "commit": commit, "tree": tree, "event": "pull_request", "runId": run,
+                    "runAttempt": 1, "pullRequest": 31}
+                expected = {"producer": producer, "artifact_id": artifact, "artifact_sha256": digest,
+                    "receipt_sha256": receipt, "object_sha256": obj, "job_id": job, "workflow_sha": workflow,
+                    "workflow_path": f".github/workflows/{component}-binary-validation.yml", "job_name": job_name,
+                    "context": {"repositoryRoot": root, "workerRoot": f"{root}/build/{component}-maven-worker"}}
+                selected = lambda candidate: locator.retained_core_origin(
+                    "binary", key, candidate, component=component, target=target)
+                self.assertEqual(expected, selected(consumer))
+                if component == "sdk-core":
+                    self.assertEqual(expected, locator.retained_core_binary_origin(key, consumer))
+                for changes in ({"repository": "other/repository"}, {"workflowPath": "other.yml"},
+                        {"event": "push"}, {"pullRequest": 32}, {"runId": True}, {"runAttempt": 0},
+                        {"runId": run - 1}, {"runId": run, "runAttempt": 1}):
+                    self.assertIsNone(selected({**consumer, **changes}))
+                self.assertEqual(expected, selected({**consumer, "runId": run, "runAttempt": 2}))
+                for wrong_phase, wrong_component, wrong_target in (
+                        ("binary", component, "unknown"), ("package", component, target),
+                        ("binary", "sdk-core" if component == "sdk-android" else "sdk-android", target)):
+                    self.assertIsNone(locator.retained_core_origin(wrong_phase, key, consumer,
+                        component=wrong_component, target=wrong_target))
+                self.assertIsNone(locator.retained_core_origin("binary", "sha256:" + "0" * 64,
+                    consumer, component=component, target=target))
+                plan = {"event": "pull_request", "remoteBuildAuthorized": True}
+                def call():
+                    return locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                        expected_build_key=key, token="synthetic-token", environ={}, component=component, target=target)
+                with patch.object(locator.products, "_validate_plan", return_value=plan), \
+                        patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                        patch.object(locator, "_locate", return_value={"artifact_id": artifact,
+                            "artifact_sha256": digest}) as observe:
+                    self.assertEqual(expected, call())
+                    self.assertEqual(producer, observe.call_args.args[0])
+                    self.assertEqual(job, observe.call_args.kwargs["expected_job_id"])
+                    self.assertEqual(key, observe.call_args.kwargs["expected_build_key"])
+                    self.assertEqual(job_name, observe.call_args.kwargs["job"])
+                    self.assertEqual({"binary": {"path": expected["workflow_path"], "sha": workflow}},
+                        observe.call_args.kwargs["trusted_workflows_by_phase"])
+                    for changed in ({"artifact_id": artifact + 1}, {"artifact_sha256": "sha256:" + "0" * 64}):
+                        observe.return_value = {"artifact_id": artifact, "artifact_sha256": digest, **changed}
+                        with self.assertRaisesRegex(ValueError, "reviewed successful original"):
+                            call()
+
     def test_retained_locator_imports_from_direct_ci_script_path(self):
         import subprocess, sys
         from pathlib import Path

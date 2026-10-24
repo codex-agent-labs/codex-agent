@@ -181,7 +181,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("iOS metadata election state or caller policy changed")
 
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-        sdk_original_workflow_sha=trusted_workflow_sha,
+        sdk_original_workflow_sha=trusted_workflow_sha, requested_scope=(_INSTANCE,),
         sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     ready = verified.prior_ready_plans.get(_INSTANCE)

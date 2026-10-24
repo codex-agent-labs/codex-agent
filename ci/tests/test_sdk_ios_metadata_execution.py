@@ -209,6 +209,59 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
             authenticated.assert_called_once()
             return result
 
+    def test_selected_scope_keeps_both_signed_targets_and_current_admission_gates(self):
+        from products.plan import native_runtime_validation_dependencies
+        selected = (workflow._INSTANCE,)
+        closure = set(workflow.product_reuse._dependency_closure(selected))
+        self.assertEqual({identity for identity in workflow.product_reuse.PHASE_INSTANCE_IDS
+                          if identity.product in {"contract", "runtime"}},
+                         {identity for identity in closure if identity.product != "sdk"})
+        self.assertEqual({workflow.PhaseInstanceId("sdk", "sdk-ios", phase, target)
+                          for phase, target in (("binary", "ios"), ("package", "ios"),
+                              ("validation", "ios-arm64"), ("validation", "ios-simulator-arm64"),
+                              ("metadata", "ios"))},
+                         {identity for identity in closure if identity.product == "sdk"})
+        self.assertFalse(any(native_runtime_validation_dependencies(identity) for identity in closure))
+        original_state = self.verified_state
+
+        def scoped_state(*args, **options):
+            # The real registered closure selects consumed phases; the existing
+            # state/Apple fixtures still stand in for cryptographic admission.
+            self.assertEqual(selected, options.get("requested_scope"))
+            self.assertIs(self.policy, options["sdk_apple_validation_policy"])
+            return original_state(*args, **options)
+
+        def reset_outputs():
+            import shutil
+            for path in (self.destination, self.stage):
+                if path.exists():
+                    shutil.rmtree(path)
+            self.events.clear()
+
+        with patch.object(self, "verified_state", side_effect=scoped_state):
+            result = self.run_controller()
+            self.assertEqual(self.ready["buildKey"], result["buildKey"])
+            self.assertEqual(["full-enter", "worker", "full-exit", "finalize", "admit"], self.events)
+            self.assertEqual(self.records, self.verified.rebased_request["sdkAppleValidationEvidence"])
+            reset_outputs()
+            with patch.dict(self.verified.prior_ready_plans,
+                    {workflow._INSTANCE: {**self.ready, "buildKey": "sha256:" + "9" * 64}}), \
+                    self.assertRaisesRegex(ValueError, "not ready with the elected build key"):
+                self.run_controller()
+            self.assertEqual([], self.events)
+            self.verified.rebased_request["sdkAppleValidationEvidence"] = self.records[:-1]
+            with self.assertRaisesRegex(ValueError, "exact signed validation carrier"):
+                self.run_controller()
+            self.assertEqual([], self.events)
+            self.assertFalse((self.destination / "shard").exists())
+            reset_outputs()
+            self.verified.rebased_request["sdkAppleValidationEvidence"] = self.records
+            self.mutation = "context-exit"
+            with self.assertRaisesRegex(ValueError, "full Apple context changed"):
+                self.run_controller()
+            self.assertEqual(["full-enter", "worker", "full-exit"], self.events)
+            self.assertFalse((self.destination / "shard").exists())
+
     def test_two_full_original_gates_exit_before_final_receipt_and_publication(self):
         result = self.run_controller()
         self.assertEqual(["full-enter", "worker", "full-exit", "finalize", "admit"], self.events)

@@ -12,7 +12,7 @@ if __package__:
 
 import product_reuse
 import sdk_workflow
-from runtime_reference_transport import measured
+from runtime_reference_transport import measured, measured_volume
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
@@ -145,7 +145,9 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
-        with tempfile.TemporaryDirectory(prefix="sdk-maven-package-") as temporary:
+        with measured_volume(component + "-package-checkout", root), \
+                measured_volume(component + "-package-temporary", tempfile.gettempdir()), \
+                tempfile.TemporaryDirectory(prefix="sdk-maven-package-") as temporary:
             private = Path(temporary).resolve()
             _require_capability_output_separate(private, [root, *protected])
             candidate = private / "shard"

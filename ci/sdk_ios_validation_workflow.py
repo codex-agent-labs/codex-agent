@@ -111,12 +111,12 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
         ("sdk_android_metadata_admission", sdk_android_metadata_admission),
     ) if value is not None}
+    instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-        sdk_original_workflow_sha=trusted_workflow_sha,
+        sdk_original_workflow_sha=trusted_workflow_sha, requested_scope=(instance,),
         **({"sdk_apple_validation_policy": sdk_apple_validation_policy}
            if sdk_apple_validation_policy is not None else {}), **admissions,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
-    instance = PhaseInstanceId("sdk", "sdk-ios", "validation", target)
     ready = verified.prior_ready_plans.get(instance)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("SDK iOS validation is not ready with the elected build key")

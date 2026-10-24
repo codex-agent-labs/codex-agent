@@ -1335,10 +1335,13 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
                 or sdk_state_wave not in range(1, 20) or state_wave != 0))):
         raise ValueError("SDK transport requires one exact current state wave")
     root = Path(repository_root).resolve(strict=True)
-    plan, _, destination = product_reuse._product_materialization_paths(root, plan, plan, destination)
+    # Caller plans may live in runner temp; capture validates their exact bytes
+    # and enforces its fresh, repository-contained destination independently.
+    plan, destination = Path(os.path.abspath(plan)), Path(os.path.abspath(destination))
     output = Path(github_output_path).absolute()
     if (output.resolve(strict=False) != output or output == root or root in output.parents
-            or output == destination or destination in output.parents):
+            or output == destination or destination in output.parents
+            or output == plan or plan.parent in output.parents):
         raise ValueError("SDK transport output must be outside source and captured state")
     descriptor = os.open(output, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "a", encoding="utf-8") as held_output:
@@ -1479,9 +1482,11 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
+    current_replays = []
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
             requested_scope=(instance,),
+            _product_state_consumer=current_replays.append,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
@@ -1489,10 +1494,19 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
         if fields not in selection["consumers"]:
             raise ValueError("SDK native preparation consumer is not selected")
         prepared = destination / "inputs"
-        ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
-            sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+        if current_replays and selection["source"] == "current-runtime":
+            replay, = current_replays
+            if (type(replay) is not product_reuse._VerifiedProductState or replay.requested != (instance,)
+                    or replay.rebased_request.get("sdkRuntimeSource") == "released-default"):
+                raise ValueError("Native preparation retained replay differs from its current selection")
+            ready = product_reuse._materialize_product_predecessors(replay, instance, prepared,
+                expected_build_key, root, materialized_scope=NATIVE_RUNTIME_PREDECESSORS)
+        else:
+            # Released defaults also capture their external Runtime predecessors.
+            ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
+                expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected native SDK producer"))

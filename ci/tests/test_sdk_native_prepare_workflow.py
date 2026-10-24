@@ -79,6 +79,9 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
     @contextmanager
     def verified(self, *args, **kwargs):
         self.assertEqual((self.plan_path, self.discovery, self.state), args)
+        replay_consumer = kwargs.pop("_product_state_consumer", None)
+        if replay_consumer is not None and hasattr(self, "replay"):
+            replay_consumer(self.replay)
         self.assertEqual({**{key: value for key, value in self.arguments.items()
                           if key not in {"component", "expected_build_key"}},
                           "requested_scope": (PhaseInstanceId(*(self.ready[field] for field in
@@ -187,6 +190,54 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
                 patch.object(workflow, "regular_file_inventory", side_effect=inventory):
             self.invoke()
         self.assertEqual({tree: 1 for tree in trees}, scans)
+
+    def test_current_runtime_reuses_exact_anchor_replay_and_keeps_lifetime_guards(self):
+        anchor = PhaseInstanceId("sdk", "python", "package", "desktop")
+        for case in ("current", "late-plan", "wrong-anchor", "wrong-type", "released-default"):
+            with self.subTest(case=case):
+                self.destination = self.root / "build" / case
+                self.events, self.result = [], None
+                self.failure = "late-plan" if case == "late-plan" else None
+                self.selection["source"] = "released-default" if case == "released-default" else "current-runtime"
+                self.replay = workflow.product_reuse._VerifiedProductState(
+                    plan={}, producer=self.producer, consumer={}, requested=(anchor,), closure=(),
+                    expected_fixed={}, rebased_request={}, prior={}, prior_by_instance={}, sources={},
+                    prior_carrier_phases={}, prior_ready_plans={anchor: self.ready})
+                if case == "wrong-anchor":
+                    from dataclasses import replace
+                    self.replay = replace(self.replay, requested=(CONTRACT,))
+                elif case == "wrong-type":
+                    self.replay = object()
+
+                def restore(replay, identity, destination, expected_key, root, **arguments):
+                    self.assertIs(replay, self.replay)
+                    self.assertEqual((anchor, self.destination / "inputs", self.ready["buildKey"], self.root),
+                                     (identity, destination, expected_key, root))
+                    self.assertEqual({"materialized_scope": (CONTRACT, *self.original_paths)}, arguments)
+                    return self.materialize(self.plan_path, self.discovery, self.state, identity, destination,
+                        expected_build_key=expected_key, repository_root=root, environ=self.arguments["environ"],
+                        sdk_original_workflow_sha=self.arguments["trusted_workflow_sha"], **arguments)
+
+                try:
+                    with patch.object(workflow.product_reuse, "_materialize_product_predecessors",
+                                      side_effect=restore) as private_restore:
+                        if case in {"wrong-anchor", "wrong-type", "late-plan"}:
+                            with self.assertRaisesRegex(ValueError,
+                                    "changed" if case == "late-plan" else "retained replay"):
+                                self.invoke()
+                            self.assertFalse((self.destination / "upload").exists())
+                        else:
+                            self.invoke()
+                            self.assertTrue((self.destination / "upload").is_dir())
+                        self.context_mock.assert_called_once()
+                        self.assertEqual(1 if case in {"current", "late-plan"} else 0,
+                                         private_restore.call_count)
+                        self.assertEqual(1 if case == "released-default" else 0,
+                                         self.materialize_mock.call_count)
+                        if case in {"wrong-anchor", "wrong-type"}:
+                            self.worker_mock.assert_not_called()
+                finally:
+                    self.plan_path.write_bytes(self.original_plan_bytes)
 
     def test_returns_exact_prepared_result_only_after_verified_context_exit(self):
         result = self.invoke()
