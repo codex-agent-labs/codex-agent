@@ -310,6 +310,44 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         contract = (ROOT / ".github/workflows/contract-validation.yml").read_text()
         self.assertIn("contract-tooling-only: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' && fromJSON(inputs.planOutputs).contract_next_phase != 'binary' }}", contract)
 
+    def test_sdk_contract_ownership_guard_requires_successful_product_reuse(self):
+        plan = workflow_job(self.workflow, "plan")
+        reuse = plan.split("      - id: product-reuse\n", 1)[1].split("\n      - ", 1)[0]
+        producer_if = re.search(r"^        if: (.+)$", reuse, re.M).group(1)
+        guard = plan.split("      - name: Require unchanged Contract ownership before SDK continuation\n", 1)[1].split("\n      - ", 1)[0]
+        guard_if = re.search(r"^        if: (.+)$", guard, re.M).group(1)
+        self.assertIn("CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}", guard)
+        script = textwrap.dedent(guard.split("        run: |\n", 1)[1])
+        self.assertEqual('test "$CONTRACT_NEXT_PHASE" = none', script.strip())
+        cases = ((False, False, False, "skipped", True, "", False),
+                 (True, False, False, "skipped", True, "", False),
+                 (True, True, True, "skipped", True, "", False),
+                 (True, True, False, "failure", True, "", False),
+                 (True, True, False, "cancelled", True, "", False),
+                 (True, True, False, "success", False, "", False),
+                 (True, True, False, "success", True, "none", True),
+                 (True, True, False, "success", True, "", True),
+                 (True, True, False, "success", True, "binary", True),
+                 (True, True, False, "success", True, "metadata", True))
+        for authorized, remote, full_reuse, outcome, sdk, phase, enabled in cases:
+            values = {"inputs.sdkRecoveryOnly": sdk, "steps.product-reuse.outcome": outcome,
+                "steps.event-authorization.outputs.authorized": str(authorized).lower(),
+                "steps.impact.outputs.remote_build_authorized": str(remote).lower(),
+                "steps.validation-reuse.outputs.reused": str(full_reuse).lower()}
+            def evaluate(expression):
+                for name, value in values.items():
+                    expression = expression.replace(name, repr(value))
+                return eval(expression.replace("&&", "and"), {"__builtins__": {}})
+            with self.subTest(authorized=authorized, remote=remote, full_reuse=full_reuse,
+                              outcome=outcome, sdk=sdk, phase=phase):
+                self.assertEqual(authorized and remote and not full_reuse, evaluate(producer_if))
+                self.assertEqual(enabled, evaluate(guard_if))
+                if enabled:
+                    result = subprocess.run(["bash", "-e", "-c", script],
+                        env={"PATH": os.environ.get("PATH", ""), "CONTRACT_NEXT_PHASE": phase},
+                        capture_output=True, text=True)
+                    self.assertEqual(phase == "none", result.returncode == 0, result.stderr)
+
     def test_completion_routes_separate_job_controls_below_linux_string_limit(self):
         from ci.sdk_completion_state import _JOBS
         from ci.tests.test_sdk_completion_state import direct_handoff, locator

@@ -60,7 +60,8 @@ class RuntimeWorkflowTest(unittest.TestCase):
                         RUNNER_TEMP=str(scratch), COMMAND_LOG=str(log), GITHUB_OUTPUT=str(scratch / 'output'))
                     for key, value in re.findall(r'^        (\w+): (.*)$', step, re.M):
                         env[key] = source if value == '${{ steps.captured.outputs.input-root }}' else ''
-                    env.update(PRODUCT=product, WAVE='1', STATE_WAVE='0', TRUSTED_WORKFLOW_SHA=PIN)
+                    env.update(PRODUCT=product, WAVE='1', STATE_WAVE='0', TRUSTED_WORKFLOW_SHA=PIN,
+                               CHECKPOINT_CONTROLS='false')
                     # The runner sets every declared action input after caller env,
                     # including empty optional inputs such as INPUT_ROOT.
                     for name in re.findall(r'^  ([\w-]+):$', inputs, re.M):

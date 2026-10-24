@@ -56,7 +56,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_sdk_selector_pin_matches_reviewed_candidate_control_bytes(self):
         root = HELPER.parents[3]
-        self.assertEqual("97f64bdb8b0c966c5f26ff5fca7d781436ab2f93", recovery.SDK_SELECTION_REVISION)
+        self.assertEqual("a54be3dcc42e026137b9cc0f84572cfdbc4c9090", recovery.SDK_SELECTION_REVISION)
         self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
                          (root / recovery.SDK_SELECTOR).read_bytes())
 
@@ -110,13 +110,15 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         source = (HELPER.parents[3] / '.github/workflows/product-validation.yml').read_text()
         jobs = re.findall(r'^  (sdk-[a-z0-9-]+):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
                           source, re.MULTILINE | re.DOTALL)
-        self.assertEqual(63, len(jobs))
+        self.assertEqual(65, len(jobs))
+        self.assertTrue({"sdk-checkpoint-9", "sdk-checkpoint-10"} <= {name for name, _ in jobs})
         for name, job in jobs:
             with self.subTest(job=name):
                 condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
                                       job, re.MULTILINE | re.DOTALL).group(1)
                 expression = ' '.join(condition.removeprefix('>-').split())
                 expression = expression.replace('inputs.runtimeRecoveryOnly', 'True')
+                expression = expression.replace('inputs.sdkCheckpoints', 'True')
                 expression = expression.replace('inputs.sdkRecoveryOnly', 'False')
                 expression = expression.replace('inputs.runtimeAggregateRequalification', 'False')
                 expression = expression.replace('needs.*.result', "['success', 'skipped']")
