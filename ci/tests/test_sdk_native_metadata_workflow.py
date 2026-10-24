@@ -19,6 +19,121 @@ from products.restore import finalize_phase_object, verify_phase_shard
 
 
 class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
+    def test_current_runtime_common_inputs_capture_compatible_sdk_once_without_legacy_fallback(self):
+        # Composition only: exact reviewed selectors, mocked authentication boundaries.
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from reuse_qualification import CompletedFrozenReuse
+        from products.inventory import load_canonical_json_bytes
+        from products.restore import verification_session
+        pins = load_canonical_json_bytes(
+            (Path(__file__).parent / "data/sdk-input-recovery.json").read_bytes())
+        runtime = pins["runtimeSource"]
+        aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+        contract = PhaseInstanceId("contract", "contract", "metadata", "common")
+        spec = {"requalification": {"signedSource": {key: runtime[key] for key in
+            ("artifactId", "artifactSha256", "producer", "workflowSha")}}}
+        phases = {aggregate: {"buildKey": runtime["buildKey"],
+            "receiptSha256": runtime["metadataReceiptSha256"]}, contract: {"buildKey": contract}}
+        contract_receipt = {"outputs": [{"kind": "contract-bundle", "sha256": "sha256:" + "d" * 64}]}
+        receipts = {contract: canonical_json_bytes(contract_receipt)}
+        for target in NATIVE_TARGETS:
+            for phase in ("package", "validation"):
+                identity = PhaseInstanceId("runtime", target, phase, target)
+                phases[identity] = dict(buildKey=identity, receiptSha256="fixture", objectSha256="fixture")
+                receipts[identity] = canonical_json_bytes(dict(productVersion="0.8.0", target=target, phase=phase))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source.json"
+            source.write_bytes(canonical_json_bytes(pins["historicalSource"]))
+            for name in ("java", "public.pub"):
+                (root / name).write_bytes(b"fixture")
+            (root / "evidence").mkdir()
+            tooling = dict(evidence=str(root / "evidence"), publicKey=str(root / "public.pub"),
+                javaExecutable=str(root / "java"), requiredTrustDomain="development", keyring=None, keysDirectory=None)
+            context = dict(repository_root=root, plan_path=root / "plan", trusted_workflow_sha="a" * 40,
+                token="fixture", environ=dict(CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=str(source),
+                    CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION='{"fixture":"authorization"}'))
+            request = dict(versions={"sdk": "0.8.0"}, repositoryRevision="b" * 40)
+            producer = dict(commit="b" * 40, tree="c" * 40)
+            trust = SimpleNamespace(keyring=root / "current-keyring", keys=root / "current-keys")
+            ranges = dict(compatibleReleaseRange=">=0.8.0 <0.9.0", compatibleRuntimeCompatibilityRange=">=0.8.0 <0.9.0")
+            compatibility = dict(sdkVersion="0.8.0", runtime=dict(defaultRuntimeVersion="0.8.0"))
+            for rejected in (False, True):
+                with self.subTest(rejected=rejected), verification_session(), ExitStack() as stack:
+                    capability = object.__new__(CompletedFrozenReuse)
+                    for name, value in (("check_request", None), ("check_consumer", None),
+                            ("_values", (spec, phases)), ("sdk_original", {"spec": {"sdkInputs": {
+                                "source": pins["historicalSource"], "runtimeSource": pins["historicalRuntime"]}}})):
+                        stack.enter_context(patch.object(CompletedFrozenReuse, name, return_value=value))
+                    stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", return_value={}))
+                    stack.enter_context(patch.object(workflow.product_reuse, "_consumer", return_value={"producer": producer}))
+                    stack.enter_context(patch.object(workflow.product_reuse, "_release_trust", return_value=trust))
+                    legacy = stack.enter_context(patch.object(CompletedFrozenReuse, "capture_sdk_input_members",
+                        side_effect=AssertionError("Historical input members must not authenticate the replacement")))
+                    stack.enter_context(patch.object(CompletedFrozenReuse, "envelope", side_effect=lambda row, raw=None:
+                        dict(receiptBytes=receipts[row["buildKey"]], receipt=load_canonical_json_bytes(receipts[row["buildKey"]]))))
+                    stack.enter_context(patch.object(CompletedFrozenReuse, "capture_object"))
+
+                    def restore(obj, stage, **kwargs):
+                        stage.mkdir(parents=True)
+                        (stage / "fixture").write_bytes(b"runtime")
+                        return dict(receiptBytes=receipts[kwargs["build_key"]])
+
+                    stack.enter_context(patch("products.restore.restore_object", side_effect=restore))
+                    stack.enter_context(patch("products.sdk_release_selection.read_sdk_runtime_compatibility_policy", return_value=ranges))
+                    stack.enter_context(patch("products.inventory.git_regular_blob_bytes", return_value=b"sdk fixture"))
+                    stage_inputs = stack.enter_context(patch("products.sdk_native.stage_native_sdk_inputs"))
+                    failure = ValueError("compatible original rejected")
+
+                    def capture(plan, destination, **kwargs):
+                        if rejected:
+                            raise failure
+                        (destination / "sdk-inputs").mkdir(parents=True)
+                        (destination / "sdk-inputs/contract.json").write_bytes(receipts[contract])
+
+                    captured = stack.enter_context(patch.object(workflow.sdk_workflow.sdk_handoff,
+                        "capture_reused_sdk_handoff", side_effect=capture))
+                    stack.enter_context(patch("products.sdk_compatibility.load_sdk_compatibility_request",
+                        side_effect=lambda path: {"contract_metadata_receipt": path.parent / "contract.json"}))
+                    joined = stack.enter_context(patch.object(workflow.sdk_workflow, "_completed_sdk_inputs",
+                        side_effect=lambda capture, **kwargs: nullcontext(dict(sdk=dict(
+                            directory=capture / "original/sdk-inputs", compatibility=compatibility),
+                            runtime=dict(receiptBytes=receipts)))))
+                    recovery = workflow.completed_validation_recovery(capability, request, tooling, context)
+                    common = inspect.getclosurevars(recovery["records"]).nonlocals["common_inputs"]
+                    if rejected:
+                        with self.assertRaises(ValueError) as raised:
+                            common()
+                        self.assertIs(failure, raised.exception)
+                        joined.assert_not_called()
+                        stage_inputs.assert_not_called()
+                    else:
+                        self.assertIs(common(), common())
+                        joined.assert_called_once()
+                        stage_inputs.assert_called_once()
+                        self.assertEqual(dict(completed_frozen=capability, keyring=trust.keyring,
+                            keys_directory=trust.keys, selection_repository_root=root,
+                            selection_revision=request["repositoryRevision"],
+                            expected_contract_payload_sha256=contract_receipt["outputs"][0]["sha256"]), joined.call_args.kwargs)
+                    legacy.assert_not_called()
+                    captured.assert_called_once()
+                    destination = captured.call_args.args[1]
+                    self.assertEqual((context["plan_path"], destination), captured.call_args.args)
+                    self.assertEqual(("common", "original"), destination.parts[-2:])
+                    self.assertEqual(dict(sdk_inputs_source=pins["compatibleSource"],
+                        artifact_id=runtime["artifactId"], artifact_sha256=runtime["artifactSha256"],
+                        trusted_workflow_sha=runtime["workflowSha"], expected_build_key=runtime["buildKey"],
+                        expected_metadata_receipt_sha256=runtime["metadataReceiptSha256"],
+                        original_producer=runtime["producer"], sdk_version="0.8.0",
+                        compatible_release_range=ranges["compatibleReleaseRange"],
+                        compatible_runtime_compatibility_range=ranges["compatibleRuntimeCompatibilityRange"],
+                        expected_contract_payload_sha256=contract_receipt["outputs"][0]["sha256"], reference_runtime=True,
+                        keyring=trust.keyring, keys_directory=trust.keys, selection_repository_root=root,
+                        selection_revision=request["repositoryRevision"], repository_root=root,
+                        environ=context["environ"], token=context["token"]), captured.call_args.kwargs)
+                    recovery["check"]()
+
     def test_state_replay_shares_admission_scope_and_clears_it_after_failure(self):
         from products.sdk_validation_inputs import _COLLECTION
         caches = []

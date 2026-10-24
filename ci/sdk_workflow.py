@@ -921,6 +921,14 @@ _RETAINED_SDK_INPUT_RECOVERY = {'historicalSource': {'artifactId': 12020869488,
                       'workflowSha': '4552e2da1684d5af0b86386bf94e5113326761c5'}}
 
 
+def retained_sdk_input_source(source, runtime_source):
+    """Select the reviewed compatible transport; ordinary capture still grants trust."""
+    if (source == _RETAINED_SDK_INPUT_RECOVERY["historicalSource"]
+            and runtime_source == _RETAINED_SDK_INPUT_RECOVERY["runtimeSource"]):
+        return _RETAINED_SDK_INPUT_RECOVERY["compatibleSource"]
+    return source
+
+
 @measured
 def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
@@ -961,11 +969,11 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
         runtime_source = dict(artifactId=artifact_id, artifactSha256=artifact_sha256,
             producer=runtime_original_producer, workflowSha=runtime_original_workflow_sha,
             buildKey=expected_build_key, metadataReceiptSha256=expected_metadata_receipt_sha256)
-        if (retained_sdk_inputs_source == _RETAINED_SDK_INPUT_RECOVERY["historicalSource"]
-                and runtime_source == _RETAINED_SDK_INPUT_RECOVERY["runtimeSource"]):
+        selected_source = retained_sdk_input_source(retained_sdk_inputs_source, runtime_source)
+        if selected_source != retained_sdk_inputs_source:
             # SDK8 keeps its historical member authority. This newer input upload
             # takes the existing full-authentication route, never that shortcut.
-            retained_sdk_inputs_source = _RETAINED_SDK_INPUT_RECOVERY["compatibleSource"]
+            retained_sdk_inputs_source = selected_source
         else:
             return sdk_handoff.stage_sdk_input_binding(plan, destination,
                 sdk_inputs_source=retained_sdk_inputs_source, runtime_source=runtime_source,

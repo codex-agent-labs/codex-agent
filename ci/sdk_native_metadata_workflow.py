@@ -65,7 +65,7 @@ def completed_validation_recovery(completed, request, tooling, context):
     producer = product_reuse._consumer(plan, environment)["producer"]
     completed.check_request(request)
     completed.check_consumer({"kind": "ci", "producer": producer})
-    _, phases = completed._values()
+    spec, phases = completed._values()
     sdk = completed.sdk_original()
     if sdk is None or binding_source != sdk["spec"]["sdkInputs"]["source"]:
         raise ValueError("Native SDK recovery input source differs from caller policy")
@@ -142,10 +142,36 @@ def completed_validation_recovery(completed, request, tooling, context):
         if common:
             return common
         capture = private / "common"
-        completed.capture_sdk_input_members(binding, capture / "original", context["token"])
         trust = product_reuse._release_trust(root, request["repositoryRevision"], private / "policy")
         if trust is None:
             raise ValueError("Native SDK recovery requires current Git public-key policy")
+        runtime_source = binding["runtimeSource"]
+        if "requalification" in spec:
+            aggregate = phases[PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")]
+            runtime_source = dict(spec["requalification"]["signedSource"],
+                buildKey=aggregate["buildKey"], metadataReceiptSha256=aggregate["receiptSha256"])
+        selected_source = sdk_workflow.retained_sdk_input_source(binding_source, runtime_source)
+        if selected_source == binding_source:
+            completed.capture_sdk_input_members(binding, capture / "original", context["token"])
+        else:
+            # Historical member authority cannot authenticate a newer Runtime
+            # input upload. Share its existing full capture once per recovery.
+            from products.sdk_release_selection import read_sdk_runtime_compatibility_policy
+            contract = completed.envelope(phases[PhaseInstanceId("contract", "contract", "metadata", "common")])
+            payload, = [row for row in contract["receipt"]["outputs"] if row["kind"] == "contract-bundle"]
+            ranges = read_sdk_runtime_compatibility_policy(root, request["repositoryRevision"])
+            sdk_workflow.sdk_handoff.capture_reused_sdk_handoff(context["plan_path"], capture / "original",
+                sdk_inputs_source=selected_source, artifact_id=runtime_source["artifactId"],
+                artifact_sha256=runtime_source["artifactSha256"], trusted_workflow_sha=runtime_source["workflowSha"],
+                expected_build_key=runtime_source["buildKey"],
+                expected_metadata_receipt_sha256=runtime_source["metadataReceiptSha256"],
+                original_producer=runtime_source["producer"], sdk_version=request["versions"]["sdk"],
+                compatible_release_range=ranges["compatibleReleaseRange"],
+                compatible_runtime_compatibility_range=ranges["compatibleRuntimeCompatibilityRange"],
+                expected_contract_payload_sha256=payload["sha256"], reference_runtime=True,
+                keyring=trust.keyring, keys_directory=trust.keys, selection_repository_root=root,
+                selection_revision=request["repositoryRevision"], repository_root=root,
+                environ=environment, token=context["token"])
         sdk_root = capture / "original/sdk-inputs"
         contract_path = load_sdk_compatibility_request(sdk_root / REQUEST_NAME)["contract_metadata_receipt"]
         contract_path.resolve(strict=True).relative_to(sdk_root)

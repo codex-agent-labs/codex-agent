@@ -34,7 +34,7 @@ class SdkWorkflowTest(unittest.TestCase):
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
         # Schema4 lists current additions; these exact Apple pins belong to the
         # preserved completion it references, not its new completedPhases rows.
-        self.assertEqual((12258354267, "e3e1a2dd335f1d0bd432d21a0d22c976b37afb54"),
+        self.assertEqual((12495518581, "095c00076f7eb73349ff58b3eff6b3772822db69"),
             (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
         self.assertEqual(
             {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
