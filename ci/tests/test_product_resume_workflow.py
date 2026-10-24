@@ -117,7 +117,21 @@ class ProductResumeWorkflowTest(unittest.TestCase):
             return textwrap.dedent(step.split("<<'" + end + "'\n", 1)[1].split('\n          ' + end, 1)[0])
         plan = workflow_job(self.workflow, 'plan')
         self.assertLess(plan.index('id: upload_plan\n'), plan.index('id: native-route\n'))
-        self.assertNotIn('id: native-route\n', resume)
+        self.assertLess(resume.index('id: upload_resume\n'), resume.index('id: native-route\n'))
+        resumed_step = resume.split('      - id: native-route\n', 1)[1]
+        self.assertIn("if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification && steps.resume.outcome == 'success' && steps.upload_resume.outcome == 'success'", resumed_step)
+        self.assertIn('ROUTING: ${{ steps.resume.outputs.routing_decisions }}', resumed_step)
+        self.assertIn('ARTIFACT_ID: ${{ steps.upload_resume.outputs.artifact-id }}', resumed_step)
+        self.assertIn("ARTIFACT_SHA256: ${{ format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}", resumed_step)
+        # Directness is a routing hint. The ordinary upload must keep its original role/name.
+        self.assertIn("artifact_name: ${{ needs.plan.outputs.native_sdk_direct == 'true' && format('codex-agent-planned-product-resume-{0}', needs.plan.outputs.validation_tree) || format('codex-agent-product-resume-{0}', needs.plan.outputs.validation_tree) }}", resume)
+        self.assertIn("artifact_id: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}", resume)
+        for name, planned in (('native_sdk_direct', 'native_sdk_direct'),
+                ('sdk_input_selection', 'native_sdk_input_selection'), ('aggregate_key', 'native_aggregate_key'),
+                ('aggregate_receipt_sha256', 'native_aggregate_receipt_sha256'),
+                ('aggregate_payload_complete', 'native_aggregate_payload_complete')):
+            self.assertIn(f'{name}: ${{{{ steps.native-route.outputs.{name} || needs.plan.outputs.{planned} }}}}', resume)
+        resumed_script = script(resume, '      - id: native-route\n', 'PYTHON')
         select_script = script(plan, '      - id: native-route\n', 'PYTHON')
         forward_script = script(resume, '      - name: Forward the completed transition')
         parent_script = script(workflow_job(self.workflow, 'sdk-plan'), '      - id: parent\n')
@@ -135,18 +149,21 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'outputs'
             env['GITHUB_OUTPUT'] = str(output)
-            for shortcut in (True, False):
-                with self.subTest(shortcut=shortcut), mock.patch.dict(os.environ,
+            for route_name, selected_script, shortcut in (
+                    ('planned', select_script, True), ('planned', select_script, False),
+                    ('resumed', resumed_script, True), ('resumed', resumed_script, False)):
+                with self.subTest(route=route_name, shortcut=shortcut), mock.patch.dict(os.environ,
                         {**env, 'SDK_RECOVERY_ONLY': str(shortcut).lower()}):
-                    exec(compile(select_script, '<native-route>', 'exec'), {})
+                    exec(compile(selected_script, '<native-route>', 'exec'), {})
                     fields = dict(line.split('=', 1) for line in output.read_text().splitlines())
                     self.assertEqual(str(shortcut).lower(), fields['native_sdk_direct'])
                     output.unlink()
-                    with mock.patch.dict(os.environ, NATIVE_SDK_DIRECT=fields['native_sdk_direct']), \
-                            mock.patch.object(product_reuse, 'capture_planned_native_resume') as capture:
-                        exec(compile(forward_script, '<native-forward>', 'exec'), {})
-                    self.assertEqual(0 if shortcut else 1, capture.call_count)
-                    output.unlink()
+                    if route_name == 'planned':
+                        with mock.patch.dict(os.environ, NATIVE_SDK_DIRECT=fields['native_sdk_direct']), \
+                                mock.patch.object(product_reuse, 'capture_planned_native_resume') as capture:
+                            exec(compile(forward_script, '<native-forward>', 'exec'), {})
+                        self.assertEqual(0 if shortcut else 1, capture.call_count)
+                        output.unlink()
                     parent = {**fixture.locator, 'routing': bound, 'native_sdk_direct': str(shortcut).lower()}
                     needs = {'product-resume': {'result': 'success', 'outputs': parent},
                         'runtime-continuation': {'result': 'skipped' if shortcut else 'success',
@@ -166,6 +183,11 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                         with mock.patch.dict(os.environ, PREDECESSORS=json.dumps(needs)), \
                                 self.assertRaisesRegex(ValueError, 'executed predecessor'):
                             exec(compile(parent_script, '<sdk-parent>', 'exec'), {})
+        original = fixture.producer
+        name = 'codex-agent-product-resume-' + original['tree']
+        with mock.patch.object(product_reuse, 'api_json', return_value={'name': name}):
+            self.assertEqual(('product-validation / product-resume', name),
+                product_reuse._initial_runtime_upload_source(original, 123, 'synthetic'))
         for name in ('runtime-continuation', 'runtime-aggregate-continuation', 'sdk-ios-binary-plan'):
             self.assertIn("needs.product-resume.outputs.native_sdk_direct != 'true'", workflow_job(self.workflow, name))
         for name in ('sdk-inputs', 'sdk-plan'):

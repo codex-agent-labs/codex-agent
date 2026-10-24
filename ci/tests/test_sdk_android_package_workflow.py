@@ -1,6 +1,13 @@
 """Android package child keeps fresh original authority and a fail-closed reuse edge."""
 
 from pathlib import Path
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
+from unittest.mock import patch
 import re
 import unittest
 
@@ -61,6 +68,48 @@ class AndroidPackageWorkflowTest(unittest.TestCase):
         self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-android-package-validation.yml", collect)
         self.assertIn("sdk-worker-job-name: product-validation / sdk-android-package-result / sdk-android-package-android", collect)
         self.assertIn("select_native_state(needs, stage='android-package')", result)
+
+    def test_native_archive_shell_passes_absolute_plan_to_strict_provider(self):
+        from ci import sdk_core_native_archive_provision as provider
+
+        block = job(CHILD.read_text(), 'sdk-android-package').split(
+            '      - id: native-archives\n', 1)[1].split('      - id: core14\n', 1)[0]
+        script = textwrap.dedent(block.split('        run: |\n', 1)[1])
+        relative_plan = 'build/runtime-input/original/product-resume-inputs/plan/impact-plan.json'
+        script = script.replace('${{ steps.selected.outputs.plan-path }}', relative_plan)
+        with tempfile.TemporaryDirectory(prefix='android-native-plan-') as temporary:
+            base = Path(temporary).resolve()
+            repository, scratch = base / 'repository', base / 'scratch'
+            repository.mkdir(); scratch.mkdir()
+            plan = repository / relative_plan
+            plan.parent.mkdir(parents=True); plan.write_bytes(b'plan boundary fixture')
+            calls = base / 'calls.jsonl'
+            # Execute the actual shell argument construction without acquiring archives.
+            interceptor = """python3() {
+              "$TEST_PYTHON" -c 'import json, os, sys
+with open(os.environ["TEST_CALLS"], "a") as stream:
+    stream.write(json.dumps(sys.argv[1:])+"\\n")
+print(sys.argv[sys.argv.index("--destination")+1])' "$@"
+            }
+"""
+            result = subprocess.run(['bash', '-c', interceptor + script], cwd=repository,
+                env={**os.environ, 'GITHUB_WORKSPACE': str(repository), 'RUNNER_TEMP': str(scratch),
+                     'GITHUB_OUTPUT': str(base / 'outputs'), 'TEST_PYTHON': sys.executable,
+                     'TEST_CALLS': str(calls)}, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            arguments = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual(4, len(arguments))
+            class ReachedPlanValidation(Exception):
+                pass
+            with patch.object(provider.product_reuse, '_validate_plan', side_effect=ReachedPlanValidation) as validate, \
+                    patch.object(provider, '_open_archive') as download:
+                for argv in arguments:
+                    self.assertEqual(['-B', '-m', 'ci.sdk_core_native_archive_provision'], argv[:3])
+                    with self.assertRaises(ReachedPlanValidation):
+                        provider.main(argv[3:])
+                self.assertEqual(4, validate.call_count)
+                self.assertTrue(all(call.args == (plan, repository) for call in validate.call_args_list))
+                download.assert_not_called()
 
     def test_qualified_package_reuses_captured_inputs_and_shared_scoped_controller(self):
         worker = job(CHILD.read_text(), 'sdk-android-package')

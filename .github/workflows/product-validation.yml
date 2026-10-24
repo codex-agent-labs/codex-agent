@@ -698,11 +698,11 @@ jobs:
     outputs:
       artifact_name: ${{ needs.plan.outputs.native_sdk_direct == 'true' && format('codex-agent-planned-product-resume-{0}', needs.plan.outputs.validation_tree) || format('codex-agent-product-resume-{0}', needs.plan.outputs.validation_tree) }}
       routing: ${{ steps.routing.outputs.routing }}
-      native_sdk_direct: ${{ needs.plan.outputs.native_sdk_direct }}
-      sdk_input_selection: ${{ needs.plan.outputs.native_sdk_input_selection }}
-      aggregate_key: ${{ needs.plan.outputs.native_aggregate_key }}
-      aggregate_receipt_sha256: ${{ needs.plan.outputs.native_aggregate_receipt_sha256 }}
-      aggregate_payload_complete: ${{ needs.plan.outputs.native_aggregate_payload_complete }}
+      native_sdk_direct: ${{ steps.native-route.outputs.native_sdk_direct || needs.plan.outputs.native_sdk_direct }}
+      sdk_input_selection: ${{ steps.native-route.outputs.sdk_input_selection || needs.plan.outputs.native_sdk_input_selection }}
+      aggregate_key: ${{ steps.native-route.outputs.aggregate_key || needs.plan.outputs.native_aggregate_key }}
+      aggregate_receipt_sha256: ${{ steps.native-route.outputs.aggregate_receipt_sha256 || needs.plan.outputs.native_aggregate_receipt_sha256 }}
+      aggregate_payload_complete: ${{ steps.native-route.outputs.aggregate_payload_complete || needs.plan.outputs.native_aggregate_payload_complete }}
       artifact_id: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_id || steps.upload_resume.outputs.artifact-id }}
       artifact_digest: ${{ needs.plan.outputs.native_sdk_direct == 'true' && needs.plan.outputs.native_resume_artifact_digest || format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
       full_reuse: ${{ steps.forward.outputs.full_reuse || steps.resume.outputs.full_reuse }}
@@ -883,6 +883,40 @@ jobs:
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+      - id: native-route
+        name: Select completed native SDK routing after ordinary resume
+        if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification && steps.resume.outcome == 'success' && steps.upload_resume.outcome == 'success'
+        env:
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
+          RETAINED_SDK_INPUTS_SOURCE: ${{ needs.plan.outputs.retained_sdk_inputs_source }}
+          ROUTING: ${{ steps.resume.outputs.routing_decisions }}
+          ARTIFACT_ID: ${{ steps.upload_resume.outputs.artifact-id }}
+          ARTIFACT_SHA256: ${{ format('sha256:{0}', steps.upload_resume.outputs.artifact-digest) }}
+          RUNTIME_WORKERS_REQUIRED: ${{ steps.resume.outputs.runtime_workers_required }}
+          SUPERVISOR_KEY: ${{ steps.resume.outputs.supervisor_key }}
+          PLAN_ID: ${{ needs.plan.outputs.plan_id }}
+          VALIDATION_COMMIT: ${{ needs.plan.outputs.validation_commit }}
+          VALIDATION_TREE: ${{ needs.plan.outputs.validation_tree }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_native_continuation import context, native_sdk_resume
+          from ci.reuse import github_output
+          recovery = os.environ['SDK_RECOVERY_ONLY']
+          if recovery not in ('true', 'false'):
+              raise ValueError('SDK recovery must be boolean')
+          locator = dict(artifact_id=os.environ['ARTIFACT_ID'], artifact_digest=os.environ['ARTIFACT_SHA256'],
+                         state_wave='0', sdk_state_wave='')
+          result = native_sdk_resume(json.loads(os.environ['ROUTING']), locator, context(os.environ),
+              sdk_recovery_only=recovery == 'true' and bool(os.environ['ORIGINAL_RUNTIME_HANDOFF'])
+                  and bool(os.environ['RETAINED_SDK_INPUTS_SOURCE']),
+              runtime_workers_required=os.environ['RUNTIME_WORKERS_REQUIRED'],
+              supervisor_key=os.environ['SUPERVISOR_KEY'])
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
+          PYTHON
 
   runtime-linux-arm64-supervisor:
     name: runtime-linux-arm64-supervisor
