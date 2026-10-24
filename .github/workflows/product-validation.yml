@@ -494,7 +494,7 @@ jobs:
               output.write('contract_matrix=' + json.dumps({'include': contracts}, separators=(',', ':')) + '\n')
           PY
       - name: Require unchanged Contract ownership before SDK continuation
-        if: inputs.sdkRecoveryOnly
+        if: inputs.sdkRecoveryOnly && steps.product-reuse.outcome == 'success'
         env:
           CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}
         run: |
