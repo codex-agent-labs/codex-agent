@@ -703,7 +703,8 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "ab1efe4f956d4e403e431544be0caf01eb7a39a0",
                              "493d0554ec86651303a221a97d904933903b775e",
                              "e8d67392cb9e7103eb36d2c43a5ce324cc86cd20",
-                             "a3620d11911883e6541ee2ac93f08b9811dfde20")):
+                             "a3620d11911883e6541ee2ac93f08b9811dfde20",
+                             "a1cbc80b15a96cb2915d06afe1e29e319dda52fc")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -825,6 +826,56 @@ def _historical_ci_observation(observations, key, attempt, fetch):
     return copy.deepcopy(observation)
 
 
+_FRESH_CI_OBSERVATION = object()
+
+
+class _FreshCIObservation:
+    """Private immutable bytes, valid only inside their fresh observation scope."""
+    __slots__ = ("_producer", "_token", "_raw")
+
+    def __init__(self, producer, token, observed, seal):
+        if seal is not _FRESH_CI_OBSERVATION:
+            raise ValueError("Fresh CI observations cannot be supplied by transported state")
+        self._producer, self._token = canonical_json_bytes(producer), token
+        self._raw = canonical_json_bytes(observed)
+
+    def values(self, producer, token):
+        if (self._raw is None or self._producer != canonical_json_bytes(producer)
+                or self._token != token):
+            raise ValueError("Fresh CI observation is closed or belongs to another source")
+        return load_canonical_json_bytes(self._raw)
+
+
+@contextmanager
+def _fresh_ci_observation(producer, token):
+    """One invocation's independent reads; callers retain their own role gates."""
+    from products.restore import bounded_verify
+    producer = load_canonical_json_bytes(canonical_json_bytes(validate_producer(producer)))
+    if (producer["repository"], producer["workflowPath"], producer["event"], producer["pullRequest"]) != (
+            "codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request", 31):
+        raise ValueError("Fresh checkpoint observation requires its exact CI producer")
+    base = f"https://api.github.com/repos/{producer['repository']}"
+    attempt = f"{base}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}"
+    commit, run, jobs = bounded_verify(lambda read: read(), (
+        lambda: api_json(f"{base}/git/commits/{producer['commit']}", token),
+        lambda: api_json(attempt, token),
+        lambda: paginated_items(attempt + "/jobs", "jobs", token)))
+    _validate_tested_commit(run, commit, expected_commit=producer["commit"],
+        expected_tree=producer["tree"], pull_request=producer["pullRequest"])
+    observation = _FreshCIObservation(producer, token,
+        {"run": run, "testedCommit": commit, "jobs": jobs}, _FRESH_CI_OBSERVATION)
+    try:
+        yield observation
+    finally:
+        observation._raw = None
+
+
+def _fresh_ci_observation_values(observation, producer, token):
+    if type(observation) is not _FreshCIObservation:
+        raise ValueError("Fresh CI observation must be a private active capture")
+    return observation.values(producer, token)
+
+
 def _original_ci_run(producer, token):
     """Share a raw historical run read; every caller still authenticates its source."""
     url = (f"https://api.github.com/repos/{producer['repository']}/actions/runs/"
@@ -840,10 +891,13 @@ def _observe_ci_producer_jobs(
     producers, *, jobs_by_phase, token, trusted_workflow_sha=None,
     trusted_workflows_by_phase=None, build_keys_by_phase=None, allow_protected_dispatch=False,
     dispatch_authorization_job="product-validation / dispatch-authorization",
-    native_job_ids_by_phase=None,
+    native_job_ids_by_phase=None, _fresh_observation=None,
 ) -> list[dict[str, Any]]:
     # Callers choose fixed jobs and workflow references; transported data selects neither.
     require_exact_keys(producers, set(jobs_by_phase), "Contract phase producers")
+    if _fresh_observation is not None and (len(producers) != 1
+            or native_job_ids_by_phase is not None or allow_protected_dispatch):
+        raise ValueError("Fresh CI observation requires one full-discovery PR source")
     native_job_id = None
     if native_job_ids_by_phase is not None:
         # Native consumers pin these IDs through an authenticated subject AND
@@ -934,8 +988,9 @@ def _observe_ci_producer_jobs(
             (run, commit), jobs = bounded_verify(lambda read: read(), (
                 source, selected_jobs))
             return {"run": run, "testedCommit": commit, "jobs": jobs}
-        observation = _historical_ci_observation(observations, observation_key,
-            (str(run_id), str(attempt)), fetch)
+        observation = (_fresh_ci_observation_values(_fresh_observation, producer, token)
+            if _fresh_observation is not None else _historical_ci_observation(observations, observation_key,
+                (str(run_id), str(attempt)), fetch))
         run, commit, jobs = (observation[field] for field in ("run", "testedCommit", "jobs"))
         if native_job_id is not None and run.get("status") != "completed":
             raise ValueError("Native original attempt is not completed")
@@ -5344,19 +5399,64 @@ def _restore_product_objects(state, instances, destination):
     return restored_objects
 
 
+def snapshot_reuse_inputs(source, destination, *, completed_frozen=None):
+    """Forward controls while leaving qualified canonical object references deferred."""
+    from reuse_qualification import CompletedFrozenReuse
+    from runtime_reference_transport import _copy_exact
+    from products.inventory import regular_file_inventory as scan_inventory
+    source, destination = Path(source), Path(destination)
+    resolved_source, resolved_destination = source.resolve(strict=True), destination.resolve(strict=False)
+    if (resolved_source == resolved_destination or resolved_source in resolved_destination.parents
+            or resolved_destination in resolved_source.parents):
+        raise ValueError("Reuse input snapshot source and destination must not overlap")
+    excluded = set()
+    if completed_frozen is not None:
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Deferred input snapshot requires native semantic authority")
+        deferred = completed_frozen.deferred_objects(include_contract=(completed_frozen.contract_members() is not None
+            and (source / "authenticated-contract/contract-input/contract-manifest.json").is_file()))
+        request = source / "reuse-wave-request.json"
+        if request.exists() or request.is_symlink():
+            for row in _canonical_control(request, "Forwarded reuse request")["availableObjects"]:
+                if completed_frozen.envelope(row) is None or row["objectSha256"] not in deferred:
+                    continue
+                relative = require_relative_path(row["objectPath"], "Deferred input object")
+                key = object_relative_path(row["buildKey"], row["receiptSha256"])
+                # Only external canonical objects can disappear. Embedded carrier
+                # bodies and all controls retain their ordinary exact snapshot.
+                if relative in {"original-objects/" + key, "contract-state/original-objects/" + key}:
+                    excluded.add(relative)
+    if not excluded:
+        snapshot_regular_tree(source, destination, allow_empty=True)
+        return
+    # Scan controls directly: the memoized inventory fingerprints even excluded
+    # bodies by opening them. No body access or cached inventory is needed here.
+    inventory = scan_inventory(source, excluded_paths=excluded, allow_empty=True)
+    with tempfile.TemporaryDirectory(prefix="product-reference-snapshot-") as temporary:
+        prepared = Path(temporary).resolve() / "inputs"
+        prepared.mkdir()
+        for row in inventory:
+            _copy_exact(source / row["relativePath"], prepared / row["relativePath"], row)
+        if scan_inventory(source, excluded_paths=excluded, allow_empty=True) != inventory:
+            raise ValueError("Forwarded reuse controls changed during snapshot")
+        publish_regular_tree(prepared, destination, expected_inventory=inventory, allow_empty=True)
+
+
 def _stage_completed_objects(phases, sources, destination, completed_frozen):
-    """Carry small references for completed Runtime; preserve other original object bytes."""
+    """Carry qualified references; preserve Contract bodies without original-member authority."""
     from runtime_reference_transport import _copy_exact
     from reuse_qualification import CompletedFrozenReuse
     if type(completed_frozen) is not CompletedFrozenReuse:
         raise ValueError("Deferred continuation requires native semantic authority")
+    deferred = completed_frozen.deferred_objects(include_contract=True)
     staged = {}
     for phase in phases:
         instance = _identity(phase)
         target = destination / "original-objects" / object_relative_path(
             phase["buildKey"], phase["receiptSha256"])
         if (completed_frozen.envelope(phase) is None
-                or instance.product == "contract" and (sources[instance].exists() or sources[instance].is_symlink())):
+                or instance.product == "contract" and phase["objectSha256"] not in deferred
+                   and (sources[instance].exists() or sources[instance].is_symlink())):
             _copy_exact(sources[instance], target,
                 {"bytes": sources[instance].stat().st_size, "sha256": phase["objectSha256"]})
         staged[instance] = target
@@ -6960,7 +7060,8 @@ def collect_runtime_workers(
                         archive, retained_paths=(), allow_empty_members=True,
                         **_worker_upload_zip_limits(instance))
                 original = retained / "original"
-                if instance in _LARGE_SDK_UPLOADS or sdk_family == "native-validation":
+                if (instance in _LARGE_SDK_UPLOADS or sdk_family == "native-validation"
+                        or instance in SDK_FAMILY_INSTANCES["core-validation"]):
                     if upload_identity != {"bytes": artifact["size_in_bytes"], "sha256": artifact["digest"]}:
                         raise ValueError("Collected SDK archive changed during authentication")
                     # Authenticate the complete original, retain only consumed
@@ -7169,7 +7270,11 @@ def advance_products(
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
     routing_output: bool = False,
     runtime_collection_wave: int | None = None, completed_frozen=None,
+    checkpoint_controls: bool = False,
 ) -> dict[str, Any]:
+    if type(checkpoint_controls) is not bool or (checkpoint_controls
+            and sdk_family is None and not sdk_javascript_only):
+        raise ValueError("Checkpoint controls require an explicit SDK collection scope")
     github_output(github_output_path, {
         "full_reuse": False,
         "target_jobs_required": True,
@@ -7422,8 +7527,9 @@ def advance_products(
         staged_sources = None
         if completed_frozen is not None:
             staged_sources = _stage_completed_objects(selected_phases, sources, staged_destination, completed_frozen)
+        published_carrier = {"objects": []}
         if selected:
-            write_carrier(
+            published_carrier = write_carrier(
                 staged_destination / final_carrier_name,
                 normalized,
                 selected,
@@ -7521,6 +7627,9 @@ def advance_products(
         # Completed transitions still need their exact current-run identity on
         # the next capture; an empty frontier does not remove that binding.
         write_canonical_json(staged_destination / "producer.json", producer)
+        if checkpoint_controls and not failed:
+            from completed_sdk_reuse import COLLECTOR_RECEIPTS, write_collector_receipts
+            write_collector_receipts(published_carrier, advanced, staged_destination / COLLECTOR_RECEIPTS)
         if routing_output and not failed:
             from sdk_native_continuation import emit
             emit(plan, advanced, ready_plans.values(), sources, staged_request, root,
@@ -9760,6 +9869,8 @@ def _capture_completed_contract_handoff(
     original_run_id=None, original_run_attempt=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Bind a release envelope to exact original state; never reissue its receipts."""
+    from products.restore import CARRIER_REFERENCES_NAME
+    from reuse_qualification import CompletedFrozenReuse
     supplied_root = Path(__file__).resolve().parents[1] if repository_root is None else repository_root
     destination = _prepare_destination(destination, supplied_root)
     destination.rmdir()
@@ -9797,7 +9908,28 @@ def _capture_completed_contract_handoff(
         if regular_file_inventory(trust.keyring.parent) != trust_files:
             raise ValueError("Completed Contract release trust differs from tracked Git bytes")
         state = private / "state"
-        snapshot_regular_tree(state_root, state)
+        original_arguments = ({"original_run_id": original_run_id, "original_run_attempt": original_run_attempt}
+                              if original_run_id is not None or original_run_attempt is not None else {})
+        controls_only = False
+        if (type(completed_frozen) is CompletedFrozenReuse
+                and completed_frozen.contract_members() is not None
+                and (Path(handoff_root) / "contract-manifest.json").is_file()
+                and (Path(state_root) / "carrier" / CARRIER_REFERENCES_NAME).is_file()):
+            qualified, _ = _completed_contract_objects(plan, Path(state_root), Path(state_root),
+                os.environ if environ is None else environ, **original_arguments, completed_frozen=completed_frozen)
+            deferred = completed_frozen.deferred_objects(include_contract=True)
+            controls_only = all(completed_frozen.envelope(row) is not None
+                                and row["objectSha256"] in deferred for row in qualified)
+        if controls_only:
+            # Exact reference controls are independently checked again below;
+            # their qualified original bodies need no private copy for admission.
+            state.mkdir()
+            (state / "contract-reuse-result.json").write_bytes(read_regular_file_bytes(
+                Path(state_root) / "contract-reuse-result.json", max_bytes=16 * 1024 * 1024,
+                reject_symlink_parents=True))
+            snapshot_regular_tree(Path(state_root) / "carrier", state / "carrier")
+        else:
+            snapshot_regular_tree(state_root, state)
         result = _canonical_control(state / "contract-reuse-result.json", "Completed Contract result")
         contract = PhaseInstanceId("contract", "contract", "metadata", "common")
         _validate_reuse_result(result, (contract,), require_complete=True)
@@ -9809,14 +9941,11 @@ def _capture_completed_contract_handoff(
             *({**record, "relativePath": f"contract-input/{record['relativePath']}"} for record in handoff_files),
         ), key=lambda record: record["relativePath"])
         phases = ("binary", "package", "validation", "metadata")
-        original_arguments = ({"original_run_id": original_run_id, "original_run_attempt": original_run_attempt}
-                              if original_run_id is not None or original_run_attempt is not None else {})
         records, _ = _completed_contract_objects(plan, state, state,
             os.environ if environ is None else environ, **original_arguments,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         records = {record["phase"]: record for record in records}
         if (handoff / "contract-manifest.json").exists():
-            from reuse_qualification import CompletedFrozenReuse
             if type(completed_frozen) is not CompletedFrozenReuse:
                 raise ValueError("Deferred Contract handoff requires native completion")
             manifest = completed_frozen.verify_contract_handoff(handoff, keyring=trust.keyring, keys_directory=trust.keys)

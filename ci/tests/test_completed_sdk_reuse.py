@@ -1246,6 +1246,11 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertFalse((work / 'completion.json').exists())
                     else:
                         report = completed.issue_extension(spec, work, root=fixture.repository, revision=issuer_revision, frozen=current_frozen, token='synthetic')
+                        self.assertEqual({'native_locator': {'original': 71}} if reused else {},
+                                         observe_original.call_args.kwargs)
+                        self.assertEqual(int(reused), report['nativePinnedOriginalObservations'])
+                        self.assertEqual(int(not reused), report['discoveredOriginalObservations'])
+                        self.assertGreaterEqual(float(report['originalObservationSeconds']), 0)
                         result = json.loads((work / 'completion.json').read_bytes())
                         self.assertEqual(spec['schemaVersion'], result['schemaVersion'])
                         self.assertEqual(issuer_revision, result['issuerCommit'])

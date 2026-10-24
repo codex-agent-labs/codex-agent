@@ -433,7 +433,19 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
     if "referenceControlSha256" in transport:
         base["referenceControlSha256"] = transport["referenceControlSha256"]
     inventory = regular_file_inventory(handoff, allow_empty=True)
-    original = regular_file_inventory(base_root, allow_empty=True)
+    # A canonical object absent from the next handoff cannot be needed as that
+    # object. Keep controls and cross-directory copies of needed objects eligible
+    # for exact content matching, without hashing unrelated old product bodies.
+    object_path = re.compile(r"(?:^|/)(v1/objects/sha256/[0-9a-f]{64}/[0-9a-f]{64}\.zip)$")
+    needed = {match[1] for row in inventory if (match := object_path.search(row["relativePath"]))}
+    excluded = set()
+    for directory, _, names in os.walk(base_root, followlinks=False):
+        for name in names:
+            relative = (Path(directory) / name).relative_to(base_root).as_posix()
+            match = object_path.search(relative)
+            if match and match[1] not in needed:
+                excluded.add(relative)
+    original = regular_file_inventory(base_root, allow_empty=True, excluded_paths=excluded)
     by_content = {}
     for record in original:
         by_content.setdefault((record["bytes"], record["sha256"]), record["relativePath"])
@@ -452,7 +464,7 @@ def stage_reference_handoff(handoff, base_root, base_capture, destination, *, st
                 _copy_exact(Path(handoff) / record["relativePath"], prepared / record["relativePath"], record)
         write_canonical_json(prepared / REFERENCE_NAME, value)
         if (regular_file_inventory(handoff, allow_empty=True) != inventory
-                or regular_file_inventory(base_root, allow_empty=True) != original):
+                or regular_file_inventory(base_root, allow_empty=True, excluded_paths=excluded) != original):
             raise ValueError("Runtime reference export inputs changed")
         publish_regular_tree(prepared, destination, allow_empty=True)
     return value

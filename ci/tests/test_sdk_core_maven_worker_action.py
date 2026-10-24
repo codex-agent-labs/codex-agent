@@ -88,6 +88,35 @@ class SdkCoreMavenWorkerActionTest(unittest.TestCase):
                 values[name] = str(path)
         return values
 
+    def test_internal_preparation_keeps_election_and_policy_fingerprint_before_setup(self):
+        self.assertIn("if: inputs.prepare-core-package == 'true'", self.action)
+        self.assertIn("if: inputs.prepare-core-package != 'true'", self.action)
+        self.assertLess(self.action.index("- id: prepared"), self.action.index("- id: policy"))
+        self.assertIn("ci.sdk_core_package_policy --elect-worker", self.action)
+        for key in ("sdk_matrix", "sdk_workers_required", "plan_path", "discovery_root", "state_root"):
+            self.assertIn("steps.prepared.outputs." + key + " || steps.captured.outputs.", self.action)
+        for key in ("binary-artifact-id", "binary-artifact-sha256", "binary-contract-evidence", "binary-original-context"):
+            self.assertIn("steps.prepared.outputs." + key + " || inputs." + key, self.action)
+        script = self.source("policy")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.environment(root, "package")
+            fingerprints = {name: sha256_bytes(Path(values[name]).read_bytes())
+                for name in ("BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT")}
+            digest = sha256_bytes(canonical_json_bytes(fingerprints))
+            values.update(PREPARE_CORE_PACKAGE="true", PREPARED_POLICY_SHA256=digest)
+            for fault in (None, "changed", "missing", "false-with-proof", "invalid-mode", "legacy-context"):
+                selected = dict(values)
+                if fault == "changed": selected["PREPARED_POLICY_SHA256"] = KEY
+                elif fault == "missing": selected["PREPARED_POLICY_SHA256"] = ""
+                elif fault == "false-with-proof": selected["PREPARE_CORE_PACKAGE"] = "false"
+                elif fault == "invalid-mode": selected["PREPARE_CORE_PACKAGE"] = "yes"
+                elif fault == "legacy-context": selected.update(PREPARE_CORE_PACKAGE="false", PREPARED_POLICY_SHA256="", BINARY_CONTEXT_JSON="{}")
+                with self.subTest(fault=fault), patch.dict(os.environ, selected, clear=True):
+                    if fault:
+                        with self.assertRaises(ValueError): exec(compile(script, "prepared-policy", "exec"), {})
+                    else: exec(compile(script, "prepared-policy", "exec"), {})
+
     def test_policy_rejects_missing_originals_and_noncanonical_or_relative_policy(self):
         script = self.source("policy")
         with tempfile.TemporaryDirectory() as temporary:

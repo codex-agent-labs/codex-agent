@@ -409,7 +409,8 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
 
 @measured
 def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, run_id, run_attempt,
-                                 signer_commit, source_commit, token, _completed_sdk=False):
+                                 signer_commit, source_commit, token, _completed_sdk=False, _checkpoint=None,
+                                 _fresh_observation=None):
     """Fresh native origin and whole ZIP authentication shared by distinct consumers."""
     import io
     import stat
@@ -421,13 +422,26 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     _commit(source_commit)
     require_integer(run_id, "Qualification run", 1)
     require_integer(run_attempt, "Qualification attempt", 1)
+    checkpoint = None
+    if _checkpoint is not None:
+        if not _completed_sdk or type(_checkpoint) is not tuple or len(_checkpoint) != 2:
+            raise ValueError("Checkpoint intake requires its separate SDK issuer policy and source")
+        from completed_sdk_reuse import checkpoint_archive_identity
+        checkpoint = checkpoint_archive_identity(*_checkpoint, signer_commit=signer_commit,
+            source_commit=source_commit, run_id=run_id, run_attempt=run_attempt)
     url = f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{run_attempt}"
     # Independent fresh reads from caller-pinned endpoints; join every result
     # before validating the issuer or reading any artifact body.
-    source, run, jobs = bounded_verify(lambda read: read(), (
-        lambda: products.api_json(f"https://api.github.com/repos/{REPOSITORY}/git/commits/{source_commit}", token),
-        lambda: products.api_json(url, token),
-        lambda: products.paginated_items(f"{url}/jobs", "jobs", token)))
+    if _fresh_observation is None:
+        source, run, jobs = bounded_verify(lambda read: read(), (
+            lambda: products.api_json(f"https://api.github.com/repos/{REPOSITORY}/git/commits/{source_commit}", token),
+            lambda: products.api_json(url, token),
+            lambda: products.paginated_items(f"{url}/jobs", "jobs", token)))
+    else:
+        if checkpoint is None:
+            raise ValueError("Fresh shared observation requires the separate checkpoint route")
+        observed = products._fresh_ci_observation_values(_fresh_observation, checkpoint["producer"], token)
+        source, run, jobs = (observed[name] for name in ("testedCommit", "run", "jobs"))
     if source.get("sha") != source_commit:
         raise ValueError("Qualification source metadata differs from caller pin")
     tree = _commit(source["tree"]["sha"])
@@ -435,6 +449,11 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
                 "event": "pull_request", "repository": REPOSITORY, "pullRequest": 31,
                 "workflowPath": ".github/workflows/portable-reuse-proof.yml"}
     job = "completion / completed-sdk" if _completed_sdk else "cold / qualify"
+    if checkpoint is not None:
+        producer = {**producer, "workflowPath": ".github/workflows/ci.yml"}
+        if producer != checkpoint["producer"]:
+            raise ValueError("Checkpoint issuer differs from its exact collected producer")
+        job = checkpoint["jobName"]
     # Product producers remain restricted to ci.yml. This separate fixed
     # authority observer elects no product and accepts only this proof issuer.
     if (require_integer(run.get("id"), "Issuer run", 1) != run_id
@@ -446,6 +465,8 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
                    for field in ("repository", "head_repository"))):
         raise ValueError("Qualification issuer attempt differs from its fixed original producer")
     products._require_ci_workflow_reference(run, f"{REPOSITORY}/{ISSUER_WORKFLOW}@{signer_commit}", signer_commit)
+    if checkpoint is not None:
+        products._require_ci_workflow_reference(run, checkpoint["collectorWorkflow"], checkpoint["collectorWorkflowSha"])
     tested = products._validate_tested_commit(run, source,
         expected_commit=source_commit, expected_tree=tree, pull_request=31)
     if any(not isinstance(row, dict) for row in jobs):
@@ -461,6 +482,8 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
         raise ValueError("Qualification issuer job did not succeed for its exact source")
     observed = [{"run": run, "testedCommit": tested, "jobs": jobs}]
     name = f"{'sdk-completed-reuse' if _completed_sdk else 'reuse-qualification'}-{run_id}-{run_attempt}"
+    if checkpoint is not None:
+        name = checkpoint["artifactName"]
     artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256, name,
         producer, observed[0]["run"], token)
     products._require_artifact_job_window(observed[0], job, artifact)
@@ -488,7 +511,10 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
             captured[row.filename] = archive.read(row)  # Native CRC checked before any consumer sees bytes.
             with (destination / row.filename).open("xb") as output:
                 output.write(captured[row.filename])
-    return {"artifact": artifact, "downloadedQualificationBytes": len(raw)}, captured
+    report = {"artifact": artifact, "downloadedQualificationBytes": len(raw)}
+    if checkpoint is not None:
+        report["checkpointIssuerJob"] = original_job
+    return report, captured
 
 
 _COMPLETED_FROZEN = object()
@@ -805,11 +831,18 @@ class CompletedFrozenReuse:
     private product state. Bodies remain digest-checked when actually consumed.
     Only fetch_completed_frozen can create it after fresh native authentication.
     """
-    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible", "_sdk_context")
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible", "_sdk_context", "_checkpoint")
 
-    def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None):
+    def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None,
+                 _checkpoint=None):
         if verified is not _COMPLETED_FROZEN:
             raise TypeError("Completed reuse requires native semantic authentication")
+        if _checkpoint is not None:
+            from completed_sdk_reuse import _CheckpointConsumer
+            if type(_checkpoint) is not _CheckpointConsumer:
+                raise ValueError("Completed checkpoint reuse requires its private native witness")
+            _checkpoint.check()
+        self._checkpoint = _checkpoint
         self._spec = canonical_json_bytes(spec)
         self._receipts = tuple((tuple(row[field] for field in _PHASE_FIELDS), canonical_json_bytes(row))
                                for row in receipts)
@@ -846,6 +879,8 @@ class CompletedFrozenReuse:
         self._contract = None if contract is None else canonical_json_bytes(contract)
 
     def _values(self):
+        if self._checkpoint is not None:
+            self._checkpoint.check()
         if self._verified is not _COMPLETED_FROZEN:
             raise TypeError("Completed reuse has no semantic authority")
         spec = load_canonical_json_bytes(self._spec)
@@ -882,6 +917,8 @@ class CompletedFrozenReuse:
 
     def check_consumer(self, consumer):
         self._values()
+        if self._checkpoint is not None:
+            self._checkpoint.check(consumer=consumer)
         producer = consumer.get("producer", {})
         if (consumer.get("kind") != "ci" or producer.get("repository") != REPOSITORY
                 or producer.get("pullRequest") != 31 or producer.get("event") != "pull_request"):
@@ -917,9 +954,13 @@ class CompletedFrozenReuse:
             raise ValueError("Incremental original lacks its concrete native completion")
         spec, proof = extension["spec"], extension["proof"]
         source = spec["source"]["producer"]
-        if (source["runId"], source["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
-            raise ValueError("Incremental completion must precede its consumer")
-        artifact, _, locator = observe_source(spec["source"], token, native_locator=proof["source"])
+        if self._checkpoint is None:
+            if (source["runId"], source["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
+                raise ValueError("Incremental completion must precede its consumer")
+            artifact, _, locator = observe_source(spec["source"], token, native_locator=proof["source"])
+        else:
+            self._checkpoint.check(consumer={"kind": "ci", "producer": producer}, token=token)
+            artifact, _, locator = self._checkpoint.source()
         if locator != proof["source"]:
             raise ValueError("Incremental admitted source changed")
         instance = products._identity(record)
@@ -930,8 +971,9 @@ class CompletedFrozenReuse:
                   if locator["instance"] == {field: record[field] for field in _PHASE_FIELDS}]
         if len(native) != 1:
             raise ValueError("Incremental original native locator is missing or ambiguous")
-        original, observed, locator = observe_original(originals[instance], envelope["receipt"], token,
-            native_locator=native[0])
+        original, observed, locator = (observe_original(originals[instance], envelope["receipt"], token,
+            native_locator=native[0]) if self._checkpoint is None else
+            self._checkpoint.original(originals[instance], envelope["receipt"], native[0], token))
         if locator not in proof["originals"]:
             raise ValueError("Incremental original changed after native admission")
         return artifact, original, observed
@@ -1381,7 +1423,7 @@ class CompletedFrozenReuse:
 @measured
 def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha256,
                            repository_root, revision, sdk_completion=None,
-                           requalification_baseline=None, **original):
+                           requalification_baseline=None, _checkpoint=None, **original):
     """Use an independently approved frozen semantic issuer for an approved consumer.
 
     All pins are caller policy. In particular the old verifier policy cannot be
@@ -1435,6 +1477,10 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
             raise QualificationIncompatible("Completed reuse current Git authority or versions changed")
         return report, qualified, phases, proof
 
+    if _checkpoint is not None:
+        from completed_sdk_reuse import _CheckpointConsumer
+        if type(_checkpoint) is not _CheckpointConsumer or sdk_completion != _checkpoint.bootstrap():
+            raise ValueError("Dynamic SDK completion requires its exact private native/bootstrap witness")
     sdk = None
     sdk_frozen = (spec if sdk_completion is None else
                   _sdk_parent_frozen_spec(root, sdk_completion, spec, original["token"]))
@@ -1444,9 +1490,11 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         from products.restore import bounded_verify
         frozen_result, sdk = bounded_verify(lambda verify: verify(), (
             authenticate_frozen,
-            lambda: _fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
+            lambda: (_fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
                 root=root, revision=revision, frozen=sdk_frozen, token=original["token"],
-                consumer_revision=current_revision)))
+                consumer_revision=current_revision) if _checkpoint is None else
+                _checkpoint.validate(root=root, revision=revision, frozen=sdk_frozen,
+                    consumer_revision=current_revision, token=original["token"]))))
         report, qualified, phases, proof = frozen_result
 
     receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
@@ -1481,7 +1529,8 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     count = int(sdk is not None) + (len(sdk["extension"]["spec"]["completedPhases"]) if sdk and "extension" in sdk else 0)
     report.update(completedFrozenPhases=len(phases), completedSdkPhases=count, productBodiesDownloaded=0)
     cap = CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
-        originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies")
+        originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies",
+        _checkpoint=_checkpoint)
     if requalification_baseline is not None:
         invalidated = _restrict_completed_reuse(cap, root, current_revision)
         report.update(requalificationBaseline=revision,
@@ -1656,6 +1705,10 @@ def _ensure_native_issuer_commit(root, commit, token):
 def add_completed_frozen_argument(parser):
     parser.add_argument("--completed-frozen-policy", type=Path,
         help="Independent caller-owned native semantic issuer/consumer pins; never retained product state")
+    parser.add_argument("--sdk-checkpoint-owner", type=Path,
+        help="Separate independently provisioned checkpoint owner policy")
+    parser.add_argument("--sdk-checkpoint",
+        help="Untrusted exact checkpoint output selector; native and current-job validation remain required")
 
 
 def validate_completed_reuse_policy(policy):
@@ -1677,8 +1730,12 @@ def completed_frozen_options(arguments, *, defer=False):
     import os
     values = vars(arguments) if not isinstance(arguments, dict) else arguments
     path = values.get("completed_frozen_policy")
+    owner_path, checkpoint_raw = values.get("sdk_checkpoint_owner"), values.get("sdk_checkpoint")
+    if (owner_path is None) != (checkpoint_raw is None) or owner_path is not None and path is None:
+        raise ValueError("Explicit checkpoint requires paired owner/selector and completed-reuse policy")
     if isinstance(arguments, dict):
-        arguments.pop("completed_frozen_policy", None)
+        for name in ("completed_frozen_policy", "sdk_checkpoint_owner", "sdk_checkpoint"):
+            arguments.pop(name, None)
     if path is None:
         yield {}
         return
@@ -1698,14 +1755,46 @@ def completed_frozen_options(arguments, *, defer=False):
     policy = load_canonical_json_bytes(original_policy)
     extra = validate_completed_reuse_policy(policy)
     plan = products._validate_plan(plan_path, root)
+    checkpoint_owner = checkpoint_output = original_owner = None
+    if owner_path is not None:
+        from completed_sdk_reuse import validate_checkpoint_owner, checkpoint_selection
+        from products.inventory import load_json_bytes
+        owner_path = Path(owner_path).absolute()
+        if owner_path.resolve(strict=True) != owner_path:
+            raise ValueError("Checkpoint owner path must be normalized and non-symbolic")
+        original_owner = read_regular_file_bytes(owner_path, max_bytes=16 * 1024, reject_symlink_parents=True)
+        checkpoint_owner = validate_checkpoint_owner(load_canonical_json_bytes(original_owner))
+        if checkpoint_owner["bootstrap"] != policy.get("sdkCompletion"):
+            raise ValueError("Checkpoint bootstrap differs from the existing completed caller policy")
+        if type(checkpoint_raw) is not str or len(checkpoint_raw.encode("utf-8")) > 16 * 1024:
+            raise ValueError("Checkpoint selector exceeds its bound")
+        checkpoint_output = load_json_bytes(checkpoint_raw.encode("utf-8"))
+        checkpoint_selection(checkpoint_owner, checkpoint_output)
     def unchanged():
         if (read_regular_file_bytes(path, max_bytes=4096, reject_symlink_parents=True) != original_policy
                 or read_regular_file_bytes(plan_path, max_bytes=LIMIT, reject_symlink_parents=True) != original_plan):
             raise ValueError("Completed reuse caller policy or current plan changed during use")
-    with tempfile.TemporaryDirectory(prefix="completed-reuse-authority-") as temporary:
+        if owner_path is not None and read_regular_file_bytes(owner_path,
+                max_bytes=16 * 1024, reject_symlink_parents=True) != original_owner:
+            raise ValueError("Checkpoint owner policy changed during consumption")
+    from contextlib import ExitStack
+    with tempfile.TemporaryDirectory(prefix="completed-reuse-authority-") as temporary, ExitStack() as checkpoint_scope:
         def authenticate():
+            witness = None
+            if checkpoint_output is not None:
+                from completed_sdk_reuse import checkpoint_consumer
+                if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
+                        or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
+                        or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
+                        or os.environ.get("GITHUB_SHA") != plan["validationCommit"]):
+                    raise ValueError("Checkpoint caller differs from the actual current CI source")
+                witness = checkpoint_scope.enter_context(checkpoint_consumer(checkpoint_owner, checkpoint_output,
+                    Path(temporary).resolve() / "checkpoint", root=root,
+                    consumer=products._consumer(plan, os.environ), job=os.environ.get("GITHUB_JOB"),
+                    token=os.environ.get("GITHUB_TOKEN", "")))
             cap, _ = fetch_completed_frozen(Path(temporary).resolve() / "native", repository_root=root,
                 revision=plan["validationCommit"], token=os.environ.get("GITHUB_TOKEN", ""),
+                **({"_checkpoint": witness} if witness is not None else {}),
                 **({"sdk_completion": policy["sdkCompletion"]} if "sdkCompletion" in extra else {}),
                 **({"requalification_baseline": policy["requalificationBaseline"]}
                    if "requalificationBaseline" in extra else {}),
@@ -1804,6 +1893,103 @@ def _qualify_frozen_sdk_ios(work, root, commit, token):
     write_canonical_json(manifest, [*existing, *({"bytes": row["bytes"], "sha256": row["sha256"]} for row in files)])
     return {"kind": "sdk-binary", "receipt": receipt, "artifactId": spec["artifactId"],
             "artifactSha256": spec["artifactSha256"]}
+
+
+def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
+    """Protected workflow entry: owner pins are provisioned separately from selectors."""
+    import os
+    from completed_sdk_reuse import issue_checkpoint, validate_checkpoint_owner, _collector_control_source, checkpoint_selection
+    from products.inventory import git_regular_blob_bytes, load_json_bytes, write_canonical_json
+    from reuse import github_output
+    commit = _commit(os.environ["QUALIFICATION_ISSUER_SHA"])
+    root = Path(__file__).resolve().parents[1]
+    if (os.environ["QUALIFICATION_ISSUER_REPOSITORY"] != REPOSITORY
+            or os.environ["QUALIFICATION_ISSUER_PATH"] != ISSUER_WORKFLOW
+            or subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip() != commit
+            or not _compatible_verifier(commit)):
+        raise ValueError("Checkpoint issuer differs from its native source")
+    # Only the existing protected restore action sets this path. workflow_call
+    # inputs carry locators; they cannot supply the owner policy or choose code.
+    policy_path = Path(os.environ["CODEX_AGENT_CHECKPOINT_OWNER_POLICY"])
+    owner_bytes = read_regular_file_bytes(policy_path, max_bytes=16 * 1024, reject_symlink_parents=True)
+    policy = validate_checkpoint_owner(load_canonical_json_bytes(owner_bytes))
+    if policy["issuerCommit"] != commit:
+        raise ValueError("Checkpoint owner has not approved this native issuer")
+    if type(selectors) is not str or len(selectors.encode("utf-8")) > 16 * 1024:
+        raise ValueError("Checkpoint selectors exceed their bound")
+    inputs = require_exact_keys(load_json_bytes(selectors.encode("utf-8")),
+                                {"source", "controlArtifact"}, "Checkpoint workflow selectors")
+    if type(preceding_selector) is not str or len(preceding_selector.encode("utf-8")) > 16 * 1024:
+        raise ValueError("Preceding checkpoint selector exceeds its bound")
+    previous = load_json_bytes(preceding_selector.encode("utf-8")) if preceding_selector else None
+    if preceding_selector:
+        checkpoint_selection(policy, previous)  # Explicit invalid input never falls back.
+    producer = _collector_control_source(inputs["source"])["producer"]
+    if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
+            or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
+            or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
+            or os.environ.get("GITHUB_SHA") != producer.get("commit")
+            or os.environ.get("GITHUB_RUN_ID") != str(producer.get("runId"))
+            or os.environ.get("GITHUB_RUN_ATTEMPT") != str(producer.get("runAttempt"))
+            or os.environ.get("GITHUB_JOB") != "completed-sdk-checkpoint"):
+        raise ValueError("Checkpoint source differs from the actual executing CI attempt")
+    path = _frozen_spec_path(root, commit)
+    frozen_bytes = git_regular_blob_bytes(root, commit, path, max_bytes=LIMIT)
+    if read_regular_file_bytes(root / path, max_bytes=LIMIT, reject_symlink_parents=True) != frozen_bytes:
+        raise ValueError("Checkpoint frozen policy differs from its native source")
+    report = issue_checkpoint(policy, inputs["source"], inputs["controlArtifact"], work,
+        root=root, revision=commit, frozen=load_canonical_json_bytes(frozen_bytes), token=token, previous=previous)
+    if read_regular_file_bytes(policy_path, max_bytes=16 * 1024, reject_symlink_parents=True) != owner_bytes:
+        raise ValueError("Checkpoint owner policy changed during issuance")
+    work = Path(work)
+    reused = "reusedCheckpoint" in report
+    if reused:
+        expected = previous if previous is not None else {"kind": "existing-sdk-completion",
+            "native": policy["bootstrap"], "subjectSha256": policy["bootstrapProofSha256"]}
+        if (report["reusedCheckpoint"] != expected["native"]
+                or report["reusedCheckpointSubjectSha256"] != expected["subjectSha256"]
+                or report.get("reusedCheckpointOutput", expected) != expected
+                or (work / "completion.json").exists()):
+            raise ValueError("Unchanged checkpoint must return its exact existing native proof")
+        output = expected
+    else:
+        subject = read_regular_file_bytes(work / "completion.json", max_bytes=LIMIT, reject_symlink_parents=True)
+        output = {"kind": "sdk-checkpoint", "source": inputs["source"],
+            "subjectSha256": sha256_bytes(subject), "issuerCommit": commit,
+            "artifactName": report["checkpointArtifactName"]}
+    write_canonical_json(work / "checkpoint-issue.json", {"report": report, "output": output})
+    github_output(Path(os.environ["GITHUB_OUTPUT"]), {"issue": str(not reused).lower(),
+        "artifact_name": "" if reused else output["artifactName"]})
+    return report
+
+
+def sdk_checkpoint_job_output(work, artifact_id, artifact_sha256, github_output_path):
+    """Expose untrusted selectors after upload, or preserve the exact no-op proof."""
+    from products.inventory import require_integer, require_sha256
+    from reuse import github_output
+    work = Path(work)
+    issued = load_canonical_json_bytes(read_regular_file_bytes(work / "checkpoint-issue.json",
+        max_bytes=LIMIT, reject_symlink_parents=True))
+    record = issued["output"]
+    if "reusedCheckpoint" in issued["report"]:
+        if artifact_id or artifact_sha256 or (work / "completion.json").exists():
+            raise ValueError("Unchanged checkpoint must not create another upload")
+        output = record
+    elif record["kind"] == "sdk-checkpoint":
+        identity = require_integer(int(artifact_id), "Checkpoint upload ID", 1)
+        digest = require_sha256("sha256:" + artifact_sha256.removeprefix("sha256:"), "Checkpoint upload digest")
+        subject = read_regular_file_bytes(work / "completion.json", max_bytes=LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(subject) != record["subjectSha256"]:
+            raise ValueError("Checkpoint subject changed after preparation")
+        producer = record["source"]["producer"]
+        output = {"kind": "sdk-checkpoint", "source": record["source"], "subjectSha256": record["subjectSha256"],
+            "native": {"artifactId": identity, "artifactSha256": digest, "runId": producer["runId"],
+                "runAttempt": producer["runAttempt"], "signerCommit": record["issuerCommit"],
+                "sourceCommit": producer["commit"]}}
+    else:
+        raise ValueError("Unsupported checkpoint job result")
+    github_output(Path(github_output_path), {"checkpoint": json.dumps(output, sort_keys=True, separators=(",", ":"))})
+    return output
 
 
 def issue_completed_sdk(work, token):

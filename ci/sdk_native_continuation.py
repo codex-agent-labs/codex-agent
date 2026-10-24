@@ -202,6 +202,33 @@ def select_native_state(needs, *, stage):
     return forward_routing({**collector["outputs"], "state_wave": "0", "sdk_state_wave": wave}, collector["outputs"])
 
 
+def select_checkpoint_output(needs, previous, *, stage, enabled):
+    """Route an untrusted selector after the existing state gate; never grant reuse."""
+    if type(enabled) is not bool or stage not in _STAGES:
+        raise ValueError("Checkpoint routing requires an explicit registered stage and mode")
+    _, _, _, collector, wave = _STAGES[stage]
+    issuer = _job(needs, "sdk-checkpoint-" + wave)
+
+    def selector(value):
+        if type(value) is not str or len(value.encode("utf-8")) > 16 * 1024 or "\n" in value or "\r" in value:
+            raise ValueError("Checkpoint routing requires a bounded single-line selector")
+        return value
+
+    output, previous = selector(issuer["outputs"].get("checkpoint", "")), selector(previous)
+    if not enabled:
+        if issuer["result"] != "skipped" or output or previous:
+            raise ValueError("Disabled checkpoints cannot execute or expose a selector")
+        return ""
+    select_native_state(needs, stage=stage)  # Includes exact no-worker/collector and sibling-failure gates.
+    if _job(needs, collector)["result"] == "success":
+        if issuer["result"] != "success" or not output:
+            raise ValueError("Collected state requires its successful nonempty checkpoint result")
+        return output
+    if issuer["result"] != "skipped" or output:
+        raise ValueError("Unchanged state must skip checkpoint issuance")
+    return previous
+
+
 def emit(plan, result, ready_plans, sources, request, root, environment, workflow_sha, output, *, runtime_wave=None,
          completed_frozen=None):
     """Called inside an authenticated transition, before its successful job gate."""

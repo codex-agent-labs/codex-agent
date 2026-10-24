@@ -2265,6 +2265,28 @@ class ProductSelectionTest(unittest.TestCase):
                         for path in inventory
                     ))
 
+    def test_exact_protected_reuse_controls_preserve_inventory_and_unknown_fails_closed(self) -> None:
+        for path in (
+            ".github/workflows/approved-reuse.yml",
+            ".github/actions/resolve-product-publication/action.yml",
+        ):
+            with self.subTest(path=path):
+                result = classify_paths((path,))
+                self.assertTrue(result.reuse_allowed)
+                self.assertEqual((), result.unknown_paths)
+                self.assertEqual((), result.inventory_paths)
+                self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))
+                for instance in PHASE_INSTANCE_IDS:
+                    self.assertEqual((), phase_inventory_paths((path,), instance))
+        unknown = ".github/actions/resolve-product-publication/unreviewed.yml"
+        result = classify_paths((unknown,))
+        self.assertFalse(result.reuse_allowed)
+        self.assertEqual((unknown,), result.unknown_paths)
+        self.assertEqual((unknown,), result.inventory_paths)
+        self.assertEqual(set(PHASE_INSTANCE_IDS), identities(result))
+        for instance in PHASE_INSTANCE_IDS:
+            self.assertEqual((unknown,), phase_inventory_paths((unknown,), instance))
+
     def test_workflow_and_lane_controls_select_work_without_entering_byte_inventory(self) -> None:
         paths = (
             ".github/workflows/desktop-runtime-evidence.yml",

@@ -20,16 +20,17 @@ class RuntimeOriginalCiTest(unittest.TestCase):
     api = fixture.ContractOriginalCiCaptureTest.api
 
     def test_current_runtime_publisher_remains_exactly_admitted_after_rotation(self):
-        publisher = "d2243aac89368df2776b6617fd5a623bd6754cb2"
-        reference = {"path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@reuse-authority",
-                     "ref": "refs/heads/reuse-authority", "sha": publisher}
-        run = {"referenced_workflows": [reference]}
-        self.assertEqual(publisher, adapter._runtime_prior_workflow_sha(run, "a" * 40))
-        for changed in ({"sha": "b" * 40}, {"ref": "refs/heads/unreviewed"},
-                        {"path": "other/repository/.github/workflows/product-validation.yml@reuse-authority"}):
-            with self.subTest(changed=changed):
-                self.assertIsNone(adapter._runtime_prior_workflow_sha(
-                    {"referenced_workflows": [{**reference, **changed}]}, "a" * 40))
+        for publisher in ("d2243aac89368df2776b6617fd5a623bd6754cb2",
+                          "a1cbc80b15a96cb2915d06afe1e29e319dda52fc"):
+            reference = {"path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@reuse-authority",
+                         "ref": "refs/heads/reuse-authority", "sha": publisher}
+            run = {"referenced_workflows": [reference]}
+            self.assertEqual(publisher, adapter._runtime_prior_workflow_sha(run, "a" * 40))
+            for changed in ({"sha": "b" * 40}, {"ref": "refs/heads/unreviewed"},
+                            {"path": "other/repository/.github/workflows/product-validation.yml@reuse-authority"}):
+                with self.subTest(changed=changed):
+                    self.assertIsNone(adapter._runtime_prior_workflow_sha(
+                        {"referenced_workflows": [{**reference, **changed}]}, "a" * 40))
 
     def download_fixture(self, artifact, token, destination, **_):
         phase = next(phase for phase, value in self.artifacts.items() if value["id"] == artifact["id"])
@@ -1276,7 +1277,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                          "dcf647126e955c37f7b3c89b44cbb8497792d72f",
                          "6b982f894a12503f772c361781c89f52e01f15d9",
                          "ab1efe4f956d4e403e431544be0caf01eb7a39a0",
-                         "a3620d11911883e6541ee2ac93f08b9811dfde20"):
+                         "a3620d11911883e6541ee2ac93f08b9811dfde20",
+                         "a1cbc80b15a96cb2915d06afe1e29e319dda52fc"):
             with self.subTest(original=original):
                 run = {"referenced_workflows": [{
                     "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",

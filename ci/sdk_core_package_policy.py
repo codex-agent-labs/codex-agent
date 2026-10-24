@@ -7,6 +7,7 @@ verification; the package reader still authenticates the original binary upload.
 """
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -232,8 +233,14 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
 
 def main(argv=None, *, component="sdk-core"):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
+    for name in ("plan", "destination", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("discovery-root", "state-root", "capture-destination"):
+        parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--capture-artifact-id", type=int)
+    parser.add_argument("--capture-artifact-sha256")
+    parser.add_argument("--capture-state-wave", type=int, choices=range(6))
+    parser.add_argument("--capture-sdk-state-wave", type=int, choices=range(1, 20))
     for name in ("expected-build-key", "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
     for name in ("binary-artifact-sha256", "binary-original-context"):
@@ -243,23 +250,86 @@ def main(argv=None, *, component="sdk-core"):
         parser.add_argument("--android-runtime-archive", type=Path, required=True)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--elect-worker", action="store_true")
+    parser.add_argument("--binary-original-workflow-path")
+    parser.add_argument("--binary-original-job-name")
     parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = vars(parser.parse_args(argv))
     if component != "sdk-core":
         args["component"] = component
-    args["plan"] = args.pop("plan")
     args["discovery"] = args.pop("discovery_root")
     args["state"] = args.pop("state_root")
     output = args.pop("github_output")
-    for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
-        path = args[name]
-        if path is not None:
-            args[name] = product_reuse._canonical_control(path, "Caller " + name)
+    elect = args.pop("elect_worker")
+    binary_route = {name.upper(): args.pop(name) for name in
+                    ("binary_original_workflow_path", "binary_original_job_name")}
+    incoming = {name: args.pop("capture_" + name) for name in
+                ("destination", "artifact_id", "artifact_sha256", "state_wave", "sdk_state_wave")}
+    combined = any(value is not None for value in incoming.values())
     try:
-        with metadata_admission_options(args) as admissions, completed_frozen_options(args) as native:
+        if elect:
+            if component != "sdk-core" or not combined or not all(binary_route.values()):
+                raise ValueError("Core worker election requires capture and the independent binary child route")
+        elif any(binary_route.values()):
+            raise ValueError("Core binary child route requires worker election")
+        policy_paths = {name.upper(): args[name] for name in
+            ("sdk_validation_tooling", "sdk_apple_validation_policy", "sdk_facade_metadata_policy", "sdk_android_metadata_policy")
+            if elect and args[name] is not None}
+        if any(not path.is_absolute() or path.resolve(strict=True) != path for path in policy_paths.values()):
+            raise ValueError("Core worker policies require absolute non-symbolic caller paths")
+        policy_bytes = {name: read_regular_file_bytes(path, reject_symlink_parents=True)
+                        for name, path in policy_paths.items()}
+        if combined:
+            if (args["discovery"] is not None or args["state"] is not None or any(
+                    incoming[name] is None for name in ("destination", "artifact_id", "artifact_sha256"))):
+                raise ValueError("Core policy requires complete capture controls or existing state roots")
+            runner_output = os.environ.get("GITHUB_OUTPUT")
+            if output is None or not runner_output or Path(runner_output).absolute() != output.absolute():
+                raise ValueError("SDK transport output must be the runner-provided GITHUB_OUTPUT")
+            capture, policy = incoming["destination"].resolve(), args["destination"].resolve()
+            if capture == policy or capture in policy.parents or policy in capture.parents:
+                raise ValueError("Core policy capture and publication destinations overlap")
+            incoming["state_wave"] = incoming["state_wave"] or 0
+        elif args["discovery"] is None or args["state"] is None:
+            raise ValueError("Core policy requires both existing state roots")
+        with ExitStack() as held:
+            if combined:
+                from sdk_workflow import capture_transport
+                native = held.enter_context(completed_frozen_options(args))
+                paths = capture_transport(plan=args["plan"], **incoming,
+                    github_output_path=output, repository_root=args["repository_root"],
+                    trusted_workflow_sha=args["trusted_workflow_sha"], **native,
+                    environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                args.update(plan=paths["plan_path"], discovery=paths["discovery_root"], state=paths["state_root"])
+            for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
+                path = args[name]
+                if path is not None:
+                    args[name] = product_reuse._canonical_control(path, "Caller " + name)
+            admissions = held.enter_context(metadata_admission_options(args))
+            if not combined:
+                native = held.enter_context(completed_frozen_options(args))
             result = prepare(**args, **admissions, **native, environ=os.environ)
+            if elect:
+                from sdk_workflow import matrix
+                for name in ("binary-contract-evidence", "binary-original-context"):
+                    key = name.upper().replace("-", "_")
+                    policy_paths[key] = Path(result[name])
+                    policy_bytes[key] = read_regular_file_bytes(policy_paths[key], reject_symlink_parents=True)
+                    load_canonical_json_bytes(policy_bytes[key])
+                elected = matrix(args["plan"], args["discovery"], args["state"], None,
+                    family="core-package", repository_root=args["repository_root"], environ=os.environ,
+                    trusted_workflow_sha=args["trusted_workflow_sha"], **native, **admissions,
+                    sdk_validation_tooling=args["sdk_validation_tooling"],
+                    sdk_apple_validation_policy=args["sdk_apple_validation_policy"])
+                if any(read_regular_file_bytes(policy_paths[name], reject_symlink_parents=True) != raw
+                        for name, raw in policy_bytes.items()):
+                    raise ValueError("Core worker caller policy changed during capture or election")
+                fingerprints = {name: sha256_bytes(raw) for name, raw in policy_bytes.items()}
+                result.update(sdk_matrix=canonical_json_bytes(elected).decode().strip(),
+                    sdk_workers_required="true" if elected["include"] else "false",
+                    policy_sha256=sha256_bytes(canonical_json_bytes({**fingerprints, **binary_route})))
         if output is not None:
             with output.open("a", encoding="utf-8") as stream:
                 for name, path in result.items():

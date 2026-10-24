@@ -252,6 +252,23 @@ def retained_core_origin(phase, build_key, consumer, *, target="common", compone
         return None
     if phase == "binary":
         return retained_core_binary_origin(build_key, consumer)
+    if phase == "metadata" and build_key == "sha256:d52f1b139e6b747db4f434d6d748e40bfa7e10e84646e3d8ee684193f44bb578":
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "c598bef357caa4b791fc6a1554949863de52f485", "tree": "cfc8544671145796e98d3eca790780b3a452add9",
+            "event": "pull_request", "runId": 40112811801, "runAttempt": 1, "pullRequest": 31}
+        if (any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12571769774,
+            "artifact_sha256": "sha256:ceec6d56c3089e0628825bfc07667a2720368a51eb3f29960297357ed897be08",
+            "receipt_sha256": "sha256:3b805434ff4418e120a806995f64016234ddcc8bb5ea461ea22bdc2e412fca07",
+            "object_sha256": "sha256:dd91e64a8238cc46718f1afd2e18125d3db922a07f5cae7afc6cdf00c1e31b48",
+            "job_id": 120942684205, "workflow_sha": "e386a1f155e940af261ea4fcc72fd7c2d64525d4",
+            "workflow_path": ".github/workflows/sdk-core-metadata-validation.yml",
+            "job_name": "product-validation / sdk-core-metadata-wave / sdk-core-metadata-common",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/tmp/core-metadata-inputs-2mdhgbdu/metadata-request.json"}}
     if phase == "metadata":
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "a1a45d67d3240624f8ef09042240daf56b27e310", "tree": "6f565a8b713db8615f973a05bffcbc0b079614a5",

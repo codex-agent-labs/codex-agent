@@ -211,6 +211,77 @@ class FacadeWorkflowTest(unittest.TestCase):
         for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
             self.assertNotIn(name, self.materialize.call_args.kwargs)
 
+    def test_replay_telemetry_keeps_counters_cleanup_and_original_exception(self):
+        import json
+        import os
+        import tempfile
+        import runtime_reference_transport as transport
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                fixture = FacadeWorkflowTest(methodName="runTest")
+                fixture.setUp()
+                try:
+                    output, events = io.StringIO(), []
+                    original = fixture.f.request.read_bytes()
+                    failure = ValueError("original facade replay rejected")
+                    measurements, volumes = transport._MEASUREMENTS.get(), transport._VOLUMES.get()
+                    def replay(**kwargs):
+                        result = fixture.replay(**kwargs)
+                        transport.count("fixtureReplayCalls")
+                        if failed: raise failure
+                        return result
+                    fixture.full.side_effect = replay
+                    @contextmanager
+                    def observe(operation, root):
+                        events.append(("enter", operation, Path(root)))
+                        with transport.measured_volume(operation, root):
+                            try:
+                                yield
+                            finally:
+                                self.assertEqual(1, len(fixture.full_calls))
+                                self.assertFalse(fixture.full_calls[0]["validation_receipt"].parent.exists())
+                                self.assertFalse((fixture.destination / "shard").exists())
+                                events.append(("exit", operation, Path(root)))
+                    with patch.dict(os.environ, {"CODEX_AGENT_THROUGHPUT_TRACE": "1"}), \
+                            patch.object(workflow, "measured_volume", side_effect=observe, create=True), \
+                            redirect_stderr(output):
+                        if failed:
+                            with self.assertRaises(ValueError) as caught: fixture.call()
+                            self.assertIs(failure, caught.exception)
+                            fixture.finalize.assert_not_called()
+                        else:
+                            result = fixture.call()
+                            verified = verify_phase_shard(fixture.destination / "shard",
+                                PhaseInstanceId("sdk", "sdk-core", "validation", "jvm"))
+                            self.assertEqual(verified["receiptBytes"], result["shard"]["receiptBytes"])
+                            self.assertEqual(fixture.producer, verified["receipt"]["producer"])
+                            fixture.finalize.assert_called_once()
+                    checkout, temporary = "core-validation-replay-checkout", "core-validation-replay-temporary"
+                    self.assertEqual([("enter", checkout, fixture.root),
+                        ("enter", temporary, Path(tempfile.gettempdir())),
+                        ("exit", temporary, Path(tempfile.gettempdir())),
+                        ("exit", checkout, fixture.root)], events)
+                    records = output.getvalue().splitlines()
+                    rows = [json.loads(line.removeprefix("throughput ")) for line in records if line.startswith("throughput ")]
+                    execute, = (row for row in rows if row["operation"] == "execute")
+                    self.assertEqual(not failed, execute["success"])
+                    self.assertEqual(1, execute["inclusiveCounters"]["fixtureReplayCalls"])
+                    sampled = [json.loads(line.removeprefix("throughput-volume ")) for line in records if line.startswith("throughput-volume ")]
+                    same_device = fixture.root.stat().st_dev == Path(tempfile.gettempdir()).stat().st_dev
+                    self.assertEqual({checkout} if same_device else {checkout, temporary}, {r["operation"] for r in sampled})
+                    self.assertEqual(1 if same_device else 2, len(sampled))
+                    for row in sampled:
+                        self.assertEqual(not failed, row["success"])
+                        self.assertTrue(row["samplerStopped"])
+                        self.assertEqual(0, row["sampleErrors"])
+                        self.assertGreaterEqual(row["sampleCount"], 2)
+                    self.assertEqual(measurements, transport._MEASUREMENTS.get())
+                    self.assertEqual(volumes, transport._VOLUMES.get())
+                    self.assertEqual(original, fixture.f.request.read_bytes())
+                    self.assertEqual(original, (fixture.destination / "originals/original-request.json").read_bytes())
+                finally:
+                    fixture.doCleanups()
+
     def test_metadata_admission_objects_forward_only_to_state_replay(self):
         admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
         self.call(**admissions)

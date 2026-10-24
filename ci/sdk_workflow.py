@@ -1371,7 +1371,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
             sdk_apple_validation_policy=None,
             sdk_worker_workflow_path=None, sdk_worker_job_name=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
-    core_metadata_caller=None):
+    core_metadata_caller=None, checkpoint_controls=False):
     """Advance only the exact elected SDK partition using the shared collector."""
     family_waves = {"csharp-binary": 19, "native-package": 4, "ios-package": 5, "javascript-metadata": 6,
                     "native-validation": 7, "native-metadata": 8, "ios-validation": 9, "ios-metadata": 10,
@@ -1432,12 +1432,12 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
                 completed_frozen=completed_frozen))
         advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
             github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
-            routing_output=True,
+            routing_output=True, checkpoint_controls=checkpoint_controls,
             sdk_original_workflow_sha=trusted_workflow_sha,
             **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
             **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
     for name in ("product-resume-inputs", "product-resume-state"):
-        snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
+        product_reuse.snapshot_reuse_inputs(input_root / name, handoff / name, completed_frozen=completed_frozen)
     if failed:
         github_output(github_output_path, {"sdk_matrix": '{"include":[]}', "sdk_workers_required": False})
     else:
@@ -1698,7 +1698,16 @@ def _workflow_main(argv, *, _continuation=None):
     captured.add_argument("--preparation-phase", choices=("package", "validation", "metadata"))
     captured.add_argument("--preparation-state-wave", type=int)
     captured.add_argument("--preparation-sdk-state-wave", type=int)
-    parsers["collect"].add_argument("--input-root", type=Path, required=True)
+    collected = parsers["collect"]
+    source = collected.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input-root", type=Path)
+    source.add_argument("--capture-plan", type=Path)
+    collected.add_argument("--capture-destination", type=Path)
+    collected.add_argument("--capture-artifact-id", type=int)
+    collected.add_argument("--capture-artifact-sha256")
+    collected.add_argument("--capture-state-wave", type=int, choices=range(6))
+    collected.add_argument("--capture-sdk-state-wave", type=int, choices=range(1, 20))
+    parsers["collect"].add_argument("--checkpoint-controls", action="store_true")
     parsers["collect"].add_argument("--wave", type=int, choices=range(1, 20), required=True)
     parsers["collect"].add_argument("--sdk-worker-workflow-path")
     parsers["collect"].add_argument("--sdk-worker-job-name")
@@ -1708,6 +1717,21 @@ def _workflow_main(argv, *, _continuation=None):
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:
+        incoming = {name: arguments.pop("capture_" + name, None) for name in
+            ("plan", "destination", "artifact_id", "artifact_sha256", "state_wave", "sdk_state_wave")}
+        combined = any(value is not None for value in incoming.values())
+        if combined:
+            if (command != "collect" or arguments.get("input_root") is not None
+                    or arguments["repository_root"] is None or any(incoming[name] is None for name in
+                        ("plan", "destination", "artifact_id", "artifact_sha256"))):
+                raise ValueError("Combined SDK collection requires complete capture controls and one input source")
+            current, previous = arguments["destination"].resolve(), incoming["destination"].resolve()
+            if current == previous or current in previous.parents or previous in current.parents:
+                raise ValueError("Combined SDK capture and collection destinations overlap")
+            runner_output = os.environ.get("GITHUB_OUTPUT")
+            if not runner_output or Path(runner_output).absolute() != arguments["github_output_path"].absolute():
+                raise ValueError("SDK transport output must be the runner-provided GITHUB_OUTPUT")
+            incoming["state_wave"] = incoming["state_wave"] or 0
         preparation = {name: arguments.pop("preparation_" + name, None) for name in
             ("destination", "artifact_id", "artifact_sha256", "phase", "state_wave", "sdk_state_wave")}
         paired = any(value is not None for value in preparation.values())
@@ -1727,7 +1751,22 @@ def _workflow_main(argv, *, _continuation=None):
             # Withhold caller outputs until both captures, the optional execution
             # continuation, and policy exit checks pass.
             arguments["github_output_path"] = None
-        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+        with ExitStack() as held:
+            if combined:
+                # Authenticate once against the caller plan, before capture and
+                # caller-policy selection. The capability stays live through collect.
+                arguments["plan"] = incoming["plan"]
+                semantic = held.enter_context(completed_frozen_options(arguments))
+                arguments.pop("plan")
+                paths = capture_transport(**incoming, github_output_path=output,
+                    repository_root=arguments["repository_root"],
+                    trusted_workflow_sha=arguments["trusted_workflow_sha"], **semantic,
+                    environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                arguments["input_root"] = paths["input_root"]
+                admissions = held.enter_context(metadata_admission_options(arguments))
+            else:
+                admissions = held.enter_context(metadata_admission_options(arguments))
+                semantic = held.enter_context(completed_frozen_options(arguments))
             policy = arguments.pop("sdk_validation_tooling")
             if policy is not None:
                 arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")

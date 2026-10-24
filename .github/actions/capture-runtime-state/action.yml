@@ -7,6 +7,9 @@ inputs:
   preflight-wave:
     default: ''
     description: Collector-only wave; fail on absent uploads before recovering the parent.
+  defer-transport:
+    default: 'false'
+    description: Checkpoint collector only; retain plan/preflight and let collection authenticate and capture in one process.
   product:
     default: runtime
     description: Fixed runtime, sdk JavaScript, or sdk-ios-binary readiness projection.
@@ -74,6 +77,8 @@ inputs:
     default: ''
     description: Optional exact elected build key.
 outputs:
+  transport-deferred:
+    value: ${{ steps.capture.outputs.transport_deferred }}
   preparation-state-root:
     value: ${{ steps.capture.outputs.preparation_state_root }}
   preparation-sdk-matrix:
@@ -156,6 +161,7 @@ runs:
         CONTINUATION: ${{ inputs.continuation }}
         STATE_PRODUCT: ${{ inputs.product }}
         PREFLIGHT_WAVE: ${{ inputs.preflight-wave }}
+        DEFER_TRANSPORT: ${{ inputs.defer-transport }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
@@ -254,6 +260,32 @@ runs:
                 selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
               fi
             fi
+            if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
+              test "$STATE_PRODUCT" = sdk
+              case "$SDK_FAMILY" in ios-metadata|core-binary|core-package) ;; *) exit 1 ;; esac
+              if [ -n "$PREFLIGHT_WAVE" ]; then
+                case "$SDK_FAMILY:$PREFLIGHT_WAVE:${GITHUB_JOB:-}" in
+                  ios-metadata:10:sdk-collect-10|core-binary:11:sdk-collect-11|core-package:12:sdk-collect-12) ;;
+                  *) exit 1 ;;
+                esac
+              fi
+              test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+              selected+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$CODEX_AGENT_SDK_CHECKPOINT")
+            fi
+            case "${DEFER_TRANSPORT:-false}" in
+              false) ;;
+              true)
+                test "$STATE_PRODUCT" = sdk
+                test -n "$PREFLIGHT_WAVE"
+                test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+                test -n "${CODEX_AGENT_SDK_CHECKPOINT:-}"
+                test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+                # No input-root is claimed before capture. The collector uses
+                # the original caller selectors and performs the complete gate.
+                printf 'transport_deferred=true\n' >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+              *) exit 1 ;;
+            esac
             "${command[@]}" \
               --plan "$PLAN_DIRECTORY/impact-plan.json" --destination build/runtime-input \
               --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \

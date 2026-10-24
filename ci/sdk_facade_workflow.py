@@ -10,6 +10,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from runtime_reference_transport import measured, measured_volume
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -80,6 +81,7 @@ def _retain_request(request, value, destination):
     return output
 
 
+@measured
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
             facade_request, android_sdk_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, repository_root,
@@ -205,7 +207,9 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         })
         retained[context] = _inventory(context)
         trust = "development" if producer["event"] == "pull_request" else "release"
-        with tempfile.TemporaryDirectory(prefix="core-validation-replay-") as temporary:
+        with measured_volume("core-validation-replay-checkout", root), \
+                measured_volume("core-validation-replay-temporary", tempfile.gettempdir()), \
+                tempfile.TemporaryDirectory(prefix="core-validation-replay-") as temporary:
             private = Path(temporary).resolve()
             receipt = write_phase_receipt(result["stage"], private, "sdk", "sdk-core", "validation", target,
                 value["sdkVersion"], ready["buildKey"], ready["inputs"], producer, trust)

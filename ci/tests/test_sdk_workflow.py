@@ -706,11 +706,18 @@ class SdkWorkflowTest(unittest.TestCase):
             self.assertEqual(row["artifact"], admission._completed["artifact"])
             args[4].mkdir(parents=True)
             return {"matrices": {"sdk": []}}
+        # This test checks admission wiring; its identity-only capability cannot
+        # authenticate snapshots. The collector snapshot tests cover that gate.
+        def snapshot(source, target, *, completed_frozen):
+            self.assertIs(cap, completed_frozen)
+            workflow.product_reuse.snapshot_regular_tree(source, target, allow_empty=True)
         with patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": [row]}), \
-                patch.object(workflow.product_reuse, "advance_products", side_effect=advance):
+                patch.object(workflow.product_reuse, "advance_products", side_effect=advance), \
+                patch.object(workflow.product_reuse, "snapshot_reuse_inputs", side_effect=snapshot) as forwarded:
             workflow.collect(original, destination, self.repository / "android-metadata-output", wave=18,
                 family="android-metadata", trusted_workflow_sha="c" * 40, repository_root=self.repository,
                 environ={}, token="fixture", completed_frozen=cap)
+        self.assertEqual(2, forwarded.call_count)
 
     def test_collection_preserves_original_roots_and_uses_exact_sdk_partition(self):
         original = self.repository / "original"

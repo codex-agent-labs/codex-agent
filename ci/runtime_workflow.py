@@ -388,7 +388,7 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     # Original input and receipt bytes are forwarded, not regenerated. Collection
     # diagnostics have their own upload, avoiding recursively nested wave archives.
     for name in ("product-resume-inputs", "product-resume-state"):
-        snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
+        products.snapshot_reuse_inputs(input_root / name, handoff / name, completed_frozen=completed_frozen)
     if wave == 5:
         if failures:
             github_output(github_output_path, {

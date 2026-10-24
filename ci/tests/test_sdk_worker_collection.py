@@ -510,7 +510,9 @@ class SdkWorkerCollectionTest(unittest.TestCase):
         child_path = ".github/workflows/sdk-core-validation.yml"
         job_template = "product-validation / sdk-core-validation-wave / sdk-core-validation-{target}"
         shards = [self.shard("validation", component="sdk-core", target=target)
-                  for target in ("jvm", "linux-x64")]
+                  for target in sorted(row.target for row in adapter.SDK_FAMILY_INSTANCES["core-validation"])]
+        for _, _, _, _, files in shards:
+            files["inputs/unselected-large.bin"] = b"unchanged input fixture" * 4096
         ready = {instance: plan for instance, plan, _, _, _ in shards}
         uploads = {instance: archive(files) for instance, _, _, _, files in shards}
         names = self.names
@@ -520,7 +522,7 @@ class SdkWorkerCollectionTest(unittest.TestCase):
 
         with patch.object(self, "names", side_effect=child_names), \
                 patch.object(adapter, "_verified_product_state", return_value=self.state(ready)), \
-                self.official_api(ready, uploads) as (query, _, _):
+                self.official_api(ready, uploads) as (query, _, downloaded):
             original_query = query.side_effect
 
             def child_run(url, token):
@@ -536,10 +538,70 @@ class SdkWorkerCollectionTest(unittest.TestCase):
                 repository_root=self.repository, environ=self.environment, token="synthetic-token",
                 sdk_family="core-validation", sdk_worker_workflow_path=child_path,
                 sdk_worker_job_name=job_template)
-        self.assertEqual(2, len(result["rows"]))
+        self.assertEqual(11, downloaded.call_count)
+        self.assertEqual(11, len(result["rows"]))
         self.assertEqual({"success"}, {row["result"] for row in result["rows"]})
-        self.assertEqual({job_template.replace("{target}", target) for target in ("jvm", "linux-x64")},
+        self.assertEqual({job_template.replace("{target}", target) for target in (row.target for row in ready)},
                          {row["jobName"] for row in result["rows"]})
+
+        expected = {instance: (original, descriptor, files) for instance, _, original, descriptor, files in shards}
+        for row in result["rows"]:
+            instance = adapter._identity(row)
+            original, descriptor, files = expected[instance]
+            retained = self.repository / "build/validation-child" / row["originalDirectory"]
+            self.assertEqual(regular_file_inventory(original), regular_file_inventory(retained / "shard"))
+            verified = adapter.verify_phase_shard(retained / "shard", instance)
+            self.assertEqual(descriptor["receiptSha256"], verified["receiptSha256"])
+            self.assertEqual(descriptor["objectSha256"], verified["objectSha256"])
+            self.assertEqual(self.producer, verified["receipt"]["producer"])
+            self.assertNotIn(instance, adapter._LARGE_SDK_UPLOADS)
+            self.assertEqual(adapter._CATALOG_ZIP_LIMITS, adapter._worker_upload_zip_limits(instance))
+            self.assertEqual({"shard"}, {path.name for path in retained.iterdir()})
+            self.assertFalse((retained.parent / "transport.zip").exists())
+            self.assertEqual({"schemaVersion": 1, "files": [
+                {"relativePath": name, "bytes": len(raw), "sha256": sha256_bytes(raw)}
+                for name, raw in sorted(files.items())]}, load_canonical_json(retained.parent / "original-inventory.json"))
+
+    def test_core_validation_projection_rejects_invalid_unselected_archive_members(self):
+        import io, stat, warnings, zipfile
+        instance, ready, _, _, files = self.shard("validation", component="sdk-core", target="jvm")
+        raw = archive(files)
+        original = files["inputs/original.bin"]
+        self.assertEqual(1, raw.count(original))
+        cases = {"crc": raw.replace(original, b"X" + original[1:])}
+        for case in ("traversal", "symlink", "duplicate", "file-directory-overlap"):
+            stream = io.BytesIO(raw)
+            with warnings.catch_warnings(), zipfile.ZipFile(stream, "a") as zipped:
+                warnings.simplefilter("ignore", UserWarning)
+                if case == "traversal": zipped.writestr("inputs/../../escape", b"bad")
+                elif case == "symlink":
+                    info = zipfile.ZipInfo("inputs/link"); info.create_system = 3
+                    info.external_attr = (stat.S_IFLNK | 0o777) << 16; zipped.writestr(info, b"original.bin")
+                elif case == "duplicate": zipped.writestr("inputs/original.bin", original)
+                else: zipped.writestr("inputs", b"not a directory")
+            cases[case] = stream.getvalue()
+        for case, body in cases.items():
+            with self.subTest(case=case), patch.object(adapter, "_extract_runtime_original_projection") as extract:
+                result = self.collect({instance: ready}, {instance: body},
+                    self.repository / ("build/invalid-core-validation-" + case), family="core-validation")
+                row, = result["rows"]
+                self.assertEqual("failure", row["result"])
+                self.assertIsNone(row["shardDirectory"])
+                extract.assert_not_called()
+
+    def test_core_validation_projection_keeps_selected_receipt_and_object_gates(self):
+        for fault in ("producer", "key", "version", "object"):
+            with self.subTest(fault=fault):
+                instance, ready, _, descriptor, files = self.shard("validation", component="sdk-core", target="jvm",
+                    wrong=fault if fault != "object" else None)
+                if fault == "object":
+                    name = "shard/" + descriptor["objectPath"]
+                    files[name] += b"changed object"
+                result = self.collect({instance: ready}, {instance: archive(files)},
+                    self.repository / ("build/wrong-core-validation-" + fault), family="core-validation")
+                row, = result["rows"]
+                self.assertEqual("failure", row["result"])
+                self.assertIsNone(row["shardDirectory"])
 
     def test_core_validation_child_rejects_non_target_template_before_replay(self):
         for job in ("product-validation / sdk-core-validation-wave / sdk-core-validation-jvm",
