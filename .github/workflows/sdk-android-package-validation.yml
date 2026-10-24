@@ -191,7 +191,7 @@ jobs:
           set -euo pipefail
           native_archive() {
             python3 -B -m ci.sdk_core_native_archive_provision \
-              --plan "${{ steps.selected.outputs.plan-path }}" \
+              --plan "$GITHUB_WORKSPACE/${{ steps.selected.outputs.plan-path }}" \
               --target "$1" --destination "$RUNNER_TEMP/android16-$2.tar.gz" \
               --repository-root "$GITHUB_WORKSPACE"
           }
