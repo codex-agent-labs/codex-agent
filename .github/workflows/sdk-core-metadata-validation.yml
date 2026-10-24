@@ -267,6 +267,8 @@ jobs:
           PY
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
+        env:
+          CODEX_AGENT_CORE_METADATA_WORKSPACE: 'true'
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk

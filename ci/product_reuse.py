@@ -1134,6 +1134,16 @@ def _reuse_contract_ci_upload(artifact, producer, observed_run, token, *, destin
         package_files = session.setdefault("coreMetadataUploads" if core_metadata else "iosPackageUploads", {})
         package_transport = (destination is not None and
             (core_metadata or artifact["name"].startswith("codex-agent-sdk-worker-sdk-ios-package-ios-")))
+        if session.get("qualifiedCoreMetadataWorkspace") is not None and destination is not None:
+            if artifact["name"].startswith("codex-agent-sdk-worker-sdk-core-metadata-common-"):
+                # One original + its mandatory isolated snapshot; later hardlink hits need neither.
+                additional = 0 if provenance in package_files else 2 * size
+                stage = "outer-download-and-snapshot" if additional else "retained-outer-alias"
+            else:
+                # Existing bootstrap capture/publication may overlap its input and output trees.
+                additional, stage = 4 * size, "bootstrap-upload"
+            _require_core_metadata_workspace(session, additional, stage, destination=destination,
+                reclaim=stage == "outer-download-and-snapshot")
         def retain_link(source, target):
             try:
                 os.link(source, target)
@@ -1198,7 +1208,11 @@ def _core_metadata_upload_inventory(archive, identity, instance):
             if archive.stat().st_size != identity["bytes"] or sha256_file(archive, reject_symlink_parents=True) != identity["sha256"]:
                 raise ValueError("Original Core archive changed before inventory reuse")
             count("coreMetadataZipInventoryHits")
-            return load_canonical_json_bytes(cache[key])
+            records = load_canonical_json_bytes(cache[key])
+            if instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common"):
+                _require_core_metadata_projection_space(session, records, archive)
+            return records
+        _require_core_metadata_workspace(session, identity["bytes"], "cold-zip-snapshot", destination=archive)
         records, _, observed = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                                      **_worker_upload_zip_limits(instance))
         if observed != identity:
@@ -1208,6 +1222,8 @@ def _core_metadata_upload_inventory(archive, identity, instance):
         if used + len(raw) <= 64 * 1024 * 1024:
             cache[key] = raw
             session["coreMetadataZipInventoryBytes"] = used + len(raw)
+        if instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common"):
+            _require_core_metadata_projection_space(session, records, archive)
         return records
 
 
@@ -6962,11 +6978,10 @@ def collect_runtime_workers(
                     original_producer = retained_worker["producer"]
                     artifact_name = (_worker_artifact_prefix(product, instance) + ready["buildKey"][7:] + "-"
                         + original_producer["tree"] + f"-attempt-{original_producer['runAttempt']}")
-                    candidates = [api_json(f"https://api.github.com/repos/{original_producer['repository']}/actions/artifacts/"
-                        + str(retained_worker["artifact_id"]), token)]
-                    if (candidates[0].get("id"), candidates[0].get("digest")) != (
-                            retained_worker["artifact_id"], retained_worker["artifact_sha256"]):
-                        raise ValueError("Retained SDK worker differs from its reviewed successful upload")
+                    # Locator pins select the original; the downstream strict metadata reader observes it once.
+                    # This selector is never exposed as an official artifact observation.
+                    candidates = [{"id": retained_worker["artifact_id"],
+                                   "digest": retained_worker["artifact_sha256"]}]
                     row["artifactName"] = artifact_name
                 if not candidates and product == "sdk":
                     prefix = artifact_name.rsplit("-attempt-", 1)[0]
@@ -7028,11 +7043,21 @@ def collect_runtime_workers(
                         if source not in prepared_sdk_sources:
                             _ensure_observed_sdk_commit(root, original_producer, token)
                             prepared_sdk_sources.add(source)
-                    artifact, _ = _download_contract_ci_upload(
-                        candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
-                        original_observed[0]["run"], token, destination=archive,
-                        **({"upload_limit": _worker_upload_zip_limits(instance)["max_archive_bytes"]}
-                           if instance in _LARGE_SDK_UPLOADS else {}))
+                    if environment.get("CODEX_AGENT_CORE_METADATA_WORKSPACE") == "true":
+                        _prepare_qualified_core_metadata_workspace(root, environment, state, completed_frozen, sdk_family)
+                        limit = _worker_upload_zip_limits(instance)["max_archive_bytes"]
+                        artifact = _contract_ci_upload_metadata(candidate.get("id"), candidate.get("digest"),
+                            artifact_name, original_producer, original_observed[0]["run"], token, upload_limit=limit)
+                        _require_artifact_job_window(original_observed[0], job_name, artifact)
+                        artifact, _ = _reuse_contract_ci_upload(artifact, original_producer,
+                            original_observed[0]["run"], token, destination=archive, limit=limit,
+                            artifact_sha256=artifact["digest"], size=artifact["size_in_bytes"])
+                    else:
+                        artifact, _ = _download_contract_ci_upload(
+                            candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
+                            original_observed[0]["run"], token, destination=archive,
+                            **({"upload_limit": _worker_upload_zip_limits(instance)["max_archive_bytes"]}
+                               if instance in _LARGE_SDK_UPLOADS else {}))
                 else:
                     artifact = _contract_ci_upload_metadata(
                         candidate.get("id"), candidate.get("digest"), artifact_name, original_producer,
@@ -9282,6 +9307,82 @@ def capture_elected_sdk_ios_validation_upload(plan_path, destination, *, target,
         elected_target=target, elected_build_key=expected_build_key)
 
 
+_UNUSED_HOSTED_TOOLCHAINS = ("/usr/local/lib/android", "/usr/share/dotnet", "/opt/ghc",
+                             "/usr/local/.ghcup", "/opt/hostedtoolcache/CodeQL")
+_CORE_METADATA_HEADROOM = 8 * 1024**3
+
+
+def _prepare_qualified_core_metadata_workspace(root, environ, state, completed_frozen, family):
+    if environ.get("CODEX_AGENT_CORE_METADATA_WORKSPACE") != "true":
+        return
+    from reuse_qualification import CompletedFrozenReuse
+    from products.registry import SDK_FACADE_TARGETS
+    from products.restore import _VERIFICATION_SESSION
+    if (family != "core-metadata" or any(environ.get(key) != value for key, value in {
+            "GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "RUNNER_ENVIRONMENT": "github-hosted",
+            "GITHUB_JOB": "sdk-collect-14"}.items()) or type(completed_frozen) is not CompletedFrozenReuse):
+        raise ValueError("Core metadata capacity requires hosted sdk-collect-14 with native predecessors")
+    predecessors = [PhaseInstanceId("sdk", "sdk-core", "package", "common"),
+        *(PhaseInstanceId("sdk", "sdk-core", "validation", target) for target in SDK_FACADE_TARGETS)]
+    if not all(identity in state.prior_by_instance and
+            state.prior_by_instance[identity]["state"] == "retained" and
+            completed_frozen.envelope(state.prior_by_instance[identity]) is not None for identity in predecessors):
+        raise ValueError("Core metadata capacity requires exact native package and eleven validation originals")
+    session = _VERIFICATION_SESSION.get()
+    if session is None:
+        raise ValueError("Core metadata capacity requires the private collect verification session")
+    roots = [root, session["root"], Path(tempfile.gettempdir())]
+    for name in ("GITHUB_WORKSPACE", "RUNNER_TEMP", "CODEX_SDK_ARCHIVE_CACHE"):
+        value = environ.get(name)
+        if not value or not Path(value).is_absolute():
+            raise ValueError("Core metadata capacity requires actual workspace, temp and archive-cache paths")
+        roots.append(Path(value))
+    cache = roots[-1]
+    if cache.parent.resolve(strict=True) != cache.parent:
+        raise ValueError("Pinned archive cache must have normalized absolute ancestry")
+    # Same cold-cache initialization as sdk_android_archive_provision, after qualified route gates.
+    cache.mkdir(exist_ok=True)
+    require_regular_directory(cache, "Pinned archive cache")
+    session["qualifiedCoreMetadataWorkspace"] = tuple(roots)
+
+
+def _require_core_metadata_projection_space(session, records, archive):
+    if session.get("qualifiedCoreMetadataWorkspace") is None:
+        return
+    projected = sum(row["bytes"] for row in records if
+        row["relativePath"].startswith(("shard/", "worker/", "selection/")) or
+        row["relativePath"] in {"originals/metadata-request.json", "inputs/producer.json", "inputs/phase-plan.json"})
+    nested = max((row["bytes"] for row in records if
+        row["relativePath"].startswith("originals/validations/") and
+        row["relativePath"].endswith("/capture/transport.zip")), default=0)
+    # Derived only from the already fully authenticated inventory. Nested ZIPs are sequential.
+    _require_core_metadata_workspace(session, 4 * projected + 2 * nested,
+        "qualified-projection-and-nested-snapshot", destination=archive)
+
+
+def _require_core_metadata_workspace(session, additional, stage, *, destination=None, reclaim=False):
+    roots = session.get("qualifiedCoreMetadataWorkspace")
+    if roots is None:
+        return
+    paths = (*roots, *((Path(destination).parent,) if destination is not None else ()))
+    if any(not path.is_dir() for path in paths) or len({path.stat().st_dev for path in paths}) != 1:
+        raise ValueError("Core metadata capacity requires workspace, temp and cache on the same volume")
+    # Additional allocation, not total job bytes: the measured baseline already includes held inputs.
+    # Keep room for the 4GiB verifier cache, four <=512MiB compilers and small bootstrap controls.
+    required = additional + _CORE_METADATA_HEADROOM
+    before = shutil.disk_usage(roots[0]).free
+    if reclaim and before < required:
+        subprocess.run(["sudo", "-n", "rm", "-rf", "--", *_UNUSED_HOSTED_TOOLCHAINS], check=True)
+    after = shutil.disk_usage(roots[0]).free
+    print("qualified-core-metadata-workspace " + canonical_json_bytes({
+        "stage": stage, "beforeFreeBytes": before, "afterFreeBytes": after,
+        "additionalBytes": additional, "headroomBytes": _CORE_METADATA_HEADROOM,
+        "requiredFreeBytes": required, "device": roots[0].stat().st_dev,
+    }).decode().strip(), flush=True)
+    if after < required:
+        raise ValueError(f"Insufficient qualified Core metadata workspace capacity: {after} free bytes; {required} required")
+
+
 @measured
 def _prepare_cold_apple_workspace(workspace, environ, archive_bytes):
     if environ.get("CODEX_AGENT_COLD_APPLE_WORKSPACE") != "true":
@@ -9296,9 +9397,7 @@ def _prepare_cold_apple_workspace(workspace, environ, archive_bytes):
     required = 4 * archive_bytes + 8 * 1024**3
     before = shutil.disk_usage(workspace).free
     if before < required:
-        subprocess.run(["sudo", "-n", "rm", "-rf", "--",
-            "/usr/local/lib/android", "/usr/share/dotnet", "/opt/ghc",
-            "/usr/local/.ghcup", "/opt/hostedtoolcache/CodeQL"], check=True)
+        subprocess.run(["sudo", "-n", "rm", "-rf", "--", *_UNUSED_HOSTED_TOOLCHAINS], check=True)
     after = shutil.disk_usage(workspace).free
     print("cold-apple-workspace " + canonical_json_bytes({
         "beforeFreeBytes": before, "afterFreeBytes": after,
