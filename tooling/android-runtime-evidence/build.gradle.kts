@@ -29,7 +29,16 @@ extensions.configure<ApplicationExtension> {
 }
 
 dependencies {
-    implementation(project(":codex-agent-runtime-android"))
+    val authenticatedVersion = rootProject.extra.properties["codexAgent.authenticatedAndroidEvidenceSdkVersion"]
+    if (authenticatedVersion == null) {
+        implementation(project(":codex-agent-runtime-android"))
+    } else {
+        val sdkVersion = rootProject.extra["codexAgent.sdkVersion"].toString()
+        require(authenticatedVersion == sdkVersion) {
+            "Authenticated Android evidence SDK version differs from this build"
+        }
+        implementation("io.github.codex-agent-labs:codex-agent-runtime-android:$sdkVersion")
+    }
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.sqlite.framework)

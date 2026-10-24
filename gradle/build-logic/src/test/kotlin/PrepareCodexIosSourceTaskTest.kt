@@ -1,4 +1,8 @@
 import java.io.File
+import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFilePermission
 import java.security.MessageDigest
 import java.util.zip.GZIPOutputStream
 import kotlin.io.path.createTempDirectory
@@ -12,8 +16,71 @@ import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.testfixtures.ProjectBuilder
+import org.junit.Assume.assumeTrue
 
 class PrepareCodexIosSourceTaskTest {
+    @Test
+    fun `identical validated source preserves mtimes while differences replace and symlinks reject`() {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+        val project = fixture()
+        try {
+            val revision = "0".repeat(40)
+            val archive = project.resolve("codex.tar.gz")
+            val lock = "locked\n".encodeToByteArray()
+            writeTarGz(
+                archive,
+                mapOf(
+                    "codex-$revision/marker.txt" to "source\n".encodeToByteArray(),
+                    "codex-$revision/codex-rs/Cargo.lock" to lock,
+                ),
+            )
+            project.resolve("change.patch").writeText("")
+            project.resolve("bridge").mkdir()
+            project.resolve("bridge/Cargo.toml").writeText("[package]\nname = \"bridge\"\n")
+            val prepare = task(project, revision, archive.sha256(), lock.sha256())
+            prepare.prepare()
+
+            val output = project.resolve("build/codex-source")
+            val marker = output.resolve("marker.txt")
+            val expectedBytes = verifiedRegularFiles(output).mapValues { it.value.sha256() }
+            val expectedPermissions = Files.getPosixFilePermissions(marker.toPath())
+            Files.setLastModifiedTime(marker.toPath(), FileTime.fromMillis(1_234_567_000L))
+            val preservedTime = Files.getLastModifiedTime(marker.toPath())
+            prepare.prepare()
+            assertEquals(preservedTime, Files.getLastModifiedTime(marker.toPath()))
+            assertEquals(expectedBytes, verifiedRegularFiles(output).mapValues { it.value.sha256() })
+
+            val invalidSource = assertFailsWith<IllegalStateException> {
+                task(project, revision, "0".repeat(64), lock.sha256()).prepare()
+            }
+            assertContains(invalidSource.message.orEmpty(), "source archive SHA-256 mismatch")
+            assertEquals(expectedBytes, verifiedRegularFiles(output).mapValues { it.value.sha256() })
+            assertEquals(preservedTime, Files.getLastModifiedTime(marker.toPath()))
+
+            marker.writeText("tampered\n")
+            prepare.prepare()
+            assertEquals("source\n", marker.readText())
+            output.resolve("unexpected-empty-directory").mkdir()
+            prepare.prepare()
+            assertFalse(output.resolve("unexpected-empty-directory").exists())
+
+            val changedPermissions = expectedPermissions.toMutableSet().apply {
+                if (!remove(PosixFilePermission.OWNER_EXECUTE)) add(PosixFilePermission.OWNER_EXECUTE)
+            }
+            Files.setPosixFilePermissions(marker.toPath(), changedPermissions)
+            prepare.prepare()
+            assertEquals(expectedPermissions, Files.getPosixFilePermissions(marker.toPath()))
+
+            val unsafe = output.resolve("unsafe-link")
+            Files.createSymbolicLink(unsafe.toPath(), marker.toPath())
+            val failure = assertFailsWith<IllegalStateException> { prepare.prepare() }
+            assertContains(failure.message.orEmpty(), "unsafe entry")
+            assertTrue(Files.isSymbolicLink(unsafe.toPath()))
+        } finally {
+            project.deleteRecursively()
+        }
+    }
+
     @Test
     fun `validates patches and stages the exact GitHub API source revision`() {
         val project = fixture()

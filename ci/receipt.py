@@ -12,7 +12,10 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from impact import LANES
+if __package__:
+    from .impact import LANES, validate_legacy_lane_projection
+else:
+    from impact import LANES, validate_legacy_lane_projection
 
 
 SCHEMA_VERSION = 1
@@ -97,6 +100,7 @@ def create_receipt(arguments: argparse.Namespace) -> None:
     plan = read_json(plan_path)
     if plan.get("schemaVersion") != SCHEMA_VERSION or arguments.lane not in LANES:
         raise ValueError("Unsupported plan schema or lane")
+    validate_legacy_lane_projection(plan, plan_path=plan_path)
     output_root = arguments.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     input_files: dict[str, str] = {}
@@ -145,9 +149,11 @@ def validate_receipt(
     runner: dict[str, str] | None = None,
     toolchain: dict[str, str] | None = None,
     categories: tuple[str, ...] = tuple(INPUT_NAMES),
+    repository_root: Path | None = None,
 ) -> dict[str, object]:
     receipt = read_json(receipt_path)
     plan = read_json(plan_path)
+    validate_legacy_lane_projection(plan, repository_root=repository_root, plan_path=plan_path)
     expected_keys = {
         "schemaVersion", "repository", "workflowPath", "event", "runId", "runAttempt", "pullRequest",
         "baseCommit", "headCommit", "validationCommit", "validationTree", "lane", "artifactName", "runner",
@@ -277,6 +283,7 @@ def validate_receipt(
 
 def aggregate(arguments: argparse.Namespace) -> None:
     plan = read_json(arguments.plan)
+    validate_legacy_lane_projection(plan, plan_path=arguments.plan)
     receipts: dict[str, dict[str, object]] = {}
     for receipt_path in arguments.receipts.rglob("lane-receipt.json"):
         receipt = validate_receipt(
@@ -290,7 +297,17 @@ def aggregate(arguments: argparse.Namespace) -> None:
             raise ValueError(f"Duplicate receipt for {lane}")
         receipts[lane] = receipt
     required = required_lanes(plan)
-    if set(receipts) != set(required):
+    expected = set(required)
+    if getattr(arguments, "auxiliary_contracts", False):
+        if "contracts" in expected:
+            raise ValueError("Selected contracts cannot also be auxiliary tooling")
+        auxiliary = receipts.get("contracts")
+        if auxiliary is None or not {"build", "test"}.issubset(parse_validation_actions(auxiliary["toolchain"])):
+            raise ValueError("Auxiliary tooling requires an original contracts build and test receipt")
+        if any(item["kind"] == "transport-provenance" for item in auxiliary["evidence"]):
+            raise ValueError("Auxiliary tooling cannot use a reissued transport receipt")
+        expected.add("contracts")
+    if set(receipts) != expected:
         raise ValueError(f"Validation receipt set mismatch: required={required} actual={sorted(receipts)}")
     if plan.get("androidEvidenceRequired") and "android" in required and not any(
         item["kind"] == "firebase-runtime-evidence" for item in receipts["android"]["evidence"]
@@ -372,6 +389,7 @@ def parser() -> argparse.ArgumentParser:
     combine = commands.add_parser("aggregate")
     combine.add_argument("--plan", type=Path, required=True)
     combine.add_argument("--receipts", type=Path, required=True)
+    combine.add_argument("--auxiliary-contracts", action="store_true")
     combine.add_argument("--output", type=Path, required=True)
     extract = commands.add_parser("extract")
     extract.add_argument("--archive", type=Path, required=True)

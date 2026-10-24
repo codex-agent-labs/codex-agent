@@ -1,0 +1,293 @@
+name: Capture authenticated Runtime state
+description: Verify the exact parent upload and re-elect work before any platform setup.
+inputs:
+  plan-directory:
+    default: ''
+    description: Existing same-job exact plan download, still validated by each consumer.
+  preflight-wave:
+    default: ''
+    description: Collector-only wave; fail on absent uploads before recovering the parent.
+  defer-transport:
+    default: 'false'
+    description: Checkpoint collector only; retain plan/preflight and let collection authenticate and capture in one process.
+  product:
+    default: runtime
+    description: Fixed runtime, sdk JavaScript, or sdk-ios-binary readiness projection.
+  plan-id:
+    required: true
+    description: Caller-owned original plan artifact ID.
+  artifact-id:
+    required: true
+    description: Caller-owned parent state artifact ID.
+  artifact-sha256:
+    required: true
+    description: Caller-owned parent state artifact digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed literal product workflow revision.
+  state-wave:
+    default: '0'
+    description: Zero for initial resume; otherwise the fixed preceding wave.
+  continuation:
+    default: ''
+    description: Optional selected/completed Runtime continuation in the same verification process.
+  sdk-state-wave:
+    default: ''
+    description: Optional exact SDK collection wave, mutually exclusive with Runtime state-wave.
+  sdk-family:
+    default: ''
+    description: Optional exact SDK family projection selected by ci.sdk_workflow.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path; never obtained from the captured state.
+  preparation-artifact-id:
+    default: ''
+    description: Optional original native preparation state captured under the same in-process authentication.
+  preparation-artifact-sha256:
+    default: ''
+    description: Exact original native preparation state upload digest.
+  preparation-phase:
+    default: ''
+    description: Original native preparation consumer phase; requires scoped native-validation capture.
+  preparation-state-wave:
+    default: '0'
+    description: Original native preparation Runtime wave.
+  preparation-sdk-state-wave:
+    default: ''
+    description: Original native preparation SDK wave, when applicable.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Caller-provisioned Apple validation policy path; never obtained from the captured state.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Caller-provisioned Core metadata policy path; never obtained from the captured state.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Caller-provisioned Android metadata policy path; never obtained from the captured state.
+  component:
+    default: ''
+    description: Optional elected Runtime component.
+  phase:
+    default: ''
+    description: Optional elected phase.
+  target:
+    default: ''
+    description: Optional elected target.
+  build-key:
+    default: ''
+    description: Optional exact elected build key.
+outputs:
+  transport-deferred:
+    value: ${{ steps.capture.outputs.transport_deferred }}
+  preparation-state-root:
+    value: ${{ steps.capture.outputs.preparation_state_root }}
+  preparation-sdk-matrix:
+    value: ${{ steps.capture.outputs.preparation_sdk_matrix }}
+  native-preparation-component:
+    value: ${{ steps.capture.outputs.native_preparation_component }}
+  native-preparation-phase:
+    value: ${{ steps.capture.outputs.native_preparation_phase }}
+  native-preparation-target:
+    value: ${{ steps.capture.outputs.native_preparation_target }}
+  native-preparation-build-key:
+    value: ${{ steps.capture.outputs.native_preparation_build_key }}
+  native-preparation-required:
+    value: ${{ steps.capture.outputs.native_preparation_required }}
+  native_attestation_matrix:
+    value: ${{ steps.capture.outputs.native_attestation_matrix }}
+  native_receipt_sha256s:
+    value: ${{ steps.capture.outputs.native_receipt_sha256s }}
+  aggregate_state:
+    value: ${{ steps.capture.outputs.aggregate_state }}
+  aggregate_key:
+    value: ${{ steps.capture.outputs.aggregate_key }}
+  aggregate_receipt_sha256:
+    value: ${{ steps.capture.outputs.aggregate_receipt_sha256 }}
+  aggregate_required:
+    value: ${{ steps.capture.outputs.aggregate_required }}
+  aggregate_payload_complete:
+    value: ${{ steps.capture.outputs.aggregate_payload_complete }}
+  sdk_handoff_required:
+    value: ${{ steps.capture.outputs.sdk_handoff_required }}
+  sdk_input_selection:
+    value: ${{ steps.capture.outputs.sdk_input_selection }}
+  sdk-matrix:
+    value: ${{ steps.capture.outputs.sdk_matrix }}
+  sdk-workers-required:
+    value: ${{ steps.capture.outputs.sdk_workers_required }}
+  plan-path:
+    value: ${{ steps.capture.outputs.plan_path }}
+  discovery-root:
+    value: ${{ steps.capture.outputs.discovery_root }}
+  state-root:
+    value: ${{ steps.capture.outputs.state_root }}
+  input-root:
+    value: ${{ steps.capture.outputs.input_root }}
+  phase-plan:
+    value: ${{ steps.capture.outputs.phase_plan }}
+runs:
+  using: composite
+  steps:
+    - if: inputs.plan-directory == ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || inputs.plan-id }}
+        path: build/runtime-plan
+        merge-multiple: true
+    - if: inputs.preflight-wave != ''
+      shell: bash
+      env:
+        PLAN_DIRECTORY: ${{ inputs.plan-directory || 'build/runtime-plan' }}
+        PRODUCT: ${{ inputs.product }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
+        WAVE: ${{ inputs.preflight-wave }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        family=()
+        if [ -n "$SDK_FAMILY" ]; then family=(--family "$SDK_FAMILY"); fi
+        python3 -B ci/runtime_workflow.py preflight --plan "$PLAN_DIRECTORY/impact-plan.json" \
+          --product "$PRODUCT" --wave "$WAVE" ${family[@]+"${family[@]}"} \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
+    - id: capture
+      uses: ./.github/actions/hydrated-evidence-cache
+      env:
+        PLAN_DIRECTORY: ${{ inputs.plan-directory || 'build/runtime-plan' }}
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        CONTINUATION: ${{ inputs.continuation }}
+        STATE_PRODUCT: ${{ inputs.product }}
+        PREFLIGHT_WAVE: ${{ inputs.preflight-wave }}
+        DEFER_TRANSPORT: ${{ inputs.defer-transport }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        PREPARATION_ARTIFACT_ID: ${{ inputs.preparation-artifact-id }}
+        PREPARATION_ARTIFACT_SHA256: ${{ inputs.preparation-artifact-sha256 }}
+        PREPARATION_PHASE: ${{ inputs.preparation-phase }}
+        PREPARATION_STATE_WAVE: ${{ inputs.preparation-state-wave }}
+        PREPARATION_SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        COMPONENT: ${{ inputs.component }}
+        PHASE: ${{ inputs.phase }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        mode: execute
+        script: |
+            set -euo pipefail
+            selected=()
+            command=(python3 -B ci/runtime_workflow.py capture)
+            case "$STATE_PRODUCT" in
+              runtime) test -z "$SDK_STATE_WAVE$SDK_FAMILY" ;;
+              sdk|sdk-ios-binary)
+                test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+                command=(python3 -B -m ci.sdk_workflow capture)
+                if [ -n "$SDK_STATE_WAVE" ]; then
+                  selected=(--sdk-state-wave "$SDK_STATE_WAVE")
+                fi
+                if [ "$STATE_PRODUCT" = sdk-ios-binary ]; then
+                  test -z "$SDK_FAMILY"
+                  selected+=(--ios-binary)
+                elif [ -n "$SDK_FAMILY" ]; then
+                  case "$SDK_FAMILY" in
+                    csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) selected+=(--family "$SDK_FAMILY") ;;
+                    *) echo 'Unknown SDK family' >&2; exit 1 ;;
+                  esac
+                fi
+                ;;
+              *) echo 'Unknown product state projection' >&2; exit 1 ;;
+            esac
+            if [ "$STATE_PRODUCT" = sdk ] && [ -z "$PREFLIGHT_WAVE" ]; then
+              case "$SDK_FAMILY" in
+                ''|javascript-metadata|native-package|native-validation|native-metadata|csharp-binary|core-binary|android-binary)
+                  selected+=(--scope-inputs) ;;
+              esac
+            fi
+            if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
+              selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
+            fi
+            if [ -n "$CONTINUATION" ]; then
+              test "$STATE_PRODUCT" = runtime
+              test -z "$COMPONENT$PHASE$TARGET$BUILD_KEY"
+              selected+=(--continuation "$CONTINUATION")
+            fi
+            if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+              selected+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+            fi
+            if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+              selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+            fi
+            if [ -n "${SDK_FACADE_METADATA_POLICY:-}${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+              test "$STATE_PRODUCT" != runtime
+            fi
+            if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+              selected+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+            fi
+            if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+              selected+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
+            fi
+            if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+              selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+            fi
+            if [ -n "${PREPARATION_ARTIFACT_ID:-}${PREPARATION_ARTIFACT_SHA256:-}${PREPARATION_PHASE:-}${PREPARATION_SDK_STATE_WAVE:-}" ] || [ "${PREPARATION_STATE_WAVE:-0}" != 0 ]; then
+              test "$STATE_PRODUCT" = sdk
+              test "$SDK_FAMILY" = native-validation
+              test -z "$PREFLIGHT_WAVE"
+              test -n "$PREPARATION_ARTIFACT_ID"
+              test -n "$PREPARATION_ARTIFACT_SHA256"
+              test -n "$PREPARATION_PHASE"
+              selected+=(--preparation-destination "$GITHUB_WORKSPACE/build/native-preparation-input"
+                --preparation-artifact-id "$PREPARATION_ARTIFACT_ID"
+                --preparation-artifact-sha256 "$PREPARATION_ARTIFACT_SHA256"
+                --preparation-phase "$PREPARATION_PHASE" --preparation-state-wave "$PREPARATION_STATE_WAVE")
+              if [ -n "$PREPARATION_SDK_STATE_WAVE" ]; then
+                selected+=(--preparation-sdk-state-wave "$PREPARATION_SDK_STATE_WAVE")
+              fi
+            fi
+            if [ "$STATE_PRODUCT" = sdk ] && [ -n "$PREFLIGHT_WAVE" ]; then
+              # The collector replays full state with its caller-owned policies.
+              command=(python3 -B -m ci.sdk_workflow capture-transport)
+              selected=(--repository-root "$GITHUB_WORKSPACE")
+              if [ -n "$SDK_STATE_WAVE" ]; then selected+=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+              if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+                selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+              fi
+            fi
+            if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
+              test "$STATE_PRODUCT" = sdk
+              case "$SDK_FAMILY" in ios-metadata|core-binary|core-package) ;; *) exit 1 ;; esac
+              if [ -n "$PREFLIGHT_WAVE" ]; then
+                case "$SDK_FAMILY:$PREFLIGHT_WAVE:${GITHUB_JOB:-}" in
+                  ios-metadata:10:sdk-collect-10|core-binary:11:sdk-collect-11|core-package:12:sdk-collect-12) ;;
+                  *) exit 1 ;;
+                esac
+              fi
+              test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+              selected+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$CODEX_AGENT_SDK_CHECKPOINT")
+            fi
+            case "${DEFER_TRANSPORT:-false}" in
+              false) ;;
+              true)
+                test "$STATE_PRODUCT" = sdk
+                test -n "$PREFLIGHT_WAVE"
+                test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+                test -n "${CODEX_AGENT_SDK_CHECKPOINT:-}"
+                test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+                # No input-root is claimed before capture. The collector uses
+                # the original caller selectors and performs the complete gate.
+                printf 'transport_deferred=true\n' >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+              *) exit 1 ;;
+            esac
+            "${command[@]}" \
+              --plan "$PLAN_DIRECTORY/impact-plan.json" --destination build/runtime-input \
+              --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+              --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --state-wave "$STATE_WAVE" \
+              --github-output "$GITHUB_OUTPUT" ${selected[@]+"${selected[@]}"}

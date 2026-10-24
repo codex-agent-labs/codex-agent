@@ -1,0 +1,97 @@
+"""Saved Core package wave wiring; hosted package evidence remains pending."""
+
+from pathlib import Path
+import json
+import os
+import re
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+from ci.tests.test_sdk_native_continuation import locator, needs_for
+
+
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml"
+CHILD = WORKFLOW.with_name("sdk-core-package-validation.yml")
+
+
+class CorePackageWorkflowTest(unittest.TestCase):
+    def test_nested_maven_callers_preserve_runtime_validation_authorization(self):
+        # Reusable workflows do not inherit the caller workflow's env block.
+        name = "CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"
+        expected = "  " + name + ": ${{ vars." + name + " }}"
+        parent_env = WORKFLOW.read_text().split("\nenv:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn(expected, parent_env.splitlines())
+        for child in ("core-binary-validation", "core-package-validation", "core-validation",
+                      "core-metadata-validation", "android-binary-validation", "android-package-validation",
+                      "android-validation", "android-metadata-validation"):
+            with self.subTest(child=child):
+                source = WORKFLOW.with_name("sdk-" + child + ".yml").read_text()
+                env = source.split("\nenv:\n", 1)[1].split("\njobs:\n", 1)[0]
+                self.assertEqual([expected], [line for line in env.splitlines() if name in line])
+
+    def test_package_wave_requires_independent_original_binary_and_contract(self):
+        source = CHILD.read_text()
+
+        def job(name):
+            found = re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", source)
+            self.assertIsNotNone(found, name)
+            return found[0]
+
+        parent = WORKFLOW.read_text()
+        plan = parent.split("  sdk-core-package-plan:\n", 1)[1].split("\n  sdk-core-package-wave:\n", 1)[0]
+        worker, collect, result = (job(name) for name in (
+            "sdk-core-package", "sdk-collect-12", "sdk-core-package-result"))
+        self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", plan)
+        self.assertIn("needs.sdk-core-binary-wave.result == 'success'", plan)
+        self.assertNotIn("sdk-inputs", plan.split("    needs:", 1)[1].split("\n", 1)[0])
+        self.assertIn("uses: ./.github/workflows/sdk-core-package-validation.yml", parent)
+        for block in (worker, collect, result):
+            self.assertIn("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'", block)
+            self.assertIn("fromJSON(inputs.binaryWave).result == 'success'", block)
+        self.assertIn("family: core-package", plan)
+        self.assertIn("sdk-family: core-package", collect)
+        self.assertIn("wave: '12'", collect)
+        self.assertIn("sdk-worker-workflow-path: .github/workflows/sdk-core-package-validation.yml", collect)
+        self.assertIn("sdk-worker-job-name: product-validation / sdk-core-package-wave / sdk-core-package-common", collect)
+        self.assertIn("runs-on: ${{ matrix.runner }}", worker)
+        self.assertNotIn("outputs.sdk_state_wave == '11'", worker)
+        self.assertNotIn("outputs.binary_artifact_id != ''", worker)
+        self.assertNotIn("ci.sdk_core_package_policy", worker)
+        self.assertIn("prepare-core-package: 'true'", worker)
+        self.assertNotIn("steps.policy.outputs", worker)
+        self.assertIn("binary-artifact-id: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_id }}", worker)
+        self.assertIn("binary-original-context-json: ${{ fromJSON(inputs.binaryWave).outputs.binary_original_context }}", worker)
+        self.assertIn("phase: package", worker)
+        self.assertIn("sdk-inputs-id: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}", worker)
+        self.assertNotIn("path: build/runtime-plan", worker)
+        self.assertIn("needs['sdk-core-binary-wave'] = json.loads(os.environ['BINARY_RESULT'])", result)
+        self.assertIn("needs['sdk-core-package-plan'] = json.loads(os.environ['PACKAGE_PLAN'])", result)
+        self.assertIn("select_native_state(needs, stage='core-package')", result)
+        self.assertIn("sdk-core-package-wave", parent.split("  sdk-completion:\n", 1)[1].split("\n", 1)[0])
+
+    def test_child_result_rejoins_the_exact_binary_parent_before_selection(self):
+        block = CHILD.read_text().split("  sdk-core-package-result:\n", 1)[1]
+        script = textwrap.dedent(block.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+        for required in (False, True):
+            needs = needs_for("core-package", required=required, state=locator("11", "0"))
+            binary = needs.pop("sdk-core-binary-wave")
+            plan = needs.pop("sdk-core-package-plan")
+            with self.subTest(required=required), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "output"
+                with patch.dict(os.environ, {"RESULTS": json.dumps(needs), "BINARY_RESULT": json.dumps(binary),
+                                          "PACKAGE_PLAN": json.dumps(plan),
+                                          "GITHUB_OUTPUT": str(output)}, clear=True):
+                    exec(compile(script, "sdk-core-package-result", "exec"), {})
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual("12" if required else "11", values["sdk_state_wave"])
+                binary["result"] = "failure"
+                with patch.dict(os.environ, {"RESULTS": json.dumps(needs), "BINARY_RESULT": json.dumps(binary),
+                                          "PACKAGE_PLAN": json.dumps(plan),
+                                          "GITHUB_OUTPUT": str(output)}, clear=True), self.assertRaises(ValueError):
+                    exec(compile(script, "sdk-core-package-result", "exec"), {})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -101,6 +101,13 @@ arguments cannot express naturally in Swift:
 `Error.codexFailure` for the stable failure carried by a thrown
 `CodexOperationException`. Advanced generated overloads remain available.
 
+The same XCFramework is the Objective-C SDK. Stable generated Objective-C
+names expose completion-block operations, current-value observation callbacks
+with explicit tokens, typed immutable values, structured `NSError` failures,
+and explicit close semantics. The package's Objective-C consumer compiles and
+executes the same Host → Agent → Conversation lifecycle; there is no separate
+Objective-C runtime or state machine.
+
 ```swift
 import CodexAgent
 import CodexAgentObservation
@@ -135,21 +142,23 @@ credential store inside the configured Codex home.
 
 `assembleCodexAgentReleaseXCFramework` creates the static umbrella framework.
 `packageCodexAgentAppleDistribution` stages its local Swift Package and creates
-`build/distributions/CodexAgentPackage-0.2.0.zip`. The package exports the
-shared host plus iOS runtime as `CodexAgent`, the native browser adapter as
-`CodexAgentAuthentication`, and the state overlay as
-`CodexAgentObservation`; `CodexAgentSwiftSupport` supplies the small Swift call
-overlay. `apple/TestApp` is a standalone SwiftUI consumer that constructs
+`build/distributions/CodexAgentPackage-0.8.0.zip` for the planned initial SDK
+release. The package exports the shared host plus iOS runtime as `CodexAgent`,
+the native browser adapter as `CodexAgentAuthentication`, and the state overlay
+as `CodexAgentObservation`; `CodexAgentSwiftSupport` supplies the small Swift
+call overlay. `apple/TestApp` is a standalone SwiftUI consumer that constructs
 `CodexHost`, observes its ready `CodexAgent`, opens a `CodexConversation`, and
 closes the host. All Rust binaries, package metadata, and the test app target
 iOS 15 or newer.
-The `0.2.0` binary supports iPhoneOS Arm64 and Apple Silicon Simulator Arm64.
+The planned `0.8.0` binary supports iPhoneOS Arm64 and Apple Silicon Simulator
+Arm64.
 Intel Simulator (`iosX64`) is intentionally unsupported.
 
 `packageCodexAgentSwiftPackageBinary` creates the reproducible release asset
-`CodexAgent-0.2.0.xcframework.zip`; its generated checksum must match the root
-URL-based `Package.swift`. `apple/RemoteConsumer` is a clean consumer of the
-public repository. It can resolve only after the matching immutable release
+`CodexAgent-0.8.0.xcframework.zip` for that planned release; its generated
+checksum must match the root URL-based `Package.swift`. `apple/RemoteConsumer`
+is a clean consumer of the public repository. It can resolve only after the
+matching immutable release
 asset exists, so it runs after release publication and is not claimed by local
 pre-release verification.
 
@@ -167,8 +176,16 @@ rustup toolchain install 1.95.0 --profile minimal \
 ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftSimulatorCompilation
 # Freeze the source tree here; do not edit it during either remaining gate.
 ./gradlew verifyIosRuntime
-./gradlew verifyRepository
+./gradlew verifyRepository \
+  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
+  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
+  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
 ```
+
+`verifyRepository` also requires separately imported Contract, Runtime, and
+SDK evidence; set the four variables to those directories and their
+`development` or `release` trust domain before running it.
 
 The preflight requires 40 GiB free by default. Override that only for a
 deliberately smaller check with
@@ -204,6 +221,5 @@ authenticate or claim a real model call.
 
 Follow the [manual release acceptance procedure](RELEASING.md) to use the
 ChatGPT browser sheet and prove a real model reads and patches a local sandbox
-file. Signed physical-device execution remains an external release gate when no
-device/team is available; physical compilation/linking and Simulator acceptance
-remain required.
+file. Signed physical-device execution is optional additional product testing;
+physical slice compilation/linking and Simulator acceptance remain required.

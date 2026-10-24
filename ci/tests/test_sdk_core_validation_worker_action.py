@@ -1,0 +1,303 @@
+"""Core validation composite caller checks; these do not claim hosted execution."""
+
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci"))
+from ci.products.inventory import canonical_json_bytes
+
+
+KEY = "sha256:" + "a" * 64
+TREE = "b" * 40
+
+
+class CoreValidationWorkerActionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.action = (ROOT / ".github/actions/sdk-core-validation-worker/action.yml").read_text()
+
+    def script(self, step):
+        match = re.search(rf"(?ms)^    - id: {re.escape(step)}\n.*?(?=^    - |\Z)", self.action)
+        self.assertIsNotNone(match, step)
+        script = textwrap.dedent(match[0].split("        python3 -B - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+        compile(script, "core-validation-" + step, "exec")
+        return script
+
+    def fixture(self, root):
+        (root / "checkout").mkdir()
+        for name in ("evidence", "keys"):
+            (root / name).mkdir()
+            (root / name / "original").write_bytes(b"original\n")
+        for name in ("public-key", "java", "keyring"):
+            (root / name).write_bytes(b"original\n")
+        tooling = {"evidence": str(root / "evidence"), "publicKey": str(root / "public-key"),
+            "javaExecutable": str(root / "java"), "requiredTrustDomain": "release",
+            "keyring": str(root / "keyring"), "keysDirectory": str(root / "keys")}
+        (root / "tooling.json").write_bytes(canonical_json_bytes(tooling))
+        return {"TARGET": "jvm", "SDK_INPUTS_ID": "7", "SDK_INPUTS_SHA256": KEY,
+            "GITHUB_WORKSPACE": str(root / "checkout"),
+            "SDK_VALIDATION_TOOLING": str(root / "tooling.json"),
+            "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
+            "SDK_ANDROID_METADATA_POLICY": "", "NATIVE_COMPILER_ARCHIVE": "",
+            "GITHUB_OUTPUT": str(root / "output")}
+
+    def test_dependency_launcher_reaches_request_validation_without_external_pythonpath(self):
+        command = re.search(r'(?m)^        (.*python3 -B -m ci\.products\.gradle_bootstrap) ', self.action)
+        self.assertIsNotNone(command)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            missing = root / "missing-facade-request.json"
+            destination = root / "dependencies"
+            arguments = ["--request", str(missing), "--repository", str(ROOT),
+                         "--revision", "HEAD", "--target", "jvm", "--destination", str(destination)]
+            result = subprocess.run(["bash", "-c", command[1] + " " + shlex.join(arguments)],
+                cwd=ROOT, env={"PATH": os.environ["PATH"], "GITHUB_WORKSPACE": str(ROOT),
+                               "PYTHONNOUSERSITE": "1"}, text=True, capture_output=True, timeout=30)
+            # The real CLI must import its full request verifier, then reject the absent request.
+            # This boundary precedes every Gradle, compiler, download and product operation.
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("ModuleNotFoundError", result.stderr)
+            self.assertIn("FileNotFoundError", result.stderr)
+            self.assertIn(str(missing), result.stderr)
+            self.assertFalse(destination.exists())
+
+    def test_retained_original_skips_only_production_after_exact_lookup(self):
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))
+        steps = re.split(r"(?m)^    - ", self.action.split("    - id: request", 1)[1])
+        self.assertEqual(6, len(steps))
+        for step in steps:
+            self.assertIn("steps.retained.outputs.reused != 'true'", step)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            values = {"PLAN": str(root / "plan"), "BUILD_KEY": KEY, "TARGET": "android",
+                "GITHUB_TOKEN": "synthetic", "GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(root / "output")}
+            with patch.dict(os.environ, values, clear=True), \
+                    patch("ci.sdk_campaign_original_locator.locate_retained_core_binary_upload") as locate:
+                for origin in (None, {"artifact_id": 123}):
+                    locate.return_value = origin
+                    exec(self.script("retained"), {})
+                    self.assertEqual("validation", locate.call_args.kwargs["phase"])
+                    self.assertEqual("android", locate.call_args.kwargs["target"])
+                    self.assertEqual(KEY, locate.call_args.kwargs["expected_build_key"])
+                self.assertEqual(["reused=false", "reused=true"], (root / "output").read_text().splitlines())
+
+    def test_independent_inputs_are_pinned_before_capture_and_host_checked_before_setup(self):
+        for first, second in (("- id: policy", "- id: captured"),
+                              ("- id: captured", "- id: identity"),
+                              ("- id: identity", "- id: request"),
+                              ("- id: request", "uses: ./.github/actions/setup-kmp")):
+            self.assertLess(self.action.index(first), self.action.index(second))
+        self.assertIn("sdk-family: core-validation", self.action)
+        self.assertIn("cache-read-only: 'true'", self.action)
+        self.assertIn("product-worker: 'true'", self.action)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            with patch.dict(os.environ, values, clear=True):
+                exec(self.script("policy"), {})
+            pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"validationTree": TREE, "validationCommit": "c" * 40}, indent=2) + "\n")
+            row = {"product": "sdk", "component": "sdk-core", "phase": "validation",
+                "target": "jvm", "buildKey": KEY, "runner": "ubuntu-24.04",
+                "runnerOs": "Linux", "runnerArch": "X64"}
+            values.update(MATRIX=json.dumps({"include": [row, {**row, "target": "android"}]}),
+                          REQUIRED="true", PLAN=str(plan), BUILD_KEY=KEY, TREE=TREE,
+                          POLICY_SHA256=pin, RUNNER_OS="Linux", RUNNER_ARCH="X64")
+            with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value="linux-x64"):
+                exec(self.script("identity"), {})
+                original_plan = plan.read_bytes()
+                for invalid in (b'{"validationTree":"a","validationTree":"b"}',
+                                b'{"number":1.5}', b'not json', b'\xff'):
+                    plan.write_bytes(invalid)
+                    with self.assertRaises(ValueError):
+                        exec(self.script("identity"), {})
+                plan.write_bytes(original_plan)
+                (root / "evidence/original").write_bytes(b"mutated\n")
+                with self.assertRaisesRegex(ValueError, "changed during state capture"):
+                    exec(self.script("identity"), {})
+                (root / "evidence/original").write_bytes(b"original\n")
+                os.environ["RUNNER_ARCH"] = "ARM64"
+                with self.assertRaisesRegex(ValueError, "physical host"):
+                    exec(self.script("identity"), {})
+
+    def test_unregistered_native_target_and_unsigned_tooling_fail_before_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            archive = root / "compiler.tar.gz"
+            archive.write_bytes(b"archive")
+            values.update(TARGET="unknown-native", NATIVE_COMPILER_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "registered target"):
+                exec(self.script("policy"), {})
+            values.update(TARGET="jvm", NATIVE_COMPILER_ARCHIVE="")
+            captured_policy = root / "checkout/tooling.json"
+            captured_policy.write_bytes((root / "tooling.json").read_bytes())
+            values["SDK_VALIDATION_TOOLING"] = str(captured_policy)
+            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "external"):
+                exec(self.script("policy"), {})
+            values["SDK_VALIDATION_TOOLING"] = str(root / "tooling.json")
+            tooling = json.loads((root / "tooling.json").read_bytes())
+            tooling["requiredTrustDomain"] = "development"
+            (root / "tooling.json").write_bytes(canonical_json_bytes(tooling))
+            with patch.dict(os.environ, values, clear=True), self.assertRaisesRegex(ValueError, "release tooling"):
+                exec(self.script("policy"), {})
+
+    def test_linux_arm64_target_requires_the_elected_x64_compiler_host(self):
+        from sdk_phase import route
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            archive = root / "compiler.tar.gz"
+            archive.write_bytes(b"caller-owned compiler archive")
+            values.update(TARGET="linux-arm64", NATIVE_COMPILER_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True):
+                exec(self.script("policy"), {})
+            pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
+            plan = root / "plan.json"
+            plan.write_bytes(canonical_json_bytes({"validationTree": TREE, "validationCommit": "c" * 40}))
+            row = {"product": "sdk", "component": "sdk-core", "phase": "validation",
+                   "target": "linux-arm64", "buildKey": KEY}
+            row.update(route(row))
+            self.assertEqual(("ubuntu-24.04", "Linux", "X64"),
+                             tuple(row[name] for name in ("runner", "runnerOs", "runnerArch")))
+            values.update(MATRIX=json.dumps({"include": [row]}), REQUIRED="true", PLAN=str(plan),
+                          BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=pin,
+                          RUNNER_OS="Linux", RUNNER_ARCH="X64")
+            with patch.dict(os.environ, values, clear=True), \
+                    patch("native_wrappers.host_classifier", return_value="linux-x64"):
+                exec(self.script("identity"), {})
+            with patch.dict(os.environ, values, clear=True), \
+                    patch("native_wrappers.host_classifier", return_value="linux-arm64"):
+                with self.assertRaisesRegex(ValueError, "physical host"):
+                    exec(self.script("identity"), {})
+
+    def test_registered_x64_native_hosts_pass_preflight_only_on_matching_runner(self):
+        from sdk_phase import route
+        for target, host in (("macos-x64", "macos-x64"), ("windows-x64", "windows-x64")):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                values = self.fixture(root)
+                archive = root / "caller-owned-compiler-archive"
+                archive.write_bytes(b"caller-owned compiler archive")
+                values.update(TARGET=target, NATIVE_COMPILER_ARCHIVE=str(archive))
+                with patch.dict(os.environ, values, clear=True):
+                    exec(self.script("policy"), {})
+                pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
+                plan = root / "plan.json"
+                plan.write_bytes(canonical_json_bytes({"validationTree": TREE, "validationCommit": "c" * 40}))
+                row = {"product": "sdk", "component": "sdk-core", "phase": "validation",
+                       "target": target, "buildKey": KEY}
+                row.update(route(row))
+                values.update(MATRIX=json.dumps({"include": [row]}), REQUIRED="true", PLAN=str(plan),
+                              BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=pin,
+                              RUNNER_OS=row["runnerOs"], RUNNER_ARCH=row["runnerArch"])
+                with patch.dict(os.environ, values, clear=True), \
+                        patch("native_wrappers.host_classifier", return_value=host):
+                    exec(self.script("identity"), {})
+                with patch.dict(os.environ, values, clear=True), \
+                        patch("native_wrappers.host_classifier", return_value="linux-x64"):
+                    with self.assertRaisesRegex(ValueError, "physical host"):
+                        exec(self.script("identity"), {})
+
+    def test_existing_full_controller_receives_request_and_separate_original_authorities(self):
+        command = self.script("execute")
+        execution = self.action.split("    - id: execute\n", 1)[1].split("      run: |", 1)[0]
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", execution)
+        for flag in ("--facade-request", "--sdk-apple-validation-policy", "--native-compiler-archive",
+                     "--tooling-evidence", "--tooling-public-key", "--tooling-keyring",
+                     "--tooling-keys-directory", "--java-executable", "--required-trust-domain",
+                     "--policy-revision", "--trusted-workflow-sha", "--android-sdk-directory"):
+            self.assertIn("'" + flag + "'", command)
+        self.assertIn("'core-validation'", command)
+        self.assertIn("ci.sdk_core_validation_policy", self.action)
+        dependency_preparation = self.action.index('python3 -B -m ci.products.gradle_bootstrap')
+        self.assertLess(self.action.index('uses: ./.github/actions/setup-kmp'), dependency_preparation)
+        self.assertLess(dependency_preparation, self.action.index('    - id: execute'))
+        self.assertIn('--revision "$POLICY_REVISION" --target "$TARGET"', self.action)
+        self.assertIn('optional+=(--native-archive "$NATIVE_COMPILER_ARCHIVE")', self.action)
+        preparation = self.action.split("optional=()", 1)[1].split("- uses: ./.github/actions/setup-kmp", 1)[0]
+        self.assertIn('optional+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")', preparation)
+        self.assertIn('optional+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")', preparation)
+        self.assertLess(self.action.index("Core validation caller authority changed before request preparation"),
+                        self.action.index("python3 -B -m ci.sdk_core_validation_policy"))
+        self.assertLess(self.script("execute").index("Core validation caller authority changed before execution"),
+                        self.script("execute").index("subprocess.run(command"))
+        self.assertIn("--sdk-inputs-artifact-id", self.action)
+        self.assertIn("--sdk-inputs-artifact-sha256", self.action)
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
+        self.assertIn("attempt-${{ github.run_attempt }}", self.action)
+        self.assertIn("if-no-files-found: warn", self.action)
+        self.assertIn("overwrite: false", self.action)
+        for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "gradlew "):
+            self.assertNotIn(forbidden, self.action)
+
+    def test_tooling_and_archive_mutation_after_identity_stop_both_controllers(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            archive = root / "compiler.tar.gz"
+            archive.write_bytes(b"original archive")
+            values.update(TARGET="macos-arm64", NATIVE_COMPILER_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True):
+                exec(self.script("policy"), {})
+            pin = (root / "output").read_text().splitlines()[0].split("=", 1)[1]
+            values.update(POLICY_SHA256=pin)
+            for path in (root / "evidence/original", archive):
+                original = path.read_bytes()
+                path.write_bytes(b"mutated")
+                with self.subTest(path=path), patch.dict(os.environ, values, clear=True), \
+                        patch.object(subprocess, "run") as controller:
+                    with self.assertRaisesRegex(ValueError, "before request preparation"):
+                        exec(self.script("request"), {})
+                    with self.assertRaisesRegex(ValueError, "before execution"):
+                        exec(self.script("execute"), {})
+                    controller.assert_not_called()
+                path.write_bytes(original)
+
+    def test_execute_normalizes_selected_java_home_before_strict_observation(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.fixture(root)
+            actual = root / 'selected-jdk'
+            actual.mkdir()
+            alias = root / 'toolcache-alias'
+            alias.symlink_to(actual, target_is_directory=True)
+            with patch.dict(os.environ, values, clear=True):
+                exec(self.script('policy'), {})
+            pin = (root / 'output').read_text().splitlines()[0].split('=', 1)[1]
+            values.update(POLICY_SHA256=pin, JAVA_HOME=str(alias), PLAN='plan',
+                DISCOVERY='discovery', STATE='state', BUILD_KEY=KEY,
+                POLICY_REVISION='c' * 40, TRUSTED_WORKFLOW_SHA='d' * 40,
+                GITHUB_TOKEN='caller-token', ANDROID_HOME=str(root / 'caller-android-sdk'))
+            with patch.dict(os.environ, values, clear=True), patch.object(subprocess, 'run') as run:
+                exec(self.script('execute'), {})
+                self.assertEqual(str(actual), run.call_args.kwargs['env']['JAVA_HOME'])
+                self.assertEqual('caller-token', run.call_args.kwargs['env']['GITHUB_TOKEN'])
+                command = run.call_args.args[0]
+                self.assertEqual(values['ANDROID_HOME'], command[command.index('--android-sdk-directory') + 1])
+                self.assertTrue(run.call_args.kwargs['check'])
+                self.assertEqual(str(alias), os.environ['JAVA_HOME'])
+                for invalid in ('relative-java', str(root / 'missing-jdk')):
+                    os.environ['JAVA_HOME'] = invalid
+                    run.reset_mock()
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        exec(self.script('execute'), {})
+                    run.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

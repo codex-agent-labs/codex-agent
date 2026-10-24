@@ -1,0 +1,85 @@
+name: Provision owner-approved reuse verification
+description: Resolve fresh owner-only caller pins; consumers authenticate native completion before reuse.
+inputs:
+  checkpoint-owner:
+    default: 'false'
+    description: Provision the separate owner-approved checkpoint policy in this existing pass.
+  repository-root:
+    required: false
+    default: ''
+    description: Explicit trusted checkout root; defaults to the workspace.
+  authority-read-token:
+    required: true
+    description: Repository-scoped Administration and Contents read credential; never a writer token.
+  artifact-id:
+    required: false
+    description: Optional original artifact selector; must be independently approved.
+  artifact-sha256:
+    required: false
+    description: Optional assertion of original artifact digest.
+  run-id:
+    required: false
+    description: Optional assertion of original run.
+  run-attempt:
+    required: false
+    description: Optional assertion of original attempt.
+  issuer-sha:
+    required: false
+    description: Optional assertion; cannot choose trusted code.
+  source-sha:
+    required: false
+    description: Optional assertion; original source is derived after native authentication.
+runs:
+  using: composite
+  steps:
+    - name: Resolve approved source and install its unchanged current-root controls
+      id: native
+      shell: bash
+      env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
+        GITHUB_TOKEN: ${{ github.token }}
+        CHECKPOINT_OWNER: ${{ inputs.checkpoint-owner }}
+        APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        REQUESTED_RUN: ${{ inputs.run-id }}
+        REQUESTED_ATTEMPT: ${{ inputs.run-attempt }}
+        REQUESTED_ISSUER: ${{ inputs.issuer-sha }}
+        REQUESTED_SOURCE: ${{ inputs.source-sha }}
+      run: |
+        set -euo pipefail
+        test -n "$REUSE_AUTHORITY_READ_TOKEN"
+        checkpoint=()
+        case "$CHECKPOINT_OWNER" in
+          false) ;;
+          true) test -z "$APPROVED_ARTIFACT_ID"; checkpoint=(--checkpoint-owner) ;;
+          *) echo 'Invalid checkpoint owner provisioning selection' >&2; exit 1 ;;
+        esac
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64|Linux/aarch64|Darwin/x86_64|Darwin/arm64|MINGW64_NT-*/x86_64) ;;
+          *) echo 'supported=false' >> "$GITHUB_OUTPUT"; exit 0 ;;
+        esac
+        source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        operation=provision
+        if [ -n "$APPROVED_ARTIFACT_ID" ]; then operation=setup; fi
+        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${checkpoint[@]+"${checkpoint[@]}"}
+        bash "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}/.github/actions/restore-reuse-qualification/install-gh.sh"
+    - name: Provision independent completion pins or authenticate an explicitly selected body qualification
+      if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''
+      shell: bash
+      env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
+        APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        REQUESTED_RUN: ${{ inputs.run-id }}
+        REQUESTED_ATTEMPT: ${{ inputs.run-attempt }}
+        REQUESTED_ISSUER: ${{ inputs.issuer-sha }}
+        REQUESTED_SOURCE: ${{ inputs.source-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        selected=()
+        if [ -n "$APPROVED_ARTIFACT_ID" ]; then selected=(--artifact-id "$APPROVED_ARTIFACT_ID"); fi
+        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${selected[@]+"${selected[@]}"}

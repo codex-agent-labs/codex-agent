@@ -15,7 +15,7 @@ tasks.register<GenerateProtocolTask>("generateProtocol") {
     schemaSource.set(layout.file(providers.gradleProperty("codexProtocolSchema").map(::File)))
     threadSource.set(layout.file(providers.gradleProperty("codexProtocolThread").map(::File)))
     turnSource.set(layout.file(providers.gradleProperty("codexProtocolTurn").map(::File)))
-    val protocolRoot = project(":codex-agent-client").layout.projectDirectory
+    val protocolRoot = project(":codex-agent-core").layout.projectDirectory
     schemaOutput.set(protocolRoot.file("protocol/schema/codex_app_server_protocol.schemas.json"))
     descriptorOutput.set(protocolRoot.file("protocol/schema/descriptors.json"))
     generatedSources.set(

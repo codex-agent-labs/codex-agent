@@ -26,6 +26,17 @@ import kotlinx.serialization.json.longOrNull
 
 internal val releaseJson = Json { prettyPrint = true }
 
+internal fun requireSuccessfulReleaseProcess(
+    command: List<String>,
+    exitCode: Int,
+    output: String,
+    errors: String,
+): String {
+    val details = listOf(output.trim(), errors.trim()).filter(String::isNotEmpty).joinToString("\n")
+    check(exitCode == 0) { "${command.joinToString(" ")} failed ($exitCode): $details" }
+    return output
+}
+
 internal fun secureDocumentBuilderFactory(
     namespaceAware: Boolean = false,
     allowDoctype: Boolean = false,
@@ -60,8 +71,12 @@ internal fun File.atomicReplaceTextIfChanged(contents: String) {
     val bytes = contents.toByteArray()
     if (isFile && readBytes().contentEquals(bytes)) return
     parentFile.mkdirs()
-    val permissions = Files.getFileAttributeView(toPath(), PosixFileAttributeView::class.java)
-        ?.readAttributes()?.permissions()
+    val permissions = if (isFile) {
+        Files.getFileAttributeView(toPath(), PosixFileAttributeView::class.java)
+            ?.readAttributes()?.permissions()
+    } else {
+        null
+    }
     val temporary = Files.createTempFile(parentFile.toPath(), ".$name-", ".tmp")
     try {
         Files.write(temporary, bytes)
@@ -74,6 +89,21 @@ internal fun File.atomicReplaceTextIfChanged(contents: String) {
 
 internal fun File.releaseDigest(algorithm: String = "SHA-256"): String = inputStream().use {
     it.releaseDigest(algorithm)
+}
+
+internal fun verifiedRegularFiles(root: File): Map<String, File> {
+    check(root.isDirectory && !Files.isSymbolicLink(root.toPath())) {
+        "Verified evidence directory is missing or unsafe"
+    }
+    val entries = Files.walk(root.toPath()).use { it.toList() }
+    entries.filter { it != root.toPath() }.forEach { path ->
+        check(!Files.isSymbolicLink(path) && (Files.isDirectory(path) || Files.isRegularFile(path))) {
+            "Verified evidence contains an unsafe entry: $path"
+        }
+    }
+    return entries.filter(Files::isRegularFile).associate { path ->
+        root.toPath().relativize(path).joinToString("/") to path.toFile()
+    }
 }
 
 internal fun InputStream.releaseDigest(algorithm: String = "SHA-256"): String {
