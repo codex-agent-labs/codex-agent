@@ -10,6 +10,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse
+from runtime_reference_transport import measured, measured_volume
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -29,6 +30,7 @@ from products.sdk_validation_inputs import _request_inventory
 from products.signatures import load_keyring, public_key_path
 from products.signing_isolation import require_no_signing_secret
 from sdk_facade_validation_phase import execute as execute_validation
+from sdk_phase import maven_consumed_predecessors
 
 
 def _read(path):
@@ -79,12 +81,13 @@ def _retain_request(request, value, destination):
     return output
 
 
+@measured
 def execute(plan, discovery, state, destination, *, target, expected_build_key,
             facade_request, android_sdk_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain, repository_root,
             environ, trusted_workflow_sha, consumer_java_executable=None, tooling_keyring=None,
             tooling_keys_directory=None, sdk_apple_validation_policy=None, native_compiler_archive=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Use existing election and full gates; retain external originals before receipt.
 
     Explicit caller paths/policy are not a downloaded request. Android SDK and
@@ -150,8 +153,10 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         ready = product_reuse.materialize_product_predecessors(
             Path(plan), discovery, state, PhaseInstanceId("sdk", "sdk-core", "validation", target), inputs,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
+            materialized_scope=maven_consumed_predecessors(PhaseInstanceId("sdk", "sdk-core", "validation", target)),
             sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
-            sdk_original_workflow_sha=trusted_workflow_sha, **admissions)
+            sdk_original_workflow_sha=trusted_workflow_sha, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = validate_producer(load_canonical_json_bytes(_read(inputs / "producer.json")), "Core producer")
         if archive is not None:
             for output in (root / f"build/product-stage/sdk/sdk-core/validation/{target}",
@@ -202,7 +207,9 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
         })
         retained[context] = _inventory(context)
         trust = "development" if producer["event"] == "pull_request" else "release"
-        with tempfile.TemporaryDirectory(prefix="core-validation-replay-") as temporary:
+        with measured_volume("core-validation-replay-checkout", root), \
+                measured_volume("core-validation-replay-temporary", tempfile.gettempdir()), \
+                tempfile.TemporaryDirectory(prefix="core-validation-replay-") as temporary:
             private = Path(temporary).resolve()
             receipt = write_phase_receipt(result["stage"], private, "sdk", "sdk-core", "validation", target,
                 value["sdkVersion"], ready["buildKey"], ready["inputs"], producer, trust)
@@ -235,6 +242,7 @@ def execute(plan, discovery, state, destination, *, target, expected_build_key,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -251,6 +259,7 @@ def main(argv=None):
                  "native-compiler-archive"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Core tooling keyring and directory must be supplied together")
@@ -259,8 +268,8 @@ def main(argv=None):
         if policy is not None:
             arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                 policy, "Caller Apple validation policy")
-        with metadata_admission_options(arguments) as admissions:
-            execute(**arguments, environ=os.environ, **admissions)
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

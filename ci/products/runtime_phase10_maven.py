@@ -18,14 +18,33 @@ from typing import Any
 
 from .aggregate import validate_runtime_aggregate
 from .contract_model import CONTRACT_CHECKSUM_SUFFIXES
+from .contract_phase10_maven import central_maven_files, verify_central_bundle, write_central_bundle
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
     require_sha256, sha256_bytes, snapshot_regular_tree,
 )
-from .runtime_maven import validate_runtime_maven_publications
+from .runtime_maven import COMPONENTS, validate_runtime_maven_publications
 
 
 _PUBLICATION_INVENTORY = "publication-inventory.json"
+
+
+def _central_layout(runtime_version: str, payload_files: list[dict],
+                    sidecar_files: list[dict]) -> tuple[str, list[dict], dict[str, str]]:
+    # Aggregate staging groups Maven publications by component. Central wants
+    # coordinate-root paths, not those private staging directories.
+    projected, sources = [], {}
+    for row in [*[row for row in payload_files if row["relativePath"].startswith("maven/")],
+                *[row for row in sidecar_files if row["relativePath"].endswith(".asc")]]:
+        path = row["relativePath"]
+        parts = path.split("/", 2)
+        if len(parts) != 3 or parts[0] != "maven" or parts[1] not in COMPONENTS:
+            raise ValueError("Runtime Central input lacks an exact Maven component")
+        coordinate = "maven/" + parts[2]
+        projected.append({**row, "relativePath": coordinate})
+        sources[coordinate] = path
+    return (f"central/codex-agent-runtime-{runtime_version}-central.zip",
+            central_maven_files(projected, []), sources)
 
 
 def _publication_inventory(runtime_version: str, payload_files: list[dict],
@@ -35,9 +54,11 @@ def _publication_inventory(runtime_version: str, payload_files: list[dict],
     paths = [item["relativePath"] for item in files]
     if len(paths) != len(set(paths)) or any(not path.startswith("maven/") for path in paths):
         raise ValueError("Runtime publication layout contains a collision or non-Maven file")
-    return canonical_json_bytes({"schemaVersion": 1, "product": "runtime",
+    central_path, central_files, _ = _central_layout(runtime_version, payload_files, sidecar_files)
+    return canonical_json_bytes({"schemaVersion": 2, "product": "runtime",
                                  "runtimeVersion": runtime_version,
-                                 "files": sorted(files, key=lambda item: item["relativePath"])})
+                                 "files": sorted(files, key=lambda item: item["relativePath"]),
+                                 "centralBundle": {"relativePath": central_path, "files": central_files}})
 
 
 def _run_gpg(*arguments: str) -> str:
@@ -147,6 +168,12 @@ def produce_runtime_phase10_maven_sidecars(
             manifest["runtimeVersion"], regular_file_inventory(payload),
             regular_file_inventory(sidecars),
         ))
+        central_path, central_files, central_sources = _central_layout(
+            manifest["runtimeVersion"], source_inventory, regular_file_inventory(sidecars))
+        (sidecars / "central").mkdir()
+        write_central_bundle(sidecars / central_path, central_files, lambda path: (
+            read_regular_file_bytes((sidecars if path.endswith(".asc") else payload) / central_sources[path],
+                                    max_bytes=512 * 1024 * 1024, reject_symlink_parents=True)))
         result = verify_runtime_phase10_maven(
             payload, payload / aggregate_manifest.name, sidecars,
             pgp_public_key, expected_pgp_key_sha256,
@@ -177,7 +204,8 @@ def verify_runtime_phase10_maven(
 ) -> dict[str, Any]:
     """Check the exact aggregate-owned Maven bytes and detached release files.
 
-    The sidecar tree contains one `.asc` and four checksums per Maven primary.
+    The sidecar tree contains one `.asc` and four checksums per Maven primary,
+    the publication inventory, and the exact pre-finalized Central upload ZIP.
     Existing product-stage primary checksums are verified and selected, never
     regenerated. Signature checksums are external release-control bytes.
     """
@@ -202,9 +230,21 @@ def verify_runtime_phase10_maven(
         payload = root / "payload"
         sidecars = root / "sidecars"
         snapshot_regular_tree(payload_directory, payload)
-        snapshot_regular_tree(sidecar_directory, sidecars)
+        # Capture small signature evidence only. Verify the Central ZIP in place
+        # with the shared bounded reader; no duplicate ZIP copy or extraction.
+        sidecars.mkdir()
+        for row in original_sidecars:
+            if row["relativePath"].startswith("central/"):
+                continue
+            path = sidecars / row["relativePath"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(read_regular_file_bytes(
+                sidecar_directory / row["relativePath"], max_bytes=16 * 1024 * 1024,
+                reject_symlink_parents=True))
+        captured_sidecars = [row for row in original_sidecars
+                            if not row["relativePath"].startswith("central/")]
         if (regular_file_inventory(payload) != original_payload
-                or regular_file_inventory(sidecars) != original_sidecars):
+                or regular_file_inventory(sidecars) != captured_sidecars):
             raise ValueError("Runtime Phase-10 Maven snapshot differs from its initial inputs")
         copied_key = root / "pgp-public-key.asc"
         copied_key.write_bytes(key)
@@ -215,8 +255,10 @@ def verify_runtime_phase10_maven(
                              for suffix in ("", *CONTRACT_CHECKSUM_SUFFIXES)}
         expected_sidecars.add(_PUBLICATION_INVENTORY)
         sidecar_inventory = regular_file_inventory(sidecars)
-        if {record["relativePath"] for record in sidecar_inventory} != expected_sidecars:
+        central_path = f"central/codex-agent-runtime-{manifest['runtimeVersion']}-central.zip"
+        if {record["relativePath"] for record in original_sidecars} != expected_sidecars | {central_path}:
             raise ValueError("Runtime Maven PGP signature inventory is incomplete or unexpected")
+        _, central_files, _ = _central_layout(manifest["runtimeVersion"], original_payload, captured_sidecars)
         layout = read_regular_file_bytes(sidecars / _PUBLICATION_INVENTORY,
                                          max_bytes=16 * 1024 * 1024,
                                          reject_symlink_parents=True)
@@ -250,18 +292,23 @@ def verify_runtime_phase10_maven(
         for path in primaries:
             _run_gpg("--homedir", str(home), "--batch", "--no-tty", "--verify",
                      str(sidecars / (path + ".asc")), str(payload / path))
+        central = verify_central_bundle(sidecar_directory / central_path, central_files)
+        selected_central = next(row for row in original_sidecars if row["relativePath"] == central_path)
+        if any(central[field] != selected_central[field] for field in ("bytes", "sha256")):
+            raise ValueError("Runtime Central envelope changed during verification")
         if (regular_file_inventory(payload_directory) != original_payload
                 or regular_file_inventory(sidecar_directory) != original_sidecars
                 or read_regular_file_bytes(pgp_public_key, max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != key):
             raise ValueError("Runtime Phase-10 Maven inputs changed during verification")
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "product": "runtime",
             "runtimeVersion": manifest["runtimeVersion"],
             "manifestSha256": sha256_bytes(manifest_bytes),
             "payloadFiles": original_payload,
             "sidecarFiles": original_sidecars,
+            "centralBundle": central,
             "pgpPublicKey": {"bytes": len(key), "sha256": expected_pgp_key_sha256,
                              "fingerprint": fingerprints[0]},
         }

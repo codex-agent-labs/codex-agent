@@ -16,7 +16,7 @@ from ci.product_reuse import stage_release_catalog
 
 from .index import (
     IndexEntrySource, SignedProductIndex, _mint_release_admission,
-    build_product_index, verify_release_product_index, write_signed_product_index,
+    verify_release_product_index,
 )
 from .inventory import (
     canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
@@ -26,7 +26,9 @@ from .receipt import validate_phase_receipt, validate_producer
 from .registry import PhaseInstanceId
 from .restore import _snapshot_archive, object_relative_path, restore_object, verify_object
 from .runtime_aggregate_handoff import _public_policy
-from .sdk_campaign_index import verify_signed_sdk_campaign_originals
+from .sdk_campaign_index import (
+    build_product_index, verify_signed_sdk_campaign_originals, write_signed_product_index,
+)
 from .sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from .signatures import load_keyring, require_active_release_key
 

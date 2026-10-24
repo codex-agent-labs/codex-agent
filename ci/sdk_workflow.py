@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+import json
+from contextlib import contextmanager, ExitStack
 import os
 from pathlib import Path
 import stat
@@ -16,7 +17,10 @@ if __package__:
 
 import product_reuse
 import sdk_handoff
+from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
+from runtime_reference_transport import count, measured
+
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     regular_file_inventory, sha256_bytes, snapshot_regular_tree, publish_regular_tree,
@@ -24,13 +28,14 @@ from products.inventory import (
     _stat_identity,
 )
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, PhaseInstanceId
-from products.restore import verification_scoped
+from products.restore import verification_scoped, verification_session, memoized_file_inventory
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_inputs import REQUEST_NAME
 from reuse import github_output
 from products.contract_model import _execution_tree_digest
 from products.signing_isolation import require_no_signing_secret
 from products.sdk_validation import decode_sdk_validation_records
+from products.sdk_validation_inputs import collection_admission_scope
 from products.sdk_maven import _zip_members
 from products.tooling import verified_tooling_capture
 
@@ -95,10 +100,72 @@ gradle.projectsEvaluated {
     if (sdk == null) return
     def config = new groovy.json.JsonSlurper().parse(new File(System.getProperty('codexAgent.importedNativeParityInputs')))
     def file = { value -> new File(value) }
+    def loader = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
+    def modelClass = { name -> loader.loadClass(name) }
+    def m11 = modelClass('CrossLanguageBindingPhase').enumConstants.find { it.name() == 'M11' }
+    def nativeModels = [:]
+    def freshSeparateFile = { destination, sources ->
+        def path = destination.canonicalFile.toPath()
+        if (java.nio.file.Files.exists(destination.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+            sources.any { source ->
+                def originalPath = file(source).canonicalFile.toPath()
+                path == originalPath || path.startsWith(originalPath) || originalPath.startsWith(path)
+            })
+            throw new GradleException('Parity output must be fresh and separate from original inputs')
+    }
+    // These are newly derived aggregate receipts, never original phase receipts.
+    // All original host fields survive; schema6 removes only single-run assumptions.
+    def nativeDocument = { r ->
+        [schema:6, result:'passed', phase:r.phase.name(), language:r.language.id,
+         canonical:[apiReportSha256:r.canonical.apiReportSha256,
+                    coverageReceiptSha256:r.canonical.coverageReceiptSha256],
+         artifacts:r.artifacts.sort(false) { it.id }.collect { [id:it.id, sha256:it.sha256] },
+         hostConsumerProofs:r.hostConsumerProofs.sort(false) { it.classifier }.collect { proof ->
+             def row = ['classifier', 'runnerOs', 'runnerArch', 'toolchainIdentitySha256',
+                 'packageArtifactId', 'packageSha256', 'nativeLibrarySha256', 'testId',
+                 'candidateCommit', 'candidateTree'].collectEntries { [(it):proof."$it"] }
+             row.status = proof.status.name().toLowerCase(java.util.Locale.ROOT)
+             row
+         },
+         testProgramSha256:r.testProgramSha256, testResultsSha256:r.testResultsSha256,
+         publicSymbols:r.publicSymbols.sort(false),
+         tests:r.bindingTests.sort(false) { it.testId }.collect {
+             [id:it.testId, status:it.status.name().toLowerCase(java.util.Locale.ROOT)] },
+         scenarios:r.scenarioEvidence.sort(false) { it.scenario.id }.collect {
+             [id:it.scenario.id, testIds:it.testIds.sort(false)] },
+         claims:r.projectionClaims.sort(false) { it.capabilityKey }.collect {
+             [capabilityKey:it.capabilityKey, publicSymbols:it.publicSymbols.sort(false),
+              executedTests:it.executedTests.sort(false),
+              sharedScenarios:it.sharedScenarios.collect { it.id }.sort(false)] },
+         exclusions:r.applicabilityExclusions.sort(false) { it.capabilityKey }.collect {
+             [capabilityKey:it.capabilityKey, reason:it.reason] }]
+    }
+    def canonicalBytes = { value ->
+        // Use the one repository canonical writer; this caller has no second codec.
+        def process = new ProcessBuilder('python3', '-B', '-c',
+            'import json,sys; from ci.products.inventory import canonical_json_bytes; ' +
+            'sys.stdout.buffer.write(canonical_json_bytes(json.load(sys.stdin)))')
+            .directory(rootProject.projectDir).start()
+        process.outputStream.withWriter('UTF-8') { it.write(groovy.json.JsonOutput.toJson(value)) }
+        def bytes = process.inputStream.bytes
+        def error = process.errorStream.getText('UTF-8')
+        if (process.waitFor() != 0) throw new GradleException('Parity canonical writer failed: ' + error)
+        bytes
+    }
+    def writeCanonical = { destination, value ->
+        def bytes = canonicalBytes(value)
+        destination.parentFile.mkdirs()
+        destination.bytes = bytes
+        bytes
+    }
     ['python':'Python', 'csharp':'CSharp', 'rust':'Rust', 'cpp':'Cpp', 'dart':'Dart'].each { language, title ->
         def original = config.native[language]
+        freshSeparateFile(file(original.output), [config.api, config.coverage, original.bootstrap,
+            original.claims, original.capability, original.packageStage, original.packageReceipt,
+            original.request, original.runtime, original.validationStages, original.validationReceipts, original.sdks])
         sdk.tasks.named("verify${title}BindingParity").configure {
             setDependsOn([])
+            phase.set('M11')
             apiReport.set(file(config.api))
             canonicalCoverageReceipt.set(file(config.coverage))
             getCAbiBootstrapEvidence().set(file(original.bootstrap))
@@ -118,28 +185,194 @@ gradle.projectsEvaluated {
             importedRepository.set(rootProject.layout.projectDirectory)
             receipt.set(file(original.output))
             outputs.upToDateWhen { false }
+            actions.clear()
+            doLast {
+                def evidence = modelClass('CrossLanguageNativeWrapperBindingEvidenceKt')
+                def binding = modelClass('CrossLanguageBinding').enumConstants.find { it.id == language }
+                def packages = evidence.nativeWrapperPackageArtifacts(binding, packageArtifacts.get().asFile)
+                def imported = modelClass('ImportedNativeWrapperParityHosts').newInstance(
+                    rootProject.projectDir, importedPackageStage.get().asFile,
+                    importedPackageReceipt.get().asFile, importedCompatibilityRequest.get().asFile,
+                    importedRuntimeStages.get().asFile, importedValidationStages.get().asFile,
+                    importedValidationReceipts.get().asFile)
+                def input = modelClass('CrossLanguageNativeWrapperEvidenceInput').newInstance(
+                    m11, binding, apiReport.get().asFile, canonicalCoverageReceipt.get().asFile,
+                    getCAbiBootstrapEvidence().get().asFile, claims.get().asFile,
+                    compilerEvidence.get().asFile, testProgram.get().asFile, testResults.get().asFile,
+                    packages, hostEvidenceDirectory.get().asFile, stagedCAbiSdks.get().asFile, imported)
+                // Unchanged full five-host installed-package and capability gates.
+                def derived = evidence.deriveCrossLanguageNativeWrapperBindingReceipt(input)
+                def document = nativeDocument(derived)
+                if (document.hostConsumerProofs.size() != 5 ||
+                    document.hostConsumerProofs.collect { it.classifier }.toSet().size() != 5 ||
+                    document.artifacts.collect { it.id }.toSet().size() != document.artifacts.size()) {
+                    throw new GradleException('Derived native parity has duplicate or missing identities')
+                }
+                nativeModels[binding] = derived
+                writeCanonical(receipt.get().asFile, document)
+            }
         }
     }
-    def type = sdk.tasks.named('verifyCppBindingParity').get().class.classLoader
-        .loadClass('VerifyImportedCAbiBindingParityTask')
-    rootProject.tasks.register('verifyImportedCAbiBindingParity', type) {
+    rootProject.tasks.register('verifyImportedCAbiBindingParity') {
         def original = config.native.cpp
-        language.set('cpp')
-        packageStage.set(file(original.packageStage))
-        packageReceipt.set(file(original.packageReceipt))
-        compatibilityRequest.set(file(original.request))
-        runtimeStages.set(file(original.runtime))
-        stagedSdks.set(file(original.sdks))
-        repositoryRoot.set(rootProject.layout.projectDirectory)
-        evidenceDirectory.set(file(config.cabiOutput))
+        def directory = file(config.cabiOutput)
+        // Reject prior contents before Gradle's stale-output cleanup can touch them.
+        if (java.nio.file.Files.exists(directory.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new GradleException('C ABI parity output must be fresh')
+        }
+        def outputPath = directory.canonicalFile.toPath()
+        if ([original.packageStage, original.packageReceipt, original.request, original.runtime,
+             original.sdks, original.bootstrap, rootProject.file('ci').path].any { value ->
+                def source = file(value).canonicalFile.toPath()
+                outputPath.startsWith(source) || source.startsWith(outputPath)
+            }) {
+            throw new GradleException('C ABI parity output overlaps an original input')
+        }
+        outputs.dir(directory)
+        outputs.upToDateWhen { false }
+        doFirst {
+            // Gradle creates output directories before task actions.
+            // This caller owns a new private tree; remove only an empty real directory.
+            def output = directory.toPath()
+            def noFollow = java.nio.file.LinkOption.NOFOLLOW_LINKS
+            if (java.nio.file.Files.exists(output, noFollow)) {
+                if (!java.nio.file.Files.isDirectory(output, noFollow)) {
+                    throw new GradleException('C ABI parity output is not a regular directory')
+                }
+                java.nio.file.Files.delete(output)
+            }
+        }
+        doLast {
+            java.nio.file.Files.createDirectory(directory.toPath())
+            // The enclosing Python transaction has already fully authenticated these
+            // originals. Reuse its bootstrap and the existing frozen receipt builders;
+            // no second package snapshot, semantic verification or serializer.
+            def evidence = loader.loadClass('CrossLanguageCAbiBindingEvidenceKt')
+            def client = loader.loadClass('CrossLanguageCAbiClientKt')
+            def identity = loader.loadClass('CrossLanguageBindingArtifactIdentity')
+            def input = loader.loadClass('CrossLanguageCAbiBindingEvidenceInput')
+            def io = loader.loadClass('ReleaseIoKt')
+            def bootstrap = file(original.bootstrap)
+            def scenarioFile = new File(directory, 'c-abi-scenarios.json')
+            def count = evidence.C_ABI_BINDING_CAPABILITY_COUNT
+            def symbols = evidence.getC_ABI_BINDING_PUBLIC_SYMBOL_COUNT()
+            def digest = evidence.C_ABI_BINDING_CAPABILITY_SHA256
+            def scenario = evidence.writeCrossLanguageCAbiScenarioProof(scenarioFile, bootstrap,
+                evidence.productionCrossLanguageCAbiScenarioMappings(), count, symbols, digest)
+            def artifact = { name, path ->
+                identity.newInstance(name, io.releaseDigest(path, 'SHA-256'))
+            }
+            def artifacts = [artifact('c-abi-bootstrap', bootstrap),
+                artifact(evidence.C_ABI_SCENARIO_PROOF_ARTIFACT_ID, scenarioFile)]
+            client.getCrossLanguageCAbiTargetSpecs().sort().each { target, spec ->
+                def component = spec.classifier.substring('c-abi-'.length())
+                def proof = new File(original.runtime, component + '/validation/outputs/c-abi/' +
+                    client.crossLanguageCAbiPackageEvidenceFileName(target))
+                artifacts.add(artifact(client.getCrossLanguageCAbiPackageProofIds().get(target), proof))
+            }
+            evidence.writeCrossLanguageCAbiBindingReceipt(new File(directory, 'c-abi-parity.json'),
+                input.newInstance(bootstrap, scenario.mappings, artifacts,
+                    scenario.testProgramSha256, scenario.testResultsSha256, count, symbols, digest))
+        }
     }
     rootProject.tasks.named('verifyImportedSdkBindingParity').configure {
-        setDependsOn([])
+        def inputs = [config.api, config.coverage] + config.nonNative.values() +
+            config.native.values().collectMany { original ->
+                [original.packageStage, original.packageReceipt, original.validationStages,
+                 original.validationReceipts, original.bootstrap, original.claims, original.capability]
+            }
+        freshSeparateFile(file(config.finalOutput), inputs + [config.finalEvidence])
+        freshSeparateFile(file(config.finalEvidence), inputs)
+        setDependsOn(['verifyImportedCAbiBindingParity'] +
+            ['Python', 'CSharp', 'Rust', 'Cpp', 'Dart'].collect { ':codex-agent-sdk:verify' + it + 'BindingParity' })
         canonicalApiReport.set(file(config.api))
         canonicalCoverageReceipt.set(file(config.coverage))
-        evidenceDirectory.set(file(config.finalEvidence))
+        // This adapter consumes originals, then emits the new aggregate directory.
+        // Do not declare that not-yet-created output as a required Gradle input.
+        evidenceDirectory.set(file(config.api).parentFile)
         resultFile.set(file(config.finalOutput))
         outputs.upToDateWhen { false }
+        actions.clear()
+        doLast {
+            def receiptIo = modelClass('CrossLanguageBindingReceiptKt')
+            def canonical = modelClass('CrossLanguageApiEvidenceKt')
+                .readCrossLanguageCanonicalApiEvidence(file(config.api), file(config.coverage))
+            def originals = new LinkedHashMap(nativeModels)
+            ['kotlin', 'java', 'javascript-typescript', 'swift', 'objective-c', 'c-abi'].each { name ->
+                def source = name == 'c-abi' ? new File(config.cabiOutput, 'c-abi-parity.json') :
+                    file(config.nonNative[name])
+                def r = receiptIo.readCrossLanguageBindingReceipt(source)
+                // Advance derived phase only. Every original file stays untouched.
+                originals[r.language] = r.copy(m11, r.language, r.canonical, r.artifacts,
+                    r.testProgramSha256, r.testResultsSha256, r.publicSymbols, r.bindingTests,
+                    r.scenarioEvidence, r.projectionClaims, r.applicabilityExclusions, r.hostConsumerProofs)
+            }
+            def languages = modelClass('CrossLanguageBinding').enumConstants.toList()
+            if (originals.keySet() != languages.toSet()) throw new GradleException('Parity lacks exactly eleven languages')
+            originals.each { language, r ->
+                if (r.language != language || r.phase != m11 || r.canonical != canonical.canonical)
+                    throw new GradleException('Parity receipt identity does not match current Contract')
+            }
+            def kotlin = originals.find { key, value -> key.id == 'kotlin' }.value
+            if (kotlin.testProgramSha256 != canonical.compiledTestsSha256 ||
+                kotlin.testResultsSha256 != canonical.testResultsSha256 ||
+                kotlin.publicSymbols.sort(false) != canonical.memberKeys.sort(false))
+                throw new GradleException('Canonical Kotlin proof differs from executed Contract evidence')
+            def receipts = originals.values().toList()
+            def input = modelClass('CrossLanguageBindingParityInput').newInstance(
+                m11, canonical.memberKeys, canonical.memberKeys,
+                receipts.collectMany { it.projectionClaims }, receipts.collectMany { it.applicabilityExclusions },
+                originals.collectEntries { key, value -> [(key):value.publicSymbols] },
+                receipts.collectMany { it.bindingTests }, receipts.collectMany { it.scenarioEvidence })
+            def evaluated = modelClass('CrossLanguageBindingParityKt').verifyCrossLanguageBindingParity(input)
+            def counts = evaluated.obligations.countBy { it.status.name() }
+            if (canonical.memberKeys.size() != 556 || evaluated.obligations.size() != 6116 ||
+                counts != [SATISFIED:6104, EXCLUDED:12])
+                throw new GradleException('Parity obligation matrix is not complete')
+            def output = file(config.finalEvidence)
+            output.mkdirs()
+            def expected = [:]
+            originals.each { language, r ->
+                def path = new File(output, language.id + '-parity.json')
+                if (nativeModels.containsKey(language)) {
+                    expected[path.name] = writeCanonical(path, nativeDocument(r))
+                } else {
+                    receiptIo.writeCrossLanguageBindingReceipt(path, r)
+                    expected[path.name] = path.bytes
+                }
+            }
+            ['canonical-api.json':config.api, 'canonical-coverage.json':config.coverage].each { name, source ->
+                expected[name] = file(source).bytes
+                new File(output, name).bytes = expected[name]
+            }
+            def digest = { bytes -> java.security.MessageDigest.getInstance('SHA-256')
+                .digest(bytes).encodeHex().toString() }
+            def exclusions = receipts.collectMany { it.applicabilityExclusions }
+            def audit = [schema:4, result:'complete', phase:'M11',
+                apiReportSha256:canonical.canonical.apiReportSha256,
+                canonicalCoverageSha256:canonical.canonical.coverageReceiptSha256,
+                languageReceiptSha256:originals.collectEntries { language, r ->
+                    [(language.id):digest(expected[language.id + '-parity.json'])] },
+                summary:[total:6116, active:6104, pending:0, excluded:12, satisfied:6104, missing:0],
+                obligations:evaluated.obligations.collect { row ->
+                    def record = [capabilityKey:row.capabilityKey, language:row.language.id,
+                        applicable:row.applicable, obligationState:row.applicable ? 'active' : 'excluded',
+                        parityStatus:row.status.name().toLowerCase(java.util.Locale.ROOT)]
+                    def exclusion = exclusions.find { it.capabilityKey == row.capabilityKey && it.language == row.language }
+                    if (exclusion != null) record.exclusionReason = exclusion.reason
+                    record
+                }, errors:[]]
+            def auditName = 'binding-obligations-m11.json'
+            expected[auditName] = writeCanonical(new File(output, auditName), audit)
+            if (output.list().toList().toSet() != expected.keySet() ||
+                expected.any { name, bytes -> !java.util.Arrays.equals(new File(output, name).bytes, bytes) })
+                throw new GradleException('Derived parity evidence changed before verification')
+            writeCanonical(file(config.finalOutput), [schemaVersion:2, result:'passed', phase:'M11',
+                capabilityCount:556, languageCount:11, scenarioCount:14,
+                canonicalApiSha256:audit.apiReportSha256, canonicalCoverageSha256:audit.canonicalCoverageSha256,
+                active:6104, pending:0, excluded:12, satisfied:6104, missing:0,
+                evidenceFiles:expected.sort().collect { name, bytes -> [path:name, bytes:bytes.length, sha256:digest(bytes)] }])
+        }
     }
 }
 """
@@ -149,7 +382,7 @@ gradle.projectsEvaluated {
 def verified_java_parity_inputs(plan, discovery, state, *, repository_root, environ,
                                 sdk_validation_tooling=None, sdk_original_workflow_sha=None,
                                 sdk_apple_validation_policy=None,
-                                sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+                                sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Import unchanged products after the existing full original-source replay.
 
     Paths grant no authority. Receipts, objects, keys and original producers are
@@ -163,7 +396,8 @@ def verified_java_parity_inputs(plan, discovery, state, *, repository_root, envi
         sdk_original_workflow_sha=sdk_original_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
+            sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     with _java_parity_inputs(verified, plan, plan_bytes) as inputs:
         yield inputs
 
@@ -236,7 +470,67 @@ def _java_parity_inputs(verified, plan, plan_bytes):
 def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
                            sdk_validation_tooling=None, sdk_original_workflow_sha=None,
                            sdk_apple_validation_policy=None,
-                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+                           sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
+    # Keep private recovered categories alive through consumption and exit checks.
+    with verification_session(), _verified_parity_inputs(plan, discovery, state,
+            repository_root=repository_root, environ=environ,
+            sdk_validation_tooling=sdk_validation_tooling,
+            sdk_original_workflow_sha=sdk_original_workflow_sha,
+            sdk_apple_validation_policy=sdk_apple_validation_policy,
+            sdk_facade_metadata_admission=sdk_facade_metadata_admission,
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
+            completed_frozen=completed_frozen) as inputs:
+        yield inputs
+
+
+def _completed_apple_parity_files(verified, destination, *, token):
+    """Recover genuine raw receipts, after native admission and fresh observation."""
+    from reuse_qualification import CompletedFrozenReuse
+    from sdk_apple_upload_locator import (
+        RETAINED_PARITY_SOURCE, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS,
+    )
+    from runtime_reference_archive import (
+        open_reference_archive, open_stored_reference_archive, copy_reference_member,
+    )
+    from runtime_reference_transport import count
+    completed = verified.completed_frozen
+    if type(completed) is not CompletedFrozenReuse:
+        raise ValueError("Compact Apple parity requires concrete native completion")
+    completed.check_request(verified.rebased_request)
+    completed.check_consumer(verified.consumer)
+    identity = PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
+    row = verified.prior_by_instance[identity]
+    envelope = completed.envelope(row)
+    if envelope is None:
+        raise ValueError("Compact Apple parity lacks its exact qualified original")
+    if any(row[field] != RETAINED_PARITY_SOURCE[field] for field in ("buildKey", "receiptSha256")):
+        raise ValueError("Compact Apple parity differs from its reviewed original")
+    _, artifact, observed = completed.observe_extended_sdk(row, producer=verified.producer, token=token)
+    if ((artifact["id"], artifact["digest"]) != (RETAINED_PARITY_SOURCE["artifactId"], RETAINED_PARITY_SOURCE["artifactSha256"])
+            or not any(job["id"] == RETAINED_PARITY_SOURCE["jobId"]
+                       for observation in observed for job in observation["jobs"])):
+        raise ValueError("Compact Apple parity changes its independently qualified upload")
+    files = {}
+    with open_reference_archive(artifact, token) as (archive, stream), \
+            open_stored_reference_archive(archive, "execution/apple-validation-evidence.zip",
+                expected_bytes=RETAINED_PARITY_ARCHIVE_BYTES) as reports:
+        for record in RETAINED_PARITY_REPORTS:
+            name = Path(record["relativePath"]).name
+            destination_file = destination / name
+            copy_reference_member(reports, record["relativePath"], destination_file, record)
+            files[name] = destination_file
+        if stream is not None:
+            count("appleParityOriginalRangeBytes", stream.transferred)
+    if completed.envelope(row) != envelope:
+        raise ValueError("Compact Apple parity authority changed during recovery")
+    return files
+
+
+@contextmanager
+def _verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
+                           sdk_validation_tooling, sdk_original_workflow_sha,
+                           sdk_apple_validation_policy, sdk_facade_metadata_admission,
+                           sdk_android_metadata_admission, completed_frozen):
     """Borrow completed immutable evidence after one full authenticated replay."""
     root = Path(repository_root).resolve(strict=True)
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
@@ -244,7 +538,8 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
         sdk_validation_tooling, sdk_original_workflow_sha=sdk_original_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
+            sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     phases = {product_reuse._identity(row): row for row in verified.prior["phases"]}
     required = {identity for identity in PHASE_INSTANCE_IDS if identity.product == "sdk"}
     if any(identity not in verified.sources or phases.get(identity, {}).get("state") not in {"retained", "reused"}
@@ -254,6 +549,41 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
     product_reuse._merge_native_comparison_records(records,
         product_reuse._retained_sdk_handoffs(Path(state), root), key="sdkValidationEvidence")
     native = decode_sdk_validation_records(root, records["sdkValidationEvidence"])
+    recovery = None
+    if any(phases[PhaseInstanceId("sdk", language, "validation", target)]["receiptSha256"] not in native
+           for language in NATIVE_BINDINGS for target in NATIVE_TARGETS):
+        from sdk_native_metadata_workflow import completed_validation_recovery
+        recovery = completed_validation_recovery(verified.completed_frozen,
+            {**verified.rebased_request, **records}, sdk_validation_tooling,
+            product_reuse._apple_package_origin(plan, root, sdk_original_workflow_sha, environ))
+        if recovery is None:
+            raise ValueError("Parity lacks authenticated native recovery authority")
+        from products.plan import sdk_validation_dependencies
+        for language in NATIVE_BINDINGS:
+            instance = PhaseInstanceId("sdk", language, "metadata", "desktop")
+            identities = sdk_validation_dependencies(instance)
+            if all(phases[identity]["receiptSha256"] in native for identity in identities):
+                continue
+            package = PhaseInstanceId("sdk", language, "package", "desktop")
+            def envelope(identity):
+                row = phases[identity]
+                qualified = verified.completed_frozen.envelope(row)
+                if qualified is not None:
+                    return qualified
+                record = native.get(row["receiptSha256"])
+                if record is None:
+                    raise ValueError("Parity lacks an authenticated selected native host")
+                raw = read_regular_file_bytes(record["validationReceipt"], reject_symlink_parents=True)
+                if sha256_bytes(raw) != row["receiptSha256"]:
+                    raise ValueError("Parity native receipt differs from its selected original")
+                return dict(receipt=product_reuse.validate_phase_receipt(load_canonical_json_bytes(raw)),
+                    receiptBytes=raw, receiptSha256=row["receiptSha256"], objectSha256=row["objectSha256"])
+            recovered = recovery["records"](instance,
+                tuple(envelope(identity) for identity in identities),
+                verified.completed_frozen.envelope(phases[package]))
+            if recovered is None:
+                raise ValueError("Parity lacks complete qualified native originals")
+            native.update(recovered[1])
     selected = {}
     protected = set()
     for language in NATIVE_BINDINGS:
@@ -267,11 +597,13 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
             if sha256_bytes(read_regular_file_bytes(record["validationReceipt"], reject_symlink_parents=True)) != digest:
                 raise ValueError("Parity native receipt differs from the selected immutable phase")
             hosts[target] = record
+            protected.add(Path(record["compatibilityRequest"]).parent)
             protected.update(Path(record[name]) for name in (
                 "packageStage", "packageReceipt", "compatibilityRequest", "runtimeStages", "stagedSdks",
-                "validationStage", "validationReceipt"))
+                "validationStage", "validationReceipt", "runtimeAuthorization",
+                *(("binaryStage", "binaryReceipt") if language == "csharp" else ())))
         selected[language] = hosts
-    before = {path: (regular_file_inventory(path, allow_empty=True) if path.is_dir()
+    before = {path: (memoized_file_inventory(path, allow_empty=True) if path.is_dir()
         else read_regular_file_bytes(path, reject_symlink_parents=True)) for path in protected}
     with tempfile.TemporaryDirectory(prefix="sdk-parity-originals-") as temporary:
         private = Path(temporary).resolve()
@@ -292,29 +624,36 @@ def verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
         apple_rows = [row for row in apple["sdkAppleValidationEvidence"]
             if row["target"] == "ios-arm64" and row["receiptSha256"] ==
                 phases[PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")]["receiptSha256"]]
-        if len(apple_rows) != 1:
+        archive, archive_identity = None, None
+        if not apple_rows and verified.completed_frozen is not None:
+            files.update(_completed_apple_parity_files(verified, private,
+                token=environ.get("GITHUB_TOKEN", "")))
+        elif len(apple_rows) != 1:
             raise ValueError("Parity lacks the selected authenticated Apple validation original")
-        archive = root / apple_rows[0]["evidenceRoot"] / "capture/original/execution/apple-validation-evidence.zip"
-        archive_identity = _stat_identity(archive.stat())
-        reports = {name: "reports/" + name
-            for name in ("swift-parity.json", "objective-c-parity.json")}
-        _, extracted, _ = verified_zip_contents(archive, allow_empty_members=True,
-            retained_paths=reports.values(), max_retained_bytes=16 * 1024 * 1024)
-        for name, path in reports.items():
-            destination = private / name
-            destination.write_bytes(extracted[path])
-            files[name] = destination
+        else:
+            archive = root / apple_rows[0]["evidenceRoot"] / "capture/original/execution/apple-validation-evidence.zip"
+            archive_identity = _stat_identity(archive.stat())
+            reports = {name: "reports/" + name
+                for name in ("swift-parity.json", "objective-c-parity.json")}
+            _, extracted, _ = verified_zip_contents(archive, allow_empty_members=True,
+                retained_paths=reports.values(), max_retained_bytes=16 * 1024 * 1024)
+            for name, path in reports.items():
+                destination = private / name
+                destination.write_bytes(extracted[path])
+                files[name] = destination
         imported_inventory = regular_file_inventory(private)
         with _java_parity_inputs(verified, plan, plan_bytes) as java:
             try:
                 yield {"java": java, "native": selected, "files": files, "phases": phases}
             finally:
-                if (_stat_identity(archive.stat()) != archive_identity or
+                if ((archive is not None and _stat_identity(archive.stat()) != archive_identity) or
                         regular_file_inventory(private) != imported_inventory or
-                        any((regular_file_inventory(path, allow_empty=True) if path.is_dir()
+                        any((memoized_file_inventory(path, allow_empty=True) if path.is_dir()
                             else read_regular_file_bytes(path, reject_symlink_parents=True)) != old
                             for path, old in before.items())):
                     raise ValueError("Original parity inputs changed during use")
+                if recovery is not None:
+                    recovery["check"]()
 
 
 def execute_java_parity(plan, discovery, state, destination, *, repository_root, environ, **policies):
@@ -347,6 +686,49 @@ def execute_java_parity(plan, discovery, state, destination, *, repository_root,
     return {"evidence": destination / "java-parity.json"}
 
 
+@measured
+def _parity_package_receipts(native, directory):
+    """Adapt borrowed categories to the existing verifier's sibling layout once.
+
+    Only external authorization, original receipts and the C# binary context are
+    copied. Product packages, Runtime bodies and compatibility inputs stay borrowed.
+    """
+    contexts, receipts = {}, {}
+    for language, hosts in native.items():
+        inventories = {target: memoized_file_inventory(record["runtimeAuthorization"])
+                       for target, record in hosts.items()}
+        key = canonical_json_bytes(inventories)
+        if key not in contexts:
+            context = directory / str(len(contexts))
+            for target, record in hosts.items():
+                captured = context / "runtime-authorization" / target
+                snapshot_regular_tree(record["runtimeAuthorization"], captured)
+                if memoized_file_inventory(captured) != inventories[target]:
+                    raise ValueError("Parity Runtime authorization changed during capture")
+                count("parityContextCopiedBytes", sum(row["bytes"] for row in inventories[target]))
+            contexts[key] = context
+            count("parityAuthorizationCaptures")
+        else:
+            count("parityAuthorizationReuses")
+        context = contexts[key]
+        primary = hosts["linux-x64"]
+        if language == "csharp":
+            binary = context / "csharp-binary"
+            inventory = memoized_file_inventory(primary["binaryStage"])
+            snapshot_regular_tree(primary["binaryStage"], binary / "stage")
+            if memoized_file_inventory(binary / "stage") != inventory:
+                raise ValueError("Parity C# binary changed during capture")
+            raw = read_regular_file_bytes(primary["binaryReceipt"], reject_symlink_parents=True)
+            (binary / "phase-receipt.json").write_bytes(raw)
+            count("parityContextCopiedBytes", sum(row["bytes"] for row in inventory) + len(raw))
+        receipt = context / (language + ".json")
+        raw = read_regular_file_bytes(primary["packageReceipt"], reject_symlink_parents=True)
+        receipt.write_bytes(raw)
+        count("parityContextCopiedBytes", len(raw))
+        receipts[language] = receipt
+    return receipts
+
+
 def execute_parity(plan, discovery, state, destination, *, repository_root, environ,
                    sdk_validation_tooling, **policies):
     """Full consumer parity over authenticated originals; no product execution."""
@@ -367,20 +749,34 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                     required_trust_domain=tooling["requiredTrustDomain"],
                     keyring=Path(tooling["keyring"]) if tooling["keyring"] else None,
                     keys_directory=Path(tooling["keysDirectory"]) if tooling["keysDirectory"] else None,
-                    policy_revision=revision) as jar, (result / "consumer.log").open("wb") as log:
+                    policy_revision=revision), (result / "consumer.log").open("w+b") as log:
             def run(command):
-                subprocess.run(command, cwd=root, env=dict(environ), check=True,
-                    stdout=log, stderr=subprocess.STDOUT)
+                start = log.tell()
+                try:
+                    subprocess.run(command, cwd=root, env=dict(environ), check=True,
+                        stdout=log, stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError:
+                    log.flush()
+                    log.seek(max(start, log.tell() - 65536))
+                    print("Parity consumer diagnostics (last 64 KiB):\n" +
+                          log.read().decode("utf-8", errors="replace"), file=sys.stderr)
+                    raise
 
             def copy(source, target):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(read_regular_file_bytes(source, reject_symlink_parents=True))
 
             files = inputs["files"]
+            contexts = private / "package-contexts"
+            package_receipts = _parity_package_receipts(inputs["native"], contexts)
+            context_inventory = memoized_file_inventory(contexts)
             config = {"api": str(files["canonical-api.json"]), "coverage": str(files["canonical-coverage.json"]),
                 "native": {}, "cabiOutput": str(private / "cabi"),
-                "finalEvidence": str(result / "m11"), "finalOutput": str(result / "sdk-parity.json")}
-            titles = {"python": "Python", "csharp": "CSharp", "rust": "Rust", "cpp": "Cpp", "dart": "Dart"}
+                "finalEvidence": str(result / "m11"), "finalOutput": str(result / "sdk-parity.json"),
+                "nonNative": {
+                    name: str(files[name + "-parity.json"])
+                    for name in ("kotlin", "javascript-typescript", "swift", "objective-c")
+                } | {"java": str(private / "java/java-parity.json")}}
             for language, hosts in inputs["native"].items():
                 lane = private / language
                 primary = hosts["linux-x64"]
@@ -393,14 +789,15 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                 command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
                     "--repository", str(root), "--component", language,
                     "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
-                for option, key in (("stage", "packageStage"), ("receipt", "packageReceipt"),
+                command.extend(("--receipt", str(package_receipts[language])))
+                for option, key in (("stage", "packageStage"),
                         ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
                         ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
                         ("validation-receipt", "validationReceipt")):
                     command.extend(("--" + option, str(primary[key])))
                 run(command)
                 config["native"][language] = {"packageStage": str(primary["packageStage"]),
-                    "packageReceipt": str(primary["packageReceipt"]), "request": str(primary["compatibilityRequest"]),
+                    "packageReceipt": str(package_receipts[language]), "request": str(primary["compatibilityRequest"]),
                     "runtime": str(primary["runtimeStages"]), "sdks": str(primary["stagedSdks"]),
                     "validationStages": str(lane / "hosts"), "validationReceipts": str(lane / "receipts"),
                     "bootstrap": str(handoff / "bootstrap/bootstrap-evidence.json"),
@@ -413,51 +810,21 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
             java_script.write_text(IMPORTED_JAVA_PARITY_INIT)
             config_path = private / "native.json"
             config_path.write_bytes(canonical_json_bytes(config))
-            gradle = [str(root / "gradlew"), "--no-configuration-cache",
+            gradle = [str(root / "gradlew"),
+                "--init-script", str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
+                "--no-configuration-cache",
                 "--no-build-cache", "--max-workers=4", "--console=plain"]
             native_options = ["--init-script", str(native_script),
                 "-DcodexAgent.importedNativeParityInputs=" + str(config_path)]
-            run(gradle + native_options + [":codex-agent-sdk:verify" + titles[name] + "BindingParity"
-                for name in titles] + [":verifyImportedCAbiBindingParity"])
             run(gradle + ["--init-script", str(java_script),
                 "-DcodexAgent.importedJavaParityInputs=" + str(inputs["java"]),
                 "-DcodexAgent.importedJavaParityOutput=" + str(private / "java/java-parity.json"),
                 ":codex-agent-core:verifyJavaBindingParity"])
-            receipts = private / "m8-receipts"
-            for name in ("kotlin-parity.json", "javascript-typescript-parity.json", "swift-parity.json", "objective-c-parity.json"):
-                copy(files[name], receipts / name)
-            copy(private / "java/java-parity.json", receipts / "java-parity.json")
-            copy(private / "cabi/c-abi-parity.json", receipts / "c-abi-parity.json")
-
-            def tool(command, **options):
-                run([str(tooling["javaExecutable"]), "-jar", str(jar), command] +
-                    [item for key, value in options.items() for item in ("--" + key.replace("_", "-"), str(value))])
-
-            def audit(phase, directory, destination):
-                tool("audit-cross-language-bindings", phase=phase, api_report=files["canonical-api.json"],
-                    coverage_receipt=files["canonical-coverage.json"], receipts=directory, output=destination)
-
-            audit("M8", receipts, result / "binding-obligations-m8.json")
-            for language in titles:
-                phase = "M9_" + language.upper()
-                next_receipts = private / (phase + "-receipts")
-                next_receipts.mkdir()
-                for source in receipts.glob("*-parity.json"):
-                    tool("advance-cross-language-binding-receipt", phase=phase, source=source,
-                        output=next_receipts / source.name)
-                copy(private / (language + "-parity.json"), next_receipts / (language + "-parity.json"))
-                audit(phase, next_receipts, result / ("binding-obligations-" + phase.lower() + ".json"))
-                receipts = next_receipts
-            final = result / "m11"
-            final.mkdir()
-            for source in receipts.glob("*-parity.json"):
-                tool("advance-cross-language-binding-receipt", phase="M11", source=source, output=final / source.name)
-            for name in ("canonical-api.json", "canonical-coverage.json"):
-                copy(files[name], final / name)
-            audit("M11", final, final / "binding-obligations-m11.json")
             run(gradle + native_options + [":verifyImportedSdkBindingParity"])
             if product_reuse.load_json_bytes(read_regular_file_bytes(result / "sdk-parity.json"))["result"] != "passed":
                 raise ValueError("Full imported SDK parity did not pass")
+            if memoized_file_inventory(contexts) != context_inventory:
+                raise ValueError("Parity package context changed during consumption")
             (result / "original-phase-identities.json").write_bytes(canonical_json_bytes(list(inputs["phases"].values())))
         # Every original lifetime and tooling authentication check must finish
         # successfully before a report can become available to another caller.
@@ -476,11 +843,15 @@ def _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy, *,
 
 def _selection(plan, discovery, state, repository_root, environ, sdk_validation_tooling=None,
                sdk_apple_validation_policy=None, *, trusted_workflow_sha=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, requested_scope=None,
+    completed_frozen=None, _product_state_consumer=None):
     plan_bytes = read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
     validated = product_reuse._validate_plan(plan, repository_root)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ, include_sdk_selection=True,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+        **({"requested_scope": requested_scope} if requested_scope is not None else {}),
+        **({"_verified_state_consumer": _product_state_consumer} if _product_state_consumer is not None else {}),
         **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -493,21 +864,96 @@ def _selection(plan, discovery, state, repository_root, environ, sdk_validation_
     return validated, selection, plan_bytes
 
 
+def _routed_selection(plan, repository_root, environ, trusted_workflow_sha, routing_state):
+    """A successful current transition may route to the signed Runtime bridge.
+
+    The bridge still authenticates the selected aggregate, Contract digest and
+    current Git compatibility policy. This hint never admits a product phase.
+    """
+    from sdk_native_continuation import select
+    validated = product_reuse._validate_plan(plan, repository_root)
+    value, locator, plan_id = routing_state
+    expected = {**product_reuse._consumer(validated, environ)["producer"],
+                "workflowSha": trusted_workflow_sha, "planId": plan_id}
+    outputs = select(value, locator, expected, family="runtime")
+    selection = json.loads(outputs["sdk_input_selection"])
+    if outputs["sdk_handoff_required"] != "true" or not isinstance(selection, dict):
+        raise ValueError("Routing has no selected SDK consumers")
+    return validated, selection
+
+
+# Reviewed transport locators only; the ordinary capture below authenticates
+# the complete original upload and current Runtime/SDK compatibility afresh.
+_RETAINED_SDK_INPUT_RECOVERY = {'historicalSource': {'artifactId': 12020869488,
+                      'artifactSha256': 'sha256:6d01390908eccb403a068ef4717d6d3f9a3a68dea07bea7a252877c159d89f27',
+                      'producer': {'commit': 'b1f647efebe105abba89bcb31de3a8d25b580406',
+                                   'event': 'pull_request',
+                                   'pullRequest': 31,
+                                   'repository': 'codex-agent-labs/codex-agent',
+                                   'runAttempt': 1,
+                                   'runId': 38835706077,
+                                   'tree': '3fe366739c0dbf3c11f305d77609e9509262093d',
+                                   'workflowPath': '.github/workflows/ci.yml'},
+                      'workflowSha': 'b0947995481dec088fce8e9490a17a3399e9dc2b'},
+ 'runtimeSource': {'artifactId': 12433452038,
+                   'artifactSha256': 'sha256:a51cad9fe390a6579b6ce40f1245f5020730db5b44c44ff2a2453472982ab225',
+                   'buildKey': 'sha256:38f5f548b4fc926e8be981bc5df81569e3422820c37a83b024f2772b46da6a45',
+                   'metadataReceiptSha256': 'sha256:eb826c1b4634c5ba010e3fec385f27393310af5252ccb98ab6aaff644dfb3a26',
+                   'producer': {'commit': 'c8400811dca2e4f8c23f7c459b1abe6ad78d5348',
+                                'event': 'pull_request',
+                                'pullRequest': 31,
+                                'repository': 'codex-agent-labs/codex-agent',
+                                'runAttempt': 1,
+                                'runId': 39745656910,
+                                'tree': 'e2c1b2686acbd4471f9f5d3ef7a78df3e9a505c7',
+                                'workflowPath': '.github/workflows/ci.yml'},
+                   'workflowSha': 'd2243aac89368df2776b6617fd5a623bd6754cb2'},
+ 'compatibleSource': {'artifactId': 12521408629,
+                      'artifactSha256': 'sha256:824a00f4f54cbd37103031c8d0ef5a2ff7a82bdd57cf4e748ba2d4be2e2368d6',
+                      'producer': {'commit': 'fc5b6c5ad9d4912d27b9c63e5a1627d4a13bef1b',
+                                   'event': 'pull_request',
+                                   'pullRequest': 31,
+                                   'repository': 'codex-agent-labs/codex-agent',
+                                   'runAttempt': 1,
+                                   'runId': 39995416657,
+                                   'tree': 'c04648a952d38c9fc2d67c2cfc4ae1e5d3591e26',
+                                   'workflowPath': '.github/workflows/ci.yml'},
+                      'workflowSha': '4552e2da1684d5af0b86386bf94e5113326761c5'}}
+
+
+def retained_sdk_input_source(source, runtime_source):
+    """Select the reviewed compatible transport; ordinary capture still grants trust."""
+    if (source == _RETAINED_SDK_INPUT_RECOVERY["historicalSource"]
+            and runtime_source == _RETAINED_SDK_INPUT_RECOVERY["runtimeSource"]):
+        return _RETAINED_SDK_INPUT_RECOVERY["compatibleSource"]
+    return source
+
+
+@measured
 def stage(plan, discovery, state, destination, *, keyring, keys_directory,
           repository_root, environ, token, trusted_workflow_sha=None, artifact_id=None,
           artifact_sha256=None, expected_build_key=None, expected_metadata_receipt_sha256=None,
           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
           runtime_original_producer=None, runtime_original_workflow_sha=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, routing_state=None,
+    retained_sdk_inputs_source=None, reference_sdk_inputs=False, completed_frozen=None):
     """Delegate source selection and both destination policies, never grant trust."""
     if (runtime_original_producer is None) != (runtime_original_workflow_sha is None):
         raise ValueError("Retained Runtime producer and original workflow pin must be paired")
+    if reference_sdk_inputs and (retained_sdk_inputs_source is None or runtime_original_producer is None):
+        raise ValueError('SDK input routing requires independently selected original SDK and Runtime sources')
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
-    validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
-                                         trusted_workflow_sha=trusted_workflow_sha, **tooling)
+    if routing_state is None:
+        validated, selection, _ = _selection(plan, discovery, state, repository_root, environ,
+                                             trusted_workflow_sha=trusted_workflow_sha,
+                                            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}), **tooling)
+    else:
+        validated, selection = _routed_selection(plan, repository_root, environ, trusted_workflow_sha, routing_state)
     if selection.get("source") == "released-default":
+        if retained_sdk_inputs_source is not None:
+            raise ValueError("Retained current Runtime SDK inputs cannot replace a released-default selection")
         if runtime_original_producer is not None:
             raise ValueError("Retained current Runtime identity cannot override a released default")
         return product_reuse.materialize_sdk_default_inputs(plan, discovery, state, destination,
@@ -519,23 +965,53 @@ def stage(plan, discovery, state, destination, *, keyring, keys_directory,
     if any(value is None for value in (trusted_workflow_sha, artifact_id, artifact_sha256,
                                       expected_build_key, expected_metadata_receipt_sha256)):
         raise ValueError("Current Runtime SDK handoff requires complete authenticated upload identity")
-    return sdk_handoff.capture_sdk_handoff(plan, destination,
+    if reference_sdk_inputs:
+        runtime_source = dict(artifactId=artifact_id, artifactSha256=artifact_sha256,
+            producer=runtime_original_producer, workflowSha=runtime_original_workflow_sha,
+            buildKey=expected_build_key, metadataReceiptSha256=expected_metadata_receipt_sha256)
+        selected_source = retained_sdk_input_source(retained_sdk_inputs_source, runtime_source)
+        return sdk_handoff.stage_sdk_input_binding(plan, destination,
+            sdk_inputs_source=selected_source, runtime_source=runtime_source,
+            repository_root=repository_root, environ=environ)
+    capture = (sdk_handoff.capture_sdk_handoff if retained_sdk_inputs_source is None
+               else sdk_handoff.capture_reused_sdk_handoff)
+    retained_arguments = ({} if retained_sdk_inputs_source is None
+                          else {"sdk_inputs_source": retained_sdk_inputs_source})
+    return capture(plan, destination,
         artifact_id=artifact_id, artifact_sha256=artifact_sha256,
         trusted_workflow_sha=runtime_original_workflow_sha or trusted_workflow_sha,
         expected_build_key=expected_build_key, expected_metadata_receipt_sha256=expected_metadata_receipt_sha256,
         sdk_version=selection["sdkVersion"], compatible_release_range=selection["compatibleReleaseRange"],
         compatible_runtime_compatibility_range=selection["compatibleRuntimeCompatibilityRange"],
         expected_contract_payload_sha256=selection["contractPayloadSha256"],
+        reference_runtime=True,
         keyring=keyring, keys_directory=keys_directory, selection_repository_root=repository_root,
         selection_revision=validated["validationCommit"], repository_root=repository_root, environ=environ, token=token,
-        **({"original_producer": runtime_original_producer} if runtime_original_producer is not None else {}))
+        **({"original_producer": runtime_original_producer} if runtime_original_producer is not None else {}),
+        **retained_arguments)
+
+
+@contextmanager
+def _completed_sdk_inputs(capture, *, completed_frozen, **policy):
+    """Keep signed SDK policy/content gates, joining exact completed Runtime controls."""
+    from reuse_qualification import CompletedFrozenReuse
+    from products.sdk_inputs_verification import _borrow_private_sdk_inputs, verified_sdk_inputs
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("SDK completed input join requires native semantic authority")
+    sdk_root = capture / "original/sdk-inputs"
+    with _borrow_private_sdk_inputs(sdk_root), verified_sdk_inputs(sdk_root, **policy) as sdk:
+        receipts = completed_frozen.sdk_receipts(sdk["arguments"])
+        yield {"sdk": sdk, "runtime": {"receiptBytes": receipts}}
+        # The dictionaries exposed to a worker never become authority on exit.
+        completed_frozen.sdk_receipts(sdk["arguments"])
 
 
 @contextmanager
 def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
                     trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
                     sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, requested_scope=None,
+    retained_sdk_inputs_source=None, completed_frozen=None, _product_state_consumer=None):
     """Keep upload, SDK policy and raw Runtime originals verified through consumer use.
 
     Returned paths expire on exit. Consumers must finish using them inside the
@@ -545,23 +1021,39 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
     """
     validated, selection, plan_bytes = _selection(plan, discovery, state, repository_root, environ,
                                                 sdk_validation_tooling=sdk_validation_tooling,
+                                                requested_scope=requested_scope,
+                                                **({"_product_state_consumer": _product_state_consumer}
+                                                   if _product_state_consumer is not None else {}),
+                                                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                                                 trusted_workflow_sha=trusted_workflow_sha,
                                                 **_caller_policies(None, sdk_apple_validation_policy,
                                                     sdk_facade_metadata_admission=sdk_facade_metadata_admission,
                                                     sdk_android_metadata_admission=sdk_android_metadata_admission))
     with tempfile.TemporaryDirectory(prefix="sdk-consumer-inputs-") as temporary:
         capture = Path(temporary).resolve() / "capture"
+        # A requalified aggregate needs ordinary admission until a new native
+        # checkpoint proves it; unchanged predecessor proofs cannot replace it.
+        input_completion = completed_frozen
+        if (input_completion is not None and PhaseInstanceId(
+                "runtime", "runtime-aggregate", "metadata", "aggregate")
+                not in input_completion.completed_phases()):
+            input_completion = None
         product_reuse.capture_sdk_inputs_upload(plan, capture, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
-            expected_source=selection["source"], repository_root=repository_root, environ=environ, token=token)
-        inventory = regular_file_inventory(capture, allow_empty=True)
+            expected_source=selection["source"], repository_root=repository_root, environ=environ, token=token,
+            **({"completed_frozen": input_completion} if input_completion is not None else {}),
+            **({'retained_sdk_inputs_source': retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}))
+        inventory = memoized_file_inventory(capture, allow_empty=True)
 
         def unchanged():
-            if (regular_file_inventory(capture, allow_empty=True) != inventory
+            if (memoized_file_inventory(capture, allow_empty=True) != inventory
                     or read_regular_file_bytes(plan, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != plan_bytes):
                 raise ValueError("SDK consumer original plan or captured upload changed during use")
 
-        with verified_apple_original_inputs(capture, expected_source=selection["source"],
+        verifier = verified_apple_original_inputs if input_completion is None else _completed_sdk_inputs
+        options = ({"expected_source": selection["source"]} if input_completion is None else
+                   {"completed_frozen": input_completion})
+        with verifier(capture, **options,
                 keyring=keyring, keys_directory=keys_directory,
                 selection_repository_root=repository_root, selection_revision=validated["validationCommit"],
                 expected_contract_payload_sha256=selection["contractPayloadSha256"]) as original:
@@ -574,7 +1066,7 @@ def verified_inputs(plan, discovery, state, *, artifact_id, artifact_sha256,
 def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_build_key,
                                native_uploads, trusted_workflow_sha, repository_root, environ, token,
                                sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Keep elected iOS binary Contract/native originals verified through use.
 
     This is not package readiness or output admission. The caller must execute
@@ -592,7 +1084,8 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
         sdk_original_workflow_sha=trusted_workflow_sha,
         **_caller_policies(None, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission))
+            sdk_android_metadata_admission=sdk_android_metadata_admission),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     instance = PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")
     elected = verified.prior_ready_plans.get(instance)
     if elected is None or elected["buildKey"] != expected_build_key:
@@ -660,7 +1153,7 @@ def verified_ios_binary_inputs(plan, discovery, state, destination, *, expected_
 def execute_ios_binary(plan, discovery, state, destination, *, expected_build_key,
                        native_uploads, trusted_workflow_sha, repository_root, environ, token,
                        sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Execute an elected binary; receipt creation follows every input exit check."""
     from sdk_ios_binary import execute
 
@@ -673,7 +1166,8 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     with verified_ios_binary_inputs(plan, discovery, state, destination / "inputs",
             expected_build_key=expected_build_key, native_uploads=native_uploads,
-            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling) as inputs:
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, environ=environ, token=token, **tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
         ready, producer, version = inputs["ready"], inputs["producer"], inputs["sdkVersion"]
         # External original evidence, never part of the reusable binary stage.
         retained_native = destination / "native-original"
@@ -696,11 +1190,8 @@ def execute_ios_binary(plan, discovery, state, destination, *, expected_build_ke
         producer=producer, product_version=version, trust_domain=trust, destination=destination / "shard")
 
 
-def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
-           trusted_workflow_sha=None,
-           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
-    """Expose only the fixed replay-elected SDK family before platform setup."""
+def _matrix_from_plans(ready_plans, *, ios_binary=False, family=None):
+    """Route a caller-authenticated election; never load a transported matrix."""
     from sdk_phase import route
 
     if type(ios_binary) is not bool:
@@ -730,28 +1221,67 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
                       "android-binary", "android-package", "android-validation", "android-metadata"):
             return {"runner": "ubuntu-24.04", "runnerOs": "Linux", "runnerArch": "X64"}
         return route(ready)
+    rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
+             **worker_route(ready)}
+            for ready in ready_plans
+            if selected(product_reuse._identity(ready))]
+    return {"include": rows}
+
+
+def _write_matrix(ready_plans, github_output_path, *, ios_binary=False, family=None):
+    value = _matrix_from_plans(ready_plans, ios_binary=ios_binary, family=family)
+    github_output(github_output_path, {"sdk_matrix": canonical_json_bytes(value).decode().strip(),
+                                      "sdk_workers_required": bool(value["include"])})
+    return value
+
+
+def _read_scope(ios_binary, family):
+    selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
+        if (product_reuse._sdk_family_worker_instance(instance, family) if family is not None else
+            (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
+             product_reuse._sdk_javascript_worker_instance)(instance)))
+    if family == "native-package":
+        selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
+            if instance.product == "sdk" and instance.component in NATIVE_BINDINGS)
+    return selected
+
+
+def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
+           trusted_workflow_sha=None,
+           sdk_validation_tooling=None, sdk_apple_validation_policy=None,
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
+    """Expose only the fixed replay-elected SDK family before platform setup."""
+    if type(ios_binary) is not bool:
+        raise ValueError("SDK binary projection must be boolean")
+    if family is not None:
+        product_reuse._sdk_family_worker_instance(None, family)
+        if ios_binary:
+            raise ValueError("SDK family and binary projection are mutually exclusive")
+    selected = _read_scope(ios_binary, family)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+        requested_scope=selected,
         **({"sdk_original_workflow_sha": trusted_workflow_sha} if trusted_workflow_sha is not None else {}),
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission))
-    rows = [{**{field: ready[field] for field in ("product", "component", "phase", "target", "buildKey")},
-             **worker_route(ready)}
-            for ready in inspected["readyPlans"]
-            if selected(product_reuse._identity(ready))]
-    value = {"include": rows}
-    github_output(github_output_path, {"sdk_matrix": canonical_json_bytes(value).decode().strip(),
-                                      "sdk_workers_required": bool(rows)})
-    return value
+    if family == "native-package":
+        from sdk_native_continuation import select_preparation_anchor
+        anchor = select_preparation_anchor(inspected["readyPlans"])
+        github_output(github_output_path, {"native_preparation_" + name.removeprefix("preparation_"): value for name, value in anchor.items()})
+    return _write_matrix(inspected["readyPlans"], github_output_path,
+                         ios_binary=ios_binary, family=family)
 
 
 @verification_scoped
+@measured
 def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha256,
             trusted_workflow_sha, state_wave=0, sdk_state_wave=None,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, scope_inputs=False,
+    completed_frozen=None):
     """Capture exact original state, then replay SDK readiness independently."""
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
@@ -759,10 +1289,16 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         product_reuse._sdk_family_worker_instance(None, family)
         if ios_binary:
             raise ValueError("SDK family and binary projection are mutually exclusive")
+    if type(scope_inputs) is not bool or scope_inputs and (ios_binary or family not in
+            {None, 'javascript-metadata', 'native-package', 'native-validation', 'native-metadata',
+             'csharp-binary', 'core-binary', 'android-binary'}):
+        raise ValueError('SDK capture scope requires a worker with independent scoped admission')
     product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
         state_wave=state_wave, **({"sdk_state_wave": sdk_state_wave} if sdk_state_wave is not None else {}),
-        repository_root=repository_root, environ=environ, token=token)
+        repository_root=repository_root, environ=environ, token=token, allow_earlier_attempt=True,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+        **({'requested_scope': _read_scope(ios_binary, family)} if scope_inputs else {}))
     original = destination / "original"
     paths = {"input_root": original,
         "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
@@ -770,6 +1306,7 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
                    repository_root=repository_root, environ=environ,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                    trusted_workflow_sha=trusted_workflow_sha, **({"ios_binary": True} if ios_binary else {}),
                    **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
                        sdk_facade_metadata_admission=sdk_facade_metadata_admission,
@@ -781,7 +1318,7 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
 
 def capture_transport(plan, destination, github_output_path, *, artifact_id,
         artifact_sha256, trusted_workflow_sha, sdk_state_wave=None, state_wave=0, repository_root,
-        environ, token):
+        environ, token, completed_frozen=None):
     """Authenticate only the current original state upload before policy election.
 
     The caller must separately pin its elected receipt/object identities, build
@@ -793,10 +1330,13 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
                 or sdk_state_wave not in range(1, 20) or state_wave != 0))):
         raise ValueError("SDK transport requires one exact current state wave")
     root = Path(repository_root).resolve(strict=True)
-    plan, _, destination = product_reuse._product_materialization_paths(root, plan, plan, destination)
+    # Caller plans may live in runner temp; capture validates their exact bytes
+    # and enforces its fresh, repository-contained destination independently.
+    plan, destination = Path(os.path.abspath(plan)), Path(os.path.abspath(destination))
     output = Path(github_output_path).absolute()
     if (output.resolve(strict=False) != output or output == root or root in output.parents
-            or output == destination or destination in output.parents):
+            or output == destination or destination in output.parents
+            or output == plan or plan.parent in output.parents):
         raise ValueError("SDK transport output must be outside source and captured state")
     descriptor = os.open(output, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "a", encoding="utf-8") as held_output:
@@ -806,10 +1346,13 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
         product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
             artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
             sdk_state_wave=sdk_state_wave, state_wave=state_wave, repository_root=root,
-            environ=environ, token=token)
+            environ=environ, token=token, allow_earlier_attempt=True,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         original = destination / "original"
+        # Capture binds these exact caller plan bytes to the original upload.
+        # Keep its lane inventories: compact native carriers omit those files.
         paths = {"input_root": original,
-            "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
+            "plan_path": plan,
             "discovery_root": original / "product-resume-state",
             "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None
                                       else "product-resume-state")}
@@ -820,11 +1363,15 @@ def capture_transport(plan, destination, github_output_path, *, artifact_id,
     return paths
 
 
+@verification_scoped
+@measured
+@collection_admission_scope
 def collect(input_root, destination, github_output_path, *, wave, trusted_workflow_sha,
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
             sdk_worker_workflow_path=None, sdk_worker_job_name=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
+    core_metadata_caller=None, checkpoint_controls=False):
     """Advance only the exact elected SDK partition using the shared collector."""
     family_waves = {"csharp-binary": 19, "native-package": 4, "ios-package": 5, "javascript-metadata": 6,
                     "native-validation": 7, "native-metadata": 8, "ios-validation": 9, "ios-metadata": 10,
@@ -836,11 +1383,15 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     allowed = (family_waves[family],) if family is not None else (3,) if ios_binary else (1, 2)
     if type(ios_binary) is not bool or (ios_binary and family is not None) or type(wave) is not int or wave not in allowed:
         raise ValueError("SDK collection requires the exact wave for its elected family")
+    if core_metadata_caller is not None and (family != "core-metadata" or sdk_facade_metadata_admission is not None):
+        raise ValueError("Core collection caller requires its exact family and one admission policy")
     scope = ({"sdk_family": family} if family is not None else
              {"sdk_ios_binary_only": True} if ios_binary else {"sdk_javascript_only": True})
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
+    if completed_frozen is not None:
+        tooling["completed_frozen"] = completed_frozen
     root = Path(repository_root or Path(__file__).resolve().parents[1]).resolve()
     input_root, _, destination = product_reuse._product_materialization_paths(root, input_root, input_root, destination)
     if destination.exists() or destination.is_symlink():
@@ -855,26 +1406,43 @@ def collect(input_root, destination, github_output_path, *, wave, trusted_workfl
     shards = [destination / "collection" / row["shardDirectory"]
               for row in collection["rows"] if row["result"] == "success"]
     failed = tuple(product_reuse._identity(row) for row in collection["rows"] if row["result"] != "success")
-    evidence = tuple(destination / "collection" / row["sdkValidationEvidenceDirectory"]
-                     for row in collection["rows"] if row["result"] == "success") if family == "native-validation" else ()
+    evidence = tuple(dict.fromkeys(destination / "collection" / row["sdkValidationEvidenceDirectory"]
+                     for row in collection["rows"] if row["result"] == "success")) if family == "native-validation" else ()
     apple_evidence = tuple(destination / "collection" / row["sdkAppleValidationEvidenceDirectory"]
                            for row in collection["rows"] if row["result"] == "success") if family == "ios-validation" else ()
     handoff = destination / "handoff"
-    advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
-        github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
-        sdk_original_workflow_sha=trusted_workflow_sha,
-        **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
-        **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
+    with ExitStack() as held:
+        if family == "android-metadata" and shards and sdk_android_metadata_admission is None:
+            if len(shards) != 1 or failed:
+                raise ValueError("Android metadata collection requires one exact successful original")
+            from products.sdk_android_metadata_admission import AndroidMetadataAdmission
+            tooling["sdk_android_metadata_admission"] = AndroidMetadataAdmission.from_completed_predecessors(
+                completed_frozen=completed_frozen, plan=plan, discovery=discovery, state=state,
+                artifact=collection["rows"][0]["artifact"], trusted_workflow_sha=trusted_workflow_sha,
+                repository_root=root, environ=os.environ if environ is None else environ, token=token,
+                sdk_validation_tooling=sdk_validation_tooling, sdk_apple_validation_policy=sdk_apple_validation_policy)
+        if core_metadata_caller is not None and shards:
+            if len(shards) != 1 or failed:
+                raise ValueError("Core metadata collection requires one exact successful original")
+            from sdk_core_metadata_same_campaign import held_collection_admission
+            tooling["sdk_facade_metadata_admission"] = held.enter_context(held_collection_admission(
+                core_metadata_caller, plan, discovery, state, shards[0], trusted_workflow_sha=trusted_workflow_sha,
+                repository_root=root, environ=os.environ if environ is None else environ, token=token,
+                sdk_validation_tooling=sdk_validation_tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
+                completed_frozen=completed_frozen))
+        advanced = product_reuse.advance_products(plan, discovery, state, shards, handoff / "runtime-state",
+            github_output_path, repository_root=root, environ=environ, failed_instances=failed, **scope, **tooling,
+            routing_output=True, checkpoint_controls=checkpoint_controls,
+            sdk_original_workflow_sha=trusted_workflow_sha,
+            **({"sdk_evidence_roots": evidence} if family == "native-validation" else {}),
+            **({"sdk_apple_evidence_roots": apple_evidence} if family == "ios-validation" else {}))
     for name in ("product-resume-inputs", "product-resume-state"):
-        snapshot_regular_tree(input_root / name, handoff / name, allow_empty=True)
+        product_reuse.snapshot_reuse_inputs(input_root / name, handoff / name, completed_frozen=completed_frozen)
     if failed:
         github_output(github_output_path, {"sdk_matrix": '{"include":[]}', "sdk_workers_required": False})
     else:
-        ready = matrix(handoff / "product-resume-inputs/plan/impact-plan.json", handoff / "product-resume-state",
-                       handoff / "runtime-state", github_output_path, repository_root=root, environ=environ,
-                       trusted_workflow_sha=trusted_workflow_sha, **tooling,
-                       **({"ios_binary": True} if ios_binary else {}),
-                       **({"family": family} if family is not None else {}))
+        ready = _write_matrix(advanced["matrices"]["sdk"], github_output_path,
+                              ios_binary=ios_binary, family=family)
         if wave >= 2 and ready["include"]:
             raise ValueError("SDK workers remain after their final collection wave")
     return advanced
@@ -884,7 +1452,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
                    artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
                    repository_root, environ, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
                    preparation_phase="package", preparation_target="desktop",
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Prepare once from elected original inputs; this does not admit an upload.
 
     The transport caller must bind these outputs and the retained original plan
@@ -909,16 +1477,32 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
+    current_replays = []
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+            requested_scope=(instance,),
+            _product_state_consumer=current_replays.append,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-            repository_root=root, environ=environ, token=token, **tooling) as inputs:
+            repository_root=root, environ=environ, token=token, **tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
             raise ValueError("SDK native preparation consumer is not selected")
         prepared = destination / "inputs"
-        ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+        if current_replays and selection["source"] == "current-runtime":
+            replay, = current_replays
+            if (type(replay) is not product_reuse._VerifiedProductState or replay.requested != (instance,)
+                    or replay.rebased_request.get("sdkRuntimeSource") == "released-default"):
+                raise ValueError("Native preparation retained replay differs from its current selection")
+            ready = product_reuse._materialize_product_predecessors(replay, instance, prepared,
+                expected_build_key, root, materialized_scope=NATIVE_RUNTIME_PREDECESSORS)
+        else:
+            # Released defaults also capture their external Runtime predecessors.
+            ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
+                expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected native SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -928,7 +1512,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
                 ("contract", "contract", "metadata", "common") or len(bundles) != 1
                 or bundles[0]["sha256"] != selection["contractPayloadSha256"]):
             raise ValueError("Elected current Contract differs from verified native SDK inputs")
-        before = regular_file_inventory(prepared, allow_empty=True)
+        before = memoized_file_inventory(prepared, allow_empty=True)
 
         def original(product, runtime_component, phase, target):
             identity = PhaseInstanceId(product, runtime_component, phase, target)
@@ -953,11 +1537,11 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
             for phase in ("package", "validation"):
                 record = original("runtime", target, phase, target)
                 snapshot_regular_tree(record["stage"], runtime_stages / target / phase)
-        runtime_before = regular_file_inventory(runtime_stages)
+        runtime_before = memoized_file_inventory(runtime_stages)
 
         def unchanged():
-            if (regular_file_inventory(prepared, allow_empty=True) != before
-                    or regular_file_inventory(runtime_stages) != runtime_before):
+            if (memoized_file_inventory(prepared, allow_empty=True) != before
+                    or memoized_file_inventory(runtime_stages) != runtime_before):
                 raise ValueError("Native preparation original predecessor inputs changed")
 
         unchanged()
@@ -1008,7 +1592,7 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
 def execute_javascript(plan, discovery, state, destination, *, phase, expected_build_key,
                        artifact_id, artifact_sha256, trusted_workflow_sha, keyring, keys_directory,
                        repository_root, environ, token, sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+    sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Execute elected SDK work; finalize only after original input contexts close."""
     from sdk_javascript_phase import execute
 
@@ -1020,20 +1604,30 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
     if destination.exists() or destination.is_symlink():
         raise ValueError("SDK JavaScript worker destination must not exist")
     instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+    consumed = [PhaseInstanceId("contract", "contract", item, "common") for item in ("binary", "metadata")]
+    consumed.append(PhaseInstanceId("runtime", "node-js", phase,
+                                   "node-js" if phase == "package" else "node-js-binding"))
+    if phase == "validation":
+        consumed.append(PhaseInstanceId("sdk", "javascript", "package", "node"))
     fields = {"product": "sdk", "component": "javascript", "phase": phase, "target": "node"}
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+            requested_scope=(instance,),
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-            repository_root=root, environ=environ, token=token, **tooling) as inputs:
+            repository_root=root, environ=environ, token=token, **tooling,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
         selection = inputs["selection"]
         if fields not in selection["consumers"]:
             raise ValueError("SDK JavaScript worker is not selected")
         prepared = destination / "inputs"
         ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
             expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+            materialized_scope=tuple(consumed),
+            sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected SDK producer"))
         contract = product_reuse.validate_phase_receipt(product_reuse._canonical_control(
@@ -1068,7 +1662,10 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         destination=destination / "shard")
 
 
-def _workflow_main(argv):
+@verification_scoped
+@product_reuse._fresh_ci_observations(share_nested=True)
+def _workflow_main(argv, *, _continuation=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Replay, capture and collect exact SDK phase work", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
     parsers = {name: commands.add_parser(name, allow_abbrev=False) for name in ("matrix", "capture", "collect")}
@@ -1094,27 +1691,110 @@ def _workflow_main(argv):
     captured.add_argument("--artifact-sha256", required=True)
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
-    parsers["collect"].add_argument("--input-root", type=Path, required=True)
+    captured.add_argument("--scope-inputs", action="store_true")
+    captured.add_argument("--preparation-destination", type=Path)
+    captured.add_argument("--preparation-artifact-id", type=int)
+    captured.add_argument("--preparation-artifact-sha256")
+    captured.add_argument("--preparation-phase", choices=("package", "validation", "metadata"))
+    captured.add_argument("--preparation-state-wave", type=int)
+    captured.add_argument("--preparation-sdk-state-wave", type=int)
+    collected = parsers["collect"]
+    source = collected.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input-root", type=Path)
+    source.add_argument("--capture-plan", type=Path)
+    collected.add_argument("--capture-destination", type=Path)
+    collected.add_argument("--capture-artifact-id", type=int)
+    collected.add_argument("--capture-artifact-sha256")
+    collected.add_argument("--capture-state-wave", type=int, choices=range(6))
+    collected.add_argument("--capture-sdk-state-wave", type=int, choices=range(1, 20))
+    parsers["collect"].add_argument("--checkpoint-controls", action="store_true")
     parsers["collect"].add_argument("--wave", type=int, choices=range(1, 20), required=True)
     parsers["collect"].add_argument("--sdk-worker-workflow-path")
     parsers["collect"].add_argument("--sdk-worker-job-name")
+    parsers["collect"].add_argument("--core-metadata-caller", type=Path)
+    for name in ("matrix", "capture", "collect"):
+        add_completed_frozen_argument(parsers[name])
     arguments = vars(parser.parse_args(argv))
     command = arguments.pop("command")
     try:
-        with metadata_admission_options(arguments) as admissions:
+        incoming = {name: arguments.pop("capture_" + name, None) for name in
+            ("plan", "destination", "artifact_id", "artifact_sha256", "state_wave", "sdk_state_wave")}
+        combined = any(value is not None for value in incoming.values())
+        if combined:
+            if (command != "collect" or arguments.get("input_root") is not None
+                    or arguments["repository_root"] is None or any(incoming[name] is None for name in
+                        ("plan", "destination", "artifact_id", "artifact_sha256"))):
+                raise ValueError("Combined SDK collection requires complete capture controls and one input source")
+            current, previous = arguments["destination"].resolve(), incoming["destination"].resolve()
+            if current == previous or current in previous.parents or previous in current.parents:
+                raise ValueError("Combined SDK capture and collection destinations overlap")
+            runner_output = os.environ.get("GITHUB_OUTPUT")
+            if not runner_output or Path(runner_output).absolute() != arguments["github_output_path"].absolute():
+                raise ValueError("SDK transport output must be the runner-provided GITHUB_OUTPUT")
+            incoming["state_wave"] = incoming["state_wave"] or 0
+        preparation = {name: arguments.pop("preparation_" + name, None) for name in
+            ("destination", "artifact_id", "artifact_sha256", "phase", "state_wave", "sdk_state_wave")}
+        paired = any(value is not None for value in preparation.values())
+        if _continuation is not None and not paired:
+            raise ValueError("Native worker continuation requires paired scoped captures")
+        output = arguments["github_output_path"]
+        if paired:
+            if (command != "capture" or arguments.get("family") != "native-validation"
+                    or not arguments.get("scope_inputs") or any(preparation[name] is None for name in
+                        ("destination", "artifact_id", "artifact_sha256", "phase"))):
+                raise ValueError("Paired preparation requires complete scoped native validation capture controls")
+            current, previous = (arguments["destination"].resolve(), preparation["destination"].resolve())
+            if current == previous or current in previous.parents or previous in current.parents:
+                raise ValueError("Paired native capture destinations overlap")
+            preparation["family"] = "native-" + preparation.pop("phase")
+            preparation["state_wave"] = preparation["state_wave"] or 0
+            # Withhold caller outputs until both captures, the optional execution
+            # continuation, and policy exit checks pass.
+            arguments["github_output_path"] = None
+        with ExitStack() as held:
+            if combined:
+                # Authenticate once against the caller plan, before capture and
+                # caller-policy selection. The capability stays live through collect.
+                arguments["plan"] = incoming["plan"]
+                semantic = held.enter_context(completed_frozen_options(arguments))
+                arguments.pop("plan")
+                paths = capture_transport(**incoming, github_output_path=output,
+                    repository_root=arguments["repository_root"],
+                    trusted_workflow_sha=arguments["trusted_workflow_sha"], **semantic,
+                    environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                arguments["input_root"] = paths["input_root"]
+                admissions = held.enter_context(metadata_admission_options(arguments))
+            else:
+                admissions = held.enter_context(metadata_admission_options(arguments))
+                semantic = held.enter_context(completed_frozen_options(arguments))
             policy = arguments.pop("sdk_validation_tooling")
             if policy is not None:
                 arguments["sdk_validation_tooling"] = product_reuse._canonical_control(policy, "Caller SDK tooling policy")
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-            return {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments, **admissions,
+            result = {"matrix": matrix, "capture": capture, "collect": collect}[command](**arguments, **admissions, **semantic,
                 environ=os.environ, **({"token": os.environ.get("GITHUB_TOKEN", "")} if command != "matrix" else {}))
+            if paired:
+                prepared = capture(**{**arguments, **preparation, "plan": result["plan_path"]},
+                    **admissions, **semantic, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                if _continuation is not None:
+                    # The capability never crosses a process or serialized boundary.
+                    # Both captures and execution remain inside its lifetime checks.
+                    _continuation(result, prepared, semantic)
+        if paired:
+            github_output(output, {**{name: str(value) for name, value in result.items() if name != "matrix"},
+                "sdk_matrix": canonical_json_bytes(result["matrix"]).decode().strip(),
+                "sdk_workers_required": bool(result["matrix"]["include"]),
+                "preparation_state_root": str(prepared["state_root"]),
+                "preparation_sdk_matrix": canonical_json_bytes(prepared["matrix"]).decode().strip()})
+        return result
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
 
 def _capture_transport_main(argv):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Capture exact official SDK state transport before caller policy selection",
                                      allow_abbrev=False)
     for name in ("plan", "destination", "github-output", "repository-root"):
@@ -1124,6 +1804,7 @@ def _capture_transport_main(argv):
     parser.add_argument("--artifact-id", type=int, required=True)
     parser.add_argument("--state-wave", type=int, choices=range(6), default=0)
     parser.add_argument("--sdk-state-wave", type=int, choices=range(1, 20))
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     arguments["github_output_path"] = arguments.pop("github_output")
     try:
@@ -1131,13 +1812,15 @@ def _capture_transport_main(argv):
         runner_output = os.environ.get("GITHUB_OUTPUT")
         if not runner_output or Path(runner_output).absolute() != arguments["github_output_path"].absolute():
             raise ValueError("SDK transport output must be the runner-provided GITHUB_OUTPUT")
-        capture_transport(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+        with completed_frozen_options(arguments) as semantic:
+            capture_transport(**arguments, **semantic, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0
 
 
 def _ios_binary_main(argv):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Execute only the elected SDK iOS binary phase")
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
@@ -1150,13 +1833,14 @@ def _ios_binary_main(argv):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     uploads = {f"ios-{lane}": {
         "artifactId": arguments.pop(lane.replace("-", "_") + "_artifact_id"),
         "artifactSha256": arguments.pop(lane.replace("-", "_") + "_artifact_sha256"),
     } for lane in lanes}
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             plan, discovery, state, destination = (arguments.pop(name) for name in (
                 "plan", "discovery_root", "state_root", "destination"))
             policy = arguments.pop("sdk_validation_tooling")
@@ -1165,7 +1849,7 @@ def _ios_binary_main(argv):
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-            execute_ios_binary(plan, discovery, state, destination, **arguments, **admissions,
+            execute_ios_binary(plan, discovery, state, destination, **arguments, **admissions, **semantic,
                 native_uploads=uploads, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -1173,6 +1857,7 @@ def _ios_binary_main(argv):
 
 
 def _parity_main(argv, *, full=False):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description="Verify parity against authenticated immutable products", allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "destination", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -1180,16 +1865,17 @@ def _parity_main(argv, *, full=False):
         parser.add_argument("--" + name, type=Path, required=full and name == "sdk-validation-tooling")
     parser.add_argument("--sdk-original-workflow-sha", required=True)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
                 if arguments[name] is not None:
                     arguments[name] = product_reuse._canonical_control(arguments[name], "Caller Java parity " + name)
             plan, discovery, state, destination = (arguments.pop(name) for name in
                 ("plan", "discovery_root", "state_root", "destination"))
             execute = execute_parity if full else execute_java_parity
-            execute(plan, discovery, state, destination, **arguments, **admissions, environ=os.environ)
+            execute(plan, discovery, state, destination, **arguments, **admissions, **semantic, environ=os.environ)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
     return 0
@@ -1197,6 +1883,7 @@ def _parity_main(argv, *, full=False):
 
 @verification_scoped
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "parity":
         return _parity_main(argv[1:], full=True)
@@ -1272,22 +1959,34 @@ def main(argv=None):
     parser.add_argument("--state-artifact-sha256")
     parser.add_argument("--state-capture-root", type=Path)
     parser.add_argument("--state-wave", type=int, default=0)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     if not worker and not native_prepare:
+        parser.add_argument("--routing-json")
+        parser.add_argument("--reference-sdk-inputs", action='store_true', default=argparse.SUPPRESS)
+        parser.add_argument("--plan-id")
         parser.add_argument("--runtime-original-producer", type=Path, default=argparse.SUPPRESS)
         parser.add_argument("--runtime-original-workflow-sha", default=argparse.SUPPRESS)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             if ("runtime_original_producer" in arguments) != ("runtime_original_workflow_sha" in arguments):
                 raise ValueError("Retained Runtime producer and original workflow pin must be paired")
             if "runtime_original_producer" in arguments:
                 arguments["runtime_original_producer"] = product_reuse._canonical_control(
                     arguments["runtime_original_producer"], "Original retained Runtime producer")
+            if "retained_sdk_inputs_source" in arguments:
+                arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                    arguments["retained_sdk_inputs_source"], "Original retained SDK input source")
             plan, discovery, state, destination = (arguments.pop(name) for name in ("plan", "discovery_root", "state_root", "destination"))
             state_locator = [arguments.pop(name) for name in ("state_artifact_id", "state_artifact_sha256", "state_capture_root")]
             state_wave = arguments.pop("state_wave")
+            routing_json = arguments.pop("routing_json", None)
+            plan_id = arguments.pop("plan_id", None)
+            if (routing_json is None) != (plan_id is None):
+                raise ValueError("SDK routing requires its current plan upload identity")
             if any(value is not None for value in state_locator):
                 if worker or any(value is None for value in state_locator) or arguments["trusted_workflow_sha"] is None:
                     raise ValueError("SDK input staging requires the complete caller-owned Runtime state locator")
@@ -1296,10 +1995,23 @@ def main(argv=None):
                 expected_state = capture_root / ("original/runtime-state" if state_wave else "original/product-resume-state")
                 if discovery != expected_discovery or state != expected_state:
                     raise ValueError("SDK input staging paths differ from the caller-selected Runtime capture")
-                product_reuse.capture_runtime_resume_upload(plan, capture_root,
-                    artifact_id=identifier, artifact_sha256=digest, state_wave=state_wave,
-                    trusted_workflow_sha=arguments["trusted_workflow_sha"], repository_root=arguments["repository_root"],
-                    environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+                routed = None
+                if routing_json is not None:
+                    if len(routing_json.encode()) > 128 * 1024:
+                        raise ValueError("SDK routing control exceeds its bound")
+                    routing_state = (json.loads(routing_json), dict(artifact_id=str(identifier),
+                        artifact_digest=digest, state_wave=str(state_wave), sdk_state_wave=""), plan_id)
+                    _, routed = _routed_selection(plan, arguments["repository_root"], os.environ,
+                                                  arguments["trusted_workflow_sha"], routing_state)
+                if routed is not None and routed.get("source") == "current-runtime":
+                    arguments["routing_state"] = routing_state
+                else:
+                    product_reuse.capture_runtime_resume_upload(plan, capture_root,
+                        artifact_id=identifier, artifact_sha256=digest, state_wave=state_wave,
+                        trusted_workflow_sha=arguments["trusted_workflow_sha"], repository_root=arguments["repository_root"],
+                        environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
+            elif routing_json is not None:
+                raise ValueError("SDK routing requires its exact state locator")
             elif state_wave:
                 raise ValueError("SDK input staging state wave requires its complete capture locator")
             action = prepare_native if native_prepare else execute_javascript if javascript else stage
@@ -1309,7 +2021,7 @@ def main(argv=None):
             apple_policy = arguments.pop("sdk_apple_validation_policy")
             if apple_policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(apple_policy, "Caller Apple validation policy")
-            action(plan, discovery, state, destination, **arguments, **admissions,
+            action(plan, discovery, state, destination, **arguments, **admissions, **semantic,
                 environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""))
     except (OSError, ValueError) as error:
         parser.error(str(error))

@@ -5,24 +5,232 @@ independently. Neither these paths nor the returned inventory grant producer,
 host, receipt, or reuse authority. No Maven output exception is defined here.
 """
 
+import ctypes
+from contextlib import contextmanager
+from contextvars import ContextVar
+import errno
 import os
 from pathlib import Path
+import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
 from .inventory import (
-    read_regular_file_bytes, regular_file_inventory, require_regular_directory, require_semver,
+    _is_reparse_point, _open_created_directory, _open_directory, _open_regular_file, _stat_identity,
+    _validate_snapshot_source,
+    read_regular_file_bytes, require_regular_directory, require_semver,
     snapshot_regular_tree,
 )
+from .restore import memoized_file_inventory as regular_file_inventory
 from .tooling import verified_tooling_capture
 from .sdk_apple_package_source import capture_apple_package_sources
+
+
+def _apple_clone_operation():
+    if sys.platform == "linux":
+        import fcntl
+        operation = getattr(fcntl, "FICLONE", None)
+        if operation is None:
+            return None
+
+        def clone(source, destination, name, _flags):
+            # FICLONE operates on an already-created file, unlike fclonefileat.
+            target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=destination)
+            try:
+                try:
+                    fcntl.ioctl(target, operation, source)
+                except OSError as error:
+                    if error.errno not in {errno.ENOTTY, errno.EOPNOTSUPP, errno.EXDEV}:
+                        raise
+                    held = os.fstat(target)
+                    named = os.stat(name, dir_fd=destination, follow_symlinks=False)
+                    if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+                        raise ValueError("Linux clone destination changed before fallback") from error
+                    os.unlink(name, dir_fd=destination)
+                    from runtime_reference_transport import count
+                    count("linuxCloneFallbacks")
+                    raise OSError(errno.ENOTSUP, "Linux file clone is unavailable") from error
+            finally:
+                os.close(target)
+            return 0
+
+        return clone
+    clone = (getattr(ctypes.CDLL(None, use_errno=True), "fclonefileat", None)
+             if sys.platform == "darwin" else None)
+    if clone is not None:
+        clone.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        clone.restype = ctypes.c_int
+    return clone
+
+
+def _clone_apple_file(source: int, destination: int, name: str, clone) -> None:
+    metadata = os.fstat(source)
+    if not stat.S_ISREG(metadata.st_mode) or _is_reparse_point(metadata):
+        raise ValueError("Apple snapshot source is not a regular file")
+    # Keep the byte-copy behavior for immutable/other special file flags.
+    if getattr(metadata, "st_flags", 0):
+        raise OSError(errno.ENOTSUP, "Flagged Apple input requires byte copy")
+    # Held regular source, held private parent, exclusive leaf. On macOS,
+    # CLONE_NOOWNERCOPY; no directory cloning, hardlinks or trust from xattrs.
+    if clone(source, destination, os.fsencode(name), 0x2) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), name)
+    target = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=destination)
+    try:
+        copied = os.fstat(target)
+        if (not stat.S_ISREG(copied.st_mode) or copied.st_nlink != 1
+                or copied.st_size != metadata.st_size
+                or (copied.st_dev, copied.st_ino) == (metadata.st_dev, metadata.st_ino)):
+            raise ValueError("Apple snapshot clone is not an independent regular file")
+        os.fchmod(target, stat.S_IMODE(metadata.st_mode))
+    finally:
+        os.close(target)
+    if _stat_identity(os.fstat(source)) != _stat_identity(metadata):
+        raise ValueError("Apple snapshot source changed during capture")
+    from runtime_reference_transport import count
+    count("nativeCloneFiles")
+    count("nativeCloneBytes", metadata.st_size)
+
+
+def copy_apple_file(source: Path, destination: Path) -> None:
+    """Create an independent private file; the caller still verifies all bytes."""
+    clone = _apple_clone_operation()
+    if clone is None:
+        # Existing portable rehydration path; the private tree is verified by the caller.
+        with Path(source).open("rb") as original, Path(destination).open("xb") as output:
+            shutil.copyfileobj(original, output, length=1024**2)
+        return
+    source_descriptor, before = _open_regular_file(source, "Apple input", reject_symlink_parents=True)
+    parent = None
+    try:
+        parent = _open_directory(Path(destination).parent, "Apple private file parent")
+        try:
+            _clone_apple_file(source_descriptor, parent, Path(destination).name, clone)
+        except OSError as error:
+            if error.errno not in {errno.ENOTSUP, errno.EXDEV}:
+                raise
+            output = os.open(Path(destination).name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             stat.S_IMODE(before.st_mode), dir_fd=parent)
+            with os.fdopen(output, "wb") as target, os.fdopen(source_descriptor, "rb", closefd=False) as original:
+                shutil.copyfileobj(original, target, length=1024**2)
+                if original.tell() != before.st_size:
+                    raise ValueError("Apple input changed size during copy")
+        if _stat_identity(os.fstat(source_descriptor)) != _stat_identity(before):
+            raise ValueError("Apple input changed during copy")
+    finally:
+        os.close(source_descriptor)
+        if parent is not None:
+            os.close(parent)
+
+
+def _clone_apple_directory(source: int, destination: int, clone, *, allow_empty: bool) -> None:
+    before = os.fstat(source)
+    names = sorted(os.listdir(source))
+    for name in names:
+        metadata = os.stat(name, dir_fd=source, follow_symlinks=False)
+        directory = stat.S_ISDIR(metadata.st_mode)
+        if (_is_reparse_point(metadata) or not (directory or stat.S_ISREG(metadata.st_mode))
+                or (not directory and not allow_empty and metadata.st_size == 0)):
+            raise ValueError("Apple snapshot source contains an unsafe or empty entry")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        descriptor = os.open(name, flags | (os.O_DIRECTORY if directory else 0), dir_fd=source)
+        try:
+            if _stat_identity(os.fstat(descriptor)) != _stat_identity(metadata):
+                raise ValueError("Apple snapshot source changed while opening")
+            if directory:
+                target = _open_created_directory(
+                    destination, name, stat.S_IMODE(metadata.st_mode), "Apple snapshot directory")
+                try:
+                    _clone_apple_directory(descriptor, target, clone, allow_empty=allow_empty)
+                    os.fchmod(target, stat.S_IMODE(metadata.st_mode))
+                finally:
+                    os.close(target)
+            else:
+                _clone_apple_file(descriptor, destination, name, clone)
+            if _stat_identity(os.fstat(descriptor)) != _stat_identity(metadata):
+                raise ValueError("Apple snapshot source changed during capture")
+        finally:
+            os.close(descriptor)
+    if _stat_identity(before) != _stat_identity(os.fstat(source)) or names != sorted(os.listdir(source)):
+        raise ValueError("Apple snapshot source directory changed during capture")
+
+
+def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool = False) -> None:
+    """Private copies with the caller's unchanged before/after byte inventories.
+
+    Native clones avoid rewriting large payloads while preserving independent files.
+    Other hosts/filesystems retain the frozen descriptor-based byte-copy path.
+    """
+    clone = _apple_clone_operation()
+    if clone is None:
+        snapshot_regular_tree(source, destination, allow_empty=allow_empty)
+        return
+    source, destination = (Path(os.path.abspath(path)) for path in (source, destination))
+    if source == destination or source in destination.parents or destination in source.parents:
+        raise ValueError("Apple snapshot source and destination must not overlap")
+    source_descriptor = _open_directory(source, "Apple snapshot source")
+    parent = target = None
+    fallback = False
+    try:
+        _validate_snapshot_source(source_descriptor, allow_empty=allow_empty)
+        parent = _open_directory(destination.parent, "Apple snapshot parent", create=True)
+        try:
+            target = _open_created_directory(parent, destination.name, 0o700, "Apple snapshot root")
+        except FileExistsError as error:
+            raise ValueError("Apple snapshot destination must not exist") from error
+        try:
+            _clone_apple_directory(source_descriptor, target, clone, allow_empty=allow_empty)
+        except OSError as error:
+            if error.errno not in {errno.ENOTSUP, errno.EXDEV}:
+                raise
+            held = os.fstat(target)
+            named = os.stat(destination.name, dir_fd=parent, follow_symlinks=False)
+            if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+                raise ValueError("Apple snapshot destination changed before fallback") from error
+            os.close(target)
+            target = None
+            shutil.rmtree(destination.name, dir_fd=parent)
+            fallback = True
+    finally:
+        os.close(source_descriptor)
+        if target is not None:
+            os.close(target)
+        if parent is not None:
+            os.close(parent)
+    if fallback:
+        snapshot_regular_tree(source, destination, allow_empty=allow_empty)
 
 
 def _input_inventory(path: Path, *, allow_empty: bool):
     for ancestor in (path.absolute(), *path.absolute().parents):
         require_regular_directory(ancestor, "Apple SDK input ancestry")
     return regular_file_inventory(path, allow_empty=allow_empty)
+
+
+_PRIVATE_EXECUTION = ContextVar("private_apple_package_execution", default=None)
+
+
+@contextmanager
+def _borrow_private_apple_execution(root: Path):
+    """Hold the outer verifier's private original events, never transported authority.
+
+    As with private SDK inputs, the owning capture retains every authentication
+    and lifetime check. Only the exact original-package replay can borrow this
+    tree; other inputs and all direct callers retain independent snapshots.
+    """
+    root = Path(root).absolute()
+    before = _input_inventory(root, allow_empty=True)
+    token = _PRIVATE_EXECUTION.set(root)
+    try:
+        yield
+    finally:
+        _PRIVATE_EXECUTION.reset(token)
+        if _input_inventory(root, allow_empty=True) != before:
+            raise ValueError("Private Apple package execution changed during use")
 
 
 def _verify_sdk_apple_with_tooling(
@@ -64,17 +272,36 @@ def _verify_sdk_apple_with_tooling(
                 raise ValueError("Apple SDK private verification work overlaps an original input")
         private_sources = {}
         for name, (source, allow_empty) in normalized_sources.items():
-            private_sources[name] = root / name
-            snapshot_regular_tree(source, private_sources[name], allow_empty=allow_empty)
-            if _input_inventory(private_sources[name], allow_empty=allow_empty) != before[name]:
-                raise ValueError("Apple SDK original input changed during capture")
+            if (command_name == "verify-original-apple-package-execution" and name == "execution"
+                    and _PRIVATE_EXECUTION.get() == source.absolute()):
+                private_sources[name] = source
+                from runtime_reference_transport import count
+                count("applePrivateExecutionBorrows")
+                count("applePrivateExecutionCopyBytesAvoided", sum(row["bytes"] for row in before[name]))
+            else:
+                private_sources[name] = root / name
+                _snapshot_apple_tree(source, private_sources[name], allow_empty=allow_empty)
+            captured = _input_inventory(private_sources[name], allow_empty=allow_empty)
+            if captured != before[name]:
+                expected_files = {row["relativePath"]: row for row in before[name]}
+                captured_files = {row["relativePath"]: row for row in captured}
+                changed = next(path for path in sorted(expected_files.keys() | captured_files.keys())
+                               if expected_files.get(path) != captured_files.get(path))
+                raise ValueError(
+                    f"Apple SDK original input changed during capture: {name}/{changed}; "
+                    f"expected={expected_files.get(changed)!r}; captured={captured_files.get(changed)!r}")
         expected = root / "expected"
         expected.mkdir()
         for name, data in expected_bytes.items():
             (expected / name).write_bytes(data)
+        # A development product may use the caller's explicitly pinned release
+        # verifier. Product trust stays unchanged; release verification never downgrades.
+        tooling_trust = ("release" if required_trust_domain == "development"
+                         and tooling_keyring is not None and tooling_keys_directory is not None
+                         else required_trust_domain)
         with verified_tooling_capture(
             tooling_evidence, repository, tooling_public_key,
-            required_trust_domain=required_trust_domain, keyring=tooling_keyring,
+            required_trust_domain=tooling_trust, keyring=tooling_keyring,
             keys_directory=tooling_keys_directory, policy_revision=policy_revision,
         ) as jar:
             private_expected = {name: expected / name for name in expected_paths}
@@ -84,8 +311,14 @@ def _verify_sdk_apple_with_tooling(
             environment = {key: value for key, value in os.environ.items() if key in {
                 "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
             }}
-            subprocess.run(command, cwd=root, env=environment, check=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                subprocess.run(command, cwd=root, env=environment, check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as failure:
+                if failure.stderr:
+                    message = failure.stderr.decode('utf-8', errors='replace') if isinstance(failure.stderr, bytes) else failure.stderr
+                    print(message, file=sys.stderr, end='')
+                raise
         for name, (source, allow_empty) in normalized_sources.items():
             if any(_input_inventory(path, allow_empty=allow_empty) != before[name]
                    for path in (source, private_sources[name])):

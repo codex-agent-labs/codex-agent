@@ -17,9 +17,10 @@ from product_reuse import _validate_plan, _consumer, _release_trust, capture_sdk
 from runtime_aggregate_release import _destination
 from sdk_apple_preparation_capture import capture_apple_signing_preparation
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
+    canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     require_integer, require_sha256, sha256_bytes, snapshot_regular_tree, write_canonical_json,
 )
+from products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from products.sdk_apple_validation_attestation import (
     ATTESTATION_NAME, derive_apple_validation_attestation, verified_prepared_apple_validation,
 )
@@ -27,10 +28,12 @@ from products.sdk_apple_validation_inputs import capture_sdk_apple_validation_ev
 from products.signatures import load_keyring, private_key_bytes, require_active_release_key, sign_manifest, verify_manifest_signature
 
 
+@verification_scoped
 def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_path,
         validation_receipt_path, destination, *, target, expected_receipt_sha256,
         artifact_id, artifact_sha256, preparation_artifact_id, preparation_artifact_sha256,
-        trusted_source_sha, trusted_workflow_sha, transport_producer, event_payload, environment, token):
+        trusted_source_sha, trusted_workflow_sha, transport_producer, event_payload, environment, token,
+        validation_archive=None):
     """Sign exact prepared capture bytes; never build, replay, or reissue receipts."""
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("Protected Apple signing requires an exact validation target")
@@ -69,7 +72,8 @@ def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_pa
             trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate, environ=environment, token=token)
         capture_sdk_ios_validation_upload(plan_path, original, validation_receipt_path=receipt_path,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256,
-            trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate, environ=environment, token=token)
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate, environ=environment, token=token,
+            **({"transport_archive": validation_archive} if validation_archive is not None else {}))
         baselines = {path: regular_file_inventory(path, allow_empty=True) for path in (prepared, original)}
 
         def unchanged():
@@ -123,11 +127,24 @@ def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_pa
             unchanged()
         # Nothing reaches the caller until the immutable binding context exits.
         unchanged()
-        for source, name in ((prepared, "preparation-transport"), (original, "validation-transport"),
-                             (root / "policy", "caller-policy")):
-            snapshot_regular_tree(source, result / name, allow_empty=True)
-            if regular_file_inventory(result / name, allow_empty=True) != baselines[source]:
-                raise ValueError("Apple signing provenance changed during forwarding")
+        # The signed carrier already contains the complete original capture.
+        # Preserve exact transport observations/inventories and immutable upload
+        # locators without copying those same multi-GB bodies into it again.
+        for source, name in ((prepared, "preparation-transport"), (original, "validation-transport")):
+            retained = result / name
+            retained.mkdir()
+            transport = read_regular_file_bytes(source / "capture-transport.json",
+                max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+            (retained / "capture-transport.json").write_bytes(transport)
+            write_canonical_json(retained / "inventory.json", {"schemaVersion": 1, "files": baselines[source]})
+            if source == prepared:
+                (retained / "preparation.json").write_bytes(read_regular_file_bytes(
+                    prepared / "original/preparation.json", max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+            baselines[retained] = regular_file_inventory(retained, allow_empty=True)
+        snapshot_regular_tree(root / "policy", result / "caller-policy")
+        if regular_file_inventory(result / "caller-policy") != baselines[root / "policy"]:
+            raise ValueError("Apple signing policy changed during forwarding")
+        baselines[result / "caller-policy"] = baselines[root / "policy"]
         caller = {"schemaVersion": 1, "target": target, "trustedSourceCommit": trusted_source_sha,
             "trustedSourceTree": source_tree, "trustedWorkflowSha": trusted_workflow_sha,
             "transportProducer": producer, "authorizationReason": reason,

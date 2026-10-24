@@ -5,13 +5,18 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
 import tempfile
 from typing import Any
 
-from .aggregate import verified_index_content, verify_immutable_product_indexes
+from .sdk_campaign_index import (
+    is_javascript_validation, verified_index_content, verify_immutable_product_indexes,
+    verify_sdk_validation_index_object, verify_build_key_output_consistency,
+)
 from .contract_projection import VerifiedContractProjection, VerifiedContractExecutionProjection, verify_contract_component_projection
 from .inventory import (
     canonical_json_bytes,
+    git_file_inventory,
     load_canonical_json_bytes,
     read_regular_file_bytes,
     require_array,
@@ -22,6 +27,7 @@ from .inventory import (
     require_sha256,
     require_string,
     sha256_bytes,
+    tree_entries,
 )
 from .index import (
     _verify_index_receipt,
@@ -32,7 +38,6 @@ from .index import (
     verify_contract_index_object,
     verify_native_runtime_index_object,
     verify_adapter_runtime_index_object,
-    verify_sdk_validation_index_object,
     SignedProductIndex,
     stable_index_identity,
     verify_release_product_index,
@@ -47,10 +52,10 @@ from .plan import (
     runtime_validation_dependencies,
     verified_phase_flags_digest,
     verified_phase_toolchain_digest,
-    verify_build_key_output_consistency,
     verify_runtime_validation_projection,
     native_runtime_validation_dependencies, _native_runtime_projections_from_request,
     sdk_validation_dependencies,
+    javascript_validation_dependencies,
     NATIVE_RUNTIME_EVIDENCE_KEYS, VerifiedNativeRuntimeProjection,
     _native_runtime_projection_from_record, _contract_projection_from_request_components,
 )
@@ -59,7 +64,7 @@ from .runtime_adapter_content import (
     VerifiedAdapterRuntimeProjection, adapter_comparison_provider, decode_adapter_comparison_records,
 )
 from .receipt import build_key_payload
-from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records, sdk_validation_provider
+from .sdk_validation import VerifiedSdkValidationProjection, decode_sdk_validation_records
 from .sdk_apple_validation_admission import AppleValidationAdmission
 from .sdk_apple_package_admission import ApplePackageAdmission
 from .sdk_facade_metadata_admission import FacadeMetadataAdmission
@@ -82,7 +87,7 @@ from .restore import (
     store_local_object,
     verify_object,
 )
-from .selection import phase_git_inventory
+from .selection import _inventory_owners, _normalized_paths
 
 
 SOURCES = ("stable", "promoted-main", "same-pr", "local")
@@ -144,6 +149,11 @@ class RemoteCatalog:
     contract_attestation: Path | None = None
     contract_attestation_signature: Path | None = None
     contract_public_key: Path | None = None
+
+
+def catalog_sequence(value):
+    """Accept legacy single catalogs and ordered historical fallbacks."""
+    return () if value is None else tuple(value) if isinstance(value, (list, tuple)) else (value,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,8 +291,8 @@ class LookupSession:
         pull_request: int | None,
         restore_root: Path | None = None,
         stable: Iterable[RemoteCatalog] = (),
-        promoted_main: RemoteCatalog | None = None,
-        same_pr: RemoteCatalog | None = None,
+        promoted_main: RemoteCatalog | Iterable[RemoteCatalog] | None = None,
+        same_pr: RemoteCatalog | Iterable[RemoteCatalog] | None = None,
         local: LocalCatalog | None = None,
         native_runtime_projection=None,
         native_runtime_evidence=None,
@@ -290,6 +300,7 @@ class LookupSession:
         adapter_runtime_evidence=None,
         runtime_aggregate_evidence=None,
         sdk_validation_projection=None,
+        sdk_javascript_index_projection=None,
     ) -> None:
         self.repository = require_relative_path(repository, "lookup repository")
         if self.repository.count("/") != 1:
@@ -316,7 +327,10 @@ class LookupSession:
         if sdk_validation_projection is not None and not callable(sdk_validation_projection):
             raise ValueError("SDK validation comparison provider must be callable")
         self._sdk_validation_projection = sdk_validation_projection
-        self._sdk_projections: dict[bytes, VerifiedSdkValidationProjection] = {}
+        if sdk_javascript_index_projection is not None and not callable(sdk_javascript_index_projection):
+            raise ValueError("JavaScript index comparison provider must be caller-owned and callable")
+        self._sdk_javascript_index_projection = sdk_javascript_index_projection
+        self._sdk_projections: dict[bytes, Any] = {}
         self._remote: dict[str, dict[str, list[_RemoteCandidate]]] = {
             source: {} for source in SOURCES[:-1]
         }
@@ -333,10 +347,9 @@ class LookupSession:
                 )
             stable_indexes.append(index)
             loaded_indexes.append(index)
-        if promoted_main is not None:
-            loaded_indexes.append(self._load_catalog("promoted-main", promoted_main))
-        if same_pr is not None:
-            loaded_indexes.append(self._load_catalog("same-pr", same_pr))
+        for source, values in (("promoted-main", promoted_main), ("same-pr", same_pr)):
+            for catalog in catalog_sequence(values):
+                loaded_indexes.append(self._load_catalog(source, catalog))
         self._reject_conflicting_catalog_outputs(loaded_indexes)
         self._local = self._snapshot_local(local)
 
@@ -456,7 +469,7 @@ class LookupSession:
                 return proof
         raise ValueError("Conflicting adapter Runtime inventories require both authenticated objects")
 
-    def _catalog_sdk_projection(self, entry: dict[str, Any]) -> VerifiedSdkValidationProjection:
+    def _catalog_sdk_projection(self, entry: dict[str, Any]):
         key = canonical_json_bytes(entry)
         if key in self._sdk_projections:
             return self._sdk_projections[key]
@@ -465,7 +478,9 @@ class LookupSession:
                 if candidate.entry != entry or candidate.object_path is None:
                     continue
                 try:
-                    proof = verify_sdk_validation_index_object(entry, candidate.object_path, self._sdk_validation_projection)
+                    provider = (self._sdk_javascript_index_projection if is_javascript_validation(entry)
+                                else self._sdk_validation_projection)
+                    proof = verify_sdk_validation_index_object(entry, candidate.object_path, provider)
                 except FileNotFoundError:
                     continue
                 self._sdk_projections[key] = proof
@@ -585,7 +600,8 @@ class LookupSession:
                             self._verify_release_attested_runtime_aggregate(envelope, captured)
                         elif source == "promoted-main" and identity.product == "sdk":
                             from .sdk_campaign_index import verify_release_sdk_campaign_objects
-                            # ponytail: recheck 62 originals per SDK lookup; cache only if measured cost warrants it.
+                            # Completed original comparisons share private custody;
+                            # the captured signature and caller policy still check.
                             originals = verify_release_sdk_campaign_objects(
                                 index, captured.catalog.objects, repository=self.repository)
                             original = originals.get(identity)
@@ -1094,6 +1110,55 @@ def _native_comparison_provider(root, value, *, keyring=None, keys_directory=Non
     return verify if records else None
 
 
+@contextmanager
+def _current_native_runtime_projections(request, available, contract_evidence):
+    """Consume the selected full signed carrier, not metadata-only authority."""
+    aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+    selected = [item for item in available if _identity(item["receipt"]) == aggregate]
+    if not selected or contract_evidence is None or contract_evidence["expectedTrustDomain"] != "release":
+        yield None
+        return
+    if len(selected) != 1:
+        raise ValueError("Current native projection requires one selected aggregate")
+    original = selected[0]
+    records = [record for record in request.get("runtimeAggregateReleaseEvidence", [])
+               if record["receiptSha256"] == original["receiptSha256"]]
+    if not records:
+        yield None
+        return
+    if len(records) != 1:
+        raise ValueError("Current native projection has ambiguous aggregate evidence")
+    from .runtime_aggregate_handoff import verified_runtime_aggregate_handoff
+    carrier = _artifact_path(Path(request["artifactRoot"]), records[0]["handoffRoot"],
+                             "Current native aggregate handoff")
+    with verified_runtime_aggregate_handoff(carrier, keyring=contract_evidence["keyring"],
+            keys_directory=contract_evidence["keysDirectory"]) as verified:
+        if verified["receiptBytes"][aggregate] != original["receiptBytes"]:
+            raise ValueError("Current native aggregate differs from its selected original receipt")
+        yield verified["nativeRuntimeProjections"]
+
+
+def _phase_git_inventories(root, revision, instances):
+    """Read exact shared Git inputs once; return independent per-phase records."""
+    if type(revision) is not str or _GIT_OBJECT_ID.fullmatch(revision) is None:
+        raise ValueError("Repository revision must be an exact lowercase Git object ID")
+    instances = tuple(instances)
+    if any(instance not in PHASE_INSTANCE_IDS for instance in instances):
+        raise ValueError("Unknown product phase instance")
+    owned = {instance: [] for instance in instances}
+    try:
+        for path in _normalized_paths(path for path, _ in tree_entries(Path(root), revision)):
+            selected = _inventory_owners(path)
+            for instance in (owned if selected is None else owned.keys() & selected):
+                owned[instance].append(path)
+        records = git_file_inventory(root, revision,
+            sorted({path for paths in owned.values() for path in paths}))
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Repository revision cannot be inventoried") from error
+    by_path = {record["relativePath"]: record for record in records}
+    return {instance: [dict(by_path[path]) for path in paths] for instance, paths in owned.items()}
+
+
 @verification_scoped
 def plan_reuse_wave(
     value: Any,
@@ -1105,6 +1170,11 @@ def plan_reuse_wave(
     sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
+    sdk_javascript_validation_projection_provider=None,
+    sdk_javascript_index_projection=None,
+    completed_native_runtime_projection_provider=None,
+    completed_sdk_validation_projection_provider=None,
+    completed_frozen=None,
 ) -> dict[str, Any]:
     """Decode one strict control request and delegate all resolution to advance_reuse."""
     if sdk_runtime_consumer is not None and not callable(sdk_runtime_consumer):
@@ -1131,7 +1201,7 @@ def plan_reuse_wave(
         } | ({key for key in ("nativeRuntimeEvidence", "nativeRuntimeComparisonEvidence", "adapterRuntimeComparisonEvidence",
                              "sdkValidationEvidence", "sdkValidationTooling", "runtimeAggregateReleaseEvidence",
                              "sdkAppleValidationEvidence", "sdkAppleValidationPolicy",
-                             "sdkRuntimeSource") if key in value}
+                             "sdkRuntimeSource", "nativeRuntimeProjectionSource") if key in value}
              if type(value) is dict else set()),
         "reuse-wave request",
     )
@@ -1139,6 +1209,9 @@ def plan_reuse_wave(
         raise ValueError("Unsupported reuse-wave request schemaVersion")
     if request["requestType"] != "reuse-wave":
         raise ValueError("Unsupported plan requestType")
+    if ("nativeRuntimeProjectionSource" in request
+            and request["nativeRuntimeProjectionSource"] != "selected-aggregate"):
+        raise ValueError("Unsupported native Runtime projection source")
     repository_root = _absolute_path(request["repositoryRoot"], "reuse-wave request.repositoryRoot")
     artifact_root = _absolute_path(request["artifactRoot"], "reuse-wave request.artifactRoot")
     # External transport only: validate paths without introducing producer or
@@ -1153,6 +1226,7 @@ def plan_reuse_wave(
     if _GIT_OBJECT_ID.fullmatch(revision) is None:
         raise ValueError("Reuse-wave repositoryRevision must be an exact lowercase Git object ID")
     sdk_originals = decode_sdk_validation_records(artifact_root, request.get("sdkValidationEvidence", []))
+    from .sdk_validation_inputs import sdk_validation_provider
     sdk_comparison = sdk_validation_provider(artifact_root, request.get("sdkValidationEvidence", []),
         repository=repository_root, policy_revision=revision, tooling=request.get("sdkValidationTooling"))
     if ("sdkAppleValidationEvidence" in request) != ("sdkAppleValidationPolicy" in request):
@@ -1160,8 +1234,17 @@ def plan_reuse_wave(
     apple_admission = None
     if "sdkAppleValidationEvidence" in request:
         apple_admission = AppleValidationAdmission(artifact_root, request["sdkAppleValidationEvidence"],
-            repository=repository_root, policy_revision=revision, policy=request["sdkAppleValidationPolicy"])
+            repository=repository_root, policy_revision=revision, policy=request["sdkAppleValidationPolicy"],
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     requested = _request_identities(request["requested"], "reuse-wave request.requested")
+    completed_instances = ()
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed reuse requires the concrete native semantic verifier")
+        completed_instances = tuple(PhaseInstanceId(*(getattr(instance, field)
+            for field in ("product", "component", "phase", "target")))
+            for instance in completed_frozen.check_request(request))
     external_sdk_runtime = "sdkRuntimeSource" in request
     if external_sdk_runtime and request["sdkRuntimeSource"] != "released-default":
         raise ValueError("Unsupported SDK Runtime dependency source")
@@ -1242,10 +1325,11 @@ def plan_reuse_wave(
     if external_sdk_runtime and native_evidence:
         raise ValueError("Released SDK Runtime evidence must come from its selected original carrier")
     phase_inputs: dict[PhaseInstanceId, dict[str, Any]] = {}
+    inventories = _phase_git_inventories(repository_root, revision, closure)
     for instance in closure:
         authority = authorities[instance]
         values = {
-            "inventory": phase_git_inventory(repository_root, revision, instance),
+            "inventory": inventories[instance],
             "versions": versions,
             "toolchain_profile_digest": require_sha256(
                 authority["toolchainProfileDigest"],
@@ -1283,16 +1367,14 @@ def plan_reuse_wave(
         _remote_catalog(artifact_root, member, f"reuse-wave request.catalogs.stable[{index}]")
         for index, member in enumerate(stable_values)
     )
-    promoted_main = None if catalogs["promotedMain"] is None else _remote_catalog(
-        artifact_root,
-        catalogs["promotedMain"],
-        "reuse-wave request.catalogs.promotedMain",
-    )
-    same_pr = None if catalogs["samePr"] is None else _remote_catalog(
-        artifact_root,
-        catalogs["samePr"],
-        "reuse-wave request.catalogs.samePr",
-    )
+    def historical_catalogs(name):
+        values = catalog_sequence(catalogs[name])
+        parsed = tuple(_remote_catalog(artifact_root, member,
+            f"reuse-wave request.catalogs.{name}[{index}]") for index, member in enumerate(values))
+        if len({catalog.manifest for catalog in parsed}) != len(parsed):
+            raise ValueError("Historical catalog manifests must be unique")
+        return parsed
+    promoted_main, same_pr = historical_catalogs("promotedMain"), historical_catalogs("samePr")
     comparison_trust = {}
     if contract_evidence is not None and contract_evidence["expectedTrustDomain"] == "release":
         comparison_trust = {"keyring": contract_evidence["keyring"],
@@ -1300,7 +1382,7 @@ def plan_reuse_wave(
     else:
         # Catalog request trust roots are caller-pinned index authorities, unlike
         # paths inside transported native comparison evidence.
-        release_catalog = next(iter((*stable, *((promoted_main,) if promoted_main else ()))), None)
+        release_catalog = next(iter((*stable, *promoted_main)), None)
         if release_catalog is not None:
             comparison_trust = {"keyring": release_catalog.keyring,
                                 "keys_directory": release_catalog.keys_directory}
@@ -1349,6 +1431,7 @@ def plan_reuse_wave(
             runtime_aggregate_evidence={record["receiptSha256"]: artifact_root / record["handoffRoot"]
                 for record in request.get("runtimeAggregateReleaseEvidence", [])},
             sdk_validation_projection=sdk_comparison,
+            sdk_javascript_index_projection=sdk_javascript_index_projection,
             pull_request=pull_request,
             restore_root=restore_root / "remote",
             stable=stable,
@@ -1376,6 +1459,12 @@ def plan_reuse_wave(
             sdk_native_evidence = selected["handoff"]["nativeRuntimeEvidence"]
         def verify_available(record):
             instance, build_key, receipt_sha256, object_sha256, object_path = record
+            if completed_frozen is not None:
+                envelope = completed_frozen.envelope({
+                    **{field: getattr(instance, field) for field in _IDENTITY_KEYS},
+                    "buildKey": build_key, "receiptSha256": receipt_sha256, "objectSha256": object_sha256})
+                if envelope is not None:
+                    return envelope
             verified = verify_object(
                 object_path,
                 build_key=build_key,
@@ -1394,9 +1483,13 @@ def plan_reuse_wave(
             return envelope
 
         available = bounded_verify(verify_available, decoded_objects)
+        deferred_contract = (completed_frozen.deferred_objects(include_contract=True)
+            if completed_frozen is not None and (contract_evidence is None or
+                (contract_evidence["attestation"].parent / "contract-manifest.json").exists()) else ())
         for record, envelope in zip(decoded_objects, available, strict=True):
-            instance, _, _, _, object_path = record
-            if instance.product == "contract" and instance.phase in {"binary", "metadata"}:
+            instance, build_key, receipt_sha256, object_sha256, object_path = record
+            if (instance.product == "contract" and instance.phase in {"binary", "metadata"}
+                    and envelope["objectSha256"] not in deferred_contract):
                 session.register_contract_stage(object_path, envelope)
 
         master_projection: VerifiedContractProjection | None = None
@@ -1410,38 +1503,63 @@ def plan_reuse_wave(
             if contract_evidence is None:
                 raise ValueError("Contract-consuming reuse requires authenticated Contract evidence")
             if master_projection is None:
-                master_contract_stage = session.contract_stage(envelope)
-                master_projection = verify_contract_component_projection(
-                    master_contract_stage,
-                    envelope["receiptBytes"],
-                    contract_evidence["attestation"],
-                    contract_evidence["attestationSignature"],
-                    contract_evidence["publicKey"],
-                    expected_trust_domain=contract_evidence["expectedTrustDomain"],
-                    expected_contract_version=versions["contract"],
-                    required_components=contract_components,
-                    keyring=contract_evidence["keyring"],
-                    keys_directory=contract_evidence["keysDirectory"],
-                )
+                if (completed_frozen is not None and
+                        (contract_evidence["attestation"].parent / "contract-manifest.json").exists()):
+                    master_projection = completed_frozen.contract_projection(contract_evidence,
+                        version=versions["contract"], components=contract_components,
+                        receipt_bytes=envelope["receiptBytes"])
+                else:
+                    master_contract_stage = session.contract_stage(envelope)
+                    master_projection = verify_contract_component_projection(
+                        master_contract_stage,
+                        envelope["receiptBytes"],
+                        contract_evidence["attestation"],
+                        contract_evidence["attestationSignature"],
+                        contract_evidence["publicKey"],
+                        expected_trust_domain=contract_evidence["expectedTrustDomain"],
+                        expected_contract_version=versions["contract"],
+                        required_components=contract_components,
+                        keyring=contract_evidence["keyring"],
+                        keys_directory=contract_evidence["keysDirectory"],
+                    )
             return master_projection.restrict(required_contract_components(instance))
 
         consumed_runtime_validation_evidence: set[PhaseInstanceId] = set()
         consumed_native_evidence: set[str] = set()
         native_projection_cache: dict[tuple[str, str], VerifiedNativeRuntimeProjection] = {}
+        current_native_projections, current_native_checked = None, False
 
         def sdk_projection_provider(instance, envelopes, package):
             if sdk_comparison is None or any(envelope["receiptSha256"] not in sdk_originals for envelope in envelopes):
-                return None
+                return (completed_sdk_validation_projection_provider(instance, envelopes, package)
+                        if completed_sdk_validation_projection_provider is not None else None)
             return tuple(sdk_comparison({**envelope["receipt"], "receiptSha256": envelope["receiptSha256"]})
                          for envelope in envelopes)
 
         def native_runtime_projection_provider(instance, envelopes, projection):
+            nonlocal current_native_projections, current_native_checked
             targets = [dependency.target for dependency in native_runtime_validation_dependencies(instance)]
             selected = [(sdk_native_evidence.get(target) if external_sdk_runtime and instance.product == "sdk" else None)
                         or native_evidence.get(target) or native_originals.get(envelope["receiptSha256"], (None, None))[1]
                         for target, envelope in zip(targets, envelopes, strict=True)]
             if any(record is None for record in selected):
-                return None
+                completed = (completed_native_runtime_projection_provider(instance, envelopes, projection)
+                        if not external_sdk_runtime and completed_native_runtime_projection_provider is not None else None)
+                # Old saved requests must replay their original wait decision.
+                # This option selects a full reader, never grants admission.
+                if (completed is not None or external_sdk_runtime
+                        or request.get("nativeRuntimeProjectionSource") != "selected-aggregate"):
+                    return completed
+                if not current_native_checked:
+                    current_native_projections = captures.enter_context(
+                        _current_native_runtime_projections(request, available, contract_evidence))
+                    current_native_checked = True
+                if current_native_projections is None:
+                    return None
+                proofs = tuple(current_native_projections[target] for target in targets)
+                for proof, envelope in zip(proofs, envelopes, strict=True):
+                    proof.receipt_value(envelope["receipt"], projection)
+                return proofs
             if master_projection is None or master_contract_stage is None or contract_evidence is None:
                 raise ValueError("Native Runtime reuse lacks authenticated Contract evidence")
             # Released-default records already carry their selected catalog's
@@ -1489,14 +1607,16 @@ def plan_reuse_wave(
             runtime_validation_projection_provider=runtime_validation_projection_provider,
             native_runtime_projection_provider=native_runtime_projection_provider,
             sdk_validation_projection_provider=sdk_projection_provider,
+            sdk_javascript_validation_projection_provider=sdk_javascript_validation_projection_provider,
             sdk_apple_package_admission=sdk_apple_package_admission,
             sdk_apple_package_admission_factory=sdk_apple_package_admission_factory,
             sdk_apple_validation_admission=apple_admission,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission,
             build_plan_consumer=build_plan_consumer,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
         )
-        unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence
+        unused_evidence = set(runtime_validation_evidence) - consumed_runtime_validation_evidence - set(completed_instances)
         if unused_evidence:
             raise ValueError(
                 "Runtime validation evidence was supplied before its metadata phase was ready: "
@@ -1532,6 +1652,8 @@ def _plan(
         "native_runtime_projections",
         "contract_execution_projection",
         "sdk_validation_projections",
+        "sdk_javascript_validation_projection",
+        "sdk_javascript_legacy_metadata_receipt",
     }
     if not _PHASE_INPUT_KEYS.issubset(keys) or not keys.issubset(allowed):
         raise ValueError(f"Phase inputs fields are invalid: {instance}")
@@ -1604,6 +1726,8 @@ def advance_reuse(
     sdk_apple_package_admission_factory: Callable[[dict[str, Any]], ApplePackageAdmission] | None = None,
     sdk_facade_metadata_admission: FacadeMetadataAdmission | None = None,
     sdk_android_metadata_admission: AndroidMetadataAdmission | None = None,
+    sdk_javascript_validation_projection_provider=None,
+    completed_frozen=None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
     """Resolve verified reuse and return only the next dependency-ready build wave.
 
@@ -1613,6 +1737,13 @@ def advance_reuse(
     """
     if not isinstance(session, LookupSession):
         raise ValueError("Reuse resolution requires a LookupSession")
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed reuse requires the concrete native semantic verifier")
+        if (session.repository != "codex-agent-labs/codex-agent" or session.pull_request != 31
+                or any(session._remote.values()) or session._local is not None):
+            raise ValueError("Completed frozen reuse requires its exact repository and empty candidate catalogs")
     if sdk_apple_validation_admission is not None and type(sdk_apple_validation_admission) is not AppleValidationAdmission:
         raise ValueError("Apple validation admission requires the concrete full verifier")
     if sdk_apple_package_admission is not None and type(sdk_apple_package_admission) is not ApplePackageAdmission:
@@ -1669,6 +1800,8 @@ def advance_reuse(
         raise ValueError("Contract execution projection provider must be callable")
     if sdk_validation_projection_provider is not None and not callable(sdk_validation_projection_provider):
         raise ValueError("SDK validation projection provider must be callable")
+    if sdk_javascript_validation_projection_provider is not None and not callable(sdk_javascript_validation_projection_provider):
+        raise ValueError("JavaScript validation projection provider must be caller-owned and callable")
     resolved_repository_root = None if repository_root is None else Path(repository_root)
     if (sdk_runtime_receipts is None) != (sdk_default_runtime_version is None):
         raise ValueError("SDK Runtime dependencies require original receipts and selected default together")
@@ -1703,7 +1836,8 @@ def advance_reuse(
     for instance, values in phase_inputs.items():
         if not isinstance(values, Mapping):
             raise ValueError(f"Phase inputs must be a mapping: {instance}")
-        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections", "sdk_validation_projections"} & set(values):
+        if {"runtime_validation_projection", "contract_execution_projection", "native_runtime_projections", "sdk_validation_projections",
+            "sdk_javascript_validation_projection", "sdk_javascript_legacy_metadata_receipt"} & set(values):
             raise ValueError("Callers cannot supply an execution validation projection")
         effective_inputs[instance] = dict(values)
     envelopes: dict[PhaseInstanceId, dict[str, Any]] = {}
@@ -1737,6 +1871,16 @@ def advance_reuse(
                     for dependency in phase_instance_dependencies(instance))
         ]
         for instance in ready:
+            if completed_frozen is not None and instance in envelopes:
+                completed_plan = completed_frozen.phase_plan(instance, effective_inputs[instance],
+                    envelopes[instance], tuple(dependency_envelope(instance, dependency)
+                        for dependency in phase_instance_dependencies(instance)))
+                if completed_plan is not None:
+                    resolved[instance] = envelopes[instance]
+                    states[instance] = {"plan": completed_plan, "state": "retained", "source": None,
+                                        "transportSource": None, "misses": []}
+                    progressed = True
+                    continue
             if instance == PhaseInstanceId("contract", "contract", "package", "common"):
                 binary = resolved[PhaseInstanceId("contract", "contract", "binary", "common")]
                 effective_inputs[instance]["contract_execution_projection"] = (
@@ -1817,6 +1961,32 @@ def advance_reuse(
                     }
                     continue
                 effective_inputs[instance]["sdk_validation_projections"] = sdk_projections
+                continuation_requirements.pop(instance, None)
+            javascript_dependencies = javascript_validation_dependencies(instance)
+            if javascript_dependencies:
+                originals = tuple(dependency_envelope(instance, dependency) for dependency in (
+                    PhaseInstanceId("contract", "contract", "binary", "common"),
+                    PhaseInstanceId("sdk", "javascript", "package", "node"),
+                    PhaseInstanceId("sdk", "javascript", "validation", "node"),
+                    PhaseInstanceId("runtime", "node-js", "validation", "node-js-binding")))
+                proof = (None if sdk_javascript_validation_projection_provider is None or any(
+                    original is None for original in originals) else
+                    sdk_javascript_validation_projection_provider(instance, originals))
+                if proof is None:
+                    continuation_requirements[instance] = {
+                        "kind": "sdk-javascript-validation-evidence", "product": instance.product,
+                        "component": instance.component, "phase": instance.phase, "target": instance.target,
+                        "dependencies": [{"product": item.product, "component": item.component,
+                                          "phase": item.phase, "target": item.target}
+                                         for item in javascript_dependencies],
+                    }
+                    continue
+                effective_inputs[instance]["sdk_javascript_validation_projection"] = proof
+                if instance in envelopes:
+                    from .sdk_javascript_metadata import javascript_metadata_uses_raw_validation
+                    original_metadata = envelopes[instance]["receipt"]
+                    if javascript_metadata_uses_raw_validation(original_metadata):
+                        effective_inputs[instance]["sdk_javascript_legacy_metadata_receipt"] = original_metadata
                 continuation_requirements.pop(instance, None)
             plan = _plan(
                 instance,

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from argparse import Namespace
+import importlib.util
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -120,6 +122,14 @@ def _receipt_producer(receipt: Mapping[str, Any]) -> dict[str, Any]:
     }, "Apple native lane producer")
 
 
+def _native_custodian(receipt, consumer):
+    custodian = _receipt_producer(receipt)
+    if (any(custodian[field] != consumer[field] for field in consumer if field != "runAttempt")
+            or custodian["runAttempt"] > consumer["runAttempt"]):
+        raise ValueError("Apple upload custodian differs from the consumer context")
+    return custodian
+
+
 def _require_native_records(
     receipt: Mapping[str, Any], lane: str, root: Path,
 ) -> dict[str, Any] | None:
@@ -156,8 +166,41 @@ def _native_lane_content(plan, producer, lane, captured, evidence, root):
             if (type(proof) is not dict or proof.get("candidateCommit") != original_producer["commit"]
                     or proof.get("candidateTree") != original_producer["tree"]):
                 raise ValueError("Apple native proof differs from its original producer")
-        (evidence / destination).write_bytes(contents)
+        if evidence is not None:
+            (evidence / destination).write_bytes(contents)
     return receipt, original_producer
+
+
+def _authenticate_native_transport_original(
+    plan_path, receipt, original_producer, lane, captured, *, root, token,
+    trusted_workflow_sha,
+):
+    """A current transport job cannot stand in for the original successful job."""
+    artifacts = product_reuse.paginated_items(
+        f"https://api.github.com/repos/{original_producer['repository']}/actions/runs/"
+        f"{original_producer['runId']}/artifacts", "artifacts", token)
+    name = f"codex-agent-ci-{lane}-{original_producer['tree']}"
+    selected = [a for a in artifacts if a.get("name") == name and a.get("expired") is False]
+    if len(selected) != 1:
+        raise ValueError("Original Apple transport source upload is missing or ambiguous")
+    path = Path(__file__).resolve().parents[1] / ".github/actions/run-ci-lane/sdk_native_qualification.py"
+    spec = importlib.util.spec_from_file_location("sdk_native_original_qualification", path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    arguments = Namespace(plan=plan_path, lane=lane, token=token,
+        runner=[f"{key}={value}" for key, value in receipt["runner"].items()],
+        toolchain=[f"{key}={value}" for key, value in receipt["toolchain"].items()
+                   if key != "validationActions"])
+    with tempfile.TemporaryDirectory(prefix="sdk-native-original-admission-") as temporary:
+        output = Path(temporary).resolve() / "original"
+        qualified = helper.qualify_candidate(arguments, selected[0],
+            trusted_workflow_sha=trusted_workflow_sha, repository_root=root, output=output)
+        if qualified["originalProducer"] != original_producer:
+            raise ValueError("Qualified native source differs from transport provenance")
+        for source in (*NATIVE_FILES[lane], *((NATIVE_TOOLCHAINS[lane],)
+                                            if lane in NATIVE_TOOLCHAINS else ())):
+            if sha256_file(captured / source) != sha256_file(output / "lane" / source):
+                raise ValueError("Transported native content differs from authenticated original")
 
 
 @contextmanager
@@ -233,8 +276,9 @@ def verified_retained_sdk_apple_native_inputs(capture_root, *, original_binary_r
             lane_root = captured / "lanes" / lane
             if zipped != regular_file_inventory(lane_root, allow_empty=True):
                 raise ValueError("Retained native lane differs from its exact original archive")
-            receipts[lane], originals[lane] = _native_lane_content(plan_path, producer, lane, lane_root, evidence, root)
             raw_receipts[lane] = read_regular_file_bytes(lane_root / "lane-receipt.json", max_bytes=16 * 1024 * 1024)
+            custodian = _native_custodian(load_json_bytes(raw_receipts[lane]), producer)
+            receipts[lane], originals[lane] = _native_lane_content(plan_path, custodian, lane, lane_root, evidence, root)
             if sha256_bytes(raw_receipts[lane]) != require_sha256(digests[lane], "Retained native receipt digest"):
                 raise ValueError("Retained native receipt differs from transport inventory")
         inventory = regular_file_inventory(evidence)
@@ -357,12 +401,7 @@ def verified_sdk_apple_native_inputs(
         producer = product_reuse._consumer(plan, producer_environment)["producer"]
         if binary_producer is not None and producer != binary_producer:
             raise ValueError("Historical Apple native plan differs from the original binary producer")
-        observed = product_reuse._observe_ci_producer_jobs(
-            {lane: producer for lane in LANES}, jobs_by_phase=JOBS,
-            trusted_workflow_sha=trusted_workflow_sha, token=token,
-        )
-        if len(observed) != 1:
-            raise ValueError("Apple native lanes must share one current CI attempt")
+        observed = []
 
         artifacts = {}
         receipt_bytes = {}
@@ -375,11 +414,19 @@ def verified_sdk_apple_native_inputs(
         for lane in LANES:
             expected_name = f"codex-agent-ci-{lane}-{producer['tree']}"
             selected = selected_uploads[lane]
-            artifact, raw = product_reuse._download_contract_ci_upload(
-                selected["artifactId"], selected["artifactSha256"], expected_name,
-                producer, observed[0]["run"], token,
-            )
-            product_reuse._require_artifact_job_window(observed[0], JOBS[lane], artifact)
+            url = f"https://api.github.com/repos/{producer['repository']}/actions/artifacts/{selected['artifactId']}"
+            artifact = product_reuse.api_json(url, token)
+            if (artifact.get("id") != selected["artifactId"]
+                    or artifact.get("digest") != selected["artifactSha256"]
+                    or artifact.get("expired") is not False
+                    or artifact.get("archive_download_url") != url + "/zip"
+                    or artifact.get("name") != expected_name
+                    or require_integer(artifact.get("size_in_bytes"), "Apple upload size", 1)
+                        > product_reuse._INLINE_UPLOAD_LIMIT):
+                raise ValueError("Apple selected upload differs from its official identity")
+            raw = product_reuse.download_artifact(artifact, token)
+            if len(raw) != artifact["size_in_bytes"] or sha256_bytes(raw) != selected["artifactSha256"]:
+                raise ValueError("Apple selected upload body differs from its official identity")
             archive = private / "archives" / f"{lane}.zip"
             archive.parent.mkdir(exist_ok=True)
             archive.write_bytes(raw)
@@ -390,7 +437,23 @@ def verified_sdk_apple_native_inputs(
             captured = private / "lanes" / lane
             safe_extract(archive, captured)
             receipt_path = captured / "lane-receipt.json"
-            receipt, original_producer = _native_lane_content(private_plan, producer, lane, captured, evidence, root)
+            custodian = _native_custodian(load_json_bytes(read_regular_file_bytes(
+                receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)), producer)
+            observation = product_reuse._observe_ci_producer_jobs(
+                {lane: custodian}, jobs_by_phase={lane: JOBS[lane]},
+                trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
+            authenticated = product_reuse._contract_ci_upload_metadata(
+                selected["artifactId"], selected["artifactSha256"], expected_name,
+                custodian, observation["run"], token)
+            if authenticated != artifact:
+                raise ValueError("Apple selected upload metadata changed during authentication")
+            product_reuse._require_artifact_job_window(observation, JOBS[lane], artifact)
+            observed.append(observation)
+            receipt, original_producer = _native_lane_content(private_plan, custodian, lane, captured, evidence, root)
+            if original_producer != custodian:
+                _authenticate_native_transport_original(private_plan, receipt, original_producer,
+                    lane, captured, root=root, token=token,
+                    trusted_workflow_sha=trusted_workflow_sha)
             artifacts[lane] = artifact
             receipt_bytes[lane] = read_regular_file_bytes(
                 receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,

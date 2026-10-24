@@ -22,6 +22,8 @@ if __package__:
     from .sdk_android_firebase_capture import capture_android_firebase_evidence
     from .sdk_android_original_validation import verified_original_android_validation
     from .sdk_android_original_upload_locator import _CHILD_ROUTES
+    from .sdk_android_upload_locator import (retained_android_evidence_origin,
+        require_retained_android_authority, require_retained_android_capture)
 else:
     from products.inventory import (
         canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -33,6 +35,8 @@ else:
     from sdk_android_firebase_capture import capture_android_firebase_evidence
     from sdk_android_original_validation import verified_original_android_validation
     from sdk_android_original_upload_locator import _CHILD_ROUTES
+    from sdk_android_upload_locator import (retained_android_evidence_origin,
+        require_retained_android_authority, require_retained_android_capture)
 
 
 _OID = re.compile(r"[0-9a-f]{40}")
@@ -143,9 +147,16 @@ def verified_original_android_firebase_validation(
             held["receipt"]["producer"], "Original Android validation producer")
         if (producer["runId"] != run_id or producer["runAttempt"] != attempt):
             raise ValueError("Original Android validation differs from the caller-selected run")
+        origin = retained_android_evidence_origin(held["receipt"].get("buildKey"), producer)
+        require_retained_android_authority(origin, trusted_source_commit=trusted_source_commit,
+            trusted_source_tree=trusted_source_tree, trusted_android_workflow_sha=trusted_android_workflow_sha)
+        capture_producer = producer if origin is None else origin["producer"]
+        capture_workflow = trusted_workflow_sha if origin is None else origin["workflowSha"]
         original = Path(held["original"])
         retained_final = original / "originals/final"
         retained_protected = original / "originals/protected"
+        require_retained_android_capture(origin, _transport_identity(retained_final),
+                                         _transport_identity(retained_protected))
         retained_before = {
             "final": regular_file_inventory(retained_final, allow_empty=True),
             "protected": regular_file_inventory(retained_protected, allow_empty=True),
@@ -156,24 +167,24 @@ def verified_original_android_firebase_validation(
             raise ValueError("Original Android nested captures selected different plans")
         historical_environment = dict(environ)
         historical_environment.update({
-            "GITHUB_RUN_ID": str(run_id),
-            "GITHUB_RUN_ATTEMPT": str(attempt),
+            "GITHUB_RUN_ID": str(capture_producer["runId"]),
+            "GITHUB_RUN_ATTEMPT": str(capture_producer["runAttempt"]),
         })
         with tempfile.TemporaryDirectory(prefix="original-android-firebase-") as temporary:
             private = Path(temporary).resolve()
             observed_final, observed_protected = private / "final", private / "protected"
             capture_android_evidence(
                 historical_plan, root, observed_final,
-                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_sha=capture_workflow,
                 trusted_android_workflow_sha=trusted_android_workflow_sha,
-                environ=historical_environment, token=token, expected_revision=producer["commit"])
+                environ=historical_environment, token=token, expected_revision=capture_producer["commit"])
             capture_android_firebase_evidence(
                 historical_plan, root, observed_final, observed_protected,
-                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_sha=capture_workflow,
                 trusted_android_workflow_sha=trusted_android_workflow_sha,
                 trusted_source_commit=trusted_source_commit,
                 trusted_source_tree=trusted_source_tree,
-                environ=historical_environment, token=token, expected_revision=producer["commit"])
+                environ=historical_environment, token=token, expected_revision=capture_producer["commit"])
             _same_capture(retained_final, observed_final, "final capture")
             _same_capture(retained_protected, observed_protected, "protected capture")
             _linked(observed_final, observed_protected, "official")

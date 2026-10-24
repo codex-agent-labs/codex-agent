@@ -1,5 +1,5 @@
-name: Execute elected iOS SDK validation
-description: Capture exact original state before Apple setup, run fixed full validation, and retain the complete unsigned worker result.
+name: Execute or forward elected iOS SDK validation
+description: Forward a reviewed successful original by reference, or run fixed full validation and retain its complete unsigned result.
 inputs:
   plan-id:
     required: true
@@ -65,11 +65,16 @@ runs:
         PACKAGE_ARTIFACT_SHA256: ${{ inputs.package-artifact-sha256 }}
         BINARY_ARTIFACT_ID: ${{ inputs.binary-artifact-id }}
         BINARY_ARTIFACT_SHA256: ${{ inputs.binary-artifact-sha256 }}
+        TARGET: ${{ inputs.target }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         python3 -B - <<'PY'
         import os
         from pathlib import Path
-        from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+        from ci.products.inventory import load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes, write_canonical_json
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
         for prefix in ('PACKAGE', 'BINARY'):
@@ -95,18 +100,75 @@ runs:
                 raise ValueError('Caller tooling fields must be explicit absolute paths')
         apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
         apple_digest = ''
+        plan_directory, retained_key = '', ''
         if apple_path:
             if not Path(apple_path).is_absolute():
                 raise ValueError('Caller Apple policy must be an explicit absolute path')
             apple_raw = read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True)
             from ci.products.sdk_apple_validation_admission import apple_validation_policy_arguments
-            apple_validation_policy_arguments(load_canonical_json_bytes(apple_raw))
+            apple = load_canonical_json_bytes(apple_raw)
+            apple_validation_policy_arguments(apple)
             apple_digest = sha256_bytes(apple_raw)
+            plan = Path(apple['plan'])
+            if plan.name == 'impact-plan.json':
+                plan_directory = str(plan.parent)
+                from ci.sdk_apple_upload_locator import products, retained_validation_origin, locate_apple_upload
+                planned = load_json_bytes(read_regular_file_bytes(plan, reject_symlink_parents=True))
+                if planned['validationTree'] != os.environ['TREE']:
+                    raise ValueError('Retained Apple validation tree differs from its caller plan')
+                current = products._consumer(planned, os.environ)['producer']
+                origin = retained_validation_origin(os.environ['TARGET'], os.environ['BUILD_KEY'], current)
+                if origin is not None:
+                    selected = locate_apple_upload(plan, Path(os.environ['GITHUB_WORKSPACE']),
+                        mode='validation', target=os.environ['TARGET'], expected_build_key=os.environ['BUILD_KEY'],
+                        trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
+                    destination = Path(os.environ['GITHUB_WORKSPACE']) / 'build/sdk-ios-validation-worker'
+                    destination.mkdir(parents=True, exist_ok=False)
+                    write_canonical_json(destination / 'original-validation-worker.json',
+                        {'schemaVersion': 1, 'target': os.environ['TARGET'], 'buildKey': os.environ['BUILD_KEY'],
+                         'producer': origin['producer'], **selected})
+                    retained_key = os.environ['BUILD_KEY'].removeprefix('sha256:')
+                    print('Retained successful original validation; production and worker replay skipped.', flush=True)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('policy_sha256=' + sha256_bytes(raw) + '\n')
             output.write('apple_policy_sha256=' + apple_digest + '\n')
+            output.write('plan_directory=' + plan_directory + '\n')
+            output.write('retained_original=' + str(bool(retained_key)).lower() + '\n')
+            output.write('retained_key_hex=' + retained_key + '\n')
+        PY
+    - id: prewarm
+      if: steps.policy.outputs.retained_original != 'true'
+      name: Start the selected simulator while authenticated inputs are prepared
+      shell: bash
+      env:
+        DEVELOPER_DIR: ${{ inputs.developer-directory }}
+      run: |
+        python3 -B - <<'PY'
+        import json, subprocess, uuid
+        def observe(kind):
+            return json.loads(subprocess.check_output(
+                ['/usr/bin/xcrun', 'simctl', 'list', '-j', kind], text=True))
+        # Match the existing XCTest task's first available runtime/device.
+        # That task still records bootstatus, readiness and actual test execution.
+        runtime = next((row for row in observe('runtimes')['runtimes']
+            if row.get('name') == 'iOS 26.5' and row.get('isAvailable') is True), None)
+        if runtime is None:
+            raise ValueError('Required iOS 26.5 simulator runtime is unavailable')
+        device = next((row for row in observe('devices')['devices'].get(runtime['identifier'], [])
+            if row.get('deviceTypeIdentifier') == 'com.apple.CoreSimulator.SimDeviceType.iPhone-17'
+            and row.get('isAvailable') is True), None)
+        if device is None:
+            raise ValueError('Required iPhone 17 simulator is unavailable')
+        identifier = device['udid']
+        if not isinstance(identifier, str) or str(uuid.UUID(identifier)) != identifier.lower():
+            raise ValueError('Selected simulator identity is malformed')
+        if device['state'] == 'Shutdown':
+            subprocess.run(['/usr/bin/xcrun', 'simctl', 'boot', identifier], check=True)
+        elif device['state'] not in ('Booted', 'Booting'):
+            raise ValueError('Selected simulator cannot be started from its current state')
         PY
     - id: captured
+      if: steps.policy.outputs.retained_original != 'true'
       uses: ./.github/actions/capture-runtime-state
       with:
         product: sdk
@@ -114,12 +176,14 @@ runs:
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
+        plan-directory: ${{ steps.policy.outputs.plan_directory }}
         artifact-id: ${{ inputs.artifact-id }}
         artifact-sha256: ${{ inputs.artifact-sha256 }}
         state-wave: ${{ inputs.state-wave }}
         sdk-state-wave: ${{ inputs.sdk-state-wave }}
         trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
     - id: identity
+      if: steps.policy.outputs.retained_original != 'true'
       name: Require the exact iOS validation election before Apple setup
       shell: bash
       env:
@@ -172,13 +236,15 @@ runs:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
     - uses: ./.github/actions/setup-kmp
+      if: steps.policy.outputs.retained_original != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
         xcode-fingerprint: auto
     - id: execute
+      if: steps.policy.outputs.retained_original != 'true'
       name: Execute exact iOS validation inside all authenticated input lifetimes
-      shell: bash
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
@@ -197,71 +263,77 @@ runs:
         POLICY_REVISION: ${{ inputs.policy-revision }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        python3 -B - <<'PY'
-        import os, subprocess, sys
-        from pathlib import Path
-        root = Path(os.environ['GITHUB_WORKSPACE'])
-        sys.path.insert(0, str(root / 'ci'))
-        from products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
-        from products.signing_isolation import require_no_signing_secret
-        require_no_signing_secret(os.environ)
-        apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
-        apple_digest = (sha256_bytes(read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True))
-                        if apple_path else '')
-        if apple_digest != os.environ['APPLE_POLICY_SHA256']:
-            raise ValueError('Caller Apple policy changed after pinning')
-        policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
-        raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
-        if sha256_bytes(raw) != os.environ['POLICY_SHA256']:
-            raise ValueError('iOS validation caller tooling changed before execution')
-        policy = require_exact_keys(load_canonical_json_bytes(raw),
-            {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
-            'Caller SDK tooling policy')
-        trust = policy['requiredTrustDomain']
-        fields = {
-            '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
-            '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-validation-worker'),
-            '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
-            '--target': os.environ['TARGET'], '--rust-host': 'aarch64-apple-darwin',
-            '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
-            '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
-            '--keys-directory': str(root / 'gradle/release/keys'),
-            '--tooling-evidence': policy['evidence'], '--tooling-public-key': policy['publicKey'],
-            '--java-executable': policy['javaExecutable'], '--policy-revision': os.environ['POLICY_REVISION'],
-            '--required-trust-domain': trust,
-        }
-        for name in ('package', 'binary'):
-            identifier = os.environ[name.upper() + '_ARTIFACT_ID']
-            digest = os.environ[name.upper() + '_ARTIFACT_SHA256']
-            if bool(identifier) != bool(digest):
-                raise ValueError('Original upload ID and digest must be supplied together')
-            if identifier:
-                fields['--' + name + '-artifact-id'] = identifier
-                fields['--' + name + '-artifact-sha256'] = digest
-        if (trust not in ('development', 'release')
-                or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))
-                or (trust == 'development' and (policy['keyring'] is not None or policy['keysDirectory'] is not None))):
-            raise ValueError('Caller tooling trust requires exact paired release policy or development trust')
-        if policy['keyring'] is not None:
-            fields['--tooling-keyring'] = policy['keyring']
-            fields['--tooling-keys-directory'] = policy['keysDirectory']
-        for name in ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory'):
-            value = policy[name]
-            if value is None and name in ('keyring', 'keysDirectory'):
-                continue
-            if type(value) is not str or not Path(value).is_absolute():
-                raise ValueError('Caller tooling fields must be explicit absolute paths')
-        if apple_path:
-            fields['--sdk-apple-validation-policy'] = apple_path
-        command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-validation']
-        command += [part for flag, value in fields.items() for part in (flag, value)]
-        subprocess.run(command, cwd=root, check=True)
-        PY
-    - if: always() && steps.identity.outcome == 'success'
+      with:
+        mode: execute
+        script: |
+          python3 -B - <<'PY'
+          import os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          sys.path.insert(0, str(root / 'ci'))
+          from products.inventory import load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, sha256_bytes
+          from products.signing_isolation import require_no_signing_secret
+          require_no_signing_secret(os.environ)
+          apple_path = os.environ['SDK_APPLE_VALIDATION_POLICY']
+          apple_digest = (sha256_bytes(read_regular_file_bytes(Path(apple_path), reject_symlink_parents=True))
+                          if apple_path else '')
+          if apple_digest != os.environ['APPLE_POLICY_SHA256']:
+              raise ValueError('Caller Apple policy changed after pinning')
+          policy_path = Path(os.environ['SDK_VALIDATION_TOOLING'])
+          raw = read_regular_file_bytes(policy_path, reject_symlink_parents=True)
+          if sha256_bytes(raw) != os.environ['POLICY_SHA256']:
+              raise ValueError('iOS validation caller tooling changed before execution')
+          policy = require_exact_keys(load_canonical_json_bytes(raw),
+              {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
+              'Caller SDK tooling policy')
+          trust = policy['requiredTrustDomain']
+          fields = {
+              '--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
+              '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-ios-validation-worker'),
+              '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
+              '--target': os.environ['TARGET'], '--rust-host': 'aarch64-apple-darwin',
+              '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
+              '--keyring': str(root / 'gradle/release/product-signing-keys.json'),
+              '--keys-directory': str(root / 'gradle/release/keys'),
+              '--tooling-evidence': policy['evidence'], '--tooling-public-key': policy['publicKey'],
+              '--java-executable': policy['javaExecutable'], '--policy-revision': os.environ['POLICY_REVISION'],
+              '--required-trust-domain': trust,
+          }
+          for name in ('package', 'binary'):
+              identifier = os.environ[name.upper() + '_ARTIFACT_ID']
+              digest = os.environ[name.upper() + '_ARTIFACT_SHA256']
+              if bool(identifier) != bool(digest):
+                  raise ValueError('Original upload ID and digest must be supplied together')
+              if identifier:
+                  fields['--' + name + '-artifact-id'] = identifier
+                  fields['--' + name + '-artifact-sha256'] = digest
+          if (trust not in ('development', 'release')
+                  or (trust == 'release' and (policy['keyring'] is None or policy['keysDirectory'] is None))
+                  or (trust == 'development' and (policy['keyring'] is not None or policy['keysDirectory'] is not None))):
+              raise ValueError('Caller tooling trust requires exact paired release policy or development trust')
+          if policy['keyring'] is not None:
+              fields['--tooling-keyring'] = policy['keyring']
+              fields['--tooling-keys-directory'] = policy['keysDirectory']
+          for name in ('evidence', 'publicKey', 'javaExecutable', 'keyring', 'keysDirectory'):
+              value = policy[name]
+              if value is None and name in ('keyring', 'keysDirectory'):
+                  continue
+              if type(value) is not str or not Path(value).is_absolute():
+                  raise ValueError('Caller tooling fields must be explicit absolute paths')
+          if apple_path:
+              fields['--sdk-apple-validation-policy'] = apple_path
+          if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+              fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+          if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE'):
+              fields['--retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
+          command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'ios-validation']
+          command += [part for flag, value in fields.items() for part in (flag, value)]
+          subprocess.run(command, cwd=root, check=True)
+          PY
+    - if: always() && (steps.identity.outcome == 'success' || steps.policy.outputs.retained_original == 'true')
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: codex-agent-sdk-worker-sdk-ios-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        name: codex-agent-sdk-worker-sdk-ios-validation-${{ inputs.target }}-${{ steps.policy.outputs.retained_key_hex || steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
         path: build/sdk-ios-validation-worker
         if-no-files-found: warn
         overwrite: false

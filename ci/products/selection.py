@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import PurePosixPath
 from pathlib import Path
 import re
@@ -237,7 +238,10 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/hydrated_evidence.py",
     "ci/hosted_reuse_proof.py",
     "ci/reuse_qualification.py",
+    "ci/completed_sdk_reuse.py",
+    ".github/workflows/approved-reuse.yml",
     ".github/workflows/reuse-qualification.yml",
+    ".github/actions/resolve-product-publication/action.yml",
     ".github/actions/restore-reuse-qualification/action.yml",
     ".github/actions/restore-reuse-qualification/install-gh.sh",
     ".github/workflows/portable-reuse-proof.yml",
@@ -250,6 +254,8 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/sdk_candidate_admission.py",
     "ci/sdk_candidate_catalog.py",
     "ci/sdk_candidate_semantics.py",
+    "ci/sdk_candidate_join.py",
+    "ci/sdk_candidate_workflow.py",
     "ci/sdk_candidate_maven_transport.py",
     "ci/contract_equal_tree_original.py",
     "ci/contract_phase10_maven_caller.py",
@@ -430,6 +436,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/products/sdk_apple_package_replay.py",
     "ci/sdk_ios_original_package.py",
     "ci/sdk_ios_original_binary.py",
+    "ci/sdk_ios_binary_recovery.py",
     "ci/sdk_ios_original_validation.py",
     "ci/sdk_apple_preparation_capture.py",
     "ci/sdk_apple_prepared_release.py",
@@ -906,6 +913,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
         ".github/workflows/contract-phase10-later-record.yml": _from_phase("contract", "contract", "metadata"),
         ".github/workflows/contract-promoted-catalog.yml": set(),
         ".github/workflows/contract-candidate.yml": set(),
+        ".github/workflows/runtime-candidate.yml": set(),
+        ".github/workflows/sdk-candidate.yml": set(),
         ".github/workflows/runtime-promoted-catalog.yml": set(),
         ".github/workflows/runtime-library-authorizations.yml": set(),
         ".github/workflows/sdk-promoted-catalog.yml": set(),
@@ -968,6 +977,8 @@ def _control_selection(path: str) -> set[PhaseInstanceId] | None:
 def _is_control_only(path: str) -> bool:
     if path in {".github/workflows/contract-phase10-maven.yml",
                 ".github/workflows/contract-candidate.yml",
+                ".github/workflows/runtime-candidate.yml",
+                ".github/workflows/sdk-candidate.yml",
                 ".github/workflows/contract-phase10-output-record.yml",
                 ".github/workflows/contract-phase10-later-record.yml",
                 ".github/workflows/contract-promoted-catalog.yml",
@@ -1034,6 +1045,8 @@ def _is_control_only(path: str) -> bool:
 
 
 def _classify(path: str) -> set[PhaseInstanceId] | None:
+    if path == "ci/sdk_cpp_windows_policy.py":
+        return _from_phase("sdk", "cpp", "validation", validation_targets=("windows-x64",))
     if path in _CONTRACT_INVENTORY_POLICIES:
         return _contract()
     if path in _MIGRATED_BUILD_LOGIC_FILES or any(
@@ -1515,7 +1528,11 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
                 "gradle/build-logic/src/main/kotlin/PackagedProductPython.kt"}:
         # Standalone Runtime includes only runtime/build-logic; still plan broad reuse.
         selected = {instance for instance in selected if instance.product != "runtime"}
-    if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_native.py", "ci/products/sdk_package.py"}:
+    if path == "ci/products/sdk_native.py":
+        # Shared authenticated staging now also produces the five package inputs.
+        return {instance for instance in selected if instance.product == "sdk"
+                and instance.component in NATIVE_BINDINGS and instance.phase in {"package", "validation"}}
+    if path in {"ci/products/sdk_inputs.py", "ci/products/sdk_package.py"}:
         return {instance for instance in selected if instance.product == "sdk"
                 and instance.component in NATIVE_BINDINGS and instance.phase == "validation"}
     if (
@@ -1626,6 +1643,27 @@ def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstan
     return direct
 
 
+@lru_cache(maxsize=8192)
+def _inventory_owners(path: str) -> frozenset[PhaseInstanceId] | None:
+    # Pure path policy only: never cache file bytes, Git identity or admission.
+    if (
+        path == _RUNTIME_BINARY_FLAGS_PATH
+        or path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS
+        or path == _SDK_CSHARP_TOOLCHAIN_PROFILE_PATH
+        or path in _DOC_FILES
+        or path in _STATIC_ONLY_FILES
+        or _is_prefix(path, "docs/")
+        or _is_prefix(path, "ci/tests/")
+        or any(_is_prefix(path, prefix) for prefix in _STATIC_TEST_PREFIXES)
+    ):
+        return frozenset()
+    selected = _classify(path)
+    if selected is None:
+        return None
+    return (frozenset() if _is_control_only(path) else
+            frozenset(_direct_owners(path, selected) | _native_metadata_owners(path)))
+
+
 def phase_inventory_paths(
     repository_paths: Iterable[str],
     instance: PhaseInstanceId,
@@ -1635,21 +1673,8 @@ def phase_inventory_paths(
         raise ValueError(f"Unknown product phase instance: {instance}")
     owned = []
     for path in _normalized_paths(repository_paths):
-        if (
-            path == _RUNTIME_BINARY_FLAGS_PATH
-            or path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS
-            or path == _SDK_CSHARP_TOOLCHAIN_PROFILE_PATH
-            or path in _DOC_FILES
-            or path in _STATIC_ONLY_FILES
-            or _is_prefix(path, "docs/")
-            or _is_prefix(path, "ci/tests/")
-            or any(_is_prefix(path, prefix) for prefix in _STATIC_TEST_PREFIXES)
-        ):
-            continue
-        selected = _classify(path)
-        if selected is None:
-            owned.append(path)
-        elif not _is_control_only(path) and instance in (_direct_owners(path, selected) | _native_metadata_owners(path)):
+        selected = _inventory_owners(path)
+        if selected is None or instance in selected:
             owned.append(path)
     return tuple(owned)
 

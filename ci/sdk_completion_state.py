@@ -1,7 +1,7 @@
 """Select final SDK replay transport; no planning or evidence authentication."""
 
 from .sdk_native_continuation import _job, _locator
-from .products.inventory import require_object
+from .products.inventory import require_object, require_sha256
 
 
 _JOBS = (
@@ -51,44 +51,68 @@ def select_sdk_completion_state(needs):
             raise ValueError("Skipped continuations require explicit original full reuse")
         return initial
 
-    runtime, aggregate = jobs["runtime-continuation"], jobs["runtime-aggregate-continuation"]
-    if runtime["result"] != "success":
-        raise ValueError("SDK completion Runtime continuation did not succeed")
-    parent = _state(runtime["outputs"], sdk_wave="")
-    if parent["state_wave"] == "5" or (parent["state_wave"] == "0" and parent != initial):
-        raise ValueError("SDK completion Runtime continuation differs from its original wave")
-    handoff = runtime["outputs"].get("sdk_handoff_required")
-    aggregate_state = runtime["outputs"].get("aggregate_state")
-    if handoff not in ("true", "false") or aggregate_state not in ("not-selected", "ready", "completed"):
-        raise ValueError("SDK completion Runtime election is incomplete")
-    expected_required = "true" if aggregate_state == "ready" else "false"
-    if runtime["outputs"].get("aggregate_required") != expected_required:
-        raise ValueError("Runtime aggregate election contradicts its state")
-    if aggregate_state == "not-selected":
-        if aggregate["result"] != "skipped":
-            raise ValueError("Unelected Runtime aggregate continuation executed")
+    direct = resume["outputs"].get("native_sdk_direct", "false")
+    if direct not in ("true", "false"):
+        raise ValueError("SDK completion native prefix election is malformed")
+    if direct == "true":
+        outputs = resume["outputs"]
+        planned = jobs["sdk-plan"]
+        skipped_prefix = ("runtime-continuation", "runtime-aggregate-continuation",
+                          "sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3")
+        if (any(jobs[name]["result"] != "skipped" for name in skipped_prefix)
+                or outputs.get("runtime_workers_required") != "false"
+                or outputs.get("runtime_matrix") != '{"include":[]}'
+                or outputs.get("aggregate_payload_complete") != "true"
+                or outputs["full_reuse"] != "false"
+                or planned["result"] != "success"
+                or planned["outputs"].get("ios_validation_direct") != "true"
+                or planned["outputs"].get("sdk_workers_required") != "false"
+                or _state(planned["outputs"]) != initial
+                or _state(jobs["sdk-native-result"]["outputs"]) != initial):
+            raise ValueError("SDK completion direct prefix contradicts its completed election")
+        for field in ("aggregate_key", "aggregate_receipt_sha256"):
+            require_sha256(outputs.get(field), "Completed native " + field)
+        # Routing only: final capture/replay still authenticates the exact original state.
+        parent, handoff = initial, "true"
     else:
-        if (aggregate["result"] != "success"
-                or aggregate["outputs"].get("aggregate_payload_complete") != "true"):
-            raise ValueError("Selected Runtime aggregate continuation is incomplete")
-        aggregate_parent = _state(aggregate["outputs"], sdk_wave="")
-        if (aggregate_state == "ready" and aggregate_parent["state_wave"] != "5"
-                or aggregate_state == "completed" and aggregate_parent != parent):
-            raise ValueError("Runtime aggregate continuation differs from its elected parent")
-        parent = aggregate_parent
+        runtime, aggregate = jobs["runtime-continuation"], jobs["runtime-aggregate-continuation"]
+        if runtime["result"] != "success":
+            raise ValueError("SDK completion Runtime continuation did not succeed")
+        parent = _state(runtime["outputs"], sdk_wave="")
+        if parent["state_wave"] == "5" or (parent["state_wave"] == "0" and parent != initial):
+            raise ValueError("SDK completion Runtime continuation differs from its original wave")
+        handoff = runtime["outputs"].get("sdk_handoff_required")
+        aggregate_state = runtime["outputs"].get("aggregate_state")
+        if handoff not in ("true", "false") or aggregate_state not in ("not-selected", "ready", "completed"):
+            raise ValueError("SDK completion Runtime election is incomplete")
+        expected_required = "true" if aggregate_state == "ready" else "false"
+        if runtime["outputs"].get("aggregate_required") != expected_required:
+            raise ValueError("Runtime aggregate election contradicts its state")
+        if aggregate_state == "not-selected":
+            if aggregate["result"] != "skipped":
+                raise ValueError("Unelected Runtime aggregate continuation executed")
+        else:
+            if (aggregate["result"] != "success"
+                    or aggregate["outputs"].get("aggregate_payload_complete") != "true"):
+                raise ValueError("Selected Runtime aggregate continuation is incomplete")
+            aggregate_parent = _state(aggregate["outputs"], sdk_wave="")
+            if (aggregate_state == "ready" and aggregate_parent["state_wave"] != "5"
+                    or aggregate_state == "completed" and aggregate_parent != parent):
+                raise ValueError("Runtime aggregate continuation differs from its elected parent")
+            parent = aggregate_parent
 
-    binary_plan, binary, collected = (jobs[name] for name in
-        ("sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3"))
-    required = binary_plan["outputs"].get("sdk_workers_required")
-    if binary_plan["result"] != "success" or required not in ("true", "false"):
-        raise ValueError("SDK completion iOS binary election is incomplete")
-    expected = "success" if required == "true" else "skipped"
-    if binary["result"] != expected or collected["result"] != expected:
-        raise ValueError("SDK completion iOS binary work differs from its election")
-    if required == "true":
-        if collected["outputs"].get("wave_failed") != "false":
-            raise ValueError("SDK completion iOS binary collection retained failures")
-        parent = _state(collected["outputs"], runtime_wave="0", sdk_wave="3")
+        binary_plan, binary, collected = (jobs[name] for name in
+            ("sdk-ios-binary-plan", "sdk-ios-binary", "sdk-collect-3"))
+        required = binary_plan["outputs"].get("sdk_workers_required")
+        if binary_plan["result"] != "success" or required not in ("true", "false"):
+            raise ValueError("SDK completion iOS binary election is incomplete")
+        expected = "success" if required == "true" else "skipped"
+        if binary["result"] != expected or collected["result"] != expected:
+            raise ValueError("SDK completion iOS binary work differs from its election")
+        if required == "true":
+            if collected["outputs"].get("wave_failed") != "false":
+                raise ValueError("SDK completion iOS binary collection retained failures")
+            parent = _state(collected["outputs"], runtime_wave="0", sdk_wave="3")
 
     planned, native, validation, final, core_binary, core_package, core_validation, core_metadata = (jobs[name] for name in
         ("sdk-plan", "sdk-native-result", "sdk-ios-validation-result", "sdk-ios-metadata-result",

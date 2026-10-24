@@ -232,7 +232,7 @@ class AcquisitionTests(unittest.TestCase):
         script = "\n".join(line[8:] for line in block.splitlines())
         for selector, expected, nested in (("", "provision", ""), ("77", "setup", ""), ("", "provision", "/trusted source")):
             with self.subTest(selector=selector, nested=nested):
-                env = {**os.environ, "REUSE_AUTHORITY_READ_TOKEN": "test-only", "APPROVED_ARTIFACT_ID": selector,
+                env = {**os.environ, "REUSE_AUTHORITY_READ_TOKEN": "test-only", "CHECKPOINT_OWNER": "false", "APPROVED_ARTIFACT_ID": selector,
                     "GITHUB_ACTION_PATH": str(root / ".github/actions/restore-reuse-qualification"),
                     "GITHUB_WORKSPACE": "/consumer with spaces", "CONSUMER_ROOT": nested, "RUNNER_TEMP": "/runner temp"}
                 result = subprocess.run(["bash", "-euc", 'uname() { if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi; }; '
@@ -346,7 +346,7 @@ class AcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "output"
             script = 'set -e\nuname() { echo MINGW64_NT/x86_64; }\n' + guard
-            environment = {**os.environ, "GITHUB_OUTPUT": str(output), "REUSE_AUTHORITY_READ_TOKEN": "test-only"}
+            environment = {**os.environ, "GITHUB_OUTPUT": str(output), "REUSE_AUTHORITY_READ_TOKEN": "test-only", "CHECKPOINT_OWNER": "false"}
             subprocess.run(["bash", "-c", script], env=environment, check=True, capture_output=True)
             self.assertEqual(output.read_text(), "supported=false\n")
             output.unlink()

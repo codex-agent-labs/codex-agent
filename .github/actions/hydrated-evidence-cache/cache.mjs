@@ -28,8 +28,31 @@ export function verify(row) {
   });
 }
 
+export async function cacheResponse(url, fetchBody = fetch) {
+  // An unavailable accelerator is a miss, not permission to bypass original admission.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let response;
+    try { response = await fetchBody(url); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; }
+    if (response?.ok) return response;
+    if (response?.body) await response.body.cancel();
+    if (response && response.status !== 408 && response.status !== 429 && response.status < 500) break;
+  }
+  console.warn('Cache transport unavailable; restoring authenticated original evidence instead');
+  return null;
+}
 
-export async function main() {
+function serviceUnavailable(error) {
+  const codes = ['ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'EAI_AGAIN'];
+  if (codes.includes(error?.code)) return true;
+  if (error?.name === 'RestError' && (error.code === 'REQUEST_SEND_ERROR' ||
+      [401, 403, 404, 408, 409, 410, 429, 500, 502, 503, 504].includes(error.statusCode))) return true;
+  // The pinned toolkit wraps its typed transport errors in Error(message).
+  return /^Failed to (GetCacheEntryDownloadURL|CreateCacheEntry|FinalizeCacheEntryUpload): (Unable to make request: (ECONNRESET|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH)\b|Rate limited: Failed request: \(429\)|Cache storage quota has been hit\.|(Failed to make request after \d+ attempts|Received non-retryable error): Failed request: \((401|403|404|408|409|410|429|500|502|503|504)\))/.test(error?.message ?? '');
+}
+
+
+export async function main(client = internalCacheTwirpClient(), upload = saveCache) {
 const mode = process.env.INPUT_MODE;
 const root = process.env.INPUT_ROOT;
 if (!['restore', 'save'].includes(mode) || !isAbsolute(root)) throw Error('Invalid cache operation');
@@ -39,19 +62,34 @@ const unique = new Map();
 for (const row of records) {
   if (!/^sha256:[0-9a-f]{64}$/.test(row.sha256) || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > 8 * 1024 ** 3)
     throw Error('Invalid cache content identity');
+  if (row.gzipLevel !== undefined && row.gzipLevel !== 0) throw Error('Invalid cache compression hint');
   if (unique.has(row.sha256) && unique.get(row.sha256).bytes !== row.bytes) throw Error('Ambiguous cache identity');
   unique.set(row.sha256, row);
 }
-const client = internalCacheTwirpClient();
 const version = createHash('sha256').update('codex-hydrated-evidence-raw-gzip-v1').digest('hex');
-const stats = {mode, entries: unique.size, hits: 0, misses: 0, saved: 0, compressedBytes: 0, hydratedBytes: 0};
+const stats = {mode, entries: unique.size, hits: 0, misses: 0, saved: 0, skipped: 0, unavailable: 0, compressedBytes: 0, hydratedBytes: 0};
 const started = performance.now();
+let unavailable = false;
+
+async function service(operation) {
+  if (unavailable) return null;
+  try { return await operation(); }
+  catch (error) {
+    if (!serviceUnavailable(error)) throw error;
+    unavailable = true;
+    stats.unavailable++;
+    console.warn('Cache service unavailable; authenticated original evidence remains required');
+    return null;
+  }
+}
 
 
 async function safeParents(path) {
   const parent = dirname(path);
-  if (parent !== path) await safeParents(parent);
-  try { await mkdir(path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  if (parent !== path) {
+    await safeParents(parent);
+    try { await mkdir(path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink()) throw Error('Unsafe cache directory');
 }
@@ -75,13 +113,14 @@ async function entry(row) {
         return;
       }
     }
-    const found = await client.GetCacheEntryDownloadURL({key, restoreKeys: [], version});
-    if (found.ok && found.matchedKey !== key) throw Error('Cache returned a different content identity');
+    const found = await service(() => client.GetCacheEntryDownloadURL({key, restoreKeys: [], version}));
+    if (found !== null && typeof found?.ok !== 'boolean') throw Error('Malformed cache lookup response');
+    if (found?.ok && found.matchedKey !== key) throw Error('Cache returned a different content identity');
     if (mode === 'restore') {
-      if (!found.ok) { stats.misses++; return; }
+      if (!found?.ok) { stats.misses++; return; }
       if (new URL(found.signedDownloadUrl).protocol !== 'https:') throw Error('Unsafe cache download URL');
-      const response = await fetch(found.signedDownloadUrl);
-      if (!response.ok) throw Error('Cache download failed');
+      const response = await cacheResponse(found.signedDownloadUrl);
+      if (response === null) { stats.misses++; return; }
       let compressed = 0;
       const count = new Transform({transform(chunk, _, done) {
         compressed += chunk.length;
@@ -98,14 +137,24 @@ async function entry(row) {
     } else {
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink()) throw Error('Unsafe cache body');
-      await pipeline(createReadStream(file), verify(row), createGzip(), createWriteStream(temporary, {flags: 'wx', mode: 0o600}));
-      if (found.ok) { stats.hits++; return; }
-      const reservation = await client.CreateCacheEntry({key, version});
-      if (!reservation.ok) throw Error('Cache reservation failed');
+      if (found === null || found.ok) {
+        await pipeline(createReadStream(file), verify(row), new Writable({write(_chunk, _encoding, done) { done(); }}));
+        if (found === null) stats.skipped++;
+        else stats.hits++;
+        return;
+      }
+      // Already compressed package bodies retain the same gzip format and content key.
+      await pipeline(createReadStream(file), verify(row), createGzip({level: row.gzipLevel ?? 6}), createWriteStream(temporary, {flags: 'wx', mode: 0o600}));
+      const reservation = await service(() => client.CreateCacheEntry({key, version}));
+      if (reservation !== null && typeof reservation?.ok !== 'boolean') throw Error('Malformed cache reservation response');
+      if (!reservation?.ok) { stats.skipped++; return; }
+      if (new URL(reservation.signedUploadUrl).protocol !== 'https:') throw Error('Unsafe cache upload URL');
       const size = (await lstat(temporary)).size;
-      await saveCache(-1, temporary, reservation.signedUploadUrl, {useAzureSdk: true, archiveSizeBytes: size, uploadConcurrency: 2, uploadChunkSize: 32 * 1024 ** 2});
-      const published = await client.FinalizeCacheEntryUpload({key, version, sizeBytes: String(size)});
-      if (!published.ok) throw Error('Cache finalization failed');
+      await service(() => upload(-1, temporary, reservation.signedUploadUrl, {useAzureSdk: true, archiveSizeBytes: size, uploadConcurrency: 2, uploadChunkSize: 32 * 1024 ** 2}));
+      if (unavailable) { stats.skipped++; return; }
+      const published = await service(() => client.FinalizeCacheEntryUpload({key, version, sizeBytes: String(size)}));
+      if (published !== null && typeof published?.ok !== 'boolean') throw Error('Malformed cache finalization response');
+      if (!published?.ok) { stats.skipped++; return; }
       stats.saved++;
       stats.compressedBytes += size;
       stats.hydratedBytes += row.bytes;

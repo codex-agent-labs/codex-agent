@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar, copy_context
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -22,6 +22,7 @@ import zipfile
 from .inventory import (
     PRODUCT_JSON_LIMIT,
     _is_windows,
+    _is_reparse_point,
     _open_directory,
     _open_regular_file,
     _stat_identity,
@@ -394,12 +395,27 @@ def verify_carrier(
     root: Path,
     expected_instances: Any,
     consumer: Any,
-    *, object_root: Path | None = None,
+    *, object_root: Path | None = None, selected_instances=None, completed_frozen=None,
 ) -> dict[str, Any]:
+    """Verify a carrier, or explicitly return only a caller-selected object view.
+
+    A selected view authenticates no other object. Full admission callers leave
+    selected_instances unset. All carrier controls and path structure still check;
+    a selected view may omit only unselected object bodies, never controls.
+    """
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Carrier completion requires native semantic evidence")
+        completed_frozen.check_consumer(consumer)
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("Product carrier directory is missing or unsafe")
     expected = _carrier_expected_instances(expected_instances)
+    selected = expected if selected_instances is None else _carrier_expected_instances(selected_instances)
+    if not set(selected).issubset(expected):
+        raise ValueError("Selected carrier view is outside its expected closure")
+    before = _stage_fingerprint(root) if selected_instances is not None and not _is_windows() else None
     carrier_bytes = _read_safe_regular(root / CARRIER_NAME, max_bytes=PRODUCT_JSON_LIMIT)
     resolution_bytes = _read_safe_regular(
         root / CARRIER_RESOLUTION_NAME, max_bytes=PRODUCT_JSON_LIMIT,
@@ -443,12 +459,15 @@ def verify_carrier(
             record["buildKey"], record["receiptSha256"], record["transportSha256"],
         )
         source = (Path(object_root) / references[object_path]) if references else root / object_path
-        object_value = verify_object(
-            source,
-            build_key=record["buildKey"],
-            receipt_sha256=record["receiptSha256"],
-            object_sha256=record["objectSha256"],
-        )
+        object_value = (completed_frozen.envelope(record)
+                        if completed_frozen is not None and references else None)
+        if object_value is None:
+            object_value = verify_object(
+                source,
+                build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"],
+                object_sha256=record["objectSha256"],
+            )
         if _carrier_identity(object_value["receipt"], "Product carrier receipt") != _carrier_identity(
             record, "Product carrier object",
         ):
@@ -467,14 +486,31 @@ def verify_carrier(
             raise ValueError("Product carrier transport does not match its resolution or consumer")
         return {**record, "receipt": object_value["receipt"], "receiptBytes": object_value["receiptBytes"],
                 **({"originalObjectPath": references[object_path]} if references else {})}
+    optional_paths = set()
     for record in records:
         if not references:
-            expected_paths.add(object_relative_path(record["buildKey"], record["receiptSha256"]))
+            path = object_relative_path(record["buildKey"], record["receiptSha256"])
+            expected_paths.add(path)
+            if selected_instances is not None and _carrier_identity(record, 'Carrier object') not in selected:
+                optional_paths.add(path)
         expected_paths.add(transport_relative_path(record["buildKey"], record["receiptSha256"], record["transportSha256"]))
-    verified = bounded_verify(verify_member, zip(records, phases, strict=True))
-    actual_paths = {record["relativePath"] for record in regular_file_inventory(root)}
-    if actual_paths != expected_paths:
+    verified = bounded_verify(verify_member, (
+        pair for pair in zip(records, phases, strict=True)
+        if _carrier_identity(pair[0], "Selected carrier object") in selected))
+    actual_paths = ({Path(path).relative_to(root).as_posix() for path, _ in before if Path(path).is_file()}
+                    if before is not None else
+                    {record["relativePath"] for record in regular_file_inventory(root)})
+    if not expected_paths - optional_paths <= actual_paths <= expected_paths:
         raise ValueError("Product carrier file inventory is incomplete or unexpected")
+    if before is not None and _stage_fingerprint(root) != before:
+        raise ValueError("Selected carrier view changed during verification")
+    if selected_instances is not None:
+        # Return a visibly scoped control view, never a full-carrier admission.
+        resolution = {**resolution, "phases": [phase for phase in phases
+            if _carrier_identity(phase, "Selected carrier phase") in selected]}
+        carrier = {**carrier, "objects": [record for record in records
+            if _carrier_identity(record, "Selected carrier object") in selected],
+            "resolutionSha256": sha256_bytes(canonical_json_bytes(resolution))}
     return {"carrier": carrier, "resolution": resolution, "objects": verified}
 
 
@@ -485,8 +521,13 @@ def write_carrier(
     expected_instances: Any,
     sources: Mapping[PhaseInstanceId, Path],
     consumer: Any,
-    *, object_root: Path | None = None,
+    *, object_root: Path | None = None, completed_frozen=None,
 ) -> dict[str, Any]:
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Carrier completion requires native semantic evidence")
+        completed_frozen.check_consumer(consumer)
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("Product carrier destination must not exist")
@@ -501,12 +542,15 @@ def write_carrier(
         (root / CARRIER_RESOLUTION_NAME).write_bytes(resolution_bytes)
         records, references = [], {}
         for instance, phase in zip(expected, phases, strict=True):
-            with _verified_object_snapshot(
+            completed = (completed_frozen.envelope(phase)
+                         if completed_frozen is not None and object_root is not None else None)
+            with (nullcontext((None, completed)) if completed is not None else _verified_object_snapshot(
                 Path(sources[instance]),
                 build_key=phase["buildKey"],
                 receipt_sha256=phase["receiptSha256"],
                 object_sha256=phase["objectSha256"],
-            ) as (snapshot, verification):
+                require_snapshot=object_root is None,
+            )) as (snapshot, verification):
                 object_relative = object_relative_path(phase["buildKey"], phase["receiptSha256"])
                 if object_root is None:
                     object_target = root / object_relative
@@ -551,13 +595,24 @@ def write_carrier(
         write_canonical_json(root / CARRIER_NAME, carrier)
         if object_root is not None:
             write_canonical_json(root / CARRIER_REFERENCES_NAME, references)
-        verify_carrier(root, expected, consumer, object_root=object_root)
+        verify_carrier(root, expected, consumer, object_root=object_root,
+                       **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         snapshot_regular_tree(root, destination)
-    return verify_carrier(destination, expected, consumer, object_root=object_root)
+    return verify_carrier(destination, expected, consumer, object_root=object_root,
+                          **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
 
 
 @verification_scoped
-def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId) -> dict[str, Any]:
+def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId, *, completed_frozen=None) -> dict[str, Any]:
+    """Verify a body, or explicit native semantic completion of an absent frozen body.
+
+    The latter keeps only exact descriptor/receipt controls. It never verifies
+    present body bytes by inference; physical consumers still use restore_object.
+    """
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Deferred shard requires native semantic evidence")
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("Product phase shard directory is missing or unsafe")
@@ -586,6 +641,17 @@ def verify_phase_shard(root: Path, expected_instance: PhaseInstanceId) -> dict[s
     receipt_bytes = _read_safe_regular(root / PHASE_RECEIPT_NAME, max_bytes=PRODUCT_JSON_LIMIT)
     if sha256_bytes(receipt_bytes) != receipt_sha256:
         raise ValueError("Product phase shard receipt digest is invalid")
+    if (completed_frozen is not None and not (root / object_path).exists()
+            and not (root / object_path).is_symlink()):
+        completed = completed_frozen.envelope(descriptor, receipt_bytes)
+        if completed is not None:
+            expected_controls = sorted([
+                {"relativePath": PHASE_SHARD_NAME, "bytes": len(descriptor_bytes), "sha256": sha256_bytes(descriptor_bytes)},
+                {"relativePath": PHASE_RECEIPT_NAME, "bytes": len(receipt_bytes), "sha256": receipt_sha256}],
+                key=lambda row: row["relativePath"])
+            if regular_file_inventory(root) != expected_controls:
+                raise ValueError("Deferred shard has unexpected controls or body content")
+            return {**descriptor, "receipt": completed["receipt"], "receiptBytes": receipt_bytes}
     verified = verify_object(
         root / object_path,
         build_key=build_key,
@@ -808,7 +874,8 @@ def _verified_object_snapshot(
     build_key: Any,
     receipt_sha256: Any,
     object_sha256: Any | None,
-) -> Iterator[tuple[Path, dict[str, Any]]]:
+    require_snapshot: bool = True,
+) -> Iterator[tuple[Path | None, dict[str, Any]]]:
     session = None if _is_windows() else _VERIFICATION_SESSION.get()
     # A missing transport digest cannot identify an immutable object in advance.
     if session is not None and object_sha256 is not None:
@@ -822,6 +889,18 @@ def _verified_object_snapshot(
                 source_key = (str(Path(archive).absolute()), identity, key)
                 with session["lock"]:
                     cached = session["objects"].get(source_key)
+                    proof = (session.get("objectProofs", {}).get(key)
+                             if source_key in session.get("objectSources", {}) else None)
+                if cached is None and not require_snapshot and proof is not None:
+                    # Only return verified metadata. Any payload consumer still
+                    # obtains a private snapshot and checks every byte's hash.
+                    if _stat_identity(os.fstat(descriptor)) != identity:
+                        raise CacheObjectError("Product cache object changed before metadata reuse")
+                    session["hits"] += 1
+                    yield None, deepcopy(proof)
+                    if _stat_identity(os.fstat(descriptor)) != identity:
+                        raise CacheObjectError("Product cache object changed during metadata reuse")
+                    return
                 if cached is not None:
                     snapshot, verification, snapshot_identity = cached
                     private_descriptor, private_stat = _open_safe_regular(snapshot, "Verified object snapshot")
@@ -846,20 +925,49 @@ def _verified_object_snapshot(
         snapshot = Path(temporary).resolve() / "object.zip"
         try:
             identity = _snapshot_archive(Path(archive), snapshot)
-            verification = _verify_snapshot(
-                snapshot,
-                build_key=build_key,
-                receipt_sha256=receipt_sha256,
-                object_identity=identity,
-                object_sha256=object_sha256,
-            )
+            verification = None
+            if session is not None and object_sha256 is not None:
+                if identity["sha256"] != key[2]:
+                    raise ValueError("Product cache object SHA-256 does not match the expected transport identity")
+                with session["lock"]:
+                    verification = deepcopy(session.get("objectProofs", {}).get(key))
+                if verification is not None and verification["objectBytes"] != identity["bytes"]:
+                    raise ValueError("Product cache object size differs from completed verification")
+            if verification is None:
+                verification = _verify_snapshot(
+                    snapshot,
+                    build_key=build_key,
+                    receipt_sha256=receipt_sha256,
+                    object_identity=identity,
+                    object_sha256=object_sha256,
+                )
+                if session is not None and object_sha256 is not None:
+                    size = len(verification["receiptBytes"]) + len(canonical_json_bytes(verification["manifest"]))
+                    with session["lock"]:
+                        proofs = session.setdefault("objectProofs", {})
+                        used = session.get("objectProofBytes", 0)
+                        # ponytail: 128 proofs/32 MiB encoded metadata; overflow verifies fully.
+                        if key not in proofs and len(proofs) < 128 and used + size <= 2 * PRODUCT_JSON_LIMIT:
+                            proofs[key] = deepcopy(verification)
+                            session["objectProofBytes"] = used + size
+            if session is not None and object_sha256 is not None:
+                with session["lock"]:
+                    sources = session.setdefault("objectSources", {})
+                    if key in session.get("objectProofs", {}) and len(sources) < 4096:
+                        sources[source_key] = key
         except (OSError, ValueError, zipfile.BadZipFile) as error:
             raise CacheObjectError(str(error)) from error
         if session is not None and object_sha256 is not None:
             session["misses"] += 1
-            # ponytail: bounded private custody; larger closures verify uncached.
+            # A newly seen alias has already passed its own complete byte hash.
+            # Share retained custody by exact identity instead of charging it twice.
             with session["lock"]:
-                if session["bytes"] + identity["bytes"] <= _VERIFICATION_CACHE_BYTES:
+                equivalent = next((value for (_, _, candidate), value in session["objects"].items()
+                                   if candidate == key), None)
+                if equivalent is not None and len(session["objects"]) < 4096:
+                    session["objects"][source_key] = equivalent
+                elif (len(session["objects"]) < 4096
+                      and session["bytes"] + identity["bytes"] <= _VERIFICATION_CACHE_BYTES):
                     retained = session["root"] / (secrets.token_hex(16) + ".zip")
                     shutil.move(snapshot, retained)
                     retained.chmod(0o400)
@@ -882,6 +990,7 @@ def verify_object(
         build_key=build_key,
         receipt_sha256=receipt_sha256,
         object_sha256=object_sha256,
+        require_snapshot=False,
     ) as (_, verification):
         return verification
 
@@ -979,20 +1088,68 @@ def restore_object(
 
 def _stage_fingerprint(root):
     """Guard private, already-verified extraction custody without rehashing it."""
-    result = []
-    for current, directories, files in os.walk(root, followlinks=False):
-        directories.sort()
-        for path in (Path(current), *(Path(current) / name for name in sorted(directories))):
-            descriptor = _open_directory(path, "Verified stage directory")
+    if not _is_windows():
+        anchor = _open_directory(root, "Verified stage directory")
+        def fail(error):
+            raise error
+        walk = os.fwalk(".", topdown=True, onerror=fail, follow_symlinks=False, dir_fd=anchor)
+        result = []
+        before = _stat_identity(os.fstat(anchor))
+        try:
+            for current, directories, files, parent in walk:
+                directories.sort()
+                entries = [(".", True), *((name, True) for name in directories),
+                           *((name, False) for name in sorted(files))]
+                for name, directory in entries:
+                    metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (_is_reparse_point(metadata)
+                            or not (stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode))):
+                        raise ValueError("Verified stage contains an unsafe entry")
+                    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                    if directory:
+                        flags |= getattr(os, "O_DIRECTORY", 0)
+                    descriptor = os.open(name, flags, dir_fd=parent)
+                    try:
+                        opened = os.fstat(descriptor)
+                        if _is_reparse_point(opened) or _stat_identity(opened) != _stat_identity(metadata):
+                            raise ValueError("Verified stage entry changed while opening")
+                        result.append((str(Path(root) / current / name), _stat_identity(opened)))
+                    finally:
+                        os.close(descriptor)
+            current = _open_directory(root, "Verified stage directory")
             try:
-                result.append((str(path), _stat_identity(os.fstat(descriptor))))
+                if (_stat_identity(os.fstat(current)) != before
+                        or _stat_identity(os.fstat(anchor)) != before):
+                    raise ValueError("Verified stage directory changed during fingerprint")
             finally:
+                os.close(current)
+            return tuple(result)
+        except OSError as error:
+            raise ValueError("Verified stage tree is missing or unsafe") from error
+        finally:
+            walk.close()
+            os.close(anchor)
+    from .index import _held_output_parent, _require_parent_identity
+    def fail(error):
+        raise error
+    result = []
+    # Windows directory handles need CreateFileW, not POSIX os.open on a drive.
+    with _held_output_parent(Path(root)) as (anchor, absolute):
+        before = _stat_identity(os.fstat(anchor))
+        for current, directories, files in os.walk(absolute, onerror=fail, followlinks=False):
+            directories.sort()
+            for path in (Path(current), *(Path(current) / name for name in directories)):
+                with _held_output_parent(path) as (descriptor, parent):
+                    result.append((str(path), _stat_identity(os.fstat(descriptor))))
+                    _require_parent_identity(descriptor, parent)
+            for name in sorted(files):
+                path = Path(current) / name
+                descriptor, metadata = _open_safe_regular(path, "Verified stage file")
                 os.close(descriptor)
-        for name in sorted(files):
-            path = Path(current) / name
-            descriptor, metadata = _open_safe_regular(path, "Verified stage file")
-            os.close(descriptor)
-            result.append((str(path), _stat_identity(metadata)))
+                result.append((str(path), _stat_identity(metadata)))
+        _require_parent_identity(anchor, absolute)
+        if _stat_identity(os.fstat(anchor)) != before:
+            raise ValueError("Verified stage directory changed during fingerprint")
     return tuple(result)
 
 

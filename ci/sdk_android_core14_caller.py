@@ -49,7 +49,7 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
         keyring=None, keys_directory=None, reused_catalog=None, reused_catalog_root=None,
         reused_catalog_source=None, reused_receipt_sha256=None,
         reused_context_manifest=None, reused_context_signature=None,
-        reused_context_keyring=None, reused_context_keys_directory=None):
+        reused_context_keyring=None, reused_context_keys_directory=None, retained_sdk_inputs_source=None):
     """Preflight or execute an Android Maven phase under one live Core admission.
 
     ``destination=None`` performs the pre-setup check. A destination executes
@@ -213,7 +213,9 @@ def with_core14(plan, discovery, before_state, after_state, metadata_receipt,
                 binary_original_job_name=binary_original_job_name,
                 android_runtime_archive=archive, sdk_validation_tooling=tooling,
                 sdk_apple_validation_policy=sdk_apple_validation_policy,
-                sdk_facade_metadata_admission=admission)
+                sdk_facade_metadata_admission=admission,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                   if retained_sdk_inputs_source is not None else {}))
         return sdk_maven_binary_workflow.execute(plan, discovery, after_state, destination,
             component="sdk-android", expected_build_key=expected_build_key,
             repository_root=root, environ=environment,
@@ -240,6 +242,7 @@ def main(argv=None):
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     for name in ("selected-state-root", "binary-contract-evidence", "binary-original-context",
                  "keyring", "keys-directory"):
         parser.add_argument("--" + name, type=Path)
@@ -273,6 +276,9 @@ def main(argv=None):
     if mode == "elect" and output is None:
         parser.error("election requires a GitHub output destination")
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Original retained SDK input source")
         replay_control, context_control = arguments["replay_policy"], arguments["original_context"]
         arguments["replay_policy"] = load_canonical_json_bytes(read_regular_file_bytes(
             arguments["replay_policy"], reject_symlink_parents=True))

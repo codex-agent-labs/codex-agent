@@ -84,7 +84,7 @@ def _execute_metadata(plan, *, producer, sdk_version, package_stage, validation_
         raise ValueError("iOS metadata requires fresh diagnostics and product output")
     product_reuse._prepare_destination(stage, root).rmdir()
     environment, wrapper = product_reuse._runtime_worker_environment(
-        root, current_producer, destination, environ)
+        root, current_producer, destination, environ, build_directory=".")
     destination = product_reuse._prepare_destination(destination, root)
     fields = {
         "codexAgent.product": "sdk", "codexAgent.component": "sdk-ios",
@@ -139,7 +139,7 @@ def _execute_metadata(plan, *, producer, sdk_version, package_stage, validation_
 
 def execute(plan, discovery, state, destination, *, expected_build_key,
             repository_root, environ, trusted_workflow_sha, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Finalize only after both signed validation gates and package lineage agree."""
     require_no_signing_secret(environ)
     if sdk_apple_validation_policy is None:
@@ -181,8 +181,9 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             raise ValueError("iOS metadata election state or caller policy changed")
 
     verified = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-        sdk_original_workflow_sha=trusted_workflow_sha,
-        sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions)
+        sdk_original_workflow_sha=trusted_workflow_sha, requested_scope=(_INSTANCE,),
+        sdk_apple_validation_policy=sdk_apple_validation_policy, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     ready = verified.prior_ready_plans.get(_INSTANCE)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("iOS metadata is not ready with the elected build key")
@@ -192,11 +193,10 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     producer_bytes = canonical_json_bytes(producer)
     controls_unchanged()
     prepared = destination / "inputs"
-    materialized = product_reuse.materialize_product_predecessors(plan, discovery, state, _INSTANCE, prepared,
-        expected_build_key=expected_build_key, repository_root=root, environ=environ,
-        sdk_validation_tooling=tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
-        sdk_original_workflow_sha=trusted_workflow_sha,
-        **admissions)
+    with product_reuse.verification_session():
+        materialized = product_reuse._materialize_product_predecessors(
+            verified, _INSTANCE, prepared, expected_build_key, root,
+            materialized_scope=tuple(PhaseInstanceId("sdk", "sdk-ios", "validation", target) for target in _TARGETS))
     controls_unchanged()
     if canonical_json_bytes(ready) != ready_bytes or canonical_json_bytes(producer) != producer_bytes:
         raise ValueError("iOS metadata election changed during predecessor materialization")
@@ -232,6 +232,10 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     for target in _TARGETS:
         digest = sha256_bytes(read_regular_file_bytes(validation_receipts[target]))
         record = by_digest.get(digest)
+        if record is None and completed_frozen is not None:
+            # The input gate below must bind both V receipts and P to concrete
+            # native completion before it can omit either complete carrier.
+            continue
         if record is None or record["target"] != target:
             raise ValueError("iOS metadata lacks the exact signed validation carrier")
         selected_records.append(record)
@@ -252,7 +256,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
         with verified_sdk_apple_metadata_inputs(repository=root,
                 validation_receipts=validation_receipts, evidence_root=root,
                 evidence_records=selected_records, policy_revision=producer["commit"],
-                policy=sdk_apple_validation_policy) as original:
+                policy=sdk_apple_validation_policy,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as original:
             inputs_unchanged()
             result = _execute_metadata(ready, producer=producer, sdk_version=version,
                 package_stage=original["package_stage"], validation_contents=original["validation_contents"],
@@ -280,7 +285,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
             metadata_stage=result["stage"], metadata_receipt=candidate / PHASE_RECEIPT_NAME,
             validation_receipts=validation_receipts, evidence_root=root,
             evidence_records=selected_records, policy_revision=producer["commit"],
-            policy=sdk_apple_validation_policy)
+            policy=sdk_apple_validation_policy,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if admitted != finalized["receipt"] or raw != read_regular_file_bytes(candidate / PHASE_RECEIPT_NAME):
             raise ValueError("iOS metadata admission returned a different candidate receipt")
         inputs_unchanged()
@@ -295,6 +301,7 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "destination", "repository-root"):
         parser.add_argument("--" + name, type=Path, required=True)
@@ -304,14 +311,15 @@ def main(argv=None):
     parser.add_argument("--trusted-workflow-sha", required=True)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             policy = arguments.pop("sdk_apple_validation_policy")
             if policy is not None:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                     policy, "Caller Apple validation policy")
-            execute(**arguments, environ=os.environ, **admissions)
+            execute(**arguments, environ=os.environ, **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

@@ -82,8 +82,11 @@ def _inspect_npm_sdk(
             if len(seen) >= 100_000 or member.size < 0:
                 raise ValueError("npm archive inventory exceeds its limit")
             path = PurePosixPath(member.name)
-            normalized = str(path) + ("/" if member.isdir() else "")
-            if (normalized in seen or normalized != member.name or
+            normalized = str(path)
+            canonical_name = member.name == normalized or (
+                member.isdir() and member.name == normalized + "/"
+            )
+            if (normalized in seen or not canonical_name or not path.parts or
                     any(ord(character) < 32 or ord(character) == 127 for character in member.name) or
                     "\\" in member.name or path.is_absolute() or ".." in path.parts or
                     member.issym() or member.islnk() or

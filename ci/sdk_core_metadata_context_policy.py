@@ -25,7 +25,9 @@ from .products.sdk_apple_validation_admission import apple_validation_policy_arg
 from .products.sdk_package import _require_capability_output_separate
 from .products.signing_isolation import require_no_signing_secret
 from .sdk_facade_metadata_original import _context
-from .sdk_facade_original_inputs import _fresh_policy_sources
+from .sdk_facade_original_inputs import (
+    _fresh_policy_sources, _require_retained_upload, _retained_validation_origin,
+)
 from .sdk_facade_upload_locator import locate_original_facade_upload
 from .sdk_policy_snapshot import snapshot_policy_closure
 
@@ -148,9 +150,12 @@ def prepare_original_core_caller_policy(plan, discovery, state, bootstrap_policy
                 ("sdk", "sdk-core", "validation", target) or receipt["buildKey"] != selected["buildKey"]):
             raise ValueError("Core original validation receipt differs from elected target and key")
         unchanged()
+        origin = _retained_validation_origin(receipt_bytes, elected.producer)
         locator = locate_original_facade_upload(receipt_path,
             expected_receipt_sha256=selected["receiptSha256"],
-            trusted_workflow_sha=trusted_workflow_sha, token=token, environ=environ)
+            trusted_workflow_sha=trusted_workflow_sha if origin is None else origin["workflow_sha"],
+            token=token, environ=environ)
+        _require_retained_upload(locator, origin)
         unchanged()
         validations[target] = {**record, "artifactId": locator["artifact_id"],
             "artifactSha256": locator["artifact_sha256"]}

@@ -11,13 +11,14 @@ import tempfile
 
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, require_array, require_exact_keys, require_integer,
+    require_array, require_exact_keys, require_integer,
     require_object, require_regular_directory, sha256_bytes, snapshot_regular_tree,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity
 from .registry import NATIVE_BINDINGS, NATIVE_TARGETS
+from .restore import memoized_file_inventory as regular_file_inventory
 from .sdk_inputs import REQUEST_NAME, stage_sdk_inputs
-from .sdk_package import _require_capability_output_separate
+from .sdk_package import _require_capability_output_separate, csharp_binary_inputs
 from .sdk_validation_inputs import _request_inventory
 from .tooling import verified_tooling_capture
 
@@ -59,7 +60,10 @@ def verify_sdk_native_metadata_content(
                                          reject_symlink_parents=True)
     trees = {"metadata": Path(metadata_stage), "package": Path(package_stage),
              "runtime": Path(runtime_stages), "sdks": Path(staged_sdks),
-             "validations": Path(validation_stages), "validation-receipts": Path(validation_receipts)}
+             "validations": Path(validation_stages), "validation-receipts": Path(validation_receipts),
+             "runtime-authorization": Path(package_receipt).parent / "runtime-authorization"}
+    if component == "csharp":
+        trees["csharp-binary"] = csharp_binary_inputs(package_receipt)["binary_stage_root"].parent
     before = {name: _inventory(path) for name, path in trees.items()}
     paths = {"metadata.json": Path(metadata_receipt), "package.json": Path(package_receipt),
              "original-request.json": Path(compatibility_request)}

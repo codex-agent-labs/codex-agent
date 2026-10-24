@@ -8,19 +8,22 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
 from typing import Any
-from zipfile import ZipFile
+from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 from .contract_model import CONTRACT_CHECKSUM_SUFFIXES, verify_contract_bundle
 from .inventory import (
     publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
-    require_sha256, sha256_bytes, snapshot_regular_tree,
+    require_integer, require_relative_path, require_semver, require_sha256, sha256_bytes, sha256_file,
+    snapshot_regular_tree, verified_zip_contents,
 )
 
 
@@ -118,12 +121,130 @@ def verify_contract_phase10_maven(
                 or regular_file_inventory(sidecar_directory) != original_sidecars
                 or _pinned_key(pgp_public_key, expected_pgp_key_sha256) != key):
             raise ValueError("Contract Maven payload, sidecars, or key changed during verification")
-        return {"schemaVersion": 1, "product": "contract",
+        return {"schemaVersion": 2, "product": "contract",
                 "contractVersion": manifest["contractVersion"],
                 "payloadSha256": sha256_bytes(original),
                 "payloadBytes": len(original), "sidecarFiles": original_sidecars,
+                "mavenFiles": [{"relativePath": row["path"], "bytes": row["bytes"],
+                                "sha256": row["sha256"]} for row in manifest["mavenFiles"]],
                 "pgpPublicKey": {"bytes": len(key), "sha256": sha256_bytes(key),
                                  "fingerprint": fingerprint}}
+
+
+def _central_files(verified_maven: dict) -> tuple[str, list[dict]]:
+    """Project an already authenticated Maven inventory, not a new trust authority."""
+    if verified_maven["schemaVersion"] != 2 or verified_maven["product"] != "contract":
+        raise ValueError("Central envelope requires the current verified Contract Maven inventory")
+    version = require_semver(verified_maven["contractVersion"], "Contract Central version")
+    records = central_maven_files(verified_maven["mavenFiles"], verified_maven["sidecarFiles"])
+    return f"codex-agent-contract-{version}-central.zip", records
+
+
+def central_maven_files(maven_files: list[dict], sidecar_files: list[dict], *,
+                        max_entry_bytes: int = _LIMIT) -> list[dict]:
+    """Shared release-only projection; callers authenticate product/signature bytes."""
+    records = []
+    for row in [*maven_files, *[
+            row for row in sidecar_files if row["relativePath"].endswith(".asc")]]:
+        path = require_relative_path(row["relativePath"], "Central input")
+        if not path.startswith("maven/"):
+            raise ValueError("Central input is outside Maven")
+        require_integer(row["bytes"], "Central input length", 1)
+        require_sha256(row["sha256"], "Central input digest")
+        records.append({**row, "relativePath": path.removeprefix("maven/")})
+    if not records or len({row["relativePath"] for row in records}) != len(records):
+        raise ValueError("Central input inventory is empty or duplicated")
+    # Stored ZIP headers have a known size; reject before allocating the output.
+    if len(records) > 16_384 or any(row["bytes"] > max_entry_bytes for row in records) or 22 + sum(
+            row["bytes"] + 76 + 2 * len(row["relativePath"].encode("utf-8")) for row in records
+    ) >= 1_000_000_000:
+        raise ValueError("Central envelope exceeds the existing upload limit")
+    return sorted(records, key=lambda row: row["relativePath"])
+
+
+def verify_contract_central_bundle(bundle: Path, verified_maven: dict) -> dict:
+    """Verify the release-only envelope against freshly verified primaries/signatures."""
+    name, expected = _central_files(verified_maven)
+    if bundle.name != name:
+        raise ValueError("Contract Central filename differs from its release identity")
+    return verify_central_bundle(bundle, expected)
+
+
+def verify_central_bundle(bundle: Path, expected: list[dict], *, max_entry_bytes: int = _LIMIT) -> dict:
+    """Shared bounded verification of an already-finalized release envelope."""
+    # The original verified inventory supplies the exact semantic closure; retain
+    # no member bodies and do not extract, copy, sign, or repack this envelope.
+    actual, _, identity = verified_zip_contents(
+        bundle, retained_paths=(), canonical_stored=True, max_archive_bytes=1_000_000_000 - 1,
+        max_total_bytes=1_000_000_000 - 1, max_members=16_384, max_entry_bytes=max_entry_bytes,
+    )
+    if actual != expected:
+        raise ValueError("Central members differ from verified Maven bytes")
+    return {"fileName": bundle.name, **identity, "files": actual}
+
+
+def write_central_bundle(bundle: Path, records: list[dict], read_member) -> None:
+    """Stream exact selected bytes once; the caller verifies before publication.
+
+    Small archive-backed callers may return bytes; large staged inputs return
+    an already safely opened binary stream, closed here after consumption.
+    """
+    with ZipFile(bundle, "x", compression=ZIP_STORED) as archive:
+        for row in records:
+            contents = read_member("maven/" + row["relativePath"])
+            info = ZipInfo(row["relativePath"], (1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            info.file_size = row["bytes"]
+            size, digest = 0, hashlib.sha256()
+            with (io.BytesIO(contents) if isinstance(contents, bytes) else contents) as source, \
+                    archive.open(info, "w") as output:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > row["bytes"]:
+                        raise ValueError("Central input changed after verification")
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size != row["bytes"] or "sha256:" + digest.hexdigest() != row["sha256"]:
+                raise ValueError("Central input changed after verification")
+
+
+def produce_contract_central_bundle(
+    payload: Path, sidecars: Path, destination: Path, verified_maven: dict,
+) -> dict:
+    """Phase10 only: enclose exact verified Maven bytes once, outside the payload.
+
+    The protected caller must first obtain verified_maven from the existing full
+    PGP verifier. This writer does not grant release or original-producer trust.
+    """
+    payload, sidecars, destination = map(Path, (payload, sidecars, destination))
+    name, records = _central_files(verified_maven)
+    output = destination.resolve(strict=False)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Contract Central destination already exists")
+    for source in (payload, sidecars):
+        source = source.resolve(strict=True)
+        if output == source or output in source.parents or source in output.parents:
+            raise ValueError("Contract Central destination overlaps a verified input")
+    # One bounded in-memory input snapshot, no extracted Maven tree or duplicate
+    # staged primaries. Signatures are tiny and read only when consumed.
+    raw = read_regular_file_bytes(payload, max_bytes=_LIMIT, reject_symlink_parents=True)
+    if len(raw) != verified_maven["payloadBytes"] or sha256_bytes(raw) != verified_maven["payloadSha256"]:
+        raise ValueError("Contract Central payload differs from verified bytes")
+    with tempfile.TemporaryDirectory(prefix="ct-central-", dir=destination.parent) as temporary:
+        prepared = Path(temporary)
+        with ZipFile(io.BytesIO(raw)) as source:
+            write_central_bundle(prepared / name, records, lambda path: (
+                read_regular_file_bytes(sidecars / path, max_bytes=1024 * 1024,
+                                        reject_symlink_parents=True)
+                if path.endswith(".asc") else source.read(path)))
+        result = verify_contract_central_bundle(prepared / name, verified_maven)
+        if (sha256_file(payload, reject_symlink_parents=True) != verified_maven["payloadSha256"]
+                or regular_file_inventory(sidecars) != verified_maven["sidecarFiles"]):
+            raise ValueError("Contract Central inputs changed before publication")
+        publish_regular_tree(prepared, destination, expected_inventory=[{
+            "relativePath": name, "bytes": result["bytes"], "sha256": result["sha256"]}])
+    return result
 
 
 def produce_contract_phase10_maven_sidecars(

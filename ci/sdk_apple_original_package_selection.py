@@ -17,16 +17,14 @@ if __package__:
 
 import product_reuse
 from products.inventory import (
-    canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer, require_sha256,
+    canonical_json_bytes, load_canonical_json_bytes,
+    read_regular_file_bytes, regular_file_inventory,
     verified_zip_contents, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
-from products.restore import restore_object, verify_phase_shard
-from products.reuse import _validate_envelope, _dependency_closure
+from products.reuse import _validate_envelope
 from products.sdk_apple_package_admission import ApplePackageAdmission
 from products.sdk_package import _require_capability_output_separate
-from products.sdk_release_selection import sdk_runtime_source
 from products.signing_isolation import require_no_signing_secret
 from receipt import safe_extract
 from sdk_apple_source import _original_upload
@@ -40,7 +38,7 @@ _PLAN_JOB = "product-validation / plan"
 
 @contextmanager
 def caller_original_apple_package_selector(plan_path, apple_policy, *, repository_root,
-        trusted_workflow_sha, environ, token):
+        trusted_workflow_sha, environ, token, retained_sdk_inputs_source=None):
     """Hold current caller authority and external evidence through one reuse wave.
 
     The policy is already caller-owned; its release keys are independently
@@ -60,6 +58,7 @@ def caller_original_apple_package_selector(plan_path, apple_policy, *, repositor
     if not token:
         raise ValueError("Apple package selector requires an observation token")
     policy_bytes = canonical_json_bytes(apple_policy)
+    sdk_source_bytes = canonical_json_bytes(retained_sdk_inputs_source)
     files = {name: arguments[name] for name in (
         "plan", "keyring", "tooling_public_key", "java_executable", "tooling_keyring")}
     directories = {name: arguments[name] for name in (
@@ -87,6 +86,7 @@ def caller_original_apple_package_selector(plan_path, apple_policy, *, repositor
             require_no_signing_secret(os.environ)
             require_no_signing_secret(environment)
             if (canonical_json_bytes(apple_policy) != policy_bytes
+                    or canonical_json_bytes(retained_sdk_inputs_source) != sdk_source_bytes
                     or any(read_regular_file_bytes(path, max_bytes=128 * 1024 * 1024,
                         reject_symlink_parents=True) != before_files[name]
                         for name, path in files.items())
@@ -107,7 +107,9 @@ def caller_original_apple_package_selector(plan_path, apple_policy, *, repositor
             java_executable=arguments["java_executable"], policy_revision=revision,
             required_trust_domain="release", environ=environment, token=token,
             tooling_keyring=arguments["tooling_keyring"],
-            tooling_keys_directory=arguments["tooling_keys_directory"])
+            tooling_keys_directory=arguments["tooling_keys_directory"],
+            **({"retained_sdk_inputs_source": load_canonical_json_bytes(sdk_source_bytes)}
+               if retained_sdk_inputs_source is not None else {}))
         try:
             unchanged()
             yield selector
@@ -126,7 +128,8 @@ class OriginalApplePackageSelector:
     def __init__(self, scratch_root, *, repository_root, trusted_workflow_sha,
             keyring, keys_directory, tooling_evidence, tooling_public_key,
             java_executable, policy_revision, required_trust_domain,
-            environ, token, tooling_keyring=None, tooling_keys_directory=None):
+            environ, token, tooling_keyring=None, tooling_keys_directory=None,
+            retained_sdk_inputs_source=None):
         self._repository = Path(repository_root).resolve(strict=True)
         self._scratch = Path(scratch_root).resolve(strict=True)
         _require_capability_output_separate(self._scratch, self._repository)
@@ -135,6 +138,8 @@ class OriginalApplePackageSelector:
         self._workflow_sha = trusted_workflow_sha
         self._environ = environ
         self._token = token
+        # Snapshot caller policy; neither the selected receipt nor its envelope elects this source.
+        self._retained_sdk_inputs_source = load_canonical_json_bytes(canonical_json_bytes(retained_sdk_inputs_source))
         self._policy = dict(repository_root=self._repository, keyring=keyring,
             keys_directory=keys_directory, tooling_evidence=tooling_evidence,
             tooling_public_key=tooling_public_key, java_executable=java_executable,
@@ -158,9 +163,18 @@ class OriginalApplePackageSelector:
         selected_receipt = destination / "selected-receipt.json"
         selected_receipt.write_bytes(raw)
 
+        original_run = product_reuse.api_json(
+            f"https://api.github.com/repos/{producer['repository']}/actions/runs/"
+            f"{producer['runId']}/attempts/{producer['runAttempt']}", self._token)
+        original_workflow = product_reuse._runtime_prior_workflow_sha(original_run, self._workflow_sha)
+        if original_workflow is None:
+            raise ValueError("Original Apple package lacks a reviewed producer workflow")
         observations = product_reuse._observe_ci_producer_jobs(
             {"plan": producer}, jobs_by_phase={"plan": _PLAN_JOB},
-            trusted_workflow_sha=self._workflow_sha, token=self._token)
+            trusted_workflow_sha=original_workflow, token=self._token)
+        # Historical PR merge objects need not remain in a fresh runner's refs.
+        from sdk_handoff import _ensure_observed_sdk_commit
+        _ensure_observed_sdk_commit(self._repository, producer, self._token)
         artifacts = product_reuse.paginated_items(
             f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
             "artifacts", self._token)
@@ -187,54 +201,10 @@ class OriginalApplePackageSelector:
         })
 
         locator = locate_original_apple_upload(selected_receipt,
-            trusted_workflow_sha=self._workflow_sha, token=self._token,
+            trusted_workflow_sha=original_workflow, token=self._token,
             environ=self._environ)
-        package_capture = destination / "package-capture"
-        product_reuse.capture_sdk_ios_package_upload(plan, package_capture,
-            package_receipt_path=selected_receipt,
+        return ApplePackageAdmission.from_original(envelope, plan=plan,
+            selected_receipt=selected_receipt,
             artifact_id=locator["artifact_id"], artifact_sha256=locator["artifact_sha256"],
-            trusted_workflow_sha=self._workflow_sha, repository_root=self._repository,
-            environ=self._environ, token=self._token)
-        shard = verify_phase_shard(package_capture / "original/shard", _INSTANCE)
-        if (shard["receiptBytes"] != raw or shard["receiptSha256"] != selected["receiptSha256"]
-                or shard["objectSha256"] != selected["objectSha256"]):
-            raise ValueError("Official Apple package upload differs from the authenticated selected object")
-
-        # The captured descriptor supplies only an upload locator claim.  The
-        # separate S858 capture re-observes the fixed original job and digest.
-        descriptor = load_canonical_json_bytes(read_regular_file_bytes(
-            package_capture / "original/apple-package-execution.json",
-            max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
-        if type(descriptor) is not dict:
-            raise ValueError("Original Apple package execution descriptor is invalid")
-        hint = require_exact_keys(descriptor.get("sdkInputsArtifact"),
-                                  {"artifactId", "artifactSha256"}, "Original S858 locator hint")
-        sdk_artifact_id = require_integer(hint["artifactId"], "Original S858 artifact ID", 1)
-        sdk_artifact_digest = require_sha256(hint["artifactSha256"], "Original S858 artifact digest")
-        versions = git_product_versions(self._repository, producer["commit"])
-        if versions["sdk"] != receipt["productVersion"]:
-            raise ValueError("Original Apple package differs from its Git SDK version")
-        source = sdk_runtime_source(self._repository, producer["commit"],
-            instances=_dependency_closure((_INSTANCE,)), runtime_version=versions["runtime-release"],
-            sdk_version=versions["sdk"]) or "current-runtime"
-        sdk_capture = destination / "sdk-capture"
-        product_reuse.capture_sdk_inputs_upload(plan, sdk_capture,
-            artifact_id=sdk_artifact_id, artifact_sha256=sdk_artifact_digest,
-            trusted_workflow_sha=self._workflow_sha, expected_source=source,
-            repository_root=self._repository, environ=self._environ, token=self._token,
-            original_package_receipt_path=selected_receipt)
-        selected_stage = destination / "selected-stage"
-        restored = restore_object(package_capture / "original/shard" / shard["objectPath"],
-            selected_stage, build_key=shard["buildKey"],
-            receipt_sha256=shard["receiptSha256"], object_sha256=shard["objectSha256"])
-        if restored["receiptBytes"] != raw:
-            raise ValueError("Restored Apple package differs from the authenticated selected receipt")
-        require_no_signing_secret(os.environ)
-        require_no_signing_secret(self._environ)
-        if read_regular_file_bytes(selected_receipt, reject_symlink_parents=True) != raw:
-            raise ValueError("Selected Apple receipt changed during original capture")
-        return ApplePackageAdmission([{
-            "receiptSha256": selected["receiptSha256"], "selectedStage": selected_stage,
-            "selectedReceipt": selected_receipt, "plan": plan,
-            "packageCapture": package_capture, "sdkCapture": sdk_capture,
-        }], **self._policy)
+            trusted_workflow_sha=original_workflow, environ=self._environ, token=self._token,
+            retained_sdk_inputs_source=self._retained_sdk_inputs_source, **self._policy)

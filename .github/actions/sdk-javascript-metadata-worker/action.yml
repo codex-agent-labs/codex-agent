@@ -177,6 +177,10 @@ runs:
                            ('javaExecutable', '--java-executable'), ('keyring', '--tooling-keyring'), ('keysDirectory', '--tooling-keys-directory')):
             if policy[name] is not None:
                 fields[flag] = policy[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+        if os.environ.get('CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE'):
+            fields['--retained-sdk-inputs-source'] = os.environ['CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'javascript-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)
@@ -185,7 +189,11 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-javascript-metadata-node-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/sdk-worker
+        path: |
+          build/sdk-worker/shard
+          build/sdk-worker/worker/execution.json
+          build/sdk-worker/worker/gradle.log
+          ${{ job.status != 'success' && 'build/sdk-worker' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true

@@ -37,7 +37,7 @@ def _envelope_binding(envelope):
 
 def verify_campaign_apple_binary(binary_envelope, binary_stage, package_envelope,
         validation_envelopes, handoffs, *, repository, policy_revision, policy,
-        package_stage=None, validation_stages=None):
+        package_stage=None, validation_stages=None, completed_frozen=None):
     """Return original binary receipt bytes after both full handoffs cleanly exit."""
     from .reuse import _validate_envelope
 
@@ -106,7 +106,8 @@ def verify_campaign_apple_binary(binary_envelope, binary_stage, package_envelope
                 verified = stack.enter_context(verified_apple_validation_handoff(
                     handoff_before[target], target=target,
                     expected_receipt_sha256=validations[target]["receiptSha256"],
-                    repository_root=Path(repository), policy_revision=policy_revision, **arguments))
+                    repository_root=Path(repository), policy_revision=policy_revision, **arguments,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
                 if verified["receiptBytes"] != validations[target]["receiptBytes"]:
                     raise ValueError("Apple campaign validation differs from the selected receipt")
                 if target in stage_inventories and regular_file_inventory(verified["stage"]) != stage_inventories[target]:
@@ -117,24 +118,39 @@ def verify_campaign_apple_binary(binary_envelope, binary_stage, package_envelope
                 if (validation_shard["receiptBytes"] != validations[target]["receiptBytes"]
                         or validation_shard["objectSha256"] != validations[target]["objectSha256"]):
                     raise ValueError("Apple campaign validation differs from its original shard")
-                shard = verify_phase_shard(original / "originals/binary/original/shard", _BINARY)
-                if (shard["receiptBytes"] != binary["receiptBytes"]
-                        or shard["receiptSha256"] != binary["receiptSha256"]
-                        or shard["objectSha256"] != binary["objectSha256"]):
-                    raise ValueError("Apple campaign binary differs from the original shard")
+                package_original = verified["package"]
+                compact = "completedCapture" in package_original
+                if compact:
+                    from reuse_qualification import CompletedFrozenReuse
+                    if type(completed_frozen) is not CompletedFrozenReuse:
+                        raise ValueError("Compact campaign requires concrete native completion")
+                    for envelope in (binary, package):
+                        record = {**{field: envelope["receipt"][field] for field in
+                            ("product", "component", "phase", "target", "buildKey")},
+                            **{field: envelope[field] for field in ("receiptSha256", "objectSha256")}}
+                        qualified = completed_frozen.envelope(record, envelope["receiptBytes"])
+                        if qualified is None or qualified["receiptBytes"] != envelope["receiptBytes"]:
+                            raise ValueError("Compact campaign differs from its native original")
+                else:
+                    shard = verify_phase_shard(original / "originals/binary/original/shard", _BINARY)
+                    if (shard["receiptBytes"] != binary["receiptBytes"]
+                            or shard["receiptSha256"] != binary["receiptSha256"]
+                            or shard["objectSha256"] != binary["objectSha256"]):
+                        raise ValueError("Apple campaign binary differs from the original shard")
                 package_original = verified["package"]
                 if package_original["receiptBytes"] != package["receiptBytes"]:
                     raise ValueError("Apple campaign validations differ from the selected package lineage")
                 if "package" in stage_inventories and regular_file_inventory(package_original["stage"]) != stage_inventories["package"]:
                     raise ValueError("Apple campaign package stage differs from its original handoff")
-                package_shard = verify_phase_shard(package_original["original"] / "shard", _PACKAGE)
-                if (package_shard["receiptBytes"] != package["receiptBytes"]
-                        or package_shard["objectSha256"] != package["objectSha256"]):
-                    raise ValueError("Apple campaign package differs from its original shard")
-                predecessor = package_original["original"] / "inputs/sdk-sdk-ios-binary-ios"
-                if (read_regular_file_bytes(predecessor / "phase-receipt.json") != binary["receiptBytes"]
-                        or regular_file_inventory(predecessor / "stage") != stage_before):
-                    raise ValueError("Apple campaign binary differs from the package predecessor")
+                if not compact:
+                    package_shard = verify_phase_shard(package_original["original"] / "shard", _PACKAGE)
+                    if (package_shard["receiptBytes"] != package["receiptBytes"]
+                            or package_shard["objectSha256"] != package["objectSha256"]):
+                        raise ValueError("Apple campaign package differs from its original shard")
+                    predecessor = package_original["original"] / "inputs/sdk-sdk-ios-binary-ios"
+                    if (read_regular_file_bytes(predecessor / "phase-receipt.json") != binary["receiptBytes"]
+                            or regular_file_inventory(predecessor / "stage") != stage_before):
+                        raise ValueError("Apple campaign binary differs from the package predecessor")
                 unchanged()
     finally:
         unchanged()
@@ -144,7 +160,7 @@ def verify_campaign_apple_binary(binary_envelope, binary_stage, package_envelope
 def verify_campaign_apple_family(binary_envelope, binary_stage, package_envelope, package_stage,
         validation_envelopes, validation_stages, metadata_envelope, metadata_stage, handoffs,
         *, package_capture, sdk_capture, metadata_evidence_root, metadata_evidence_records,
-        repository, policy_revision, policy):
+        repository, policy_revision, policy, completed_frozen=None):
     """Replay all five selected Apple phases; return exact original receipt bytes.
 
     The caller independently authenticates every envelope, stage, retained
@@ -212,14 +228,16 @@ def verify_campaign_apple_family(binary_envelope, binary_stage, package_envelope
                 raise ValueError("Apple campaign original package differs from its selected object")
         binary_raw = verify_campaign_apple_binary(frozen_binary, binary_stage, frozen_package,
             frozen_validations, roots_before, repository=repository, policy_revision=policy_revision, policy=policy,
-            package_stage=package_stage, validation_stages=stage_roots_before)
+            package_stage=package_stage, validation_stages=stage_roots_before,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if binary_raw != bound["binary"][1][0]:
             raise ValueError("Apple campaign binary replay returned another selected receipt")
         verified, metadata_raw = verify_sdk_apple_metadata_admission(repository=repository,
             metadata_stage=metadata_stage, metadata_receipt=receipt_paths["metadata"],
             validation_receipts={target: receipt_paths[target] for target in _TARGETS},
             evidence_root=evidence_root, evidence_records=records,
-            policy_revision=policy_revision, policy=policy)
+            policy_revision=policy_revision, policy=policy,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if metadata_raw != bound["metadata"][1][0] or canonical_json_bytes(verified) != metadata_raw:
             raise ValueError("Apple campaign metadata differs from the selected receipt")
         if (canonical_json_bytes(policy) != policy_bytes

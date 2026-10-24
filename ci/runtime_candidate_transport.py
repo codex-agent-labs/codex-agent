@@ -23,11 +23,12 @@ from ci.receipt import safe_extract
 from ci.runtime_phase10_output_record import _observe_protected_record_dispatch
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys,
+    read_regular_file_bytes, require_exact_keys,
     require_integer, require_sha256, sha256_bytes, sha256_file,
     verified_zip_contents, write_canonical_json,
 )
 from ci.products.receipt import validate_producer
+from ci.products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from ci.products.signing_isolation import require_no_signing_secret
 
 
@@ -45,7 +46,7 @@ _FORBIDDEN_SECRETS = frozenset({
 def validate_selection(value: dict) -> tuple[dict, dict]:
     selected = require_exact_keys(value, {"schemaVersion", "catalog", "phase10"},
                                   "Runtime candidate transport selection")
-    if type(selected["schemaVersion"]) is not int or selected["schemaVersion"] != 1:
+    if type(selected["schemaVersion"]) is not int or selected["schemaVersion"] not in (1, 2):
         raise ValueError("Unsupported Runtime candidate transport selection schema")
     catalog = require_exact_keys(selected["catalog"], {
         "producer", "trustedWorkflowSha", "artifactId", "artifactSha256",
@@ -54,7 +55,8 @@ def validate_selection(value: dict) -> tuple[dict, dict]:
     phase10 = require_exact_keys(selected["phase10"], {
         "originalProducer", "recordProducer", "trustedRecordWorkflowSha",
         "artifactId", "artifactSha256", "recordSha256", "signatureSha256",
-    }, "Runtime Phase-10 record selection")
+    } | ({"sidecarTransport"} if selected["schemaVersion"] == 2 else set()),
+        "Runtime Phase-10 record selection")
     promoted = validate_producer(catalog["producer"])
     original = validate_producer(phase10["originalProducer"])
     record = validate_producer(phase10["recordProducer"])
@@ -80,6 +82,13 @@ def validate_selection(value: dict) -> tuple[dict, dict]:
             require_sha256(group[name], f"Runtime candidate {name}")
     if catalog["artifactId"] == phase10["artifactId"]:
         raise ValueError("Runtime catalog and record must be distinct official uploads")
+    if selected["schemaVersion"] == 2:
+        sidecar = require_exact_keys(phase10["sidecarTransport"],
+            {"artifactId", "artifactSha256"}, "Runtime retained sidecar transport")
+        require_integer(sidecar["artifactId"], "Runtime retained sidecar upload ID", 1)
+        require_sha256(sidecar["artifactSha256"], "Runtime retained sidecar upload digest")
+        if sidecar["artifactId"] in {catalog["artifactId"], phase10["artifactId"]}:
+            raise ValueError("Runtime retained sidecar transport must be a distinct upload")
     return catalog, phase10
 
 
@@ -122,6 +131,7 @@ def _observe_catalog(producer: dict, workflow_sha: str, token: str) -> dict:
     return {"run": run, "testedCommit": commit, "jobs": jobs}
 
 
+@verification_scoped
 def capture_runtime_candidate_transports(selection: dict, destination: Path, *,
                                          token: str, environ=None) -> dict:
     """Retain exact official catalog/record ZIPs and observations, without admission."""
@@ -157,6 +167,13 @@ def capture_runtime_candidate_transports(selection: dict, destination: Path, *,
              f"-attempt-{phase10['recordProducer']['runAttempt']}",
              {"record.json", "record.sig"}, _RECORD_JOB),
         )
+        if selection["schemaVersion"] == 2:
+            routes += (("sidecar-capture", phase10["sidecarTransport"],
+                phase10["recordProducer"], observed_record,
+                f"codex-agent-runtime-phase10-sidecar-transport-{phase10['originalProducer']['tree']}"
+                f"-attestation-{phase10['recordProducer']['runId']}"
+                f"-attempt-{phase10['recordProducer']['runAttempt']}",
+                {"plan/impact-plan.json", "transport.zip", "capture-transport.json"}, _RECORD_JOB),)
         observations = {}
         for label, pins, producer, observed, name, members, job in routes:
             archive = staged / f"{label}.zip"
@@ -173,6 +190,10 @@ def capture_runtime_candidate_transports(selection: dict, destination: Path, *,
                         "caller.json", "catalog", "original-evidence", "trust"}
                         for path in paths)):
                     raise ValueError("Runtime catalog upload has unexpected or missing members")
+            elif label == "sidecar-capture":
+                if (not members < paths or any(path not in members and not path.startswith("original/")
+                                              for path in paths)):
+                    raise ValueError("Runtime retained sidecar capture has unexpected or missing members")
             elif paths != members:
                 raise ValueError("Runtime Phase-10 record upload has unexpected members")
             extracted = staged / label
@@ -184,12 +205,12 @@ def capture_runtime_candidate_transports(selection: dict, destination: Path, *,
                         or sha256_file(extracted / "catalog/product-index.json") != pins["indexSha256"]
                         or sha256_file(extracted / "catalog/product-index.sig") != pins["signatureSha256"]):
                     raise ValueError("Runtime catalog bytes differ from independent S1048 pins")
-            elif (sha256_file(extracted / "record.json") != pins["recordSha256"]
+            elif label == "phase10-record" and (sha256_file(extracted / "record.json") != pins["recordSha256"]
                     or sha256_file(extracted / "record.sig") != pins["signatureSha256"]):
                 raise ValueError("Runtime Phase-10 record differs from independent S1048 pins")
             observations[label] = {"artifact": artifact, "observation": observed,
                                    "producer": producer, "files": inventory}
-        write_canonical_json(staged / "transport.json", {"schemaVersion": 1,
+        write_canonical_json(staged / "transport.json", {"schemaVersion": selection["schemaVersion"],
             "selectionSha256": sha256_bytes(canonical_json_bytes(selection)),
             "routes": observations})
         before = regular_file_inventory(staged)

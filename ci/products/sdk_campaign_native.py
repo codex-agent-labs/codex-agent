@@ -33,6 +33,7 @@ def verify_sdk_campaign_native(
     sources: Mapping[PhaseInstanceId, IndexEntrySource],
     stages: Mapping[PhaseInstanceId, Path],
     compatibility_request: Path, runtime_stages: Path, staged_sdks: Path,
+    runtime_authorizations: Path,
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
@@ -47,6 +48,9 @@ def verify_sdk_campaign_native(
             or set(sources) != NATIVE_CAMPAIGN_INSTANCES
             or set(stages) != NATIVE_CAMPAIGN_INSTANCES):
         raise ValueError("Native SDK campaign requires its exact 36 phase instances")
+    authorization_paths = {item: Path(runtime_authorizations) / item.component / item.target
+                           for item in NATIVE_CAMPAIGN_INSTANCES if item.phase == "validation"}
+    authorization_inventories = {item: regular_file_inventory(path) for item, path in authorization_paths.items()}
 
     originals = {}
     inventories = {}
@@ -89,10 +93,13 @@ def verify_sdk_campaign_native(
         receipt_paths = {}
         for instance in sorted(NATIVE_CAMPAIGN_INSTANCES):
             stage = private / instance.component / instance.phase / instance.target
+            receipt_path = private / "receipts" / instance.component / instance.phase / f"{instance.target}.json"
+            if instance == PhaseInstanceId("sdk", "csharp", "binary", "desktop"):
+                context = private / "receipts/csharp/package/csharp-binary"
+                stage, receipt_path = context / "stage", context / "phase-receipt.json"
             snapshot_regular_tree(source_paths[instance], stage)
             if regular_file_inventory(stage) != inventories[instance]:
                 raise ValueError("Native SDK stage changed during capture")
-            receipt_path = private / "receipts" / instance.component / instance.phase / f"{instance.target}.json"
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             receipt_path.write_bytes(originals[instance][1])
             captured[instance], receipt_paths[instance] = stage, receipt_path
@@ -104,6 +111,12 @@ def verify_sdk_campaign_native(
             binary_inputs = ({"binary_stage_root": captured[binary],
                               "binary_receipt_path": receipt_paths[binary]}
                              if component == "csharp" else {})
+            authorizations = receipt_paths[package].parent / "runtime-authorization"
+            for target in NATIVE_TARGETS:
+                instance = PhaseInstanceId("sdk", component, "validation", target)
+                snapshot_regular_tree(authorization_paths[instance], authorizations / target)
+                if regular_file_inventory(authorizations / target) != authorization_inventories[instance]:
+                    raise ValueError("Native SDK campaign authorization changed during capture")
             value = verify_sdk_package_inputs(repository, captured[package], receipt_paths[package],
                 compatibility_request, runtime_stage_root=runtime_stages, staged_sdks=staged_sdks,
                 **binary_inputs)
@@ -119,9 +132,11 @@ def verify_sdk_campaign_native(
             for target in sorted(NATIVE_TARGETS):
                 instance = PhaseInstanceId("sdk", component, "validation", target)
                 proof = verify_sdk_validation_projection(component=component, target=target,
+                    runtime_authorization=authorizations / target,
                     package_stage=captured[package], package_receipt=receipt_paths[package],
                     validation_stage=captured[instance], validation_receipt=receipt_paths[instance],
-                    **tooling)
+                    **tooling, **({"binary_stage": captured[binary], "binary_receipt": receipt_paths[binary]}
+                                 if component == "csharp" else {}))
                 receipt, raw = originals[instance]
                 proof.output_inventory(sha256_bytes(raw), receipt["outputs"], identity=receipt)
                 projections[instance] = proof
@@ -137,6 +152,11 @@ def verify_sdk_campaign_native(
             verified_receipts[metadata] = value
 
         for instance in sorted(NATIVE_CAMPAIGN_INSTANCES):
+            if instance.phase == "validation" and (
+                    regular_file_inventory(authorization_paths[instance]) != authorization_inventories[instance]
+                    or regular_file_inventory(private / "receipts" / instance.component / "package" /
+                                              "runtime-authorization" / instance.target) != authorization_inventories[instance]):
+                raise ValueError("Native SDK campaign authorization changed during verification")
             if (sources[instance] != original_sources[instance]
                     or Path(stages[instance]) != source_paths[instance]
                     or regular_file_inventory(source_paths[instance]) != inventories[instance]

@@ -5,15 +5,16 @@ full product semantics separately. No uploaded field chooses producer or policy.
 """
 
 import os
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
-import zipfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse as products
+from runtime_reference_archive import open_reference_archive
 from impact import require_oid
 from products.inventory import (
     canonical_json_bytes, publish_regular_tree, read_regular_file_bytes, regular_file_inventory,
@@ -169,37 +170,45 @@ def capture_runtime_native_release_handoffs(plan_path, destination, *, recovery,
         expected_files = []
         for target in NATIVE_TARGETS:
             record = artifacts[target]
-            with tempfile.TemporaryDirectory(prefix="original-native-", dir=private) as scratch:
-                archive = Path(scratch) / "original-upload.zip"
-                name = f"codex-agent-runtime-release-handoff-{target}-{producer['tree']}-attempt-{producer['runAttempt']}"
-                artifact, _ = products._download_contract_ci_upload(record["artifactId"],
-                    record["artifactSha256"], name, producer, observed[0]["run"], token, destination=archive)
-                products._require_artifact_job_window(observed[0], jobs[target], artifact)
-                with zipfile.ZipFile(archive) as zipped:
-                    paths = [entry.filename for entry in zipped.infolist()
-                             if entry.filename.startswith("runtime-input/") and not entry.is_dir()]
-                if len(paths) != 9:
-                    raise ValueError("Native recovery requires the exact nine-file signed leaf")
-                _, contents, archive_info = verified_zip_contents(archive, retained_paths=paths,
-                    max_retained_bytes=2 * 1024 * 1024 * 1024,
-                    allow_empty_members=True, **products._CATALOG_ZIP_LIMITS)
-                if archive_info != {"bytes": artifact["size_in_bytes"], "sha256": record["artifactSha256"]}:
-                    raise ValueError("Native recovery original archive changed during verification")
-                leaf = prepared / target / "runtime-input"
-                leaf.mkdir(parents=True)
-                for path, raw in contents.items():
-                    relative = path.removeprefix("runtime-input/")
+            name = f"codex-agent-runtime-release-handoff-{target}-{producer['tree']}-attempt-{producer['runAttempt']}"
+            artifact = products._contract_ci_upload_metadata(record["artifactId"],
+                record["artifactSha256"], name, producer, observed[0]["run"], token)
+            products._require_artifact_job_window(observed[0], jobs[target], artifact)
+            leaf = prepared / target / "runtime-input"
+            leaf.mkdir(parents=True)
+            # The original job and stable ranges bind transport; the unchanged
+            # release verifier below authenticates every selected leaf byte.
+            # Do not claim the unread outer archive's body hash was verified.
+            with open_reference_archive(artifact, token) as (zipped, stream):
+                entries = [entry for entry in zipped.infolist()
+                           if entry.filename.startswith("runtime-input/") and not entry.is_dir()]
+                if len(entries) != 9 or sum(entry.file_size for entry in entries) > 2 * 1024**3:
+                    raise ValueError("Native recovery requires the exact bounded nine-file signed leaf")
+                for entry in entries:
+                    relative = entry.filename.removeprefix("runtime-input/")
                     output = leaf / relative
                     output.parent.mkdir(parents=True, exist_ok=True)
-                    output.write_bytes(raw)
+                    digest, total = hashlib.sha256(), 0
+                    with zipped.open(entry) as incoming, output.open("xb") as outgoing:
+                        while chunk := incoming.read(32 * 1024**2):
+                            total += len(chunk)
+                            if total > entry.file_size:
+                                raise ValueError("Native recovery member exceeds its declared size")
+                            digest.update(chunk)
+                            outgoing.write(chunk)
+                    if total != entry.file_size:
+                        raise ValueError("Native recovery member is truncated")
                     expected_files.append({"relativePath": f"{target}/runtime-input/{relative}",
-                                           "bytes": len(raw), "sha256": sha256_bytes(raw)})
-                verified = read_runtime_variant_handoff(leaf, target=target,
-                    keyring=trust.keyring, keys_directory=trust.keys)
-                actual = {phase: sha256_bytes(raw) for phase, raw in verified["receiptBytes"].items()}
-                if actual != selected[target]:
-                    raise ValueError("Native recovery receipts differ from the current selected originals")
-                records.append({"target": target, "artifact": artifact, "receiptSha256s": actual})
+                                           "bytes": total, "sha256": "sha256:" + digest.hexdigest()})
+                transferred = stream.transferred
+            verified = read_runtime_variant_handoff(leaf, target=target,
+                keyring=trust.keyring, keys_directory=trust.keys)
+            actual = {phase: sha256_bytes(raw) for phase, raw in verified["receiptBytes"].items()}
+            if actual != selected[target]:
+                raise ValueError("Native recovery receipts differ from the current selected originals")
+            records.append({"target": target, "artifact": artifact, "receiptSha256s": actual,
+                            "archiveBytesRead": transferred, "archiveBodyHashed": False,
+                            "verifiedScope": "complete-signed-runtime-handoff"})
         transport = {"producer": producer, "trustedWorkflowSha": original_workflow,
             "captureProducer": consumer, "captureTrustedWorkflowSha": trusted_workflow_sha,
             "observed": observed, "artifacts": records}

@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 
@@ -25,8 +26,12 @@ from ci.runtime_phase11_bytes import _landed_tree, forward_verified_runtime_phas
 from ci.products.index import SignedProductIndex, verify_release_product_index
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    publish_regular_tree, regular_file_inventory, require_exact_keys, require_integer, require_sha256,
+    publish_regular_tree, require_exact_keys, require_integer, require_sha256,
     sha256_bytes, sha256_file, verified_zip_contents,
+    write_canonical_json,
+)
+from ci.products.restore import (
+    memoized_file_inventory as regular_file_inventory, verification_scoped, verification_session,
 )
 from ci.products.runtime_aggregate_inputs import load_runtime_aggregate_release_evidence
 from ci.products.sdk_protected_runtime import _original_carrier
@@ -88,6 +93,7 @@ def _capture(capture: Path, expected_inventory: str, artifact_id: int, artifact_
     return control
 
 
+@verification_scoped
 def join_runtime_candidate(selection: dict, pins: dict, transports: Path,
                            aggregate_capture: Path, sidecar_capture: Path,
                            trusted_repository: Path, validation_repository: Path,
@@ -142,18 +148,25 @@ def join_runtime_candidate(selection: dict, pins: dict, transports: Path,
             raise ValueError("Runtime candidate output overlaps an authority input")
     if _digest_tree(transports) != pins["transportInventorySha256"]:
         raise ValueError("Runtime candidate custody differs from S1048 approval")
+    retained_sidecar = selection["schemaVersion"] == 2
     if {item.name for item in transports.iterdir()} != {
-            "catalog.zip", "catalog", "phase10-record.zip", "phase10-record", "transport.json"}:
+            "catalog.zip", "catalog", "phase10-record.zip", "phase10-record", "transport.json"
+            } | ({"sidecar-capture.zip", "sidecar-capture"} if retained_sidecar else set()):
         raise ValueError("Runtime candidate custody has unexpected roots")
     custody = require_exact_keys(_json(transports / "transport.json"),
         {"schemaVersion", "selectionSha256", "routes"}, "Runtime candidate custody")
-    if custody["schemaVersion"] != 1 or custody["selectionSha256"] != selected_digest:
+    if custody["schemaVersion"] != selection["schemaVersion"] or custody["selectionSha256"] != selected_digest:
         raise ValueError("Runtime candidate custody names a different S1048 selection")
-    routes = require_exact_keys(custody["routes"], {"catalog", "phase10-record"},
+    routes = require_exact_keys(custody["routes"], {"catalog", "phase10-record"}
+                                | ({"sidecar-capture"} if retained_sidecar else set()),
                                 "Runtime candidate official routes")
-    for label, selected in (("catalog", catalog_pin), ("phase10-record", phase10)):
+    selected_routes = [("catalog", catalog_pin), ("phase10-record", phase10)]
+    if retained_sidecar:
+        selected_routes.append(("sidecar-capture", phase10["sidecarTransport"]))
+    for label, selected in selected_routes:
         route = routes[label]
-        if (route.get("producer") != selected["producer" if label == "catalog" else "recordProducer"]
+        if (route.get("producer") != (catalog_pin["producer"] if label == "catalog"
+                                      else phase10["recordProducer"])
                 or route.get("artifact", {}).get("id") != selected["artifactId"]
                 or route.get("artifact", {}).get("digest") != selected["artifactSha256"]
                 or sha256_file(transports / f"{label}.zip") != selected["artifactSha256"]
@@ -167,6 +180,12 @@ def join_runtime_candidate(selection: dict, pins: dict, transports: Path,
         wrong_layout = (paths != expected_paths if label == "phase10-record" else
             not expected_paths <= paths or any(path.split("/", 1)[0] not in {
                 "caller.json", "catalog", "original-evidence", "trust"} for path in paths))
+        if label == "sidecar-capture":
+            controls = {"plan/impact-plan.json", "transport.zip", "capture-transport.json"}
+            wrong_layout = not controls < paths or any(
+                path not in controls and not path.startswith("original/") for path in paths)
+            if _digest_tree(transports / label) != pins["sidecarCaptureInventorySha256"]:
+                raise ValueError("Runtime retained sidecar capture differs from S1048 approval")
         if zipped != route["files"] or wrong_layout:
             raise ValueError("Runtime candidate custody extraction differs from official ZIP")
     if _digest_tree(transports / "catalog") != catalog_pin["inventorySha256"]:
@@ -310,12 +329,40 @@ def join_runtime_candidate(selection: dict, pins: dict, transports: Path,
             "signedRecordSha256": phase10["recordSha256"], "candidate": result}
 
 
+def _catalog_capture(transports: Path, destination: Path, pins: dict) -> Path:
+    """Re-present the original capture, without downloading, extracting or copying its body.
+
+    These private hardlinks grant no authority. The unchanged join authenticates
+    the exact approved capture inventory, original signed record and every body.
+    """
+    original = transports / "catalog/original-evidence"
+    sidecar = transports / "sidecar-capture"
+    regular_file_inventory(original, allow_empty=True)  # Reject unsafe source paths before linking.
+    regular_file_inventory(sidecar, allow_empty=True)
+    record = _json(transports / "phase10-record/record.json")
+    destination.mkdir()
+    def link(source, target):
+        os.link(source, target, follow_symlinks=False)
+    shutil.copytree(original / "original", destination / "original", copy_function=link)
+    link(original / "upload.zip", destination / "transport.zip")
+    (destination / "plan").mkdir()
+    link(sidecar / "plan/impact-plan.json", destination / "plan/impact-plan.json")
+    # Canonical serialization reproduces the original control exactly; no new
+    # producer, retrieval time or observation is substituted into its identity.
+    write_canonical_json(destination / "capture-transport.json", record["officialUpload"])
+    if _digest_tree(destination, allow_empty=True) != pins["aggregateCaptureInventorySha256"]:
+        raise ValueError("Retained catalog cannot reproduce the independently approved original capture")
+    return destination
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    for name in ("selection", "pins", "transports", "aggregate-capture", "sidecar-capture",
+    for name in ("selection", "pins", "transports",
                  "trusted-repository", "validation-repository", "landed-repository",
                  "pgp-public-key", "destination"):
         parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("aggregate-capture", "sidecar-capture"):
+        parser.add_argument("--" + name, type=Path)
     parser.add_argument("--expected-selection-sha256", required=True)
     parser.add_argument("--expected-pins-sha256", required=True)
     args = parser.parse_args(argv)
@@ -328,13 +375,26 @@ def main(argv=None) -> int:
             or sha256_bytes(approved) != require_sha256(args.expected_pins_sha256,
             "Runtime approved join pins")):
         raise ValueError("Runtime candidate controls differ from S1048 approval")
-    result = join_runtime_candidate(load_canonical_json_bytes(selected),
-        load_canonical_json_bytes(approved), args.transports, args.aggregate_capture,
-        args.sidecar_capture, args.trusted_repository, args.validation_repository,
-        args.landed_repository,
-        args.pgp_public_key, args.destination,
-        expected_selection_sha256=args.expected_selection_sha256,
-        expected_pins_sha256=args.expected_pins_sha256)
+    selection, pins = load_canonical_json_bytes(selected), load_canonical_json_bytes(approved)
+    validate_selection(selection)
+    if bool(args.aggregate_capture) != bool(args.sidecar_capture):
+        raise ValueError("Runtime candidate requires both original captures or neither")
+    require_no_signing_secret(os.environ)
+    if (_TOKENS | _SECRETS) & os.environ.keys():
+        raise ValueError("Runtime candidate semantic join must not receive token or signing secret")
+    with verification_session(), transport.verification_session(), tempfile.TemporaryDirectory(
+            prefix="runtime-original-view-", dir=args.transports.resolve(strict=True).parent) as temporary:
+        aggregate, sidecar = args.aggregate_capture, args.sidecar_capture
+        if aggregate is None:
+            if selection["schemaVersion"] != 2:
+                raise ValueError("Retained candidate captures require schema-2 selection")
+            aggregate = _catalog_capture(args.transports, Path(temporary) / "aggregate", pins)
+            sidecar = args.transports / "sidecar-capture"
+        result = join_runtime_candidate(selection, pins, args.transports, aggregate,
+            sidecar, args.trusted_repository, args.validation_repository,
+            args.landed_repository, args.pgp_public_key, args.destination,
+            expected_selection_sha256=args.expected_selection_sha256,
+            expected_pins_sha256=args.expected_pins_sha256)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

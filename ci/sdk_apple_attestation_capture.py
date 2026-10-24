@@ -25,7 +25,7 @@ from products.sdk_package import _require_capability_output_separate
 
 def capture_apple_validation_attestation(plan_path, destination, *, target,
         expected_receipt_sha256, artifact_id, artifact_sha256, trusted_workflow_sha,
-        repository_root=None, environ=None, token):
+        repository_root=None, environ=None, token, original_run_attempt=None):
     """Preserve exact original upload bytes without signing or semantic replay."""
     if target not in ("ios-arm64", "ios-simulator-arm64"):
         raise ValueError("Apple attestation capture requires an exact validation target")
@@ -53,19 +53,37 @@ def capture_apple_validation_attestation(plan_path, destination, *, target,
             raise ValueError("Apple attestation capture requires an authorized PR or merge-group plan")
         producer = products.validate_producer(products._consumer(
             plan, os.environ if environ is None else environ)["producer"])
+        from sdk_apple_upload_locator import RETAINED_VALIDATION_UPLOADS, retained_validation_attestation_origin
+        retained = retained_validation_attestation_origin(target, RETAINED_VALIDATION_UPLOADS[target][0], producer)
+        if retained is not None and artifact_id == retained["artifact_id"]:
+            if (original_run_attempt is not None or
+                    (artifact_sha256, expected_receipt_sha256, trusted_workflow_sha) !=
+                    (retained["artifact_sha256"], retained["receipt_sha256"], retained["workflow_sha"])):
+                raise ValueError("Retained Apple attestation differs from its fixed receipt or source")
+            producer = retained["producer"]
+        else:
+            retained = None
+        if retained is None and original_run_attempt is not None:
+            producer = products._same_run_state_consumer({"producer": producer},
+                {**producer, "runAttempt": original_run_attempt})["producer"]
         job = f"product-validation / sdk-apple-validation-attestation-{target}"
         observed = products._observe_ci_producer_jobs({"attestation": producer},
             jobs_by_phase={"attestation": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        if retained is not None:
+            jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]
+            if len(jobs) != 1 or jobs[0].get("id") != retained["job_id"]:
+                raise ValueError("Retained Apple attestation changes its reviewed successful signer")
         name = (f"codex-agent-sdk-apple-validation-evidence-{target}-"
                 f"{expected_receipt_sha256.removeprefix('sha256:')}-{producer['tree']}-"
                 f"attempt-{producer['runAttempt']}")
-        artifact, raw = products._download_contract_ci_upload(
-            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        products._require_artifact_job_window(observed[0], job, artifact)
         prepared = private / "captured"
         prepared.mkdir()
         archive = prepared / "original-upload.zip"
-        archive.write_bytes(raw)
+        artifact, _ = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token, destination=archive)
+        products._require_artifact_job_window(observed[0], job, artifact)
+        if retained is not None and artifact["size_in_bytes"] != retained["artifact_bytes"]:
+            raise ValueError("Retained Apple attestation changes its reviewed upload size")
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
                                              **products._CATALOG_ZIP_LIMITS)
         original = prepared / "original"

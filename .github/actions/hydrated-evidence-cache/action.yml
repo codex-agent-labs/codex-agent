@@ -17,6 +17,8 @@ inputs:
     required: false
     description: Existing caller-owned capture command, only for execute mode.
 outputs:
+  routing_decisions:
+    description: Routing hints emitted by the authenticated transition.
   aggregate_key:
     description: Original capture command output.
   aggregate_payload_complete:
@@ -39,6 +41,8 @@ outputs:
     description: Original capture command output.
   phase_plan:
     description: Original capture command output.
+  preparation_path:
+    description: Original non-secret preparation command output.
   plan_path:
     description: Original capture command output.
   product_reuse_reason:
@@ -61,6 +65,8 @@ outputs:
     description: Original capture command output.
   target_jobs_required:
     description: Original capture command output.
+  wave_failed:
+    description: Original collection failure decision, required by downstream gates.
 runs:
   using: node24
   main: entry.mjs

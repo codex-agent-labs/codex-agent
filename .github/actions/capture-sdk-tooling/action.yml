@@ -1,6 +1,15 @@
 name: Capture exact signed SDK validation tooling
 description: Reauthenticate tooling under the consumer's Git policy and installed Java, importing missing signed-original Git objects without checkout. No build, signing or JAR execution.
 inputs:
+  read-app-id:
+    default: ''
+    description: Optional protected read-only App identity; never artifact authority.
+  read-installation-id:
+    default: ''
+    description: Matching dedicated single-repository App installation.
+  read-app-private-key:
+    default: ''
+    description: Protected product-read environment credential, not a product input.
   artifact-id:
     required: true
     description: Caller-selected exact original tooling upload ID.
@@ -38,6 +47,20 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Prepare protected renewable read credentials
+      if: inputs.read-app-id != '' || inputs.read-installation-id != '' || inputs.read-app-private-key != ''
+      shell: bash
+      env:
+        READ_APP_ID: ${{ inputs.read-app-id }}
+        READ_INSTALLATION_ID: ${{ inputs.read-installation-id }}
+        READ_APP_PRIVATE_KEY: ${{ inputs.read-app-private-key }}
+      run: |
+        python3 -B - <<'PY'
+        import sys
+        sys.path.insert(0, 'ci')
+        from runtime_reference_transport import configure_read_app
+        configure_read_app()
+        PY
     - id: capture
       name: Capture caller-selected tooling using provisioned Java
       shell: bash
@@ -58,12 +81,17 @@ runs:
         from ci.products.inventory import canonical_json_bytes, load_json_bytes, read_regular_file_bytes
         from ci.tooling_discovery import _original_tooling_workflow
         repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
-        java_home = Path(os.environ['JAVA_HOME'])
+        java_home = os.environ['JAVA_HOME']
+        # Use ARM SHA intrinsics for verification without changing the producer's Java 17.
+        if (os.environ.get('RUNNER_OS'), os.environ.get('RUNNER_ARCH')) == ('macOS', 'ARM64'):
+            java_home = os.environ.get('JAVA_HOME_21_arm64', java_home)
+        java_home = Path(java_home)
         scratch_root = Path(os.environ['RUNNER_TEMP'])
         if not java_home.is_absolute() or not scratch_root.is_absolute():
             raise ValueError('Tooling capture requires absolute caller Java and scratch paths')
         java = (java_home / 'bin' / ('java.exe' if os.name == 'nt' else 'java')).resolve(strict=True)
         read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+        print('SDK tooling verifier Java: ' + str(java), flush=True)
         scratch_root = scratch_root.resolve(strict=True)
         if scratch_root.is_relative_to(repository) or repository.is_relative_to(scratch_root):
             raise ValueError('Tooling capture scratch must be outside and separate from the checkout')
@@ -82,7 +110,8 @@ runs:
             ('', ''), ('.github/workflows/contract-validation.yml',
                        'product-validation / contract-validation / tooling-attestation'),
         ):
-            original = _original_tooling_workflow(producer, original_sha, os.environ['GITHUB_TOKEN'])
+            original = _original_tooling_workflow(producer, original_sha, os.environ['GITHUB_TOKEN'],
+                                                  repository_root=repository)
             original_sha = original['trusted_workflow_sha']
             workflow_policy = ([
                 '--trusted-workflow-path', original['trusted_workflow_path'],
@@ -108,7 +137,7 @@ runs:
       if: inputs.plan-id != ''
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
-        artifact-ids: ${{ inputs.plan-id }}
+        artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || inputs.plan-id }}
         path: ${{ steps.capture.outputs.plan_directory }}
         merge-multiple: true
     - id: apple-policy

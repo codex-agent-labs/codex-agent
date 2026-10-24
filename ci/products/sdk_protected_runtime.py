@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import tempfile
 
+from runtime_reference_transport import measured
+
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_exact_keys, require_regular_directory,
@@ -20,6 +22,7 @@ from .runtime_aggregate_handoff import _public_policy
 from .runtime_sdk_handoff import stage_runtime_sdk_handoff
 from .sdk_inputs import INVENTORY_NAME
 from .sdk_package import _require_capability_output_separate
+from .restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 
 
 def _json(path):
@@ -64,18 +67,23 @@ def _original_carrier(root, expected_digest, expected_key):
     return root
 
 
+@verification_scoped
+@measured
 def stage_protected_runtime_sdk_inputs(
     protected_output: Path, destination: Path, *, expected_metadata_receipt_sha256: str,
     expected_build_key: str, sdk_version: str, compatible_release_range: str,
     compatible_runtime_compatibility_range: str, keyring: Path, keys_directory: Path,
     selection_repository_root: Path, selection_revision: str,
     expected_contract_payload_sha256: str | None = None,
+    retain_runtime: bool = True,
 ) -> dict:
     """Stage SDK files separately from exact fresh or retained protected history.
 
     Full original authentication and SDK Git-policy checks remain in the existing
     bridge. The result is its ordinary inventory, not a new admission token.
     """
+    if type(retain_runtime) is not bool:
+        raise ValueError("Runtime retention must be boolean")
     digest = require_sha256(expected_metadata_receipt_sha256, "Caller-selected aggregate receipt")
     key = require_sha256(expected_build_key, "Caller-selected aggregate key")
     if expected_contract_payload_sha256 is not None:
@@ -105,8 +113,10 @@ def stage_protected_runtime_sdk_inputs(
     with tempfile.TemporaryDirectory(prefix="sdk-protected-runtime-") as temporary:
         private = Path(temporary).resolve()
         prepared = private / "output"
-        captured = prepared / "runtime-release"
-        snapshot_regular_tree(original, captured, allow_empty=True)
+        # The nested bridge owns its verified snapshot; callers may retain their own original.
+        captured = prepared / "runtime-release" if retain_runtime else original
+        if retain_runtime:
+            snapshot_regular_tree(original, captured, allow_empty=True)
         if regular_file_inventory(captured, allow_empty=True) != before:
             raise ValueError("Protected Runtime output changed during capture")
         policy = private / "policy"
@@ -134,7 +144,7 @@ def stage_protected_runtime_sdk_inputs(
         sdk_files = [*result["inventory"]["files"], {"relativePath": INVENTORY_NAME,
             "bytes": len(manifest_bytes), "sha256": sha256_bytes(manifest_bytes)}]
         expected_inventory = sorted([
-            *({**record, "relativePath": f"runtime-release/{record['relativePath']}"} for record in before),
+            *({**record, "relativePath": f"runtime-release/{record['relativePath']}"} for record in before if retain_runtime),
             *({**record, "relativePath": f"sdk-inputs/{record['relativePath']}"} for record in sdk_files),
         ], key=lambda record: record["relativePath"])
         if (regular_file_inventory(original, allow_empty=True) != before

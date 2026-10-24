@@ -75,11 +75,27 @@ runs:
         PY
     - uses: ./.github/actions/setup-kmp
       with:
-        cache-read-only: 'true'
+        cache-read-only: 'false'
         node-version: '24.18.0'
         product-worker: 'true'
-    - name: Execute exact SDK phase within verified original input lifetimes
+    - name: Provision locked consumer dependencies before offline validation
+      if: inputs.phase == 'validation'
       shell: bash
+      env:
+        npm_config_offline: 'false'
+        npm_config_engine_strict: 'true'
+      run: |
+        set -euo pipefail
+        consumer_inputs=$(mktemp -d "$RUNNER_TEMP/sdk-js-consumer-inputs.XXXXXX")
+        cp "$GITHUB_WORKSPACE/codex-agent-bindings/javascript/consumer/package.json" \
+          "$GITHUB_WORKSPACE/codex-agent-bindings/javascript/consumer/package-lock.json" "$consumer_inputs/"
+        npm ci --prefix "$consumer_inputs" --ignore-scripts --no-audit --no-fund \
+          --cache "$GITHUB_WORKSPACE/codex-agent-sdk/build/npm/cache"
+        typescript_spec=$(node -p '"typescript@" + require(process.argv[1]).packages["node_modules/typescript"].version' "$consumer_inputs/package-lock.json")
+        npm cache add "$typescript_spec" --ignore-scripts \
+          --cache "$GITHUB_WORKSPACE/codex-agent-sdk/build/npm/cache"
+    - name: Execute exact SDK phase within verified original input lifetimes
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
@@ -92,23 +108,32 @@ runs:
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        selected=()
-        if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-        if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-        python3 -B -m ci.sdk_workflow javascript --plan "$PLAN" --discovery-root "$DISCOVERY" \
-          --state-root "$STATE" --destination "$GITHUB_WORKSPACE/build/sdk-worker" \
-          --repository-root "$GITHUB_WORKSPACE" --phase "$PHASE" --expected-build-key "$BUILD_KEY" \
-          --artifact-id "$SDK_INPUTS_ID" --artifact-sha256 "$SDK_INPUTS_SHA256" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${selected[@]+"${selected[@]}"}
+      with:
+        mode: execute
+        script: |
+          set -euo pipefail
+          selected=()
+          if [ -n "$SDK_VALIDATION_TOOLING" ]; then selected=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
+          if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+          reuse=()
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then reuse+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
+          python3 -B -m ci.sdk_workflow javascript --plan "$PLAN" --discovery-root "$DISCOVERY" \
+            --state-root "$STATE" --destination "$GITHUB_WORKSPACE/build/sdk-worker" \
+            --repository-root "$GITHUB_WORKSPACE" --phase "$PHASE" --expected-build-key "$BUILD_KEY" \
+            --artifact-id "$SDK_INPUTS_ID" --artifact-sha256 "$SDK_INPUTS_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${selected[@]+"${selected[@]}"} ${reuse[@]+"${reuse[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-javascript-${{ inputs.phase }}-node-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: build/sdk-worker
+        path: |
+          build/sdk-worker/shard
+          build/sdk-worker/worker/execution.json
+          build/sdk-worker/worker/gradle.log
+          ${{ job.status != 'success' && 'build/sdk-worker' || '' }}
         if-no-files-found: warn
         overwrite: false
         include-hidden-files: true

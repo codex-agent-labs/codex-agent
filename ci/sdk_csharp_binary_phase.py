@@ -117,7 +117,7 @@ def execute(plan, *, producer, sdk_version, contract_metadata, verified_contract
             raise ValueError("C# binary private bytecode namespace changed")
 
     unchanged()
-    environment, wrapper = _runtime_worker_environment(root, current, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
     _prepare_destination(stage, root).rmdir()
     destination = _prepare_destination(destination, root)
     command = _runtime_worker_command(wrapper, properties, environment, build_directory=".")

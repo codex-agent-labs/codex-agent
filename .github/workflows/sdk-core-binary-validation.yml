@@ -12,6 +12,14 @@ on:
       iosMetadataResult:
         required: true
         type: string
+      sdkCheckpoints:
+        description: Enable bounded new-result checkpoints
+        type: boolean
+        default: false
+      sdkCheckpoint:
+        description: Untrusted completed checkpoint selector from the caller dependency
+        type: string
+        default: ''
       trustedWorkflowSha:
         required: true
         type: string
@@ -20,6 +28,8 @@ on:
         description: Read-only protected reuse authority; scoped to qualification restoration
         required: false
     outputs:
+      checkpoint:
+        value: ${{ jobs.sdk-core-binary-result.outputs.checkpoint }}
       artifact_id:
         value: ${{ jobs.sdk-core-binary-result.outputs.artifact_id }}
       routing:
@@ -91,6 +101,8 @@ jobs:
       matrix: ${{ fromJSON(needs.sdk-core-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ inputs.sdkCheckpoint }}
     outputs:
       binary_artifact_id: ${{ steps.binary.outputs.binary-artifact-id }}
       binary_artifact_sha256: ${{ steps.binary.outputs.binary-artifact-sha256 }}
@@ -104,6 +116,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoint != '' && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -159,6 +172,9 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
+    env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ inputs.sdkCheckpoint }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -168,6 +184,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoint != '' && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -197,6 +214,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: core-binary
@@ -213,8 +231,24 @@ jobs:
           sdk-worker-workflow-path: .github/workflows/sdk-core-binary-validation.yml
           sdk-worker-job-name: product-validation / sdk-core-binary-wave / sdk-core-binary-common
 
+
+  sdk-checkpoint-11:
+    needs: [sdk-collect-11]
+    if: inputs.sdkCheckpoints && needs.sdk-collect-11.result == 'success'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-checkpoint: ${{ needs.sdk-collect-11.outputs.checkpoint_inputs || '{}' }}
+      sdk-preceding-checkpoint: ${{ inputs.sdkCheckpoint }}
+    secrets:
+      authority_read_token: ${{ secrets.authority_read_token }}
+
   sdk-core-binary-result:
-    needs: [sdk-core-binary-plan, sdk-core-binary, sdk-collect-11]
+    needs: [sdk-core-binary-plan, sdk-core-binary, sdk-collect-11, sdk-checkpoint-11]
     if: >-
       always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
       fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
@@ -222,6 +256,7 @@ jobs:
       fromJSON(inputs.iosMetadataResult).result == 'success'
     runs-on: ubuntu-24.04
     outputs:
+      checkpoint: ${{ steps.result.outputs.checkpoint }}
       artifact_id: ${{ steps.result.outputs.artifact_id }}
       routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
@@ -241,13 +276,15 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
           IOS_METADATA_RESULT: ${{ inputs.iosMetadataResult }}
+          SDK_CHECKPOINTS: ${{ inputs.sdkCheckpoints }}
+          PRECEDING_CHECKPOINT: ${{ inputs.sdkCheckpoint }}
         run: |
           python3 - <<'PY'
           import json, os, re
           from pathlib import Path
           from ci.products.inventory import canonical_json_bytes, require_exact_keys, require_sha256
           from ci.sdk_maven_original import _context
-          from ci.sdk_native_continuation import select_native_state
+          from ci.sdk_native_continuation import select_native_state, select_checkpoint_output
           from ci.reuse import github_output
           needs = json.loads(os.environ['RESULTS'])
           needs['sdk-ios-metadata-result'] = json.loads(os.environ['IOS_METADATA_RESULT'])
@@ -268,5 +305,7 @@ jobs:
               result.update(zip(fields, (identifier, digest, context)))
           elif any(original.get(field, '') for field in fields):
               raise ValueError('Reused Core binary cannot expose a current-run original upload')
+          result['checkpoint'] = select_checkpoint_output(needs, os.environ['PRECEDING_CHECKPOINT'],
+              stage='core-binary', enabled=os.environ['SDK_CHECKPOINTS'] == 'true')
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY

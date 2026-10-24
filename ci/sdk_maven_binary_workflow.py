@@ -38,7 +38,7 @@ def _read(path):
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             repository_root, environ, trusted_workflow_sha, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
     """Finalize only after signed input replay and binary output/lifetime checks.
 
     The existing producer owns primary-inventory generation. This caller checks
@@ -89,8 +89,9 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
         verified = product_reuse._verified_product_state(plan, discovery, state, root, environ,
-            sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha,
-            **sdk_workflow._caller_policies(None, sdk_apple_validation_policy), **admissions)
+            sdk_validation_tooling, sdk_original_workflow_sha=trusted_workflow_sha, requested_scope=(instance,),
+            **sdk_workflow._caller_policies(None, sdk_apple_validation_policy), **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         elected = verified.prior_ready_plans.get(instance)
         if elected is None or elected["buildKey"] != expected_build_key:
             raise ValueError("Maven binary is not ready with the expected elected key")
@@ -219,6 +220,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -233,14 +235,15 @@ def main(argv=None):
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     try:
         for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
-        with metadata_admission_options(arguments) as admissions:
-            execute(**arguments, environ=os.environ, **admissions)
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

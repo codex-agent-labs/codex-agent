@@ -31,6 +31,7 @@ from products.sdk_native import (
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_compatibility import load_sdk_compatibility_request
 from sdk_native_prepare import validate_anchor
+from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 
 
 _SOURCE_EXCLUDES = {
@@ -54,7 +55,8 @@ def _verify_prepared_sources(source, sdks, index, root, commit):
         if not path.startswith(prefix):
             continue
         language, _, relative = path[len(prefix):].partition("/")
-        if (language in NATIVE_BINDINGS and relative and not any(
+        # Gradle Sync excludes .gitignore at every depth by default.
+        if (language in NATIVE_BINDINGS and relative and Path(relative).name != ".gitignore" and not any(
                 fnmatch.fnmatchcase(relative, pattern) for pattern in _SOURCE_EXCLUDES[language])):
             tracked.append(path)
     expected = {}
@@ -105,7 +107,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
         prepared_artifact_sha256, sdk_inputs_artifact_id, sdk_inputs_artifact_sha256,
         trusted_workflow_sha, keyring, keys_directory, repository_root, environ, token,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
-        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None):
+        sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Export five verified SDKs only after original inputs and contexts exit.
 
     The output is an external workflow handoff, not a reusable product phase or
@@ -145,17 +147,21 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                         ("sdk_android_metadata_admission", sdk_android_metadata_admission)):
         if value is not None:
             tooling[name] = value
-    with tempfile.TemporaryDirectory(prefix="sdk-native-receiver-", dir=root / "build") as temporary:
+    with tempfile.TemporaryDirectory(prefix="sdk-native-receiver-", dir=root / "build") as temporary, \
+            tempfile.TemporaryDirectory(prefix="sdk-native-receiver-capture-") as capture_temporary:
         private = Path(temporary).resolve()
-        capture, predecessors, runtime = (private / name for name in
-                                          ("prepared-upload", "predecessors", "runtime-stages"))
+        capture = Path(capture_temporary).resolve() / "prepared-upload"
+        predecessors, runtime = (private / name for name in ("predecessors", "runtime-stages"))
         upload = private / "upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(PhaseInstanceId("sdk", preparation_component, preparation_phase, preparation_target),),
                 artifact_id=sdk_inputs_artifact_id,
                 artifact_sha256=sdk_inputs_artifact_sha256,
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring,
                 keys_directory=keys_directory, repository_root=root,
-                environ=environ, token=token, **tooling) as inputs:
+                environ=environ, token=token, **tooling,
+                **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             unchanged()
             identity = PhaseInstanceId("sdk", preparation_component,
                                       preparation_phase, preparation_target)
@@ -163,8 +169,9 @@ def receive(plan, discovery, state, preparation_state, destination, *,
                     "phase": preparation_phase, "target": preparation_target} not in inputs["selection"]["consumers"]:
                 raise ValueError("Native preparation anchor is not selected")
             inspected = product_reuse.inspect_products(plan, discovery, preparation_state,
-                repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                repository_root=root, environ=environ, requested_scope=(identity,),
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             elected = [row for row in inspected["readyPlans"] if
                        tuple(row.get(name) for name in ("product", "component", "phase", "target")) ==
                        (identity.product, identity.component, identity.phase, identity.target)]
@@ -184,7 +191,9 @@ def receive(plan, discovery, state, preparation_state, destination, *,
             product_reuse.materialize_product_predecessors(plan, discovery, state,
                 identity, predecessors, expected_build_key=preparation_build_key,
                 repository_root=root, environ=environ,
-                sdk_original_workflow_sha=trusted_workflow_sha, **tooling)
+                materialized_scope=NATIVE_RUNTIME_PREDECESSORS,
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
             predecessor_files = regular_file_inventory(predecessors, allow_empty=True)
             producer = product_reuse.validate_producer(product_reuse._canonical_control(
                 predecessors / "producer.json", "Native preparation producer"))
@@ -201,12 +210,21 @@ def receive(plan, discovery, state, preparation_state, destination, *,
             for target in NATIVE_TARGETS:
                 for phase in ("package", "validation"):
                     original_id = PhaseInstanceId("runtime", target, phase, target)
-                    original = inputs["runtime"]["originalPhases"][original_id]
                     elected_stage = predecessors / f"runtime-{target}-{phase}-{target}"
                     elected_bytes = read_regular_file_bytes(
                         elected_stage / "phase-receipt.json", reject_symlink_parents=True)
                     if elected_bytes != inputs["runtime"]["receiptBytes"][original_id]:
                         raise ValueError("Native preparation Runtime predecessor differs from SDK original")
+                    if completed_frozen is None:
+                        original = inputs["runtime"]["originalPhases"][original_id]
+                    else:
+                        # These demanded objects passed ordinary restore_object verification.
+                        # Their receipts must also match the independently signed SDK join.
+                        original = {"receiptPath": elected_stage / "phase-receipt.json",
+                            "receipt": product_reuse.validate_phase_receipt(
+                                product_reuse._canonical_control(elected_stage / "phase-receipt.json",
+                                    "Native Runtime original receipt")),
+                            "stage": elected_stage / "stage"}
                     receipt_bytes = read_regular_file_bytes(original["receiptPath"],
                         reject_symlink_parents=True)
                     receipt = original["receipt"]
@@ -273,6 +291,7 @@ def receive(plan, discovery, state, preparation_state, destination, *,
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("plan", "discovery-root", "state-root", "preparation-state-root",
                  "destination", "keyring", "keys-directory", "repository-root"):
@@ -288,18 +307,23 @@ def main(argv=None):
     parser.add_argument("--sdk-validation-tooling", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     arguments = {name.replace("_root", "") if name in {"discovery_root", "state_root"} else name: value
                  for name, value in vars(args).items()
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     arguments["preparation_state"] = arguments.pop("preparation_state_root")
+    if "retained_sdk_inputs_source" in arguments:
+        arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+            arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
     for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
         path = arguments.pop(name)
         if path is not None:
             arguments[name] = product_reuse._canonical_control(path, f"Caller {name} policy")
-    with metadata_admission_options(args) as admissions:
+    with metadata_admission_options(args) as admissions, completed_frozen_options(arguments) as semantic:
         receive(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
-                **admissions)
+                **admissions, **semantic)
     return 0
 
 

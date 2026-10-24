@@ -1,21 +1,21 @@
 name: Execute elected Android SDK validation
 description: Replay elected predecessors and both unchanged official Firebase captures through the existing full gate.
 inputs:
-  plan-id:
+  plan-path:
     required: true
-    description: Exact original plan upload ID.
-  artifact-id:
+    description: Caller-held exact plan from its authenticated same-job capture.
+  discovery-root:
     required: true
-    description: Exact current predecessor state upload ID.
-  artifact-sha256:
+    description: Already captured discovery; independently reverified by the controller.
+  state-root:
     required: true
-    description: Exact current predecessor state upload digest.
-  state-wave:
-    default: '0'
-    description: Current Runtime state wave.
-  sdk-state-wave:
+    description: Already captured state; independently reverified by the controller.
+  sdk-matrix:
     required: true
-    description: Exact preceding Android package SDK state wave 16.
+    description: Same-job readiness projection; not semantic authority.
+  sdk-workers-required:
+    required: true
+    description: Same-job readiness decision; not semantic authority.
   trusted-workflow-sha:
     required: true
     description: Reviewed product workflow revision for state and final capture.
@@ -105,7 +105,7 @@ runs:
   using: composite
   steps:
     - id: policy
-      name: Pin all original caller inputs before state capture or platform setup
+      name: Pin all original caller inputs before platform setup
       shell: bash
       env:
         PACKAGE_STAGE: ${{ inputs.package-stage }}
@@ -119,7 +119,6 @@ runs:
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
-        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
       run: |
         python3 -B - <<'PY'
         import os
@@ -135,8 +134,6 @@ runs:
         from ci.products.sdk_validation_inputs import _request_inventory
         from ci.products.signing_isolation import require_no_signing_secret
         require_no_signing_secret(os.environ)
-        if os.environ['SDK_STATE_WAVE'] != '16':
-            raise ValueError('Android validation requires exact preceding SDK wave 16')
         def path(name, directory=False):
             value = Path(os.environ[name])
             if not value.is_absolute() or value.resolve(strict=True) != value or (not value.is_dir() if directory else not value.is_file()):
@@ -211,29 +208,14 @@ runs:
             output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(pins)) + '\n')
             output.write('tooling_trust=' + tooling['requiredTrustDomain'] + '\n')
         PY
-    - id: captured
-      uses: ./.github/actions/capture-runtime-state
-      with:
-        product: sdk
-        sdk-family: android-validation
-        plan-id: ${{ inputs.plan-id }}
-        artifact-id: ${{ inputs.artifact-id }}
-        artifact-sha256: ${{ inputs.artifact-sha256 }}
-        state-wave: ${{ inputs.state-wave }}
-        sdk-state-wave: ${{ inputs.sdk-state-wave }}
-        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
-        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
-        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
-        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
-        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
     - id: identity
       name: Require exact elected Android phase and unchanged original inputs before setup
       shell: bash
       env:
-        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
-        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        STATE: ${{ steps.captured.outputs.state-root }}
+        MATRIX: ${{ inputs.sdk-matrix }}
+        REQUIRED: ${{ inputs.sdk-workers-required }}
+        PLAN: ${{ inputs.plan-path }}
+        STATE: ${{ inputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
         POLICY_REVISION: ${{ inputs.policy-revision }}
@@ -259,7 +241,7 @@ runs:
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import host_classifier
-        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
             read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
         from products.sdk_android_validation_phase import _contract_sources
         from products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
@@ -282,7 +264,7 @@ runs:
                        ('POLICY_REVISION', 'TRUSTED_WORKFLOW_SHA', 'TRUSTED_ANDROID_WORKFLOW_SHA',
                         'TRUSTED_SOURCE_COMMIT', 'TRUSTED_SOURCE_TREE'))):
             raise ValueError('Android validation differs from its exact elected phase or host')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree:
             raise ValueError('Android validation source tree differs from the authenticated plan')
         state = Path(os.environ['STATE']).resolve(strict=True)
@@ -360,14 +342,17 @@ runs:
         cache-read-only: 'true'
         product-worker: 'true'
     - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: platform-tools
     - id: execute
       name: Compose existing full Android validation without new Firebase execution
       shell: bash
       env:
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-        STATE: ${{ steps.captured.outputs.state-root }}
+        PLAN: ${{ inputs.plan-path }}
+        DISCOVERY: ${{ inputs.discovery-root }}
+        STATE: ${{ inputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
+        TREE: ${{ inputs.tree }}
         PACKAGE_STAGE: ${{ inputs.package-stage }}
         PACKAGE_RECEIPT: ${{ inputs.package-receipt }}
         BINARY_STAGE: ${{ inputs.binary-stage }}
@@ -490,6 +475,8 @@ runs:
                            ('SDK_FACADE_METADATA_POLICY', '--sdk-facade-metadata-policy'),
                            ('SDK_ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
             if os.environ[name]: fields[flag] = os.environ[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'android-validation']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

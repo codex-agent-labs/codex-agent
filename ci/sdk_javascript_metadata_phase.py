@@ -104,7 +104,7 @@ def execute(
     _require_capability_output_separate(destination, [*owned, *inputs])
     for output in owned:
         _require_capability_output_separate(output, inputs)
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
     for output in owned:
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)

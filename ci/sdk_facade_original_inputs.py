@@ -15,11 +15,11 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ci import product_reuse
-from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+from ci.products.inventory import (canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys,
     require_sha256, sha256_bytes, sha256_file, write_canonical_json)
 from ci.products.receipt import validate_phase_receipt
-from ci.products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
+from products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
 from ci.products.sdk_facade_inputs import _path, _request, _sources
 from ci.products.sdk_facade_metadata_admission import fresh_metadata_arguments
 from ci.products.sdk_facade_validation import _inventory
@@ -31,9 +31,54 @@ from ci.sdk_facade_capture import (capture_sdk_facade_metadata_upload,
 from ci.sdk_facade_metadata_inputs import verified_facade_metadata_inputs
 from ci.sdk_facade_metadata_selection import write_selected_facade_metadata_policy
 from ci.sdk_facade_upload_locator import locate_original_facade_upload
+from sdk_phase import maven_consumed_predecessors
 
 
 _FRESH_INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
+
+
+def _retained_validation_origin(raw, consumer):
+    from sdk_campaign_original_locator import retained_core_origin
+    receipt = load_canonical_json_bytes(raw)
+    if tuple(receipt.get(name) for name in ("product", "component", "phase")) != ("sdk", "sdk-core", "validation"):
+        return None
+    if receipt["producer"] == consumer:
+        return None
+    origin = retained_core_origin("validation", receipt["buildKey"], consumer, target=receipt["target"])
+    if origin is not None and origin["producer"] == receipt["producer"]:
+        return origin
+    producer = receipt["producer"]
+    if (any(producer[name] != consumer[name] for name in
+            ("repository", "workflowPath", "event", "pullRequest"))
+            or (producer["runId"], producer["runAttempt"]) >= (consumer["runId"], consumer["runAttempt"])):
+        return None
+    # Reviewed selection only: use the consumer's immutable Git recipe, never
+    # an uploaded workflow claim. Official capture and full replay still follow.
+    spec = load_canonical_json_bytes(git_regular_blob_bytes(
+        Path(__file__).resolve().parents[1], consumer["commit"],
+        "ci/tests/data/requalified-sdk-completed-resume.json", max_bytes=16 * 1024 * 1024))
+    if spec.get("schemaVersion") not in (2, 3):
+        return None
+    fields = ("product", "component", "phase", "target")
+    matches = [row for row in spec["completedPhases"]
+               if all(row[name] == receipt[name] for name in fields)
+               and row["buildKey"] == receipt["buildKey"]]
+    if not matches:
+        return None
+    if len(matches) != 1 or matches[0]["receiptSha256"] != sha256_bytes(raw):
+        raise ValueError("Reviewed Core original differs from the exact selected receipt")
+    pins = [row for row in spec["originals"] if all(row[name] == receipt[name] for name in fields)]
+    if len(pins) != 1:
+        raise ValueError("Reviewed Core original upload is missing or ambiguous")
+    pin = pins[0]
+    return {"producer": producer, "artifact_id": pin["artifactId"],
+            "artifact_sha256": pin["artifactSha256"], "job_id": pin["jobId"],
+            "workflow_sha": pin["workflowSha"]}
+
+
+def _require_retained_upload(locator, origin):
+    if origin is not None and locator != {name: origin[name] for name in ("artifact_id", "artifact_sha256")}:
+        raise ValueError("Core validation metadata input differs from its reviewed original upload")
 
 
 def _fresh_policy_sources(policy):
@@ -78,17 +123,56 @@ def _fresh_policy_sources(policy):
 
 
 @contextmanager
-def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_key,
-        replay_policy, trusted_workflow_sha, repository_root, environ, token,
-        sdk_apple_validation_policy=None, sdk_android_metadata_admission=None):
-    """Hold a fresh external descriptor bound to the current elected originals.
+def held_fresh_facade_metadata_policy(plan, discovery, state, **arguments):
+    """Hold a fully replayed fresh descriptor, with no metadata reuse authority."""
+    with _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
+        descriptor, predecessors, elected = captured
+        policy = load_canonical_json_bytes(read_regular_file_bytes(
+            descriptor, reject_symlink_parents=True))["policy"]
+        root = Path(arguments["repository_root"]).resolve(strict=True)
+        environ, token = arguments["environ"], arguments["token"]
+        trusted_workflow_sha = arguments["trusted_workflow_sha"]
+        arguments = fresh_metadata_arguments(policy)
+        with verified_facade_metadata_inputs(plan=Path(plan).absolute(), validations=arguments["validations"],
+                contract_digest=arguments["contract_digest"], component_digests=arguments["component_digests"],
+                repository_root=root, environ=environ, token=token,
+                trusted_workflow_sha=trusted_workflow_sha, tooling_evidence=arguments["tooling_evidence"],
+                tooling_public_key=arguments["tooling_public_key"], java_executable=arguments["java_executable"],
+                policy_revision=elected.plan["validationCommit"],
+                required_trust_domain=arguments["required_trust_domain"],
+                tooling_keyring=arguments["tooling_keyring"],
+                tooling_keys_directory=arguments["tooling_keys_directory"]) as original:
+            package = predecessors / "sdk-sdk-core-package-common"
+            if (read_regular_file_bytes(package / "phase-receipt.json", reject_symlink_parents=True) !=
+                    original["package"]["receiptBytes"]
+                    or _inventory(package / "stage") != _inventory(original["package"]["stage"])):
+                raise ValueError("Fresh Core original package differs from elected predecessor")
+            for target in SDK_FACADE_TARGETS:
+                selected = predecessors / f"sdk-sdk-core-validation-{target}"
+                record = original["validations"][target]
+                if (read_regular_file_bytes(selected / "phase-receipt.json", reject_symlink_parents=True) !=
+                        record["receiptBytes"] or _inventory(selected / "stage") != _inventory(record["stage"])):
+                    raise ValueError("Fresh Core original validation differs from elected predecessor")
+            yield descriptor
 
-    No metadata receipt exists yet. Current state selects the key and all eleven
-    predecessor receipts; the original-upload locator selects their official
-    carriers. The full original reader replays source, Contract, host and
-    compiler evidence before the descriptor is exposed. This grants neither
-    hosted hardware attestation nor reuse admission for a completed metadata.
+
+@contextmanager
+def held_captured_facade_metadata_policy(plan, discovery, state, **arguments):
+    """Hold official captures only; the consuming controller must fully replay them.
+
+    This records=[] descriptor grants no semantic acceptance or reuse admission.
+    Use it only around execute(), which performs the complete original replay,
+    checks elected package/validation bytes, and finalizes after clean reader exit.
     """
+    with _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
+        yield captured[0]
+
+
+@contextmanager
+def _held_captured_facade_metadata_policy(plan, discovery, state, *, expected_build_key,
+        replay_policy, trusted_workflow_sha, repository_root, environ, token,
+        sdk_apple_validation_policy=None, sdk_android_metadata_admission=None, completed_frozen=None):
+    """Acquire exact elected originals and hold caller inputs through consumption."""
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     plan = _path(str(Path(plan).absolute()), "Fresh Core plan")
@@ -120,7 +204,8 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
         optional["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     unchanged()
     elected = product_reuse._verified_product_state(plan, discovery, state, root, environ, tooling,
-        sdk_original_workflow_sha=trusted_workflow_sha, **optional)
+        sdk_original_workflow_sha=trusted_workflow_sha,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}), **optional)
     ready = elected.prior_ready_plans.get(_FRESH_INSTANCE)
     if ready is None or ready["buildKey"] != expected_build_key:
         raise ValueError("Fresh Core metadata is not ready with the exact elected build key")
@@ -133,10 +218,12 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
             raise ValueError("Fresh Core original scratch must be outside the source checkout")
         materialized = product_reuse.materialize_product_predecessors(plan, discovery, state,
             _FRESH_INSTANCE, predecessors, expected_build_key=expected_build_key,
+            materialized_scope=maven_consumed_predecessors(_FRESH_INSTANCE),
             repository_root=root, environ=environ, sdk_validation_tooling=tooling,
             sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_original_workflow_sha=trusted_workflow_sha,
-            sdk_android_metadata_admission=sdk_android_metadata_admission)
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if materialized != ready:
             raise ValueError("Fresh Core predecessor election changed during materialization")
         receipts = {}
@@ -156,48 +243,31 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, *, expected_build_
         for target in SDK_FACADE_TARGETS:
             unchanged()
             path = Path(policy["validations"][target]["validationReceipt"])
+            origin = _retained_validation_origin(receipts[target], elected.producer)
+            workflow = trusted_workflow_sha if origin is None else origin["workflow_sha"]
             locator = locate_original_facade_upload(path, expected_receipt_sha256=sha256_bytes(receipts[target]),
-                trusted_workflow_sha=trusted_workflow_sha, token=token)
+                trusted_workflow_sha=workflow, token=token)
+            _require_retained_upload(locator, origin)
             unchanged()
             capture = captures / target
             capture_sdk_facade_validation_upload(plan, capture, validation_receipt_path=path,
                 artifact_id=locator["artifact_id"], artifact_sha256=locator["artifact_sha256"],
-                trusted_workflow_sha=trusted_workflow_sha, repository_root=root, token=token)
+                trusted_workflow_sha=workflow, repository_root=root, environ=environ, token=token)
             policy["validations"][target]["captureRoot"] = str(capture)
-        arguments = fresh_metadata_arguments(policy)
+        fresh_metadata_arguments(policy)
         before = _inventory(captures, allow_empty=True)
         unchanged()
-        with verified_facade_metadata_inputs(plan=plan, validations=arguments["validations"],
-                contract_digest=arguments["contract_digest"], component_digests=arguments["component_digests"],
-                repository_root=root, environ=environ, token=token,
-                trusted_workflow_sha=trusted_workflow_sha, tooling_evidence=arguments["tooling_evidence"],
-                tooling_public_key=arguments["tooling_public_key"], java_executable=arguments["java_executable"],
-                policy_revision=elected.plan["validationCommit"],
-                required_trust_domain=arguments["required_trust_domain"],
-                tooling_keyring=arguments["tooling_keyring"],
-                tooling_keys_directory=arguments["tooling_keys_directory"]) as original:
-            package = predecessors / "sdk-sdk-core-package-common"
-            if (read_regular_file_bytes(package / "phase-receipt.json", reject_symlink_parents=True) !=
-                    original["package"]["receiptBytes"]
-                    or _inventory(package / "stage") != _inventory(original["package"]["stage"])):
-                raise ValueError("Fresh Core original package differs from elected predecessor")
-            for target in SDK_FACADE_TARGETS:
-                selected = predecessors / f"sdk-sdk-core-validation-{target}"
-                record = original["validations"][target]
-                if (read_regular_file_bytes(selected / "phase-receipt.json", reject_symlink_parents=True) !=
-                        record["receiptBytes"] or _inventory(selected / "stage") != _inventory(record["stage"])):
-                    raise ValueError("Fresh Core original validation differs from elected predecessor")
-            descriptor = outside / "policy.json"
-            write_canonical_json(descriptor, {"evidenceRoot": str(captures), "records": [], "policy": policy})
-            descriptor_bytes = read_regular_file_bytes(descriptor, reject_symlink_parents=True)
+        descriptor = outside / "policy.json"
+        write_canonical_json(descriptor, {"evidenceRoot": str(captures), "records": [], "policy": policy})
+        descriptor_bytes = read_regular_file_bytes(descriptor, reject_symlink_parents=True)
+        unchanged()
+        try:
+            yield descriptor, predecessors, elected
+        finally:
             unchanged()
-            try:
-                yield descriptor
-            finally:
-                unchanged()
-                if (_inventory(captures, allow_empty=True) != before
-                        or read_regular_file_bytes(descriptor, reject_symlink_parents=True) != descriptor_bytes):
-                    raise ValueError("Fresh Core original carriers or descriptor changed while held")
+            if (_inventory(captures, allow_empty=True) != before
+                    or read_regular_file_bytes(descriptor, reject_symlink_parents=True) != descriptor_bytes):
+                raise ValueError("Fresh Core original carriers or descriptor changed while held")
 
 
 @contextmanager
@@ -254,13 +324,17 @@ def held_original_facade_metadata_policy(plan, *, catalog, catalog_source,
         for target in (*SDK_FACADE_TARGETS, "common"):
             unchanged()
             path = paths[target]
+            origin = _retained_validation_origin(originals[target],
+                load_canonical_json_bytes(originals["common"])["producer"])
+            workflow = trusted_workflow_sha if origin is None else origin["workflow_sha"]
             locator = locate_original_facade_upload(path,
                 expected_receipt_sha256=expected[target],
-                trusted_workflow_sha=trusted_workflow_sha, token=token)
+                trusted_workflow_sha=workflow, token=token)
+            _require_retained_upload(locator, origin)
             unchanged()
             arguments = dict(artifact_id=locator["artifact_id"],
                 artifact_sha256=locator["artifact_sha256"],
-                trusted_workflow_sha=trusted_workflow_sha,
+                trusted_workflow_sha=workflow,
                 repository_root=root, token=token)
             capture = evidence / target
             if target == "common":

@@ -1,22 +1,52 @@
-name: Authenticate frozen reuse qualification
+name: Reuse preserved authenticated qualification
 
 on:
   workflow_call:
+    inputs:
+      sdk-checkpoint:
+        description: Untrusted source/control selectors; independent protected owner policy is required
+        type: string
+        default: ''
+      sdk-preceding-checkpoint:
+        description: Untrusted previous checkpoint selector from an approved dependency edge
+        type: string
+        default: ''
+      refresh:
+        description: Reauthenticate unchanged frozen originals under this reviewed verifier; never build products
+        type: boolean
+        default: false
+      completed-sdk:
+        description: Authenticate the preserved successful SDK resume once, without replaying product phases
+        type: boolean
+        default: false
+      requalified:
+        description: Authenticate the fixed native parent and genuinely requalified aggregate
+        type: boolean
+        default: false
     outputs:
-      artifact-id:
-        value: ${{ jobs.qualify.outputs.artifact-id }}
-      artifact-sha256:
-        value: ${{ jobs.qualify.outputs.artifact-sha256 }}
-      issuer-sha:
-        value: ${{ jobs.qualify.outputs.issuer-sha }}
+      checkpoint:
+        description: Native checkpoint selectors, or the exact unchanged prior proof
+        value: ${{ jobs.completed-sdk-checkpoint.outputs.checkpoint }}
+    secrets:
+      authority_read_token:
+        required: false
+      PRODUCT_READ_APP_PRIVATE_KEY:
+        description: Supplied by the protected product-read environment for incremental completion only
+        required: false
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  preserved:
+    if: inputs.sdk-checkpoint == '' && inputs.refresh != true && inputs.completed-sdk != true
+    uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority
+    secrets:
+      authority_read_token: ${{ secrets.authority_read_token }}
+
   qualify:
-    if: github.repository == 'codex-agent-labs/codex-agent'
+    if: inputs.sdk-checkpoint == '' && inputs.refresh && inputs.completed-sdk != true && github.repository == 'codex-agent-labs/codex-agent'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -24,35 +54,32 @@ jobs:
       actions: read
       id-token: write
       attestations: write
-    outputs:
-      artifact-id: ${{ steps.preserve.outputs.artifact-id }}
-      artifact-sha256: ${{ format('sha256:{0}', steps.preserve.outputs.artifact-digest) }}
-      issuer-sha: ${{ steps.identity.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Retain the exact original Git policy tree before authentication
+      - name: Retain the authenticated original Git policy tree
         run: |
           git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}' || git fetch --no-tags origin db38c174a2db6f02ff6b6e2091e809681d83a4d9
           git cat-file -e 'db38c174a2db6f02ff6b6e2091e809681d83a4d9^{tree}'
+          git cat-file -e '57ab0d09097d90141bf0e0bf3bc70bf3b0dda542^{tree}' || git fetch --no-tags origin 57ab0d09097d90141bf0e0bf3bc70bf3b0dda542
+          git cat-file -e '57ab0d09097d90141bf0e0bf3bc70bf3b0dda542^{tree}'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
-      - id: identity
+      - name: Bind the executing native issuer, not caller-selected source
         env:
-          ISSUER_REPOSITORY: ${{ job.workflow_repository }}
-          ISSUER_PATH: ${{ job.workflow_file_path }}
-          ISSUER_SHA: ${{ job.workflow_sha }}
+          ISSUER_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ISSUER_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          ISSUER_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
         run: |
           set -euo pipefail
           test "$ISSUER_REPOSITORY" = codex-agent-labs/codex-agent
           test "$ISSUER_PATH" = .github/workflows/reuse-qualification.yml
           test "$(git rev-parse HEAD)" = "$ISSUER_SHA"
-          echo "commit=$ISSUER_SHA" >> "$GITHUB_OUTPUT"
           {
             echo "QUALIFICATION_ISSUER_REPOSITORY=$ISSUER_REPOSITORY"
             echo "QUALIFICATION_ISSUER_PATH=$ISSUER_PATH"
@@ -62,12 +89,20 @@ jobs:
             echo "PROOF_WORK=$RUNNER_TEMP/qualification-proof"
           } >> "$GITHUB_ENV"
       - run: npm ci --ignore-scripts --no-audit --no-fund
+        if: inputs.requalified != true
         working-directory: .github/actions/hydrated-evidence-cache
-      - name: Fully authenticate originals and preserve the frozen closure
+      - name: Reauthenticate exact originals; verify zero selected product phases
+        if: inputs.requalified != true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 -B ci/reuse_qualification.py issue-frozen --work "$PROOF_WORK"
+      - name: Authenticate native49 and the requalified aggregate checkpoint
+        if: inputs.requalified == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -B ci/reuse_qualification.py issue-requalified-frozen --work "$PROOF_WORK"
       - uses: ./.github/actions/hydrated-evidence-cache
+        if: inputs.requalified != true
         with:
           mode: save
           root: ${{ env.CODEX_AGENT_HYDRATED_EVIDENCE }}
@@ -82,8 +117,7 @@ jobs:
         env:
           BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: cp "$BUNDLE_PATH" "$PROOF_WORK/bundle.jsonl"
-      - id: preserve
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: reuse-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -94,3 +128,175 @@ jobs:
             ${{ env.PROOF_WORK }}/prepare.json
             ${{ env.PROOF_WORK }}/cache-save.json
           if-no-files-found: error
+          overwrite: false
+
+  completed-sdk:
+    if: inputs.sdk-checkpoint == '' && inputs.completed-sdk && inputs.refresh != true && github.repository == 'codex-agent-labs/codex-agent'
+    environment: product-read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Bind the native completion issuer
+        env:
+          ISSUER_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ISSUER_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          ISSUER_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$ISSUER_REPOSITORY" = codex-agent-labs/codex-agent
+          test "$ISSUER_PATH" = .github/workflows/reuse-qualification.yml
+          test "$(git rev-parse HEAD)" = "$ISSUER_SHA"
+          {
+            echo "QUALIFICATION_ISSUER_REPOSITORY=$ISSUER_REPOSITORY"
+            echo "QUALIFICATION_ISSUER_PATH=$ISSUER_PATH"
+            echo "QUALIFICATION_ISSUER_SHA=$ISSUER_SHA"
+            echo "PROOF_WORK=$RUNNER_TEMP/completed-sdk-proof"
+          } >> "$GITHUB_ENV"
+      - name: Authenticate the successful resume and exact admitted SDK object
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          READ_APP_ID: ${{ vars.PRODUCT_READ_APP_ID }}
+          READ_INSTALLATION_ID: ${{ vars.PRODUCT_READ_INSTALLATION_ID }}
+          READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
+        run: |
+          python3 -B - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'ci')
+          from runtime_reference_transport import configure_read_app
+          from reuse_qualification import issue_completed_sdk
+          configure_read_app()
+          issue_completed_sdk(os.environ['PROOF_WORK'], os.environ['GITHUB_TOKEN'])
+          PY
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.PROOF_WORK }}/completion.json
+          create-storage-record: false
+      - name: Preserve the independent native completion bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$PROOF_WORK/bundle.jsonl"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-completed-reuse-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.PROOF_WORK }}/completion.json
+            ${{ env.PROOF_WORK }}/bundle.jsonl
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+
+  completed-sdk-checkpoint:
+    if: inputs.sdk-checkpoint != '' && github.repository == 'codex-agent-labs/codex-agent'
+    environment: product-read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      checkpoint: ${{ steps.result.outputs.checkpoint }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Reject incompatible qualification modes
+        env:
+          OTHER_MODE: ${{ inputs.refresh || inputs.completed-sdk || inputs.requalified }}
+        run: test "$OTHER_MODE" = false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: 'true'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Bind the native checkpoint issuer
+        env:
+          ISSUER_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ISSUER_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          ISSUER_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$ISSUER_REPOSITORY" = codex-agent-labs/codex-agent
+          test "$ISSUER_PATH" = .github/workflows/reuse-qualification.yml
+          test "$(git rev-parse HEAD)" = "$ISSUER_SHA"
+          {
+            echo "QUALIFICATION_ISSUER_REPOSITORY=$ISSUER_REPOSITORY"
+            echo "QUALIFICATION_ISSUER_PATH=$ISSUER_PATH"
+            echo "QUALIFICATION_ISSUER_SHA=$ISSUER_SHA"
+            echo "PROOF_WORK=$RUNNER_TEMP/completed-sdk-checkpoint"
+          } >> "$GITHUB_ENV"
+      - id: issue
+        name: Verify new results and retain existing native qualifications
+        env:
+          SDK_CHECKPOINT_SELECTORS: ${{ inputs.sdk-checkpoint }}
+          SDK_PRECEDING_CHECKPOINT: ${{ inputs.sdk-preceding-checkpoint }}
+          GITHUB_TOKEN: ${{ github.token }}
+          READ_APP_ID: ${{ vars.PRODUCT_READ_APP_ID }}
+          READ_INSTALLATION_ID: ${{ vars.PRODUCT_READ_INSTALLATION_ID }}
+          READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import os, sys
+          sys.path.insert(0, 'ci')
+          from runtime_reference_transport import configure_read_app
+          from reuse_qualification import issue_sdk_checkpoint
+          configure_read_app()
+          issue_sdk_checkpoint(os.environ['PROOF_WORK'], os.environ['SDK_CHECKPOINT_SELECTORS'], os.environ['GITHUB_TOKEN'],
+              preceding_selector=os.environ['SDK_PRECEDING_CHECKPOINT'])
+          PYCODE
+      - id: attest
+        if: steps.issue.outputs.issue == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.PROOF_WORK }}/completion.json
+          create-storage-record: false
+      - name: Preserve the independent native checkpoint bundle
+        if: steps.issue.outputs.issue == 'true'
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$PROOF_WORK/bundle.jsonl"
+      - id: upload
+        if: steps.issue.outputs.issue == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.issue.outputs.artifact_name }}
+          path: |
+            ${{ env.PROOF_WORK }}/completion.json
+            ${{ env.PROOF_WORK }}/bundle.jsonl
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+      - id: result
+        name: Expose exact native checkpoint selectors for downstream needs
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import os, sys
+          sys.path.insert(0, 'ci')
+          from reuse_qualification import sdk_checkpoint_job_output
+          sdk_checkpoint_job_output(os.environ['PROOF_WORK'], os.environ['ARTIFACT_ID'],
+              os.environ['ARTIFACT_SHA256'], os.environ['GITHUB_OUTPUT'])
+          PYCODE

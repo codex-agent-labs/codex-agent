@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -17,12 +18,14 @@ import sys
 import tempfile
 
 from .inventory import (
-    load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
-    regular_file_inventory, require_sha256, sha256_bytes, snapshot_regular_tree,
+    _open_regular_file, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
+    regular_file_inventory, require_regular_directory, require_semver, require_sha256,
+    sha256_bytes, snapshot_regular_tree,
 )
+from .contract_phase10_maven import central_maven_files, verify_central_bundle, write_central_bundle
 from .receipt import validate_phase_receipt, verify_output_manifest_identity
 from .registry import PhaseId, phase_targets
-from .sdk_maven import CHECKSUMS, MAVEN_GROUPS, verify_packaged_sdk_maven_repository
+from .sdk_maven import CHECKSUMS, COMPONENT_ARTIFACTS, MAVEN_GROUPS, verify_packaged_sdk_maven_repository
 
 
 def _run_gpg(*arguments: str, input_bytes: bytes | None = None) -> str:
@@ -196,6 +199,89 @@ def produce_sdk_phase10_maven_sidecars(
         if regular_file_inventory(sidecar_directory) != result["sidecarFiles"]:
             raise ValueError("SDK Maven published sidecars differ from verified bytes")
         return result
+
+
+def _central_layout(verified_maven: list[dict]) -> tuple[list[dict], dict]:
+    """Project all three freshly verified packages into the existing SDK shards."""
+    if (len(verified_maven) != 3
+            or {row["component"] for row in verified_maven} != set(MAVEN_GROUPS)
+            or any(row["schemaVersion"] != 1 or row["product"] != "sdk" for row in verified_maven)
+            or len({row["sdkVersion"] for row in verified_maven}) != 1):
+        raise ValueError("SDK Central requires exactly three verified same-version packages")
+    version = require_semver(verified_maven[0]["sdkVersion"], "SDK Central version")
+    grouped = {name: [] for name in ("main", "ios-arm64", "ios-simulator-arm64")}
+    sources = {}
+    for result in verified_maven:
+        component = result["component"]
+        rows = [(False, row) for row in result["stageFiles"]
+                if row["relativePath"].startswith("outputs/maven/")]
+        rows.extend((True, row) for row in result["sidecarFiles"]
+                    if row["relativePath"].endswith(".asc"))
+        for signature, row in rows:
+            path = ("maven/" + row["relativePath"] if signature else
+                    row["relativePath"].removeprefix("outputs/"))
+            prefix = "maven/" + MAVEN_GROUPS[component].replace(".", "/") + "/"
+            coordinate = path.removeprefix(prefix).split("/", 2)
+            if (not path.startswith(prefix) or len(coordinate) != 3
+                    or coordinate[0] not in COMPONENT_ARTIFACTS[component] or coordinate[1] != version):
+                raise ValueError("SDK Central coordinate differs from its package owner/version")
+            if path in sources:
+                raise ValueError("SDK Central input is duplicated across packages")
+            sources[path] = (component, signature, row["relativePath"])
+            shard = {"codex-agent-runtime-ios-iosarm64": "ios-arm64",
+                     "codex-agent-runtime-ios-iossimulatorarm64": "ios-simulator-arm64"}.get(
+                         coordinate[0], "main")
+            grouped[shard].append({**row, "relativePath": path})
+    # iOS cinterop inputs exceed 512 MiB; each complete shard must still be <1GB.
+    return ([{"fileName": f"codex-agent-{version}-central-{shard}.zip",
+              "files": central_maven_files(files, [], max_entry_bytes=1_000_000_000 - 1)}
+             for shard, files in grouped.items()], sources)
+
+
+def verify_sdk_central_bundles(directory: Path, verified_maven: list[dict]) -> list[dict]:
+    """Verify exact finalized envelopes against freshly authenticated package bytes."""
+    directory = require_regular_directory(Path(directory), "SDK Central directory")
+    layout, _ = _central_layout(verified_maven)
+    if {path.name for path in directory.iterdir()} != {row["fileName"] for row in layout}:
+        raise ValueError("SDK Central shard inventory is incomplete or unexpected")
+    return [verify_central_bundle(directory / row["fileName"], row["files"],
+                                  max_entry_bytes=1_000_000_000 - 1) for row in layout]
+
+
+def produce_sdk_central_bundles(stages: dict[str, Path], sidecars: Path,
+                                destination: Path, verified_maven: list[dict]) -> list[dict]:
+    """Phase10 only: stream exact selected Maven/signature bytes into three ZIPs.
+
+    The protected caller supplies results from the existing full package/PGP
+    verifier. This helper neither authenticates originals nor grants release trust.
+    """
+    layout, sources = _central_layout(verified_maven)
+    if set(stages) != set(MAVEN_GROUPS):
+        raise ValueError("SDK Central stages do not cover the three packages")
+    destination, sidecars = Path(destination), Path(sidecars)
+    output = destination.resolve(strict=False)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("SDK Central destination already exists")
+    for source in (*stages.values(), sidecars):
+        source = Path(source).resolve(strict=True)
+        if output == source or output in source.parents or source in output.parents:
+            raise ValueError("SDK Central destination overlaps an input")
+
+    def open_member(path):
+        component, signature, relative = sources[path]
+        source = (sidecars / component if signature else Path(stages[component])) / relative
+        descriptor, _ = _open_regular_file(source, "SDK Central input", reject_symlink_parents=True)
+        return os.fdopen(descriptor, "rb")
+
+    with tempfile.TemporaryDirectory(prefix="sdk-central-", dir=destination.parent) as temporary:
+        prepared = Path(temporary)
+        for row in layout:
+            write_central_bundle(prepared / row["fileName"], row["files"], open_member)
+        result = verify_sdk_central_bundles(prepared, verified_maven)
+        publish_regular_tree(prepared, destination, expected_inventory=[
+            {"relativePath": row["fileName"], "bytes": row["bytes"], "sha256": row["sha256"]}
+            for row in sorted(result, key=lambda row: row["fileName"])])
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

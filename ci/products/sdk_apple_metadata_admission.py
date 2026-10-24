@@ -1,8 +1,10 @@
-"""Original Apple metadata admission through both complete signed handoffs.
+"""Original Apple metadata admission from fully verified or native-completed inputs.
 
 No structural carrier or deterministic projection grants authority here. Each
 target is independently signature-verified and fully replayed by the existing
 handoff, including its original package, binary, sources and native evidence.
+Exact independently native-completed inputs retain that admission while only
+the small validation objects and original package receipt are consumed here.
 """
 
 from contextlib import ExitStack, contextmanager
@@ -10,16 +12,18 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 from .inventory import (
     canonical_json_bytes, git_product_versions, load_canonical_json_bytes,
     read_regular_file_bytes, require_array, require_exact_keys, require_relative_path, run_git, sha256_bytes,
+    write_canonical_json,
 )
 from .plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity
 from .registry import PhaseInstanceId
 from .sdk_apple_content import _input_inventory
-from .sdk_apple_metadata import OUTPUT_KIND, OUTPUT_PATH, apple_metadata_content
+from .sdk_apple_metadata import PACKAGE_INPUT_NAME, OUTPUT_KIND, OUTPUT_PATH, apple_metadata_content
 from .sdk_apple_validation_admission import apple_validation_policy_arguments
 from .sdk_apple_validation_attestation import verified_apple_validation_handoff
 from .sdk_apple_validation_inputs import rebase_sdk_apple_validation_records
@@ -55,11 +59,110 @@ def _stage(stage, receipt, kind, path):
 
 
 @contextmanager
-def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evidence_root,
-                                       evidence_records, policy_revision, policy):
-    """Hold both full gates and the common original package through caller use.
+def _completed_inputs(completed, originals, paths, *, repository, policy_revision, policy):
+    """Consume small V objects and the native-qualified P receipt, never a fake P stage."""
+    import product_reuse as products
+    from reuse_qualification import CompletedFrozenReuse
+    from sdk_ios_original_package import _restore_completed_input
 
-    Returned paths are private handoff paths valid only inside this context.
+    if type(completed) is not CompletedFrozenReuse:
+        raise ValueError("Apple metadata requires concrete native completion")
+    _, phases = completed._values()
+    package_id = products.PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+    validations = {target: products.PhaseInstanceId("sdk", "sdk-ios", "validation", target) for target in _TARGETS}
+    if any(identity not in phases for identity in (package_id, *validations.values())):
+        yield None
+        return
+    arguments = apple_validation_policy_arguments(policy)
+    if (arguments["attestation_trust_domain"] != "release" or arguments["required_trust_domain"] != "release"
+            or arguments["attestation_public_key"] is not None):
+        raise ValueError("Completed Apple metadata requires current Git release policy")
+    root = Path(repository).resolve(strict=True)
+    plan_bytes = _read(arguments["plan"])
+    plan = products._validate_plan(arguments["plan"], root)
+    if (policy_revision != completed._revision or plan["validationCommit"] != policy_revision
+            or plan["remoteBuildAuthorized"] is not True):
+        raise ValueError("Completed Apple metadata differs from the authenticated current revision")
+    consumer = products._consumer(plan, os.environ)
+    completed.check_consumer(consumer)
+    envelopes = {identity: completed.envelope(phases[identity]) for identity in (package_id, *validations.values())}
+    if any(value is None for value in envelopes.values()):
+        raise ValueError("Completed Apple metadata lacks its exact original receipts")
+    package, package_raw = envelopes[package_id]["receipt"], envelopes[package_id]["receiptBytes"]
+    receipts = {}
+    for target, identity in validations.items():
+        envelope = envelopes[identity]
+        if envelope["receiptBytes"] != originals[target]:
+            raise ValueError("Apple metadata validation differs from native completion")
+        receipt = receipts[target] = envelope["receipt"]
+        upstream = [row for row in receipt["inputs"]["upstreamArtifacts"] if products._identity(row) == package_id]
+        if (len(upstream) != 1 or upstream[0]["buildKey"] != package["buildKey"]
+                or upstream[0]["outputsDigest"] != output_inventory_digest(package["outputs"])
+                or receipt["productVersion"] != package["productVersion"]):
+            raise ValueError("Apple metadata validations have different native package lineage")
+    policy_bytes = canonical_json_bytes(policy)
+    trust_files = {arguments[name]: _read(arguments[name]) for name in ("keyring", "tooling_keyring")}
+    trust_dirs = {arguments[name]: _input_inventory(arguments[name], allow_empty=True)
+                  for name in ("keys_directory", "tooling_keys_directory")}
+
+    def unchanged():
+        require_no_signing_secret(os.environ)
+        if (canonical_json_bytes(policy) != policy_bytes or _read(arguments["plan"]) != plan_bytes
+                or any(_read(paths[target]) != raw or canonical_json_bytes(receipts[target]) != raw
+                       for target, raw in originals.items())
+                or canonical_json_bytes(package) != package_raw
+                or any(_read(path) != raw for path, raw in trust_files.items())
+                or any(_input_inventory(path, allow_empty=True) != inventory for path, inventory in trust_dirs.items())):
+            raise ValueError("Completed Apple metadata controls or current policy changed")
+
+    with tempfile.TemporaryDirectory(prefix="completed-apple-metadata-") as temporary:
+        private = Path(temporary).resolve()
+        current_trust = products._release_trust(root, policy_revision, private / "current-policy")
+        if (current_trust is None or any(raw != _read(current_trust.keyring) for raw in trust_files.values())
+                or any(inventory != _input_inventory(current_trust.keys, allow_empty=True)
+                       for inventory in trust_dirs.values())):
+            raise ValueError("Completed Apple metadata caller keys differ from current Git policy")
+        token = os.environ.get("GITHUB_TOKEN", "")
+        completed.observe_extended_sdk(phases[package_id], producer=consumer["producer"], token=token)
+        stages, contents = {}, {}
+        for target, identity in validations.items():
+            body, stage = private / (target + ".zip"), private / target / "stage"
+            completed.capture_object(phases[identity], body, plan=plan, producer=consumer["producer"],
+                                     trusted_workflow_sha=None, token=token)
+            restored = _restore_completed_input(body, stage, phases[identity])
+            if restored["receiptBytes"] != originals[target]:
+                raise ValueError("Consumed Apple validation differs from its native receipt")
+            contents[target] = _stage(stage, receipts[target], "apple-validation-content", _VALIDATION_PATH)
+            stages[target] = stage
+        package_inputs = private / "package-receipt-input"
+        write_canonical_json(package_inputs / PACKAGE_INPUT_NAME,
+                             {"schemaVersion": 1, "kind": "package-receipt-input", "receipt": package})
+        content = apple_metadata_content(sdk_version=package["productVersion"],
+            package_outputs_digest=output_inventory_digest(package["outputs"]),
+            contract_digest=contents[_TARGETS[0]]["contractDigest"],
+            expected_canonical=contents[_TARGETS[0]]["canonical"], validation_contents=contents)
+        before = {path: _input_inventory(path, allow_empty=False) for path in (package_inputs, *stages.values())}
+        content_bytes = canonical_json_bytes(content)
+        try:
+            unchanged()
+            yield {"package_stage": package_inputs, "package_receipt": package,
+                   "package_receipt_bytes": package_raw,
+                   "validation_contents": {target: stage / _VALIDATION_PATH for target, stage in stages.items()},
+                   "validation_receipts": receipts, "validation_receipt_bytes": dict(originals), "content": content}
+        finally:
+            unchanged()
+            if (canonical_json_bytes(content) != content_bytes or any(
+                    _input_inventory(path, allow_empty=False) != inventory for path, inventory in before.items())):
+                raise ValueError("Completed Apple metadata consumed inputs changed")
+
+
+@contextmanager
+def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evidence_root,
+                                       evidence_records, policy_revision, policy, completed_frozen=None):
+    """Hold authenticated validations and their common package through caller use.
+
+    Returned paths are private inputs valid only inside this context. Completed
+    native inputs supply an explicit receipt-input directory for the package.
     Distinct validation producers are permitted; both must have consumed the
     very same original package receipt, not merely similar package contents.
     """
@@ -70,6 +173,12 @@ def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evide
     paths = {target: Path(path) for target, path in
              require_exact_keys(validation_receipts, _TARGETS, "Apple metadata validation receipts").items()}
     originals = {target: _read(path) for target, path in paths.items()}
+    if completed_frozen is not None:
+        with _completed_inputs(completed_frozen, originals, paths, repository=repository,
+                policy_revision=policy_revision, policy=policy) as completed:
+            if completed is not None:
+                yield completed
+                return
     policy_bytes, record_bytes = canonical_json_bytes(policy), canonical_json_bytes(evidence_records)
     # Records may be rebased against the checkout or an enclosing artifact.
     # Only referenced entries are inputs, never the entire enclosing root.
@@ -112,7 +221,8 @@ def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evide
                     raise ValueError("Apple metadata lacks an exact original validation evidence record")
                 verified = stack.enter_context(verified_apple_validation_handoff(
                     root / record["evidenceRoot"], target=target, expected_receipt_sha256=digest,
-                    repository_root=Path(repository), policy_revision=policy_revision, **arguments))
+                    repository_root=Path(repository), policy_revision=policy_revision, **arguments,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})))
                 verified_rows[target] = verified
                 unchanged()
                 current_package = verified["package"]
@@ -158,7 +268,7 @@ def verified_sdk_apple_metadata_inputs(*, repository, validation_receipts, evide
 
 
 def verify_sdk_apple_metadata_receipt_admission(*, repository, metadata_receipt_bytes,
-        validation_receipts, evidence_root, evidence_records, policy_revision, policy):
+        validation_receipts, evidence_root, evidence_records, policy_revision, policy, completed_frozen=None):
     """Bind original receipt outputs to full replay; caller verifies object bytes.
 
     This is not an observed metadata-worker or publication attestation. No
@@ -171,7 +281,8 @@ def verify_sdk_apple_metadata_receipt_admission(*, repository, metadata_receipt_
     try:
         with verified_sdk_apple_metadata_inputs(repository=repository, validation_receipts=validation_receipts,
                 evidence_root=evidence_root, evidence_records=evidence_records,
-                policy_revision=policy_revision, policy=policy) as inputs:
+                policy_revision=policy_revision, policy=policy,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
             commit, tree = receipt["producer"]["commit"], receipt["producer"]["tree"]
             try:
                 if (run_git(Path(repository), "rev-parse", f"{commit}^{{commit}}").strip() != commit
@@ -200,7 +311,7 @@ def verify_sdk_apple_metadata_receipt_admission(*, repository, metadata_receipt_
 
 
 def verify_sdk_apple_metadata_admission(*, repository, metadata_stage, metadata_receipt,
-        validation_receipts, evidence_root, evidence_records, policy_revision, policy):
+        validation_receipts, evidence_root, evidence_records, policy_revision, policy, completed_frozen=None):
     """Verify stage bytes plus the same receipt-only original admission gate."""
     stage, receipt_path = Path(metadata_stage), Path(metadata_receipt)
     before, raw = _input_inventory(stage, allow_empty=False), _read(receipt_path)
@@ -208,7 +319,8 @@ def verify_sdk_apple_metadata_admission(*, repository, metadata_stage, metadata_
         receipt, returned = verify_sdk_apple_metadata_receipt_admission(repository=repository,
             metadata_receipt_bytes=raw, validation_receipts=validation_receipts,
             evidence_root=evidence_root, evidence_records=evidence_records,
-            policy_revision=policy_revision, policy=policy)
+            policy_revision=policy_revision, policy=policy,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if returned != raw or canonical_json_bytes(receipt) != raw:
             raise ValueError("Apple metadata admission returned a different original receipt")
         _stage(stage, receipt, OUTPUT_KIND, OUTPUT_PATH)

@@ -73,7 +73,7 @@ def observe_android_protected_dispatch(
         observation["run"].get("referenced_workflows"),
         "Android protected-dispatch workflow references",
     )
-    expected = f"{upload_locator.REPOSITORY}/{upload_locator.ANDROID_WORKFLOW}@main"
+    expected = upload_locator.ANDROID_WORKFLOW_REFERENCE
     android = [value for value in references if type(value) is dict
                and isinstance(value.get("path"), str)
                and value["path"].split("@", 1)[0] == expected.split("@", 1)[0]]

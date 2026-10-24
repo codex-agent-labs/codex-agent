@@ -21,9 +21,87 @@ from products.signing_isolation import require_no_signing_secret
 
 REPOSITORY = "codex-agent-labs/codex-agent"
 ANDROID_WORKFLOW = ".github/workflows/android-runtime-evidence.yml"
+ANDROID_WORKFLOW_REFERENCE = f"{REPOSITORY}/{ANDROID_WORKFLOW}@reuse-authority"
 FIREBASE_JOB = "product-validation / android-runtime-evidence / firebase-arm64-runtime"
 ATTACH_JOB = "product-validation / android-runtime-evidence / attach-evidence"
 _OID = re.compile(r"[0-9a-f]{40}")
+
+
+def retained_android_evidence_origin(build_key, consumer, *, phase="validation"):
+    """Select reviewed device evidence, not a validation verdict or new producer."""
+    producer = {"repository": REPOSITORY, "workflowPath": ".github/workflows/ci.yml",
+        "commit": "986d173ae4c05cf3ec456bef463641376a65e6d3",
+        "tree": "554dee42106c5c00e0114d166fb2c52b2a5aa1e0", "event": "pull_request",
+        "runId": 39012954522, "runAttempt": 2, "pullRequest": 31}
+    expected = {"validation": "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637",
+                "metadata": "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"}
+    if (phase not in expected or build_key != expected[phase]
+            or any(consumer.get(name) != producer[name]
+                   for name in ("repository", "workflowPath", "event", "pullRequest"))
+            or any(type(consumer.get(name)) is not int or consumer[name] < 1
+                   for name in ("runId", "runAttempt"))
+            or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+        return None
+    return {"producer": producer,
+        "workflowSha": "26622ad8247c4c411890d22bc3519332ad11fb25",
+        "authority": {"schemaVersion": 1,
+            "trustedAndroidWorkflowSha": "26622ad8247c4c411890d22bc3519332ad11fb25",
+            "trustedSourceCommit": "acb00a8f065d86e96ec047b17db7fc33fd2b2992",
+            "trustedSourceTree": "554dee42106c5c00e0114d166fb2c52b2a5aa1e0"},
+        "final": {"artifact_id": 12094264612,
+            "artifact_sha256": "sha256:a04694b9c916300ba3e68db3665f132894a8b5e8fdfd14787e68d2f4434eec38"},
+        "protected": {"artifact_id": 12094334017,
+            "artifact_sha256": "sha256:731bbd6c9795735f1bcbe629fb2433c69c5ed74b18804bd6e6a47187be4fb113"}}
+
+
+def require_retained_android_authority(origin, *, trusted_source_commit, trusted_source_tree,
+                                       trusted_android_workflow_sha=None):
+    if origin is None:
+        return
+    authority = origin["authority"]
+    if (trusted_source_commit != authority["trustedSourceCommit"]
+            or trusted_source_tree != authority["trustedSourceTree"]
+            or trusted_android_workflow_sha is not None and
+               trusted_android_workflow_sha != authority["trustedAndroidWorkflowSha"]):
+        raise ValueError("Retained Android evidence differs from caller-owned source/workflow authority")
+
+
+def require_retained_android_capture(origin, final, protected):
+    if origin is not None and any(
+            value.get("captureProducer") != origin["producer"] or value.get("locator") != origin[name]
+            for name, value in (("final", final), ("protected", protected))):
+        raise ValueError("Retained Android capture differs from its reviewed original identity")
+
+
+def capture_retained_android_plan(origin, root, destination, *, token):
+    """One scoped reader, four pinned controls; no product body or trust shortcut."""
+    from runtime_reference_archive import open_reference_archive, copy_reference_member
+    from runtime_reference_transport import count
+    producer = {**origin["producer"], "runAttempt": 1}  # Original successful planner, never retry alias.
+    job = "product-validation / plan"
+    observed = products._observe_ci_producer_jobs({"plan": producer}, jobs_by_phase={"plan": job},
+        trusted_workflow_sha=origin["workflowSha"], token=token)[0]
+    artifact = products._contract_ci_upload_metadata(12093438301,
+        "sha256:f08b52c4fe7e730d23129e235061d381b3cb3437c12ceecf87893e3218beda52",
+        "codex-agent-ci-plan-" + producer["tree"], producer, observed["run"], token)
+    products._require_artifact_job_window(observed, job, artifact)
+    members = {
+        "impact-plan.json": (166986, "7beceac7d13ba4fc92018494d28f52887d5ba55b4f05ff661c9edebfb39a5261"),
+        "inventories/android/production-inputs.git-tree": (115438, "2fbe0ee28e686d8874c7e5444e0235b3cfafbd5717eb360d1b69fa50ed1f1e4a"),
+        "inventories/android/test-inputs.git-tree": (1911, "65be67ce424143079d3ee33943cb5161f0a7a136447af8a42a2a3d3f29bf2cf3"),
+        "inventories/android/metadata-inputs.git-tree": (314, "04f68e123cb2c77b5863adc88dfe4930d401ef99d4e7e7881f198de93fbc9f4c"),
+    }
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink() or destination.resolve(strict=False) != destination:
+        raise ValueError("Retained Android plan destination must be fresh and non-symbolic")
+    with open_reference_archive(artifact, token, max_bytes=16 * 1024**2) as (archive, stream):
+        for name, (size, digest) in members.items():
+            copy_reference_member(archive, name, destination / name,
+                {"bytes": size, "sha256": "sha256:" + digest})
+        count("androidRetainedPlanRangeBytes", stream.transferred)
+    plan = destination / "impact-plan.json"
+    products._validate_plan(plan, root, expected_revision=producer["commit"])
+    return plan
 
 
 def _utc(value, label):
@@ -88,9 +166,9 @@ def locate_android_validation_upload(
             "Android original workflow references",
         )
         # The checked-in caller deliberately declares this reusable workflow at
-        # @main.  Its resolved `sha` is a separate official observation and is
+        # @reuse-authority. Its resolved `sha` is a separate official observation and is
         # pinned by the caller of this locator; do not conflate the two fields.
-        expected = f"{REPOSITORY}/{ANDROID_WORKFLOW}@main"
+        expected = ANDROID_WORKFLOW_REFERENCE
         selected = [value for value in references if type(value) is dict
                     and isinstance(value.get("path"), str)
                     and value["path"].split("@", 1)[0] == expected.split("@", 1)[0]]

@@ -5,14 +5,11 @@ evidence, never a product payload or a substitute for full original admission.
 """
 
 import argparse
-import hashlib
 import os
 from pathlib import Path
 import sys
 import tempfile
 import tomllib
-from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -23,7 +20,9 @@ from products.inventory import (git_regular_blob_bytes, read_regular_file_bytes,
 from products.signing_isolation import require_no_signing_secret
 from products.toolchain import (_metadata_checksum, RUNTIME_VERIFICATION_METADATA,
                                 VERSION_CATALOG)
-from sdk_android_archive_provision import _publish_archive
+from sdk_android_archive_provision import (
+    _publish_archive, _fetch_pinned_archive, _github_https, _open_archive,
+)
 
 
 _SUFFIXES = {
@@ -33,25 +32,8 @@ _SUFFIXES = {
     "windows-x64": "windows-x86_64",
 }
 _TARGETS = set(_SUFFIXES)
-_MAVEN_ROOT = "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-native-prebuilt"
+_RELEASE_ROOT = "https://github.com/JetBrains/kotlin/releases/download"
 _MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
-
-
-def _maven_https(url):
-    parsed = urlsplit(url)
-    if (parsed.scheme != "https" or parsed.hostname != "repo.maven.apache.org"
-            or parsed.username or parsed.password or parsed.port not in (None, 443)):
-        raise ValueError("Core native archive redirect must stay on Maven Central HTTPS")
-
-
-class _MavenRedirect(HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, new_url):
-        _maven_https(new_url)
-        return super().redirect_request(request, response, code, message, headers, new_url)
-
-
-def _open_archive(url):
-    return build_opener(_MavenRedirect()).open(Request(url), timeout=30)
 
 
 def provision(plan_path, target, destination, *, repository_root):
@@ -83,29 +65,17 @@ def provision(plan_path, target, destination, *, repository_root):
     extension = "zip" if target == "windows-x64" else "tar.gz"
     name = f"kotlin-native-prebuilt-{version}-{_SUFFIXES[target]}.{extension}"
     expected = _metadata_checksum(sources[RUNTIME_VERIFICATION_METADATA], name)
-    url = f"{_MAVEN_ROOT}/{version}/{name}"
-    _maven_https(url)
+    url = f"{_RELEASE_ROOT}/v{version}/{name}"
+    _github_https(url)
     if read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                                reject_symlink_parents=True) != plan_bytes:
         raise ValueError("Core native archive plan changed before download")
     with tempfile.TemporaryDirectory(prefix="core-native-", dir=destination.parent,
                                      ignore_cleanup_errors=True) as temporary:
         archive = Path(temporary) / name
-        digest = hashlib.sha256()
-        count = 0
-        with _open_archive(url) as response:
-            if response.status != 200:
-                raise ValueError("Core native archive download did not return HTTP 200")
-            _maven_https(response.geturl())
-            with archive.open("xb") as output:
-                while chunk := response.read(1024 * 1024):
-                    count += len(chunk)
-                    if count > _MAX_ARCHIVE_BYTES:
-                        raise ValueError("Core native archive exceeds the pinned size limit")
-                    output.write(chunk)
-                    digest.update(chunk)
-        if (not count or "sha256:" + digest.hexdigest() != expected
-                or sha256_file(archive, reject_symlink_parents=True) != expected):
+        _fetch_pinned_archive(url, archive, expected, _MAX_ARCHIVE_BYTES,
+                              _open_archive, _github_https)
+        if sha256_file(archive, reject_symlink_parents=True) != expected:
             raise ValueError("Core native archive differs from the immutable Git pin")
         if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                                     reject_symlink_parents=True) != plan_bytes

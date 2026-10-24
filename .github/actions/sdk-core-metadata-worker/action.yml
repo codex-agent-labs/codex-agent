@@ -77,39 +77,31 @@ outputs:
   metadata-original-context:
     description: Successful original Core metadata invocation context, captured by the caller before upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.original_context || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.execute.outputs.original_context != '' && steps.execute.outputs.original_context || '' }}
   metadata-receipt-sha256:
     description: Verified original metadata phase receipt digest, exposed only after successful execution and upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.receipt_sha256 || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.receipt_sha256 || '' }}
   metadata-artifact-id:
     description: Official original metadata upload ID, exposed only after successful execution and upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.artifact_id || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           steps.upload.outputs.artifact-id || '' }}
   metadata-artifact-sha256:
     description: Official original metadata upload digest, exposed only after successful execution and upload.
     value: >-
-      ${{ steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
+      ${{ steps.retained.outcome == 'success' && steps.retained.outputs.reused == 'true' &&
+          steps.retained.outputs.artifact_sha256 || steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
           steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != '' &&
           format('sha256:{0}', steps.upload.outputs.artifact-digest) || '' }}
-  preparation-artifact-id:
-    description: Official unsigned Core context preparation upload ID after full original replay.
-    value: >-
-      ${{ steps.context-preparation.outcome == 'success' && steps.context-upload.outcome == 'success' &&
-          steps.context-upload.outputs.artifact-id != '' && steps.context-upload.outputs.artifact-digest != '' &&
-          steps.context-upload.outputs.artifact-id || '' }}
-  preparation-artifact-sha256:
-    description: Official unsigned Core context preparation upload digest after full original replay.
-    value: >-
-      ${{ steps.context-preparation.outcome == 'success' && steps.context-upload.outcome == 'success' &&
-          steps.context-upload.outputs.artifact-id != '' && steps.context-upload.outputs.artifact-digest != '' &&
-          format('sha256:{0}', steps.context-upload.outputs.artifact-digest) || '' }}
 runs:
   using: composite
   steps:
@@ -155,6 +147,8 @@ runs:
         bootstrap_dir=$(mktemp -d "$RUNNER_TEMP/core-metadata-bootstrap.XXXXXXXX")
         policy_path="$bootstrap_dir/policy.json"
         options=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then options+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+        if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then options+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
         if [ -n "$APPLE_POLICY" ]; then options+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
         python3 -B -m ci.sdk_core_metadata_bootstrap \
           --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \
@@ -258,11 +252,38 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
+    - id: retained
+      name: Locate exact successful Core metadata before production
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+        from ci.products.inventory import canonical_json_bytes, require_sha256
+        from ci.sdk_facade_metadata_original import _context
+        from ci.reuse import github_output
+        origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
+            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'], phase='metadata')
+        values = {'reused': 'false'}
+        if origin is not None:
+            values.update(reused='true', artifact_id=str(origin['artifact_id']),
+                artifact_sha256=require_sha256(origin['artifact_sha256'], 'Retained metadata original upload'),
+                receipt_sha256=require_sha256(origin['receipt_sha256'], 'Retained metadata receipt'),
+                original_context=canonical_json_bytes(_context(origin['context'])).decode().strip())
+        github_output(Path(os.environ['GITHUB_OUTPUT']), values)
+        PY
     - uses: ./.github/actions/setup-kmp
+      if: steps.retained.outputs.reused != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
     - id: execute
+      if: steps.retained.outputs.reused != 'true'
       name: Execute exact Core metadata controller
       shell: bash
       env:
@@ -285,11 +306,12 @@ runs:
         from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys, require_sha256, sha256_bytes
         from products.sdk_facade_metadata_admission import fresh_metadata_arguments
         from products.signing_isolation import require_no_signing_secret
-        from sdk_facade_original_inputs import held_fresh_facade_metadata_policy
+        from sdk_facade_original_inputs import held_captured_facade_metadata_policy
         from sdk_facade_metadata_original import _context as original_metadata_context
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         from sdk_facade_metadata_workflow import execute
         from sdk_metadata_policy import metadata_admission_options
+        from reuse_qualification import completed_frozen_options
         require_no_signing_secret(os.environ)
         root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         policy_path = Path(os.environ['CORE_POLICY'])
@@ -306,25 +328,27 @@ runs:
         if held_policy_digest() != os.environ['POLICY_SHA256']:
             raise ValueError('Core metadata caller policy changed before execution')
         replay_policy = load_canonical_json_bytes(raw)
-        plan = Path(os.environ['PLAN'])
+        plan = Path(os.environ['PLAN']).absolute()
         current = product_reuse._validate_plan(plan, root)
         # The fresh metadata phase has no selected metadata receipt yet. Keep
         # the reuse-only Core admission out of both state capture and replay;
         # the controller joins and replays all eleven elected validations.
         options = {'plan': plan, 'repository_root': root}
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            options['completed_frozen_policy'] = Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY'])
         if os.environ['ANDROID_POLICY']:
             options['sdk_android_metadata_policy'] = Path(os.environ['ANDROID_POLICY'])
             options['expected_policy_bytes'] = {'sdk_android_metadata_policy': optional_raw['ANDROID_POLICY']}
         apple = load_canonical_json_bytes(optional_raw['APPLE_POLICY']) if os.environ['APPLE_POLICY'] else None
         if apple is not None and type(apple) is not dict:
             raise ValueError('Caller Apple validation policy must be an object')
-        with metadata_admission_options(options) as admissions:
-            with held_fresh_facade_metadata_policy(plan, Path(os.environ['DISCOVERY']),
+        with metadata_admission_options(options) as admissions, completed_frozen_options(options) as semantic:
+            with held_captured_facade_metadata_policy(plan, Path(os.environ['DISCOVERY']),
                     Path(os.environ['STATE']), expected_build_key=os.environ['BUILD_KEY'],
                     replay_policy=replay_policy, trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
                     repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],
                     sdk_apple_validation_policy=apple,
-                    sdk_android_metadata_admission=admissions.get('sdk_android_metadata_admission')) as descriptor_path:
+                    sdk_android_metadata_admission=admissions.get('sdk_android_metadata_admission'), **semantic) as descriptor_path:
                 if held_policy_digest() != os.environ['POLICY_SHA256'] or \
                         read_regular_file_bytes(policy_path, reject_symlink_parents=True) != raw or \
                         any(read_regular_file_bytes(Path(os.environ[name]), max_bytes=16 * 1024 * 1024,
@@ -349,7 +373,7 @@ runs:
                     java_executable=policy['java_executable'], policy_revision=current['validationCommit'],
                     required_trust_domain=policy['required_trust_domain'], tooling_keyring=policy['tooling_keyring'],
                     tooling_keys_directory=policy['tooling_keys_directory'], sdk_apple_validation_policy=apple,
-                    **admissions)
+                    **admissions, **semantic)
         if held_policy_digest() != os.environ['POLICY_SHA256']:
             raise ValueError('Core metadata caller policy closure changed after original reader exit')
         require_no_signing_secret(os.environ)
@@ -365,7 +389,7 @@ runs:
             output.write('receipt_sha256=' + receipt_sha256 + '\n')
         PY
     - id: upload
-      if: always() && steps.identity.outcome == 'success'
+      if: always() && steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-core-metadata-common-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
@@ -375,89 +399,18 @@ runs:
         include-hidden-files: true
         compression-level: 0
         retention-days: 90
-    - id: context-policy
-      name: Locate all original Core uploads for non-secret context preparation
-      if: >-
-        steps.execute.outcome == 'success' && steps.upload.outcome == 'success' &&
-        steps.execute.outputs.receipt_sha256 != '' && steps.execute.outputs.original_context != '' &&
-        steps.upload.outputs.artifact-id != '' && steps.upload.outputs.artifact-digest != ''
-      shell: bash
-      env:
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-        STATE: ${{ steps.captured.outputs.state-root }}
-        BOOTSTRAP_POLICY: ${{ steps.bootstrap.outputs.policy_path }}
-        BUILD_KEY: ${{ inputs.build-key }}
-        RECEIPT_SHA256: ${{ steps.execute.outputs.receipt_sha256 }}
-        METADATA_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-        METADATA_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
-        ORIGINAL_CONTEXT: ${{ steps.execute.outputs.original_context }}
-        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
-        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
-        GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        context_root=$(mktemp -d "$RUNNER_TEMP/core-context-caller.XXXXXXXX")
-        options=()
-        if [ -n "$APPLE_POLICY" ]; then
-          options+=(--sdk-apple-validation-policy "$APPLE_POLICY")
-        fi
-        python3 -B -m ci.sdk_core_metadata_context_policy \
-          --plan "$PLAN" --discovery "$DISCOVERY" --state "$STATE" \
-          --bootstrap-policy "$BOOTSTRAP_POLICY" \
-          --metadata-receipt "$GITHUB_WORKSPACE/build/sdk-core-metadata-worker/shard/phase-receipt.json" \
-          --destination "$context_root/policy" --expected-build-key "$BUILD_KEY" \
-          --expected-receipt-sha256 "$RECEIPT_SHA256" \
-          --metadata-artifact-id "$METADATA_ARTIFACT_ID" \
-          --metadata-artifact-sha256 "sha256:$METADATA_ARTIFACT_SHA256" \
-          --original-context "$ORIGINAL_CONTEXT" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --repository-root "$GITHUB_WORKSPACE" "${options[@]}"
-        printf 'policy=%s\n' "$context_root/policy/caller-policy.json" >> "$GITHUB_OUTPUT"
-    - id: context-preparation
-      name: Replay exact Core originals without signing authority
-      if: steps.context-policy.outcome == 'success'
-      shell: bash
-      env:
-        CALLER_POLICY: ${{ steps.context-policy.outputs.policy }}
-        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
-        KEYRING: ${{ inputs.keyring }}
-        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
-        GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        context_root=$(mktemp -d "$RUNNER_TEMP/core-context-prepared.XXXXXXXX")
-        python3 -B -m ci.sdk_core_metadata_context_preparation \
-          --caller-policy "$CALLER_POLICY" --destination "$context_root/prepared" \
-          --repository-root "$GITHUB_WORKSPACE" \
-          --signing-keyring "$KEYRING" --signing-keys-directory "$KEYS_DIRECTORY" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"
-        printf 'prepared=%s\n' "$context_root/prepared" >> "$GITHUB_OUTPUT"
-    - id: context-upload
-      if: steps.context-preparation.outcome == 'success'
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: codex-agent-sdk-core-context-preparation-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
-        path: ${{ steps.context-preparation.outputs.prepared }}
-        if-no-files-found: error
-        overwrite: false
-        include-hidden-files: true
-        compression-level: 0
-        retention-days: 90
-    - name: Require both successful original uploads
+    # Later signing preparation uses sdk_core_metadata_protected_handoff only
+    # after this original uploader has completed successfully.
+    - name: Require successful metadata execution and original upload
       if: always() && steps.identity.outcome == 'success'
       shell: bash
       env:
-        PHASE_RESULT: ${{ steps.execute.outcome }}
-        PHASE_UPLOAD_RESULT: ${{ steps.upload.outcome }}
-        PHASE_RECEIPT: ${{ steps.execute.outputs.receipt_sha256 }}
-        PHASE_CONTEXT: ${{ steps.execute.outputs.original_context }}
-        PHASE_UPLOAD_ID: ${{ steps.upload.outputs.artifact-id }}
-        PHASE_UPLOAD_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
-        PREPARATION_RESULT: ${{ steps.context-preparation.outcome }}
-        PREPARATION_UPLOAD_RESULT: ${{ steps.context-upload.outcome }}
-        PREPARATION_UPLOAD_ID: ${{ steps.context-upload.outputs.artifact-id }}
-        PREPARATION_UPLOAD_DIGEST: ${{ steps.context-upload.outputs.artifact-digest }}
+        PHASE_RESULT: ${{ steps.retained.outputs.reused == 'true' && steps.retained.outcome || steps.execute.outcome }}
+        PHASE_UPLOAD_RESULT: ${{ steps.retained.outputs.reused == 'true' && steps.retained.outcome || steps.upload.outcome }}
+        PHASE_RECEIPT: ${{ steps.retained.outputs.receipt_sha256 || steps.execute.outputs.receipt_sha256 }}
+        PHASE_CONTEXT: ${{ steps.retained.outputs.original_context || steps.execute.outputs.original_context }}
+        PHASE_UPLOAD_ID: ${{ steps.retained.outputs.artifact_id || steps.upload.outputs.artifact-id }}
+        PHASE_UPLOAD_DIGEST: ${{ steps.retained.outputs.artifact_sha256 || steps.upload.outputs.artifact-digest }}
       run: |
         set -euo pipefail
         test "$PHASE_RESULT" = success
@@ -466,7 +419,3 @@ runs:
         test -n "$PHASE_CONTEXT"
         test -n "$PHASE_UPLOAD_ID"
         test -n "$PHASE_UPLOAD_DIGEST"
-        test "$PREPARATION_RESULT" = success
-        test "$PREPARATION_UPLOAD_RESULT" = success
-        test -n "$PREPARATION_UPLOAD_ID"
-        test -n "$PREPARATION_UPLOAD_DIGEST"

@@ -2,10 +2,13 @@
 
 import argparse
 import base64
+import importlib.util
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import subprocess
 import sys
 import tempfile
+from types import FunctionType, SimpleNamespace
 from typing import Any
 from zipfile import ZipFile
 
@@ -200,6 +203,18 @@ def _verify_plan(repository: Path, receipt: dict[str, Any], versions: dict[str, 
         raise ValueError("SDK receipt inputs/build key differ from its original authenticated plan")
 
 
+def csharp_binary_inputs(package_receipt: Path) -> dict[str, Path]:
+    """Fixed external input context; its bytes still need full binary/plan checks.
+
+    Validation/metadata callers retain the original binary beside the original
+    package receipt. This is an exact transport layout, never artifact discovery
+    or an alternative source of trust. Explicit binary arguments remain valid.
+    """
+    context = Path(package_receipt).parent / "csharp-binary"
+    return {"binary_stage_root": context / "stage",
+            "binary_receipt_path": context / "phase-receipt.json"}
+
+
 def verify_sdk_package_inputs(
     repository: Path, stage_root: Path, receipt_path: Path, compatibility_request: Path,
     *, runtime_stage_root: Path | None = None, staged_sdks: Path | None = None,
@@ -285,6 +300,9 @@ def verify_sdk_package_inputs(
         raise ValueError("Unexpected Node Runtime package inputs for this SDK family")
     elif native:
         csharp_binary = instance.component == "csharp"
+        if csharp_binary and binary_stage_root is None and binary_receipt_path is None:
+            context = csharp_binary_inputs(receipt_path)
+            binary_stage_root, binary_receipt_path = context["binary_stage_root"], context["binary_receipt_path"]
         if (runtime_stage_root is None or staged_sdks is None or binary_contract_evidence is not None
                 or (binary_stage_root is None) != (binary_receipt_path is None)
                 or (binary_stage_root is not None) != csharp_binary):
@@ -293,7 +311,12 @@ def verify_sdk_package_inputs(
             runtime_stage_root is not None or staged_sdks is not None:
         raise ValueError("Maven SDK input verification requires its original binary and Contract evidence")
 
-    with tempfile.TemporaryDirectory(prefix="sdk-package-plan-") as temporary:
+    authorization = (Path(receipt_path).parent / "runtime-authorization" / validation_target
+                     if validation_stage_root is not None else None)
+    for output in (validation_inputs_output, validation_content_output):
+        if output is not None:
+            _require_capability_output_separate(output, authorization)
+    with tempfile.TemporaryDirectory(prefix="sdk-package-plan-") as temporary, ExitStack() as evidence_lifetime:
         root = Path(temporary).resolve()
         if validation_stage_root is not None:
             validation_inventory = regular_file_inventory(Path(validation_stage_root))
@@ -447,6 +470,11 @@ def verify_sdk_package_inputs(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
                 git_regular_blob_bytes(repository, receipt["producer"]["commit"], SDK_ROOT_PATH, max_bytes=4096),
             )
+            if authorization is not None:
+                # External evidence authenticates the selected default; its signatures
+                # never enter the deterministic capability handoff/content projection.
+                evidence_lifetime.enter_context(verified_native_consumer_authorization(
+                    authorization, staged_sdks, validation_target))
             if instance.component == "csharp":
                 archive = stage / "outputs/csharp" / f"CodexAgent.{versions['sdk']}.nupkg"
                 with ZipFile(archive) as package:
@@ -698,9 +726,539 @@ def native_metadata_content(contents: Path, package_receipt: Path, component: st
             "packageOutputsDigest": package_digest, "hosts": hosts}
 
 
+@contextmanager
+def verified_native_consumer_authorization(evidence: Path, sdks: Path, target: str):
+    """Private host-only sidecars; never part of deterministic package/phase bytes."""
+    from .c_abi import TARGET_SPECS
+    from .sdk_runtime_root import verify_external_library_authorization
+    if target not in NATIVE_TARGETS:
+        raise ValueError("Native consumer authorization requires an exact host")
+    evidence, sdks = Path(evidence), Path(sdks)
+    library_path = next(spec.library_path for spec in TARGET_SPECS.values()
+                        if spec.classifier == "c-abi-" + target)
+    library = sdks / target / library_path
+    compatibility_path, root_path = sdks / COMPATIBILITY_NAME, sdks / "sdk-runtime-root.pub"
+    compatibility_raw = read_regular_file_bytes(compatibility_path, max_bytes=65536, reject_symlink_parents=True)
+    root_raw = read_regular_file_bytes(root_path, max_bytes=4096, reject_symlink_parents=True)
+    before = regular_file_inventory(evidence)
+    if len(before) > 128 or sum(row["bytes"] for row in before) > _LIMIT:
+        raise ValueError("Native consumer authorization exceeds its small evidence bound")
+    with tempfile.TemporaryDirectory(prefix="native-consumer-authorization-") as temporary:
+        captured = Path(temporary).resolve() / "evidence"
+        snapshot_regular_tree(evidence, captured)
+        if regular_file_inventory(captured) != before:
+            raise ValueError("Native authorization changed during capture")
+        transport = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(
+            captured / "transport.json", max_bytes=_LIMIT, reject_symlink_parents=True)),
+            {"schemaVersion", "kind", "target", "source", "observed", "artifact", "files", "rangeBytes", "elapsedNs"},
+            "Native authorization transport")
+        # Recorded provenance is not authority: the SDK-pinned root below is.
+        if (type(transport["schemaVersion"]) is not int or transport["schemaVersion"] != 1
+                or transport["kind"] != "sdk-runtime-authorization-capture" or transport["target"] != target
+                or transport["files"] != regular_file_inventory(captured / "sidecars")
+                or {row["relativePath"].split("/")[0] for row in before} != {"sidecars", "transport.json"}):
+            raise ValueError("Native authorization transport differs from captured host sidecars")
+        compatibility = load_canonical_json_bytes(compatibility_raw)
+        claim = verify_external_library_authorization(captured / "sidecars",
+            sdk_pinned_root_public_key=root_raw, sdk_compatibility=compatibility,
+            target=target, library_snapshot=library)
+        runtime = compatibility["runtime"]
+        variant = next(item for item in runtime["embeddedVariants"] if item["target"] == target)
+        if (claim["runtimeVersion"] != runtime["defaultRuntimeVersion"]
+                or claim["aggregateManifestSha256"] != runtime["defaultManifestSha256"]
+                or claim["runtimeIdentity"]["componentId"] != variant["componentId"]
+                or any(claim[left] != variant[right] for left, right in (
+                    ("runtimeLibrarySha256", "runtimeLibrarySha256"),
+                    ("variantBundleSha256", "bundleSha256"), ("variantManifestSha256", "manifestSha256")))):
+            raise ValueError("Native consumer authorization differs from the selected SDK Runtime")
+        yield captured / "sidecars"
+        if (regular_file_inventory(evidence) != before or regular_file_inventory(captured) != before
+                or read_regular_file_bytes(compatibility_path, reject_symlink_parents=True) != compatibility_raw
+                or read_regular_file_bytes(root_path, reject_symlink_parents=True) != root_raw):
+            raise ValueError("Native consumer authorization or SDK policy changed during use")
+
+
+class _LfEvidencePath(type(Path())):
+    """Only fresh consumer reports use this writer; imported files stay untouched."""
+
+    def write_text(self, data, encoding=None, errors=None, newline=None):
+        return super().write_text(data, encoding=encoding, errors=errors, newline="\n")
+
+
+def consume_authorized_native(repository, packages, sdks, output, sdk_version, language, *,
+                              runtime_authorization, expected_classifier, offline=False,
+                              package_negative_evidence=None, plan=None):
+    """Reuse the unchanged installed consumer with one additional staging seam.
+
+    A private function namespace keeps the package-producing module and its
+    globals untouched. All original path, package, equality and consumer gates
+    execute; each installed loader still verifies its own signed sidecars.
+    """
+    from ci import native_wrappers
+    all_languages = language is None
+    if all_languages != (plan is not None):
+        raise ValueError("All-language consumers require exactly one original lane plan")
+    if all_languages:
+        if package_negative_evidence is None or native_wrappers.host_classifier() != expected_classifier:
+            raise ValueError("All-language consumers require matching host and C++ negative evidence")
+        for destination in (output, package_negative_evidence):
+            if (destination.resolve() == (repository / "build").resolve()
+                    or not destination.resolve().is_relative_to((repository / "build").resolve())
+                    or any(path.is_symlink() for path in (destination, *destination.parents))):
+                raise ValueError("All-language consumer output must be a private build directory")
+            _require_capability_output_separate(destination, [packages, sdks, plan])
+        _require_capability_output_separate(output, package_negative_evidence)
+    for destination in (output, package_negative_evidence):
+        if destination is not None:
+            _require_capability_output_separate(destination, Path(runtime_authorization))
+    namespace = dict(vars(native_wrappers))
+
+    def bind(name):
+        original = getattr(native_wrappers, name)
+        bound = FunctionType(original.__code__, namespace, original.__name__,
+                             original.__defaults__, original.__closure__)
+        bound.__kwdefaults__ = original.__kwdefaults__
+        return bound
+
+    original_consumer = bind("_consume")
+
+    def authorized_consumer(*args, **kwargs):
+        matches = []
+
+        def matching_native(root, pattern, sdk_library, label):
+            native = native_wrappers.require_matching_native(root, pattern, sdk_library, label)
+            if all_languages:
+                labels = ("Python", "C#", "Rust", "C++", "Dart")
+                if len(matches) >= len(labels) or label != labels[len(matches)]:
+                    raise ValueError("All-language consumer library order differs from the original suite")
+            elif matches:
+                raise ValueError("Native consumer must select exactly one installed library")
+            matches.append(native)
+            return native
+
+        with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence:
+            external_calls = []
+
+            def run(*command, **options):
+                if (all_languages or language == "csharp") and command[:2] == ("dotnet", "restore"):
+                    # .NET 8 names this switch --no-cache; preserve the original
+                    # local-only source, isolated package cache and forced restore.
+                    command = tuple("--no-cache" if value == "--no-http-cache" else value
+                                    for value in command)
+                if (all_languages or language == "rust") and "codex-agent-rust-lifecycle-smoke" in command:
+                    if (len(matches) != (3 if all_languages else 1) or tuple(command[:-1]) != (
+                            "cargo", "run", "--manifest-path", options["cwd"] / "rust-consumer/Cargo.toml",
+                            "--release", "--locked", "--offline", "--bin",
+                            "codex-agent-rust-lifecycle-smoke", "--")):
+                        raise ValueError("Rust fixture consumer invocation differs from the fixed test path")
+                    return run_rust_fixture_consumer(matches[-1].parents[2],
+                        options["cwd"] / "rust-consumer/src/bin/lifecycle_smoke.rs",
+                        Path(command[-1]), environ=options["env"])
+                if not matches or not any(str(value) == str(matches[-1]) for value in command):
+                    return native_wrappers.run(*command, **options)
+                # Only the explicit external-positive invocation sees sidecars.
+                # Package-negative fixtures and deterministic evidence never copy them.
+                if matches[-1] in external_calls:
+                    raise ValueError("Native consumer repeated an external-positive invocation")
+                sidecar = matches[-1].with_name(matches[-1].name + ".evidence")
+                inventory = regular_file_inventory(evidence)
+                publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
+                try:
+                    result = native_wrappers.run(*command, **options)
+                    if regular_file_inventory(sidecar) != inventory:
+                        raise ValueError("Installed consumer changed its Runtime authorization")
+                    external_calls.append(matches[-1])
+                    return result
+                finally:
+                    native_wrappers.invalidate_output(sidecar)
+
+            namespace.update(require_matching_native=matching_native, run=run)
+            if all_languages:
+                kwargs["package_negative_evidence"] = package_negative_evidence
+                kwargs["offline"] = offline
+            original_consumer(*args, **kwargs)
+            if len(matches) != (5 if all_languages else 1) or external_calls != matches:
+                raise ValueError("Native consumer must authenticate exactly one external-positive invocation per library")
+
+    namespace["_consume"] = authorized_consumer
+    # Write canonical bytes once, before any receipt is issued, even on Windows.
+    # Do not edit the shared package producer or normalize authenticated inputs.
+    output = _LfEvidencePath(output)
+    # Keep the original output guards and exception cleanup around authorization too.
+    if all_languages:
+        native_wrappers.invalidate_output(package_negative_evidence)
+        try:
+            bind("consume")(repository, packages, sdks, plan, output, sdk_version)
+        except Exception:
+            native_wrappers.invalidate_output(package_negative_evidence)
+            raise
+    else:
+        bind("consume_language")(repository, packages, sdks, output, sdk_version, language,
+            expected_classifier=expected_classifier, offline=offline,
+            package_negative_evidence=package_negative_evidence)
+
+
+def run_rust_fixture_consumer(package: Path, program: Path, fixture: Path, *, environ):
+    """Compile the existing smoke as a unit test using the shipped cfg(test) seam.
+
+    Public embedded/external consumers run unchanged first. This private source
+    overlay tests the unsigned mock; it neither changes nor republishes the crate.
+    """
+    program_raw = read_regular_file_bytes(program, reject_symlink_parents=True)
+    source = program_raw.decode("utf-8")
+    replacements = (
+        ("use codex_agent::{", "use crate::{"),
+        ("fn main() -> Result<(), CodexError> {", "#[test]\nfn main() -> Result<(), CodexError> {"),
+        ('std::env::args_os()\n            .nth(1)', 'std::env::var_os("CODEX_AGENT_INSTALLED_TEST_FIXTURE")'),
+        ("CodexNativeLibrary::load(&library)?", "CodexNativeLibrary::load_fixture_for_test(&library)?"),
+    )
+    for old, new in replacements:
+        if source.count(old) != 1:
+            raise ValueError("Rust fixture consumer source differs from the reviewed test-only overlay")
+        source = source.replace(old, new)
+    original_sources = regular_file_inventory(package / "src")
+    originals = {name: read_regular_file_bytes(package / name, reject_symlink_parents=True) for name in (
+        "Cargo.toml", "Cargo.lock", "build.rs", "native/sdk-compatibility.json", "native/sdk-runtime-root.pub")}
+    with tempfile.TemporaryDirectory(prefix="rust-installed-fixture-") as temporary:
+        root = Path(temporary).resolve()
+        snapshot_regular_tree(package / "src", root / "src")
+        if regular_file_inventory(root / "src") != original_sources:
+            raise ValueError("Installed Rust sources changed during fixture capture")
+        for name, raw in originals.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        # No Cargo.toml.orig or native bodies: this is a source unit harness,
+        # not another package build or public-loader authentication test.
+        unit = root / "src/codex_installed_fixture.rs"
+        if unit.exists():
+            raise ValueError("Rust fixture overlay collides with an installed source")
+        unit.write_text(source, encoding="utf-8", newline="\n")
+        library = root / "src/lib.rs"
+        library.write_bytes(library.read_bytes() + b"\n#[cfg(test)]\nmod codex_installed_fixture;\n")
+        # Reuse the caller's already-built dependencies, never a second cold
+        # Cargo target tree. The normal consumer owns and removes this scratch.
+        target = Path(environ.get("CARGO_TARGET_DIR", root / "target"))
+        if not target.is_absolute():
+            raise ValueError("Rust fixture Cargo target must be an explicit private path")
+        _require_capability_output_separate(target, [package, program, fixture])
+        result = subprocess.run(["cargo", "test", "--manifest-path", str(root / "Cargo.toml"),
+            "--lib", "--release", "--locked", "--offline", "codex_installed_fixture::main", "--", "--exact"],
+            cwd=root, env={**environ, "CARGO_TARGET_DIR": str(target),
+                "CODEX_AGENT_INSTALLED_TEST_FIXTURE": str(fixture)}, capture_output=True, check=False)
+        sys.stdout.buffer.write(result.stdout)
+        sys.stderr.buffer.write(result.stderr)
+        if (result.returncode != 0 or b"test codex_installed_fixture::main ... ok" not in result.stdout
+                or b"test result: ok. 1 passed; 0 failed;" not in result.stdout):
+            raise ValueError("Rust test-only installed lifecycle did not execute successfully")
+        if (regular_file_inventory(package / "src") != original_sources
+                or read_regular_file_bytes(program, reject_symlink_parents=True) != program_raw
+                or any(read_regular_file_bytes(package / name, reject_symlink_parents=True) != raw
+                       for name, raw in originals.items())):
+            raise ValueError("Installed Rust fixture inputs changed during execution")
+
+
+def rust_lifecycle_unit_source(original: bytes) -> bytes:
+    """Move the unchanged lifecycle assertions into the crate's existing test seam."""
+    source = original.decode("utf-8")
+    marker = "fn lifecycle_state_failure_cancellation_identity_and_ownership()"
+    if source.count(marker) != 1 or source.count("use codex_agent::{") != 1:
+        raise ValueError("Rust lifecycle source differs from the reviewed unit projection")
+    real, mock = source.split(marker)
+    if (real.count("CodexNativeLibrary::load(") != 1 or mock.count("CodexNativeLibrary::load(") != 15
+            or source.count("#[test]") != 3):
+        raise ValueError("Rust lifecycle loader/test inventory differs from the reviewed projection")
+    # The genuine imported-SDK test must still authenticate through the PUBLIC loader.
+    return (real.replace("use codex_agent::{", "use crate::{") + marker + mock.replace(
+        "CodexNativeLibrary::load(", "CodexNativeLibrary::load_fixture_for_test(")).encode("utf-8")
+
+
+def project_dart_capability_fixtures(source: Path) -> None:
+    """Private test compilation only, analogous to Rust's cfg(test) fixture loader.
+
+    Only the four locally compiled mock fixtures register here. Genuine Runtime,
+    installed consumers and loader-security tests keep the unmodified auth path.
+    No test registration code is added to the shipped Dart library.
+    """
+    for name in ("leaf_service", "conversation", "agent", "host"):
+        path = source / f"test/{name}_parity.dart"
+        raw = path.read_text(encoding="utf-8")
+        if raw.count("Future<String> _buildFixture() async {") != 1 or raw.count("  return output;") != 1:
+            raise ValueError("Dart fixture producer differs from the reviewed projection")
+        path.write_text("import 'package:codex_agent/src/ffi.dart' show registerCapabilityFixture;\n" +
+                        raw.replace("  return output;", "  return registerCapabilityFixture(output);"), encoding="utf-8")
+    path = source / "lib/src/ffi.dart"
+    raw = path.read_text(encoding="utf-8")
+    marker = "}) {\n  final file = File(path);\n  requireAbsoluteRegularFile(file, 'Codex Agent C SDK');"
+    if raw.count(marker) != 1 or "registerCapabilityFixture" in raw:
+        raise ValueError("Dart runtime loader differs from the reviewed projection")
+    raw = raw.replace(marker, """}) {
+  final fixture = _capabilityFixtures[path];
+  if (fixture != null) {
+    if (beforeDynamicOpen != null || runtimeFileSha256(File(path)) != fixture.digest) {
+      throw StateError('Private capability fixture changed');
+    }
+    return fixture;
+  }
+  final file = File(path);
+  requireAbsoluteRegularFile(file, 'Codex Agent C SDK');""")
+    raw += """
+// Generated solely in the private capability test compilation, never packaged.
+final _capabilityFixtures = <String, _AuthenticatedRuntime>{};
+String registerCapabilityFixture(String path) {
+  final file = File(path);
+  requireAbsoluteRegularFile(file, 'Private capability fixture');
+  if (!RegExp(r'^codex_agent_dart_(leaf|conversation|agent|host)_[0-9]+\\.(dylib|dll|so)$')
+      .hasMatch(file.uri.pathSegments.last) || _capabilityFixtures.containsKey(path)) {
+    throw StateError('Unexpected private capability fixture');
+  }
+  final digest = runtimeFileSha256(file);
+  final library = DynamicLibrary.open(path);
+  RuntimeCompatibility.load().verifyRuntimeIdentity(
+      readRuntimeIdentity(library), currentClassifier(), embedded: false);
+  if (runtimeFileSha256(file) != digest) throw StateError('Private capability fixture changed');
+  _capabilityFixtures[path] = _AuthenticatedRuntime(library, digest);
+  return path;
+}
+"""
+    path.write_text(raw, encoding="utf-8")
+
+
+def project_csharp_capability_runtime(source: Path) -> dict[str, bytes]:
+    """Private interop projection: C fixture and managed projections share one image.
+
+    The caller independently authenticates the real library and signed sidecars.
+    This does not test the public loader; unchanged installed consumers do that.
+    The separate fixture-root/security runs still execute the original loader.
+    """
+    projection = "src/CodexAgent/Interop/NativeLibraryLoader.CapabilityProjection.cs"
+    path = source / projection
+    if path.exists() or path.is_symlink():
+        raise ValueError("C# capability projection collides with original sources")
+    path.write_text("""using System.Runtime.InteropServices;
+namespace CodexAgent.Interop;
+// Generated solely for this private capability test compilation, never packaged.
+internal static partial class NativeLibraryLoader
+{
+    internal static void LoadCapabilityProjection(string path)
+    {
+        lock (Gate)
+        {
+            if (loadedHandle != 0) throw new InvalidOperationException("Projection already loaded");
+            path = ValidateAbsoluteRegularPath(path, "Authenticated capability Runtime");
+            var compatibility = ReadCompatibility();
+            var expected = compatibility.Variants[RuntimeTarget].RuntimeLibrarySha256;
+            if (Digest(File.ReadAllBytes(path)) != expected)
+                throw new InvalidDataException("Capability Runtime digest differs");
+            var handle = NativeLibrary.Load(path);
+            try
+            {
+                ValidateLoadedLibrary(handle, compatibility, RuntimeTarget, true);
+                if (Digest(File.ReadAllBytes(path)) != expected)
+                    throw new InvalidDataException("Capability Runtime changed");
+                loadedHandle = handle;
+            }
+            catch { NativeLibrary.Free(handle); throw; }
+        }
+    }
+}
+""", encoding="utf-8")
+    test = "tests/CodexAgent.Tests/McpValueParity.cs"
+    path = source / test
+    raw = path.read_text(encoding="utf-8")
+    if raw.count("CodexNativeLibrary.Configure(sdkPath);") != 1:
+        raise ValueError("C# MCP producer differs from the reviewed projection")
+    path.write_text(raw.replace("CodexNativeLibrary.Configure(sdkPath);",
+                               "NativeLibraryLoader.LoadCapabilityProjection(sdkPath);"), encoding="utf-8")
+    return {name: read_regular_file_bytes(source / name, reject_symlink_parents=True) for name in (projection, test)}
+
+
+@contextmanager
+def capability_sidecars(native_library: Path, evidence: Path):
+    """Expose only the authenticated small sidecars for the private test lifetime."""
+    from ci.native_wrappers import invalidate_output
+    sidecar = native_library.with_name(native_library.name + ".evidence")
+    if sidecar.exists() or sidecar.is_symlink():
+        raise ValueError("Capability sidecar destination is already occupied")
+    inventory = regular_file_inventory(evidence)
+    publish_regular_tree(evidence, sidecar, expected_inventory=inventory)
+    try:
+        yield
+        if regular_file_inventory(sidecar) != inventory:
+            raise ValueError("Capability authorization changed during execution")
+    finally:
+        invalidate_output(sidecar)
+
+
+def project_cpp_capability_linkage(source: Path) -> dict[str, bytes]:
+    # Force the mock object into mock-only tests instead of letting the earlier
+    # shared Runtime satisfy its symbols before the static archive is extracted.
+    name = "tests/CMakeLists.txt"
+    path = source / name
+    raw = read_regular_file_bytes(path, reject_symlink_parents=True)
+    declaration = b"add_library(codex_agent_mock STATIC mock_codex_agent.cpp)"
+    if raw.count(declaration) != 1:
+        raise ValueError("C++ mock test linkage declaration changed")
+    raw = raw.replace(declaration, declaration.replace(b"STATIC", b"OBJECT"))
+    path.write_bytes(raw)
+    return {name: raw}
+
+
+def produce_authorized_native_capabilities(repository: Path, *, language: str, canonical_api: Path, c_abi_bootstrap: Path,
+        c_sdk_root: Path, native_library: Path, sdk_compatibility: Path, output: Path,
+        runtime_authorization: Path, expected_classifier: str,
+        dart_executable: str = "dart", package_config: Path | None = None, dotnet: Path | None = None) -> None:
+    """Compose the existing raw producer; no package changes or mock signatures."""
+    from .c_abi import TARGET_SPECS
+    if language not in NATIVE_BINDINGS:
+        raise ValueError("Unsupported authorized capability language")
+    directory = "tool" if language == "dart" else "tools"
+    script = repository / f"codex-agent-bindings/{language}/{directory}/produce_sdk_validation_evidence.py"
+    script_raw = read_regular_file_bytes(script, reject_symlink_parents=True)
+    spec = importlib.util.spec_from_file_location(f"{language}_capability_producer", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    dart_runner = module._resolved_runner(package_config or module.ROOT / ".dart_tool/package_config.json")[1] if language == "dart" else None
+    sdks = sdk_compatibility.parent
+    library_path = next(spec.library_path for spec in TARGET_SPECS.values()
+                        if spec.classifier == "c-abi-" + expected_classifier)
+    if (sdk_compatibility.name != COMPATIBILITY_NAME or c_sdk_root != sdks / expected_classifier
+            or native_library != c_sdk_root / library_path):
+        raise ValueError("Capability inputs differ from the exact SDK host paths")
+    _require_capability_output_separate(output, [runtime_authorization, sdks])
+    original_run = subprocess.run
+    calls = []
+    projected_sources = {}
+
+    with verified_native_consumer_authorization(runtime_authorization, sdks, expected_classifier) as evidence, \
+            capability_sidecars(native_library, evidence):
+        def run(command, **options):
+            source = options["cwd"]
+            expected = (["cargo", "test", "--locked", "--offline", "--message-format=json", "--", "--include-ignored"]
+                if language == "rust" else [dart_executable, f"--packages={source / '.dart_tool/package_config.json'}",
+                    str(dart_runner), "--reporter", "expanded", "test"] if language == "dart"
+                else [sys.executable, "-m", "unittest", "discover", "-s", str(source / "tests"), "-v"])
+            if calls or command != expected:
+                raise ValueError("Unexpected capability producer invocation")
+            calls.append(True)
+            root = source / {"rust": "native/sdk-runtime-root.pub", "python": "src/codex_agent/native/sdk-runtime-root.pub",
+                             "dart": "lib/src/native/sdk-runtime-root.pub"}[language]
+            if root.exists() or root.is_symlink():
+                raise ValueError("Capability trust root collides with original sources")
+            root.write_bytes(read_regular_file_bytes(sdks / "sdk-runtime-root.pub", reject_symlink_parents=True))
+            if language == "rust":
+                unit = source / "tests/lifecycle_unit.rs"
+                if unit.exists() or unit.is_symlink():
+                    raise ValueError("Rust capability unit projection collides with original sources")
+                unit.write_bytes(rust_lifecycle_unit_source((source / "tests/lifecycle.rs").read_bytes()))
+                library = source / "src/lib.rs"
+                library.write_bytes(library.read_bytes() +
+                    b'\n#[cfg(test)]\n#[path = "../tests/lifecycle_unit.rs"]\nmod codex_lifecycle_fixture;\n')
+            elif language == "python":
+                # The private suite includes repository packaging-control tests.
+                options["env"] = {**options["env"], "PYTHONPATH": str(repository)}
+            elif language == "dart":
+                project_dart_capability_fixtures(source)
+                projected_sources.update({name: read_regular_file_bytes(source / name, reject_symlink_parents=True)
+                    for name in ("lib/src/ffi.dart", *(f"test/{name}_parity.dart"
+                        for name in ("leaf_service", "conversation", "agent", "host")))})
+                options["env"] = {**options["env"], "CODEX_AGENT_LIBRARY": str(native_library)}
+            # Lifecycle assertions drain a process-global cleanup registry.
+            result = original_run(command[:2] + ["--lib", "--test", "enum_parity"] +
+                command[2:] + ["--test-threads=1"] if language == "rust" else command, **options)
+            # Explicit target selection excludes doctests; retain the existing
+            # compile-fail ownership proof using the SAME Cargo target cache/log.
+            if language == "rust":
+                original_run(command[:2] + ["--doc"] + command[2:] + ["--test-threads=1"], **options)
+            verify_projection(source)
+            return result
+
+        def verify_projection(source):
+            if any(read_regular_file_bytes(source / name, reject_symlink_parents=True) != raw
+                   for name, raw in projected_sources.items()):
+                raise ValueError("Capability test projection changed during execution")
+
+        def copy_csharp_sources(files, source):
+            if calls:
+                raise ValueError("C# capability producer repeated source composition")
+            module._copy_sources(files, source)
+            projected_sources.update(project_csharp_capability_runtime(source))
+            calls.append(True)
+
+        def run_csharp(command, **options):
+            verify_projection(options["cwd"])
+            module._run_logged(command, **options)
+            verify_projection(options["cwd"])
+
+        def copy_cpp_sources(source):
+            if calls:
+                raise ValueError("C++ capability producer repeated source composition")
+            module._copy_sources(source)
+            projected_sources.update(project_cpp_capability_linkage(source))
+            calls.append(True)
+
+        def run_cpp(command, **options):
+            verify_projection(options["cwd"])
+            result = original_run(command, **options)
+            verify_projection(options["cwd"])
+            return result
+
+        def retain(log, source, evidence):
+            module._retain_cargo_test_executables(log, source, evidence, lifecycle_as_unit=True)
+
+        namespace = {**vars(module), "subprocess": SimpleNamespace(run=run, STDOUT=subprocess.STDOUT,
+            CalledProcessError=subprocess.CalledProcessError)}
+        if language == "rust":
+            namespace["_retain_cargo_test_executables"] = retain
+        elif language == "csharp":
+            if dotnet is None or not dotnet.is_absolute():
+                raise ValueError("C# capability requires an explicit absolute dotnet executable")
+            namespace.update(_copy_sources=copy_csharp_sources, _run_logged=run_csharp)
+        elif language == "cpp":
+            namespace.update(_copy_sources=copy_cpp_sources, subprocess=SimpleNamespace(
+                run=run_cpp, STDOUT=subprocess.STDOUT, CalledProcessError=subprocess.CalledProcessError))
+        produce = FunctionType(module.produce.__code__, namespace, module.produce.__name__)
+        options = ({"dart_executable": dart_executable, "package_config": package_config} if language == "dart"
+                   else {"dotnet": dotnet} if language == "csharp"
+                   else {"classifier": expected_classifier} if language == "cpp" else {})
+        produce(canonical_api=canonical_api, c_abi_bootstrap=c_abi_bootstrap, c_sdk_root=c_sdk_root,
+                native_library=native_library, sdk_compatibility=sdk_compatibility, output=output, **options)
+        if calls != [True]:
+            raise ValueError("Capability producer did not execute its exact suite")
+        if read_regular_file_bytes(script, reject_symlink_parents=True) != script_raw:
+            raise ValueError("Capability producer changed during execution")
+        for name, raw in projected_sources.items():
+            retained = output / "test-projection" / name
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            with retained.open("xb") as stream:
+                stream.write(raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
+    for language in NATIVE_BINDINGS:
+        capability = commands.add_parser(f"{language}-capabilities", allow_abbrev=False)
+        for name in ("repository", "canonical-api", "c-abi-bootstrap", "c-sdk-root", "native-library",
+                     "sdk-compatibility", "output", "runtime-authorization"):
+            capability.add_argument(f"--{name}", type=Path, required=True)
+        capability.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
+        if language == "cpp":
+            capability.add_argument("--classifier", choices=NATIVE_TARGETS, required=True)
+        if language == "dart":
+            capability.add_argument("--dart-executable", default="dart")
+            capability.add_argument("--package-config", type=Path)
+        if language == "csharp":
+            capability.add_argument("--dotnet", type=Path, required=True)
+    consumer = commands.add_parser("consume-native", allow_abbrev=False)
+    for name in ("repository", "packages", "sdks", "output", "sdk-version-file", "runtime-authorization"):
+        consumer.add_argument(f"--{name}", type=Path, required=True)
+    consumer_scope = consumer.add_mutually_exclusive_group(required=True)
+    consumer_scope.add_argument("--language", choices=NATIVE_BINDINGS)
+    consumer_scope.add_argument("--plan", type=Path)
+    consumer.add_argument("--expected-classifier", choices=NATIVE_TARGETS, required=True)
+    consumer.add_argument("--offline", action="store_true")
+    consumer.add_argument("--package-negative-evidence", type=Path)
     native = commands.add_parser("verify-native", allow_abbrev=False)
     for name in ("repository", "stage", "receipt", "compatibility-request", "runtime-stages", "staged-sdks"):
         native.add_argument(f"--{name}", type=Path, required=True)
@@ -721,6 +1279,23 @@ def main(argv: list[str] | None = None) -> int:
     metadata.add_argument("--package-receipt", type=Path, required=True)
     metadata.add_argument("--component", choices=NATIVE_BINDINGS, required=True)
     args = parser.parse_args(argv)
+    if args.command in {f"{language}-capabilities" for language in NATIVE_BINDINGS}:
+        if args.command == "cpp-capabilities" and args.classifier != args.expected_classifier:
+            raise ValueError("C++ capability classifier differs from authenticated host")
+        options = ({"dart_executable": args.dart_executable, "package_config": args.package_config} if args.command == "dart-capabilities"
+                   else {"dotnet": args.dotnet} if args.command == "csharp-capabilities" else {})
+        produce_authorized_native_capabilities(args.repository, language=args.command.removesuffix("-capabilities"), canonical_api=args.canonical_api,
+            c_abi_bootstrap=args.c_abi_bootstrap, c_sdk_root=args.c_sdk_root, native_library=args.native_library,
+            sdk_compatibility=args.sdk_compatibility, output=args.output,
+            runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier, **options)
+        return 0
+    if args.command == "consume-native":
+        from ci.native_wrappers import require_sdk_version_file
+        consume_authorized_native(args.repository.resolve(), args.packages.resolve(), args.sdks,
+            args.output.absolute(), require_sdk_version_file(args.sdk_version_file.resolve()), args.language,
+            runtime_authorization=args.runtime_authorization, expected_classifier=args.expected_classifier,
+            offline=args.offline, package_negative_evidence=args.package_negative_evidence, plan=args.plan)
+        return 0
     if args.command == "native-metadata":
         sys.stdout.buffer.write(canonical_json_bytes(native_metadata_content(args.contents, args.package_receipt, args.component)))
         return 0

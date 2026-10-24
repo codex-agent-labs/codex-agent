@@ -3,6 +3,10 @@ name: Product Validation
 on:
   workflow_call:
     inputs:
+      sdkCheckpoints:
+        description: Authenticate new collector results for the next registered consumer under protected owner policy
+        type: boolean
+        default: false
       trustedWorkflowSha:
         description: Deprecated and ignored; native protected publication owns publisher and source identities
         required: false
@@ -4962,6 +4966,7 @@ jobs:
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
     outputs:
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
@@ -5009,6 +5014,7 @@ jobs:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: ios-validation
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-native-result.outputs.artifact_id }}
           artifact-sha256: ${{ needs.sdk-native-result.outputs.artifact_digest }}
@@ -5084,21 +5090,38 @@ jobs:
           validation-commit: ${{ needs.plan.outputs.validation_commit }}
           validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
+  sdk-checkpoint-9:
+    needs: [plan, sdk-collect-9]
+    if: inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-9.result == 'success'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-checkpoint: ${{ needs.sdk-collect-9.outputs.checkpoint_inputs || '{}' }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
   sdk-ios-metadata:
     name: sdk-sdk-ios-metadata-${{ matrix.target }}
-    needs: [plan, sdk-plan, sdk-ios-validation-result, sdk-ios-metadata-plan]
+    needs: [plan, sdk-plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-checkpoint-9]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-validation-result.result == 'success' && needs.sdk-plan.result == 'success' &&
       needs.sdk-ios-metadata-plan.result == 'success' &&
-      needs.sdk-ios-metadata-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-ios-metadata-plan.outputs.sdk_workers_required == 'true' &&
+      (!inputs.sdkCheckpoints || needs.sdk-checkpoint-9.result == 'skipped' ||
+       (needs.sdk-checkpoint-9.result == 'success' && needs.sdk-checkpoint-9.outputs.checkpoint != ''))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ needs.sdk-checkpoint-9.outputs.checkpoint }}
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -5109,6 +5132,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -5149,7 +5173,7 @@ jobs:
           tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-collect-10:
-    needs: [plan, sdk-plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata]
+    needs: [plan, sdk-plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-checkpoint-9]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -5162,7 +5186,9 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
     env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ needs.sdk-checkpoint-9.outputs.checkpoint }}
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -5173,6 +5199,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ needs.sdk-checkpoint-9.outputs.checkpoint != '' && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -5202,6 +5229,7 @@ jobs:
       - id: collect
         uses: ./.github/actions/collect-runtime-wave
         with:
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
           sdk-family: ios-metadata
@@ -5215,6 +5243,26 @@ jobs:
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '10'
           tree: ${{ needs.plan.outputs.validation_tree }}
+
+
+  sdk-checkpoint-10:
+    needs: [plan, sdk-collect-10, sdk-checkpoint-9]
+    if: >-
+      always() && inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-10.result == 'success' &&
+      (needs.sdk-checkpoint-9.result == 'skipped' ||
+       (needs.sdk-checkpoint-9.result == 'success' && needs.sdk-checkpoint-9.outputs.checkpoint != ''))
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-checkpoint: ${{ needs.sdk-collect-10.outputs.checkpoint_inputs || '{}' }}
+      sdk-preceding-checkpoint: ${{ needs.sdk-checkpoint-9.outputs.checkpoint }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   sdk-ios-metadata-result:
     needs: [plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-collect-10]
@@ -5250,19 +5298,28 @@ jobs:
           PY
 
   sdk-core-binary-wave:
-    needs: [plan, sdk-plan, sdk-ios-metadata-result]
+    needs: [plan, sdk-plan, sdk-ios-metadata-result, sdk-checkpoint-10]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
       needs.sdk-ios-metadata-result.result == 'success' &&
-      needs.sdk-ios-metadata-result.outputs.artifact_id != ''
+      needs.sdk-ios-metadata-result.outputs.artifact_id != '' &&
+      (!inputs.sdkCheckpoints || needs.sdk-checkpoint-10.result == 'skipped' ||
+       (needs.sdk-checkpoint-10.result == 'success' && needs.sdk-checkpoint-10.outputs.checkpoint != ''))
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/sdk-core-binary-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       iosMetadataResult: ${{ toJSON(needs.sdk-ios-metadata-result) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      sdkCheckpoint: ${{ needs.sdk-checkpoint-10.outputs.checkpoint }}
+      sdkCheckpoints: ${{ inputs.sdkCheckpoints }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 

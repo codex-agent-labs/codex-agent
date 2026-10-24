@@ -6,7 +6,7 @@ import stat
 import tempfile
 
 from .inventory import (
-    git_file_inventory, git_regular_blob_bytes, publish_regular_tree,
+    _is_windows, git_file_inventory, git_regular_blob_bytes, publish_regular_tree,
     regular_file_inventory, require_regular_directory, tree_entries,
 )
 from .sdk_apple_package_source import _immutable_tree
@@ -27,7 +27,10 @@ _FILES = (
 
 
 def capture_facade_validation_sources(repository: Path, revision: str, output: Path) -> dict:
-    """Preserve selected regular Git blobs and modes without reading the checkout.
+    """Preserve regular Git blobs and POSIX modes without reading the checkout.
+
+    Windows retains the exact Git tree/blobs through safe snapshot publication;
+    its fixed Java/Gradle-JAR launcher does not use POSIX executable modes.
 
     The caller MUST independently authenticate the original validation receipt
     and bind revision to its exact producer commit/tree. Accepting a caller's Git
@@ -65,7 +68,7 @@ def capture_facade_validation_sources(repository: Path, revision: str, output: P
     if any(record["bytes"] == 0 for record in inventory):
         raise ValueError("Facade source capture contains an empty blob")
     modes = {record["relativePath"]: 0o755 if entries[record["relativePath"]][0] == "100755" else 0o644
-             for record in inventory}
+             for record in inventory} if not _is_windows() else None
     with tempfile.TemporaryDirectory(prefix="sdk-facade-source-") as temporary:
         captured = Path(temporary).resolve() / "source"
         captured.mkdir()
@@ -75,11 +78,12 @@ def capture_facade_validation_sources(repository: Path, revision: str, output: P
             destination = captured / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(contents)
-            os.chmod(destination, modes[relative])
+            if modes is not None:
+                os.chmod(destination, modes[relative])
         if regular_file_inventory(captured) != inventory or git_file_inventory(repository, tree, paths) != inventory:
             raise ValueError("Facade immutable source bytes changed during capture")
         publish_regular_tree(captured, output, expected_inventory=inventory, expected_modes=modes)
-    if regular_file_inventory(output) != inventory or any(
+    if regular_file_inventory(output) != inventory or modes is not None and any(
         stat.S_IMODE((output / relative).lstat().st_mode) != mode for relative, mode in modes.items()
     ):
         raise ValueError("Facade captured source bytes changed during publication")

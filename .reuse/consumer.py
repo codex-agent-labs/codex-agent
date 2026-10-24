@@ -409,14 +409,47 @@ def retained_sdk_binding_current(root, document):
                    if phase.component not in {"sdk-android", *NATIVE_BINDINGS})
 
 
-def completed_environment(root, work, value):
+def checkpoint_owner_policy(raw, value, document):
+    """Materialize the exact independently resolved publisher, never a caller SHA."""
+    from products.inventory import load_canonical_json_bytes, require_exact_keys
+    from completed_sdk_reuse import validate_checkpoint_owner
+    if type(raw) is not bytes or len(raw) > 16 * 1024:
+        raise ValueError("Protected checkpoint descriptor exceeds its bound")
+    descriptor = require_exact_keys(load_canonical_json_bytes(raw),
+        {"schemaVersion", "kind", "parent", "parentProofSha256", "bootstrap", "bootstrapProofSha256", "collectors"},
+        "Protected checkpoint owner descriptor")
+    if descriptor["kind"] != "sdk-checkpoint-owner-authorization":
+        raise ValueError("Unsupported protected checkpoint owner descriptor")
+    publisher = authority.commit(value["authorityCommit"])
+    policy = validate_checkpoint_owner({**descriptor, "kind": "sdk-checkpoint-owner",
+        "issuerCommit": publisher, "collectorWorkflowSha": publisher})
+    if (policy["bootstrap"] != document["policy"]["sdkCompletion"]
+            or any(pins[field] not in value["approvedVerifiers"]
+                   for pins in (policy["parent"], policy["bootstrap"])
+                   for field in ("signerCommit", "sourceCommit"))):
+        raise ValueError("Checkpoint owner differs from independently approved native pins")
+    return policy
+
+
+def completed_environment(root, work, value, *, checkpoint=False):
     from products.inventory import canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes
     raw = authority.contents(".reuse/completed-reuse.json", value["authorityCommit"])
     document = completed_descriptor(raw, value)
+    if type(checkpoint) is not bool:
+        raise ValueError("Checkpoint provisioning requires an explicit boolean")
+    checkpoint_raw = None
+    if checkpoint:
+        checkpoint_raw = authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"])
+        owner_policy = checkpoint_owner_policy(checkpoint_raw, value, document)
     acquired = [history(root, record) for record in document["gitHistory"]]
     spec, _ = completed_sdk_spec(root, document, value)
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
         raise ValueError("Approved SDK source pin differs from the native issuer's fixed source")
+    # The optional descriptor is separate; legacy completed_descriptor stays exact.
+    if checkpoint:
+        owner_path = work / "checkpoint-owner-policy.json"
+        with owner_path.open("xb") as output:
+            output.write(canonical_json_bytes(owner_policy))
     # This only distributes caller-owned pins. Each actual CLI independently
     # acquires native proof and checks current inputs before any completed reuse.
     paths = {}
@@ -428,12 +461,15 @@ def completed_environment(root, work, value):
         paths[field] = str(path)
     if authority.contents(".reuse/completed-reuse.json", value["authorityCommit"]) != raw:
         raise ValueError("Approved completed reuse descriptor changed during provisioning")
+    if checkpoint and authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"]) != checkpoint_raw:
+        raise ValueError("Protected checkpoint descriptor changed during provisioning")
     result = {"kind": "completed-reuse-policy", "authorityCommit": value["authorityCommit"],
               "approvedConsumerCommit": value["activeVerifier"],
               "descriptorSha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
               "originalGit": acquired, "productArtifactDownloads": 0,
               "nativeAuthentication": "required by each explicit consumer"}
-    return result, {"CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
+    return result, {**({"CODEX_AGENT_CHECKPOINT_OWNER_POLICY": str(owner_path)} if checkpoint else {}),
+                    "CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
                     "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": (
                         paths["retainedSdkInputsSource"] if retained_sdk_binding_current(root, document) else "")}
 
@@ -472,6 +508,7 @@ def main():
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--expected-authority-commit")
     parser.add_argument("--artifact-id", type=int)
+    parser.add_argument("--checkpoint-owner", action="store_true")
     args = parser.parse_args()
     root, work = args.repository_root.resolve(strict=True), args.work.absolute()
     work.mkdir(parents=True, exist_ok=True)
@@ -479,6 +516,8 @@ def main():
             for name in ("REQUESTED_ARTIFACT_SHA", "REQUESTED_RUN", "REQUESTED_ATTEMPT",
                          "REQUESTED_ISSUER", "REQUESTED_SOURCE"))):
         raise ValueError("Combined provisioning only accepts native completion pins")
+    if args.checkpoint_owner and args.operation != "provision":
+        raise ValueError("Checkpoint owner policy requires the existing combined provisioning pass")
     value = approved(args.expected_authority_commit)
     os.chdir(root)  # Existing production commands use the consumer checkout as cwd.
     environment = None
@@ -486,7 +525,8 @@ def main():
         result = snapshot(root, value, work)
         if args.operation == "provision":
             snapshot_result = result
-            result, environment = completed_environment(root, work, value)
+            result, environment = completed_environment(root, work, value,
+                **({"checkpoint": True} if args.checkpoint_owner else {}))
             authority.protection(authority.api(f"branches/{authority.BRANCH}/protection"))
             if authority.api(f"branches/{authority.BRANCH}")["commit"]["sha"] != value["authorityCommit"]:
                 raise ValueError("Approval reference changed during provisioning")

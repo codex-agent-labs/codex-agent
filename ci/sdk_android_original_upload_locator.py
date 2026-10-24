@@ -122,6 +122,15 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
                 or plan["event"] not in {"pull_request", "merge_group"}):
             raise ValueError("Android original upload lookup requires an authorized PR or merge-group plan")
         plan_value = canonical_json_bytes(plan)
+        from sdk_campaign_original_locator import retained_core_origin
+        origin = retained_core_origin(phase, receipt["buildKey"],
+            products._consumer(plan, environment)["producer"], component="sdk-android", target="android")
+        retained = origin if origin is not None and producer == origin["producer"] else None
+        if retained is not None:
+            if (expected_receipt_sha256 != retained["receipt_sha256"]
+                    or (workflow_path, job) != (retained["workflow_path"], retained["job_name"])):
+                raise ValueError("Retained Android lookup differs from its reviewed receipt or route")
+            trusted_workflow_sha = retained["workflow_sha"]
 
         def unchanged():
             require_no_signing_secret(environment)
@@ -129,15 +138,18 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
                     or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != receipt_bytes
                     or read_regular_file_bytes(copied, max_bytes=_LIMIT) != plan_bytes
                     or canonical_json_bytes(plan) != plan_value
-                    or canonical_json_bytes(receipt) != receipt_bytes):
+                    or canonical_json_bytes(receipt) != receipt_bytes
+                    or retained is not None and retained != retained_core_origin(phase, receipt["buildKey"],
+                        products._consumer(plan, environment)["producer"], component="sdk-android", target="android")):
                 raise ValueError("Android original plan or selected receipt changed during lookup")
 
         unchanged()
         observation = products._observe_ci_producer_jobs(
             {family: producer}, jobs_by_phase={family: job},
+            build_keys_by_phase={family: receipt["buildKey"]},
             trusted_workflows_by_phase={family: {
                 "path": workflow_path, "sha": trusted_workflow_sha}}, token=token)[0]
-        jobs = [value for value in observation["jobs"] if value.get("name") == job]
+        jobs = products._matching_ci_jobs(observation["jobs"], job, expected_build_key=receipt["buildKey"])
         if len(jobs) != 1:
             raise ValueError("Android original worker job is missing or ambiguous")
         labels = jobs[0].get("labels")
@@ -145,6 +157,8 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
                 or runner not in labels):
             raise ValueError("Android original worker runner route differs from its selected receipt")
         require_integer(jobs[0].get("runner_id"), "Android original worker runner ID", 1)
+        if retained is not None and jobs[0].get("id") != retained["job_id"]:
+            raise ValueError("Retained Android lookup differs from its reviewed original job")
         unchanged()
         api = f"https://api.github.com/repos/{_REPOSITORY}/actions"
         listed = products.paginated_items(
@@ -155,6 +169,8 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
             raise ValueError("Android original worker upload is missing or ambiguous")
         artifact_id = require_integer(selected[0].get("id"), "Android original upload ID", 1)
         digest = require_sha256(selected[0].get("digest"), "Android original upload digest")
+        if retained is not None and (artifact_id, digest) != (retained["artifact_id"], retained["artifact_sha256"]):
+            raise ValueError("Retained Android lookup differs from its reviewed original upload")
         url = f"{api}/artifacts/{artifact_id}"
         detail = products.api_json(url, token)
         if (type(detail) is not dict
@@ -169,6 +185,6 @@ def _locate_sdk_android_upload(plan_path, receipt_path, *, phase,
                 or require_integer(detail.get("size_in_bytes"), "Android original upload bytes", 1)
                    > products._CATALOG_LIMIT):
             raise ValueError("Android original upload detail differs from official listing or run")
-        products._require_artifact_job_window(observation, job, detail)
+        products._require_artifact_job_window(observation, jobs[0]["name"], detail)
         unchanged()
         return {"artifact_id": artifact_id, "artifact_sha256": digest}

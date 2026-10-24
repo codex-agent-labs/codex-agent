@@ -37,7 +37,7 @@ def attest_prepared_runtime_ci(
     expected_build_key, artifact_id, artifact_sha256, state_wave,
     preparation_artifact_id, preparation_artifact_sha256,
     trusted_source_sha, trusted_workflow_sha, transport_producer,
-    event_payload, environment, token, variant_handoffs=None,
+    event_payload, environment, token, variant_handoffs=None, completed_frozen=None,
 ):
     """Bind two exact uploads before invoking build-free signing-only leaves."""
     if target not in (*NATIVE_TARGETS, "aggregate"):
@@ -51,6 +51,7 @@ def attest_prepared_runtime_ci(
     if type(token) is not str or not token:
         raise ValueError("Prepared Runtime caller requires an observation token")
     handoffs = {} if variant_handoffs is None else dict(variant_handoffs)
+    semantic = {} if completed_frozen is None else {"completed_frozen": completed_frozen}
     if target != "aggregate" and handoffs:
         raise ValueError("Native prepared signing does not accept variant overrides")
     trusted, producer, _, _, _ = verify_product_release_context(
@@ -83,7 +84,7 @@ def attest_prepared_runtime_ci(
         capture_runtime_resume_upload(captured_plan, original_capture,
             artifact_id=artifact_id, artifact_sha256=artifact_sha256, state_wave=state_wave,
             trusted_workflow_sha=trusted_workflow_sha, repository_root=candidate,
-            environ=environment, token=token)
+            environ=environment, token=token, **semantic)
         prepared = prepared_capture / "original"
         selected = prepared / "selected-inputs"
         selection_bytes = read_regular_file_bytes(selected / "selection.json",
@@ -141,7 +142,8 @@ def attest_prepared_runtime_ci(
         originals_root = private / "authenticated-originals"
         originals = restore_prepared_runtime_originals(plan, original, originals_root,
             producer=producer, target=target, expected_build_key=expected_build_key,
-            selection=selection, state_wave=state_wave, repository_root=candidate)
+            selection=selection, state_wave=state_wave, repository_root=candidate,
+            **({"selected_root": selected, **semantic} if semantic else {}))
         baselines[originals_root] = regular_file_inventory(originals_root, allow_empty=True)
         context = dict(trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
             transport_producer=producer, event_payload=event_payload, environment=environment, token=token)
@@ -157,7 +159,7 @@ def attest_prepared_runtime_ci(
             unchanged()
             result = _attest_selected_runtime_aggregate(trusted, result_path,
                 selected_root=selected, selection=selection, expected_build_key=expected_build_key,
-                variant_handoffs=handoffs, release_handoff=release, **context)
+                variant_handoffs=handoffs, release_handoff=release, **context, **semantic)
         else:
             arguments = verify_native_prepared_selection(selected, selection, producer=producer,
                 target=target, expected_build_key=expected_build_key, originals=originals)

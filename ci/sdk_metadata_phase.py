@@ -36,6 +36,7 @@ def execute(
     trust_domain: str, repository_root: Path, destination: Path,
     predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
     compatibility_request: Path, runtime_stages: Path, staged_sdks: Path,
+    runtime_authorizations: Mapping[str, Path],
     sdk_validation_projections: tuple[VerifiedSdkValidationProjection, ...],
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, required_trust_domain: str, environ: Mapping[str, str],
@@ -56,6 +57,8 @@ def execute(
     require_sha256(plan["buildKey"], "Elected metadata build key")
     validate_producer(producer, "Elected metadata producer")
     require_semver(sdk_version, "Elected SDK version")
+    if set(runtime_authorizations) != set(NATIVE_TARGETS):
+        raise ValueError("Native metadata requires exactly five original host authorizations")
     if trust_domain not in {"development", "release"}:
         raise ValueError("Invalid elected SDK trust domain")
     root = Path(repository_root).resolve(strict=True)
@@ -66,12 +69,17 @@ def execute(
     request = Path(compatibility_request)
     request_bytes = read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True)
     request_inventory = _request_inventory(request)
-    trees = {"runtime": Path(runtime_stages), "sdks": Path(staged_sdks)}
+    trees = {"runtime": Path(runtime_stages), "sdks": Path(staged_sdks),
+             **{f"receipts/runtime-authorization/{target}": Path(path)
+                for target, path in runtime_authorizations.items()}}
     receipts, raw = {}, {}
     identities = [("package", "desktop"), *(("validation", target) for target in sorted(NATIVE_TARGETS))]
+    if component == "csharp":
+        identities.append(("binary", "desktop"))
     for phase, target in identities:
         original = predecessor("sdk", component, phase, target)
-        name = "package" if phase == "package" else f"validation/{target}"
+        name = ("csharp-binary/phase-receipt" if phase == "binary" else
+                "package" if phase == "package" else f"validation/{target}")
         receipt_path = Path(original["receiptPath"])
         contents = read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True)
         receipt = validate_phase_receipt(load_canonical_json_bytes(contents))
@@ -82,7 +90,7 @@ def execute(
         manifest = verify_output_manifest_identity(original_stage, "sdk", component, phase, target, sdk_version)
         if manifest["outputs"] != receipt["outputs"]:
             raise ValueError("Native SDK predecessor stage differs from its original receipt")
-        trees[name] = original_stage
+        trees["receipts/csharp-binary/stage" if phase == "binary" else name] = original_stage
         receipts[name] = receipt_path
         raw[name] = contents
     original_inventory = {name: _inventory(path) for name, path in trees.items()}
@@ -91,7 +99,7 @@ def execute(
               *(Path(path) for path in (tooling_keyring, tooling_keys_directory) if path is not None)]
     _require_capability_output_separate(destination, [stage, *inputs])
     _require_capability_output_separate(stage, inputs)
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
     _prepare_destination(stage, root).rmdir()
     destination = _prepare_destination(destination, root)
     captured = destination / "inputs"
@@ -135,6 +143,8 @@ def execute(
     if stage.exists() or stage.is_symlink():
         raise ValueError("Native SDK product stage appeared before execution")
     command = _runtime_worker_command(wrapper, properties, environment, build_directory=".")
+    # Same reviewed packaged-Python closure as signed tooling, not checkout fallback.
+    command += ["--init-script", str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle")]
     started = time.monotonic_ns()
     with (destination / "gradle.log").open("xb") as log:
         process = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)

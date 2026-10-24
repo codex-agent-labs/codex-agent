@@ -224,7 +224,7 @@ def execute(
     for output in owned_directories:
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)
-    environment, wrapper = _runtime_worker_environment(root, current_producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, current_producer, destination, environ, build_directory=".")
 
     def unchanged() -> None:
         _runtime_worker_checkout(root, current_producer)

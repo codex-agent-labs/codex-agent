@@ -65,7 +65,7 @@ runs:
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
       run: |
-        python3 - <<'PY'
+        python3 -B - <<'PY'
         import json, os, re
         from pathlib import Path
         from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes
@@ -90,9 +90,13 @@ runs:
         PY
     - uses: ./.github/actions/setup-kmp
       with:
-        cache-read-only: 'true'
+        cache-read-only: 'false'
         product-worker: 'true'
         xcode-fingerprint: auto
+    - uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+      with:
+        toolchain: '1.95.0'
+        components: rust-src
     - name: Execute exact iOS SDK binary within verified original input lifetimes
       shell: bash
       env:
@@ -115,6 +119,8 @@ runs:
         tooling=()
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow ios-binary \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --destination "$GITHUB_WORKSPACE/build/sdk-ios-worker" \
@@ -125,7 +131,7 @@ runs:
           --rust-device-artifact-id "$RUST_DEVICE_ID" \
           --rust-device-artifact-sha256 "$RUST_DEVICE_SHA256" \
           --rust-simulator-artifact-id "$RUST_SIMULATOR_ID" \
-          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256" ${tooling[@]+"${tooling[@]}"}
+          --rust-simulator-artifact-sha256 "$RUST_SIMULATOR_SHA256" ${tooling[@]+"${tooling[@]}"} ${reuse[@]+"${reuse[@]}"}
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

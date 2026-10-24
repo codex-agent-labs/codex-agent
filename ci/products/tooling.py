@@ -8,16 +8,19 @@ import tempfile
 import zipfile
 
 if __package__ == "products":  # Script entry points in ci/ use this namespace.
+    from reuse_qualification import read_blobs
     from impact import effective_pathspecs
     from receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 else:
+    from ..reuse_qualification import read_blobs
     from ..impact import effective_pathspecs
     from ..receipt import INPUT_NAMES, parse_validation_actions, validate_receipt
 from .inventory import (
     git_inventory, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes, publish_regular_tree,
     read_regular_file_bytes, regular_file_inventory, require_exact_keys, require_integer,
-    require_relative_path, require_sha256, run_git, sha256_bytes, snapshot_regular_tree, write_canonical_json,
+    require_relative_path, require_sha256, run_git, sha256_bytes, snapshot_regular_tree, tree_entries, write_canonical_json,
 )
+from .restore import memoized_file_inventory as regular_file_inventory, verification_session
 from .receipt import validate_producer
 from .signatures import (
     load_keyring, public_key_for_metadata, sign_manifest, validate_signing_metadata,
@@ -32,7 +35,9 @@ _LIMIT = 16 * 1024 * 1024
 _COMPILER_INPUTS = ("gradle/build-logic/src/main/**", "gradle/build-logic/build.gradle.kts",
                     "gradle/build-logic/settings.gradle.kts", "gradle/build-logic/gradle.properties",
                     "gradle/build-logic/gradle.lockfile", "gradle/libs.versions.toml",
-                    "gradle/wrapper/gradle-wrapper.properties")
+                    "gradle/wrapper/gradle-wrapper.properties",
+                    ".github/actions/run-ci-lane/release_tooling.init.gradle",
+                    ".github/actions/run-ci-lane/release_tooling_classes.json")
 
 
 def _json(path):
@@ -146,7 +151,8 @@ def _verify_capture(root: Path, repository: Path, public_key: Path, required_tru
     return original / JAR if schema == 2 else original / "lane" / JAR
 
 
-def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision: str) -> None:
+def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision: str, *,
+                           use: str = "full") -> None:
     """Compare actual executable inputs, not run/commit identity or unrelated CI."""
     if run_git(repository, "rev-parse", f"{revision}^{{commit}}").strip() != revision:
         raise ValueError("Tooling policy revision must be an exact Git commit")
@@ -177,11 +183,42 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
                 resources[name.removeprefix("python/")] = archive.read(entry)
     if not resources or "ci/products/sdk_package.py" not in resources:
         raise ValueError("Authenticated tooling lacks its packaged native verifier")
+    entries = dict(tree_entries(repository, revision))
+    class_policy = ".github/actions/run-ci-lane/release_tooling_classes.json"
+    if class_policy not in entries and use == "javascript-validation":
+        # Original JS validators predate the Apple class policy. This explicit
+        # consumer scope cannot admit Apple execution or override a present
+        # policy. Signatures, original compiler closure and every resource still
+        # match the exact caller-selected Git revision above/below.
+        required_classes = [
+            "CrossLanguageJavaScriptBindingEvidenceKt",
+            "CrossLanguageJavaScriptMetadataEvidenceKt",
+            "CrossLanguageJavaScriptStagedMetadataKt",
+            "ReleaseToolingCliKt",
+        ]
+    else:
+        required_classes = load_canonical_json_bytes(git_regular_blob_bytes(
+            repository, revision, class_policy, max_bytes=16 * 1024))
+    if (type(required_classes) is not list or not required_classes
+            or any(type(name) is not str or not name.isascii() or not name.isalnum() for name in required_classes)
+            or required_classes != sorted(set(required_classes))):
+        raise ValueError("Tooling class policy is invalid")
+    if any(name + '.class' not in names for name in required_classes):
+        raise ValueError("Authenticated tooling lacks required Apple execution classes"
+                         if class_policy in entries else "Authenticated tooling lacks required JavaScript replay classes")
     # The authenticated build recipe and all Kotlin source above define this
     # resource allow-list. Verify every actual embedded resource against Git;
     # do not maintain a second parser/list of Kotlin's packaging declarations.
+    sources = {}
+    for path in resources:
+        fields = entries.get(path, "").split("\t", 3)
+        if len(fields) != 4 or fields[0] not in {"100644", "100755"} or fields[1] != "blob" or fields[3] != path:
+            raise ValueError(f"Authenticated tooling resource lacks a regular Git blob: {path}")
+        sources[path] = fields[2]
+    blobs = read_blobs(repository, sources.values(), max_bytes=64 * 1024 * 1024,
+                       total_bytes=512 * 1024 * 1024)
     for path, data in resources.items():
-        if data != git_regular_blob_bytes(repository, revision, path, max_bytes=64 * 1024 * 1024):
+        if data != blobs[sources[path]]:
             raise ValueError(f"Authenticated tooling resource differs from applicable policy: {path}")
 
 
@@ -189,15 +226,17 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
 def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path, *,
                              required_trust_domain: str, keyring: Path | None = None,
                              keys_directory: Path | None = None, policy_revision: str | None = None,
-                             ensure_original_source=None):
+                             ensure_original_source=None, use: str = "full"):
     """Yield only an authenticated private JAR, invalid after this context exits.
 
     The repository is the invoking trusted policy/Git context, never selected by
     placement of an imported plan. This does not grant SDK/host receipt admission.
     """
+    if use not in {"full", "javascript-validation"} or (use != "full" and policy_revision is None):
+        raise ValueError("Tooling consumer scope requires an explicit supported Git policy")
     evidence, repository, public_key = Path(evidence), Path(repository), Path(public_key)
-    before = regular_file_inventory(evidence, allow_empty=True)
-    with tempfile.TemporaryDirectory(prefix="verified-tooling-") as temporary:
+    with verification_session(), tempfile.TemporaryDirectory(prefix="verified-tooling-") as temporary:
+        before = regular_file_inventory(evidence, allow_empty=True)
         root = Path(temporary).resolve()
         captured = root / "evidence"
         snapshot_regular_tree(evidence, captured, allow_empty=True)
@@ -206,7 +245,7 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
         jar = _verify_capture(captured, repository, key, required_trust_domain, keyring, keys_directory,
                               ensure_original_source)
         if policy_revision is not None:
-            _verify_tooling_policy(jar, captured, repository, policy_revision)
+            _verify_tooling_policy(jar, captured, repository, policy_revision, use=use)
         checked = regular_file_inventory(captured, allow_empty=True)
         yield jar
         if checked != regular_file_inventory(captured, allow_empty=True) or \

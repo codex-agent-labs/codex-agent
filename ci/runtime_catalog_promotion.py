@@ -25,7 +25,8 @@ from products.inventory import (
     write_canonical_json,
 )
 from products.registry import PhaseInstanceId
-from products.restore import object_relative_path, verify_phase_shard
+from products.restore import object_relative_path, verify_phase_shard, verify_object
+from runtime_reference_archive import open_reference_archive, copy_reference_member
 from products.runtime_aggregate_handoff import verified_runtime_aggregate_handoff
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_protected_runtime import _original_carrier
@@ -52,6 +53,52 @@ def _json(path):
     if not isinstance(value, dict):
         raise ValueError("Promotion original control must be an object")
     return value
+
+
+def _verify_metadata_object(archive, verified, key, digest, expected_object):
+    value = verify_object(archive, build_key=key, receipt_sha256=digest, object_sha256=expected_object)
+    if value["receiptBytes"] != verified["receiptBytes"][_METADATA]:
+        raise ValueError("Original aggregate object differs from the signed receipt")
+
+
+def _capture_metadata_object(verified, output, key, digest, expected_object, token):
+    """Consume one exact original object; never expand compact carriers back to raw archives."""
+    relative = object_relative_path(key, digest)
+    evidence = verified["directory"] / "original-evidence"
+    shard = evidence / "phases/runtime-aggregate-metadata-aggregate/original/shard"
+    if not (evidence / "transport/original-ci-phases.sig").exists():
+        value = verify_phase_shard(shard, _METADATA)
+        if value["receiptBytes"] != verified["receiptBytes"][_METADATA]:
+            raise ValueError("Original aggregate object differs from the signed receipt")
+        output.parent.mkdir(parents=True)
+        output.write_bytes(read_regular_file_bytes(shard / relative))
+    else:
+        # The full handoff reader authenticated this historical proof. Fresh
+        # job/workflow/upload observations authenticate retrieval, not new production.
+        proof = _json(evidence / "transport/original-ci-phases.json")
+        name = "runtime-aggregate-metadata-aggregate"
+        original = proof["artifacts"][name]
+        producer = verified["receipts"][_METADATA]["producer"]
+        observed = next(row for row in proof["observed"] if
+            (row["run"]["id"], row["run"]["run_attempt"]) ==
+            (producer["runId"], producer["runAttempt"]))
+        workflow = transport._runtime_prior_workflow_sha(observed["run"],
+            _json(verified["directory"] / "caller.json")["trustedWorkflowSha"])
+        if workflow is None:
+            raise ValueError("Aggregate metadata lacks a reviewed original workflow")
+        observed, = transport._observe_ci_producer_jobs({"metadata": producer},
+            jobs_by_phase={"metadata": f"product-validation / runtime-{name}"},
+            trusted_workflow_sha=workflow, token=token)
+        artifact = transport._contract_ci_upload_metadata(original["id"], original["digest"],
+            original["name"], producer, observed["run"], token)
+        if artifact != original:
+            raise ValueError("Aggregate metadata upload differs from its signed original identity")
+        transport._require_artifact_job_window(observed, f"product-validation / runtime-{name}", artifact)
+        with open_reference_archive(artifact, token) as (archive, _):
+            member = "shard/" + relative
+            copy_reference_member(archive, member, output,
+                {"bytes": archive.getinfo(member).file_size, "sha256": expected_object})
+    _verify_metadata_object(output, verified, key, digest, expected_object)
 
 
 def _checkout(root, commit):
@@ -207,16 +254,9 @@ def capture_promotable_runtime_aggregate_catalog(repository_root, candidate_root
                 raise ValueError("Original aggregate attestation/signature differs from S1048 selection")
             if sha256_bytes(verified["receiptBytes"][_METADATA]) != digest or verified["receipts"][_METADATA]["buildKey"] != key:
                 raise ValueError("Signed aggregate differs from the original selected receipt/key")
-            shard = verified["directory"] / "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/shard"
-            value = verify_phase_shard(shard, _METADATA)
-            if value["receiptBytes"] != verified["receiptBytes"][_METADATA]:
-                raise ValueError("Original aggregate object differs from the signed receipt")
             relative = object_relative_path(key, digest)
-            if sha256_file(shard / relative) != selected_object:
-                raise ValueError("Original aggregate object differs from S1048 selection")
             output = unsigned / relative
-            output.parent.mkdir(parents=True)
-            output.write_bytes(read_regular_file_bytes(shard / relative))
+            _capture_metadata_object(verified, output, key, digest, selected_object, token)
             release = unsigned / "runtime-aggregate-release-evidence"
             handoff = f"handoffs/{digest.removeprefix('sha256:')}"
             snapshot_regular_tree(verified["directory"], release / handoff, allow_empty=True)
@@ -412,12 +452,8 @@ def sign_promoted_runtime_aggregate_catalog(repository_root, candidate_root, cap
                                               / expected_receipt_sha256.removeprefix("sha256:"),
                                               allow_empty=True) != verified["inventory"]):
                 raise ValueError("Runtime capture carrier differs from approved signed original")
-            shard = verified["directory"] / "original-evidence/phases/runtime-aggregate-metadata-aggregate/original/shard"
-            if (verify_phase_shard(shard, _METADATA)["receiptBytes"] !=
-                    verified["receiptBytes"][_METADATA]
-                    or sha256_file(shard / relative) != expected_object_sha256
-                    or sha256_file(captured / "unsigned" / relative) != expected_object_sha256):
-                raise ValueError("Runtime capture object differs from approved original")
+            _verify_metadata_object(captured / "unsigned" / relative, verified,
+                                    expected_build_key, expected_receipt_sha256, expected_object_sha256)
         if regular_file_inventory(captured, allow_empty=True) != original_files or \
                 regular_file_inventory(capture_root, allow_empty=True) != original_files:
             raise ValueError("Runtime capture changed before signing")

@@ -21,7 +21,8 @@ if __package__:
 import product_reuse
 from products.inventory import (git_regular_blob_bytes,
     read_regular_file_bytes, require_regular_directory, require_semver,
-    require_sha256, sha256_file)
+    require_sha256, sha256_file, _open_regular_file, _stat_identity, _is_windows,
+    _is_reparse_point)
 from products.signing_isolation import require_no_signing_secret
 from products.toolchain import _properties
 
@@ -48,8 +49,88 @@ def _open_archive(url):
     return build_opener(_GithubRedirect()).open(Request(url), timeout=30)
 
 
+def _copy_archive(source, destination, expected, limit):
+    descriptor, before = _open_regular_file(source, "Pinned archive cache", reject_symlink_parents=True)
+    digest, count = hashlib.sha256(), 0
+    with os.fdopen(descriptor, "rb") as source, destination.open("xb") as output:
+        while chunk := source.read(1024 * 1024):
+            count += len(chunk)
+            if count > limit:
+                raise ValueError("Pinned archive cache exceeds the size limit")
+            output.write(chunk)
+            digest.update(chunk)
+        if _stat_identity(os.fstat(source.fileno())) != _stat_identity(before):
+            raise ValueError("Pinned archive cache changed during copy")
+    if not count or "sha256:" + digest.hexdigest() != expected:
+        raise ValueError("Pinned archive cache differs from the Git pin")
+
+
+def _fetch_pinned_archive(url, archive, expected, limit, opener, validate_url):
+    """Cache untrusted bytes by digest; always copy and hash into private custody."""
+    cache = os.environ.get("CODEX_SDK_ARCHIVE_CACHE")
+    cached = None
+    if cache:
+        cache = Path(cache)
+        if not cache.is_absolute() or cache.parent.resolve(strict=True) != cache.parent:
+            raise ValueError("Pinned archive cache must have normalized absolute ancestry")
+        cache.mkdir(exist_ok=True)
+        require_regular_directory(cache, "Pinned archive cache")
+        cached = cache / require_sha256(expected, "Pinned archive digest").split(":")[1]
+        if cached.exists() or cached.is_symlink():
+            _copy_archive(cached, archive, expected, limit)
+            return
+    digest, count = hashlib.sha256(), 0
+    with opener(url) as response:
+        if response.status != 200:
+            raise ValueError("Pinned archive download did not return HTTP 200")
+        validate_url(response.geturl())
+        with archive.open("xb") as output:
+            while chunk := response.read(1024 * 1024):
+                count += len(chunk)
+                if count > limit:
+                    raise ValueError("Pinned archive exceeds the size limit")
+                output.write(chunk)
+                digest.update(chunk)
+    if not count or "sha256:" + digest.hexdigest() != expected:
+        raise ValueError("Downloaded archive differs from the Git pin")
+    if cached is not None:
+        from products.restore import _publish_no_replace
+        if not _publish_no_replace(archive, cached):
+            if sha256_file(cached, reject_symlink_parents=True) != expected:
+                raise ValueError("Concurrent archive cache differs from the Git pin")
+
+
 def _publish_archive(archive, destination):
     """Link one checked staging inode into a fresh name, removing only our inode on failure."""
+    if _is_windows():
+        from products.index import _held_output_parent, _require_parent_identity
+        with (_held_output_parent(archive.parent) as (source_fd, source_parent),
+              _held_output_parent(destination.parent) as (destination_fd, destination_parent)):
+            source = archive.lstat()
+            if not stat.S_ISREG(source.st_mode) or _is_reparse_point(source):
+                raise ValueError("Android Codex staging archive is not a regular file")
+            _require_parent_identity(source_fd, source_parent)
+            _require_parent_identity(destination_fd, destination_parent)
+            try:
+                # Existing Windows handles deny parent rename/delete; link is no-replace.
+                os.link(archive, destination, follow_symlinks=False)
+                _require_parent_identity(source_fd, source_parent)
+                _require_parent_identity(destination_fd, destination_parent)
+                published = destination.lstat()
+                if (not stat.S_ISREG(published.st_mode) or _is_reparse_point(published) or
+                        (published.st_dev, published.st_ino) != (source.st_dev, source.st_ino)):
+                    raise ValueError("Android archive destination changed during publication")
+            except BaseException:
+                _require_parent_identity(destination_fd, destination_parent)
+                try:
+                    current = destination.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (current.st_dev, current.st_ino) == (source.st_dev, source.st_ino):
+                        destination.unlink()
+                raise
+        return
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     source_fd = os.open(archive.parent, directory_flags)
     try:
@@ -128,21 +209,9 @@ def provision(plan_path, destination, *, repository_root):
                                          ignore_cleanup_errors=True) as temporary:
             stage = Path(temporary)
             archive = stage / f"{_ASSET}.tar.gz"
-            digest = hashlib.sha256()
-            count = 0
-            with _open_archive(url) as response:
-                if response.status != 200:
-                    raise ValueError("Android Codex archive download did not return HTTP 200")
-                _github_https(response.geturl())
-                with archive.open("xb") as target:
-                    while chunk := response.read(1024 * 1024):
-                        count += len(chunk)
-                        if count > _MAX_ARCHIVE_BYTES:
-                            raise ValueError("Android Codex archive exceeds the pinned size limit")
-                        target.write(chunk)
-                        digest.update(chunk)
-            if not count or "sha256:" + digest.hexdigest() != archive_sha256 or \
-                    sha256_file(archive, reject_symlink_parents=True) != archive_sha256:
+            _fetch_pinned_archive(url, archive, archive_sha256, _MAX_ARCHIVE_BYTES,
+                                  _open_archive, _github_https)
+            if sha256_file(archive, reject_symlink_parents=True) != archive_sha256:
                 raise ValueError("Downloaded Android Codex archive differs from the Git pin")
             if read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
                                        reject_symlink_parents=True) != plan_bytes:

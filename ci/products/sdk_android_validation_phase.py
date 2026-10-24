@@ -88,6 +88,7 @@ def produce_sdk_android_validation_phase(
     binary_stage: Path, binary_receipt: Path, compatibility_request: Path,
     binary_contract_evidence: dict, final_capture: Path, protected_capture: Path,
     expected_capture_producer: dict, expected_original_producer: dict,
+    expected_binary_producer: dict,
     trusted_source_commit: str, trusted_source_tree: str,
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     apkanalyzer_executable: Path, policy_revision: str,
@@ -141,6 +142,7 @@ def produce_sdk_android_validation_phase(
         "binaryContractEvidence": binary_contract_evidence,
         "captureProducer": expected_capture_producer,
         "originalProducer": expected_original_producer,
+        "binaryProducer": expected_binary_producer,
         "trustedSourceCommit": trusted_source_commit,
         "trustedSourceTree": trusted_source_tree,
         "policyRevision": policy_revision,
@@ -148,13 +150,14 @@ def produce_sdk_android_validation_phase(
     })
     package = validate_phase_receipt(load_canonical_json_bytes(file_before["packageReceipt"]))
     binary = validate_phase_receipt(load_canonical_json_bytes(file_before["binaryReceipt"]))
-    expected_original = validate_producer(expected_original_producer, "Android original producer")
+    validate_producer(expected_original_producer, "Android evidence original producer")
+    expected_binary = validate_producer(expected_binary_producer, "Android binary original producer")
     if ((package["product"], package["component"], package["phase"], package["target"])
             != ("sdk", "sdk-android", "package", "android")
             or (binary["product"], binary["component"], binary["phase"], binary["target"])
             != ("sdk", "sdk-android", "binary", "android")
             or package["productVersion"] != binary["productVersion"]
-            or binary["producer"] != expected_original):
+            or binary["producer"] != expected_binary):
         raise ValueError("Android validation requires its exact package/binary identity and original producer")
 
     artifact, (extension, _) = next(iter(COMPONENT_CARRIERS["sdk-android"].items()))
@@ -174,6 +177,7 @@ def produce_sdk_android_validation_phase(
                 "binaryContractEvidence": binary_contract_evidence,
                 "captureProducer": expected_capture_producer,
                 "originalProducer": expected_original_producer,
+                "binaryProducer": expected_binary_producer,
                 "trustedSourceCommit": trusted_source_commit,
                 "trustedSourceTree": trusted_source_tree,
                 "policyRevision": policy_revision,

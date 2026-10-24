@@ -27,7 +27,7 @@ def _id(component, phase, target):
 
 def verify_sdk_campaign_semantics(*, sources, envelopes, stages, maven_controls,
         core_validation_controls, core_validation_policy, core_metadata_control,
-        android_control, apple_control, javascript_control, native_control):
+        android_control, apple_control, javascript_control, native_control, completed_frozen=None):
     """Return exact original bytes only after all 62 real semantic gates pass.
 
     ``sources``, ``envelopes`` and ``stages`` must be the private values yielded
@@ -96,7 +96,8 @@ def verify_sdk_campaign_semantics(*, sources, envelopes, stages, maven_controls,
         envelopes[ios_binary], stages[ios_binary], envelopes[ios_package], stages[ios_package],
         {target: envelopes[instance] for target, instance in ios_validation.items()},
         {target: stages[instance] for target, instance in ios_validation.items()},
-        envelopes[ios_metadata], stages[ios_metadata], **apple_control)
+        envelopes[ios_metadata], stages[ios_metadata], **apple_control,
+        **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     if (not isinstance(apple_receipts, Mapping) or set(apple_receipts) != {"binary", "package", "validation", "metadata"}
             or not isinstance(apple_receipts["validation"], Mapping)
             or set(apple_receipts["validation"]) != set(ios_validation)):

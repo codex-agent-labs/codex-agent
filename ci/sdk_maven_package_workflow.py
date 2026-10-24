@@ -12,6 +12,7 @@ if __package__:
 
 import product_reuse
 import sdk_workflow
+from runtime_reference_transport import measured, measured_volume
 from products.contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
@@ -22,13 +23,14 @@ from products.registry import PhaseInstanceId
 from products.restore import PHASE_RECEIPT_NAME, verify_phase_shard
 from products.runtime_aggregate_handoff import _public_policy
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS, _path
-from products.sdk_facade_validation import _inventory
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_package import _require_capability_output_separate, verify_sdk_package_inputs
 from products.signing_isolation import require_no_signing_secret
 from sdk_ios_package import _record
 from sdk_maven_phase import execute as execute_package
-from sdk_maven_original import _context, verified_original_maven_phase, verified_retained_maven_phase
+from sdk_phase import maven_consumed_predecessors
+from sdk_maven_original import _context, _inventory, verified_original_maven_phase, verified_retained_maven_phase
+from products.sdk_apple_content import _snapshot_apple_tree
 
 
 _TARGETS = {"sdk-core": "common", "sdk-android": "android"}
@@ -39,6 +41,7 @@ def _read(path):
     return read_regular_file_bytes(Path(path), max_bytes=_LIMIT, reject_symlink_parents=True)
 
 
+@measured
 def execute(plan, discovery, state, destination, *, component, expected_build_key,
             sdk_inputs_artifact_id, sdk_inputs_artifact_sha256, trusted_workflow_sha,
             keyring, keys_directory, binary_contract_evidence, binary_original_context,
@@ -46,7 +49,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             binary_capture_root=None, android_runtime_archive=None,
             sdk_validation_tooling=None, sdk_apple_validation_policy=None,
             sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
-            binary_original_workflow_path=None, binary_original_job_name=None):
+            binary_original_workflow_path=None, binary_original_job_name=None, retained_sdk_inputs_source=None, completed_frozen=None):
     """Publish one shard only after full original gates and successful context exit.
 
     The binary's original Contract evidence is mandatory caller policy, even if
@@ -142,14 +145,20 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
         ("sdk_android_metadata_admission", sdk_android_metadata_admission)) if value is not None}
     try:
-        with tempfile.TemporaryDirectory(prefix="sdk-maven-package-") as temporary:
+        with measured_volume(component + "-package-checkout", root), \
+                measured_volume(component + "-package-temporary", tempfile.gettempdir()), \
+                tempfile.TemporaryDirectory(prefix="sdk-maven-package-") as temporary:
             private = Path(temporary).resolve()
             _require_capability_output_separate(private, [root, *protected])
             candidate = private / "shard"
             with sdk_workflow.verified_inputs(plan, discovery, state,
+                requested_scope=(instance,),
                     artifact_id=sdk_inputs_artifact_id, artifact_sha256=sdk_inputs_artifact_sha256,
                     trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
-                    repository_root=root, environ=environ, token=token, **policies, **admissions) as sdk_inputs, ExitStack() as binary_contexts:
+                    repository_root=root, environ=environ, token=token, **policies, **admissions,
+                    **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                       if retained_sdk_inputs_source is not None else {}),
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as sdk_inputs, ExitStack() as binary_contexts:
                 selection = sdk_inputs["selection"]
                 values.append((selection, canonical_json_bytes(selection)))
                 if identity not in selection["consumers"]:
@@ -157,7 +166,11 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 prepared = destination / "inputs"
                 ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
                     expected_build_key=expected_build_key, repository_root=root, environ=environ,
-                    sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions)
+                    # Keep the complete Runtime dependency authentication above;
+                    # Maven packaging and its retained reader consume only these stages.
+                    materialized_scope=maven_consumed_predecessors(instance),
+                    sdk_original_workflow_sha=trusted_workflow_sha, **policies, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                 retained[prepared] = _inventory(prepared, allow_empty=True)
                 producer = product_reuse.validate_producer(load_canonical_json_bytes(_read(prepared / "producer.json")))
                 values.extend((value, canonical_json_bytes(value)) for value in (ready, producer))
@@ -200,7 +213,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 binary_capture = Path(original_binary["capture"])
                 binary_capture_inventory = _inventory(binary_capture, allow_empty=True)
                 binary_original = destination / "binary-original"
-                snapshot_regular_tree(binary_capture, binary_original / "capture", allow_empty=True)
+                _snapshot_apple_tree(binary_capture, binary_original / "capture", allow_empty=True)
                 write_canonical_json(binary_original / "context.json", binary_original_context)
                 if (_inventory(binary_capture, allow_empty=True) != binary_capture_inventory
                         or _inventory(binary_original / "capture", allow_empty=True) != binary_capture_inventory
@@ -211,7 +224,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
                 capture = Path(sdk_inputs["capture"])
                 capture_inventory = _inventory(capture, allow_empty=True)
-                snapshot_regular_tree(capture, destination / "sdk-inputs-original", allow_empty=True)
+                _snapshot_apple_tree(capture, destination / "sdk-inputs-original", allow_empty=True)
                 if _inventory(capture, allow_empty=True) != capture_inventory:
                     raise ValueError("Maven package SDK capture changed during retention")
                 retained[destination / "sdk-inputs-original"] = capture_inventory
@@ -282,6 +295,7 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
 
 def main(argv=None):
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -304,18 +318,23 @@ def main(argv=None):
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
+    parser.add_argument("--retained-sdk-inputs-source", type=Path, default=argparse.SUPPRESS)
     arguments = vars(parser.parse_args(argv))
     if (arguments["binary_artifact_id"] is None) != (arguments["binary_artifact_sha256"] is None):
         parser.error("Original binary upload ID and digest must be supplied together")
     if (arguments["android_runtime_archive"] is not None) != (arguments["component"] == "sdk-android"):
         parser.error("Original Android archive is required only for Android binary replay")
     try:
+        if "retained_sdk_inputs_source" in arguments:
+            arguments["retained_sdk_inputs_source"] = product_reuse._canonical_control(
+                arguments["retained_sdk_inputs_source"], "Caller retained SDK input source")
         for name in ("binary_contract_evidence", "binary_original_context", "sdk_validation_tooling", "sdk_apple_validation_policy"):
             path = arguments.pop(name)
             if path is not None:
                 arguments[name] = product_reuse._canonical_control(path, "Caller " + name)
-        with metadata_admission_options(arguments) as admissions:
-            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions)
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
+            execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""), **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

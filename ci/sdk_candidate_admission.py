@@ -18,10 +18,12 @@ if not __package__:
 from ci.products.index import SignedProductIndex, verify_release_product_index
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    regular_file_inventory, require_exact_keys, require_semver, require_sha256,
+    require_exact_keys, require_semver, require_sha256,
     sha256_bytes, sha256_file,
 )
-from ci.products.restore import object_relative_path
+from ci.products.restore import (
+    memoized_file_inventory as regular_file_inventory, object_relative_path, verification_scoped,
+)
 from ci.products.sdk_campaign_index import verify_release_sdk_campaign_objects
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from ci.products.signing_isolation import require_no_signing_secret
@@ -37,6 +39,14 @@ _OBJECT_PIN_FIELDS = {"product", "component", "phase", "target", "buildKey",
                       "receiptSha256", "objectSha256", "relativePath"}
 
 
+def candidate_object_root(promoted_catalog, forwarded_objects, use_promoted_objects):
+    """Select physical custody only; neither layout grants admission."""
+    if type(use_promoted_objects) is not bool:
+        raise ValueError("SDK candidate object layout must be explicitly selected")
+    return Path(promoted_catalog) if use_promoted_objects else Path(forwarded_objects) / "objects"
+
+
+@verification_scoped
 def verify_sdk_candidate_join(
     promoted_catalog: Path, forwarded_objects: Path, forwarded_maven: Path, *,
     expected_promoted_inventory_sha256: str, expected_promoted_index_sha256: str,
@@ -44,7 +54,7 @@ def verify_sdk_candidate_join(
     expected_phase10_signature_sha256: str, expected_keyring_sha256: str,
     expected_keys_inventory_sha256: str, expected_object_pins_sha256: str,
     expected_maven_inventory_sha256: str, expected_sdk_version: str,
-    expected_validation_tree: str,
+    expected_validation_tree: str, use_promoted_objects: bool = False,
 ) -> dict:
     """Require one exact 62-object identity across promoted, campaign and Maven."""
     require_no_signing_secret(os.environ)
@@ -72,9 +82,18 @@ def verify_sdk_candidate_join(
     promoted_catalog = Path(promoted_catalog)
     forwarded_objects = Path(forwarded_objects)
     forwarded_maven = Path(forwarded_maven)
+    candidate_object_root(promoted_catalog, forwarded_objects, use_promoted_objects)
     promoted_files = regular_file_inventory(promoted_catalog)
     objects_files = regular_file_inventory(forwarded_objects)
     maven_files = regular_file_inventory(forwarded_maven)
+    if use_promoted_objects and {path.name for path in forwarded_objects.iterdir()} != {
+            "signed-campaign", "object-pins.json"}:
+        raise ValueError("Shared-catalog candidate controls must not contain another object tree or extra files")
+    promoted_records = {row["relativePath"]: row for row in promoted_files}
+    object_records = (promoted_records if use_promoted_objects else {
+        row["relativePath"].removeprefix("objects/"): {
+            **row, "relativePath": row["relativePath"].removeprefix("objects/")}
+        for row in objects_files if row["relativePath"].startswith("objects/")})
     if (sha256_bytes(canonical_json_bytes(promoted_files)) != expected_promoted_inventory_sha256
             or sha256_bytes(canonical_json_bytes(maven_files)) != expected_maven_inventory_sha256):
         raise ValueError("SDK candidate input differs from independent S1048 inventory")
@@ -152,16 +171,17 @@ def verify_sdk_candidate_join(
             raise ValueError("SDK candidate object pin differs from signed campaign")
         require_sha256(row["objectSha256"], "SDK candidate object digest")
         relative = row["relativePath"]
-        source = forwarded_objects / "objects" / relative
         promoted_source = promoted_catalog / relative
-        if (sha256_file(source) != row["objectSha256"]
-                or sha256_file(promoted_source) != row["objectSha256"]):
+        record = object_records.get(relative)
+        if (record is None or record["sha256"] != row["objectSha256"]
+                or promoted_records.get(relative) != record):
             raise ValueError("SDK candidate original object differs across releases")
         object_paths[entry["buildKey"]] = promoted_source
-        expected_objects.append({"relativePath": relative, "bytes": source.stat().st_size,
+        expected_objects.append({"relativePath": relative, "bytes": record["bytes"],
                                  "sha256": row["objectSha256"]})
     expected_objects.sort(key=lambda row: row["relativePath"])
-    if (regular_file_inventory(forwarded_objects / "objects") != expected_objects
+    if ((not use_promoted_objects and sorted(object_records.values(),
+                                            key=lambda row: row["relativePath"]) != expected_objects)
             or {row["relativePath"] for row in promoted_files}
                 != {"product-index.json", "product-index.sig", *(row["relativePath"]
                     for row in expected_objects)}):
@@ -185,6 +205,7 @@ def verify_sdk_candidate_join(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--use-promoted-objects", action="store_true")
     for name in ("promoted-catalog", "forwarded-objects", "forwarded-maven"):
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("promoted-inventory-sha256", "promoted-index-sha256",

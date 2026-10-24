@@ -35,7 +35,10 @@ def verified_selected_ios_package(selected_stage, selected_receipt, *, plan,
     execution events and package semantics; this wrapper never substitutes a
     receipt or content-inventory check for that gate.
     """
-    from ci.sdk_ios_original_package import verified_retained_ios_package
+    if __package__ == "ci.products":
+        from ..sdk_ios_original_package import verified_retained_ios_package
+    else:
+        from sdk_ios_original_package import verified_retained_ios_package
 
     stage = Path(selected_stage)
     receipt_path = Path(selected_receipt)
@@ -92,6 +95,7 @@ class ApplePackageAdmission:
         if type(records) not in (list, tuple):
             raise ValueError("Apple package admission requires selected original records")
         self._records = {}
+        self._original = None
         for value in records:
             record = require_exact_keys(value, _RECORD_KEYS, "Apple package admission record")
             digest = require_sha256(record["receiptSha256"], "Apple package original receipt")
@@ -108,6 +112,27 @@ class ApplePackageAdmission:
             tooling_keyring=None if tooling_keyring is None else Path(tooling_keyring),
             tooling_keys_directory=None if tooling_keys_directory is None else Path(tooling_keys_directory))
 
+    @classmethod
+    def from_original(cls, envelope, *, plan, selected_receipt, artifact_id, artifact_sha256,
+            trusted_workflow_sha, environ, token, retained_sdk_inputs_source=None, **policy):
+        """Keep caller-owned original selection; run its full gate only in verify()."""
+        from .reuse import _validate_envelope
+
+        instance, selected = _validate_envelope(envelope)
+        if instance != _INSTANCE:
+            raise ValueError("Original Apple admission requires the selected package")
+        plan, receipt = Path(plan).resolve(strict=True), Path(selected_receipt).resolve(strict=True)
+        if read_regular_file_bytes(receipt, reject_symlink_parents=True) != selected["receiptBytes"]:
+            raise ValueError("Original Apple admission differs from its selected receipt")
+        result = cls([], **policy)
+        result._original = (plan, receipt, selected["receiptSha256"], dict(
+            artifact_id=artifact_id, artifact_sha256=artifact_sha256,
+            trusted_workflow_sha=trusted_workflow_sha, environ=dict(environ), token=token,
+            ephemeral_capture=True, expected_plan_revision=selected["receipt"]["producer"]["commit"],
+            **({"retained_sdk_inputs_source": load_canonical_json_bytes(
+                canonical_json_bytes(retained_sdk_inputs_source))} if retained_sdk_inputs_source is not None else {})))
+        return result
+
     def verify(self, envelope):
         """Return only after original capture, content and selected object agree."""
         from .reuse import _validate_envelope
@@ -116,14 +141,25 @@ class ApplePackageAdmission:
         instance, selected = _validate_envelope(envelope)
         if instance != _INSTANCE:
             raise ValueError("Apple package admission requires the exact iOS package envelope")
-        record = self._records.get(selected["receiptSha256"])
-        if record is None:
-            raise ValueError("Apple package admission lacks authenticated original evidence")
         binding = (selected["receiptBytes"], selected["receiptSha256"],
                    selected["objectSha256"], canonical_json_bytes(selected["receipt"]))
-        with verified_selected_ios_package(record["selectedStage"], record["selectedReceipt"],
+        if self._original is not None:
+            if __package__ == "ci.products":
+                from ..sdk_ios_original_package import verified_original_ios_package
+            else:
+                from sdk_ios_original_package import verified_original_ios_package
+            plan, receipt, digest, options = self._original
+            if digest != binding[1]:
+                raise ValueError("Apple package admission changes its selected original")
+            context = verified_original_ios_package(plan, receipt, **options, **self._policy)
+        else:
+            record = self._records.get(selected["receiptSha256"])
+            if record is None:
+                raise ValueError("Apple package admission lacks authenticated original evidence")
+            context = verified_selected_ios_package(record["selectedStage"], record["selectedReceipt"],
                 plan=record["plan"], package_capture=record["packageCapture"],
-                sdk_capture=record["sdkCapture"], **self._policy) as original:
+                sdk_capture=record["sdkCapture"], **self._policy)
+        with context as original:
             shard = verify_phase_shard(original["original"] / "shard", _INSTANCE)
             if (shard["receiptBytes"] != binding[0]
                     or shard["receiptSha256"] != binding[1]

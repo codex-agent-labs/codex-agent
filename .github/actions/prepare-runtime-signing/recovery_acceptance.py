@@ -16,6 +16,8 @@ from products.inventory import (
     read_regular_file_bytes, run_git,
 )
 from reuse import github_output
+from products.registry import PHASE_INSTANCE_IDS, PhaseInstanceId
+from products.reuse import _phase_git_inventories
 
 
 BASELINE_PRODUCER = {
@@ -129,6 +131,21 @@ CONTROL_FILES = CORRECTED_FILES | PRODUCT_CORRECTION_FILES | NEW_FILES | {
 CONTROL_FILES |= REUSE_FIXED_FILES | SDK_CONTROL_FILES | REFERENCE_TRANSPORT_FILES
 CONTROL_FILES |= CACHE_FIXED_FILES
 
+# Current signed Runtime closure from 39745656910/1: this source ancestor has
+# the exact c8400811 producer tree and is present in fresh full branch checkouts.
+# Original receipt/signature gates retain c8400811; no full-head acceptance.
+SDK_FROZEN_REVISION = "ca7dd6d02193df66c1bcba9867255321e74a1fe6"
+SDK_REGISTRY = "ci/products/registry.py"
+# Reviewed candidate control classifications preserve all 112 product inventories.
+SDK_SELECTION_REVISION = "97f64bdb8b0c966c5f26ff5fca7d781436ab2f93"
+SDK_SELECTOR = "ci/products/selection.py"
+# Reviewed canonical LF writer correction. Historical acceptance never admits
+# the resulting new aggregate key; ordinary production/signature gates do that.
+SDK_AGGREGATE_CORRECTION = "1b33491ad273aa42ba0d6b4cd7d7b98562141ad8"
+# Phase9 Runtime recovery may execute only this separately reviewed product
+# correction. This never broadens SDK-only recovery or admits its new outputs.
+RUNTIME_POSIX_CORRECTION = "43860b0b3acdb51d23c69b1a01df8716bd2257d1"
+
 
 def _tree(root, revision):
     entries = {}
@@ -144,20 +161,37 @@ def _blob(root, revision, path):
 
 
 def _activated_ci(original, sha):
-    """Only these two literal substitutions may differ from the reviewed tree."""
-    result = original
-    for prefix in (
-        b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@",
-        b"      trustedWorkflowSha: ",
-    ):
-        pattern = re.compile(b"^" + re.escape(prefix) + b"[0-9a-f]{40}$", re.MULTILINE)
-        if len(pattern.findall(result)) != 1:
-            raise ValueError("Recovery caller must have exactly two literal activation pins")
-        result = pattern.sub(lambda match: prefix + sha.encode("ascii"), result)
-    return result
+    """Exact protected caller transition; source identity is resolved externally."""
+    require_oid(sha, "Reviewed recovery source")
+    jobs = list(re.finditer(rb"(?ms)^  product-validation:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", original))
+    if len(jobs) > 1 or not jobs and re.search(rb"^  [a-z][a-z0-9-]*:", original, re.MULTILINE):
+        raise ValueError("Recovery caller must have exactly one product-validation job")
+    start, end = jobs[0].span() if jobs else (0, len(original))
+    caller = original[start:end]
+    prefix = b"    uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@"
+    pattern = re.compile(b"^" + re.escape(prefix) + b"(?:[0-9a-f]{40}|reuse-authority)$", re.MULTILINE)
+    if len(pattern.findall(caller)) != 1:
+        raise ValueError("Recovery caller must have exactly one protected workflow reference")
+    result = pattern.sub(lambda match: prefix + b"reuse-authority", caller)
+    source = re.compile(rb"^      trustedWorkflowSha: [0-9a-f]{40}\n", re.MULTILINE)
+    references = source.findall(result)
+    source_fields = re.findall(rb"^      trustedWorkflowSha:.*$", result, re.MULTILINE)
+    if (len(source_fields) != len(references) or len(references) > 1
+            or references and prefix + b"reuse-authority" in caller
+            or re.search(rb"^      trustedSourceSha:", result, re.MULTILINE)):
+        raise ValueError("Protected recovery caller cannot supply workflow source identity")
+    result = source.sub(b"", result)
+    return original[:start] + result + original[end:]
 
 
 def _reviewed_scope(trusted, candidate, sha):
+    caller = _blob(trusted, sha, CI)
+    if (caller.splitlines().count(b"      sdkRecoveryOnly: true") == 1
+            and caller.splitlines().count(b"      runtimeRecoveryOnly: false") == 1):
+        return _sdk_reviewed_scope(trusted, candidate, sha)
+    if (caller.splitlines().count(b"      runtimeRecoveryOnly: true") == 1
+            and caller.splitlines().count(b"      sdkRecoveryOnly: false") == 1):
+        return _sdk_reviewed_scope(trusted, candidate, sha, allow_posix_correction=True)
     baseline = _tree(trusted, BASELINE_PRODUCER["tree"])
     reviewed = _tree(trusted, sha)
     changed = {path for path in baseline.keys() | reviewed.keys() if baseline.get(path) != reviewed.get(path)}
@@ -199,8 +233,56 @@ def _reviewed_scope(trusted, candidate, sha):
         raise ValueError("Recovery candidate caller has changes beyond exact activation pins")
 
 
-def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, environ):
-    sha = require_oid(trusted_workflow_sha, "Reviewed recovery workflow SHA")
+def _sdk_reviewed_scope(trusted, candidate, sha, *, allow_posix_correction=False):
+    """Keep SDK recovery frozen; Runtime mode additionally pins four binary inputs."""
+    baseline = _tree(trusted, SDK_FROZEN_REVISION)
+    reviewed = _tree(trusted, sha)
+    changed = {path for path in baseline.keys() | reviewed.keys()
+               if baseline.get(path) != reviewed.get(path)}
+    if any(not (path == "ci/run-lane.sh"
+                and baseline.get(path, ())[:2] == reviewed.get(path, ())[:2] == ("100755", "blob"))
+           and (reviewed.get(path, ())[:2] != ("100644", "blob")
+                or path in baseline and baseline[path][:2] != ("100644", "blob"))
+           for path in changed):
+        raise ValueError("SDK recovery reviewed delta contains modes, symlinks or deletions")
+    if (len(PHASE_INSTANCE_IDS) != 112 or reviewed.get(SDK_REGISTRY) != baseline.get(SDK_REGISTRY)
+            or reviewed.get(SDK_REGISTRY, ())[:2] != ("100644", "blob")):
+        raise ValueError("SDK recovery product registry differs from frozen authority")
+    selection_authority = _tree(trusted, SDK_SELECTION_REVISION)
+    if (reviewed.get(SDK_SELECTOR) != selection_authority.get(SDK_SELECTOR)
+            or reviewed.get(SDK_SELECTOR, ())[:2] != ("100644", "blob")):
+        raise ValueError("SDK recovery selector differs from independently reviewed authority")
+    instances = tuple(instance for instance in PHASE_INSTANCE_IDS if instance.product != "sdk")
+    before = _phase_git_inventories(trusted, SDK_FROZEN_REVISION, instances)
+    after = _phase_git_inventories(trusted, sha, instances)
+    corrected = _phase_git_inventories(trusted, RUNTIME_POSIX_CORRECTION, tuple(
+        PhaseInstanceId("runtime", target, "binary", target)
+        for target in ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64")
+    )) if allow_posix_correction else {}
+    for instance in instances:
+        if before[instance] != after[instance]:
+            aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+            if instance == aggregate and after[instance] == _phase_git_inventories(
+                    trusted, SDK_AGGREGATE_CORRECTION, (aggregate,))[aggregate]:
+                continue
+            if instance in corrected and after[instance] == corrected[instance]:
+                continue
+            raise ValueError(f"SDK recovery changes frozen product inputs: {instance}")
+    current = _tree(candidate, "HEAD")
+    if current.keys() != reviewed.keys() or any(
+            current[path] != reviewed[path] for path in current if path != CI
+    ) or current.get(CI, ())[:2] != ("100644", "blob"):
+        raise ValueError("SDK recovery candidate differs from independently reviewed control tree")
+    if _blob(candidate, "HEAD", CI) != _activated_ci(_blob(trusted, sha, CI), sha):
+        raise ValueError("SDK recovery candidate caller has changes beyond exact activation pins")
+
+
+def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, environ,
+                              trusted_source_sha=None):
+    # Both authorities are workflow-owned: native publisher identity and the
+    # independent protected approval's source. Context checks do not grant trust.
+    publisher = require_oid(trusted_workflow_sha, "Executing recovery workflow SHA")
+    sha = require_oid(trusted_source_sha or publisher, "Reviewed recovery source SHA")
     trusted = Path(__file__).resolve().parents[3]
     candidate = Path(repository_root).resolve(strict=True)
     if (candidate == trusted
@@ -240,6 +322,7 @@ def verify_recovery_acceptance(repository_root, trusted_workflow_sha, *, token, 
     if len(jobs) != 1 or jobs[0]["id"] != BASELINE_JOB:
         raise ValueError("Recovery acceptance is not the fixed successful historical job")
     return {"recovery_control_admitted": True, "full_acceptance_current": False,
+        "executing_workflow_sha": publisher, "reviewed_source_sha": sha,
         "historical_acceptance_producer": dict(BASELINE_PRODUCER),
         "historical_acceptance_job_id": BASELINE_JOB,
         "historical_acceptance_workflow_sha": BASELINE_WORKFLOW}
@@ -249,11 +332,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--trusted-source-sha")
     parser.add_argument("--github-output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         result = verify_recovery_acceptance(args.repository_root, args.trusted_workflow_sha,
-            token=os.environ["GITHUB_TOKEN"], environ=os.environ)
+            token=os.environ["GITHUB_TOKEN"], environ=os.environ,
+            trusted_source_sha=args.trusted_source_sha)
         result["historical_acceptance_producer"] = canonical_json_bytes(
             result["historical_acceptance_producer"]).decode().strip()
         github_output(args.github_output, result)

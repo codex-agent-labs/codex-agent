@@ -141,7 +141,7 @@ def verify_retained_sdk_phase_upload(capture, receipt_bytes):
     if (transport["captureProducer"] != receipt["producer"]
             or transport[receipt["phase"] + "ReceiptSha256"] != sha256_bytes(receipt_bytes)):
         raise ValueError("Retained SDK transport differs from the exact original receipt")
-    products._verify_retained_sdk_upload_archive(capture, transport["artifact"])
+    products._verify_retained_sdk_upload_archive(capture, transport["artifact"], worker_instance=instance)
     if transport["artifact"].get("name") != name:
         raise ValueError("Retained SDK artifact differs from its original phase identity")
     for directory in directories:
@@ -201,6 +201,22 @@ def _capture_sdk_upload(
         if plan["remoteBuildAuthorized"] is not True or plan["event"] not in {"pull_request", "merge_group"}:
             raise ValueError("Core worker capture requires an authorized PR or merge-group plan")
         plan_value = canonical_json_bytes(plan)
+        retained_core = None
+        component_options = ({"component": instance.component, "target": instance.target}
+                             if instance.component != "sdk-core" else {})
+        if instance == PhaseInstanceId("sdk", "sdk-android", "validation", "android") or instance in tuple(PhaseInstanceId("sdk", name, step, target)
+                for name, target in (("sdk-core", "common"), ("sdk-android", "android"))
+                for step in ("binary", "package")):
+            from sdk_campaign_original_locator import retained_core_origin
+            origin = retained_core_origin(phase, receipt["buildKey"], products._consumer(plan, environment)["producer"], **component_options)
+            if origin is not None and producer == origin["producer"]:
+                if origin.get("receipt_sha256", sha256_bytes(receipt_bytes)) != sha256_bytes(receipt_bytes):
+                    raise ValueError("Retained Core capture differs from its reviewed original receipt")
+                if (artifact_id, artifact_sha256, trusted_workflow_path, job) != (
+                        origin["artifact_id"], origin["artifact_sha256"], origin["workflow_path"], origin["job_name"]):
+                    raise ValueError("Retained Core capture differs from its reviewed original route/upload")
+                retained_core = origin
+                trusted_workflow_sha = origin["workflow_sha"]
 
         def unchanged():
             require_no_signing_secret(environment)
@@ -208,6 +224,9 @@ def _capture_sdk_upload(
                     or _read(captured_plan) != plan_bytes or canonical_json_bytes(receipt) != receipt_bytes
                     or canonical_json_bytes(plan) != plan_value):
                 raise ValueError("Core capture original receipt or caller plan changed")
+            if retained_core is not None and retained_core != retained_core_origin(
+                    phase, receipt["buildKey"], products._consumer(plan, environment)["producer"], **component_options):
+                raise ValueError("Retained Core capture original or current consumer changed")
 
         unchanged()
         workflow_path = (_VALIDATION_WORKFLOW_PATH if family == "facade-validation" else
@@ -216,11 +235,15 @@ def _capture_sdk_upload(
             if workflow_path is None else {"trusted_workflows_by_phase": {family: {
                 "path": workflow_path, "sha": trusted_workflow_sha}}})
         observed = products._observe_ci_producer_jobs({family: producer},
-            jobs_by_phase={family: job}, token=token, **workflow_policy)
-        jobs = [value for value in observed[0]["jobs"] if value.get("name") == job]
+            jobs_by_phase={family: job}, build_keys_by_phase={family: receipt["buildKey"]},
+            token=token, **workflow_policy)
+        jobs = products._matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=receipt["buildKey"])
         if len(jobs) != 1:
             raise ValueError("Core original worker job is missing or ambiguous")
         official_job = jobs[0]
+        if retained_core is not None and official_job.get("id") != retained_core["job_id"]:
+            raise ValueError("Retained Core capture differs from its reviewed original job")
+        job = official_job["name"]
         labels = official_job.get("labels")
         if (type(labels) is not list or any(type(label) is not str for label in labels)
                 or runner not in labels):
@@ -228,13 +251,13 @@ def _capture_sdk_upload(
         require_integer(official_job.get("runner_id"), "Core original worker runner ID", 1)
         observed_bytes = canonical_json_bytes(observed)
         unchanged()
-        artifact, raw = products._download_contract_ci_upload(
-            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
-        products._require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
-        archive.write_bytes(raw)
+        artifact, _ = products._download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, producer, observed[0]["run"], token, destination=archive,
+            **({"upload_limit": products._IOS_PACKAGE_UPLOAD_LIMIT} if instance in products._LARGE_SDK_UPLOADS else {}))
+        products._require_artifact_job_window(observed[0], job, artifact)
         zipped, _, _ = verified_zip_contents(archive, retained_paths=(), allow_empty_members=True,
-                                            **products._CATALOG_ZIP_LIMITS)
+                                            **products._worker_upload_zip_limits(instance))
         original = prepared / "original"
         products.safe_extract(archive, original)
         if regular_file_inventory(original, allow_empty=True) != zipped:

@@ -22,7 +22,8 @@ else:
 from contract_equal_tree_original import capture_equal_tree_contract_original
 from products.contract_phase10_inventory import verify_contract_phase10_inventory
 from products.contract_phase10_maven import (
-    produce_contract_phase10_maven_sidecars, verify_contract_phase10_maven,
+    produce_contract_central_bundle, produce_contract_phase10_maven_sidecars,
+    verify_contract_central_bundle, verify_contract_phase10_maven,
 )
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
@@ -100,9 +101,10 @@ def produce_authenticated_contract_maven_sidecars(
         public.write_bytes(key)
         if verify_contract_phase10_maven(payload, sidecars, public, expected_pgp_key_sha256) != signed:
             raise ValueError("Retained Contract Maven sidecars differ from signed originals")
+        central = produce_contract_central_bundle(payload, sidecars, prepared / "central", signed)
         control = {
-            "schemaVersion": 1, "originalSelection": selection,
-            "mavenSidecars": signed,
+            "schemaVersion": 2, "originalSelection": selection,
+            "mavenSidecars": signed, "centralBundle": central,
         }
         write_canonical_json(prepared / "sidecar-selection.json", control)
         control_bytes = canonical_json_bytes(control)
@@ -113,6 +115,7 @@ def produce_authenticated_contract_maven_sidecars(
                 or verify_contract_phase10_maven(
                     payload, sidecars, public, expected_pgp_key_sha256,
                 ) != signed
+                or verify_contract_central_bundle(prepared / "central" / central["fileName"], signed) != central
                 or read_regular_file_bytes(pgp_public_key, max_bytes=1024 * 1024,
                                            reject_symlink_parents=True) != key
                 or read_regular_file_bytes(public, max_bytes=1024 * 1024,
@@ -131,7 +134,7 @@ def produce_authenticated_contract_maven_sidecars(
                                            max_bytes=16 * 1024 * 1024,
                                            reject_symlink_parents=True) != control_bytes):
             raise ValueError("Published Contract sidecars differ from verified bytes")
-        return {"originalSelection": selection, "mavenSidecars": signed}
+        return {"originalSelection": selection, "mavenSidecars": signed, "centralBundle": central}
 
 
 def main(argv: list[str] | None = None) -> int:

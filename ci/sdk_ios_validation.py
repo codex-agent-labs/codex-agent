@@ -11,16 +11,58 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
-    canonical_json_bytes, read_regular_file_bytes, regular_file_inventory,
-    require_exact_keys, require_integer, require_semver, require_sha256,
+    canonical_json_bytes, read_regular_file_bytes,
+    require_exact_keys, require_integer, require_regular_directory, require_semver, require_sha256,
     write_canonical_json,
 )
 from products.receipt import validate_producer, verify_output_manifest_identity
 from products.restore import PHASE_PLAN_KEYS
+from products.restore import memoized_file_inventory as regular_file_inventory
 from sdk_ios_phase import _directory, _request, _GIT_ID
+from runtime_reference_transport import count, measured
 
 
 _LIMIT = 16 * 1024 * 1024
+
+
+@measured
+def _retain_failed_apple_processes(ios_build: Path, destination: Path) -> None:
+    """Bounded diagnostics only; no product, execution bundle or admission."""
+    names = ["simulator-devices.json", "swift-authentication-tests-summary.json",
+             "swift-authentication-evidence-task/raw/successful-attempt.json"]
+    for attempt in range(2):
+        for kind, operations in (
+            ("simulator-raw", ("runtimes", "devices", "boot", "bootstatus", "ready-devices", "retry-devices")),
+            ("raw", ("xcodebuild", "summary", "tests")),
+        ):
+            prefix = f"swift-authentication-evidence-task/{kind}/attempt-{attempt}"
+            names.extend(f"{prefix}/{operation}/{member}" for operation in operations
+                         for member in ("execution.json", "stdout.bin", "stderr.bin"))
+        names.append(f"swift-authentication-evidence-task/simulator-raw/attempt-{attempt}/failure.json")
+    output = destination / "failed-apple-processes"
+    output.mkdir()
+    remaining = 2 * _LIMIT
+    skipped = []
+    for name in names:
+        source = ios_build / name
+        if not source.exists() and not source.is_symlink():
+            continue
+        try:
+            raw = read_regular_file_bytes(source, max_bytes=min(_LIMIT, remaining), reject_symlink_parents=True)
+        except (OSError, ValueError):
+            skipped.append(name)
+            continue
+        target = output / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as stream:
+            stream.write(raw)
+        remaining -= len(raw)
+        count("failedAppleDiagnosticBytes", len(raw))
+        count("failedAppleDiagnosticFiles")
+    write_canonical_json(output / "capture.json", {
+        "schemaVersion": 1, "retainedBytes": 2 * _LIMIT - remaining,
+        "skippedUnsafeOrOverLimit": skipped,
+    })
 
 
 def validation_properties(*, target, sdk_version, contract_version, candidate_tree,
@@ -195,7 +237,7 @@ def execute(
 
     for output in owned_directories:
         _prepare_destination(output, root).rmdir()
-    environment, wrapper = _runtime_worker_environment(root, current_producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, current_producer, destination, environ, build_directory=".")
     destination = _prepare_destination(destination, root)
 
     def unchanged() -> None:
@@ -233,6 +275,7 @@ def execute(
         })
         unchanged()
     if return_code != 0:
+        _retain_failed_apple_processes(ios_build, destination)
         raise ValueError(
             f"iOS SDK validation task failed with exit code {return_code}; see {destination / 'gradle.log'}",
         )
@@ -245,7 +288,7 @@ def execute(
             "outputs/validation/apple-validation.json"):
         raise ValueError("iOS SDK validation canonical output is missing or ambiguous")
     output_inventory = _inventory(stage)
-    evidence_inventory = regular_file_inventory(envelope)
+    evidence_inventory = regular_file_inventory(require_regular_directory(envelope, "iOS validation evidence envelope"))
     if ([record["relativePath"] for record in evidence_inventory] != [archive.name]
             or evidence_inventory[0]["bytes"] <= 0):
         raise ValueError("iOS SDK validation evidence archive output is missing or ambiguous")

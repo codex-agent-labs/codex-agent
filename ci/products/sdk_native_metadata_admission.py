@@ -16,7 +16,7 @@ from .plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, 
 from .receipt import validate_phase_receipt
 from .registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from .sdk_native_metadata import _inventory, verify_sdk_native_metadata_content
-from .sdk_package import _require_capability_output_separate
+from .sdk_package import _require_capability_output_separate, csharp_binary_inputs
 from .sdk_validation import VerifiedSdkValidationProjection
 from .selection import phase_git_inventory
 
@@ -44,7 +44,10 @@ def verify_sdk_native_metadata_admission(
     repository = Path(repository)
     trees = {"metadata_stage": Path(metadata_stage), "package_stage": Path(package_stage),
              "runtime_stages": Path(runtime_stages), "staged_sdks": Path(staged_sdks),
-             "validation_stages": Path(validation_stages), "validation_receipts": Path(validation_receipts)}
+             "validation_stages": Path(validation_stages), "validation_receipts": Path(validation_receipts),
+             "runtime-authorization": Path(package_receipt).parent / "runtime-authorization"}
+    if component == "csharp":
+        trees["csharp-binary"] = csharp_binary_inputs(package_receipt)["binary_stage_root"].parent
     before = {name: _inventory(path) for name, path in trees.items()}
     paths = {"metadata_receipt": Path(metadata_receipt), "package_receipt": Path(package_receipt)}
     raw = {name: read_regular_file_bytes(path, max_bytes=_LIMIT, reject_symlink_parents=True)
@@ -94,7 +97,8 @@ def verify_sdk_native_metadata_admission(
         if metadata["inputs"] != planned["inputs"] or metadata["buildKey"] != planned["buildKey"]:
             raise ValueError("Native SDK metadata inputs/build key differ from its original authenticated plan")
         verified, verified_bytes = verify_sdk_native_metadata_content(
-            repository=repository, component=component, **captured,
+            repository=repository, component=component,
+            **{name: path for name, path in captured.items() if name not in {"csharp-binary", "runtime-authorization"}},
             compatibility_request=compatibility_request, tooling_evidence=tooling_evidence,
             tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,

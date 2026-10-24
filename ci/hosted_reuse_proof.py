@@ -82,6 +82,23 @@ def prepare(spec, work, token, retained=None):
         "uniqueHydratedBytes": sum({row["sha256"]: row["bytes"] for row in manifest}.values())})
 
 
+def verify_frozen_inventories(baseline, phases):
+    """Protect retained phases, while reporting legitimate unrelated SDK changes."""
+    frozen = {products._identity(row) for row in phases}
+    old = tuple(path for path, _ in tree_entries(ROOT, baseline))
+    new = tuple(path for path, _ in tree_entries(ROOT, "HEAD"))
+    changed = set(subprocess.check_output(
+        ["git", "-C", str(ROOT), "diff", baseline, "HEAD", "--name-only"], text=True).splitlines())
+    affected = []
+    for instance in PHASE_INSTANCE_IDS:
+        before, after = phase_inventory_paths(old, instance), phase_inventory_paths(new, instance)
+        if before != after or set(after) & changed:
+            if instance in frozen:
+                raise ValueError(f"Frozen product inventory changed: {instance}")
+            affected.append(products._identity_record(instance))
+    return affected
+
+
 def verify(spec, work, token):
     from reuse_qualification import process_read_bytes
     read_before = process_read_bytes()
@@ -192,15 +209,11 @@ def verify(spec, work, token):
             raise ValueError("Frozen cache proof unexpectedly consumed cold original archives")
         from products.verified_evidence import _source_identity
         verification_policy = _source_identity()
-    old = tuple(path for path, _ in tree_entries(ROOT, spec["inventoryBaseline"]))
-    new = tuple(path for path, _ in tree_entries(ROOT, "HEAD"))
-    changed = subprocess.check_output(["git", "diff", spec["inventoryBaseline"], "HEAD", "--name-only"], text=True).splitlines()
-    for instance in PHASE_INSTANCE_IDS:
-        before, after = phase_inventory_paths(old, instance), phase_inventory_paths(new, instance)
-        if before != after or set(after) & set(changed):
-            raise ValueError(f"Product inventory changed: {instance}")
+    changed_inventories = verify_frozen_inventories(spec["inventoryBaseline"], result["phases"])
     report = {"seconds": str(time.perf_counter() - started), "frozenPhases": len(result["phases"]),
-        "selectedProductPhases": 0, "productInventories": len(PHASE_INSTANCE_IDS), "changedProductInventories": 0,
+        "selectedProductPhases": 0, "productInventories": len(PHASE_INSTANCE_IDS),
+        "changedProductInventories": len(changed_inventories), "changedProductInstances": changed_inventories,
+        "changedFrozenInventories": 0,
         "resultSha256": sha256_bytes(canonical_json_bytes(result)), "freshOriginalPhases": phases,
         "originalRangeBytes": sum(item["rangeBytes"] for item in [*transports, *additional_transports, signed_transport]),
         "originalColdArchiveBytes": cold_archive_bytes, "verificationPolicySha256": verification_policy,
@@ -229,12 +242,18 @@ def qualify_checkpoint(plan, work, token, *, trusted_workflow_sha):
     cache.hosted("restore", refs, work)
     transports = []
     for source in refs["sources"]:
-        if source["kind"] != "phase":
-            continue
         rows = [row for row in refs["references"] if row["source"] == source["relativePath"]
                 and row["relativePath"].startswith(source["relativePath"] + "/")]
-        transports.append(products._capture_runtime_original_reference_members(plan, PRODUCER,
-            source, rows, original, trusted_workflow_sha=trusted_workflow_sha, token=token))
+        transport = products._capture_runtime_original_reference_members(plan, PRODUCER,
+            source, rows, original, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        # Persistent phase custody can supply bytes without populating hydrated CAS.
+        # Presence avoids duplicate reads; the save backend still hashes every body.
+        for row in rows:
+            body = cache.blob(row)
+            if body is not None and not body.exists():
+                cache.retain(row, original / row["relativePath"])
+        if source["kind"] == "phase":
+            transports.append(transport)
     products._register_qualified_original_projections(original,
         {**refs, "sources": [source for source in refs["sources"] if source["kind"] == "phase"]},
         transports, trusted_workflow_sha=trusted_workflow_sha)

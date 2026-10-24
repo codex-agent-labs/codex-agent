@@ -86,6 +86,20 @@ def _portable_source_path(relative):
     return relative.as_posix() != ".github/workflows/portable-reuse-proof.yml"
 
 
+def _code_identity(code, checkout):
+    # Code objects are immutable. Keep their objects alive in this operation's
+    # private cache; changed functions/defaults/globals still enter the profile.
+    session = _VERIFICATION_SESSION.get()
+    key = (id(code), checkout)
+    cached = session.setdefault("sourceCodeIdentities", {}) if session is not None else {}
+    if key not in cached:
+        digest = sha256_bytes(canonical_json_bytes(_policy_value(code, checkout=checkout)))
+        if len(cached) >= 16_384:
+            return digest
+        cached[key] = (code, digest)
+    return cached[key][1]
+
+
 def _source_identity(*, portable=False):
     root = Path(__file__).resolve().parents[2]
     records = []
@@ -128,7 +142,7 @@ def _source_identity(*, portable=False):
                 while inspect.isfunction(function) and id(function) not in seen:
                     seen.add(id(function))
                     executed.append({"symbol": f"{name}.{symbol}.{function.__qualname__}",
-                                     "code": sha256_bytes(canonical_json_bytes(_policy_value(function.__code__, checkout=root if portable else None)))})
+                                     "code": _code_identity(function.__code__, root if portable else None)})
                     try:
                         defaults = _policy_value((function.__defaults__, function.__kwdefaults__), checkout=root if portable else None)
                     except TypeError:
@@ -138,6 +152,10 @@ def _source_identity(*, portable=False):
                                          "defaults": defaults})
                     function = getattr(function, "__wrapped__", None)
             if not symbol.startswith("__"):
+                # A renewed read credential is execution state, not verifier
+                # policy. Its validating code and permission constants stay bound.
+                if name == "runtime_reference_transport" and symbol == "_cached":
+                    continue
                 try:
                     policy_value = _policy_value(value, checkout=root if portable else None)
                 except TypeError:

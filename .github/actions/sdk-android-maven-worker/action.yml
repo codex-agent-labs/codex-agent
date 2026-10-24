@@ -389,12 +389,14 @@ runs:
         set -euo pipefail
         wave=()
         if [ -n "$SDK_STATE_WAVE" ]; then wave=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture-transport \
           --plan build/sdk-android-core14-plan/impact-plan.json \
           --destination build/sdk-android-core13-transport \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
           --state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" ${reuse[@]+"${reuse[@]}"}
     - id: core14
       name: Capture exact original Core metadata state transport
       shell: bash
@@ -412,12 +414,14 @@ runs:
         if [ "$PHASE" = package ]; then SDK_STATE_WAVE="$CORE14_SDK_STATE_WAVE"; fi
         wave=()
         if [ -n "$SDK_STATE_WAVE" ]; then wave=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture-transport \
           --plan build/sdk-android-core14-plan/impact-plan.json \
           --destination build/sdk-android-core14-transport \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
           --state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" ${reuse[@]+"${reuse[@]}"}
     - id: selected
       if: inputs.phase == 'package'
       name: Capture exact original Android binary state transport
@@ -433,12 +437,14 @@ runs:
         set -euo pipefail
         wave=()
         if [ -n "$SDK_STATE_WAVE" ]; then wave=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        reuse=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
         python3 -B -m ci.sdk_workflow capture-transport \
           --plan build/sdk-android-core14-plan/impact-plan.json \
           --destination build/sdk-android-binary-transport \
           --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
           --state-wave "$STATE_WAVE" ${wave[@]+"${wave[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" ${reuse[@]+"${reuse[@]}"}
     - id: core14_admitted
       name: Re-observe Core metadata originals and elect Android before setup
       shell: bash
@@ -586,7 +592,7 @@ runs:
                 not re.fullmatch(r'sha256:[0-9a-f]{64}', key) or
                 not re.fullmatch(r'[0-9a-f]{40}', tree)):
             raise ValueError('Android Maven worker differs from its exact replay election')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree:
             raise ValueError('Android Maven source tree differs from the authenticated plan')
         state = Path(os.environ['STATE']).resolve(strict=True)
@@ -677,6 +683,8 @@ runs:
         cache-read-only: 'true'
         product-worker: 'true'
     - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: platform-tools
     - id: execute
       name: Execute exact Android Maven phase with held original inputs
       shell: bash

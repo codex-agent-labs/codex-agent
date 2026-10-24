@@ -154,11 +154,16 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
             raise ValueError("Maven SDK private bytecode namespace was modified")
 
     unchanged()
-    environment, wrapper = _runtime_worker_environment(root, current, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
     for output in owned:
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)
     unchanged()
+    if phase == 'binary':
+        from products.gradle_bootstrap import seed_sdk_maven_binary_dependencies
+        seed_sdk_maven_binary_dependencies(root, current['commit'], wrapper, environment,
+                                          destination / 'dependency-seed', fields)
+        unchanged()
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     started = time.monotonic_ns()
     return_code, launch_error = None, None

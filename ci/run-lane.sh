@@ -91,7 +91,7 @@ case "$lane" in
       [ "$build" != true ] || contract_tasks=(:codex-agent-core:verifyProtocolSource "${contract_tasks[@]}")
       ./gradlew "${contract_tasks[@]}" "${args[@]}"
     fi
-    [ "$build" != true ] || ./gradlew :build-logic:releaseToolingJar --stacktrace
+    [ "$build" != true ] || ./gradlew --init-script "$PWD/.github/actions/run-ci-lane/release_tooling.init.gradle" :build-logic:releaseToolingJar --stacktrace
     if [ "$test_lane" = true ]; then
       ./gradlew :codex-agent-core:jvmTest :tooling:protocol-generator:test "${args[@]}"
     fi

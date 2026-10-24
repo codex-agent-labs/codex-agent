@@ -61,6 +61,8 @@ jobs:
       matrix: ${{ fromJSON(fromJSON(inputs.packagePlan).outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ fromJSON(inputs.binaryWave).outputs.checkpoint }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,6 +72,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: ${{ fromJSON(inputs.binaryWave).outputs.checkpoint != '' && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -96,71 +99,9 @@ jobs:
         with:
           plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
           tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
-          path: build/runtime-plan
-          merge-multiple: true
-      - id: original
-        name: Capture authenticated current state without electing from retained binary bytes
-        env:
-          PARENT_ID: ${{ fromJSON(inputs.binaryWave).outputs.artifact_id }}
-          PARENT_SHA256: ${{ fromJSON(inputs.binaryWave).outputs.artifact_digest }}
-          STATE_WAVE: ${{ fromJSON(inputs.binaryWave).outputs.state_wave }}
-          SDK_STATE_WAVE: ${{ fromJSON(inputs.binaryWave).outputs.sdk_state_wave }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 -B - <<'PY'
-          import os
-          from ci.products.signing_isolation import require_no_signing_secret
-          require_no_signing_secret(os.environ)
-          PY
-          state=(--state-wave "${STATE_WAVE:-0}")
-          if [ -n "$SDK_STATE_WAVE" ]; then state+=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
-          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then state+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-          python3 -B -m ci.sdk_workflow capture-transport \
-            --plan "$GITHUB_WORKSPACE/build/runtime-plan/impact-plan.json" \
-            --destination "$GITHUB_WORKSPACE/build/sdk-core-package-policy-capture" \
-            --artifact-id "$PARENT_ID" --artifact-sha256 "$PARENT_SHA256" \
-            ${state[@]+"${state[@]}"} --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT"
-      - id: policy
-        name: Restore independent current Contract and original Core binary invocation policy
-        env:
-          BUILD_KEY: ${{ matrix.buildKey }}
-          PLAN_PATH: ${{ steps.original.outputs.plan_path }}
-          DISCOVERY_ROOT: ${{ steps.original.outputs.discovery_root }}
-          STATE_ROOT: ${{ steps.original.outputs.state_root }}
-          GITHUB_TOKEN: ${{ github.token }}
-          BINARY_ID: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_id }}
-          BINARY_SHA256: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_sha256 }}
-          BINARY_CONTEXT: ${{ fromJSON(inputs.binaryWave).outputs.binary_original_context }}
-          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
-          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
-          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
-        run: |
-          set -euo pipefail
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
-          if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
-          original=()
-          if [ -n "$BINARY_ID$BINARY_SHA256$BINARY_CONTEXT" ]; then
-            original=(--binary-artifact-id "$BINARY_ID" --binary-artifact-sha256 "$BINARY_SHA256" --binary-original-context "$BINARY_CONTEXT")
-          fi
-          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-          python3 -B -m ci.sdk_core_package_policy \
-            --plan "$PLAN_PATH" \
-            --discovery-root "$DISCOVERY_ROOT" \
-            --state-root "$STATE_ROOT" \
-            --destination "$RUNNER_TEMP/sdk-core-package-policy" \
-            --expected-build-key "$BUILD_KEY" ${original[@]+"${original[@]}"} \
-            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-            ${tooling[@]+"${tooling[@]}"}
       - uses: ./.github/actions/sdk-core-maven-worker
         with:
+          prepare-core-package: 'true'
           phase: package
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
           artifact-id: ${{ fromJSON(inputs.binaryWave).outputs.artifact_id }}
@@ -174,10 +115,9 @@ jobs:
           tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
           sdk-inputs-id: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
           sdk-inputs-sha256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
-          binary-artifact-id: ${{ steps.policy.outputs.binary-artifact-id }}
-          binary-artifact-sha256: ${{ steps.policy.outputs.binary-artifact-sha256 }}
-          binary-contract-evidence: ${{ steps.policy.outputs.binary-contract-evidence }}
-          binary-original-context: ${{ steps.policy.outputs.binary-original-context }}
+          binary-artifact-id: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_id }}
+          binary-artifact-sha256: ${{ fromJSON(inputs.binaryWave).outputs.binary_artifact_sha256 }}
+          binary-original-context-json: ${{ fromJSON(inputs.binaryWave).outputs.binary_original_context }}
           binary-original-workflow-path: .github/workflows/sdk-core-binary-validation.yml
           binary-original-job-name: product-validation / sdk-core-binary-wave / sdk-core-binary-common
 
@@ -190,6 +130,8 @@ jobs:
       fromJSON(inputs.packagePlan).result == 'success' &&
       fromJSON(inputs.packagePlan).outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
+    env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ fromJSON(inputs.binaryWave).outputs.checkpoint }}
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
       routing: ${{ steps.collect.outputs.routing }}
@@ -204,6 +146,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: ${{ fromJSON(inputs.binaryWave).outputs.checkpoint != '' && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail

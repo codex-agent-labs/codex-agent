@@ -134,7 +134,7 @@ def verify_apple_validation_binding(capture, receipt_bytes, value):
 
 @contextmanager
 def verified_apple_validation_attestation(capture, receipt_path, attestation, signature, *,
-        public_key, required_trust_domain, keyring=None, keys_directory=None):
+        public_key, required_trust_domain, keyring=None, keys_directory=None, _receipt_only=False):
     """Hold caller-pinned signer authentication while full replay consumes a copy.
 
     Development keys must be explicitly pinned by the caller's independently
@@ -142,7 +142,11 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
     a trust root. Release mode requires the caller's tracked keyring and may
     select its exact signed key identity when public_key is None.
     Successful signature verification alone never proves compiler/host behavior.
+    Receipt-only readers get no capture path and consume no private body copy;
+    the original inventory and all controls are still checked through exit.
     """
+    if type(_receipt_only) is not bool:
+        raise ValueError("Apple attestation receipt-only mode must be boolean")
     if required_trust_domain not in {"development", "release"}:
         raise ValueError("Apple attestation requires an explicit caller trust domain")
     if (required_trust_domain == "release" and (keyring is None or keys_directory is None)
@@ -168,7 +172,7 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
     signing = validate_signing_metadata(value["signing"], trust_domain=required_trust_domain)
     with tempfile.TemporaryDirectory(prefix="apple-validation-attestation-") as temporary:
         root = Path(temporary).resolve()
-        captured = root / "capture"
+        captured = capture if _receipt_only else root / "capture"
         policy_paths, policy_bytes = {}, {}
         if required_trust_domain == "release":
             policy_paths, policy_bytes = _public_policy(Path(keyring), Path(keys_directory), root / "policy")
@@ -179,7 +183,8 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
             if public_key is not None and selected_public != originals["public-key"]:
                 raise ValueError("Apple attestation public key differs from caller release policy")
             originals["public-key"] = selected_public
-        snapshot_regular_tree(capture, captured, allow_empty=True)
+        if not _receipt_only:
+            snapshot_regular_tree(capture, captured, allow_empty=True)
         snapshots = {}
         for name, raw in originals.items():
             snapshots[name] = root / name
@@ -200,7 +205,8 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
                 raise ValueError("Authenticated Apple evidence or caller policy changed during use")
         unchanged()
         try:
-            yield {"capture": captured, "receiptBytes": originals["receipt"], "attestation": value,
+            yield {**({} if _receipt_only else {"capture": captured}),
+                   "receiptBytes": originals["receipt"], "attestation": value,
                    "attestationBytes": originals["attestation"], "signatureBytes": originals["signature"]}
         finally:
             unchanged()
@@ -210,7 +216,7 @@ def verified_apple_validation_attestation(capture, receipt_path, attestation, si
 def verified_apple_validation_handoff(evidence_root, *, plan, expected_receipt_sha256, target,
         attestation_public_key, attestation_trust_domain, keyring, keys_directory,
         repository_root, tooling_evidence, tooling_public_key, java_executable,
-        policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None):
+        policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None, completed_frozen=None):
     """Authenticate the complete original capture AND replay its full content gate.
 
     The selected receipt/target and all key policies come from the caller, never
@@ -243,7 +249,8 @@ def verified_apple_validation_handoff(evidence_root, *, plan, expected_receipt_s
                     repository_root=repository_root, tooling_evidence=tooling_evidence,
                     tooling_public_key=tooling_public_key, java_executable=java_executable,
                     policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory) as verified:
+                    tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+                    **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as verified:
                 if (verified["receiptBytes"] != authenticated["receiptBytes"]
                         or verified["receipt"]["target"] != target):
                     raise ValueError("Apple replay returned a different original validation receipt")

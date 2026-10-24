@@ -1,18 +1,18 @@
 name: Execute elected Android metadata phase
 description: Re-observe the caller-pinned protected Android/Firebase validation before finalizing metadata.
 inputs:
-  plan-id:
+  plan-path:
     required: true
-    description: Original plan artifact ID.
-  artifact-id:
+    description: Same-job captured plan; independently re-elected before execution.
+  discovery-root:
     required: true
-    description: Predecessor SDK state artifact ID.
-  artifact-sha256:
+    description: Same-job captured discovery; never an admission verdict.
+  state-root:
     required: true
-    description: Exact predecessor SDK state digest.
-  sdk-state-wave:
+    description: Same-job captured state with authenticated original predecessors.
+  sdk-validation-tooling:
     required: true
-    description: Exact preceding SDK state wave.
+    description: Independent caller-owned signed tooling policy.
   trusted-workflow-sha:
     required: true
     description: Reviewed product workflow revision.
@@ -76,7 +76,6 @@ runs:
         APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         CORE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
         ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
-        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
       run: |
         python3 -B - <<'PY'
         import os, re, sys
@@ -88,8 +87,6 @@ runs:
         from products.signing_isolation import require_no_signing_secret
         from ci.sdk_policy_snapshot import snapshot_policy_closure
         require_no_signing_secret(os.environ)
-        if os.environ['SDK_STATE_WAVE'] != '17':
-            raise ValueError('Android metadata requires exact preceding SDK wave 17')
         root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         names = ('ORIGINAL_POLICY', 'APPLE_POLICY', 'CORE_METADATA_POLICY', 'ANDROID_METADATA_POLICY')
         controls, digests = {}, {}
@@ -168,26 +165,41 @@ runs:
             output.write('policy_sha256=' + sha256_bytes(canonical_json_bytes(digests)) + '\n')
         PY
     - id: captured
-      uses: ./.github/actions/capture-runtime-state
-      with:
-        product: sdk
-        sdk-family: android-metadata
-        plan-id: ${{ inputs.plan-id }}
-        artifact-id: ${{ inputs.artifact-id }}
-        artifact-sha256: ${{ inputs.artifact-sha256 }}
-        sdk-state-wave: ${{ inputs.sdk-state-wave }}
-        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
-        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
-        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
-        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+      name: Re-elect metadata from same-job authenticated state without another transfer
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan-path }}
+        DISCOVERY: ${{ inputs.discovery-root }}
+        STATE: ${{ inputs.state-root }}
+        SDK_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        CORE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        policy=()
+        if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+        if [ -n "$CORE_METADATA_POLICY" ]; then policy+=(--sdk-facade-metadata-policy "$CORE_METADATA_POLICY"); fi
+        if [ -n "$ANDROID_METADATA_POLICY" ]; then policy+=(--sdk-android-metadata-policy "$ANDROID_METADATA_POLICY"); fi
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+          policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+        fi
+        python3 -B -m ci.sdk_workflow matrix \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
+          --family android-metadata --sdk-validation-tooling "$SDK_TOOLING" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
+          ${policy[@]+"${policy[@]}"}
     - id: identity
       name: Require exact elected Android metadata row before setup
       shell: bash
       env:
-        MATRIX: ${{ steps.captured.outputs.sdk-matrix }}
-        REQUIRED: ${{ steps.captured.outputs.sdk-workers-required }}
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        STATE: ${{ steps.captured.outputs.state-root }}
+        MATRIX: ${{ steps.captured.outputs.sdk_matrix }}
+        REQUIRED: ${{ steps.captured.outputs.sdk_workers_required }}
+        PLAN: ${{ inputs.plan-path }}
+        STATE: ${{ inputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
         ORIGINAL_POLICY: ${{ inputs.original-policy }}
@@ -265,9 +277,9 @@ runs:
       name: Execute exact Android metadata controller
       shell: bash
       env:
-        PLAN: ${{ steps.captured.outputs.plan-path }}
-        DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
-        STATE: ${{ steps.captured.outputs.state-root }}
+        PLAN: ${{ inputs.plan-path }}
+        DISCOVERY: ${{ inputs.discovery-root }}
+        STATE: ${{ inputs.state-root }}
         BUILD_KEY: ${{ inputs.build-key }}
         TREE: ${{ inputs.tree }}
         ORIGINAL_POLICY: ${{ inputs.original-policy }}
@@ -282,7 +294,7 @@ runs:
         import os, subprocess, sys
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
-        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file
+        from products.inventory import canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file
         from products.sdk_validation_inputs import _request_inventory
         from products.sdk_android_validation_phase import _contract_sources
         from products.signing_isolation import require_no_signing_secret
@@ -321,7 +333,7 @@ runs:
         fields = {'--plan': os.environ['PLAN'], '--discovery-root': os.environ['DISCOVERY'],
             '--state-root': os.environ['STATE'], '--destination': str(root / 'build/sdk-android-metadata-worker'),
             '--repository-root': str(root), '--expected-build-key': os.environ['BUILD_KEY'],
-            '--policy-revision': load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))['validationCommit'],
+            '--policy-revision': load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))['validationCommit'],
             '--trusted-workflow-sha': os.environ['TRUSTED_WORKFLOW_SHA'],
             '--package-stage': original['packageStage'], '--package-receipt': original['packageReceipt'],
             '--binary-stage': original['binaryStage'], '--binary-receipt': original['binaryReceipt'],
@@ -346,6 +358,8 @@ runs:
                            ('ANDROID_METADATA_POLICY', '--sdk-android-metadata-policy')):
             if os.environ[name]:
                 fields[flag] = os.environ[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'android-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)
@@ -358,7 +372,7 @@ runs:
         shard = verify_phase_shard(root / 'build/sdk-android-metadata-worker/shard',
             PhaseInstanceId('sdk', 'sdk-android', 'metadata', 'android'))
         producer = validate_producer(shard['receipt']['producer'], 'Android metadata producer')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN'])))
         if (shard['buildKey'] != os.environ['BUILD_KEY'] or
                 producer['tree'] != os.environ['TREE'] or
                 producer['commit'] != plan['validationCommit'] or

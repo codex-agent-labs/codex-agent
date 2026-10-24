@@ -8,6 +8,8 @@ The complete original carrier remains external to the standard SDK input tree.
 from pathlib import Path
 import tempfile
 
+from runtime_reference_transport import measured
+
 from .inventory import (
     canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
     regular_file_inventory, require_regular_directory, require_sha256, sha256_bytes,
@@ -15,11 +17,14 @@ from .inventory import (
 from .registry import NATIVE_TARGETS, PhaseInstanceId
 from .runtime_aggregate_handoff import _public_policy, verified_runtime_aggregate_handoff
 from .sdk_inputs import INVENTORY_NAME, stage_sdk_inputs
+from .restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from .sdk_release_selection import (
     require_sdk_contract_version, require_sdk_release_selection, require_sdk_runtime_compatibility_policy,
 )
 
 
+@verification_scoped
+@measured
 def stage_runtime_sdk_handoff(handoff_root: Path, destination: Path, *,
                               sdk_version: str, compatible_release_range: str,
                               compatible_runtime_compatibility_range: str,

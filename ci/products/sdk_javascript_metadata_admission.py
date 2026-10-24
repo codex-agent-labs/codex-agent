@@ -15,7 +15,9 @@ from .inventory import (
 from .plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from .receipt import validate_phase_receipt
 from .registry import PhaseInstanceId
-from .sdk_javascript_metadata import _inventory, verify_sdk_javascript_metadata_content
+from .sdk_javascript_metadata import (
+    _inventory, javascript_metadata_uses_raw_validation, verify_sdk_javascript_metadata_content,
+)
 from .sdk_package import _require_capability_output_separate
 from .selection import phase_git_inventory
 
@@ -81,6 +83,7 @@ def verify_sdk_javascript_metadata_admission(
             captured[name].write_bytes(contents)
         receipts = {name.removesuffix("_receipt"): validate_phase_receipt(load_canonical_json_bytes(contents))
                     for name, contents in raw.items()}
+        original_inputs = {}
         for phase in ("validation", "metadata"):
             receipt = receipts[phase]
             instance = PhaseInstanceId("sdk", "javascript", phase, "node")
@@ -88,14 +91,10 @@ def verify_sdk_javascript_metadata_admission(
                     "sdk", "javascript", phase, "node"):
                 raise ValueError("JavaScript admission receipt has the wrong phase identity")
             versions = _original_versions(repository, receipt)
-            upstream = ([receipts["validation"]] if phase == "metadata" else
-                        [receipts["package"], receipts["runtime_validation"]])
-            planned = plan_phase(instance, inventory=phase_git_inventory(repository, receipt["producer"]["commit"], instance),
-                versions=versions, upstream_receipts=upstream,
-                toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
-                flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1)
-            if receipt["inputs"] != planned["inputs"] or receipt["buildKey"] != planned["buildKey"]:
-                raise ValueError("JavaScript original inputs/build key differ from its producer plan")
+            inventory = phase_git_inventory(repository, receipt["producer"]["commit"], instance)
+            if inventory != receipt["inputs"]["inventory"]:
+                raise ValueError("JavaScript original inventory differs from its producer plan")
+            original_inputs[phase] = versions, inventory
         program = captured["validation_stage"] / "outputs/test-program"
         if {record["relativePath"] for record in regular_file_inventory(program)} != _CONSUMER_FILES:
             raise ValueError("JavaScript original consumer source inventory differs from the exact matcher input")
@@ -105,12 +104,38 @@ def verify_sdk_javascript_metadata_admission(
             if not source or source != read_regular_file_bytes(program / name, max_bytes=_LIMIT,
                                                               reject_symlink_parents=True):
                 raise ValueError("JavaScript consumer program differs from its original validation Git source")
-        metadata, original = verify_sdk_javascript_metadata_content(**captured,
+        from .sdk_javascript_validation_phase import verify_sdk_javascript_validation_projection
+
+        proof = verify_sdk_javascript_validation_projection(
+            **{name: captured[name] for name in (
+                "contract_stage", "contract_receipt", "package_stage", "package_receipt",
+                "validation_stage", "validation_receipt", "runtime_validation_stage", "runtime_validation_receipt")},
             original_consumer_directory=original_consumer_directory, repository=repository,
             tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
             java_executable=java_executable, policy_revision=policy_revision,
             required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
             tooling_keys_directory=tooling_keys_directory)
+        for phase in ("validation", "metadata"):
+            receipt = receipts[phase]
+            instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+            versions, inventory = original_inputs[phase]
+            upstream = ([receipts["validation"]] if phase == "metadata" else
+                        [receipts["package"], receipts["runtime_validation"]])
+            projection = ({"sdk_javascript_validation_projection": proof} if phase == "metadata" else {})
+            if phase == "metadata" and javascript_metadata_uses_raw_validation(receipt):
+                projection["sdk_javascript_legacy_metadata_receipt"] = receipt
+            planned = plan_phase(instance, inventory=inventory,
+                versions=versions, upstream_receipts=upstream,
+                toolchain_profile_digest=NOT_APPLICABLE_TOOLCHAIN_DIGEST,
+                flags_digest=NOT_APPLICABLE_FLAGS_DIGEST, output_schema_version=1, **projection)
+            if receipt["inputs"] != planned["inputs"] or receipt["buildKey"] != planned["buildKey"]:
+                raise ValueError("JavaScript original inputs/build key differ from its producer plan")
+        metadata, original = verify_sdk_javascript_metadata_content(**captured,
+            original_consumer_directory=original_consumer_directory, repository=repository,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+            java_executable=java_executable, policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory, validation_projection=proof)
         if original != raw["metadata_receipt"] or metadata != receipts["metadata"]:
             raise ValueError("JavaScript full content gate returned a different original metadata receipt")
         for name, source in trees.items():

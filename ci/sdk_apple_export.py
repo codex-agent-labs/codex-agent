@@ -98,7 +98,7 @@ def execute(
             path.exists() or path.is_symlink() for path in (distribution, execution)):
         raise ValueError("Fresh Apple export requires fresh diagnostics and output roots")
     _prepare_destination(export_root, root).rmdir()
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
     destination = _prepare_destination(destination, root)
 
     def unchanged() -> None:

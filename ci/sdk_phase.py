@@ -1,18 +1,149 @@
-"""Translate authenticated SDK predecessors into existing artifact-only inputs.
+"""Shared SDK routing declarations and artifact-only input translation.
 
-JavaScript package/validation and Core validation have routes here. The caller owns
-full original receipt/plan/Contract/Runtime authentication and common versions.
-This module does not turn an embedded compatibility declaration into trust.
+Register workflow addresses once in SDK_FAMILY_ROUTES. Checkpoint support must
+retain its existing family verifier and bounded transport format before enabling
+the checkpoint flag. Physical input scopes never reduce dependency authentication.
+This module does no I/O and grants no producer, signature or semantic authority.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from products.inventory import read_regular_file_bytes, require_regular_directory, require_semver
-from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, SDK_FACADE_TARGETS
+from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PHASE_INSTANCE_IDS, SDK_FACADE_TARGETS, PhaseInstanceId
+
+
+@dataclass(frozen=True, slots=True)
+class SdkFamilyRoute:
+    """Reviewed workflow addresses only; this record grants no admission."""
+
+    family: str
+    wave: int
+    predecessor: str
+    election: str
+    workers: str
+    child: str | None = None
+    parent: str | None = None
+    checkpoint: bool = False
+
+    @property
+    def stage(self):
+        return self.family.removeprefix("native-")
+
+    @property
+    def collector(self):
+        return f"sdk-collect-{self.wave}"
+
+    @property
+    def collector_job(self):
+        prefix = "product-validation / " + (self.parent + " / " if self.parent else "")
+        return prefix + self.collector
+
+    @property
+    def workflow_path(self):
+        return f".github/workflows/{self.child or 'product-validation'}.yml"
+
+
+# Wave numbers are immutable upload identities, not execution order. Checkpoint
+# support is deliberately explicit: a routing row never enables a new verifier.
+SDK_FAMILY_ROUTES = (
+    SdkFamilyRoute("csharp-binary", 19, "sdk-javascript-metadata-result", "sdk-csharp-binary-plan", "sdk-csharp-binary"),
+    SdkFamilyRoute("native-package", 4, "sdk-csharp-binary-result", "sdk-native-plan", "sdk-native-workers", checkpoint=True),
+    SdkFamilyRoute("ios-package", 5, "sdk-native-packages", "sdk-ios-package-plan", "sdk-ios-package"),
+    SdkFamilyRoute("javascript-metadata", 6, "sdk-javascript", "sdk-javascript-metadata-plan", "sdk-javascript-metadata"),
+    SdkFamilyRoute("native-validation", 7, "sdk-ios-packages", "sdk-native-validation-plan", "sdk-native-validation", checkpoint=True),
+    SdkFamilyRoute("native-metadata", 8, "sdk-native-validation-result", "sdk-native-metadata-plan", "sdk-native-metadata", checkpoint=True),
+    SdkFamilyRoute("ios-validation", 9, "sdk-native-result", "sdk-native-result", "sdk-ios-validation", checkpoint=True),
+    SdkFamilyRoute("ios-metadata", 10, "sdk-ios-validation-result", "sdk-ios-metadata-plan", "sdk-ios-metadata", checkpoint=True),
+    SdkFamilyRoute("core-binary", 11, "sdk-ios-metadata-result", "sdk-core-binary-plan", "sdk-core-binary",
+                   "sdk-core-binary-validation", "sdk-core-binary-wave", True),
+    SdkFamilyRoute("core-package", 12, "sdk-core-binary-wave", "sdk-core-package-plan", "sdk-core-package",
+                   "sdk-core-package-validation", "sdk-core-package-wave", True),
+    SdkFamilyRoute("core-validation", 13, "sdk-core-package-wave", "sdk-core-validation-plan", "sdk-core-validation",
+                   "sdk-core-validation", "sdk-core-validation-wave", True),
+    SdkFamilyRoute("core-metadata", 14, "sdk-core-validation-wave", "sdk-core-metadata-plan", "sdk-core-metadata",
+                   "sdk-core-metadata-validation", "sdk-core-metadata-wave", True),
+    SdkFamilyRoute("android-binary", 15, "sdk-core-metadata-wave", "sdk-android-binary-plan", "sdk-android-binary",
+                   "sdk-android-binary-validation", "sdk-android-binary-result", True),
+    SdkFamilyRoute("android-package", 16, "sdk-android-binary-result", "sdk-android-package-plan", "sdk-android-package",
+                   "sdk-android-package-validation", "sdk-android-package-result", True),
+    SdkFamilyRoute("android-validation", 17, "sdk-android-package-result", "sdk-android-validation-plan", "sdk-android-validation",
+                   "sdk-android-validation", "sdk-android-validation-result", True),
+    SdkFamilyRoute("android-metadata", 18, "sdk-android-validation-result", "sdk-android-metadata-plan", "sdk-android-metadata",
+                   "sdk-android-metadata-validation", "sdk-android-metadata-result", True),
+)
+
+
+def _family_instances(family):
+    component, phase = family.rsplit("-", 1)
+    components = NATIVE_BINDINGS if component == "native" else (
+        "sdk-" + component if component in {"core", "android", "ios"} else component,)
+    return tuple(item for item in PHASE_INSTANCE_IDS
+                 if item.product == "sdk" and item.component in components and item.phase == phase)
+
+
+SDK_FAMILY_INSTANCES = {row.family: frozenset(_family_instances(row.family)) for row in SDK_FAMILY_ROUTES}
+CHECKPOINT_ROUTES = {row.collector_job: row for row in SDK_FAMILY_ROUTES if row.checkpoint}
+LEGACY_REPLAY_INSTANCES = tuple(PhaseInstanceId("sdk", "javascript", phase, "node")
+    for phase in ("package", "validation", "metadata")) + (PhaseInstanceId("sdk", "csharp", "binary", "desktop"),)
+FULL_ORIGINAL_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(sorted(SDK_FAMILY_INSTANCES["native-package"]))
+COMPACT_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(
+    instance for row in SDK_FAMILY_ROUTES if row.checkpoint for instance in sorted(SDK_FAMILY_INSTANCES[row.family]))
+
+# Preparation and outer native controllers consume these stages, not the full
+# transitive closure. Dependency identity/admission still precedes materialization.
+NATIVE_RUNTIME_PREDECESSORS = (PhaseInstanceId("contract", "contract", "metadata", "common"),
+    *(PhaseInstanceId("runtime", target, phase, target)
+      for target in NATIVE_TARGETS for phase in ("package", "validation")))
+
+
+def native_consumed_predecessors(instance):
+    """Physical inputs only; metadata receives Runtime stages from its caller."""
+    if instance not in SDK_FAMILY_INSTANCES.get("native-" + instance.phase, ()):
+        raise ValueError("Unsupported native consumed-input scope")
+    runtime = () if instance.phase == "metadata" else NATIVE_RUNTIME_PREDECESSORS
+    phases = (("binary",) if instance.component == "csharp" else ()) + (
+        ("package",) if instance.phase != "package" else ())
+    return runtime + tuple(PhaseInstanceId("sdk", instance.component, phase, "desktop") for phase in phases) + tuple(
+        PhaseInstanceId("sdk", instance.component, "validation", target)
+        for target in NATIVE_TARGETS if instance.phase == "metadata")
+
+
+def completed_recovery_folder(instance):
+    """Preserve existing on-disk controls and their exact recovery readers."""
+    if instance == PhaseInstanceId("sdk", "sdk-ios", "package", "ios"):
+        return "prior-failed-sdk-ios-package"
+    if instance not in COMPACT_REPLAY_INSTANCES:
+        raise ValueError("Unsupported completed SDK recovery phase")
+    if instance.component == "javascript":
+        return "prior-failed-sdk-javascript" + ("" if instance.phase == "package" else "-" + instance.phase)
+    if instance == PhaseInstanceId("sdk", "csharp", "binary", "desktop"):
+        return "prior-failed-sdk-csharp"
+    return f"prior-completed-{instance.component}-{instance.phase}-{instance.target}"
+
+
+def maven_consumed_predecessors(instance, *, validation_target=None):
+    """Physical inputs only; callers must authenticate the full dependency closure."""
+    package = instance in {PhaseInstanceId("sdk", "sdk-core", "package", "common"),
+                          PhaseInstanceId("sdk", "sdk-android", "package", "android")}
+    validation = instance in (SDK_FAMILY_INSTANCES["core-validation"] |
+                              SDK_FAMILY_INSTANCES["android-validation"])
+    metadata = instance == PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
+    if (not (package or validation or metadata)
+            or metadata and validation_target is not None and validation_target not in SDK_FACADE_TARGETS
+            or not metadata and validation_target is not None):
+        raise ValueError("Unsupported Maven consumed-input scope")
+    contract = tuple(PhaseInstanceId("contract", "contract", phase, "common")
+                     for phase in ("binary", "package", "validation", "metadata"))
+    target = "android" if instance.component == "sdk-android" else "common"
+    phases = ("binary",) if package else ("binary", "package")
+    validations = (SDK_FACADE_TARGETS if validation_target is None else (validation_target,)) if metadata else ()
+    return contract + tuple(PhaseInstanceId("sdk", instance.component, phase, target) for phase in phases) + tuple(
+        PhaseInstanceId("sdk", "sdk-core", "validation", target) for target in validations)
 
 
 def _identity(plan: Mapping[str, Any]) -> tuple[str, str, str, str]:

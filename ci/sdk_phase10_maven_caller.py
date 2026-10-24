@@ -22,16 +22,20 @@ from ci import product_reuse
 from ci.products.index import SignedProductIndex, _verify_index_receipt, verify_release_product_index
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_exact_keys,
+    read_regular_file_bytes, require_exact_keys,
     require_integer, require_sha256, sha256_bytes, sha256_file,
     snapshot_regular_tree, write_canonical_json,
 )
 from ci.products.receipt import validate_producer
 from ci.products.registry import PhaseInstanceId
-from ci.products.restore import restore_object, verify_phase_shard
+from ci.products.restore import (
+    memoized_file_inventory as regular_file_inventory, restore_object,
+    verification_scoped, verify_phase_shard,
+)
 from ci.products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from ci.products.sdk_phase10_maven import (
-    produce_sdk_phase10_maven_sidecars, verify_sdk_phase10_maven,
+    produce_sdk_central_bundles, produce_sdk_phase10_maven_sidecars,
+    verify_sdk_central_bundles, verify_sdk_phase10_maven,
 )
 from ci.sdk_phase10_maven_campaign import capture_sdk_phase10_maven_campaign
 from ci.sdk_facade_capture import verify_retained_sdk_phase_upload
@@ -191,6 +195,7 @@ def prepare_sdk_phase10_maven_handoff(
             "files": expected}
 
 
+@verification_scoped
 def sign_sdk_phase10_maven_handoff(
     prepared: Path, destination: Path, *, expected_preparation_sha256: str,
     expected_control_sha256: str,
@@ -323,9 +328,13 @@ def sign_sdk_phase10_maven_handoff(
                 public_key, expected_pgp_key_sha256,
                 signing_home, signing_fingerprint, passphrase)
             results.append(result)
+        central = produce_sdk_central_bundles(
+            {component: stage for component, stage, _ in selected},
+            published / "maven-sidecars", published / "central", results)
         write_canonical_json(published / "sidecar-selection.json", {
-            "schemaVersion": 1, "product": "sdk", "approvedControlSha256": prep["approvedControlSha256"],
+            "schemaVersion": 2, "product": "sdk", "approvedControlSha256": prep["approvedControlSha256"],
             "preparationSha256": expected_preparation_sha256, "packages": results,
+            "centralBundles": central,
         })
         output = regular_file_inventory(published, allow_empty=True)
         if (regular_file_inventory(held, allow_empty=True) != original_inventory
@@ -334,14 +343,15 @@ def sign_sdk_phase10_maven_handoff(
             raise ValueError("SDK Maven prepared bytes or signing isolation changed")
         publish_regular_tree(published, Path(destination), allow_empty=True,
                              expected_inventory=output)
-    return {"packages": results, "files": output}
+    return {"packages": results, "centralBundles": central, "files": output}
 
 
+@verification_scoped
 def verify_sdk_phase10_maven_handoff(
     signed: Path, *, expected_preparation_sha256: str,
     expected_control_sha256: str, expected_pgp_key_sha256: str,
 ) -> dict:
-    """Verify the held signed bytes and expose exactly three upload directories."""
+    """Verify three original package sets and their finalized Central envelopes."""
     if _TOKENS & set(os.environ):
         raise ValueError("SDK Maven signed verifier must not receive an observation token")
     signed = Path(signed)
@@ -393,19 +403,19 @@ def verify_sdk_phase10_maven_handoff(
         {"schemaVersion", "product", "signedIndexSha256", "signedIndexSignatureSha256", "packages"},
         "SDK Maven custody")
     selection = require_exact_keys(load_canonical_json_bytes(_read(signed / "sidecar-selection.json")),
-        {"schemaVersion", "product", "approvedControlSha256", "preparationSha256", "packages"},
+        {"schemaVersion", "product", "approvedControlSha256", "preparationSha256", "packages", "centralBundles"},
         "SDK Maven sidecar selection")
     if (custody_record["schemaVersion"] != 1 or custody_record["product"] != "sdk"
             or custody_record["signedIndexSha256"] != control["signedIndexSha256"]
             or custody_record["signedIndexSignatureSha256"] != control["signatureSha256"]
-            or selection["schemaVersion"] != 1 or selection["product"] != "sdk"
+            or selection["schemaVersion"] != 2 or selection["product"] != "sdk"
             or selection["approvedControlSha256"] != control_sha
             or selection["preparationSha256"] != expected_preparation_sha256
             or type(custody_record["packages"]) is not list
             or type(selection["packages"]) is not list
             or len(custody_record["packages"]) != 3 or len(selection["packages"]) != 3):
         raise ValueError("SDK Maven signed sidecar selection differs from custody")
-    uploads = []
+    uploads, verified_packages = [], []
     expected_paths = {"control.json", "preparation.json", "publication-pgp-public-key.asc",
                       "sidecar-selection.json"}
     expected_paths.update(entry["relativePath"] for entry in held_files
@@ -439,17 +449,23 @@ def verify_sdk_phase10_maven_handoff(
             stage, receipt, sidecars, signed / "publication-pgp-public-key.asc", expected_key)
         if verified != signed_result[0]:
             raise ValueError("SDK Maven signed sidecar inventory differs from verification")
+        verified_packages.append(verified)
         expected_paths.update(source + "/" + item["relativePath"]
                               for item in verified["sidecarFiles"])
         uploads.append({"component": component, "relativePath": source,
                         "files": verified["sidecarFiles"],
                         "inventorySha256": sha256_bytes(canonical_json_bytes(verified["sidecarFiles"]))})
+    central = verify_sdk_central_bundles(signed / "central", verified_packages)
+    if central != selection["centralBundles"]:
+        raise ValueError("SDK Central envelopes differ from finalized selection")
+    expected_paths.update("central/" + row["fileName"] for row in central)
     if {entry["relativePath"] for entry in files} != expected_paths or \
             regular_file_inventory(signed) != files:
         raise ValueError("SDK Maven signed handoff contains extra or changed files")
-    return {"schemaVersion": 1, "product": "sdk",
+    return {"schemaVersion": 2, "product": "sdk",
             "signedIndexSha256": control["signedIndexSha256"],
             "pgpPublicKeySha256": expected_key, "uploadSources": uploads,
+            "centralBundles": central,
             "files": files, "signedFilesSha256": sha256_bytes(canonical_json_bytes(files))}
 
 

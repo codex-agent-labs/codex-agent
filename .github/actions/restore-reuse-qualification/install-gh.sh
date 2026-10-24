@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Native verification needs source/signer digest pins absent from older gh.
+executable=gh
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)
     asset=gh_2.102.0_linux_amd64.tar.gz
@@ -18,6 +19,11 @@ case "$(uname -s)/$(uname -m)" in
     asset=gh_2.102.0_macOS_arm64.zip
     digest=da922c20d1792e5b2cbf375593d7a658acf034c12c84e007e71c76ef959c337e
     ;;
+  MINGW64_NT-*/x86_64)
+    asset=gh_2.102.0_windows_amd64.zip
+    digest=ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4
+    executable=gh.exe
+    ;;
   *)
     echo 'Portable qualification custody unavailable; retain cold authentication.' >&2
     echo 'supported=false' >> "$GITHUB_OUTPUT"
@@ -28,13 +34,18 @@ directory="$RUNNER_TEMP/reuse-qualification-gh"
 mkdir "$directory"
 curl --fail --location --silent --show-error \
   "https://github.com/cli/cli/releases/download/v2.102.0/$asset" -o "$directory/$asset"
-printf '%s  %s\n' "$digest" "$directory/$asset" | shasum -a 256 --check --status
+python3 - "$directory/$asset" "$digest" <<'PY'
+import hashlib, sys
+with open(sys.argv[1], 'rb') as archive:
+    if hashlib.file_digest(archive, 'sha256').hexdigest() != sys.argv[2]:
+        raise SystemExit('Native gh archive differs from its pinned SHA-256')
+PY
 if [[ "$asset" == *.zip ]]; then
-  unzip -q "$directory/$asset" '*/bin/gh' -d "$directory"
+  unzip -q "$directory/$asset" "*bin/$executable" -d "$directory"
 else
   tar -xzf "$directory/$asset" -C "$directory" --wildcards '*/bin/gh'
 fi
-binary=$(find "$directory" -type f -path '*/bin/gh')
+binary=$(find "$directory" -type f -path "*/bin/$executable")
 test -n "$binary"
 echo "$(dirname "$binary")" >> "$GITHUB_PATH"
 echo 'supported=true' >> "$GITHUB_OUTPUT"

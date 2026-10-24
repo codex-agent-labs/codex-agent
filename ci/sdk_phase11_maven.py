@@ -19,14 +19,16 @@ if not __package__:
 
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_semver,
+    read_regular_file_bytes, require_semver,
     require_sha256, sha256_bytes, snapshot_regular_tree,
 )
 from ci.products.signing_isolation import require_no_signing_secret
+from ci.products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from ci.sdk_phase10_maven_caller import _SECRETS, verify_sdk_phase10_maven_handoff
 from ci.sdk_phase11_bytes import _landed_tree
 
 
+@verification_scoped
 def forward_verified_sdk_phase10_maven(
     signed: Path, destination: Path, *, landed_repository: Path,
     expected_signed_inventory_sha256: str, expected_preparation_sha256: str,
@@ -108,7 +110,8 @@ def forward_verified_sdk_phase10_maven(
     return {"product": "sdk", "sdkVersion": expected_sdk_version,
             "signedIndexSha256": expected_signed_index_sha256,
             "signedInventorySha256": expected_signed_inventory_sha256,
-            "uploadSources": admitted["uploadSources"], "files": original}
+            "uploadSources": admitted["uploadSources"], "centralBundles": admitted["centralBundles"],
+            "files": original}
 
 
 def main(argv: list[str] | None = None) -> int:

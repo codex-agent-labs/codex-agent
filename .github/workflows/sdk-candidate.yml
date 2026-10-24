@@ -1,0 +1,129 @@
+name: SDK candidate
+
+on:
+  push:
+    tags:
+      - candidate/sdk/v*-rc.*
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: sdk-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    environment: release-candidate
+    timeout-minutes: 180
+    steps:
+      - name: Require protected tag and independently approved S1048 controls
+        id: authority
+        shell: bash
+        env:
+          SELECTION_JSON: ${{ vars.CODEX_AGENT_SDK_CANDIDATE_SELECTION_JSON }}
+          SELECTION_SHA256: ${{ vars.CODEX_AGENT_SDK_CANDIDATE_SELECTION_SHA256 }}
+          OBJECT_PINS_JSON: ${{ vars.CODEX_AGENT_SDK_CANDIDATE_OBJECT_PINS_JSON }}
+          OBJECT_PINS_SHA256: ${{ vars.CODEX_AGENT_SDK_CANDIDATE_OBJECT_PINS_SHA256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$GITHUB_REF_NAME" =~ ^candidate/sdk/v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]
+          candidate_version="${BASH_REMATCH[1]}"
+          [[ "$SELECTION_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$OBJECT_PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          umask 077
+          printf '%s' "$SELECTION_JSON" > "$RUNNER_TEMP/sdk-candidate-selection.json"
+          printf '%s' "$OBJECT_PINS_JSON" > "$RUNNER_TEMP/sdk-candidate-object-pins.json"
+          test "$(wc -c < "$RUNNER_TEMP/sdk-candidate-selection.json")" -le 65536
+          test "$(wc -c < "$RUNNER_TEMP/sdk-candidate-object-pins.json")" -le 65536
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-candidate-selection.json" | cut -d ' ' -f 1)" = "$SELECTION_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-candidate-object-pins.json" | cut -d ' ' -f 1)" = "$OBJECT_PINS_SHA256"
+          test "$(jq -er '.schemaVersion' "$RUNNER_TEMP/sdk-candidate-selection.json")" = 1
+          test "$(jq -er '.join.sdk.joinPins.expected_sdk_version' "$RUNNER_TEMP/sdk-candidate-selection.json")" = "$candidate_version"
+          test "$(jq -er '.join.sdk.joinPins.expected_object_pins_sha256' "$RUNNER_TEMP/sdk-candidate-selection.json")" = "$OBJECT_PINS_SHA256"
+          source_sha=$(jq -er '.trustedSourceCommit' "$RUNNER_TEMP/sdk-candidate-selection.json")
+          landed_sha=$(jq -er '.landedCommit' "$RUNNER_TEMP/sdk-candidate-selection.json")
+          validation_tree=$(jq -er '.join.sdk.joinPins.expected_validation_tree' "$RUNNER_TEMP/sdk-candidate-selection.json")
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$landed_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$validation_tree" =~ ^[0-9a-f]{40}$ ]]
+          test "$landed_sha" = "$GITHUB_SHA"
+          {
+            printf 'selection_sha256=%s\n' "$SELECTION_SHA256"
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'validation_tree=%s\n' "$validation_tree"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out the exact landed tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: landed-source
+      - name: Require the exact validated candidate tree on main
+        shell: bash
+        env:
+          VALIDATION_TREE: ${{ steps.authority.outputs.validation_tree }}
+        run: |
+          set -euo pipefail
+          test "$(git -C landed-source rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C landed-source rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+          test "$(git -C landed-source rev-parse 'HEAD^{tree}')" = "$VALIDATION_TREE"
+          git -C landed-source fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git -C landed-source merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test -z "$(git -C landed-source status --porcelain --untracked-files=no)"
+      - name: Check out reviewed verifier at its independently pinned source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.authority.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted-source
+      - name: Verify source identity before executing any repository script
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          VALIDATION_TREE: ${{ steps.authority.outputs.validation_tree }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C trusted-source rev-parse 'HEAD^{tree}')" = "$VALIDATION_TREE"
+          test -z "$(git -C trusted-source status --porcelain --untracked-files=no)"
+      - name: Capture one catalog and only consumed official inputs
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SELECTION_SHA256: ${{ steps.authority.outputs.selection_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/sdk_candidate_workflow.py capture \
+            --selection "$RUNNER_TEMP/sdk-candidate-selection.json" \
+            --expected-selection-sha256 "$SELECTION_SHA256" \
+            --object-pins "$RUNNER_TEMP/sdk-candidate-object-pins.json" \
+            --workspace "$RUNNER_TEMP/sdk-candidate" \
+            --trusted-repository trusted-source --landed-repository landed-source
+      - name: Forward exact bytes offline and require the complete SDK join
+        shell: bash
+        env:
+          SELECTION_SHA256: ${{ steps.authority.outputs.selection_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/sdk_candidate_workflow.py forward \
+            --selection "$RUNNER_TEMP/sdk-candidate-selection.json" \
+            --expected-selection-sha256 "$SELECTION_SHA256" \
+            --object-pins "$RUNNER_TEMP/sdk-candidate-object-pins.json" \
+            --workspace "$RUNNER_TEMP/sdk-candidate" \
+            --trusted-repository trusted-source --landed-repository landed-source
+      - name: Retain only the verified unchanged candidate bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-sdk-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-candidate/candidate
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: false
+          compression-level: 0
+          retention-days: 90

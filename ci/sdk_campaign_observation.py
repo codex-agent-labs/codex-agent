@@ -41,7 +41,7 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
         original_run_id=None, original_run_attempt=None,
         sdk_validation_tooling=None, sdk_apple_validation_policy=None,
         sdk_facade_metadata_admission=None,
-        sdk_android_metadata_admission=None):
+        sdk_android_metadata_admission=None, completed_frozen=None):
     """Observe one official state upload, then hold all 62 original object bytes.
 
     The caller still owns the exact terminal state locator and all semantic
@@ -59,7 +59,8 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
             sdk_state_wave=sdk_state_wave, state_wave=state_wave, repository_root=root,
             environ=environ, token=token,
             original_run_id=original_run_id,
-            original_run_attempt=original_run_attempt)
+            original_run_attempt=original_run_attempt,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         transport_bytes = read_regular_file_bytes(captured / "capture-transport.json",
             max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
         if canonical_json_bytes(transport) != transport_bytes:
@@ -74,7 +75,8 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
             sdk_validation_tooling, sdk_apple_validation_policy=sdk_apple_validation_policy,
             sdk_original_workflow_sha=trusted_workflow_sha,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
-            sdk_android_metadata_admission=sdk_android_metadata_admission)
+            sdk_android_metadata_admission=sdk_android_metadata_admission,
+            **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         if not SDK_CAMPAIGN_INSTANCES <= set(state.prior_by_instance):
             raise ValueError("Observed SDK state lacks the exact 62-phase campaign")
         if not SDK_CAMPAIGN_INSTANCES <= set(state.sources) or not SDK_CAMPAIGN_INSTANCES <= set(state.prior_carrier_phases):
@@ -90,6 +92,12 @@ def held_sdk_campaign_observation(plan_path, *, artifact_id, artifact_sha256,
                     "product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256")):
                 raise ValueError("Observed SDK carrier differs from its original replay record")
             archive = Path(state.sources[instance])
+            if not archive.exists() and not archive.is_symlink() and state.completed_frozen is not None:
+                if state.capture_deferred_object is None:
+                    raise ValueError("Completed SDK campaign lacks its original materializer")
+                archive = private / "deferred" / f"{position}.zip"
+                archive.parent.mkdir(exist_ok=True)
+                state.capture_deferred_object(carrier, archive)
             verified = verify_object(archive, build_key=carrier["buildKey"],
                 receipt_sha256=carrier["receiptSha256"], object_sha256=carrier["objectSha256"])
             archive_digests[instance] = carrier["objectSha256"]

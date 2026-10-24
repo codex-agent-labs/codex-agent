@@ -34,18 +34,24 @@ runs:
     - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
       with:
         sdk: '3.13.2'
+    - name: Restore lock-qualified original Dart archives
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/sdk-dart-archives-v1
+        key: sdk-dart-archives-v1-${{ runner.os }}-${{ runner.arch }}-3.13.2-${{ hashFiles('codex-agent-bindings/dart/pubspec.yaml', 'codex-agent-bindings/dart/pubspec.lock') }}
     - id: populate
       name: Populate locked dependencies outside the checkout
       shell: bash
       env:
         REVISION: ${{ inputs.revision }}
+        CODEX_SDK_ARCHIVE_CACHE: ${{ runner.temp }}/sdk-dart-archives-v1
       run: |
         python3 -B - <<'PY'
-        import os, shutil, subprocess, sys, tempfile, time
+        import os, re, shutil, subprocess, sys, tempfile, time
         from pathlib import Path
         repository = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
         sys.path.insert(0, str(repository / 'ci'))
-        from product_reuse import _runtime_worker_checkout, _runtime_worker_environment
+        from product_reuse import _runtime_worker_checkout, _worker_process_environment
         from products.inventory import git_regular_blob_bytes, read_regular_file_bytes, run_git, write_canonical_json
         revision = os.environ['REVISION']
         producer = {'commit': revision, 'tree': run_git(repository, 'rev-parse', 'HEAD^{tree}').strip()}
@@ -70,7 +76,66 @@ runs:
         cache.mkdir()
         for name, raw in manifests.items():
             (project / name).write_bytes(raw)
-        environment, _ = _runtime_worker_environment(repository, producer, parent, os.environ)
+        # Cache only original archives: pub's extracted cache and hash marker
+        # alone do not authenticate package contents. The lock stays authority.
+        from sdk_android_archive_provision import _fetch_pinned_archive
+        from products.sdk_archive import _bounded_tar
+        from products.inventory import require_relative_path, sha256_bytes
+        from urllib.parse import urlsplit
+        from urllib.request import HTTPRedirectHandler, build_opener
+        pattern = (r'  ([a-zA-Z0-9_]+):\n    dependency: [^\n]+\n    description:\n'
+            r'      name: \1\n      sha256: "?([a-f0-9]{64})"?\n'
+            r'      url: "https://pub.dev"\n    source: hosted\n    version: "([0-9A-Za-z.+-]+)"\n')
+        lock = manifests['pubspec.lock'].decode('utf-8')
+        packages = lock.split('packages:\n', 1)[-1].split('sdks:\n', 1)[0]
+        # Unsupported lock layouts keep native locked resolution, never guessed pins.
+        rows = list(re.finditer(pattern, packages)) if re.sub(pattern, '', packages).strip() == '' else []
+        def pub_url(url):
+            parsed = urlsplit(url)
+            if (parsed.scheme != 'https' or parsed.hostname != 'pub.dev'
+                    or parsed.username or parsed.password or parsed.port not in (None, 443)):
+                raise ValueError('Dart archive must stay on pub.dev HTTPS')
+        class PubRedirect(HTTPRedirectHandler):
+            def redirect_request(self, request, response, code, message, headers, new_url):
+                pub_url(new_url)
+                return super().redirect_request(request, response, code, message, headers, new_url)
+        opener = build_opener(PubRedirect())
+        for row in rows:
+            name, digest, version = row.groups()
+            identity = name + '-' + version
+            archive_path = parent / (identity + '.tar.gz')
+            url = 'https://pub.dev/api/archives/' + identity + '.tar.gz'
+            _fetch_pinned_archive(url, archive_path, 'sha256:' + digest, 64 * 1024 * 1024,
+                lambda url: opener.open(url, timeout=60), pub_url)
+            package = cache / 'hosted/pub.dev' / identity
+            package.mkdir(parents=True)
+            raw = read_regular_file_bytes(archive_path, max_bytes=64 * 1024 * 1024,
+                                         reject_symlink_parents=True)
+            if sha256_bytes(raw) != 'sha256:' + digest:
+                raise ValueError('Dart archive changed before extraction')
+            with _bounded_tar(raw) as archive:
+                seen = set()
+                for member in archive:
+                    relative = require_relative_path(member.name.rstrip('/'), 'Dart archive member')
+                    if (relative in seen or len(seen) >= 100_000 or member.issparse()
+                            or not (member.isfile() or member.isdir())
+                            or member.size < 0 or member.size > 64 * 1024 * 1024):
+                        raise ValueError('Dart archive has unsafe or oversized members')
+                    seen.add(relative)
+                    target = package / relative
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.extractfile(member) as source, target.open('xb') as output:
+                            shutil.copyfileobj(source, output)
+                        if target.stat().st_size != member.size:
+                            raise ValueError('Dart archive member is truncated')
+                        target.chmod(member.mode & 0o777)
+            hashes = cache / 'hosted-hashes/pub.dev'
+            hashes.mkdir(parents=True, exist_ok=True)
+            (hashes / (identity + '.sha256')).write_text(digest, encoding='ascii')
+        environment = _worker_process_environment(repository, producer, parent, os.environ)
         environment.update(PUB_CACHE=str(cache), PUB_HOSTED_URL='https://pub.dev')
         resolved = shutil.which('dart', path=environment.get('PATH', ''))
         if not resolved:

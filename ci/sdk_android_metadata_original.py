@@ -41,6 +41,203 @@ _INSTANCE = PhaseInstanceId("sdk", "sdk-android", "metadata", "android")
 _LIMIT = 512 * 1024 * 1024
 
 
+def verify_completed_android_metadata(envelope, validation_envelopes, *, plan, discovery, state,
+        artifact, trusted_workflow_sha, repository_root, environ, token, completed_frozen,
+        sdk_validation_tooling, sdk_apple_validation_policy=None):
+    """Admit the full original using qualified P/V, without expanding their trees.
+
+    Share the collector's authenticated private archive and inventory. Compare
+    every embedded predecessor byte with its qualified receipt/original; retain
+    original worker, source, election and lifetime checks. No acceptance cache.
+    """
+    import zipfile
+    from reuse_qualification import CompletedFrozenReuse
+    from products.reuse import _validate_envelope
+    from products.inventory import sha256_file
+    from products.plan import _upstream_record
+    from products.receipt import output_inventory_digest
+    from products.sdk_android_validation_content import android_metadata_content
+    from runtime_reference_archive import copy_reference_member
+    from sdk_campaign_original_locator import fresh_sdk_worker_route, retained_core_origin
+
+    if type(completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Android metadata requires concrete native predecessor authority")
+    require_no_signing_secret(environ)
+    root = Path(repository_root).resolve(strict=True)
+    identity, selected = _validate_envelope(envelope)
+    validation_id = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
+    package_id = PhaseInstanceId("sdk", "sdk-android", "package", "android")
+    if identity != _INSTANCE or not isinstance(validation_envelopes, (list, tuple)) or len(validation_envelopes) != 1:
+        raise ValueError("Android metadata requires its exact identity and one validation predecessor")
+    supplied_id, supplied = _validate_envelope(validation_envelopes[0])
+    if supplied_id != validation_id:
+        raise ValueError("Android metadata requires its exact validation predecessor")
+    receipt, raw = selected["receipt"], selected["receiptBytes"]
+    elected = product_reuse._verified_product_state(Path(plan), Path(discovery), Path(state), root,
+        environ, sdk_validation_tooling, requested_scope=(_INSTANCE,), completed_frozen=completed_frozen,
+        sdk_original_workflow_sha=trusted_workflow_sha, sdk_apple_validation_policy=sdk_apple_validation_policy)
+    ready = elected.prior_ready_plans.get(_INSTANCE)
+    if ready is None or ready["buildKey"] != receipt["buildKey"]:
+        raise ValueError("Android metadata is not elected with its exact key")
+    consumer = product_reuse._consumer(elected.plan, environ)["producer"]
+    completed_frozen.check_consumer({"kind": "ci", "producer": consumer})
+    origin = None
+    workflow = trusted_workflow_sha
+    context = {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+        "metadataRequest": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json"}
+    if receipt["producer"] != consumer:
+        origin = retained_core_origin("metadata", receipt["buildKey"], consumer, component="sdk-android", target="android")
+        if (origin is None or origin["producer"] != receipt["producer"]
+                or origin["artifact_id"] != artifact["id"] or origin["artifact_sha256"] != artifact["digest"]
+                or origin["receipt_sha256"] != selected["receiptSha256"] or origin["context"] != context):
+            raise ValueError("Android metadata differs from its reviewed original")
+        workflow = origin["workflow_sha"]
+    native, originals = {}, {}
+    for predecessor in (package_id, validation_id):
+        row = elected.prior_by_instance[predecessor]
+        qualified = completed_frozen.envelope(row)
+        if qualified is None or row["state"] != "retained":
+            raise ValueError("Android predecessor lacks exact native semantic qualification")
+        if predecessor == validation_id and supplied != qualified:
+            raise ValueError("Android validation differs from its native-qualified envelope")
+        native[predecessor] = qualified
+        _, originals[predecessor], _ = completed_frozen.observe_extended_sdk(row, producer=consumer, token=token)
+    package, validation = native[package_id]["receipt"], native[validation_id]["receipt"]
+    if (any(value["productVersion"] != receipt["productVersion"] for value in (package, validation))
+            or [r for r in validation["inputs"]["upstreamArtifacts"] if
+                (r["product"], r["component"], r["phase"]) == ("sdk", "sdk-android", "package")]
+               != [_upstream_record(package)]):
+        raise ValueError("Android metadata predecessor version or package lineage differs")
+    artifact_bytes = canonical_json_bytes(artifact)
+    binding = raw, selected["receiptSha256"], selected["objectSha256"]
+
+    def unchanged():
+        require_no_signing_secret(environ)
+        completed_frozen.check_consumer({"kind": "ci", "producer": consumer})
+        if (canonical_json_bytes(artifact) != artifact_bytes or canonical_json_bytes(selected["receipt"]) != raw
+                or (selected["receiptBytes"], selected["receiptSha256"], selected["objectSha256"]) != binding
+                or len(validation_envelopes) != 1 or _validate_envelope(validation_envelopes[0])[1] != native[validation_id]
+                or any(completed_frozen.envelope(elected.prior_by_instance[i]) != v for i, v in native.items())):
+            raise ValueError("Android metadata caller or native-qualified predecessors changed")
+
+    unchanged()
+    with tempfile.TemporaryDirectory(prefix="completed-android-metadata-") as temporary:
+        private = Path(temporary).resolve()
+        job, name = fresh_sdk_worker_route(_INSTANCE, receipt)
+        observed = product_reuse._observe_ci_producer_jobs({"metadata": receipt["producer"]},
+            jobs_by_phase={"metadata": job}, build_keys_by_phase={"metadata": receipt["buildKey"]}, token=token,
+            trusted_workflows_by_phase={"metadata": {"path": ".github/workflows/sdk-android-metadata-validation.yml", "sha": workflow}})
+        jobs = product_reuse._matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=receipt["buildKey"])
+        labels = jobs[0].get("labels") if len(jobs) == 1 else None
+        if (type(labels) is not list or any(type(label) is not str for label in labels) or "ubuntu-24.04" not in labels
+                or origin is not None and jobs[0].get("id") != origin["job_id"]):
+            raise ValueError("Android metadata original lacks its fixed successful worker route")
+        require_integer(jobs[0].get("runner_id"), "Original Android metadata runner", 1)
+        archive = private / "metadata.zip"
+        actual, _ = product_reuse._download_contract_ci_upload(artifact["id"], artifact["digest"], name,
+            receipt["producer"], observed[0]["run"], token, destination=archive,
+            upload_limit=product_reuse._worker_upload_zip_limits(_INSTANCE)["max_archive_bytes"])
+        product_reuse._require_artifact_job_window(observed[0], jobs[0]["name"], actual)
+        records = product_reuse._core_metadata_upload_inventory(archive,
+            {"bytes": actual["size_in_bytes"], "sha256": actual["digest"]}, _INSTANCE)
+        index = {r["relativePath"]: r for r in records}
+        with zipfile.ZipFile(archive) as zipped:
+            names = tuple(info.filename.rstrip("/") for info in zipped.infolist())
+
+        def inventory(prefix):
+            return [{**r, "relativePath": r["relativePath"][len(prefix):]} for r in records if r["relativePath"].startswith(prefix)]
+
+        def roots(prefix):
+            return {n[len(prefix):].split("/", 1)[0] for n in names if n.startswith(prefix) and n != prefix.rstrip("/")}
+
+        expected_roots = {"shard", "worker", "selection", "originals", "inputs", "metadata-request.json"}
+        if "worker-dependency-seed" in roots(""):
+            expected_roots.add("worker-dependency-seed")
+        if (roots("") != expected_roots or any(n in index for n in expected_roots - {"metadata-request.json"})
+                or roots("worker/") != {"execution.json", "gradle.log"}
+                or roots("selection/") != {"impact-plan.json", "phase-plan.json", "producer.json"}
+                or roots("originals/") != {"validation"}):
+            raise ValueError("Android metadata original has an unexpected retained layout")
+        original = private / "original"
+        projection = []
+        with zipfile.ZipFile(archive) as zipped:
+            for row in records:
+                path = row["relativePath"]
+                if path.startswith(("shard/", "worker/", "selection/")) or path in {
+                        "metadata-request.json", "inputs/producer.json", "inputs/phase-plan.json",
+                        "inputs/sdk-sdk-android-validation-android/stage/" + validation_phase.OUTPUT_PATH}:
+                    if row["bytes"] > _LIMIT:
+                        raise ValueError("Android metadata control exceeds its reader bound")
+                    copy_reference_member(zipped, path, original / path, row)
+                    projection.append(row)
+            for predecessor in (package_id, validation_id):
+                value = native[predecessor]
+                prefix = ("originals/validation/original/" if predecessor == package_id else "")
+                prefix += f"inputs/sdk-sdk-android-{predecessor.phase}-android/"
+                manifest = canonical_json_bytes({"schemaVersion": 1, **{n: value["receipt"][n] for n in
+                    ("product", "component", "phase", "target", "productVersion", "outputs")}})
+                expected = sorted([{"relativePath": "output-manifest.json", "bytes": len(manifest), "sha256": sha256_bytes(manifest)},
+                    *[{n: r[n] for n in ("relativePath", "bytes", "sha256")} for r in value["receipt"]["outputs"]]],
+                    key=lambda r: r["relativePath"])
+                if (roots(prefix) != {"stage", "phase-receipt.json"} or inventory(prefix + "stage/") != expected
+                        or index[prefix + "phase-receipt.json"]["sha256"] != value["receiptSha256"]
+                        or index[prefix + "phase-receipt.json"]["bytes"] != len(value["receiptBytes"])):
+                    raise ValueError("Android retained predecessor differs from native-qualified bytes")
+            member = index["originals/validation/transport.zip"]
+            validation_artifact = originals[validation_id]
+            if (member["sha256"] != validation_artifact["digest"]
+                    or member["bytes"] != validation_artifact["size_in_bytes"]):
+                raise ValueError("Embedded Android validation differs from its native-qualified original")
+            nested = private / "validation.zip"
+            copy_reference_member(zipped, member["relativePath"], nested, member)
+            contents = product_reuse._core_metadata_upload_inventory(nested,
+                {"sha256": member["sha256"], "bytes": member["bytes"]}, validation_id)
+            if contents != inventory("originals/validation/original/"):
+                raise ValueError("Embedded Android validation extraction differs from its full original ZIP")
+            nested.unlink()
+        if regular_file_inventory(original, allow_empty=True) != projection:
+            raise ValueError("Android metadata controls changed during projection")
+        for parent in ("selection", "inputs"):
+            if (_json(original / parent / "producer.json") != receipt["producer"]
+                    or _json(original / parent / "phase-plan.json") != {n: receipt[n] for n in PHASE_PLAN_KEYS}):
+                raise ValueError("Android retained election differs from its receipt")
+        shard = verify_phase_shard(original / "shard", _INSTANCE)
+        if any(shard[n] != selected[n] for n in ("receiptBytes", "receiptSha256", "objectSha256")):
+            raise ValueError("Android original shard differs from selected metadata")
+        output = private / "metadata-stage"
+        restore_object(original / "shard" / shard["objectPath"], output, build_key=receipt["buildKey"],
+            receipt_sha256=selected["receiptSha256"], object_sha256=selected["objectSha256"])
+        content = validate_android_validation_content(_json(original /
+            ("inputs/sdk-sdk-android-validation-android/stage/" + validation_phase.OUTPUT_PATH)))
+        if (len(validation["outputs"]) != 1 or validation["outputs"][0]["kind"] != validation_phase.OUTPUT_KIND
+                or validation["outputs"][0]["relativePath"] != validation_phase.OUTPUT_PATH):
+            raise ValueError("Android metadata requires exact singleton native-qualified validation content")
+        expected = canonical_json_bytes(android_metadata_content(sdk_version=receipt["productVersion"],
+            package_outputs_digest=output_inventory_digest(package["outputs"]),
+            expected_release_aar_sha256=content["releaseAarSha256"],
+            expected_bundled_runtime_sha256=content["bundledRuntimeSha256"], validation_content=content))
+        manifest = verify_output_manifest_identity(output, "sdk", "sdk-android", "metadata", "android", receipt["productVersion"])
+        if (manifest["outputs"] != receipt["outputs"] or len(manifest["outputs"]) != 1
+                or manifest["outputs"][0]["kind"] != OUTPUT_KIND or manifest["outputs"][0]["relativePath"] != OUTPUT_PATH
+                or _read(output / OUTPUT_PATH) != expected):
+            raise ValueError("Android metadata differs from the native-qualified deterministic join")
+        historical = product_reuse._validate_plan(original / "selection/impact-plan.json", root,
+                                                  expected_revision=receipt["producer"]["commit"])
+        producer = receipt["producer"]
+        if (historical["remoteBuildAuthorized"] is not True or historical["event"] not in {"pull_request", "merge_group"}
+                or product_reuse._consumer(historical, {"GITHUB_RUN_ID": str(producer["runId"]),
+                    "GITHUB_RUN_ATTEMPT": str(producer["runAttempt"])})["producer"] != producer):
+            raise ValueError("Android original historical plan is not authorized")
+        _worker(original, receipt, _context(context), content)
+        _replan(root, receipt, validation)
+        if archive.stat().st_size != actual["size_in_bytes"] or sha256_file(archive) != actual["digest"]:
+            raise ValueError("Original Android metadata archive changed while consumed")
+        if regular_file_inventory(original, allow_empty=True) != projection:
+            raise ValueError("Android metadata controls changed while consumed")
+        unchanged()
+    unchanged()
+
+
 def _read(path):
     return read_regular_file_bytes(
         Path(path), max_bytes=_LIMIT, reject_symlink_parents=True)
@@ -396,7 +593,7 @@ def _verified_sdk_android_metadata(
                     validation_capture=trees["validationCapture"], **common) as validation:
                 _same_stage(validation_directory, validation["stage"],
                             validation["receiptBytes"], "validation")
-                package_directory = inputs / "sdk-sdk-android-package-android"
+                package_directory = original / "originals/validation/original/inputs/sdk-sdk-android-package-android"
                 _same_stage(package_directory, trees["package"],
                             before_files["packageReceipt"], "package")
                 if (validation["receiptBytes"] != validation_raw

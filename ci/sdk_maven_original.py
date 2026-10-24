@@ -18,15 +18,15 @@ import product_reuse
 from products.inventory import (
     canonical_json_bytes, git_product_versions, git_regular_blob_bytes,
     load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
-    require_integer, require_semver, require_sha256, sha256_file, snapshot_regular_tree,
+    require_integer, require_regular_directory, require_semver, require_sha256, sha256_file, snapshot_regular_tree,
 )
 from products.plan import _contract_projection_from_request
 from products.receipt import validate_phase_receipt
 from products.registry import PhaseInstanceId
-from products.restore import PHASE_PLAN_KEYS, restore_object, verify_phase_shard
+from products.restore import PHASE_PLAN_KEYS, memoized_file_inventory, restore_object, verify_phase_shard
 from products.sdk_apple_original_inputs import verified_apple_original_inputs
 from products.sdk_facade_inputs import _EVIDENCE_FIELDS, _path
-from products.sdk_facade_validation import _inventory, _original_path
+from products.sdk_facade_validation import _original_path
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_maven import verify_sdk_maven_binary_content
 from products.sdk_package import _require_capability_output_separate, _verify_plan, verify_sdk_package_inputs
@@ -39,6 +39,12 @@ from sdk_ios_package import _record
 
 _TARGETS = {"sdk-core": "common", "sdk-android": "android"}
 _LIMIT = 512 * 1024 * 1024
+
+
+def _inventory(root: Path, *, allow_empty=False):
+    for ancestor in (root, *root.parents):
+        require_regular_directory(ancestor, "Maven input ancestry")
+    return memoized_file_inventory(root, allow_empty=allow_empty)
 
 
 def _read(path):
@@ -81,7 +87,12 @@ def _same_record(record, stage, receipt):
 
 
 def _worker(original, receipt, context, contract_version, archive_name):
-    _layout(original / "worker", {"execution.json", "gradle.log"})
+    names = {"execution.json", "gradle.log"}
+    seed = original / "worker/dependency-seed"
+    if seed.exists():
+        require_regular_directory(seed, "Original Maven worker dependency seed")
+        names.add("dependency-seed")
+    _layout(original / "worker", names)
     execution = require_exact_keys(_json(original / "worker/execution.json"),
         {"schemaVersion", "producer", "buildKey", "command", "returnCode", "launchError", "elapsedNs"},
         "Original Maven execution")
@@ -169,7 +180,12 @@ def _binary_origin(original, context, evidence, contract_version):
          "metadataReceiptSha256"}, "Original Maven Contract locator")
     handoff = original / "inputs/contract-input"
     metadata = original / "inputs/predecessors/contract-contract-metadata-common"
-    source = require_exact_keys(locator["sourceEvidence"], _EVIDENCE_FIELDS,
+    # The producer pins metadata paths/inventories separately. Its release
+    # evidence omits those two caller fields; retain the complete legacy form.
+    source_fields = (_EVIDENCE_FIELDS if isinstance(locator["sourceEvidence"], dict)
+        and {"stageRoot", "phaseReceipt"} <= locator["sourceEvidence"].keys()
+        else _EVIDENCE_FIELDS - {"stageRoot", "phaseReceipt"})
+    source = require_exact_keys(locator["sourceEvidence"], source_fields,
                                 "Original Maven producer Contract source")
     if (locator["contractVersion"] != contract_version
             or source["expectedTrustDomain"] != evidence["expectedTrustDomain"]
@@ -295,6 +311,11 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
             names = {"inputs", "selection", "worker", "shard"}
             names.update({"sdk-inputs-original", "binary-contract-original", "binary-original"} if phase == "package" else
                          {"android-original"} if component == "sdk-android" else set())
+            # Authenticated diagnostic transport; never execution or admission authority.
+            seed = original / "worker-dependency-seed"
+            if seed.exists():
+                require_regular_directory(seed, "Original Maven dependency seed")
+                names.add("worker-dependency-seed")
             _layout(original, names)
             instance = PhaseInstanceId("sdk", component, phase, target)
             shard = verify_phase_shard(original / "shard", instance)
@@ -319,8 +340,15 @@ def _verified_maven_phase(plan, receipt_path, *, capture_root, binary_contract_e
                 _binary_origin(original, context, evidence, contract_version)
             archive_name = None
             if android_runtime_archive is not None and phase == "binary":
-                archive_name = Path(android_runtime_archive).name
-                _layout(original / "android-original", {archive_name})
+                # Transport filenames may differ between consumers. Bind the
+                # authenticated original member to its original command below;
+                # caller bytes and the immutable Git digest must still match.
+                archive_files = _inventory(original / "android-original")
+                if (len(archive_files) != 1 or "/" in archive_files[0]["relativePath"] or
+                        {item.name for item in (original / "android-original").iterdir()} !=
+                        {archive_files[0]["relativePath"]}):
+                    raise ValueError("Original Android archive requires one top-level file")
+                archive_name = archive_files[0]["relativePath"]
                 if _read(original / "android-original" / archive_name) != files_before["archive"]:
                     raise ValueError("Original Android archive differs from caller input")
                 properties = _properties(git_regular_blob_bytes(root, receipt["producer"]["commit"],

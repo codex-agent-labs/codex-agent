@@ -17,10 +17,11 @@ if __package__:
 import product_reuse
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from products.inventory import (
-    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
     publish_regular_tree, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
 )
 from products.registry import PhaseInstanceId
+from products.restore import verification_scoped
 from products.sdk_apple_validation_admission import apple_validation_policy_arguments
 from products.sdk_inputs import stage_sdk_inputs
 from products.sdk_package import _require_capability_output_separate
@@ -28,14 +29,14 @@ from products.sdk_validation_inputs import _request_inventory
 from products.signatures import load_keyring, public_key_path
 from products.signing_isolation import require_no_signing_secret
 from sdk_android_evidence_capture import capture_android_evidence
-from sdk_android_firebase_capture import capture_android_firebase_evidence
+from sdk_android_firebase_capture import capture_android_firebase_evidence, _producer_from_receipt
+from sdk_android_upload_locator import (retained_android_evidence_origin, capture_retained_android_plan,
+    require_retained_android_authority, require_retained_android_capture)
 from products import sdk_android_validation_phase as validation_phase
+from sdk_phase import maven_consumed_predecessors
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
-_STABLE_PRODUCER_FIELDS = (
-    "repository", "workflowPath", "commit", "tree", "event", "pullRequest",
-)
 _LIMIT = 512 * 1024 * 1024
 
 
@@ -96,6 +97,7 @@ def _retain_original_inputs(request, evidence, destination):
     write_canonical_json(destination / "binary-contract-invocation.json", relocated)
 
 
+@verification_scoped
 def execute(
     plan: Path, discovery: Path, state: Path, destination: Path, *,
     expected_build_key: str,
@@ -113,6 +115,7 @@ def execute(
     sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None,
     sdk_android_metadata_admission=None,
+    completed_frozen=None,
 ) -> dict:
     """Finalize one elected Android validation only after all original checks."""
     require_no_signing_secret(environ)
@@ -215,8 +218,10 @@ def execute(
     ready = product_reuse.materialize_product_predecessors(
         plan, discovery, state, _INSTANCE, destination / "inputs",
         expected_build_key=expected_build_key, repository_root=root, environ=environ,
+        materialized_scope=maven_consumed_predecessors(_INSTANCE),
         sdk_validation_tooling=tooling, sdk_original_workflow_sha=trusted_workflow_sha,
-        **apple, **admissions)
+        **apple, **admissions,
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
     selected_inventory = regular_file_inventory(destination / "inputs", allow_empty=True)
     producer = product_reuse.validate_producer(product_reuse._canonical_control(
         destination / "inputs/producer.json", "Elected Android validation producer"))
@@ -248,9 +253,7 @@ def execute(
         raise ValueError("Android caller package or binary differs from its elected original predecessor")
     if package != selected_package or binary != selected_binary:
         raise ValueError("Android caller package or binary receipt differs from its elected original")
-    original_producer = product_reuse.validate_producer(binary["producer"], "Android binary original producer")
-    if any(producer[field] != original_producer[field] for field in _STABLE_PRODUCER_FIELDS):
-        raise ValueError("Android current capture and binary original select different candidate identities")
+    binary_producer = product_reuse.validate_producer(binary["producer"], "Android binary original producer")
     version = package["productVersion"]
     if binary["productVersion"] != version:
         raise ValueError("Android selected package and binary versions differ")
@@ -260,20 +263,33 @@ def execute(
         with tempfile.TemporaryDirectory(prefix="sdk-android-validation-captures-") as temporary:
             private = Path(temporary).resolve()
             private_final, private_protected = private / "final", private / "protected"
+            origin = retained_android_evidence_origin(ready["buildKey"], producer)
+            require_retained_android_authority(origin, trusted_source_commit=trusted_source_commit,
+                trusted_source_tree=trusted_source_tree, trusted_android_workflow_sha=trusted_android_workflow_sha)
+            capture_producer = producer if origin is None else origin["producer"]
+            capture_plan, capture_environment, revision = plan, environ, {}
+            capture_workflow = trusted_workflow_sha
+            if origin is not None:
+                capture_plan = capture_retained_android_plan(origin, root, private / "historical-plan", token=token)
+                capture_environment = {**environ, "GITHUB_RUN_ID": str(capture_producer["runId"]),
+                    "GITHUB_RUN_ATTEMPT": str(capture_producer["runAttempt"])}
+                revision = {"expected_revision": capture_producer["commit"]}
+                capture_workflow = origin["workflowSha"]
             final_transport = capture_android_evidence(
-                plan, root, private_final, trusted_workflow_sha=trusted_workflow_sha,
+                capture_plan, root, private_final, trusted_workflow_sha=capture_workflow,
                 trusted_android_workflow_sha=trusted_android_workflow_sha,
-                environ=environ, token=token)
-            if final_transport.get("captureProducer") != producer:
+                environ=capture_environment, token=token, **revision)
+            if final_transport.get("captureProducer") != capture_producer:
                 raise ValueError("Android final capture differs from the elected producer")
             protected_transport = capture_android_firebase_evidence(
-                plan, root, private_final, private_protected,
-                trusted_workflow_sha=trusted_workflow_sha,
+                capture_plan, root, private_final, private_protected,
+                trusted_workflow_sha=capture_workflow,
                 trusted_android_workflow_sha=trusted_android_workflow_sha,
                 trusted_source_commit=trusted_source_commit,
-                trusted_source_tree=trusted_source_tree, environ=environ, token=token)
-            if protected_transport.get("captureProducer") != producer:
+                trusted_source_tree=trusted_source_tree, environ=capture_environment, token=token, **revision)
+            if protected_transport.get("captureProducer") != capture_producer:
                 raise ValueError("Android protected capture differs from the elected producer")
+            require_retained_android_capture(origin, final_transport, protected_transport)
             private_inventories = {
                 "final": regular_file_inventory(private_final, allow_empty=True),
                 "protected": regular_file_inventory(private_protected, allow_empty=True),
@@ -295,8 +311,12 @@ def execute(
                 compatibility_request=compatibility_request,
                 binary_contract_evidence=binary_contract_evidence,
                 final_capture=private_final, protected_capture=private_protected,
-                expected_capture_producer=producer,
-                expected_original_producer=original_producer,
+                expected_capture_producer=capture_producer,
+                # The authenticated protected submission retains the APK's
+                # original receipt even when Firebase/capture is retried.
+                expected_original_producer=_producer_from_receipt(load_json_bytes(
+                    _read(private_protected / "original/lane-receipt.json"))),
+                expected_binary_producer=binary_producer,
                 trusted_source_commit=trusted_source_commit, trusted_source_tree=trusted_source_tree,
                 tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
                 java_executable=java_executable, apkanalyzer_executable=apkanalyzer_executable,
@@ -335,6 +355,7 @@ def execute(
 
 
 def main(argv=None) -> int:
+    from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in (
         "plan", "destination",
@@ -356,11 +377,12 @@ def main(argv=None) -> int:
     parser.add_argument("--tooling-keys-directory", type=Path)
     parser.add_argument("--sdk-apple-validation-policy", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     arguments = vars(parser.parse_args(argv))
     if (arguments["tooling_keyring"] is None) != (arguments["tooling_keys_directory"] is None):
         parser.error("Android tooling keyring and directory must be supplied together")
     try:
-        with metadata_admission_options(arguments) as admissions:
+        with metadata_admission_options(arguments) as admissions, completed_frozen_options(arguments) as semantic:
             arguments["binary_contract_evidence"] = product_reuse._canonical_control(
                 arguments["binary_contract_evidence"], "Caller Android binary Contract evidence")
             apple = arguments.pop("sdk_apple_validation_policy")
@@ -368,7 +390,7 @@ def main(argv=None) -> int:
                 arguments["sdk_apple_validation_policy"] = product_reuse._canonical_control(
                     apple, "Caller Apple validation policy")
             execute(**arguments, environ=os.environ, token=os.environ.get("GITHUB_TOKEN", ""),
-                    **admissions)
+                    **admissions, **semantic)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     return 0

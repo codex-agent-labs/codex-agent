@@ -155,7 +155,7 @@ runs:
         from pathlib import Path
         sys.path.insert(0, str(Path.cwd() / 'ci'))
         from native_wrappers import host_classifier
-        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
+        from products.inventory import (canonical_json_bytes, load_canonical_json_bytes, load_json_bytes,
             read_regular_file_bytes, regular_file_inventory, sha256_bytes, sha256_file)
         from products.sdk_facade_validation_admission import _native_archive_path
         from products.signing_isolation import require_no_signing_secret
@@ -181,7 +181,7 @@ runs:
                     (expected['runnerOs'], expected['runnerArch'])
                 or host_classifier() != expected_host):
             raise ValueError('Core validation differs from its elected physical host')
-        plan = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
+        plan = load_json_bytes(read_regular_file_bytes(Path(os.environ['PLAN']), reject_symlink_parents=True))
         if plan['validationTree'] != tree or not re.fullmatch(r'[0-9a-f]{40}', plan['validationCommit']):
             raise ValueError('Core validation source differs from its authenticated plan')
         tooling = load_canonical_json_bytes(read_regular_file_bytes(Path(os.environ['SDK_VALIDATION_TOOLING']),
@@ -203,7 +203,27 @@ runs:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
             output.write('policy_revision=' + plan['validationCommit'] + '\n')
         PY
+    - id: retained
+      name: Locate exact successful Core validation original before production
+      shell: bash
+      env:
+        PLAN: ${{ steps.captured.outputs.plan-path }}
+        BUILD_KEY: ${{ inputs.build-key }}
+        TARGET: ${{ inputs.target }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        from ci.sdk_campaign_original_locator import locate_retained_core_binary_upload
+        from ci.reuse import github_output
+        origin = locate_retained_core_binary_upload(Path(os.environ['PLAN']), Path(os.environ['GITHUB_WORKSPACE']),
+            expected_build_key=os.environ['BUILD_KEY'], token=os.environ['GITHUB_TOKEN'],
+            phase='validation', target=os.environ['TARGET'])
+        github_output(Path(os.environ['GITHUB_OUTPUT']), {'reused': str(origin is not None).lower()})
+        PY
     - id: request
+      if: steps.retained.outputs.reused != 'true'
       name: Materialize selected package, Contract and signed SDK inputs before setup
       shell: bash
       env:
@@ -249,6 +269,8 @@ runs:
             raise ValueError('Core validation caller authority changed before request preparation')
         PY
         optional=()
+        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then optional+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+        if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then optional+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
         for pair in SDK_VALIDATION_TOOLING:--sdk-validation-tooling SDK_APPLE_VALIDATION_POLICY:--sdk-apple-validation-policy SDK_FACADE_METADATA_POLICY:--sdk-facade-metadata-policy SDK_ANDROID_METADATA_POLICY:--sdk-android-metadata-policy NATIVE_COMPILER_ARCHIVE:--native-compiler-archive; do
           variable="${pair%%:*}"
           flag="${pair#*:}"
@@ -265,15 +287,37 @@ runs:
           --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
           ${optional[@]+"${optional[@]}"}
     - uses: ./.github/actions/setup-kmp
+      if: steps.retained.outputs.reused != 'true'
       with:
         cache-read-only: 'true'
         product-worker: 'true'
-    - if: inputs.target == 'android'
+    - if: inputs.target == 'android' && steps.retained.outputs.reused != 'true'
       uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        packages: platform-tools
+    - name: Prepare pinned dependencies for the elected offline consumer
+      if: steps.retained.outputs.reused != 'true'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        POLICY_REVISION: ${{ steps.identity.outputs.policy_revision }}
+        NATIVE_COMPILER_ARCHIVE: ${{ inputs.native-compiler-archive }}
+      run: |
+        set -euo pipefail
+        trap 'if [ -f "$RUNNER_TEMP/sdk-core-consumer-dependencies/gradle.log" ]; then tail -n 120 "$RUNNER_TEMP/sdk-core-consumer-dependencies/gradle.log"; fi' ERR
+        optional=()
+        if [ -n "$NATIVE_COMPILER_ARCHIVE" ]; then optional+=(--native-archive "$NATIVE_COMPILER_ARCHIVE"); fi
+        PYTHONPATH="$GITHUB_WORKSPACE/ci" python3 -B -m ci.products.gradle_bootstrap \
+          --request "$GITHUB_WORKSPACE/build/sdk-core-validation-policy/facade-request.json" \
+          --repository "$GITHUB_WORKSPACE" --revision "$POLICY_REVISION" --target "$TARGET" \
+          --destination "$RUNNER_TEMP/sdk-core-consumer-dependencies" \
+          ${optional[@]+"${optional[@]}"}
     - id: execute
+      if: steps.retained.outputs.reused != 'true'
       name: Run existing Core installed-consumer and complete original replay
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         PLAN: ${{ steps.captured.outputs.plan-path }}
         DISCOVERY: ${{ steps.captured.outputs.discovery-root }}
         STATE: ${{ steps.captured.outputs.state-root }}
@@ -318,7 +362,7 @@ runs:
             '--repository-root': str(root), '--target': os.environ['TARGET'],
             '--expected-build-key': os.environ['BUILD_KEY'],
             '--facade-request': str(root / 'build/sdk-core-validation-policy/facade-request.json'),
-            '--android-sdk-directory': os.environ.get('ANDROID_HOME', '') if os.environ['TARGET'] == 'android' else '',
+            '--android-sdk-directory': os.environ.get('ANDROID_HOME', ''),
             '--tooling-evidence': tooling['evidence'], '--tooling-public-key': tooling['publicKey'],
             '--java-executable': tooling['javaExecutable'], '--required-trust-domain': tooling['requiredTrustDomain'],
             '--policy-revision': os.environ['POLICY_REVISION'],
@@ -340,13 +384,19 @@ runs:
                            ('NATIVE_COMPILER_ARCHIVE', '--native-compiler-archive')):
             if os.environ[name]:
                 values[flag] = os.environ[name]
+        if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
+            values['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'core-validation']
         command.extend(part for flag, value in values.items() for part in (flag, value))
-        subprocess.run(command, cwd=root, check=True)
+        java_home = Path(os.environ['JAVA_HOME'])
+        if not java_home.is_absolute():
+            raise ValueError('Core caller JAVA_HOME must be absolute')
+        environment = dict(os.environ, JAVA_HOME=str(java_home.resolve(strict=True)))
+        subprocess.run(command, cwd=root, env=environment, check=True)
         require_no_signing_secret(os.environ)
         PY
     - id: upload
-      if: always() && steps.identity.outcome == 'success'
+      if: always() && steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: codex-agent-sdk-worker-sdk-core-validation-${{ inputs.target }}-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}

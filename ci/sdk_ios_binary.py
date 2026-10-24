@@ -189,7 +189,7 @@ def execute(
     if destination.exists() or destination.is_symlink() or stage.exists() or stage.is_symlink():
         raise ValueError("iOS SDK binary worker requires fresh diagnostic and product outputs")
     _prepare_destination(stage, root).rmdir()
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ)
+    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
     destination = _prepare_destination(destination, root)
 
     def unchanged() -> None:
@@ -202,6 +202,10 @@ def execute(
     unchanged()
     if stage.exists() or stage.is_symlink():
         raise ValueError("iOS SDK binary product stage appeared before execution")
+    from products.gradle_bootstrap import seed_sdk_ios_native_distribution
+    seed_sdk_ios_native_distribution(root, producer["commit"], wrapper, environment,
+                                    destination / "native-toolchain-seed")
+    unchanged()
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     started = time.monotonic_ns()
     return_code, launch_error = None, None

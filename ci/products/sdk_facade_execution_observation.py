@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
 import re
+import shlex
 import subprocess
 
 from .inventory import (
@@ -24,6 +25,15 @@ from .signing_isolation import require_no_signing_secret
 from .toolchain import _authority, _match, _properties, WRAPPER_PROPERTIES
 from .tooling_local import _execution
 from .gradle_bootstrap import require_preprovisioned_gradle
+
+
+def native_data_options(environment):
+    """Bind the exact existing native cache through both nested Java launches."""
+    data = Path(environment.get("KONAN_DATA_DIR", str(Path.home() / ".konan")))
+    require_regular_directory(data, "Core native consumer data directory")
+    if not data.is_absolute() or data.resolve(strict=True) != data:
+        raise ValueError("Core native consumer data directory must be absolute and non-symbolic")
+    return shlex.quote("-Dorg.gradle.project.konan.data.dir=" + str(data))
 
 
 @contextmanager
@@ -50,6 +60,10 @@ def capture_facade_execution_observation(*, repository, producer, target, enviro
     if HOSTS[host["classifier"]][2:4] != (topology["runnerOs"], topology["runnerArch"]):
         raise ValueError("Core launcher observation differs from the elected actual host")
     for key, value in environment.items():
+        if (key == "JAVA_TOOL_OPTIONS" and
+                target not in {"android", "jvm", "node-js", "node-wasm"} and
+                value == native_data_options(environment)):
+            continue
         if value and (key.startswith("ORG_GRADLE_PROJECT_") or key in {
                 "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS", "GRADLE_OPTS"}):
             raise ValueError("Core launcher observation rejects injected JVM/Gradle options")
@@ -122,7 +136,7 @@ def capture_facade_execution_observation(*, repository, producer, target, enviro
         java_arch = _match(r"^\s*os\.arch = (.+)$", java_text, "Core Java architecture")
         if java_arch.lower() not in HOSTS[host["classifier"]][1]:
             raise ValueError("Core Java launcher architecture differs from actual elected host")
-        if _match(r"^Gradle ([^\s]+)$", gradle_text, "Core Gradle version") != version:
+        if _match(r"^Gradle ([^\s]+)\r?$", gradle_text, "Core Gradle version") != version:
             raise ValueError("Core observed Gradle version differs from immutable wrapper source")
         value = {"schemaVersion": 1, "kind": "sdk-facade-launcher-observation", "target": target,
             "producer": dict(selected), "host": host,
@@ -220,7 +234,7 @@ def verify_facade_execution_observation(directory, *, repository, producer, targ
     if (java["arch"] != _match(r"^\s*os\.arch = (.+)$", text, "Core original Java architecture")
             or java["arch"].lower() not in HOSTS[matches[0]][1]
             or java["runtimeVersion"] != _match(r"^\s*java\.runtime\.version = (.+)$", text, "Core original Java version")
-            or gradle["version"] != _match(r"^Gradle ([^\s]+)$", gradle_output.decode("utf-8", errors="strict"), "Core original Gradle")):
+            or gradle["version"] != _match(r"^Gradle ([^\s]+)\r?$", gradle_output.decode("utf-8", errors="strict"), "Core original Gradle")):
         raise ValueError("Core original probe output differs from retained observation")
     if value["executions"] != [row for row in before if row["relativePath"] != "observation.json"]:
         raise ValueError("Core original raw probe bytes differ from retained hashes")
