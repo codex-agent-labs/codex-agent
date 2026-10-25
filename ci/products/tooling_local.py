@@ -167,6 +167,8 @@ def produce_local_tooling_attestation(repository, java_home, gradle_installation
             raise ValueError("Local tooling rejects external Gradle initialization/properties")
     commit = run_git(repository, "rev-parse", "HEAD").strip()
     tree = run_git(repository, "rev-parse", f"{commit}^{{tree}}").strip()
+    if git_inventory(repository, commit, ("ci/tooling_inspector.py",)):
+        raise ValueError("Local tooling receipt does not bind the .NET compiler; use authenticated hosted tooling")
     sources = _source_inventory(repository, commit)
     source_paths = git_inventory_paths(sources.decode())
     source_records = git_file_inventory(repository, commit, source_paths)
