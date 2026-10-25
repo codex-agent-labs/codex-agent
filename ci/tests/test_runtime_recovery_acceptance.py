@@ -78,6 +78,13 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                 job = workflow_job(source, name)
                 condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
                                       job, re.MULTILINE | re.DOTALL).group(1)
+                if name == 'sdk-ios-binary-plan':
+                    prefix = ("!(inputs.sdkRecoveryOnly && "
+                              "needs.plan.outputs.native_resume_ready == 'true' && "
+                              "needs.plan.outputs.native_resume_full_reuse == 'true') && ")
+                    condition = ' '.join(condition.removeprefix('>-').split())
+                    self.assertTrue(condition.startswith(prefix), condition)
+                    condition = condition.removeprefix(prefix)
                 self.assertRegex(condition, r"^(?:>-\s*|')?!inputs\.runtimeRecoveryOnly &&")
         for wave in range(1, 5):
             worker = workflow_job(source, f'runtime-workers-{wave}')
