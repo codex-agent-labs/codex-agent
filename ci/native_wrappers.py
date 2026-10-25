@@ -660,9 +660,15 @@ def package_once(
     languages: tuple[str, ...] = LANGUAGES,
     csharp_binary: Path | None = None,
     dotnet_profile: Path | None = None,
+    *, csharp_inspector=None,
 ) -> None:
     if not languages or len(set(languages)) != len(languages) or any(language not in LANGUAGES for language in languages):
         raise ValueError(f"invalid native wrapper language selection: {languages}")
+    if csharp_inspector is not None:
+        if languages != ("csharp",):
+            raise ValueError("C# inspector requires an exact C# package selection")
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
     if "csharp" in languages and csharp_binary is None:
         raise ValueError("C# package requires authenticated binary stage")
     if "csharp" in languages:
@@ -759,7 +765,8 @@ def package_once(
                 )
         write_package_toolchains(output, languages)
         for language in languages:
-            verify_native_wrapper_sdk_packages(output, sdks, sdk_version, language)
+            verify_native_wrapper_sdk_packages(output, sdks, sdk_version, language,
+                **({"csharp_inspector": csharp_inspector} if csharp_inspector is not None else {}))
 
 
 def package_all(
@@ -770,14 +777,23 @@ def package_all(
     languages: tuple[str, ...] = LANGUAGES,
     csharp_binary: Path | None = None,
     dotnet_profile: Path | None = None,
+    *, csharp_inspector=None,
 ) -> None:
+    if csharp_inspector is not None:
+        if languages != ("csharp",):
+            raise ValueError("C# inspector requires an exact C# package selection")
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
+    inspector_options = {"csharp_inspector": csharp_inspector} if csharp_inspector is not None else {}
     invalidate_output(output)
     try:
         sdk_version = require_semver(sdk_version, "SDK version")
-        package_once(sources, sdks, output, sdk_version, languages, csharp_binary, dotnet_profile)
+        package_once(sources, sdks, output, sdk_version, languages, csharp_binary, dotnet_profile,
+                     **inspector_options)
         with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-reproducibility-") as temporary:
             second = Path(temporary) / "packages"
-            package_once(sources, sdks, second, sdk_version, languages, csharp_binary, dotnet_profile)
+            package_once(sources, sdks, second, sdk_version, languages, csharp_binary, dotnet_profile,
+                         **inspector_options)
             first_inventory = dict(package_inventory(output))
             second_inventory = dict(package_inventory(second))
             if first_inventory != second_inventory:
@@ -993,7 +1009,13 @@ def require_embedded_sdk_compatibility(
     sdks: Path,
     sdk_version: str,
     languages: tuple[str, ...] = LANGUAGES,
+    *, csharp_inspector=None,
 ) -> None:
+    if csharp_inspector is not None:
+        if languages != ("csharp",):
+            raise ValueError("C# inspector requires an exact C# package selection")
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
     expected = (sdks / "sdk-compatibility.json").read_bytes()
     root_path = sdks / "sdk-runtime-root.pub"
     if not root_path.is_file() or root_path.is_symlink() or root_path.stat().st_size > 4096:
@@ -1030,7 +1052,7 @@ def require_embedded_sdk_compatibility(
 
     with tempfile.TemporaryDirectory(prefix="codex-agent-native-wrapper-compatibility-") as temporary:
         work = Path(temporary)
-        csharp_inspector: Path | None = None
+        local_inspector: Path | None = None
         for language in languages:
             archives = [
                 path for path in files(packages / language)
@@ -1065,7 +1087,10 @@ def require_embedded_sdk_compatibility(
                                   if path.name.lower() == "codexagent.dll"]
                     if assemblies != [assembly]:
                         raise ValueError("C# package must contain only the expected CodexAgent.dll")
-                    if csharp_inspector is None:
+                    if csharp_inspector is not None:
+                        csharp_inspector.verify_resources(assembly, required_root, required)
+                        continue
+                    if local_inspector is None:
                         project = (Path(__file__).resolve().parents[1] /
                                    "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/"
                                    "VerifySdkRuntimeRoot.csproj")
@@ -1080,9 +1105,9 @@ def require_embedded_sdk_compatibility(
                             *properties, cwd=tool_work)
                         run("dotnet", "build", project, "--no-restore", *properties,
                             cwd=tool_work)
-                        csharp_inspector = tool_work / "bin/Debug/net8.0/VerifySdkRuntimeRoot.dll"
+                        local_inspector = tool_work / "bin/Debug/net8.0/VerifySdkRuntimeRoot.dll"
                     result = subprocess.run(
-                        ["dotnet", str(csharp_inspector), str(assembly), str(required_root), str(required)],
+                        ["dotnet", str(local_inspector), str(assembly), str(required_root), str(required)],
                         capture_output=True, text=True, check=False, timeout=30,
                     )
                     if result.returncode != 0:
@@ -1259,13 +1284,20 @@ def verify_native_wrapper_sdk_packages(
     staged_sdks: Path,
     product_version: str,
     language: str,
+    *, csharp_inspector=None,
 ) -> None:
     """Verify one final package family against supplied, unauthenticated staged SDK bytes."""
     if language not in LANGUAGES:
         raise ValueError(f"unsupported native wrapper language: {language}")
+    if csharp_inspector is not None:
+        if language != "csharp":
+            raise ValueError("C# inspector requires an exact C# package selection")
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
     version = require_semver(product_version, "SDK product version")
     selected = (language,)
-    require_embedded_sdk_compatibility(packages, staged_sdks, version, selected)
+    require_embedded_sdk_compatibility(packages, staged_sdks, version, selected,
+        **({"csharp_inspector": csharp_inspector} if csharp_inspector is not None else {}))
     require_embedded_package_versions(packages, version, selected)
     require_embedded_native_assets(packages, staged_sdks, version, selected)
 

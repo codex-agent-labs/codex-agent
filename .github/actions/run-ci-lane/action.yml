@@ -389,6 +389,15 @@ runs:
         if [ -d build/ci/reuse/production/payload/maven ]; then
           printf 'MAVEN_REPOSITORY=%s/build/ci/reuse/production/payload/maven\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
         fi
+    - name: Provision the pinned C# inspector compiler for missing tooling
+      if: >-
+        inputs.lane == 'contracts' && inputs.reuse-only != 'true' &&
+        steps.reuse.outputs.reused != 'true' && steps.production.outputs.reused != 'true'
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
+      with:
+        dotnet-version: '8.0.419'
     - id: production-execution
       if: >-
         inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&

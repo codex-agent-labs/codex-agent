@@ -38,6 +38,13 @@ _COMPILER_INPUTS = ("gradle/build-logic/src/main/**", "gradle/build-logic/build.
                     "gradle/wrapper/gradle-wrapper.properties",
                     ".github/actions/run-ci-lane/release_tooling.init.gradle",
                     ".github/actions/run-ci-lane/release_tooling_classes.json")
+_INSPECTOR_PREFIX = "tools/csharp-runtime-inspector/"
+_INSPECTOR_INPUTS = (
+    "ci/tooling_inspector.py", "ci/products/sdk_dotnet_toolchain.py", "ci/products/inventory.py",
+    "gradle/release/toolchains/sdk/csharp.json",
+    "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs",
+    "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/VerifySdkRuntimeRoot.csproj",
+)
 
 
 def _json(path):
@@ -161,19 +168,29 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
         original = _json(captured / "original/tooling-build-receipt.json")["producer"]["commit"]
     else:
         original = _json(captured / "original/lane/lane-receipt.json")["validationCommit"]
-    expected = git_inventory(repository, revision, _COMPILER_INPUTS)
-    if not expected or expected != git_inventory(repository, original, _COMPILER_INPUTS):
+    entries = dict(tree_entries(repository, revision))
+    inspector_required = _INSPECTOR_INPUTS[0] in entries
+    if inspector_required:
+        if value["schemaVersion"] != 1:
+            raise ValueError("C# inspector requires an original hosted tooling compiler receipt")
+        if __package__ == "products":
+            from tooling_inspector import SOURCES, PROFILE, _LIMITS, verify
+        else:
+            from ..tooling_inspector import SOURCES, PROFILE, _LIMITS, verify
+    compiler_inputs = _COMPILER_INPUTS + (_INSPECTOR_INPUTS if inspector_required else ())
+    expected = git_inventory(repository, revision, compiler_inputs)
+    if not expected or expected != git_inventory(repository, original, compiler_inputs):
         raise ValueError("Authenticated tooling compiler/build inputs differ from applicable policy")
     # JARs legitimately contain directory records; the stricter product ZIP
     # reader intentionally rejects those. Read this already-authenticated private
     # archive without extracting anything or relaxing reusable product ZIP rules.
-    resources = {}
+    resources, inspector = {}, {}
     with zipfile.ZipFile(io.BytesIO(read_regular_file_bytes(jar, max_bytes=128 * 1024 * 1024))) as archive:
-        entries = archive.infolist()
-        if len(entries) > 50_000 or sum(item.file_size for item in entries) > 512 * 1024 * 1024:
+        archive_entries = archive.infolist()
+        if len(archive_entries) > 50_000 or sum(item.file_size for item in archive_entries) > 512 * 1024 * 1024:
             raise ValueError("Tooling JAR inventory is oversized")
         names = set()
-        for entry in entries:
+        for entry in archive_entries:
             name = require_relative_path(entry.filename.rstrip("/"), "tooling JAR path")
             mode = stat.S_IFMT(entry.external_attr >> 16)
             if name in names or entry.file_size > 64 * 1024 * 1024 or mode not in {0, stat.S_IFREG, stat.S_IFDIR}:
@@ -181,9 +198,13 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
             names.add(name)
             if not entry.is_dir() and name.startswith("python/"):
                 resources[name.removeprefix("python/")] = archive.read(entry)
+            if not entry.is_dir() and name.startswith(_INSPECTOR_PREFIX):
+                relative = name.removeprefix(_INSPECTOR_PREFIX)
+                if not inspector_required or relative not in _LIMITS or entry.file_size > _LIMITS[relative]:
+                    raise ValueError("Tooling inspector has undeclared or oversized files")
+                inspector[relative] = archive.read(entry)
     if not resources or "ci/products/sdk_package.py" not in resources:
         raise ValueError("Authenticated tooling lacks its packaged native verifier")
-    entries = dict(tree_entries(repository, revision))
     class_policy = ".github/actions/run-ci-lane/release_tooling_classes.json"
     if class_policy not in entries and use == "javascript-validation":
         # Original JS validators predate the Apple class policy. This explicit
@@ -220,6 +241,15 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
     for path, data in resources.items():
         if data != blobs[sources[path]]:
             raise ValueError(f"Authenticated tooling resource differs from applicable policy: {path}")
+    if inspector_required:
+        # These are compiler outputs authenticated by the signed original JAR,
+        # not Git source blobs. Bind their exact inventory and producing inputs.
+        source_files = [{"path": path, "sha256": sha256_bytes(git_regular_blob_bytes(
+            repository, revision, path, max_bytes=_LIMIT))} for path in sorted(SOURCES)]
+        verify(inspector, source_files, sha256_bytes(git_regular_blob_bytes(
+            repository, revision, PROFILE, max_bytes=4096)))
+    elif inspector:
+        raise ValueError("Tooling contains an inspector absent from its source policy")
 
 
 @contextmanager

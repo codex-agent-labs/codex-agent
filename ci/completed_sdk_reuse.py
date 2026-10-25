@@ -443,7 +443,7 @@ def _contract_files(spec, files, sdk):
 
 
 def validate_extension(spec, proof, arguments, *, root, revision, frozen, token, consumer_revision=None,
-                       _checkpoint=None):
+                       _checkpoint=None, requalification_baseline=None):
     """The caller has authenticated this exact new native subject first."""
     import reuse_qualification as native
     originals = _spec(spec)
@@ -455,6 +455,12 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token,
         if consumer_revision is None:
             raise ValueError("Planned SDK completion requires an explicit current consumer revision")
         native._commit(consumer_revision)
+    if requalification_baseline is not None:
+        # Only the outer native consumer supplies this explicit policy baseline;
+        # it must restrict the admitted originals to current inputs before return.
+        # The checkpoint witness still matches the actual consumer revision.
+        if native._commit(requalification_baseline) != revision:
+            raise ValueError("SDK requalification baseline differs from native admission revision")
     require_exact_keys(proof, {"schemaVersion", "kind", "issuerCommit", "specSha256", "parentProof",
         "controls", "source", "originals", "members", "contractSource", "contractFiles"},
         "Incremental native completion")
@@ -500,7 +506,8 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token,
     # A fresh runner may lack the original PR merge even with full branch history.
     # Acquire only the exact native-pinned tree after its live source checks pass.
     validate_current(request, phases, receipts, root=root,
-                     revision=consumer_revision if source_predecessor_context(spec) else revision,
+                     revision=(requalification_baseline if requalification_baseline is not None else
+                               consumer_revision if source_predecessor_context(spec) else revision),
                      original_revision=_inventory_revision(spec, root, token=token))
     available = _records(request["availableObjects"], "Incremental original objects")
     if type(proof["members"]) is not list or len(proof["members"]) != len(phases):
@@ -1552,12 +1559,14 @@ class _CheckpointConsumer:
                 or prior.get("extension") != {"spec": envelope["recipe"], "proof": envelope["completion"]}):
             raise ValueError("Checkpoint inheritance changes its authenticated inner proof or next source")
 
-    def validate(self, *, root, revision, frozen, consumer_revision, token):
+    def validate(self, *, root, revision, frozen, consumer_revision, token, requalification_baseline=None):
         self.check(token=token)
         envelope = load_canonical_json_bytes(self._subject)
         result = validate_extension(envelope["recipe"], envelope["completion"],
             {"signer_commit": envelope["issuerCommit"]}, root=root, revision=revision,
-            frozen=frozen, consumer_revision=consumer_revision, token=token, _checkpoint=self)
+            frozen=frozen, consumer_revision=consumer_revision, token=token, _checkpoint=self,
+            **({"requalification_baseline": requalification_baseline}
+               if requalification_baseline is not None else {}))
         self._validated = sha256_bytes(canonical_json_bytes(result))
         return result
 

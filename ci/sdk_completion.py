@@ -58,6 +58,37 @@ gradle.projectsEvaluated {
 """
 
 
+# Same task-time execution pattern as VerifyImportedRepositoryEvidenceTask; no
+# Project/script/stream object is captured in a cached task action.
+LOCAL_CACHE_TASK = """\
+abstract class VerifyCompletedEvidence extends org.gradle.api.DefaultTask {
+    @org.gradle.api.tasks.Internal
+    abstract org.gradle.api.file.DirectoryProperty getRepositoryDirectory()
+    @org.gradle.api.tasks.Input
+    abstract org.gradle.api.provider.ListProperty<String> getArguments()
+    @org.gradle.api.tasks.OutputFile
+    abstract org.gradle.api.file.RegularFileProperty getResultFile()
+    @javax.inject.Inject
+    abstract org.gradle.process.ExecOperations getProcesses()
+
+    @org.gradle.api.tasks.TaskAction
+    void verify() {
+        def report = resultFile.get().asFile
+        java.nio.file.Files.deleteIfExists(report.toPath())
+        def captured = new ByteArrayOutputStream()
+        processes.exec {
+            workingDir repositoryDirectory.get().asFile
+            environment 'PYTHONDONTWRITEBYTECODE', '1'
+            commandLine arguments.get()
+            standardOutput = captured
+        }.assertNormalExitValue()
+        report.parentFile.mkdirs()
+        report.bytes = captured.toByteArray()
+    }
+}
+"""
+
+
 def _runtime_contract_policy(path):
     raw = read_regular_file_bytes(path, max_bytes=8192, reject_symlink_parents=True)
     value = require_exact_keys(load_canonical_json_bytes(raw), {
@@ -77,13 +108,15 @@ def _runtime_contract_policy(path):
 
 
 def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=None, parity_archive=None,
-                               runtime_contract_policy=None):
+                               runtime_contract_policy=None, configuration_cache=False):
     """Use the root verification entry point without changing product/toolkit inputs."""
     root = Path(repository_root).resolve(strict=True)
     policy = Path(policy_path).absolute()
     read_regular_file_bytes(policy, max_bytes=4096, reject_symlink_parents=True)
     sdk = parity_policy is not None or parity_archive is not None
     runtime = runtime_contract_policy is not None
+    if configuration_cache and not sdk:
+        raise ValueError("Configuration-cache lifecycle requires local SDK Gradle acceptance")
     if runtime and sdk:
         raise ValueError("Standalone Runtime acceptance does not consume SDK parity")
     if sdk and (parity_policy is None or parity_archive is None):
@@ -106,6 +139,17 @@ def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=N
     with tempfile.TemporaryDirectory(prefix="repository-gradle-adapter-") as temporary:
         script = Path(temporary) / "repository.init.gradle"
         init = LOCAL_REPOSITORY_INIT
+        if configuration_cache:
+            init = LOCAL_CACHE_TASK + init.replace(
+                "    def captured = new ByteArrayOutputStream()\n", "").replace(
+                "org.gradle.api.tasks.Exec", "VerifyCompletedEvidence").replace(
+                "workingDir root.projectDir", "repositoryDirectory.set(root.projectDir)").replace(
+                "        environment 'PYTHONDONTWRITEBYTECODE', '1'\n", "").replace(
+                "commandLine python,", "arguments.set([python,").replace(
+                "'--completed-frozen-policy', policy\n", "'--completed-frozen-policy', policy])\n").replace(
+                "        standardOutput = captured\n", "").replace(
+                "        doLast {\n            report.parentFile.mkdirs()\n"
+                "            report.bytes = captured.toByteArray()\n        }", "        resultFile.set(report)")
         extra = []
         if runtime:
             init = init.replace("':codex-agent-core'", "':codex-agent-runtime-desktop'")
@@ -154,13 +198,23 @@ def run_local_repository_gradle(repository_root, policy_path, *, parity_policy=N
             extra = ["-DcodexAgent.parityPolicy=" + str(Path(parity_policy).absolute()),
                      "-DcodexAgent.parityArchive=" + str(Path(parity_archive).absolute())]
         script.write_text(init, encoding="utf-8")
-        subprocess.run([str(root / "gradlew"), "--offline", "--no-configuration-cache", "--no-build-cache",
+        command = [str(root / "gradlew"), "--offline",
+            *(["--configuration-cache", "--configuration-cache-problems=fail"] if configuration_cache
+              else ["--no-configuration-cache"]), "--no-build-cache",
             "--max-workers=4", "--console=plain", "--init-script",
             str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
             "--init-script", str(script), "-DcodexAgent.completedRepositoryPolicy=" + str(policy),
             "-DcodexAgent.repositoryPython=" + sys.executable, *extra,
-            ":verifyRuntime" if runtime else ":verifySdk" if sdk else ":verifyRepository"],
-            cwd=root, stdout=sys.stderr, check=True)
+            ":verifyRuntime" if runtime else ":verifySdk" if sdk else ":verifyRepository"]
+        # Both cache-lifecycle passes use this one private init path. Each executes
+        # fresh authentication; Gradle's actual store/reuse log remains the proof.
+        for _ in range(2 if configuration_cache else 1):
+            report.unlink(missing_ok=True)
+            try:
+                subprocess.run(command, cwd=root, stdout=sys.stderr, check=True)
+            except BaseException:
+                report.unlink(missing_ok=True)
+                raise
     if runtime and read_regular_file_bytes(runtime_contract_policy, max_bytes=8192,
                                           reject_symlink_parents=True) != contract_raw:
         raise ValueError("Standalone Contract caller policy changed during verification")
@@ -577,9 +631,13 @@ def main(argv=None):
                         help="Verify current local repository inputs through completed original evidence; no CI identity")
     parser.add_argument("--gradle", action="store_true",
                         help="Run local repository, SDK or standalone Runtime acceptance through Gradle (offline)")
+    parser.add_argument("--configuration-cache", action="store_true",
+                        help="Run two local SDK Gradle passes with one private init path; inspect actual store/reuse logs")
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
+    if args.configuration_cache and not (args.local and args.gradle and args.sdk):
+        parser.error("--configuration-cache requires --sdk --local --gradle")
     if args.runtime:
         if not args.local or args.repository or args.sdk:
             parser.error("--runtime requires --local without --repository or --sdk")
@@ -607,7 +665,7 @@ def main(argv=None):
     if args.local:
         if (not (args.repository or args.sdk or args.runtime) or args.completed_frozen_policy is None or any(
                 value is not None for name, value in vars(args).items() if name not in {
-                    "repository_root", "completed_frozen_policy", "repository", "local", "gradle",
+                    "repository_root", "completed_frozen_policy", "repository", "local", "gradle", "configuration_cache",
                     "sdk", "parity_policy", "parity_archive", "runtime", "hosted_parity",
                     "runtime_contract_policy", "runtime_contract_manifest"})):
             parser.error("Local repository verification accepts only its current source and explicit completed policy")
@@ -623,6 +681,8 @@ def main(argv=None):
                     options["runtime_contract_policy"] = args.runtime_contract_policy
                 if args.runtime_contract_manifest is not None:
                     options["runtime_contract_manifest"] = args.runtime_contract_manifest
+            if args.configuration_cache:
+                options["configuration_cache"] = True
             result = gate(args.repository_root, args.completed_frozen_policy, **options)
             print(canonical_json_bytes(result).decode().strip())
             return 0

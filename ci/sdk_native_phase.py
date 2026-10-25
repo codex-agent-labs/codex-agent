@@ -7,10 +7,17 @@ are separate phases; this leaf neither executes nor substitutes for them.
 """
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
+import os
 from pathlib import Path
+import re
 import subprocess
+import sys
 import time
 from typing import Any
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -24,6 +31,7 @@ from products.sdk_native_metadata import _inventory
 from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
 from products.sdk_dotnet_toolchain import verify_sdk_dotnet_toolchain
+from products.signing_isolation import require_no_signing_secret
 
 
 _LIMIT = 16 * 1024 * 1024
@@ -85,8 +93,9 @@ def execute(
     predecessor: Callable[[str, str, str, str], Mapping[str, Any]],
     environ: Mapping[str, str],
     csharp_binary_stage: Path | None = None,
+    csharp_inspector=None,
 ) -> dict[str, Any]:
-    """Run existing root ciProductPhase only; never finalize or publish evidence.
+    """Run the fixed package recipe; never finalize or publish evidence.
 
     The caller authenticates S858/current Contract, the original Runtime source,
     and the single prepared-source/SDK upload bound to its original source plan
@@ -97,10 +106,10 @@ def execute(
     """
     from native_wrappers import HOSTS, host_classifier
     from product_reuse import (
-        _prepare_destination, _runtime_worker_checkout, _runtime_worker_command,
-        _runtime_worker_environment,
+        _prepare_destination, _runtime_worker_checkout, _worker_process_environment,
     )
 
+    require_no_signing_secret(environ)
     require_exact_keys(plan, PHASE_PLAN_KEYS, "Native SDK package plan")
     if require_integer(plan["schemaVersion"], "Native SDK plan schema", 1) != 1:
         raise ValueError("Unsupported native SDK package plan schema")
@@ -123,6 +132,12 @@ def execute(
         raise ValueError("C# package requires an authenticated binary predecessor")
     if component != "csharp" and binary is not None:
         raise ValueError("Only C# may import the C# binary predecessor")
+    if component == "csharp":
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
+        inspector_directory, inspector_digest = csharp_inspector.handoff()
+    elif csharp_inspector is not None:
+        raise ValueError("Only C# may use the private inspector")
     if any(not path.is_absolute() for path in (runtime_stages, prepared_sources, sdks, request)):
         raise ValueError("Native SDK inputs must be explicit absolute paths")
     if binary is not None and not binary.is_absolute():
@@ -150,12 +165,16 @@ def execute(
               *(path for original, _, receipt, _ in originals for path in (original, receipt))]
     if binary is not None:
         inputs.append(binary)
+        inputs.append(inspector_directory)
     _require_capability_output_separate(destination, [*owned, *inputs])
     for output in owned:
         _require_capability_output_separate(output, inputs)
-    environment, wrapper = _runtime_worker_environment(root, producer, destination, environ, build_directory=".")
+    if environ.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", ""):
+        raise ValueError("SDK product commands remain offline after verified dependency seeding")
+    environment = _worker_process_environment(root, producer, destination, environ)
 
     def unchanged():
+        require_no_signing_secret(environ)
         _runtime_worker_checkout(root, producer)
         bytecode = destination / "python-bytecode"
         if bytecode.exists() or bytecode.is_symlink():
@@ -167,6 +186,8 @@ def execute(
             raise ValueError("Original prepared native SDK source or staging inputs changed")
         if binary is not None and _inventory(binary) != binary_inventory:
             raise ValueError("Original C# binary predecessor changed")
+        if csharp_inspector is not None:
+            require_inspector(csharp_inspector)
         if (read_regular_file_bytes(request, max_bytes=_LIMIT, reject_symlink_parents=True) != request_bytes
                 or _request_inventory(request) != request_inventory):
             raise ValueError("Original SDK compatibility request or inputs changed")
@@ -184,11 +205,14 @@ def execute(
         "codexAgent.nativeWrapperPackageSourcesRoot": str(prepared_sources),
         "codexAgent.nativeWrapperPackageSdksRoot": str(sdks),
         "codexAgent.sdkCompatibilityRequest": str(request),
+        "codexAgent.sdkVersion": sdk_version,
     }
     if binary is not None:
         fields["codexAgent.csharpBinaryStageRoot"] = str(binary)
         fields["codexAgent.csharpDotnetProfile"] = str(dotnet_profile)
-    command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
+        fields["codexAgent.csharpInspectorRoot"] = str(inspector_directory)
+        fields["codexAgent.csharpInspectorManifestSha256"] = inspector_digest
+    command = _package_command(root, fields)
     unchanged()
     if any(path.exists() or path.is_symlink() for path in owned):
         raise ValueError("Native SDK task output appeared before execution")
@@ -216,3 +240,109 @@ def execute(
     unchanged()
     return {"stage": stage, "diagnostics": destination, "outputInventory": output_inventory,
             "stagedSdks": sdks, "stagedSdkInventory": sdk_inventory}
+
+
+def _package_command(root, properties):
+    """The exact fixed Python recipe recorded in execution diagnostics."""
+    return ["python3", "-B", "-m", "ci.sdk_native_phase", "package", str(root),
+            *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
+
+
+def _package_only(root, fields, environ):
+    """Compose unchanged producers; execute owns original-input authentication/lifetimes."""
+    from native_wrappers import host_classifier, package_all, require_sdk_version_file
+    from product_reuse import _runtime_worker_checkout
+    from products.receipt import write_output_manifest
+    from sdk_ios_binary import _directory, _file
+
+    require_no_signing_secret(environ)
+    if environ.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", ""):
+        raise ValueError("SDK product commands remain offline after verified dependency seeding")
+    component = fields.get("codexAgent.component")
+    if component not in NATIVE_BINDINGS or host_classifier() != "linux-x64":
+        raise ValueError("Python native package requires a native binding on Linux x64")
+    csharp_fields = {"codexAgent." + name for name in (
+        "csharpBinaryStageRoot", "csharpDotnetProfile", "csharpInspectorRoot",
+        "csharpInspectorManifestSha256")} if component == "csharp" else set()
+    require_exact_keys(fields, {"codexAgent." + name for name in (
+        "product", "component", "phase", "target", "sdkVersion", "candidateCommit", "candidateTree",
+        "nativeWrapperRuntimeStageRoot", "nativeWrapperPackageSourcesRoot",
+        "nativeWrapperPackageSdksRoot", "sdkCompatibilityRequest")} | csharp_fields,
+        "Fixed Python native package properties")
+    if (fields["codexAgent.product"], fields["codexAgent.phase"], fields["codexAgent.target"]) != (
+            "sdk", "package", "desktop"):
+        raise ValueError("Python native package identity differs from the fixed recipe")
+    version = require_semver(fields["codexAgent.sdkVersion"], "Python native package version")
+    producer = {name: fields["codexAgent.candidate" + name.title()] for name in ("commit", "tree")}
+    if any(re.fullmatch("[0-9a-f]{40}", value) is None for value in producer.values()):
+        raise ValueError("Python native package source identity is malformed")
+    root = Path(root)
+    if root.resolve(strict=True) != root:
+        raise ValueError("Python native package checkout must be normalized and absolute")
+    runtime, sources, sdks = (_directory(Path(fields["codexAgent." + name]), "Original native package input")
+                             for name in ("nativeWrapperRuntimeStageRoot", "nativeWrapperPackageSourcesRoot",
+                                          "nativeWrapperPackageSdksRoot"))
+    request = Path(fields["codexAgent.sdkCompatibilityRequest"])
+    if not request.is_absolute() or request.resolve(strict=True) != request:
+        raise ValueError("Python native package request must be normalized and absolute")
+    version_file = _file(root / "gradle/release/versions/sdk.txt", "Tracked SDK version")
+    if require_sdk_version_file(version_file) != version:
+        raise ValueError("Python native package differs from the tracked SDK version")
+    stage = root / f"codex-agent-sdk/build/product-stage/sdk/{component}/package"
+    _require_capability_output_separate(stage, [runtime, sources, sdks, request, version_file])
+    if stage.resolve(strict=False) != stage or stage.exists() or stage.is_symlink():
+        raise ValueError("Python native package requires fresh normalized outputs")
+    package_arguments = {}
+    inspector_context = nullcontext()
+    if component == "csharp":
+        from tooling_inspector import borrowed_inspector
+        binary = _directory(Path(fields["codexAgent.csharpBinaryStageRoot"]), "Original C# binary")
+        profile = _file(root / "gradle/release/toolchains/sdk/csharp.json", "Tracked .NET profile")
+        if str(profile) != fields["codexAgent.csharpDotnetProfile"]:
+            raise ValueError("C# package profile differs from the tracked policy")
+        inspector = _directory(Path(fields["codexAgent.csharpInspectorRoot"]), "Private C# inspector")
+        _require_capability_output_separate(stage, [binary, profile, inspector])
+        package_arguments = {"csharp_binary": binary / "outputs/csharp", "dotnet_profile": profile}
+        inspector_context = borrowed_inspector(inspector, fields["codexAgent.csharpInspectorManifestSha256"])
+
+    def unchanged():
+        require_no_signing_secret(environ)
+        _runtime_worker_checkout(root, producer)
+
+    unchanged()
+    try:
+        with inspector_context as capability:
+            if capability is not None:
+                package_arguments["csharp_inspector"] = capability
+            package_all(sources, sdks, stage / "outputs", version, (component,), **package_arguments)
+        evidence = stage / "outputs/evidence"
+        evidence.mkdir()
+        for name in ("sdk-compatibility.json", "sdk-runtime-root.pub"):
+            with (evidence / name).open("xb") as output:
+                output.write(read_regular_file_bytes(sdks / name, max_bytes=_LIMIT, reject_symlink_parents=True))
+        write_output_manifest(stage, "sdk", component, "package", "desktop", version,
+                              {"evidence": "outputs/evidence", "package": f"outputs/{component}"})
+    finally:
+        unchanged()
+
+
+def main(argv=None):
+    arguments = sys.argv[1:] if argv is None else argv
+    if len(arguments) < 2 or arguments[0] != "package":
+        raise ValueError("Only the fixed native package recipe is available")
+    fields = {}
+    for argument in arguments[2:]:
+        if not argument.startswith("-P") or "=" not in argument[2:]:
+            raise ValueError("Malformed native package property")
+        key, value = argument[2:].split("=", 1)
+        if key in fields:
+            raise ValueError("Duplicate native package property")
+        fields[key] = value
+    if arguments != _package_command(arguments[1], fields)[4:]:
+        raise ValueError("Native package command is not canonical")
+    _package_only(arguments[1], fields, os.environ)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
