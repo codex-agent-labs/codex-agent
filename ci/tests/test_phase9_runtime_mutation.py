@@ -1,5 +1,7 @@
 """Preflight controls only; never substitute these tests for real host evidence."""
 import json
+from contextlib import ExitStack
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -110,6 +112,168 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
             self.assertFalse(result['profileMatches'])
             self.assertEqual(0, result['productExecutions'])
             self.assertEqual(observation, json.loads((destination/'toolchain-observation.json').read_bytes()))
+
+
+    def test_windows_binary_requires_its_own_exact_context(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            event = Path(temporary) / 'event.json'
+            payload = dict(label=dict(name=fixture.WINDOWS_BINARY_LABEL), pull_request=dict(number=31,
+                head=dict(sha='a'*40, repo=dict(full_name='codex-agent-labs/codex-agent', fork=False))))
+            event.write_text(json.dumps(payload))
+            environment = dict(GITHUB_ACTIONS='true', GITHUB_EVENT_NAME='pull_request',
+                GITHUB_REPOSITORY='codex-agent-labs/codex-agent', GITHUB_EVENT_PATH=str(event),
+                GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='2', GITHUB_SHA='b'*40)
+            def git(*args):
+                return '' if args[0] == 'diff' else 'c'*40 if args[-1] == 'HEAD^{tree}' else 'a'*40
+            with patch.dict(os.environ, environment), patch.object(fixture.mutation, 'git', side_effect=git), \
+                    patch.object(fixture, 'host_classifier', return_value='windows-x64') as host:
+                context = fixture.hosted_context('windows-x64', 'builder', windows_binary=True)
+                self.assertEqual((123, 2, 'a'*40), tuple(context[k] for k in ('runId', 'runAttempt', 'sourceCommit')))
+                with self.assertRaisesRegex(ValueError, 'same-repository'):
+                    fixture.hosted_context('windows-x64', 'builder')
+                payload['label']['name'] = fixture.WINDOWS_LABEL
+                event.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(ValueError, 'same-repository'):
+                    fixture.hosted_context('windows-x64', 'builder', windows_binary=True)
+                payload['label']['name'] = fixture.WINDOWS_BINARY_LABEL
+                event.write_text(json.dumps(payload))
+                host.return_value = 'linux-x64'
+                with self.assertRaisesRegex(ValueError, 'actual selected'):
+                    fixture.hosted_context('windows-x64', 'builder', windows_binary=True)
+
+    def test_windows_source_intake_is_tiny_and_rejects_wrong_bundle_head(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary).resolve() / 'worker'
+            raw = b'tiny-source-fixture'
+            record = dict(relativePath='source/windows-mutation-source.bundle', bytes=len(raw),
+                sha256='sha256:'+hashlib.sha256(raw).hexdigest())
+            def receive(records, inputs, storage):
+                self.assertEqual(['source/mutation-source.bundle', record['relativePath']],
+                    [r['relativePath'] for r in records])
+                inputs.mkdir(parents=True)
+                (inputs / 'source').mkdir()
+                (inputs / record['relativePath']).write_bytes(raw)
+                return dict(downloadedBytes=len(raw))
+            with patch.object(fixture, 'WINDOWS_BUNDLE', record), \
+                    patch.object(fixture, 'receive', side_effect=receive), \
+                    patch.object(fixture.mutation, 'source_fixture', return_value=(destination/'source', {})), \
+                    patch.object(fixture.mutation, 'git', return_value='wrong HEAD'), \
+                    patch.object(fixture.mutation, 'contract_inputs') as contract:
+                with self.assertRaisesRegex(ValueError, 'unexpected heads'):
+                    fixture.prepare_windows_source(destination, Path(temporary))
+                contract.assert_not_called()
+                self.assertFalse((destination/'inputs').exists())
+
+    def test_windows_binary_profile_then_single_execution_and_late_failure_gates(self):
+        from types import SimpleNamespace
+        import product_reuse
+        import products.receipt
+        import products.toolchain_capture_bootstrap
+        import runtime_native_phase
+        command_builder = product_reuse._runtime_worker_command
+        for mode in ('profile-mismatch', 'process-failure', 'input-mutation', 'success'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                destination = Path(temporary).resolve() / 'worker'
+                context = dict(sourceCommit='a'*40, sourceTree='b'*40, workflowEventCommit='c'*40,
+                    runId=123, runAttempt=2, target='windows-x64', role='builder')
+                prepared = dict(environment={}, originalContractProducer={'event':'local'},
+                    sourceCommit=fixture.WINDOWS_SOURCE, sourceTree=fixture.WINDOWS_TREE)
+                plan = dict(inputs={}, buildKey=fixture.WINDOWS_BINARY_KEY)
+                calls = []
+                def source(*args):
+                    destination.mkdir()
+                    (destination/'source-inputs').mkdir()
+                    (destination/'source-inputs/source.bundle').write_bytes(b'original-source')
+                    policy = destination/'source/codex-agent-runtime-desktop/src/mingwMain/gradle/deterministic-native-link.init.gradle'
+                    policy.parent.mkdir(parents=True)
+                    policy.write_bytes(b'policy')
+                    return prepared, SimpleNamespace(digest=fixture.WINDOWS_PROFILE)
+                def binary(*args):
+                    calls.append('contract')
+                    (destination/'inputs/contract').mkdir(parents=True)
+                    (destination/'inputs/contract/original').write_bytes(b'original-contract')
+                    return prepared, SimpleNamespace(digest=fixture.WINDOWS_PROFILE), plan
+                def provision(root, revision, target, output, environment):
+                    environment['KONAN_DATA_DIR'] = str(destination/'konan')
+                    return {'codexAgent.kotlinPluginJar':'plugin.jar','codexAgent.nativeArchive':'native.zip'}
+                observation = dict(producer=dict(runner=dict(os='Windows',arch='X64'),tools=[]), imageProvenance={})
+                def observe(*args, **kwargs):
+                    self.assertIs(kwargs['environment'], os.environ)
+                    self.assertEqual('', os.environ['GH_TOKEN'])
+                    return observation
+                def verify(*args, **kwargs):
+                    calls.append('profile')
+                    if mode == 'profile-mismatch':
+                        raise ValueError('actual tool mismatch')
+                def process(command, **kwargs):
+                    calls.append('execute')
+                    self.assertEqual('C:\\Java17\\bin\\java.exe', command[0])
+                    self.assertIn('ciProductPhase', command)
+                    self.assertIn('-PcodexAgent.candidateCommit='+fixture.WINDOWS_SOURCE, command)
+                    self.assertIn('-PcodexAgent.component=windows-x64', command)
+                    self.assertIn('-PcodexAgent.phase=binary', command)
+                    self.assertEqual('/Brepro', kwargs['env']['LINK'])
+                    self.assertEqual('', kwargs['env']['GH_TOKEN'])
+                    if mode == 'input-mutation':
+                        (destination/'inputs/contract/original').write_bytes(b'changed-contract')
+                    return SimpleNamespace(returncode=1 if mode == 'process-failure' else 0)
+                def receipt(stage, output, *args):
+                    calls.append('receipt')
+                    value = dict(outputs=[dict(bytes=3)], producer=args[-2])
+                    (output/'phase-receipt.json').write_text(json.dumps(value))
+                    return value
+                stack.enter_context(patch.object(fixture,'hosted_context',return_value=context))
+                stack.enter_context(patch.object(fixture,'prepare_windows_source',side_effect=source))
+                capture = stack.enter_context(patch.object(fixture,'prepare_windows_binary',side_effect=binary))
+                stack.enter_context(patch.object(fixture,'_runtime_worker_environment',return_value=(
+                    dict(JAVA_HOME='C:\\Java17',GH_TOKEN='ambient',GITHUB_TOKEN='ambient'),Path('C:/fixture/gradlew.bat'))))
+                stack.enter_context(patch.object(fixture,'_provision_runtime_native_toolchain',side_effect=provision))
+                stack.enter_context(patch.object(fixture,'observe_producer',side_effect=observe))
+                stack.enter_context(patch.object(fixture,'verify_toolchain_profile',side_effect=verify))
+                stack.enter_context(patch.object(fixture,'git_regular_blob_bytes',return_value=b'policy'))
+                stack.enter_context(patch.object(product_reuse,'_runtime_worker_checkout'))
+                stack.enter_context(patch.object(product_reuse,'_runtime_worker_command',side_effect=lambda *a,**kw:
+                    command_builder(*a,**kw,platform_name='nt')))
+                stack.enter_context(patch.object(runtime_native_phase,'archive_spec',return_value=dict(
+                    asset='pinned.zip',url='https://example.invalid/pinned.zip',sha256='sha256:'+hashlib.sha256(b'zip').hexdigest())))
+                stack.enter_context(patch.object(runtime_native_phase,'properties',return_value={}))
+                download = stack.enter_context(patch.object(products.toolchain_capture_bootstrap,'_pinned_file',
+                    side_effect=lambda url,path,digest,unused:path.write_bytes(b'zip')))
+                execute = stack.enter_context(patch.object(fixture.subprocess,'run',side_effect=process))
+                writer = stack.enter_context(patch.object(products.receipt,'write_phase_receipt',side_effect=receipt))
+                if mode == 'success':
+                    fixture.hosted_windows_binary(destination, Path(temporary))
+                    self.assertEqual(['profile','contract','execute','receipt'],calls)
+                    result = json.loads((destination/'result.json').read_bytes())
+                    self.assertEqual(fixture.WINDOWS_SOURCE,result['producer']['commit'])
+                    self.assertEqual(context,result['hostedContext'])
+                    self.assertEqual(1,result['productExecutions'])
+                    self.assertFalse(result['baselineAdmission'])
+                    self.assertFalse(result['releaseAdmission'])
+                else:
+                    with self.assertRaisesRegex(ValueError, 'mismatch|failed|changed'):
+                        fixture.hosted_windows_binary(destination,Path(temporary))
+                    writer.assert_not_called()
+                    self.assertFalse((destination/'binary-receipt').exists())
+                    if mode == 'profile-mismatch':
+                        capture.assert_not_called(); download.assert_not_called(); execute.assert_not_called()
+                        self.assertTrue((destination/'toolchain-observation.json').is_file())
+                    else:
+                        self.assertTrue((destination/'binary-execution.json').is_file())
+                        execute.assert_called_once()
+
+    def test_windows_binary_workflow_and_fixed_identity(self):
+        workflow = (fixture.ROOT/'.github/workflows/portable-reuse-proof.yml').read_text()
+        job = workflow.split('  phase9-runtime-windows-binary:')[1].split('  phase9-ios-package-check:')[0]
+        self.assertIn("github.event.label.name == 'ci:phase9-runtime-windows-binary'",job)
+        self.assertIn('runs-on: windows-2025',job)
+        self.assertIn('hosted-windows-binary',job)
+        self.assertIn('if: always()',job)
+        self.assertNotIn('product-attestation',job)
+        self.assertIn('binary-receipt',job)
+        self.assertNotIn('build/phase9-runtime-windows-binary/inputs',job)
+        self.assertEqual('sha256:459daab114ea2b62b6994e162f033c959bf95bfdd649bcda6c46b7dc96f2fcc5',fixture.WINDOWS_BINARY_KEY)
+        self.assertEqual('sha256:3944685c3a9dcfa21e48adf67b72b1946928b119ad83390c3334842baa65cc5a',fixture.RETAINED_CHECKPOINT)
 
 
 if __name__ == '__main__':

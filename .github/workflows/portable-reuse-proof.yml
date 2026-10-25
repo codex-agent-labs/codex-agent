@@ -254,6 +254,55 @@ jobs:
           overwrite: false
           retention-days: 90
 
+  phase9-runtime-windows-binary:
+    if: >-
+      github.event.label.name == 'ci:phase9-runtime-windows-binary' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-msvc
+      - uses: ./.github/actions/setup-kmp
+        with:
+          product-worker: 'true'
+          cache-read-only: 'true'
+          xcode-fingerprint: 'none'
+      - name: Execute only the missing canonical-model Windows binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/phase9-runtime-lfs
+          python3 -B ci/tests/phase9_runtime_mutation.py hosted-windows-binary \
+            "$GITHUB_WORKSPACE/build/phase9-runtime-windows-binary" "$GITHUB_WORKSPACE/build/phase9-runtime-lfs"
+      - name: Preserve original Windows outputs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase9-runtime-windows-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/phase9-runtime-windows-binary/*.json
+            build/phase9-runtime-windows-binary/binary.log
+            build/phase9-runtime-windows-binary/binary-receipt
+            build/phase9-runtime-windows-binary/source/codex-agent-runtime-desktop/build/product-stage/runtime/windows-x64/binary
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
+
   phase9-ios-package-check:
     if: >-
       github.event.label.name == 'ci:phase9-ios-package-check' &&
