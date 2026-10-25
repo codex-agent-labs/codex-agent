@@ -23,9 +23,9 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            self.assertEqual(len(original["gitHistory"]), 151)
+            self.assertEqual(len(original["gitHistory"]), 153)
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL), original)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -36,7 +36,7 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(152)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(154)]
                     elif fault == "duplicate": rows[-1] = dict(rows[0])
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
@@ -179,8 +179,8 @@ class AcquisitionTests(unittest.TestCase):
         raw = Path(__file__).with_name("completed-sdk-parity.json").read_bytes()
         policy = json.loads(raw)
         self.assertEqual(consumer.sdk_parity_policy(raw), policy)
-        self.assertEqual(policy["artifactId"], 12585288030)
-        self.assertEqual(policy["jobId"], 121052185391)
+        self.assertEqual(policy["artifactId"], 12602670281)
+        self.assertEqual(policy["jobId"], 121177434633)
         self.assertNotEqual(policy["workflowSha"], APPROVAL["authorityCommit"])
         for fault in ("extra", "kind", "version", "repository", "workflow", "pr", "run",
                       "job", "artifact", "digest", "publisher", "canonical", "bound"):
