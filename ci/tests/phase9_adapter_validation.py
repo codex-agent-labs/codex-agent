@@ -137,6 +137,7 @@ def elect(spec, inputs, source, target, component, receipts):
 def prepare(destination, storage, target):
     controller = hosted_context(target)  # All source/host checks precede acquisition.
     spec = specification(); tick = time.monotonic_ns()
+    storage.mkdir(exist_ok=True)
     prepared, _ = prepare_windows_source(destination, storage)  # Existing two tiny bundles, no Contract/B bodies.
     inputs = destination/'inputs'; source = destination/'source'
     write_canonical_json(destination/'context.json',controller)

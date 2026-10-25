@@ -39,12 +39,36 @@ class AdapterValidationTest(unittest.TestCase):
     def test_wrong_event_fails_before_shared_intake(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary).resolve();event=root/'event.json';event.write_text('{}')
+            storage=root/'cache'
             with patch.dict(os.environ,{'GITHUB_EVENT_PATH':str(event),'GITHUB_ACTIONS':'false'}), \
                     patch.object(check.mutation,'git',return_value='a'*40), \
                     patch.object(check,'receive') as intake,patch.object(check,'prepare_windows_source') as source:
                 with self.assertRaisesRegex(ValueError,'same-repository'):
-                    check.prepare(root/'out',root,'windows-x64')
+                    check.prepare(root/'out',storage,'windows-x64')
                 intake.assert_not_called();source.assert_not_called();self.assertFalse((root/'out').exists())
+                self.assertFalse(storage.exists())
+
+    def test_shared_storage_exists_before_source_acquisition_and_preserves_warm_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();storage=root/'cache';marker=storage/'retained'
+            def source_acquisition(destination, selected_storage):
+                self.assertEqual(storage,selected_storage)
+                self.assertTrue(storage.is_dir())
+                raise RuntimeError('stop at source acquisition')
+            with patch.object(check,'hosted_context',return_value={}), \
+                    patch.object(check,'prepare_windows_source',side_effect=source_acquisition) as source, \
+                    patch.object(check,'receive') as intake:
+                self.assertFalse(storage.exists())
+                for warm in (False,True):
+                    with self.subTest(warm=warm):
+                        with self.assertRaisesRegex(RuntimeError,'stop at source acquisition'):
+                            check.prepare(root/'out',storage,'windows-x64')
+                        self.assertEqual(int(warm)+1,source.call_count)
+                        intake.assert_not_called()
+                        if warm:
+                            self.assertEqual(b'original cache bytes',marker.read_bytes())
+                        else:
+                            marker.write_bytes(b'original cache bytes')
 
     def test_real_receipt_member_election_and_tamper_checks(self):
         from ci.tests.test_product_plan import receipt as fixture_receipt, file_record, VERSIONS
