@@ -337,7 +337,9 @@ def hosted_windows_binary(destination, storage):
             baselineAdmission=False, releaseAdmission=False))
         tick = time.monotonic_ns()
         with (destination / 'binary.log').open('xb') as log:
-            completed = subprocess.run(command, cwd=source, env=environment,
+            # Only this private development fixture uses development Contract trust.
+            # Host observation/controller provenance and production workers stay unchanged.
+            completed = subprocess.run(command, cwd=source, env=dict(environment, GITHUB_ACTIONS='false'),
                 stdout=log, stderr=subprocess.STDOUT, check=False)
         write_canonical_json(destination / 'binary-execution.json', dict(returnCode=completed.returncode,
             elapsedNs=time.monotonic_ns()-tick, command=command, producer=producer,

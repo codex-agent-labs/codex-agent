@@ -200,6 +200,7 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
                 def observe(*args, **kwargs):
                     self.assertIs(kwargs['environment'], os.environ)
                     self.assertEqual('', os.environ['GH_TOKEN'])
+                    self.assertEqual('true', os.environ['GITHUB_ACTIONS'])
                     return observation
                 def verify(*args, **kwargs):
                     calls.append('profile')
@@ -214,6 +215,8 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
                     self.assertIn('-PcodexAgent.phase=binary', command)
                     self.assertEqual('/Brepro', kwargs['env']['LINK'])
                     self.assertEqual('', kwargs['env']['GH_TOKEN'])
+                    self.assertEqual('false', kwargs['env']['GITHUB_ACTIONS'])
+                    self.assertEqual('true', os.environ['GITHUB_ACTIONS'])
                     if mode == 'input-mutation':
                         (destination/'inputs/contract/original').write_bytes(b'changed-contract')
                     return SimpleNamespace(returncode=1 if mode == 'process-failure' else 0)
@@ -226,7 +229,9 @@ class RuntimeMutationPreflightTest(unittest.TestCase):
                 stack.enter_context(patch.object(fixture,'prepare_windows_source',side_effect=source))
                 capture = stack.enter_context(patch.object(fixture,'prepare_windows_binary',side_effect=binary))
                 stack.enter_context(patch.object(fixture,'_runtime_worker_environment',return_value=(
-                    dict(JAVA_HOME='C:\\Java17',GH_TOKEN='ambient',GITHUB_TOKEN='ambient'),Path('C:/fixture/gradlew.bat'))))
+                    dict(JAVA_HOME='C:\\Java17',GH_TOKEN='ambient',GITHUB_TOKEN='ambient',
+                         GITHUB_ACTIONS='true'),Path('C:/fixture/gradlew.bat'))))
+                stack.enter_context(patch.dict(os.environ, GITHUB_ACTIONS='true'))
                 stack.enter_context(patch.object(fixture,'_provision_runtime_native_toolchain',side_effect=provision))
                 stack.enter_context(patch.object(fixture,'observe_producer',side_effect=observe))
                 stack.enter_context(patch.object(fixture,'verify_toolchain_profile',side_effect=verify))
