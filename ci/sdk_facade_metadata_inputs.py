@@ -1,4 +1,4 @@
-"""Hold eleven original Core validation replays for deterministic metadata.
+"""Hold authenticated Core predecessor outputs for deterministic metadata.
 
 This context preserves the existing observed-upload/source/semantic gates. It
 does not turn runner labels or ordinary dictionaries into hardware/toolchain
@@ -18,8 +18,8 @@ from products.inventory import (
     require_exact_keys, require_integer, require_regular_directory, require_sha256, snapshot_regular_tree,
     write_canonical_json,
 )
-from products.receipt import validate_phase_receipt
-from products.registry import SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
+from products.receipt import validate_phase_receipt, verify_output_manifest_identity
+from products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, SDK_FACADE_TARGETS
 from products.sdk_facade_inputs import _request
 from products.sdk_facade_validation import _inventory
 from products.sdk_facade_validation_admission import _native_archive_path, _native_archive_digest, _NON_NATIVE_TARGETS
@@ -70,11 +70,51 @@ def _view(record):
         value.hex() if isinstance(value, bytes) else value for name, value in record.items()})
 
 
+def _validation_original_reference(receipt_bytes, artifact):
+    """Describe an independently authenticated original; this grants no authority."""
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if (tuple(receipt[n] for n in ("product", "component", "phase")) !=
+            ("sdk", "sdk-core", "validation") or receipt["target"] not in SDK_FACADE_TARGETS):
+        raise ValueError("Core original reference requires an exact validation receipt")
+    from products.inventory import sha256_bytes
+    return {"schemaVersion": 1, "kind": "sdk-core-validation-original-reference",
+        "receiptSha256": sha256_bytes(receipt_bytes), "artifact": {
+            "id": require_integer(artifact["id"], "Core original reference artifact", 1),
+            "bytes": require_integer(artifact["size_in_bytes"], "Core original reference bytes", 1),
+            "sha256": require_sha256(artifact["digest"], "Core original reference digest")}}
+
+
+def _qualified_predecessors(completed_frozen, elected):
+    """Join a verified current election to concrete native authority.
+
+    Missing current coverage selects ordinary replay. Conflicting identities
+    fail; serialized controls never grant authority.
+    """
+    if completed_frozen is None:
+        return None
+    from reuse_qualification import CompletedFrozenReuse
+    if (type(completed_frozen) is not CompletedFrozenReuse or elected is None
+            or elected.completed_frozen is not completed_frozen):
+        raise ValueError("Fresh Core inputs require the current elected native capability")
+    completed_frozen.check_consumer(elected.consumer)
+    result = {}
+    for phase, target in [("package", "common"), *(("validation", t) for t in SDK_FACADE_TARGETS)]:
+        identity = PhaseInstanceId("sdk", "sdk-core", phase, target)
+        row = elected.prior_by_instance.get(identity)
+        if row is None or row["state"] != "retained":
+            return None
+        value = completed_frozen.envelope(row)
+        if value is None:
+            return None
+        result[identity] = value
+    return result
+
+
 @contextmanager
 def verified_facade_metadata_inputs(*, plan, validations, contract_digest, component_digests,
         repository_root, environ, token, trusted_workflow_sha, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain,
-        tooling_keyring=None, tooling_keys_directory=None):
+        tooling_keyring=None, tooling_keys_directory=None, completed_frozen=None, elected=None):
     """Yield private package/validation paths and expected content until clean exit.
 
     Caller-owned facade requests supply replay policy. Retained request paths
@@ -85,10 +125,18 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
     Every native target record requires nativeCompilerArchive from independent
     caller policy, in either acquisition mode. This path is not retained in the
     metadata request/payload; unsupported host archive policies remain failures.
+    A verified current election with complete native qualification can consume
+    small receipt-bound stages after fresh original observations. All other
+    inputs retain the full original readers and their clean-exit requirements.
     """
     require_no_signing_secret(environ)
     root = Path(repository_root).resolve(strict=True)
     records = _records(validations)
+    native = _qualified_predecessors(completed_frozen, elected)
+    if native is not None and any("captureRoot" in r for r in records.values()):
+        native = None  # Already captured callers retain their full-reader contract.
+    if native is not None and elected.plan["validationCommit"] != policy_revision:
+        raise ValueError("Fresh Core native inputs differ from the current policy revision")
     record_bytes = canonical_json_bytes(records)
     archives = _native_archives(records)
     retained_sources = {Path(record["captureRoot"]): _inventory(Path(record["captureRoot"]), allow_empty=True)
@@ -124,6 +172,8 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
 
     def unchanged():
         require_no_signing_secret(environ)
+        if native is not None and _qualified_predecessors(completed_frozen, elected) != native:
+            raise ValueError("Fresh Core predecessor authority changed")
         if (set(held) != set(held_before)
                 or canonical_json_bytes(_records(validations)) != record_bytes
                 or _native_archives(records) != archives
@@ -142,6 +192,12 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
             *(Path(value["packageStage"]) for value in request_values.values())])
         try:
             with ExitStack() as stack:
+                package_id = PhaseInstanceId("sdk", "sdk-core", "package", "common")
+                if native is not None:
+                    if package_bytes != native[package_id]["receiptBytes"]:
+                        raise ValueError("Fresh Core package differs from native authority")
+                    completed_frozen.observe_extended_sdk(elected.prior_by_instance[package_id],
+                        producer=elected.consumer["producer"], token=token)
                 for target in SDK_FACADE_TARGETS:
                     record = records[target]
                     arguments = dict(facade_request=Path(record["facadeRequest"]), repository_root=root, environ=environ,
@@ -151,20 +207,45 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
                         tooling_keys_directory=tooling_keys_directory)
                     if "nativeCompilerArchive" in record:
                         arguments["native_compiler_archive"] = Path(record["nativeCompilerArchive"])
-                    if "captureRoot" in record:
+                    if native is not None:
+                        identity = PhaseInstanceId("sdk", "sdk-core", "validation", target)
+                        value = native[identity]
+                        if selected_receipts[target] != value["receiptBytes"]:
+                            raise ValueError("Fresh Core validation differs from native authority")
+                        _, artifact, _ = completed_frozen.observe_extended_sdk(elected.prior_by_instance[identity],
+                            producer=elected.consumer["producer"], token=token)
+                        reference = _validation_original_reference(value["receiptBytes"], artifact)
+                        if (record["artifactId"] != reference["artifact"]["id"]
+                                or record["artifactSha256"] != reference["artifact"]["sha256"]):
+                            raise ValueError("Fresh Core locator differs from its qualified original")
+                        source = Path(record["validationReceipt"]).parent / "stage"
+                        trees[source] = _inventory(source)
+                        stage = private / "validations" / target / "stage"
+                        snapshot_regular_tree(source, stage)
+                        manifest = verify_output_manifest_identity(stage, "sdk", "sdk-core", "validation",
+                            target, value["receipt"]["productVersion"])
+                        if manifest["outputs"] != value["receipt"]["outputs"]:
+                            raise ValueError("Fresh Core stage differs from native-qualified outputs")
+                        receipt_path = stage.parent / "phase-receipt.json"
+                        receipt_path.write_bytes(value["receiptBytes"])
+                        verified = {"stage": stage, "receiptPath": receipt_path,
+                            "receiptBytes": value["receiptBytes"], "receipt": value["receipt"],
+                            "transport": {"artifact": artifact}}
+                    elif "captureRoot" in record:
                         context = verified_retained_sdk_facade_validation(plan, Path(record["validationReceipt"]),
                             capture_root=Path(record["captureRoot"]), **arguments)
                     else:
                         context = verified_original_sdk_facade_validation(plan, Path(record["validationReceipt"]),
                             artifact_id=record["artifactId"], artifact_sha256=record["artifactSha256"],
                             trusted_workflow_sha=trusted_workflow_sha, token=token, **arguments)
-                    verified = stack.enter_context(context)
+                    if native is None:
+                        verified = stack.enter_context(context)
                     if (verified["receiptBytes"] != selected_receipts[target]
                             or canonical_json_bytes(verified["receipt"]) != selected_receipts[target]
                             or _read(verified["receiptPath"]) != selected_receipts[target]):
                         raise ValueError("Core metadata original reader returned a different selected receipt")
                     held[target], held_before[target] = verified, _view(verified)
-                    for name in ("stage", "capture"):
+                    for name in (("stage",) if native is not None else ("stage", "capture")):
                         path = Path(verified[name])
                         trees[path] = _inventory(path, allow_empty=True)
                     unchanged()
@@ -173,6 +254,11 @@ def verified_facade_metadata_inputs(*, plan, validations, contract_digest, compo
                 package_stage = private / "package/stage"
                 package_path = private / "package/phase-receipt.json"
                 snapshot_regular_tree(Path(first["packageStage"]), package_stage)
+                if native is not None:
+                    manifest = verify_output_manifest_identity(package_stage, "sdk", "sdk-core", "package",
+                        "common", native[package_id]["receipt"]["productVersion"])
+                    if manifest["outputs"] != native[package_id]["receipt"]["outputs"]:
+                        raise ValueError("Fresh Core package stage differs from native-qualified outputs")
                 package_path.write_bytes(package_bytes)
                 package = {"stage": package_stage, "receiptPath": package_path, "receiptBytes": package_bytes,
                            "receipt": validate_phase_receipt(load_canonical_json_bytes(package_bytes))}

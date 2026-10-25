@@ -45,7 +45,7 @@ def _arguments(policy, *, fresh=False):
     arguments = {name: None if policy[field] is None and field in pair else _path(policy[field], field)
                  for field, name in _PATHS.items()}
     records = _records(policy["validations"])
-    if any("captureRoot" not in record for record in records.values()):
+    if not fresh and any("captureRoot" not in record for record in records.values()):
         raise ValueError("Core metadata admission requires eleven retained validations")
     components = require_exact_keys(policy["componentDigests"], set(SDK_FACADE_CONTRACT_COMPONENTS.values()),
                                     "Core metadata Contract components")

@@ -32,7 +32,9 @@ from products.sdk_validation_inputs import _request_inventory
 from products.selection import phase_git_inventory
 from products.signing_isolation import require_no_signing_secret
 from sdk_facade_capture import capture_sdk_facade_metadata_upload, verify_retained_sdk_phase_upload
-from sdk_facade_metadata_inputs import _records, _view, _native_archives, verified_facade_metadata_inputs
+from sdk_facade_metadata_inputs import (
+    _records, _view, _native_archives, _validation_original_reference, verified_facade_metadata_inputs,
+)
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -43,10 +45,10 @@ def verify_completed_facade_metadata(envelope, validation_envelopes, *, plan, di
         completed_frozen, sdk_validation_tooling, sdk_apple_validation_policy=None):
     """Join native-qualified predecessors without expanding their old carriers.
 
-    The complete metadata ZIP is still authenticated. Each embedded validation
-    ZIP is matched to its freshly observed native-qualified original and its
-    complete inventory is compared with the metadata's retained extraction.
-    Only one nested ZIP and small, independently verified stages occupy scratch.
+    The complete metadata ZIP is still authenticated. Each validation reference
+    is matched to its freshly observed native-qualified original. Legacy embedded
+    ZIPs retain their full inventory comparison with the retained extraction.
+    At most one legacy nested ZIP and independently verified stages occupy scratch.
     No semantic success is cached: staged replay performs these checks again.
     """
     import zipfile
@@ -216,7 +218,11 @@ def verify_completed_facade_metadata(envelope, validation_envelopes, *, plan, di
                     projection.append(row)
             for target, identity in [("package", package_id), *((t, PhaseInstanceId("sdk", "sdk-core", "validation", t)) for t in SDK_FACADE_TARGETS)]:
                 prefix = "originals/package/" if target == "package" else f"originals/validations/{target}/"
-                if roots(prefix) != ({"stage", "phase-receipt.json"} if target == "package" else {"stage", "phase-receipt.json", "capture"}):
+                referenced = target != "package" and "original-reference.json" in roots(prefix)
+                expected = {"stage", "phase-receipt.json"}
+                if target != "package":
+                    expected.add("original-reference.json" if referenced else "capture")
+                if roots(prefix) != expected:
                     raise ValueError("Completed Core retained predecessor layout differs")
                 selected_prefix = "inputs/sdk-sdk-core-package-common/" if target == "package" else f"inputs/sdk-sdk-core-validation-{target}/"
                 for parent in (prefix, selected_prefix):
@@ -224,7 +230,13 @@ def verify_completed_facade_metadata(envelope, validation_envelopes, *, plan, di
                             or index[parent + "phase-receipt.json"]["sha256"] != native[identity]["receiptSha256"]
                             or index[parent + "phase-receipt.json"]["bytes"] != len(native[identity]["receiptBytes"])):
                         raise ValueError("Completed Core retained predecessor differs from native-qualified bytes")
-                if target != "package":
+                if referenced:
+                    name = prefix + "original-reference.json"
+                    expected = canonical_json_bytes(_validation_original_reference(
+                        native[identity]["receiptBytes"], originals[identity]))
+                    if index.get(name) != {"relativePath": name, "bytes": len(expected), "sha256": sha256_bytes(expected)}:
+                        raise ValueError("Core original reference differs from its native-qualified original")
+                elif target != "package":
                     member = index[prefix + "capture/transport.zip"]
                     original = originals[identity]
                     if member["sha256"] != original["digest"] or member["bytes"] != original["size_in_bytes"]:
@@ -355,14 +367,22 @@ def _retained(original, held, receipt):
     _layout(originals / "validations", SDK_FACADE_TARGETS)
     for target, value in {"package": held["package"], **held["validations"]}.items():
         retained = originals / "package" if target == "package" else originals / "validations" / target
-        _layout(retained, {"stage", "phase-receipt.json"} if target == "package" else {"stage", "phase-receipt.json", "capture"})
+        referenced = target != "package" and (retained / "original-reference.json").exists()
+        expected = {"stage", "phase-receipt.json"}
+        if target != "package":
+            expected.add("original-reference.json" if referenced else "capture")
+        _layout(retained, expected)
         selected = original / "inputs" / ("sdk-sdk-core-package-common" if target == "package" else
                                           f"sdk-sdk-core-validation-{target}")
         for parent in (retained, selected):
             if (_read(parent / "phase-receipt.json") != value["receiptBytes"]
                     or _inventory(parent / "stage") != _inventory(value["stage"])):
                 raise ValueError("Original metadata retained predecessor differs from full original replay")
-        if target != "package":
+        if referenced:
+            expected = canonical_json_bytes(_validation_original_reference(value["receiptBytes"], value["transport"]["artifact"]))
+            if _read(retained / "original-reference.json") != expected:
+                raise ValueError("Core original reference differs from full original replay")
+        elif target != "package":
             # Observations and current capture plans can legitimately change;
             # the original ZIP and complete extracted payload cannot.
             if (sha256_file(retained / "capture/transport.zip") != sha256_file(value["capture"] / "transport.zip")

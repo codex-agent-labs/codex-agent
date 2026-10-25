@@ -21,7 +21,7 @@ from .sdk_inputs import COMPATIBILITY_NAME, INVENTORY_NAME, REQUEST_NAME as INPU
 from .sdk_package import _capture_validation_sources, _require_capability_output_separate
 from .sdk_validation import (
     VerifiedSdkValidationProjection, decode_sdk_validation_records,
-    sdk_validation_provider as _full_provider, shared_sdk_validation_scope,
+    sdk_validation_provider as _full_provider, shared_sdk_validation_scope, _SHARED_SCOPE,
 )
 from .signatures import load_keyring, public_key_path
 from runtime_reference_transport import count, measured
@@ -79,10 +79,12 @@ def _admission_subject(root, record, repository, revision, tooling):
     authority = {name: (None if tooling[name] is None else
         regular_file_inventory(Path(tooling[name]), allow_empty=True) if name in {"evidence", "keysDirectory"}
         else tooling[name] if name == "requiredTrustDomain" else file(tooling[name])) for name in tooling}
-    # The fixed Kotlin gate also consumes these mutable checkout files.
-    trees["verifierSources"] = regular_file_inventory(Path(repository) / "ci", allow_empty=True)
-    if record["component"] == "cpp":
-        files["cppVerifier"] = file(Path(repository) / "codex-agent-bindings/cpp/tools/verify_imported_package.py")
+    # The shared matcher executes only authenticated JAR resources, guarded by
+    # its private lifetime. The older one-shot Kotlin path also pins checkout code.
+    if _SHARED_SCOPE.get() is None:
+        trees["verifierSources"] = regular_file_inventory(Path(repository) / "ci", allow_empty=True)
+        if record["component"] == "cpp":
+            files["cppVerifier"] = file(Path(repository) / "codex-agent-bindings/cpp/tools/verify_imported_package.py")
     return sha256_bytes(canonical_json_bytes(dict(
         repository=str(Path(repository).resolve(strict=True)), revision=revision,
         receipt=record["receiptSha256"], component=record["component"], target=record["target"],

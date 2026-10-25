@@ -33,6 +33,7 @@ from products.restore import PHASE_PLAN_KEYS, PHASE_RECEIPT_NAME, verify_phase_s
 from products.sdk_inputs import REQUEST_NAME
 from products.sdk_native_metadata import _inventory
 from products.sdk_package import _require_capability_output_separate, csharp_binary_inputs, verify_sdk_package_inputs
+from products.sdk_validation import rebase_sdk_validation_records
 from products.sdk_validation_inputs import _request_inventory, stage_sdk_validation_evidence
 from products.signatures import load_keyring, public_key_path
 from sdk_native_phase import _runtime_originals, _runtime_originals_unchanged
@@ -516,11 +517,11 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                 producer=producer, product_version=selection["sdkVersion"],
                 trust_domain="development" if producer["event"] == "pull_request" else "release", destination=candidate)
             candidate_inventory = _inventory(candidate)
-            # Existing decoder accepts relative paths only. Privately copy the
-            # verified complete SDK directory, retaining its request path layout.
+            # Keep copied evidence categories separate from the authenticated
+            # preparation capture; their private parent is only a path anchor.
             source = private / "evidence-source"
             for name, path in {"packageStage": package["stage"], "runtimeStages": runtime_stages,
-                    "stagedSdks": sdks, "validationStage": result["stage"], "runtimeAuthorization": authorization,
+                    "validationStage": result["stage"], "runtimeAuthorization": authorization,
                     "inputs": inputs["sdk"]["directory"]}.items():
                 snapshot_regular_tree(path, source / name, allow_empty=name == "inputs")
             if (_inventory(source / "inputs", allow_empty=True) != sdk_inventory
@@ -538,9 +539,11 @@ def execute(plan, discovery, state, destination, *, component, target, expected_
                 (source / "binaryReceipt").write_bytes(read_regular_file_bytes(
                     binary["binary_receipt_path"], reject_symlink_parents=True))
                 record.update(binaryStage="binaryStage", binaryReceipt="binaryReceipt")
+            record, = rebase_sdk_validation_records([record], source, private)
+            record["stagedSdks"] = sdks.relative_to(private).as_posix()
             source_inventory = _inventory(source, allow_empty=True)
             try:
-                stage_sdk_validation_evidence([record], source, evidence, repository=root,
+                stage_sdk_validation_evidence([record], private, evidence, repository=root,
                     policy_revision=policy_revision, tooling=tooling)
             except Exception:
                 # Keep the completed consumer observations, not another copy of

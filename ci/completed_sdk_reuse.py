@@ -984,9 +984,14 @@ def issue_extension(spec, work, *, root, revision, frozen, token, _checkpoint=No
         if "reuseCompletion" in spec or _checkpoint is not None and _checkpoint.previous is not None:
             if _checkpoint is None:
                 previous_frozen = native._sdk_parent_frozen_spec(root, spec["reuseCompletion"], frozen, token)
+                from products.inventory import git_regular_blob_bytes
+                previous_issuer = spec["reuseCompletion"]["signerCommit"]
+                previous_spec = load_canonical_json_bytes(git_regular_blob_bytes(root, previous_issuer,
+                    native._sdk_completed_spec_path(root, previous_issuer), max_bytes=LIMIT))
+                previous_revision = _inventory_revision(previous_spec, root, token=token)
                 prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
-                    root=root, revision=None, frozen=previous_frozen, token=token,
-                    consumer_revision=inventory_revision)
+                    root=root, revision=previous_revision, frozen=previous_frozen, token=token,
+                    consumer_revision=inventory_revision, requalification_baseline=previous_revision)
             else:
                 prior = _checkpoint.prior
             # Both subjects bind their original product source; only exact

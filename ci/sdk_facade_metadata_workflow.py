@@ -22,7 +22,7 @@ from products.inventory import (
 )
 from products.receipt import validate_producer, verify_output_manifest_identity
 from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
-from products.restore import verify_phase_shard
+from products.restore import verification_scoped, verify_phase_shard
 from products.sdk_facade_inputs import _request, _sources
 from products.sdk_facade_validation import _inventory
 from products.sdk_apple_validation_admission import apple_validation_policy_arguments
@@ -30,7 +30,9 @@ from products.sdk_package import _require_capability_output_separate
 from products.sdk_platform_metadata import OUTPUT_KIND, OUTPUT_PATH
 from products.sdk_validation_inputs import _request_inventory
 from products.signing_isolation import require_no_signing_secret
-from sdk_facade_metadata_inputs import _records, _native_archives, verified_facade_metadata_inputs
+from sdk_facade_metadata_inputs import (
+    _records, _native_archives, _validation_original_reference, verified_facade_metadata_inputs,
+)
 from sdk_phase import maven_consumed_predecessors
 
 
@@ -41,6 +43,7 @@ def _read(path):
     return read_regular_file_bytes(Path(path), max_bytes=512 * 1024 * 1024, reject_symlink_parents=True)
 
 
+@verification_scoped
 def execute(plan, discovery, state, destination, *, expected_build_key, validations,
         contract_digest, component_digests, repository_root, environ, token, trusted_workflow_sha,
         tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain,
@@ -150,7 +153,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
                 trusted_workflow_sha=trusted_workflow_sha, tooling_evidence=tooling_evidence,
                 tooling_public_key=tooling_public_key, java_executable=java_executable, policy_revision=policy_revision,
                 required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
-                tooling_keys_directory=tooling_keys_directory) as original:
+                tooling_keys_directory=tooling_keys_directory,
+                completed_frozen=completed_frozen, elected=elected) as original:
             original_context = {"repositoryRoot": str(root), "metadataRequest": str(original["request"])}
             package = original["package"]
             selected_package = prepared / "sdk-sdk-core-package-common"
@@ -172,16 +176,16 @@ def execute(plan, discovery, state, destination, *, expected_build_key, validati
             (originals / "package/phase-receipt.json").write_bytes(package["receiptBytes"])
             for target, record in original["validations"].items():
                 parent = originals / "validations" / target
-                capture_inventory = _inventory(record["capture"], allow_empty=True)
                 stage_inventory = _inventory(record["stage"])
-                snapshot_regular_tree(record["capture"], parent / "capture", allow_empty=True)
                 snapshot_regular_tree(record["stage"], parent / "stage")
-                if (_inventory(record["capture"], allow_empty=True) != capture_inventory
-                        or _inventory(parent / "capture", allow_empty=True) != capture_inventory
-                        or _inventory(record["stage"]) != stage_inventory
+                if (_inventory(record["stage"]) != stage_inventory
                         or _inventory(parent / "stage") != stage_inventory):
                     raise ValueError("Core metadata validation changed during retention")
                 (parent / "phase-receipt.json").write_bytes(record["receiptBytes"])
+                reference = _validation_original_reference(record["receiptBytes"], record["transport"]["artifact"])
+                write_canonical_json(parent / "original-reference.json", reference)
+                if _read(parent / "original-reference.json") != canonical_json_bytes(reference):
+                    raise ValueError("Core original reference changed during retention")
             (originals / "metadata-request.json").write_bytes(_read(original["request"]))
             retained[originals] = _inventory(originals, allow_empty=True)
             expected = original["expectedContentBytes"]
