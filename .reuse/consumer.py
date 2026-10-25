@@ -431,7 +431,31 @@ def checkpoint_owner_policy(raw, value, document):
     return policy
 
 
-def completed_environment(root, work, value, *, checkpoint=False):
+def sdk_parity_policy(raw):
+    """Validate protected caller pins only; the consumer still authenticates parity."""
+    from products.inventory import load_canonical_json_bytes, require_exact_keys, require_integer
+    from products.receipt import validate_producer
+    if type(raw) is not bytes or len(raw) > 4096:
+        raise ValueError("Protected SDK parity descriptor exceeds its bound")
+    policy = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "kind", "producer", "workflowSha", "jobId", "artifactId", "artifactSha256",
+    }, "Protected SDK parity descriptor")
+    if (require_integer(policy["schemaVersion"], "SDK parity schema", 1) != 1
+            or policy["kind"] != "completed-sdk-parity"):
+        raise ValueError("Unsupported protected SDK parity descriptor")
+    producer = validate_producer(policy["producer"], "Protected SDK parity producer")
+    if (producer["repository"] != authority.REPOSITORY
+            or producer["workflowPath"] != ".github/workflows/ci.yml"
+            or producer["event"] != "pull_request" or producer["pullRequest"] != 31):
+        raise ValueError("Protected SDK parity producer differs from its authorized scope")
+    authority.commit(policy["workflowSha"])
+    authority.digest(policy["artifactSha256"])
+    for field in ("jobId", "artifactId"):
+        require_integer(policy[field], "SDK parity " + field, 1)
+    return policy
+
+
+def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=False):
     from products.inventory import canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes
     raw = authority.contents(".reuse/completed-reuse.json", value["authorityCommit"])
     document = completed_descriptor(raw, value)
@@ -441,6 +465,12 @@ def completed_environment(root, work, value, *, checkpoint=False):
     if checkpoint:
         checkpoint_raw = authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"])
         owner_policy = checkpoint_owner_policy(checkpoint_raw, value, document)
+    if type(sdk_parity) is not bool:
+        raise ValueError("SDK parity provisioning requires an explicit boolean")
+    parity_raw = None
+    if sdk_parity:
+        parity_raw = authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"])
+        sdk_parity_policy(parity_raw)
     acquired = [history(root, record) for record in document["gitHistory"]]
     spec, _ = completed_sdk_spec(root, document, value)
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
@@ -450,6 +480,10 @@ def completed_environment(root, work, value, *, checkpoint=False):
         owner_path = work / "checkpoint-owner-policy.json"
         with owner_path.open("xb") as output:
             output.write(canonical_json_bytes(owner_policy))
+    if sdk_parity:
+        parity_path = work / "completed-sdk-parity-policy.json"
+        with parity_path.open("xb") as output:
+            output.write(parity_raw)
     # This only distributes caller-owned pins. Each actual CLI independently
     # acquires native proof and checks current inputs before any completed reuse.
     paths = {}
@@ -463,12 +497,20 @@ def completed_environment(root, work, value, *, checkpoint=False):
         raise ValueError("Approved completed reuse descriptor changed during provisioning")
     if checkpoint and authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"]) != checkpoint_raw:
         raise ValueError("Protected checkpoint descriptor changed during provisioning")
+    if sdk_parity and (
+            authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"]) != parity_raw
+            or regular(parity_path, 4096) != parity_raw):
+        raise ValueError("Protected SDK parity descriptor changed during provisioning")
     result = {"kind": "completed-reuse-policy", "authorityCommit": value["authorityCommit"],
               "approvedConsumerCommit": value["activeVerifier"],
               "descriptorSha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
               "originalGit": acquired, "productArtifactDownloads": 0,
               "nativeAuthentication": "required by each explicit consumer"}
-    return result, {**({"CODEX_AGENT_CHECKPOINT_OWNER_POLICY": str(owner_path)} if checkpoint else {}),
+    if sdk_parity:
+        result["sdkParityPolicySha256"] = "sha256:" + hashlib.sha256(parity_raw).hexdigest()
+        result["sdkParityAuthentication"] = "required by each explicit consumer"
+    return result, {**({"CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY": str(parity_path)} if sdk_parity else {}),
+                    **({"CODEX_AGENT_CHECKPOINT_OWNER_POLICY": str(owner_path)} if checkpoint else {}),
                     "CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
                     "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": (
                         paths["retainedSdkInputsSource"] if retained_sdk_binding_current(root, document) else "")}
@@ -509,6 +551,7 @@ def main():
     parser.add_argument("--expected-authority-commit")
     parser.add_argument("--artifact-id", type=int)
     parser.add_argument("--checkpoint-owner", action="store_true")
+    parser.add_argument("--sdk-parity", action="store_true")
     args = parser.parse_args()
     root, work = args.repository_root.resolve(strict=True), args.work.absolute()
     work.mkdir(parents=True, exist_ok=True)
@@ -518,6 +561,8 @@ def main():
         raise ValueError("Combined provisioning only accepts native completion pins")
     if args.checkpoint_owner and args.operation != "provision":
         raise ValueError("Checkpoint owner policy requires the existing combined provisioning pass")
+    if args.sdk_parity and args.operation != "provision":
+        raise ValueError("SDK parity policy requires the existing combined provisioning pass")
     value = approved(args.expected_authority_commit)
     os.chdir(root)  # Existing production commands use the consumer checkout as cwd.
     environment = None
@@ -526,7 +571,8 @@ def main():
         if args.operation == "provision":
             snapshot_result = result
             result, environment = completed_environment(root, work, value,
-                **({"checkpoint": True} if args.checkpoint_owner else {}))
+                **({"checkpoint": True} if args.checkpoint_owner else {}),
+                **({"sdk_parity": True} if args.sdk_parity else {}))
             authority.protection(authority.api(f"branches/{authority.BRANCH}/protection"))
             if authority.api(f"branches/{authority.BRANCH}")["commit"]["sha"] != value["authorityCommit"]:
                 raise ValueError("Approval reference changed during provisioning")
@@ -562,6 +608,9 @@ def main():
                       "consumerCommit": git(root, "rev-parse", "HEAD").decode().strip(),
                       "freshQualificationAuthority": fresh}
     if environment is not None:
+        if args.sdk_parity and "sha256:" + hashlib.sha256(regular(
+                work / "completed-sdk-parity-policy.json", 4096)).hexdigest() != result["sdkParityPolicySha256"]:
+            raise ValueError("Provisioned SDK parity policy changed before export")
         if any("\n" in item or "\r" in item for item in environment.values()):
             raise ValueError("Invalid runner environment value")
         with Path(os.environ["GITHUB_ENV"]).open("a") as output:

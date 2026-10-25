@@ -174,6 +174,106 @@ class AcquisitionTests(unittest.TestCase):
             consumer.blobs(Path("unused"), objects)
         command.assert_called_once()
 
+    def test_sdk_parity_descriptor_is_canonical_bounded_original_policy(self):
+        from products.inventory import canonical_json_bytes
+        raw = Path(__file__).with_name("completed-sdk-parity.json").read_bytes()
+        policy = json.loads(raw)
+        self.assertEqual(consumer.sdk_parity_policy(raw), policy)
+        self.assertEqual(policy["artifactId"], 12585288030)
+        self.assertEqual(policy["jobId"], 121052185391)
+        self.assertNotEqual(policy["workflowSha"], APPROVAL["authorityCommit"])
+        for fault in ("extra", "kind", "version", "repository", "workflow", "pr", "run",
+                      "job", "artifact", "digest", "publisher", "canonical", "bound"):
+            value = copy.deepcopy(policy)
+            if fault == "extra": value["consumerCommit"] = APPROVAL["activeVerifier"]
+            elif fault == "kind": value["kind"] = "completed-frozen-reuse"
+            elif fault == "version": value["schemaVersion"] = True
+            elif fault == "repository": value["producer"]["repository"] = "untrusted/fork"
+            elif fault == "workflow": value["producer"]["workflowPath"] = ".github/workflows/other.yml"
+            elif fault == "pr": value["producer"]["pullRequest"] = 32
+            elif fault == "run": value["producer"]["runId"] = True
+            elif fault == "job": value["jobId"] = 0
+            elif fault == "artifact": value["artifactId"] = True
+            elif fault == "digest": value["artifactSha256"] = "wrong"
+            elif fault == "publisher": value["workflowSha"] = "reuse-authority"
+            modified = canonical_json_bytes(value)
+            if fault == "canonical": modified += b" "
+            if fault == "bound": modified += b" " * 4096
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                consumer.sdk_parity_policy(modified)
+
+    def test_sdk_parity_provision_uses_same_authority_and_rejects_changed_policy(self):
+        from products.inventory import canonical_json_bytes
+        document = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        raw = canonical_json_bytes(document)
+        parity = Path(__file__).with_name("completed-sdk-parity.json").read_bytes()
+        protection = {"restrictions": {"users": [{"login": "ciurlaro", "id": 19213191}], "teams": [], "apps": []},
+            **{name: {"enabled": enabled} for name, enabled in (("enforce_admins", True),
+                ("block_creations", True), ("allow_force_pushes", False), ("allow_deletions", False))}}
+        original = Path.cwd()
+        for fault in ("off", None, "source", "descriptor", "local", "late-local", "occupied", "symlink", "branch"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve();work = root / "private";work.mkdir();export = root / "env"
+                policy_path = work / "completed-sdk-parity-policy.json";reads = []
+                value = {**APPROVAL, **({"activeVerifier": "f" * 40} if fault == "source" else {})}
+                if fault == "occupied": policy_path.write_bytes(parity)
+                if fault == "symlink": policy_path.symlink_to(root / "missing")
+                def fetch(path, revision):
+                    self.assertEqual(revision, APPROVAL["authorityCommit"]);reads.append(path)
+                    if path == ".reuse/completed-reuse.json": return raw
+                    self.assertEqual(path, ".reuse/completed-sdk-parity.json")
+                    if reads.count(path) == 2:
+                        if fault == "descriptor": return parity + b" "
+                        if fault == "local": policy_path.write_bytes(parity + b" ")
+                    return parity
+                def observe(path):
+                    if path.endswith("/protection"): return protection
+                    self.assertEqual(path, "branches/reuse-authority")
+                    if fault == "late-local": policy_path.write_bytes(parity + b" ")
+                    return {"commit": {"sha": "f" * 40 if fault == "branch" else APPROVAL["authorityCommit"]}}
+                try:
+                    with patch.dict(os.environ, {"GITHUB_ENV": str(export)}, clear=True), \
+                            patch.object(consumer.sys, "argv", ["consumer", "provision", "--repository-root", str(root),
+                                "--work", str(work), *([] if fault == "off" else ["--sdk-parity"])]), \
+                            patch.object(consumer, "approved", return_value=value) as approved, \
+                            patch.object(consumer, "snapshot", return_value={}) as snapshot, \
+                            patch.object(consumer.authority, "contents", side_effect=fetch), \
+                            patch.object(consumer.authority, "api", side_effect=observe), \
+                            patch.object(consumer, "history", return_value={}) as history, \
+                            patch.object(consumer, "retained_sdk_binding_current", return_value=True), \
+                            patch.object(consumer, "completed_sdk_spec", return_value=({"sdkInputs": {
+                                "source": document["retainedSdkInputsSource"]}}, 62)), contextlib.redirect_stdout(io.StringIO()):
+                        if fault not in (None, "off"):
+                            with self.assertRaises((ValueError, FileExistsError)): consumer.main()
+                            self.assertFalse(export.exists())
+                            self.assertFalse((work / "provision.json").exists())
+                        else:
+                            consumer.main()
+                            approved.assert_called_once_with(None)
+                            snapshot.assert_called_once_with(root, value, work)
+                            self.assertEqual(history.call_count, len(document["gitHistory"]))
+                            self.assertEqual(reads.count(".reuse/completed-sdk-parity.json"), 0 if fault == "off" else 2)
+                            result = json.loads((work / "provision.json").read_bytes())
+                            self.assertEqual(result["productArtifactDownloads"], 0)
+                            self.assertEqual(result["nativeAuthentication"], "required by each explicit consumer")
+                            if fault == "off":
+                                self.assertNotIn("SDK_PARITY_POLICY", export.read_text())
+                                self.assertFalse(policy_path.exists())
+                            else:
+                                self.assertEqual(policy_path.read_bytes(), parity)
+                                self.assertIn("CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY=" + str(policy_path), export.read_text())
+                                self.assertEqual(result["sdkParityAuthentication"], "required by each explicit consumer")
+                finally: os.chdir(original)
+
+    def test_sdk_parity_selector_is_provision_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode in ("setup", "restore", "verify"):
+                with self.subTest(mode=mode), patch.object(consumer.sys, "argv", ["consumer", mode,
+                        "--repository-root", temporary, "--work", temporary + "/work", "--sdk-parity"]), \
+                        patch.object(consumer, "approved") as approved, self.assertRaisesRegex(ValueError, "combined provisioning"):
+                    consumer.main()
+                approved.assert_not_called()
+
     def test_native_provision_resolves_once_and_checks_fresh_governance_before_export(self):
         protection = {"restrictions": {"users": [{"login": "ciurlaro", "id": 19213191}], "teams": [], "apps": []},
             **{name: {"enabled": enabled} for name, enabled in (("enforce_admins", True),
@@ -230,14 +330,25 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''", action)
         block = action.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
         script = "\n".join(line[8:] for line in block.splitlines())
-        for selector, expected, nested in (("", "provision", ""), ("77", "setup", ""), ("", "provision", "/trusted source")):
-            with self.subTest(selector=selector, nested=nested):
-                env = {**os.environ, "REUSE_AUTHORITY_READ_TOKEN": "test-only", "CHECKPOINT_OWNER": "false", "APPROVED_ARTIFACT_ID": selector,
+        self.assertIn("sdk-parity:\n    default: 'false'", action)
+        for selector, expected, nested, parity, valid in (
+                ("", "provision", "", "false", True), ("77", "setup", "", "false", True),
+                ("", "provision", "/trusted source", "true", True),
+                ("77", "setup", "", "true", False), ("", "provision", "", "unknown", False)):
+            with self.subTest(selector=selector, nested=nested, parity=parity):
+                env = {**os.environ, "REUSE_AUTHORITY_READ_TOKEN": "test-only", "CHECKPOINT_OWNER": "false", "SDK_PARITY": "false", "APPROVED_ARTIFACT_ID": selector,
                     "GITHUB_ACTION_PATH": str(root / ".github/actions/restore-reuse-qualification"),
-                    "GITHUB_WORKSPACE": "/consumer with spaces", "CONSUMER_ROOT": nested, "RUNNER_TEMP": "/runner temp"}
+                    "GITHUB_WORKSPACE": "/consumer with spaces", "CONSUMER_ROOT": nested, "RUNNER_TEMP": "/runner temp", "SDK_PARITY": parity}
                 result = subprocess.run(["bash", "-euc", 'uname() { if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi; }; '
                     'python3() { printf "%s\\n" "$@"; }; bash() { :; };\n' + script],
-                    env=env, capture_output=True, text=True, check=True)
+                    env=env, capture_output=True, text=True)
+                if not valid:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines().count("-B"), 1)
+                self.assertEqual("--sdk-parity" in result.stdout.splitlines(), parity == "true")
                 self.assertEqual(result.stdout.splitlines()[2], expected)
                 self.assertEqual(result.stdout.splitlines()[4], nested or env["GITHUB_WORKSPACE"])
 
@@ -346,7 +457,7 @@ class AcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "output"
             script = 'set -e\nuname() { echo MINGW64_NT/x86_64; }\n' + guard
-            environment = {**os.environ, "GITHUB_OUTPUT": str(output), "REUSE_AUTHORITY_READ_TOKEN": "test-only", "CHECKPOINT_OWNER": "false"}
+            environment = {**os.environ, "GITHUB_OUTPUT": str(output), "REUSE_AUTHORITY_READ_TOKEN": "test-only", "CHECKPOINT_OWNER": "false", "SDK_PARITY": "false"}
             subprocess.run(["bash", "-c", script], env=environment, check=True, capture_output=True)
             self.assertEqual(output.read_text(), "supported=false\n")
             output.unlink()

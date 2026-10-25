@@ -6,7 +6,10 @@ Package phases only decorate imported binaries on Linux x64. Host checks are
 execution constraints, not independently observed hosted/toolchain authority.
 """
 
+import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -17,7 +20,7 @@ if __package__:
 from native_wrappers import host_classifier
 from product_reuse import (
     _prepare_destination, _runtime_worker_checkout, _runtime_worker_command,
-    _runtime_worker_environment,
+    _runtime_worker_environment, _worker_process_environment,
 )
 from products.inventory import (
     canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
@@ -41,7 +44,7 @@ _LIMIT = 512 * 1024 * 1024
 def execute(plan, *, producer, sdk_version, repository_root, destination, environ,
             contract_metadata=None, verified_contract_handoff=None, sdk_binary=None,
             compatibility_request=None, android_runtime_archive=None):
-    """Run only root ciProductPhase, retaining raw success and failure diagnostics.
+    """Run fixed binary/package recipes, retaining raw success and failure diagnostics.
 
     Records and handoffs must already be authenticated by the caller. This leaf
     checks exact identity/content pairing but performs no planner, signer or
@@ -122,8 +125,7 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
     stage = ((root / "build") if phase == "binary" else sdk_build) / f"product-stage/sdk/{component}/{phase}"
     owned = [stage]
     if phase == "package":
-        owned.extend((sdk_build / f"imported-sdk-binary-stages/{current['tree']}/{component}",
-                      sdk_build / f"sdk-compatibility/{current['tree']}"))
+        owned.append(sdk_build / f"sdk-compatibility/{current['tree']}")
     elif component == "sdk-android":
         owned.append(root / "codex-agent-runtime-android/build/generated/codex-runtime/main")
     outputs = [destination, *owned]
@@ -154,7 +156,13 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
             raise ValueError("Maven SDK private bytecode namespace was modified")
 
     unchanged()
-    environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
+    if phase == "package":
+        if environ.get("CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH", ""):
+            raise ValueError("SDK product commands remain offline after verified dependency seeding")
+        environment = _worker_process_environment(root, current, destination, environ)
+        wrapper = None
+    else:
+        environment, wrapper = _runtime_worker_environment(root, current, destination, environ, build_directory=".")
     for output in owned:
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)
@@ -164,7 +172,8 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
         seed_sdk_maven_binary_dependencies(root, current['commit'], wrapper, environment,
                                           destination / 'dependency-seed', fields)
         unchanged()
-    command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
+    command = (_package_command(root, fields) if phase == "package" else
+               _runtime_worker_command(wrapper, fields, environment, build_directory="."))
     started = time.monotonic_ns()
     return_code, launch_error = None, None
     try:
@@ -194,3 +203,100 @@ def execute(plan, *, producer, sdk_version, repository_root, destination, enviro
         return {"stage": stage, "diagnostics": destination, "outputInventory": output_inventory}
     finally:
         unchanged()
+
+
+def _package_command(root, properties):
+    """One fixed Python recipe; the original reader reconstructs all arguments."""
+    return ["python3", "-B", "-m", "ci.sdk_maven_phase", "package", str(root),
+            *(f"-P{key}={value}" for key, value in sorted(properties.items()))]
+
+
+def _package_only(root, fields, environ):
+    """Compose the unchanged Gradle task producers without configuring Gradle."""
+    from products.receipt import write_output_manifest
+    from products.sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
+    from products.sdk_maven import MAVEN_GROUPS, package_sdk_maven
+
+    require_no_signing_secret(environ)
+    component = fields.get("codexAgent.component")
+    if component not in _TARGETS or host_classifier() != "linux-x64":
+        raise ValueError("Python Maven package requires Core/Android on Linux x64")
+    binary_field = "codexAgent.sdkCoreBinaryStageRoot" if component == "sdk-core" else "codexAgent.sdkAndroidBinaryStageRoot"
+    require_exact_keys(fields, {"codexAgent." + name for name in (
+        "product", "component", "phase", "target", "sdkVersion", "candidateCommit", "candidateTree",
+        "sdkCompatibilityRequest")} | {binary_field}, "Fixed Python Maven package properties")
+    if (fields["codexAgent.product"], fields["codexAgent.phase"], fields["codexAgent.target"]) != (
+            "sdk", "package", _TARGETS[component]):
+        raise ValueError("Python Maven package identity differs from the fixed recipe")
+    version = require_semver(fields["codexAgent.sdkVersion"], "Python Maven package version")
+    producer = {name: fields["codexAgent.candidate" + name.title()] for name in ("commit", "tree")}
+    if any(re.fullmatch("[0-9a-f]{40}", value) is None for value in producer.values()):
+        raise ValueError("Python Maven package source identity is malformed")
+    root = Path(root)
+    if root.resolve(strict=True) != root:
+        raise ValueError("Python Maven package checkout must be normalized and absolute")
+    binary = _directory(Path(fields[binary_field]), "Original Maven binary stage")
+    request = _file(Path(fields["codexAgent.sdkCompatibilityRequest"]), "Original compatibility request")
+    before = _inventory(binary)
+    request_before = _request_inventory(request)
+    build = root / "codex-agent-sdk/build"
+    resource = build / f"sdk-compatibility/{producer['tree']}"
+    stage = build / f"product-stage/sdk/{component}/package"
+    owned = (resource, stage)
+    for index, path in enumerate(owned):
+        _require_capability_output_separate(path, [binary, request, *request_before])
+        _require_capability_output_separate(path, owned[index + 1:])
+        if path.resolve(strict=False) != path or path.exists() or path.is_symlink():
+            raise ValueError("Python Maven package requires fresh normalized outputs")
+
+    def unchanged():
+        require_no_signing_secret(environ)
+        _runtime_worker_checkout(root, producer)
+        if _inventory(binary) != before or _request_inventory(request) != request_before:
+            raise ValueError("Original Maven package inputs changed during Python execution")
+
+    unchanged()
+    try:
+        verify_output_manifest_identity(binary, "sdk", component, "binary", _TARGETS[component], version)
+        compatibility = resource / "META-INF/codex-agent/sdk-compatibility.json"
+        compatibility.parent.mkdir(parents=True)
+        try:
+            produce_sdk_compatibility(**load_sdk_compatibility_request(request), output=compatibility)
+            if [row["relativePath"] for row in _inventory(resource)] != ["META-INF/codex-agent/sdk-compatibility.json"]:
+                raise ValueError("SDK compatibility resource inventory is not exact")
+        except Exception:
+            shutil.rmtree(resource)
+            raise
+        package_sdk_maven(binary / "outputs/maven", stage / "outputs/maven", compatibility,
+                          MAVEN_GROUPS[component], version, component)
+        evidence = stage / "outputs/evidence/sdk-compatibility.json"
+        evidence.parent.mkdir(parents=True)
+        with evidence.open("xb") as output:
+            output.write(read_regular_file_bytes(compatibility, max_bytes=16 * 1024 * 1024,
+                                                 reject_symlink_parents=True))
+        write_output_manifest(stage, "sdk", component, "package", _TARGETS[component], version,
+                              {"evidence": "outputs/evidence", "maven": "outputs/maven"})
+    finally:
+        unchanged()
+
+
+def main(argv=None):
+    arguments = sys.argv[1:] if argv is None else argv
+    if len(arguments) < 2 or arguments[0] != "package":
+        raise ValueError("Only the fixed Maven package recipe is available")
+    fields = {}
+    for argument in arguments[2:]:
+        if not argument.startswith("-P") or "=" not in argument[2:]:
+            raise ValueError("Malformed Maven package property")
+        key, value = argument[2:].split("=", 1)
+        if key in fields:
+            raise ValueError("Duplicate Maven package property")
+        fields[key] = value
+    if arguments != _package_command(arguments[1], fields)[4:]:
+        raise ValueError("Maven package command is not canonical")
+    _package_only(arguments[1], fields, os.environ)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -117,6 +117,7 @@ jobs:
     with:
       runtimeRecoveryOnly: false
       sdkRecoveryOnly: true
+      reuseCompletedParity: ${{ vars.CODEX_AGENT_REUSE_COMPLETED_SDK_PARITY == 'true' }}
       runtimeAggregateRequalification: false
       runtimeAggregateHandoffRecovery: '{"artifactId":12433452038,"artifactSha256":"sha256:a51cad9fe390a6579b6ce40f1245f5020730db5b44c44ff2a2453472982ab225","originalProducer":{"commit":"c8400811dca2e4f8c23f7c459b1abe6ad78d5348","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":39745656910,"tree":"e2c1b2686acbd4471f9f5d3ef7a78df3e9a505c7","workflowPath":".github/workflows/ci.yml"},"trustedWorkflowSha":"d2243aac89368df2776b6617fd5a623bd6754cb2"}'
       baseCommit: ${{ inputs.baseCommit || '' }}
