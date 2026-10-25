@@ -53,8 +53,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         return {
             "sdk-ios-packages": {"result": "success", "outputs": {
                 "artifact_id": "74", "artifact_digest": "sha256:" + "a" * 64,
-                "state_wave": "0", "sdk_state_wave": "4"}},
-            "sdk-native-validation-plan": {"result": "success", "outputs": {"sdk_workers_required": "true"}},
+                "state_wave": "0", "sdk_state_wave": "4", "sdk_workers_required": "true"}},
             "sdk-native-validation": {"result": "success", "outputs": {}},
             "sdk-collect-7": {"result": "success", "outputs": {
                 "artifact_id": "77", "artifact_digest": "sha256:" + "b" * 64, "wave_failed": "false"}},
@@ -68,16 +67,26 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         return result
 
     def test_exact_elected_hosts_and_original_preparation_are_forwarded_with_local_tooling(self):
-        plan = self.job("sdk-native-validation-plan")
+        plan = self.job("sdk-ios-packages")
+        self.assertNotIn("  sdk-native-validation-plan:", self.harness.workflow)
+        self.assertEqual(("sdk-ios-packages", "sdk-ios-packages"),
+                         sdk_native_continuation._STAGES["validation"][:2])
         worker = self.job("sdk-native-validation")
         collector = self.job("sdk-collect-7")
-        self.assertIn("needs.sdk-ios-packages.result == 'success'", plan)
-        self.assertIn("needs.sdk-ios-packages.outputs.artifact_id != ''", plan)
+        self.assertIn("stage='ios-package'", plan)
+        self.assertIn("needs['sdk-plan']['result'] != 'success'", plan)
+        self.assertIn("if: steps.result.outputs.artifact_id != ''", plan)
+        self.assertLess(plan.index("stage='ios-package'"), plan.index("family: native-validation"))
+        for status in ('failure', 'cancelled', 'skipped'):
+            needs = fixture.selector_fixture.needs_for('ios-package')
+            needs['sdk-plan'] = {'result': status, 'outputs': {}}
+            with self.subTest(sdk_plan=status), self.assertRaisesRegex(ValueError, 'successful SDK plan'):
+                self.harness.snippet('sdk-ios-packages', {'RESULTS': json.dumps(needs)})
         self.assertIn("family: native-validation", plan)
         self.assertNotIn("setup-kmp", plan)
         self.assertIn("name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}", worker)
         self.assertIn("fail-fast: false", worker)
-        self.assertIn("fromJSON(needs.sdk-native-validation-plan.outputs.sdk_matrix", worker)
+        self.assertIn("fromJSON(needs.sdk-ios-packages.outputs.sdk_matrix", worker)
         self.assertIn("runs-on: ${{ matrix.runner }}", worker)
         self.assertIn("needs.sdk-native-prepare.result == 'success'", worker)
         self.assertEqual(1, worker.count("uses: ./.github/actions/sdk-native-validation-worker"))
@@ -93,10 +102,11 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         for job in (plan, worker, collector):
             self.assertIn("needs.plan.outputs.event_authorized == 'true'", job)
             self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", job)
-            self.assertIn("sdk-plan", job.split("    if:", 1)[0])
+            self.assertIn("sdk-plan", job.split("    runs-on:", 1)[0])
             for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
                                 ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-                self.assertIn(flag + ": ${{ needs.sdk-ios-packages.outputs." + field + " }}", job)
+                source = "steps.result" if job == plan else "needs.sdk-ios-packages"
+                self.assertIn(flag + ": ${{ " + source + ".outputs." + field + " }}", job)
         for job in (worker, collector):
             self.assertIn('source ci/select_caller_java.sh', job)
             self.assertIn("if [ \"$RUNNER_OS\" = Windows ]; then java_binary=java.exe; fi", job)
@@ -123,10 +133,10 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         self.assertNotIn("pub get", worker)
 
     def test_election_uses_controls_and_elected_execution_and_collection_require_tooling(self):
-        for name in ("sdk-native-validation-plan", "sdk-native-metadata-plan",
+        for name in ("sdk-ios-packages", "sdk-native-metadata-plan",
                      "sdk-native-validation", "sdk-native-metadata", "sdk-collect-7", "sdk-collect-8"):
             job = self.job(name)
-            if name.endswith("-plan"):
+            if name == "sdk-ios-packages" or name.endswith("-plan"):
                 self.assertIn("uses: ./.github/actions/capture-runtime-state/route", job)
                 self.assertNotIn("capture-sdk-tooling", job)
                 self.assertNotIn("select_caller_java", job)
@@ -160,7 +170,7 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
         self.assertIn("sdk-native-validation]", collector.split("    if:", 1)[0])
         condition = collector.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0]
         self.assertIn("always()", condition)
-        self.assertIn("needs.sdk-native-validation-plan.outputs.sdk_workers_required == 'true'", condition)
+        self.assertIn("needs.sdk-ios-packages.outputs.sdk_workers_required == 'true'", condition)
         self.assertNotIn("needs.sdk-native-validation.result", condition)
         self.assertNotIn("contains(needs.*.result", condition)
         self.assertIn("sdk-family: native-validation", collector)
@@ -189,17 +199,18 @@ class SdkNativeValidationWorkflowWiringTest(unittest.TestCase):
             needs["sdk-collect-7"]["outputs"][field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 self.summary(needs)
-        base["sdk-native-validation-plan"]["outputs"]["sdk_workers_required"] = "false"
+        base["sdk-ios-packages"]["outputs"]["sdk_workers_required"] = "false"
         for name in ("sdk-native-validation", "sdk-collect-7"):
             base[name] = {"result": "skipped", "outputs": {}}
-        self.assertEqual(base["sdk-ios-packages"]["outputs"], self.summary(base))
+        self.assertEqual({key: base["sdk-ios-packages"]["outputs"][key]
+                          for key in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave")},
+                         self.summary(base))
         for name in ("sdk-native-validation", "sdk-collect-7"):
             needs = deepcopy(base)
             needs[name]["result"] = "success"
             with self.subTest(unexpected=name), self.assertRaises(ValueError):
                 self.summary(needs)
         base["sdk-ios-packages"]["outputs"] = {}
-        base["sdk-native-validation-plan"] = {"result": "skipped", "outputs": {}}
         self.assertEqual(dict(artifact_id="", artifact_digest="", state_wave="", sdk_state_wave=""), self.summary(base))
 
 

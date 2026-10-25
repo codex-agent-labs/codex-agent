@@ -102,12 +102,17 @@ class SdkPolicySnapshotTest(unittest.TestCase):
                     patch.object(snapshot, "fresh_metadata_arguments", return_value={"validations": {"jvm": original}}), \
                     patch.object(snapshot, "facade_request", return_value=({"compatibilityRequest": str(compatibility)}, b"")), \
                     patch.object(snapshot, "facade_sources", return_value=({}, {"stage": stage}, {"receipt": receipt})), \
-                    patch.object(snapshot, "_request_inventory", return_value={nested: "sha256:" + "a" * 64}):
+                    patch.object(snapshot, "_request_paths", return_value={nested}):
                 for kind in ("core-metadata", "core-metadata-fresh"):
                     nested.write_text("original")
                     first = snapshot_policy_closure(kind, descriptor)
                     nested.write_text("changed")
                     self.assertNotEqual(first, snapshot_policy_closure(kind, descriptor))
+                original.pop("captureRoot")
+                original.update(artifactId=1, artifactSha256="sha256:" + "a" * 64)
+                first = snapshot_policy_closure("core-metadata-fresh", descriptor)
+                nested.write_text("changed again with locator inputs")
+                self.assertNotEqual(first, snapshot_policy_closure("core-metadata-fresh", descriptor))
                 descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": str(evidence),
                     "records": [{"receiptSha256": "sha256:" + "a" * 64}], "policy": {}}))
                 with self.assertRaisesRegex(ValueError, "must not claim a metadata receipt"):
@@ -130,10 +135,103 @@ class SdkPolicySnapshotTest(unittest.TestCase):
                     "binary_contract_evidence": {}, "compatibility_request": compatibility}), \
                     patch.object(snapshot.sdk_android_validation_phase, "_contract_sources",
                                  return_value=({"contract": contract}, {})), \
-                    patch.object(snapshot, "_request_inventory", return_value={nested: "sha256:" + "a" * 64}):
+                    patch.object(snapshot, "_request_paths", return_value={nested}):
                 first = snapshot_policy_closure("android-metadata", descriptor)
                 (contract / "input.txt").write_text("changed")
                 self.assertNotEqual(first, snapshot_policy_closure("android-metadata", descriptor))
+
+
+class PolicyPathSelectionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from ci.tests.test_sdk_validation_inputs import SdkValidationInputsTest as fixture
+        from ci.products.sdk_compatibility import load_sdk_compatibility_request
+        fixture.setUpClass()
+        cls.addClassCleanup(fixture.doClassCleanups)
+        cls.request = fixture.original / "request.json"
+        cls.payload = load_sdk_compatibility_request(cls.request)["contract_payload"]
+        cls.tooling = fixture.original
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name).resolve()
+        self.measurements = []
+
+    def counted(self, operation, kind):
+        from ci.products import inventory, sdk_validation_inputs
+        opened, digested = [], []
+        original_open, original_digest = sdk_validation_inputs._open_regular_file, inventory._regular_file_digest
+        def opening(path, *args, **kwargs):
+            value = original_open(path, *args, **kwargs)
+            if Path(path) == self.payload:
+                opened.append(value[1].st_size)
+            return value
+        def digest(path, **kwargs):
+            value = original_digest(path, **kwargs)
+            if Path(path) == self.payload:
+                digested.append(value[0])
+            return value
+        with patch.object(sdk_validation_inputs, "_open_regular_file", side_effect=opening), \
+                patch.object(inventory, "_regular_file_digest", side_effect=digest):
+            result = operation()
+        self.measurements.append({"kind": kind, "enumerationHashes": len(opened),
+            "finalPayloadHashes": len(digested), "logicalPayloadHashBytes": sum(opened + digested),
+            "payloadBytes": self.payload.stat().st_size})
+        return result
+
+    def test_core_and_android_paths_are_selected_without_throwaway_payload_hashes(self):
+        descriptor = self.work / "policy.json"
+        descriptor.write_bytes(canonical_json_bytes({"evidenceRoot": str(self.work), "records": [], "policy": {}}))
+        original = {"facadeRequest": str(self.request), "validationReceipt": str(self.request)}
+        from ci.products.registry import SDK_FACADE_TARGETS
+        arguments = {"validations": {target: original for target in SDK_FACADE_TARGETS}}
+        with patch.object(snapshot, "core_arguments", return_value=arguments), \
+                patch.object(snapshot, "fresh_metadata_arguments", return_value=arguments), \
+                patch.object(snapshot, "facade_request", return_value=({"compatibilityRequest": str(self.request)}, b"")), \
+                patch.object(snapshot, "facade_sources", return_value=({}, {}, {})), \
+                patch.object(snapshot, "android_arguments", return_value={"binary_contract_evidence": {}, "compatibility_request": self.request}), \
+                patch.object(snapshot.sdk_android_validation_phase, "_contract_sources", return_value=({}, {})):
+            for kind in ("core-metadata", "core-metadata-fresh", "android-metadata"):
+                self.counted(lambda: snapshot_policy_closure(kind, descriptor), kind)
+            before = snapshot_policy_closure("android-metadata", descriptor)
+            payload = self.payload.read_bytes()
+            try:
+                self.payload.write_bytes(payload + b"changed")
+                self.assertNotEqual(before, snapshot_policy_closure("android-metadata", descriptor))
+                self.payload.unlink()
+                self.payload.symlink_to(self.request)
+                with self.assertRaises(ValueError):
+                    snapshot_policy_closure("android-metadata", descriptor)
+            finally:
+                if self.payload.is_symlink(): self.payload.unlink()
+                self.payload.write_bytes(payload)
+        self.assertEqual([(0, 1)] * 3, [(row["enumerationHashes"], row["finalPayloadHashes"]) for row in self.measurements])
+
+    def test_fresh_bootstrap_hashes_shared_payload_once_after_path_selection(self):
+        from ci import sdk_facade_original_inputs as holder
+        from ci.products.registry import SDK_FACADE_TARGETS, SDK_FACADE_CONTRACT_COMPONENTS
+        archive = self.work / "native.zip"
+        archive.write_bytes(b"synthetic archive identity; no native proof")
+        records = {target: {"validationReceipt": str(self.request), "facadeRequest": str(self.request),
+            **({"nativeCompilerArchive": str(archive)} if target not in holder._NON_NATIVE_TARGETS else {})}
+            for target in SDK_FACADE_TARGETS}
+        policy = {"plan": str(self.request), "toolingEvidence": str(self.tooling),
+            "toolingPublicKey": str(self.request), "javaExecutable": str(self.request),
+            "toolingKeyring": None, "toolingKeysDirectory": None, "toolingTrustDomain": "development",
+            "validations": records, "contractDigest": "sha256:" + "a" * 64,
+            "componentDigests": {name: "sha256:" + "b" * 64 for name in SDK_FACADE_CONTRACT_COMPONENTS.values()}}
+        with patch.object(holder, "_request", return_value=({"compatibilityRequest": str(self.request)}, b"")), \
+                patch.object(holder, "_sources", return_value=({}, {}, {})):
+            before = self.counted(lambda: holder._fresh_policy_sources(policy), "core-metadata-bootstrap")
+            self.assertIn(self.payload, before[0])
+            payload = self.payload.read_bytes()
+            try:
+                self.payload.write_bytes(payload + b"changed")
+                self.assertNotEqual(before, holder._fresh_policy_sources(policy))
+            finally:
+                self.payload.write_bytes(payload)
+        self.assertEqual([(0, 1)], [(row["enumerationHashes"], row["finalPayloadHashes"]) for row in self.measurements])
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ class SdkIosPackageWorkflowWiringTest(unittest.TestCase):
 
     def needs(self, *, required="true", worker="success", collector="success", failed="false"):
         return {
+            "sdk-plan": {"result": "success", "outputs": {}},
             "sdk-native-packages": {"result": "success", "outputs": self.locator()},
             "sdk-ios-package-plan": {
                 "result": "success",
@@ -155,8 +156,8 @@ class SdkIosPackageWorkflowWiringTest(unittest.TestCase):
         self.assertIn("stage='ios-package'", final)
         self.assertIn("sdk-ios-packages", self.job("merge-gate").split("    runs-on:", 1)[0])
 
+        self.assertNotIn("  sdk-native-validation-plan:", self.workflow)
         for name in (
-            "sdk-native-validation-plan",
             "sdk-native-validation",
             "sdk-collect-7",
             "sdk-native-validation-result",

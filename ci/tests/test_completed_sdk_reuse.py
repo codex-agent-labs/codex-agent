@@ -1044,9 +1044,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
             collected_wave=8, receipt_hint=True, planned_context=True, reused=True,
             previous_schema=4, issuer_revision='d' * 40)
 
+    def test_schema4_issuer_validates_previous_owning_inputs_before_current_inheritance(self):
+        self.check_v3_issuer_original_member('python', 'metadata', 'desktop', collected=True,
+            collected_wave=8, receipt_hint=True, planned_context=True, reused=True,
+            previous_schema=4, issuer_revision='d' * 40, previous_input_change=True)
+
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
                                       collected_wave=9, receipt_hint=False, issuer_revision='a' * 40,
-                                      planned_context=False, previous_schema=3):
+                                      planned_context=False, previous_schema=3, previous_input_change=False):
         actual_validate_current = completed.validate_current
         import io, json, zipfile
         from contextlib import contextmanager
@@ -1151,7 +1156,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             spec['reuseCompletion'] = {'artifactId': 8, 'artifactSha256': 'sha256:' + 'c' * 64,
                 'runId': 2, 'runAttempt': 1, 'signerCommit': 'b' * 40, 'sourceCommit': 'b' * 40}
             previous = {'proof': parent, 'extension': {'spec': {'schemaVersion': previous_schema,
-                'parent': spec['parent'], 'completedPhases': [phase]}, 'proof': {
+                'parent': spec['parent'], 'completedPhases': [phase],
+                'source': {'inventoryCommit': 'b' * 40}}, 'proof': {
                 'controls': deepcopy(self.controls), 'originals': [{'original': 71}],
                 'members': [{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}]}}}
             spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(previous['extension']['proof']))
@@ -1173,7 +1179,22 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 self.assertEqual(historical_frozen, arguments['frozen'])
                 if reused and pins == spec['reuseCompletion']:
                     self.assertEqual('previous', destination.name)
-                    self.assertIsNone(arguments['revision'])
+                    if previous_input_change:
+                        # External native authentication is the fixture seam;
+                        # the owning-input comparison and its ordering are real.
+                        from products import inventory
+                        selected = completed._identity(receipt)
+                        authority = next(row for row in request['phaseAuthorities']
+                                         if completed._identity(row) == selected)
+                        with patch.object(inventory, 'tree_entries', side_effect=lambda root, revision:
+                                [('new-unclassified-input', '100644 blob changed')]
+                                if revision == 'a' * 40 else []), \
+                                patch.object(products, '_authorities', return_value=([authority], None)):
+                            actual_validate_current(request, [phase], [receipt], root=fixture.repository,
+                                revision=arguments.get('requalification_baseline', arguments['consumer_revision']),
+                                original_revision='b' * 40)
+                    self.assertEqual('b' * 40, arguments['revision'])
+                    self.assertEqual('b' * 40, arguments['requalification_baseline'])
                     self.assertEqual('a' * 40, arguments['consumer_revision'])
                     return previous
                 self.assertEqual(spec['parent'], pins)
@@ -1182,7 +1203,17 @@ class CompletedSdkControlsTest(unittest.TestCase):
             fetched = stack.enter_context(patch.object(native, '_fetch_completed_sdk', side_effect=native_completion))
             stack.enter_context(patch.object(completed, '_base', return_value=historical_frozen))
             current = stack.enter_context(patch.object(completed, 'validate_current'))
-            stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
+            stack.enter_context(patch.object(completed, '_inventory_revision', side_effect=lambda value, *args, **kw:
+                'b' * 40 if reused and value == previous['extension']['spec'] else 'a' * 40))
+            if reused:
+                from products import inventory
+                fixed_path = 'ci/tests/data/requalified-sdk-completed-resume.json'
+                stack.enter_context(patch.object(native, '_sdk_completed_spec_path', return_value=fixed_path))
+                def previous_recipe(repository, commit, path, *, max_bytes):
+                    self.assertEqual((fixture.repository, 'b' * 40, fixed_path, completed.LIMIT),
+                                     (repository, commit, path, max_bytes))
+                    return canonical_json_bytes(previous['extension']['spec'])
+                stack.enter_context(patch.object(inventory, 'git_regular_blob_bytes', side_effect=previous_recipe))
             stack.enter_context(patch.object(completed, '_contract_files'))
             stack.enter_context(patch.object(completed, 'observe_source', side_effect=lambda item, token, **kw:
                 ({'name': 'controls'}, [{'run': {}}], {'source': item['artifactId']})))

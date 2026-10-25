@@ -18,6 +18,7 @@ from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
 from products.sdk_package import _require_capability_output_separate
 from products.signing_isolation import require_no_signing_secret
 from reuse import github_output
+from reuse_qualification import add_completed_frozen_argument, completed_frozen_options, CompletedFrozenReuse
 
 
 def stage_completed_sdk_catalog(state, destination: Path) -> dict:
@@ -26,8 +27,9 @@ def stage_completed_sdk_catalog(state, destination: Path) -> dict:
     selected = {instance for instance in state.prior_by_instance if instance.product == "sdk"}
     if selected != SDK_CAMPAIGN_INSTANCES or state.producer["event"] != "pull_request":
         raise ValueError("SDK catalog requires a completed exact-62 PR selection")
-    if any(instance not in state.sources for instance in selected):
-        raise ValueError("SDK catalog lacks an original object for a selected phase")
+    completed = getattr(state, "completed_frozen", None)
+    if completed is not None and type(completed) is not CompletedFrozenReuse:
+        raise ValueError("SDK catalog requires the concrete native semantic verifier")
     sources, envelopes, archives = {}, {}, {}
     for instance in sorted(SDK_CAMPAIGN_INSTANCES):
         record = state.prior_by_instance[instance]
@@ -35,9 +37,14 @@ def stage_completed_sdk_catalog(state, destination: Path) -> dict:
             raise ValueError("SDK catalog contains an unresolved phase")
         for field in ("buildKey", "receiptSha256", "objectSha256"):
             require_sha256(record[field], "SDK catalog selected " + field)
-        archive = Path(state.sources[instance])
-        original = verify_object(archive, build_key=record["buildKey"],
-            receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+        original = None if completed is None else completed.envelope(record)
+        if original is None:
+            if instance not in state.sources:
+                raise ValueError("SDK catalog lacks an original object for a selected phase")
+            archive = Path(state.sources[instance])
+            original = verify_object(archive, build_key=record["buildKey"],
+                receipt_sha256=record["receiptSha256"], object_sha256=record["objectSha256"])
+            archives[instance] = archive
         receipt = original["receipt"]
         if (tuple(receipt[field] for field in ("product", "component", "phase", "target"))
                 != (instance.product, instance.component, instance.phase, instance.target)
@@ -49,13 +56,12 @@ def stage_completed_sdk_catalog(state, destination: Path) -> dict:
         envelopes[instance] = {field: original[field] for field in (
             "receipt", "receiptBytes", "objectSha256")}
         envelopes[instance]["receiptSha256"] = record["receiptSha256"]
-        archives[instance] = archive
     object_bytes = sum(archive.stat().st_size for archive in archives.values())
     # The outer transport is stored, with a bounded index/signature/ZIP header allowance.
     if object_bytes > products._CATALOG_LIMIT - 32 * 1024 * 1024:
         raise ValueError("SDK catalog original objects exceed bounded transport capacity")
     index = stage_sdk_same_pr_catalog(sources, envelopes, archives,
-        producer=state.producer, destination=destination)
+        producer=state.producer, destination=destination, completed_frozen=completed)
     result = {"phaseCount": len(index["entries"]),
               "objectBytes": object_bytes,
               "indexSha256": sha256_file(Path(destination) / "product-index.json",
@@ -75,6 +81,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sdk-original-workflow-sha", required=True)
     parser.add_argument("--github-output", type=Path)
     add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     try:
         require_no_signing_secret(os.environ)
@@ -86,14 +93,14 @@ def main(argv=None) -> int:
         if args.github_output is not None:
             _require_capability_output_separate(args.github_output,
                 [args.plan, *paths, args.destination])
-        with metadata_admission_options(args) as admissions:
+        with metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
             tooling = None if args.sdk_validation_tooling is None else products._canonical_control(
                 args.sdk_validation_tooling, "Caller SDK tooling policy")
             apple = None if args.sdk_apple_validation_policy is None else products._canonical_control(
                 args.sdk_apple_validation_policy, "Caller Apple validation policy")
             state = products._verified_product_state(args.plan, *paths, root, os.environ,
                 tooling, sdk_original_workflow_sha=args.sdk_original_workflow_sha,
-                sdk_apple_validation_policy=apple, **admissions)
+                sdk_apple_validation_policy=apple, **admissions, **completed)
             result = stage_completed_sdk_catalog(state, args.destination)
         require_no_signing_secret(os.environ)
         github_output(args.github_output, result)

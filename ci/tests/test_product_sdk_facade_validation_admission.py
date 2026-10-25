@@ -4,8 +4,10 @@ No fixture claims an observed worker, authentic signed inputs or compilation.
 """
 
 from copy import deepcopy
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +21,114 @@ from ci.products.receipt import write_output_manifest, compute_build_key
 from ci.products.registry import PhaseInstanceId
 from ci.tests import test_sdk_facade_inputs as fixtures
 from ci.tests.product_chain_support import write_receipt
+
+
+class NativeArchiveDigestTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.archive = self.root / "compiler.tar.gz"
+        self.archive.write_bytes(b"first archive")
+
+    def test_digest_is_shared_only_within_one_verified_invocation(self):
+        from products.restore import verification_session
+        from products import sdk_facade_validation_admission as standalone
+        with patch.object(admission, "sha256_file", wraps=admission.sha256_file) as hashed, \
+                patch.object(standalone, "sha256_file", wraps=standalone.sha256_file) as other:
+            with verification_session():
+                expected = admission._native_archive_digest(self.archive)
+                with verification_session():
+                    self.assertEqual(expected, standalone._native_archive_digest(self.archive))
+                self.assertEqual(expected, admission._native_archive_digest(self.archive))
+            self.assertEqual(1, hashed.call_count)
+            other.assert_not_called()
+            with verification_session():
+                self.assertEqual(expected, admission._native_archive_digest(self.archive))
+            self.assertEqual(2, hashed.call_count)
+            for _ in range(2):
+                self.assertEqual(expected, admission._native_archive_digest(self.archive))
+            self.assertEqual(4, hashed.call_count)
+            with verification_session(), patch.object(admission, "_is_windows", return_value=True):
+                for _ in range(2):
+                    self.assertEqual(expected, admission._native_archive_digest(self.archive))
+            self.assertEqual(6, hashed.call_count)
+
+    def test_same_length_retimed_write_and_replacement_require_fresh_hashes(self):
+        from products.restore import verification_session
+        with verification_session(), patch.object(admission, "sha256_file", wraps=admission.sha256_file) as hashed:
+            first = admission._native_archive_digest(self.archive)
+            stamp = self.archive.stat()
+            self.archive.write_bytes(b"other archive")
+            os.utime(self.archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            second = admission._native_archive_digest(self.archive)
+            self.assertNotEqual(first, second)
+            replacement = self.root / "replacement"
+            replacement.write_bytes(b"third archive")
+            os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            os.replace(replacement, self.archive)
+            self.assertNotEqual(second, admission._native_archive_digest(self.archive))
+            self.assertEqual(3, hashed.call_count)
+
+    def test_file_or_parent_symlink_cannot_reuse_a_digest(self):
+        from products.restore import verification_session
+        parent = self.root / "original"
+        parent.mkdir()
+        path = parent / "compiler.tar.gz"
+        path.write_bytes(b"archive")
+        with verification_session():
+            admission._native_archive_digest(path)
+            moved = self.root / "moved"
+            parent.rename(moved)
+            parent.symlink_to(moved, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                admission._native_archive_digest(path)
+            parent.unlink()
+            moved.rename(parent)
+            path.unlink()
+            path.symlink_to(self.archive)
+            with self.assertRaises(ValueError):
+                admission._native_archive_digest(path)
+
+    def test_replacement_during_scan_or_cached_reopen_is_rejected(self):
+        from products.restore import verification_session
+        original_hash, original_open = admission.sha256_file, admission._open_regular_file
+        def replace():
+            replacement = self.root / "replacement"
+            replacement.write_bytes(b"other archive")
+            os.replace(replacement, self.archive)
+        def scan(path, **kwargs):
+            value = original_hash(path, **kwargs)
+            replace()
+            return value
+        with verification_session(), patch.object(admission, "sha256_file", side_effect=scan):
+            with self.assertRaisesRegex(ValueError, "changed during verification"):
+                admission._native_archive_digest(self.archive)
+        with verification_session():
+            admission._native_archive_digest(self.archive)
+            opens = 0
+            def reopen(*args, **kwargs):
+                nonlocal opens
+                opens += 1
+                if opens == 2:
+                    replace()
+                return original_open(*args, **kwargs)
+            with patch.object(admission, "_open_regular_file", side_effect=reopen), \
+                    self.assertRaisesRegex(ValueError, "changed during verification"):
+                admission._native_archive_digest(self.archive)
+
+    def test_digest_metadata_is_bounded_and_overflow_still_streams(self):
+        from products.restore import verification_session
+        with verification_session() as session:
+            for index in range(65):
+                path = self.root / str(index)
+                path.write_bytes(str(index).encode())
+                admission._native_archive_digest(path)
+            self.assertEqual(64, len(session["nativeCompilerArchiveDigests"]))
+            with patch.object(admission, "sha256_file", wraps=admission.sha256_file) as hashed:
+                admission._native_archive_digest(path)
+                admission._native_archive_digest(path)
+            self.assertEqual(2, hashed.call_count)
 
 
 class FacadeOriginalContentTest(unittest.TestCase):

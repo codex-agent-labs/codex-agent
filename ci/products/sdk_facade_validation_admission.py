@@ -16,7 +16,7 @@ import tomllib
 from .inventory import (
     canonical_json_bytes, git_product_versions, git_regular_blob_bytes, load_canonical_json_bytes, load_json_bytes,
     read_regular_file_bytes, require_exact_keys, require_string, run_git,
-    sha256_bytes, sha256_file, snapshot_regular_tree,
+    sha256_bytes, sha256_file, snapshot_regular_tree, _is_windows, _open_regular_file, _stat_identity,
 )
 from .plan import (
     NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
@@ -57,13 +57,38 @@ def _native_archive_path(target, archive):
 
 
 def _native_archive_digest(path):
-    # Large archives remain streamed; never feed them to the bounded JSON reader.
+    """Reuse streamed bytes only within the existing invocation's file custody."""
+    from products.restore import _VERIFICATION_SESSION
     if path.resolve(strict=True) != path or not path.is_file():
         raise ValueError("Native compiler archive path changed or is unsafe")
-    digest = sha256_file(path)
-    if path.resolve(strict=True) != path:
-        raise ValueError("Native compiler archive path changed during hashing")
-    return digest
+    session = None if _is_windows() else _VERIFICATION_SESSION.get()
+    if session is None:
+        # Large archives remain streamed; never feed them to the bounded JSON reader.
+        digest = sha256_file(path)
+        if path.resolve(strict=True) != path:
+            raise ValueError("Native compiler archive path changed during hashing")
+        return digest
+    descriptor, before = _open_regular_file(path, "Native compiler archive", reject_symlink_parents=True)
+    try:
+        identity = _stat_identity(before)
+        key = str(path), identity
+        with session["lock"]:
+            cached = session.setdefault("nativeCompilerArchiveDigests", {}).get(key)
+        digest = cached if cached is not None else sha256_file(path, reject_symlink_parents=True)
+        current, named = _open_regular_file(path, "Native compiler archive", reject_symlink_parents=True)
+        try:
+            if (_stat_identity(os.fstat(descriptor)) != identity or _stat_identity(named) != identity
+                    or _stat_identity(os.fstat(current)) != identity):
+                raise ValueError("Native compiler archive changed during verification")
+        finally:
+            os.close(current)
+        with session["lock"]:
+            # ponytail: cap digest metadata; additional files keep full streaming checks.
+            if len(session["nativeCompilerArchiveDigests"]) < 64:
+                session["nativeCompilerArchiveDigests"][key] = digest
+        return digest
+    finally:
+        os.close(descriptor)
 
 
 def _read(path):

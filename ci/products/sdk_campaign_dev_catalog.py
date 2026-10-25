@@ -23,6 +23,7 @@ def stage_sdk_same_pr_catalog(
     *,
     producer: dict,
     destination: Path,
+    completed_frozen=None,
 ) -> dict:
     """Sign a development cache index over original SDK receipts and objects.
 
@@ -30,7 +31,7 @@ def stage_sdk_same_pr_catalog(
     this content assembler never supplies original-worker or release admission.
     """
     return _stage_sdk_same_pr_catalog(sources, envelopes, archives, producer=producer,
-                                      destination=destination, partial=False)
+                                      destination=destination, partial=False, completed_frozen=completed_frozen)
 
 
 def stage_sdk_partial_same_pr_catalog(
@@ -50,17 +51,24 @@ def stage_sdk_partial_same_pr_catalog(
                                       destination=destination, partial=True)
 
 
-def _verify_partial_objects(sources, envelopes, archives):
+def _verify_partial_objects(sources, envelopes, archives, *, completed_frozen=None):
     receipts = {}
     for instance in sorted(sources):
         identity, envelope = _validate_envelope(envelopes[instance])
-        receipt, _, _ = _validated_entry_source(sources[instance])
+        source = sources[instance]
+        receipt, _, _ = _validated_entry_source(source)
         if (identity != instance or sources[instance].release_admission is not None
                 or sources[instance].receipt_bytes != envelope["receiptBytes"]):
             raise ValueError("Partial SDK catalog original phase identity differs")
-        original = verify_object(archives[instance], build_key=receipt["buildKey"],
-            receipt_sha256=sha256_bytes(sources[instance].receipt_bytes),
-            object_sha256=envelope["objectSha256"])
+        original = None if completed_frozen is None else completed_frozen.envelope(
+            {**receipt, "receiptSha256": sha256_bytes(source.receipt_bytes),
+             "objectSha256": envelope["objectSha256"]}, source.receipt_bytes)
+        if original is None:
+            if instance not in archives:
+                raise ValueError("SDK catalog lacks an unqualified original object")
+            original = verify_object(archives[instance], build_key=receipt["buildKey"],
+                receipt_sha256=sha256_bytes(source.receipt_bytes),
+                object_sha256=envelope["objectSha256"])
         if original["receiptBytes"] != sources[instance].receipt_bytes:
             raise ValueError("Partial SDK catalog original receipt differs")
         receipts[instance] = receipt
@@ -69,8 +77,13 @@ def _verify_partial_objects(sources, envelopes, archives):
     return receipts
 
 
-def _stage_sdk_same_pr_catalog(sources, envelopes, archives, *, producer, destination, partial):
+def _stage_sdk_same_pr_catalog(sources, envelopes, archives, *, producer, destination, partial,
+                               completed_frozen=None):
     current = validate_producer(producer)
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        if partial or type(completed_frozen) is not CompletedFrozenReuse:
+            raise ValueError("Completed SDK catalog requires the concrete native semantic verifier")
     selected_instances = set(sources)
     if current["event"] != "pull_request":
         raise ValueError("Same-PR SDK catalog requires a current PR")
@@ -79,12 +92,18 @@ def _stage_sdk_same_pr_catalog(sources, envelopes, archives, *, producer, destin
             raise ValueError("Partial SDK catalog requires a nonempty proper subset of 62 phases")
     elif selected_instances != SDK_CAMPAIGN_INSTANCES:
         raise ValueError("Same-PR SDK catalog requires one current PR and all 62 phases")
-    if set(envelopes) != selected_instances or set(archives) != selected_instances:
+    if (set(envelopes) != selected_instances or not set(archives) <= selected_instances
+            or completed_frozen is None and set(archives) != selected_instances):
         raise ValueError("Same-PR SDK catalog sources, envelopes and archives must match")
     selected_sources = dict(sources)
     selected_envelopes = deepcopy(dict(envelopes))
     selected_archives = {instance: Path(path) for instance, path in archives.items()}
-    verify_selected = _verify_partial_objects if partial else verify_sdk_campaign_objects
+    # Missing bodies are allowed only by the live native capability, never by
+    # absence or an index claim. The ordinary all-object and partial routes stay exact.
+    verify_selected = (_verify_partial_objects if partial else verify_sdk_campaign_objects)
+    if completed_frozen is not None:
+        def verify_selected(sources, envelopes, archives):
+            return _verify_partial_objects(sources, envelopes, archives, completed_frozen=completed_frozen)
     receipts = verify_selected(selected_sources, selected_envelopes, selected_archives)
     if any(receipt["trustDomain"] != "development"
            or receipt["producer"]["repository"] != current["repository"]
@@ -104,7 +123,7 @@ def _stage_sdk_same_pr_catalog(sources, envelopes, archives, *, producer, destin
         catalog.mkdir()
         private_key, public_key, signing = generate_development_key(private / "keys")
         (catalog / "public-key.pub").write_bytes(public_key.read_bytes())
-        for instance in sorted(selected_instances):
+        for instance in sorted(selected_archives):
             receipt = receipts[instance]
             path = object_relative_path(receipt["buildKey"], sha256_bytes(selected_sources[instance].receipt_bytes))
             archive = selected_archives[instance]
@@ -128,8 +147,16 @@ def _stage_sdk_same_pr_catalog(sources, envelopes, archives, *, producer, destin
         if verified != index or len(index["entries"]) != len(selected_instances):
             raise ValueError("Same-PR SDK catalog index changed during signing")
         for entry in index["entries"]:
-            original = verify_object(catalog / object_relative_path(entry["buildKey"], entry["receiptSha256"]),
-                build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+            instance = PhaseInstanceId(*(entry[field] for field in ("product", "component", "phase", "target")))
+            if instance in selected_archives:
+                original = verify_object(catalog / object_relative_path(entry["buildKey"], entry["receiptSha256"]),
+                    build_key=entry["buildKey"], receipt_sha256=entry["receiptSha256"])
+            else:
+                original = completed_frozen.envelope(
+                    {**entry, "objectSha256": selected_envelopes[instance]["objectSha256"]},
+                    selected_sources[instance].receipt_bytes)
+                if original is None:
+                    raise ValueError("SDK catalog omitted an unqualified original object")
             _verify_index_receipt(entry, {**original, "receiptSha256": entry["receiptSha256"]})
         if (dict(sources) != selected_sources or dict(envelopes) != selected_envelopes
                 or {instance: Path(path) for instance, path in archives.items()} != selected_archives

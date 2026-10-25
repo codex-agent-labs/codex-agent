@@ -103,6 +103,53 @@ class VerifiedSdkInputsTest(unittest.TestCase):
                 path = value["directory"] / REQUEST_NAME
                 path.write_bytes(path.read_bytes() + b"changed\n")
 
+    def test_borrowed_verified_tree_does_not_rescan_bytes_before_full_compatibility(self):
+        from products import inventory
+        from products.restore import verification_session, memoized_file_inventory
+        root = self.copy()
+        original_hash, original_produce = inventory._regular_file_digest, verifier.produce_sdk_compatibility
+        scans, before_producer = [], []
+        def digest(path, **kwargs):
+            if Path(path).is_relative_to(root):
+                scans.append(Path(path).stat().st_size)
+            return original_hash(path, **kwargs)
+        def produce(**kwargs):
+            before_producer.append((len(scans), sum(scans)))
+            return original_produce(**kwargs)  # All real signatures and compatibility gates still run.
+        with verification_session():
+            memoized_file_inventory(root)
+            with verifier._borrow_private_sdk_inputs(root), \
+                    patch.object(inventory, "_regular_file_digest", side_effect=digest), \
+                    patch.object(verifier, "produce_sdk_compatibility", side_effect=produce) as semantic:
+                for _ in range(2):
+                    scans.clear()
+                    with self.verify(root) as result:
+                        self.assertEqual(root, result["directory"])
+                        self.assertEqual((root / COMPATIBILITY_NAME).read_bytes(),
+                                         canonical_json_bytes(result["compatibility"]))
+                self.assertEqual(2, semantic.call_count)
+        self.inventory_measurements = {"contexts": 2, "inventoryHashesBeforeEachSemanticGate": before_producer,
+            "fullCompatibilityRecomputations": 2, "inputFiles": len(self.before),
+            "logicalInputBytes": sum(r["bytes"] for r in self.before),
+            "scope": "Signed synthetic SDK inputs. Existing guarded inventory warmed within one process; signatures/compatibility recomputed twice. Counts before each semantic gate exclude its required body checks; no hosted or physical I/O claim."}
+        self.assertEqual([(0, 0), (0, 0)], before_producer)
+
+    def test_declared_inventory_shape_stays_strict_before_semantic_replay(self):
+        root = self.copy()
+        before = load_canonical_json_bytes((root / INVENTORY_NAME).read_bytes())
+        for mutation in ("reverse", "duplicate", "extra-field", "missing-file", "bool-bytes"):
+            value = load_canonical_json_bytes(canonical_json_bytes(before))
+            if mutation == "reverse": value["files"].reverse()
+            elif mutation == "duplicate": value["files"].insert(0, dict(value["files"][0]))
+            elif mutation == "extra-field": value["files"][0]["kind"] = "unrequested"
+            elif mutation == "missing-file": value["files"].pop()
+            else: value["files"][0]["bytes"] = True
+            (root / INVENTORY_NAME).write_bytes(canonical_json_bytes(value))
+            with self.subTest(mutation=mutation), patch.object(verifier, "produce_sdk_compatibility") as semantic:
+                with self.assertRaises(ValueError), self.verify(root):
+                    self.fail("invalid inventory yielded")
+                semantic.assert_not_called()
+
     def test_inventory_schema_file_tamper_and_symlinks_are_not_accepted(self):
         root = self.copy()
         inventory = (root / INVENTORY_NAME).read_bytes()

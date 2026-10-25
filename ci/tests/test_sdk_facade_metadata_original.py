@@ -7,6 +7,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+import shutil
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -50,7 +51,8 @@ class FacadeMetadataOriginalTest(unittest.TestCase):
             with zipfile.ZipFile(capture / "transport.zip", "w") as z:
                 for row in regular_file_inventory(capture / "original", allow_empty=True):
                     z.write(capture / "original" / row["relativePath"], row["relativePath"])
-            artifacts[identity] = {"digest": original.sha256_file(capture / "transport.zip"),
+            artifacts[identity] = {"id": SDK_FACADE_TARGETS.index(target) + 1,
+                                  "digest": original.sha256_file(capture / "transport.zip"),
                                   "size_in_bytes": (capture / "transport.zip").stat().st_size}
         cap = object.__new__(CompletedFrozenReuse)
         policy = {"plan": str(self.f.f.plan), "toolingEvidence": str(self.f.tooling),
@@ -104,6 +106,92 @@ class FacadeMetadataOriginalTest(unittest.TestCase):
              verification_session():
             yield SimpleNamespace(envelope=envelope, validations=validations, arguments=arguments,
                 native=native, artifacts=artifacts, rebuild=rebuild, archive=source_zip)
+
+    def compact_originals(self, artifacts):
+        """Keep independent cold-reader originals; only the new upload gets references."""
+        for target in SDK_FACADE_TARGETS:
+            identity = PhaseInstanceId("sdk", "sdk-core", "validation", target)
+            parent = self.f.destination / "originals/validations" / target
+            caller_capture = self.root / "independent-validation-originals" / target
+            snapshot_regular_tree(parent / "capture", caller_capture, allow_empty=True)
+            record = self.f.f.records[target]
+            self.f.f.records[target] = {k: v for k, v in record.items()
+                if k in {"validationReceipt", "facadeRequest", "nativeCompilerArchive"}}
+            self.f.f.records[target]["captureRoot"] = caller_capture
+            (parent / "original-reference.json").write_bytes(canonical_json_bytes(
+                original._validation_original_reference((parent / "phase-receipt.json").read_bytes(), artifacts[identity])))
+            shutil.rmtree(parent / "capture")
+
+    def test_compact_references_pass_both_readers_without_nested_archive_copies(self):
+        with self.completed_fixture() as f:
+            legacy_bytes = f.archive.stat().st_size
+            self.compact_originals(f.artifacts)
+            f.rebuild()
+            compact_bytes = f.archive.stat().st_size
+            inventory = original.product_reuse._core_metadata_upload_inventory
+            with patch.object(original.product_reuse, "_core_metadata_upload_inventory", wraps=inventory) as scans:
+                original.verify_completed_facade_metadata(f.envelope, f.validations, **f.arguments)
+                self.assertEqual([original._INSTANCE], [c.args[2] for c in scans.call_args_list])
+            self.held.assert_not_called()
+            with self.call() as value:
+                self.assertEqual(canonical_json_bytes(self.f.expected), (value["stage"] / original.OUTPUT_PATH).read_bytes())
+                self.assertEqual(set(SDK_FACADE_TARGETS), self.f.f.active)
+            self.assertLess(compact_bytes, legacy_bytes // 10)
+            self.assertFalse(list((self.f.destination / "originals/validations").glob("*/capture")))
+            self.reference_measurements = {"legacyMetadataZipBytes": legacy_bytes,
+                "compactMetadataZipBytes": compact_bytes, "legacyNestedArchives": 11,
+                "compactNestedArchives": 0, "qualifiedReaderOldArchiveScans": 0,
+                "ordinaryReaderValidationGates": len(SDK_FACADE_TARGETS),
+                "scope": "Synthetic ZIP sizes; native authority/API/election/producer/full-original readers are explicit fixture seams. Full new archive, shard, stage, writer and key checks execute. No wire/physical/hosted timing claim."}
+
+    def test_compact_reference_mismatches_fail_both_acceptance_paths(self):
+        with self.completed_fixture() as f:
+            self.compact_originals(f.artifacts)
+            parent = self.f.destination / "originals/validations/jvm"
+            path = parent / "original-reference.json"
+            before = path.read_bytes()
+            for field in ("id", "bytes", "sha256", "receiptSha256", "schemaVersion", "extra", "malformed"):
+                with self.subTest(field=field):
+                    value = original.load_canonical_json_bytes(before)
+                    if field in {"id", "bytes"}: value["artifact"][field] += 1
+                    elif field == "sha256": value["artifact"][field] = "sha256:" + "0" * 64
+                    elif field == "receiptSha256": value[field] = "sha256:" + "0" * 64
+                    elif field == "schemaVersion": value[field] = 2
+                    elif field == "extra": value[field] = True
+                    path.write_bytes(b"not JSON\n" if field == "malformed" else canonical_json_bytes(value))
+                    f.rebuild()
+                    with self.assertRaisesRegex(ValueError, "original reference"):
+                        original.verify_completed_facade_metadata(f.envelope, f.validations, **f.arguments)
+                    with self.assertRaisesRegex(ValueError, "original reference"), self.call():
+                        pass
+            path.write_bytes(before)
+            (parent / "capture").mkdir()
+            (parent / "capture/unexpected").write_bytes(b"mixed layout")
+            f.rebuild()
+            with self.assertRaisesRegex(ValueError, "layout"):
+                original.verify_completed_facade_metadata(f.envelope, f.validations, **f.arguments)
+            with self.assertRaisesRegex(ValueError, "layout"), self.call():
+                pass
+
+    def test_compact_references_cannot_replace_native_authority_or_new_shard_checks(self):
+        with self.completed_fixture() as f:
+            self.compact_originals(f.artifacts)
+            f.rebuild()
+            identity = PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
+            native = f.native.pop(identity)
+            with self.assertRaisesRegex(ValueError, "native semantic"):
+                original.verify_completed_facade_metadata(f.envelope, f.validations, **f.arguments)
+            f.native[identity] = native
+            from products.restore import verify_phase_shard
+            shard = verify_phase_shard(self.f.destination / "shard", original._INSTANCE)
+            object_path = self.f.destination / "shard" / shard["objectPath"]
+            object_path.unlink()  # Replace the immutable test upload member without mutating shared source bytes.
+            object_path.write_bytes(b"changed new result")
+            f.rebuild()
+            with self.assertRaises(ValueError):
+                original.verify_completed_facade_metadata(f.envelope, f.validations, **f.arguments)
+            with self.assertRaises(ValueError), self.call():
+                pass
 
     def test_completed_predecessors_stream_full_original_members_and_keep_stages_small(self):
         from runtime_reference_archive import copy_reference_member
@@ -226,6 +314,14 @@ class FacadeMetadataOriginalTest(unittest.TestCase):
         self.f.ready = planned
         self.f.election.return_value.prior_ready_plans = {original._INSTANCE: planned}
         produced = fixtures.workflow.execute(**self.f.arguments())
+        # Existing recovery cases retain the historical complete-capture layout.
+        # New cases below replace it with references after binding independent originals.
+        for target in SDK_FACADE_TARGETS:
+            parent = self.f.destination / "originals/validations" / target
+            (parent / "original-reference.json").unlink()
+            (parent / "capture/original").mkdir(parents=True)
+            (parent / "capture/transport.zip").write_bytes(b"opaque original ZIP; official gate mocked")
+            (parent / "capture/original/gradle.log").write_bytes(b"")
         self.receipt_path = self.root / "selected-metadata.json"
         self.receipt_path.write_bytes(produced["shard"]["receiptBytes"])
         self.receipt = produced["shard"]["receipt"]

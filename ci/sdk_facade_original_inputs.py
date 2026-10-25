@@ -23,15 +23,16 @@ from products.registry import PhaseInstanceId, SDK_FACADE_CONTRACT_COMPONENTS, S
 from ci.products.sdk_facade_inputs import _path, _request, _sources
 from ci.products.sdk_facade_metadata_admission import fresh_metadata_arguments
 from ci.products.sdk_facade_validation import _inventory
-from ci.products.sdk_facade_validation_admission import _NON_NATIVE_TARGETS, _native_archive_path
-from ci.products.sdk_validation_inputs import _request_inventory
+from ci.products.sdk_facade_validation_admission import _NON_NATIVE_TARGETS, _native_archive_path, _native_archive_digest
+from ci.products.sdk_validation_inputs import _request_paths
 from ci.products.signing_isolation import require_no_signing_secret
 from ci.sdk_facade_capture import (capture_sdk_facade_metadata_upload,
     capture_sdk_facade_validation_upload)
-from ci.sdk_facade_metadata_inputs import verified_facade_metadata_inputs
+from ci.sdk_facade_metadata_inputs import _qualified_predecessors, verified_facade_metadata_inputs
 from ci.sdk_facade_metadata_selection import write_selected_facade_metadata_policy
 from ci.sdk_facade_upload_locator import locate_original_facade_upload
 from sdk_phase import maven_consumed_predecessors
+from products.restore import verification_session
 
 
 _FRESH_INSTANCE = PhaseInstanceId("sdk", "sdk-core", "metadata", "common")
@@ -100,6 +101,7 @@ def _fresh_policy_sources(policy):
                                      "Fresh Core validation locators")
     files = {_path(policy[name], name) for name in ("plan", "toolingPublicKey", "javaExecutable")}
     trees = {_path(policy["toolingEvidence"], "toolingEvidence")}
+    archives = set()
     for name, collection in (("toolingKeyring", files), ("toolingKeysDirectory", trees)):
         if policy[name] is not None:
             collection.add(_path(policy[name], name))
@@ -113,25 +115,28 @@ def _fresh_policy_sources(policy):
         archive = _native_archive_path(target, record.get("nativeCompilerArchive"))
         if archive is not None:
             files.add(archive)
+            archives.add(archive)
         request, _ = _request(request_path)
         _, source_trees, source_files = _sources(request)
         trees.update(source_trees.values())
         files.update(source_files.values())
-        files.update(_request_inventory(Path(request["compatibilityRequest"])))
-    return ({path: sha256_file(path, reject_symlink_parents=True) for path in files},
+        files.update(_request_paths(Path(request["compatibilityRequest"])))
+    return ({path: _native_archive_digest(path) if path in archives else
+             sha256_file(path, reject_symlink_parents=True) for path in files},
             {path: _inventory(path, allow_empty=True) for path in trees})
 
 
 @contextmanager
 def held_fresh_facade_metadata_policy(plan, discovery, state, **arguments):
-    """Hold a fully replayed fresh descriptor, with no metadata reuse authority."""
-    with _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
+    """Hold verified fresh inputs, with no metadata reuse authority."""
+    with verification_session(), _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
         descriptor, predecessors, elected = captured
         policy = load_canonical_json_bytes(read_regular_file_bytes(
             descriptor, reject_symlink_parents=True))["policy"]
         root = Path(arguments["repository_root"]).resolve(strict=True)
         environ, token = arguments["environ"], arguments["token"]
         trusted_workflow_sha = arguments["trusted_workflow_sha"]
+        completed_frozen = arguments.get("completed_frozen")
         arguments = fresh_metadata_arguments(policy)
         with verified_facade_metadata_inputs(plan=Path(plan).absolute(), validations=arguments["validations"],
                 contract_digest=arguments["contract_digest"], component_digests=arguments["component_digests"],
@@ -141,7 +146,8 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, **arguments):
                 policy_revision=elected.plan["validationCommit"],
                 required_trust_domain=arguments["required_trust_domain"],
                 tooling_keyring=arguments["tooling_keyring"],
-                tooling_keys_directory=arguments["tooling_keys_directory"]) as original:
+                tooling_keys_directory=arguments["tooling_keys_directory"],
+                completed_frozen=completed_frozen, elected=elected) as original:
             package = predecessors / "sdk-sdk-core-package-common"
             if (read_regular_file_bytes(package / "phase-receipt.json", reject_symlink_parents=True) !=
                     original["package"]["receiptBytes"]
@@ -158,13 +164,13 @@ def held_fresh_facade_metadata_policy(plan, discovery, state, **arguments):
 
 @contextmanager
 def held_captured_facade_metadata_policy(plan, discovery, state, **arguments):
-    """Hold official captures only; the consuming controller must fully replay them.
+    """Hold official captures or qualified locators for the consuming controller.
 
     This records=[] descriptor grants no semantic acceptance or reuse admission.
-    Use it only around execute(), which performs the complete original replay,
+    Use it only around execute(), which independently verifies original inputs,
     checks elected package/validation bytes, and finalizes after clean reader exit.
     """
-    with _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
+    with verification_session(), _held_captured_facade_metadata_policy(plan, discovery, state, **arguments) as captured:
         yield captured[0]
 
 
@@ -183,13 +189,16 @@ def _held_captured_facade_metadata_policy(plan, discovery, state, *, expected_bu
     if _path(policy["plan"], "Fresh Core replay plan") != plan:
         raise ValueError("Fresh Core replay policy refers to another current plan")
     file_digests, tree_inventories = _fresh_policy_sources(policy)
+    archives = {Path(row["nativeCompilerArchive"]) for row in policy["validations"].values()
+                if "nativeCompilerArchive" in row}
     file_digests[plan] = sha256_file(plan, reject_symlink_parents=True)
     tree_inventories.update({path: _inventory(path, allow_empty=True) for path in (discovery, state)})
 
     def unchanged():
         require_no_signing_secret(environ)
         if (canonical_json_bytes(replay_policy) != policy_bytes
-                or any(sha256_file(path, reject_symlink_parents=True) != digest
+                or any((_native_archive_digest(path) if path in archives else
+                        sha256_file(path, reject_symlink_parents=True)) != digest
                        for path, digest in file_digests.items())
                 or any(_inventory(path, allow_empty=True) != before
                        for path, before in tree_inventories.items())):
@@ -240,9 +249,18 @@ def _held_captured_facade_metadata_policy(plan, discovery, state, *, expected_bu
             receipts[target] = raw
         captures = outside / "evidence"
         captures.mkdir()
+        native = _qualified_predecessors(completed_frozen, elected)
         for target in SDK_FACADE_TARGETS:
             unchanged()
             path = Path(policy["validations"][target]["validationReceipt"])
+            if native is not None:
+                identity = PhaseInstanceId("sdk", "sdk-core", "validation", target)
+                if receipts[target] != native[identity]["receiptBytes"]:
+                    raise ValueError("Fresh Core selected validation differs from native authority")
+                _, artifact, _ = completed_frozen.observe_extended_sdk(elected.prior_by_instance[identity],
+                    producer=elected.consumer["producer"], token=token)
+                policy["validations"][target].update(artifactId=artifact["id"], artifactSha256=artifact["digest"])
+                continue
             origin = _retained_validation_origin(receipts[target], elected.producer)
             workflow = trusted_workflow_sha if origin is None else origin["workflow_sha"]
             locator = locate_original_facade_upload(path, expected_receipt_sha256=sha256_bytes(receipts[target]),
@@ -268,6 +286,8 @@ def _held_captured_facade_metadata_policy(plan, discovery, state, *, expected_bu
             if (_inventory(captures, allow_empty=True) != before
                     or read_regular_file_bytes(descriptor, reject_symlink_parents=True) != descriptor_bytes):
                 raise ValueError("Fresh Core original carriers or descriptor changed while held")
+            if native is not None and _qualified_predecessors(completed_frozen, elected) != native:
+                raise ValueError("Fresh Core predecessor authority changed while held")
 
 
 @contextmanager

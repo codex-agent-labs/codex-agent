@@ -376,6 +376,87 @@ class SdkAppleContentTest(unittest.TestCase):
         self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
         self.assertEqual(1, len(self.calls))
 
+    def test_snapshot_diagnostics_preserve_result_failure_and_owned_cleanup(self):
+        import json
+        from runtime_reference_transport import count
+        for mode in ("portable", "fallback"):
+            for failure in (False, True):
+                with self.subTest(mode=mode, failure=failure):
+                    seen = {}
+                    original_failure = subprocess.CalledProcessError(
+                        7, "fixture verifier", stderr=b"fixture stderr")
+                    def observe(fields):
+                        private = fields["--product-directory"].parent
+                        identity = private.stat()
+                        seen.update(path=str(private), device=identity.st_dev, inode=identity.st_ino)
+                        if failure:
+                            raise original_failure
+                    def unsupported(*_args):
+                        ctypes.set_errno(errno.EXDEV)
+                        return -1
+                    self.mutate = observe
+                    diagnostics = io.StringIO()
+                    before = regular_file_inventory(self.root, allow_empty=True)
+                    with patch.dict(os.environ, {"CODEX_AGENT_THROUGHPUT_TRACE": "1"}), \
+                            patch.object(content, "_apple_clone_operation",
+                                         return_value=None if mode == "portable" else unsupported), \
+                            patch("runtime_reference_transport.count", wraps=count) as counters, \
+                            redirect_stderr(diagnostics):
+                        if failure:
+                            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                                self.verify()
+                            self.assertIs(original_failure, caught.exception)
+                        else:
+                            self.assertEqual(regular_file_inventory(self.product), self.verify())
+                    self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+                    self.assertFalse(Path(seen["path"]).exists())
+                    lines = diagnostics.getvalue().splitlines()
+                    volumes = [json.loads(line.split("throughput-volume ", 1)[1]) for line in lines
+                               if "throughput-volume " in line]
+                    self.assertEqual(1, len(volumes))
+                    self.assertEqual("sdk-apple-verification", volumes[0]["operation"])
+                    self.assertEqual(not failure, volumes[0]["success"])
+                    self.assertTrue(volumes[0]["samplerStopped"])
+                    self.assertGreaterEqual(volumes[0]["sampleCount"], 2)
+                    snapshot_counts = [call.args for call in counters.call_args_list
+                                       if call.args[0].startswith("appleSnapshot")]
+                    expected = "appleSnapshotPortableTrees" if mode == "portable" else "appleSnapshotFallbackTrees"
+                    self.assertEqual([(expected,), (expected,)], snapshot_counts)
+                    retirements = [json.loads(line.split(" ", 1)[1]) for line in lines
+                                   if line.startswith("scratch-retirement ")]
+                    self.assertEqual(0 if failure else 1, len(retirements))
+                    if not failure:
+                        event = retirements[0]
+                        self.assertEqual({**seen, "absentAfterExit": True}, event["ownedDirectory"])
+                        self.assertEqual("a" * 40, event["policyRevision"])
+                        self.assertTrue(event["localVerificationCompleted"])
+                        self.assertFalse(event["remoteCustodyObserved"])
+                        self.assertGreater(event["lifetimeElapsedNs"], 0)
+
+    def test_retirement_diagnostic_value_error_does_not_replace_verified_result(self):
+        import builtins
+        real_print = builtins.print
+        retired = []
+        def fail_retirement(*args, **kwargs):
+            if args and str(args[0]).startswith("scratch-retirement "):
+                import json
+                event = json.loads(args[0].split(" ", 1)[1])
+                self.assertTrue(event["localVerificationCompleted"])
+                self.assertTrue(event["ownedDirectory"]["absentAfterExit"])
+                self.assertFalse(Path(event["ownedDirectory"]["path"]).exists())
+                retired.append(event)
+                raise ValueError("fixture closed diagnostic stream")
+            return real_print(*args, **kwargs)
+        before = regular_file_inventory(self.root, allow_empty=True)
+        with patch.dict(os.environ, {"CODEX_AGENT_THROUGHPUT_TRACE": "1"}), \
+                patch.object(content, "_apple_clone_operation", return_value=None), \
+                patch("builtins.print", side_effect=fail_retirement), \
+                redirect_stderr(io.StringIO()):
+            self.assertEqual(regular_file_inventory(self.product), self.verify())
+        self.assertEqual(1, len(self.calls))
+        self.assertEqual(1, len(retired))
+        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+
     def test_tooling_rejection_prevents_any_process(self):
         with patch("ci.products.sdk_apple_content.verified_tooling_capture", side_effect=ValueError("tooling authority")), \
                 patch("ci.products.sdk_apple_content.subprocess.run", side_effect=AssertionError("execution")), \
@@ -745,7 +826,8 @@ class LinuxPrivateSnapshotTest(unittest.TestCase):
                 patch.object(content, "snapshot_regular_tree", side_effect=AssertionError("byte fallback")):
             content._snapshot_apple_tree(self.source, self.destination)
         ioctl.assert_called_once()
-        self.assertEqual([("nativeCloneFiles",), ("nativeCloneBytes", self.body.stat().st_size)],
+        self.assertEqual([("nativeCloneFiles",), ("nativeCloneBytes", self.body.stat().st_size),
+                          ("appleSnapshotNativeTrees",)],
                          [call.args for call in count.call_args_list])
         self.assertEqual(before, regular_file_inventory(self.destination))
         self.assertTrue((self.destination / "empty-directory").is_dir())

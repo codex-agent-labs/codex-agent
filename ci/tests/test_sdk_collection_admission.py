@@ -56,7 +56,7 @@ class SdkCollectionAdmissionTest(unittest.TestCase):
             self.assertEqual(2, gate.call_count)
 
     def test_changed_evidence_policy_or_source_cannot_hit_and_failed_gate_is_not_cached(self):
-        for changed in ("evidence", "publicKey", "javaExecutable", "verifier", "revision"):
+        for changed in ("evidence", "publicKey", "javaExecutable", "toolingResource", "revision"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary, \
                     patch("ci.products.sdk_validation_inputs._capture_validation_sources", self.sources), \
                     patch("ci.products.sdk_validation.verify_sdk_validation_projection", side_effect=self.proof) as gate:
@@ -64,7 +64,7 @@ class SdkCollectionAdmissionTest(unittest.TestCase):
                 source = root / "carrier"
                 snapshot_regular_tree(self.carrier, source)
                 mutation = (source / self.captured[0]["runtimeStages"] / "outputs/original.log" if changed == "evidence"
-                    else self.root / "ci/verifier.py" if changed == "verifier"
+                    else self.root / "caller/tooling/evidence.json" if changed == "toolingResource"
                     else Path(self.tooling[changed]) if changed != "revision" else None)
                 original = mutation.read_bytes() if mutation else None
 
@@ -87,6 +87,88 @@ class SdkCollectionAdmissionTest(unittest.TestCase):
                 finally:
                     if mutation:
                         mutation.write_bytes(original)
+
+    def test_shared_matcher_reuse_does_not_scan_unconsumed_checkout_code(self):
+        from ci.products import sdk_validation_inputs as evidence
+        source = self.root / "ci/verifier.py"
+        before = source.read_bytes()
+        scan = evidence.regular_file_inventory
+        def guarded(path, **options):
+            self.assertNotEqual(self.root / "ci", Path(path), "unconsumed checkout scanned")
+            return scan(path, **options)
+        raw = (self.carrier / self.captured[0]["validationReceipt"]).read_bytes()
+        entry = {**load_canonical_json_bytes(raw), "receiptSha256": self.captured[0]["receiptSha256"]}
+        @collection_admission_scope
+        def collect():
+            provider = sdk_validation_provider(self.carrier, self.captured,
+                repository=self.root, policy_revision="a" * 40, tooling=self.tooling)
+            first = provider(entry)
+            source.write_bytes(before + b"unconsumed checkout edit\n")
+            self.assertIs(first, provider(entry))
+        try:
+            with patch.object(evidence, "regular_file_inventory", side_effect=guarded), \
+                    patch("ci.products.sdk_validation.verify_sdk_validation_projection", side_effect=self.proof) as gate:
+                collect()
+                self.assertEqual(1, gate.call_count)
+        finally:
+            source.write_bytes(before)
+
+    def test_non_shared_subject_keeps_legacy_checkout_guards(self):
+        from ci.products import sdk_validation_inputs as evidence
+        record = evidence.decode_sdk_validation_records(self.carrier, self.captured)[self.captured[0]["receiptSha256"]]
+        source = self.root / "ci/verifier.py"
+        before = source.read_bytes()
+        def subject(value):
+            return evidence._admission_subject(self.carrier, value, self.root, "a" * 40, self.tooling)
+        try:
+            initial = subject(record)
+            source.write_bytes(before + b"legacy checkout edit\n")
+            self.assertNotEqual(initial, subject(record))
+        finally:
+            source.write_bytes(before)
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            (repository / "ci").mkdir()
+            (repository / "ci/verifier.py").write_bytes(before)
+            cpp = repository / "codex-agent-bindings/cpp/tools/verify_imported_package.py"
+            cpp.parent.mkdir(parents=True)
+            cpp.write_bytes(b"legacy CPP verifier\n")
+            cpp_record = {**record, "component": "cpp"}
+            initial = evidence._admission_subject(self.carrier, cpp_record, repository, "a" * 40, self.tooling)
+            cpp.write_bytes(b"changed CPP verifier\n")
+            self.assertNotEqual(initial, evidence._admission_subject(
+                self.carrier, cpp_record, repository, "a" * 40, self.tooling))
+
+    def test_fixed_worker_ignores_checkout_module_and_still_checks_private_code(self):
+        from zipfile import ZipFile
+        from ci.products import sdk_validation as verifier
+        script = b'''import json,sys
+print('{"protocol":1}',flush=True)
+for line in sys.stdin:
+    value=json.loads(line)
+    print(json.dumps(dict(id=value['id'],result='failure',error='signed-resource fixture rejection',metrics=dict(commonChecks=0,commonReuses=0,elapsedSeconds='0.0')),sort_keys=True,separators=(',',':')),flush=True)
+'''
+        with tempfile.TemporaryDirectory() as temporary, verifier._byte_inventory_scope():
+            root = Path(temporary).resolve()
+            repository = root / "checkout"
+            poison = repository / "ci/products/sdk_validation.py"
+            poison.parent.mkdir(parents=True)
+            poison.write_bytes(b"raise AssertionError('checkout code must not execute')\n")
+            jar, java = root / "fixture.jar", root / "java"
+            java.write_bytes(b"fixture Java identity; never executed\n")
+            with ZipFile(jar, "w") as archive:
+                archive.writestr("python/ci/products/sdk_validation.py", script)
+            worker = verifier._SharedVerifierProcess(root, jar, repository, java)
+            try:
+                with self.assertRaisesRegex(ValueError, "signed-resource fixture rejection"):
+                    worker.verify({}, {})
+                resource = worker.code / "ci/products/sdk_validation.py"
+                resource.write_bytes(script + b"# changed private resource\n")
+                with self.assertRaisesRegex(ValueError, "code or Java changed"):
+                    worker.verify({}, {})
+            finally:
+                with self.assertRaisesRegex(ValueError, "code or Java changed"):
+                    worker.close()
 
     def test_captured_provider_cannot_escape_collection_lifetime(self):
         @collection_admission_scope

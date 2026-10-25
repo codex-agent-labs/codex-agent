@@ -69,6 +69,18 @@ class FacadeMetadataAdmissionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             admission.fresh_metadata_arguments(fresh)
 
+    def test_only_fresh_policy_accepts_official_locator_inputs(self):
+        policy = deepcopy(self.policy)
+        for index, record in enumerate(policy["validations"].values()):
+            record.pop("captureRoot")
+            record.update(artifactId=index + 1, artifactSha256="sha256:" + "a" * 64)
+        with self.assertRaisesRegex(ValueError, "eleven retained"):
+            admission._arguments(policy)
+        policy.pop("originalContext")
+        result = admission.fresh_metadata_arguments(policy)
+        self.assertEqual(11, len(result["validations"]))
+        self.assertTrue(all("captureRoot" not in r for r in result["validations"].values()))
+
     @contextmanager
     def replay(self, **arguments):
         self.assertEqual(self.root, arguments["repository_root"])

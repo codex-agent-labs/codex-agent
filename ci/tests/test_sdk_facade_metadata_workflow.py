@@ -13,7 +13,7 @@ from ci import sdk_facade_metadata_workflow as workflow
 from ci.tests import test_sdk_facade_metadata_inputs as fixtures
 from ci.tests.product_chain_support import write_receipt
 from ci.tests.test_sdk_facade_workflow import assert_metadata_cli_context
-from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree
+from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree, sha256_bytes
 from products.plan import _upstream_record
 from products.receipt import write_output_manifest
 from products.restore import PHASE_PLAN_KEYS, verify_phase_shard
@@ -82,7 +82,7 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         return deepcopy(self.ready)
 
     def produce(self, command, **kwargs):
-        self.assertEqual(11, len(self.f.active))
+        self.assertEqual(getattr(self, "expected_active_readers", 11), len(self.f.active))
         self.assertEqual(self.root, kwargs["cwd"])
         self.assertIn("--offline", command)
         self.assertEqual(1, command.count("ciProductPhase"))
@@ -103,7 +103,7 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
             tooling_evidence=self.tooling, tooling_public_key=self.key, java_executable=self.java,
             policy_revision="e" * 40, required_trust_domain="development")
 
-    def test_fixed_producer_retains_all_originals_and_finalizes_after_contexts_close(self):
+    def test_fixed_producer_retains_exact_original_references_and_finalizes_after_contexts_close(self):
         result = workflow.execute(**self.arguments())
         self.assertEqual("f" * 40, self.election.call_args.kwargs["sdk_original_workflow_sha"])
         self.assertEqual("f" * 40, self.materialize.call_args.kwargs["sdk_original_workflow_sha"])
@@ -115,16 +115,82 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
         self.assertFalse(request.exists())  # The caller preserves the path, not a mutable private input.
         self.assertEqual({"inputs", "selection", "worker", "originals", "shard"},
                          {path.name for path in self.destination.iterdir()})
-        for target in SDK_FACADE_TARGETS:
+        for index, target in enumerate(SDK_FACADE_TARGETS):
             original = self.destination / "originals/validations" / target
             self.assertEqual(self.f.f.receipts[target].read_bytes(), (original / "phase-receipt.json").read_bytes())
-            self.assertEqual(b"opaque original ZIP; official gate mocked", (original / "capture/transport.zip").read_bytes())
+            self.assertEqual({"stage", "phase-receipt.json", "original-reference.json"},
+                             {p.name for p in original.iterdir()})
+            reference = load_canonical_json_bytes((original / "original-reference.json").read_bytes())
+            self.assertEqual(sha256_bytes(self.f.f.receipts[target].read_bytes()), reference["receiptSha256"])
+            self.assertEqual({"id": index + 1, "bytes": len(b"opaque original ZIP; official gate mocked"),
+                "sha256": sha256_bytes(b"opaque original ZIP; official gate mocked")}, reference["artifact"])
+            self.assertFalse((original / "capture").exists())
         self.finalize.assert_called_once()
         self.assertFalse(self.f.active)
         self.assertEqual(b"", (result["diagnostics"] / "gradle.log").read_bytes())
         for call in (self.election.call_args, self.materialize.call_args):
             for name in ("sdk_facade_metadata_admission", "sdk_android_metadata_admission"):
                 self.assertNotIn(name, call.kwargs)
+
+    def test_qualified_holder_through_worker_never_acquires_or_replays_old_archives(self):
+        from ci import sdk_facade_original_inputs as holder
+        from ci.products.sdk_facade_metadata_admission import fresh_metadata_arguments
+        self.expected_active_readers = 0
+        with self.f.qualified(self.producer) as q:
+            q.elected.prior_ready_plans = {workflow._INSTANCE: self.ready}
+            q.elected.producer = self.producer
+            q.elected.expected_fixed = {"versions": {"sdk": "0.8.7"}}
+            self.election.return_value = q.elected
+            args = self.arguments()
+            policy = {"plan": str(args["plan"]), "toolingEvidence": str(self.tooling),
+                "toolingPublicKey": str(self.key), "javaExecutable": str(self.java),
+                "toolingKeyring": None, "toolingKeysDirectory": None, "toolingTrustDomain": "development",
+                "contractDigest": args["contract_digest"], "componentDigests": args["component_digests"],
+                "validations": {t: {k: str(v) for k, v in record.items()
+                    if k not in {"artifactId", "artifactSha256"}} for t, record in self.f.records.items()}}
+            with patch.object(holder, "_request_paths", side_effect=lambda path: {path}), \
+                    patch.object(holder.product_reuse, "_verified_product_state", return_value=q.elected), \
+                    patch.object(holder.product_reuse, "materialize_product_predecessors", side_effect=self.materialize_inputs), \
+                    patch.object(holder, "locate_original_facade_upload", side_effect=AssertionError("old lookup")), \
+                    patch.object(holder, "capture_sdk_facade_validation_upload", side_effect=AssertionError("old archive")):
+                with holder.held_captured_facade_metadata_policy(args["plan"], self.discovery, self.discovery,
+                        expected_build_key=self.ready["buildKey"], replay_policy=policy, completed_frozen=q.cap,
+                        repository_root=self.root, environ={}, token=args["token"],
+                        trusted_workflow_sha=args["trusted_workflow_sha"]) as descriptor:
+                    value = load_canonical_json_bytes(descriptor.read_bytes())
+                    self.assertEqual([], value["records"])
+                    self.assertEqual([], list(Path(value["evidenceRoot"]).iterdir()))
+                    parsed = fresh_metadata_arguments(value["policy"])
+                    result = workflow.execute(**{**args, **parsed, "completed_frozen": q.cap})
+            self.assertEqual(canonical_json_bytes(self.expected), result["content"].read_bytes())
+            self.f.reader.assert_not_called()
+            self.f.retained_reader.assert_not_called()
+            self.assertEqual(23, q.observed.call_count)  # Holder11 + worker package/all11.
+            for target in SDK_FACADE_TARGETS:
+                self.assertFalse((self.destination / "originals/validations" / target / "capture").exists())
+            self.process.assert_called_once()
+            self.finalize.assert_called_once()
+
+    def test_native_archive_mutation_in_qualified_worker_prevents_finalization(self):
+        self.expected_active_readers = 0
+        with self.f.qualified(self.producer) as q:
+            q.elected.prior_ready_plans = {workflow._INSTANCE: self.ready}
+            q.elected.producer = self.producer
+            q.elected.expected_fixed = {"versions": {"sdk": "0.8.7"}}
+            self.election.return_value = q.elected
+            def produce(*args, **kwargs):
+                result = self.produce(*args, **kwargs)
+                stamp = self.f.archive.stat()
+                raw = self.f.archive.read_bytes()
+                self.f.archive.write_bytes(b"X" + raw[1:])
+                os.utime(self.f.archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                return result
+            self.process.side_effect = produce
+            with self.assertRaises(ValueError):
+                workflow.execute(**self.arguments(), completed_frozen=q.cap)
+            self.process.assert_called_once()
+            self.finalize.assert_not_called()
+            self.assertFalse((self.destination / "shard").exists())
 
     def test_metadata_admission_objects_forward_to_both_state_replays_only(self):
         admissions = {"sdk_facade_metadata_admission": object(), "sdk_android_metadata_admission": object()}
@@ -204,15 +270,28 @@ class FacadeMetadataWorkflowTest(unittest.TestCase):
                 workflow.execute(**self.arguments())
         self.finalize.assert_not_called()
 
-    def test_retention_copy_must_equal_source_and_late_exit_diagnostics_cannot_finalize(self):
+    def test_retained_validation_stage_must_equal_source_before_finalization(self):
         snapshot = workflow.snapshot_regular_tree
         def changed(source, destination, **kwargs):
             result = snapshot(source, destination, **kwargs)
-            if destination.name == "capture":
-                (destination / "transport.zip").write_bytes(b"different retained copy")
+            if destination.name == "stage" and destination.parent.parent.name == "validations":
+                (destination / "unexpected-file").write_bytes(b"different retained copy")
             return result
         with patch.object(workflow, "snapshot_regular_tree", side_effect=changed):
             with self.assertRaisesRegex(ValueError, "changed during retention"):
+                workflow.execute(**self.arguments())
+        self.process.assert_not_called()
+        self.finalize.assert_not_called()
+
+    def test_reference_write_mismatch_cannot_finalize(self):
+        write = workflow.write_canonical_json
+        def changed(path, value):
+            result = write(path, value)
+            if path.name == "original-reference.json":
+                path.write_bytes(b"{}\n")
+            return result
+        with patch.object(workflow, "write_canonical_json", side_effect=changed):
+            with self.assertRaisesRegex(ValueError, "reference changed during retention"):
                 workflow.execute(**self.arguments())
         self.process.assert_not_called()
         self.finalize.assert_not_called()

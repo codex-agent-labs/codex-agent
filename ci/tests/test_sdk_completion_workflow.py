@@ -476,7 +476,8 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 "STATE_ROOT": "/captured state", "SDK_VALIDATION_TOOLING": "/tooling policy.json",
                 "SDK_APPLE_VALIDATION_POLICY": "/apple policy.json", "TRUSTED_WORKFLOW_SHA": "c" * 40,
                 "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_TOKEN": "not-an-argument",
-                "GITHUB_OUTPUT": str(root / "github-output"), "ARGV_CAPTURE": str(arguments)}
+                "GITHUB_OUTPUT": str(root / "github-output"), "ARGV_CAPTURE": str(arguments),
+                "CODEX_AGENT_COMPLETED_REUSE_POLICY": "/completed policy.json"}
             process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
                                      capture_output=True, text=True)
             self.assertEqual(0, process.returncode, process.stderr)
@@ -486,7 +487,8 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 "--repository-root", env["GITHUB_WORKSPACE"], "--destination", "build/ci/sdk-catalog",
                 "--github-output", env["GITHUB_OUTPUT"],
                 "--sdk-validation-tooling", env["SDK_VALIDATION_TOOLING"],
-                "--sdk-apple-validation-policy", env["SDK_APPLE_VALIDATION_POLICY"]],
+                "--sdk-apple-validation-policy", env["SDK_APPLE_VALIDATION_POLICY"],
+                "--completed-frozen-policy", env["CODEX_AGENT_COMPLETED_REUSE_POLICY"]],
                 json.loads(arguments.read_text()))
             identity = textwrap.dedent(job.split("      - id: identity\n", 1)[1]
                 .split("        run: |\n", 1)[1].split("\n      - id: upload", 1)[0])

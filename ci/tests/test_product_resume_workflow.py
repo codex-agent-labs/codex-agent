@@ -252,7 +252,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         skipped = ('sdk-javascript', 'sdk-javascript-metadata-plan', 'sdk-javascript-metadata-result',
                    'sdk-csharp-binary-plan', 'sdk-csharp-binary-result', 'sdk-native-plan',
                    'sdk-native-packages', 'sdk-ios-package-plan', 'sdk-ios-packages',
-                   'sdk-native-validation-plan', 'sdk-native-validation-result', 'sdk-native-metadata-plan')
+                   'sdk-native-validation-result', 'sdk-native-metadata-plan')
         for name in skipped:
             job = workflow_job(self.workflow, name)
             header = job.split('    runs-on:', 1)[0]

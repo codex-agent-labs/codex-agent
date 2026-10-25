@@ -4027,6 +4027,8 @@ jobs:
     needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package, sdk-collect-5]
     runs-on: ubuntu-24.04
     outputs:
+      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
+      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
       artifact_id: ${{ steps.result.outputs.artifact_id }}
       routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
@@ -4048,9 +4050,26 @@ jobs:
           from pathlib import Path
           from ci.sdk_native_continuation import select_native_state
           from ci.reuse import github_output
-          result = select_native_state(json.loads(os.environ['RESULTS']), stage='ios-package')
+          needs = json.loads(os.environ['RESULTS'])
+          result = select_native_state(needs, stage='ios-package')
+          if result['artifact_id'] and needs['sdk-plan']['result'] != 'success':
+              raise ValueError('Native validation election requires a successful SDK plan')
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
+      - id: capture
+        if: steps.result.outputs.artifact_id != ''
+        uses: ./.github/actions/capture-runtime-state/route
+        with:
+          family: native-validation
+          routing: ${{ steps.result.outputs.routing }}
+          plan-id: ${{ needs.plan.outputs.plan_id }}
+          artifact-id: ${{ steps.result.outputs.artifact_id }}
+          artifact-sha256: ${{ steps.result.outputs.artifact_digest }}
+          state-wave: ${{ steps.result.outputs.state_wave }}
+          sdk-state-wave: ${{ steps.result.outputs.sdk_state_wave }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          validation-commit: ${{ needs.plan.outputs.validation_commit }}
+          validation-tree: ${{ needs.plan.outputs.validation_tree }}
 
   sdk-javascript-metadata-plan:
     needs: [plan, sdk-plan, sdk-javascript]
@@ -4242,52 +4261,20 @@ jobs:
           github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY
 
-  sdk-native-validation-plan:
-    needs: [plan, sdk-plan, sdk-ios-packages]
-    if: >-
-      always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-ios-packages.result == 'success' &&
-      needs.sdk-ios-packages.outputs.artifact_id != '' &&
-      needs.sdk-plan.result == 'success'
-    runs-on: ubuntu-24.04
-    outputs:
-      sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
-      sdk_workers_required: ${{ steps.capture.outputs.sdk-workers-required }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-          ref: ${{ needs.plan.outputs.validation_commit }}
-      - id: capture
-        uses: ./.github/actions/capture-runtime-state/route
-        with:
-          family: native-validation
-          routing: ${{ needs.sdk-ios-packages.outputs.routing }}
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
-          artifact-sha256: ${{ needs.sdk-ios-packages.outputs.artifact_digest }}
-          state-wave: ${{ needs.sdk-ios-packages.outputs.state_wave }}
-          sdk-state-wave: ${{ needs.sdk-ios-packages.outputs.sdk_state_wave }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-          validation-commit: ${{ needs.plan.outputs.validation_commit }}
-          validation-tree: ${{ needs.plan.outputs.validation_tree }}
-
   sdk-native-validation:
     name: sdk-${{ matrix.component }}-validation-${{ matrix.target }}
     environment: product-read
-    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-prepare, sdk-inputs]
+    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-prepare, sdk-inputs]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.sdk-native-validation-plan.result == 'success' &&
-      needs.sdk-native-validation-plan.outputs.sdk_workers_required == 'true' &&
+      needs.sdk-ios-packages.result == 'success' &&
+      needs.sdk-ios-packages.outputs.sdk_workers_required == 'true' &&
       needs.sdk-native-prepare.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.sdk-native-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
+      matrix: ${{ fromJSON(needs.sdk-ios-packages.outputs.sdk_matrix || '{"include":[]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     env:
@@ -4426,13 +4413,12 @@ jobs:
   sdk-collect-7:
     name: sdk-collect-7
     environment: product-read
-    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation]
+    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation]
     if: >-
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-packages.result == 'success' &&
-      needs.sdk-native-validation-plan.result == 'success' &&
-      needs.sdk-native-validation-plan.outputs.sdk_workers_required == 'true'
+      needs.sdk-ios-packages.outputs.sdk_workers_required == 'true'
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4497,7 +4483,7 @@ jobs:
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
-    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation-plan, sdk-native-validation, sdk-collect-7]
+    needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation, sdk-collect-7]
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -6178,6 +6164,9 @@ jobs:
           fi
           if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
             tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+          fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
           fi
           python3 -B -m ci.sdk_campaign_catalog_caller --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \

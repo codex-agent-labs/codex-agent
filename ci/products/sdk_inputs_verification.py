@@ -8,7 +8,7 @@ import tempfile
 from .inventory import (
     load_canonical_json_bytes, read_regular_file_bytes,
     require_exact_keys, require_integer, require_regular_directory, require_relative_path,
-    require_sha256, snapshot_regular_tree, verify_regular_file_inventory,
+    require_sha256, require_sorted_unique_records, snapshot_regular_tree, validate_file_record,
 )
 from .receipt import validate_phase_receipt
 from .restore import memoized_file_inventory as regular_file_inventory
@@ -74,7 +74,13 @@ def verified_sdk_inputs(root: Path, *, keyring: Path, keys_directory: Path,
             {"schemaVersion", "kind", "files"}, "SDK input inventory")
         if require_integer(inventory["schemaVersion"], "SDK input inventory schemaVersion", 1) != 1 or inventory["kind"] != "sdk-inputs":
             raise ValueError("Unsupported SDK input inventory")
-        verify_regular_file_inventory(captured, inventory["files"], with_kind=False, excluded_paths=(INVENTORY_NAME,))
+        files = require_sorted_unique_records(inventory["files"], "file inventory")
+        for index, record in enumerate(files):
+            validate_file_record(record, f"file inventory[{index}]", with_kind=False)
+        captured_inventory = regular_file_inventory(captured)
+        if (captured_inventory != before or
+                [row for row in captured_inventory if row["relativePath"] != INVENTORY_NAME] != files):
+            raise ValueError("Declared SDK input inventory differs from the complete captured tree")
 
         def bind(value):
             if isinstance(value, Path):

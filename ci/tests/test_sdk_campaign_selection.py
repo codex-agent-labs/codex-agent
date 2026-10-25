@@ -307,6 +307,147 @@ class SdkCampaignSelectionTest(unittest.TestCase):
                     ])
                 replay.assert_called_once()
 
+
+    def test_completed_catalog_uses_native_receipts_without_deferred_bodies(self):
+        import reuse_qualification as qualification
+        from products.inventory import load_canonical_json_bytes
+        from products.registry import PhaseInstanceId
+        instances = sorted(SDK_CAMPAIGN_INSTANCES)
+        deferred = set(instances[:2])
+        rows = {PhaseInstanceId(instance.product, instance.component, instance.phase, instance.target): {
+            **{name: self.envelopes[instance]["receipt"][name]
+               for name in ("product", "component", "phase", "target", "buildKey")},
+            "state": "retained", "receiptSha256": self.envelopes[instance]["receiptSha256"],
+            "objectSha256": self.envelopes[instance]["objectSha256"]}
+            for instance in instances}
+        cap = qualification.CompletedFrozenReuse(
+            {"expectedResult": {"phases": [rows[PhaseInstanceId(i.product, i.component, i.phase, i.target)] for i in sorted(deferred)]}},
+            [self.envelopes[i]["receipt"] for i in sorted(deferred)],
+            qualification._COMPLETED_FROZEN, revision="a" * 40)
+        archives = {PhaseInstanceId(i.product, i.component, i.phase, i.target): p for i,p in self.archives.items() if i not in deferred}
+        producer = {**next(iter(self.envelopes.values()))["receipt"]["producer"],
+                    "commit": "c" * 40, "tree": "d" * 40, "runId": 9}
+        state = SimpleNamespace(prior_by_instance=rows, sources=archives,
+            expected_fixed={"versions": {"sdk": "0.8.0"}}, producer=producer, completed_frozen=cap)
+        # Only the external native authentication constructor is a fixture seam.
+        # Real capability envelope checks, object checks, signing and index reads follow.
+        with tempfile.TemporaryDirectory(prefix="sdk-qualified-catalog-") as temporary:
+            root = Path(temporary).resolve()
+            writer = catalog_caller.stage_sdk_same_pr_catalog
+            writer_module = __import__(writer.__module__, fromlist=["_snapshot_archive"])
+            with patch.object(writer_module, "_snapshot_archive",
+                    wraps=writer_module._snapshot_archive) as snapshot:
+                result = stage_completed_sdk_catalog(state, root / "catalog")
+            self.assertEqual(62, result["phaseCount"])
+            self.assertEqual(60, snapshot.call_count)
+            self.assertEqual(sum(path.stat().st_size for path in archives.values()), result["objectBytes"])
+            index, _ = verify_signed_product_index(SignedProductIndex(
+                root / "catalog/product-index.json", root / "catalog/product-index.sig"),
+                root / "catalog/public-key.pub")
+            self.assertEqual(62, len(index["entries"]))
+            self.assertEqual(producer, index["producer"])
+            for instance in instances:
+                original = self.envelopes[instance]
+                path = root / "catalog" / object_relative_path(
+                    original["receipt"]["buildKey"], original["receiptSha256"])
+                self.assertEqual(instance not in deferred, path.exists())
+                if instance not in deferred:
+                    self.assertEqual(self.archives[instance].read_bytes(), path.read_bytes())
+                entry, = [e for e in index["entries"] if e["receiptSha256"] == original["receiptSha256"]]
+                self.assertEqual(sha256_bytes(original["receiptBytes"]), entry["receiptSha256"])
+                if instance in deferred:
+                    self.assertEqual(original["receipt"]["producer"],
+                        cap.envelope(rows[PhaseInstanceId(instance.product, instance.component, instance.phase, instance.target)])["receipt"]["producer"])
+            # Existing generic catalog layout supports index-only entries. Their
+            # absent objects remain absent to ordinary lookup, never synthesized.
+            catalog = catalog_caller.products._read_catalog_directory("same-pr", root / "catalog",
+                root, None, repository=producer["repository"],
+                pull_request=producer["pullRequest"], provenance_root=root / "provenance",
+                workflow_run={"run": {"id": producer["runId"], "run_attempt": producer["runAttempt"],
+                    "path": producer["workflowPath"]},
+                    "testedCommit": {"sha": producer["commit"], "tree": {"sha": producer["tree"]}}})
+            self.assertEqual(60, len(catalog.objects))
+            self.assertEqual({self.envelopes[i]["receipt"]["buildKey"] for i in instances if i not in deferred},
+                             set(catalog.objects))
+            before = dict(rows)
+            for label, change in (
+                ("no-authority", {"completed_frozen": None}),
+                ("untyped-authority", {"completed_frozen": SimpleNamespace(envelope=cap.envelope)}),
+                ("missing-new-object", {"sources": dict(list(archives.items())[1:])}),
+            ):
+                with self.subTest(label=label), self.assertRaises((ValueError, FileNotFoundError)):
+                    stage_completed_sdk_catalog(SimpleNamespace(**{**vars(state), **change}), root / label)
+                self.assertFalse((root / label).exists())
+            bad = dict(rows)
+            selected = PhaseInstanceId(*(getattr(min(deferred), name) for name in ("product", "component", "phase", "target")))
+            bad[selected] = {**bad[selected], "objectSha256": "sha256:" + "f" * 64}
+            with self.assertRaisesRegex(ValueError, "proved identity"):
+                stage_completed_sdk_catalog(SimpleNamespace(**{**vars(state), "prior_by_instance": bad}),
+                                            root / "wrong-qualified")
+            self.assertFalse((root / "wrong-qualified").exists())
+            self.assertEqual(before, rows)
+
+    def test_catalog_cli_holds_explicit_completed_policy_through_output(self):
+        import reuse_qualification as qualification
+        from products.inventory import canonical_json_bytes
+        instance = min(SDK_CAMPAIGN_INSTANCES)
+        original = self.envelopes[instance]
+        row = {**{name: original["receipt"][name]
+                  for name in ("product", "component", "phase", "target", "buildKey")},
+               "receiptSha256": original["receiptSha256"], "objectSha256": original["objectSha256"]}
+        cap = qualification.CompletedFrozenReuse({"expectedResult": {"phases": [row]}},
+            [original["receipt"]], qualification._COMPLETED_FROZEN, revision="d" * 40)
+        with tempfile.TemporaryDirectory(prefix="sdk-catalog-cli-policy-") as temporary:
+            root = Path(temporary).resolve()
+            plan, policy, output = root / "plan.json", root / "policy.json", root / "github-output"
+            plan.write_bytes(b"authenticated current plan fixture")
+            policy_value = {"schemaVersion": 1, "kind": "completed-frozen-reuse",
+                "consumerCommit": "c" * 40, "verifierPolicySha256": "sha256:" + "a" * 64,
+                "artifactId": 71, "artifactSha256": "sha256:" + "e" * 64,
+                "runId": 72, "runAttempt": 1, "signerCommit": "b" * 40, "sourceCommit": "a" * 40}
+            policy.write_bytes(canonical_json_bytes(policy_value))
+            args = ["--plan", str(plan), "--discovery-root", str(root / "discovery"),
+                    "--state-root", str(root / "state"), "--repository-root", str(root),
+                    "--destination", str(root / "catalog"), "--github-output", str(output),
+                    "--sdk-original-workflow-sha", "a" * 40, "--completed-frozen-policy", str(policy)]
+            consumer = {"kind": "ci", "producer": {"repository": qualification.REPOSITORY,
+                        "pullRequest": 31, "event": "pull_request"}}
+            state = SimpleNamespace(completed_frozen=cap)
+            def replay(*unused, **options):
+                self.assertIs(cap, options["completed_frozen"])
+                return state
+            result = {"phaseCount": 62, "objectBytes": 1, "indexSha256": "sha256:" + "a" * 64,
+                      "publicKeySha256": "sha256:" + "b" * 64}
+            with patch.object(catalog_caller.products, "_validate_plan",
+                    return_value={"validationCommit": "d" * 40}), \
+                 patch.object(catalog_caller.products, "_consumer", return_value=consumer), \
+                 patch.object(qualification, "fetch_completed_frozen", return_value=(cap, {})) as fetch, \
+                 patch.object(catalog_caller.products, "_verified_product_state", side_effect=replay), \
+                 patch.object(catalog_caller, "stage_completed_sdk_catalog", return_value=result), \
+                 redirect_stdout(StringIO()):
+                self.assertEqual(0, catalog_caller_main(args))
+                fetch.assert_called_once()
+                self.assertEqual("c" * 40, fetch.call_args.kwargs["consumer_commit"])
+                self.assertEqual("d" * 40, fetch.call_args.kwargs["revision"])
+                self.assertTrue(output.exists())
+                output.unlink()
+                def mutate_policy(*unused, **options):
+                    policy.write_bytes(b"changed caller policy")
+                    return result
+                with patch.object(catalog_caller, "stage_completed_sdk_catalog", side_effect=mutate_policy), \
+                     redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                    catalog_caller_main(args)
+                self.assertFalse(output.exists())
+            policy.write_bytes(canonical_json_bytes(policy_value))
+            with patch.object(qualification, "fetch_completed_frozen", side_effect=ValueError("bad native proof")), \
+                 patch.object(catalog_caller.products, "_validate_plan",
+                     return_value={"validationCommit": "d" * 40}), \
+                 patch.object(catalog_caller.products, "_verified_product_state") as replay, \
+                 redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                catalog_caller_main(args)
+            replay.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_partial_or_cross_paired_selection_fails(self):
         first, second = sorted(SDK_CAMPAIGN_INSTANCES)[:2]
         with self.assertRaisesRegex(ValueError, "every exact SDK phase"):

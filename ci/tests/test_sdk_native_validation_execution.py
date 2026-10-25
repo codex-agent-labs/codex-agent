@@ -247,6 +247,51 @@ class SdkNativeValidationExecutionTest(unittest.TestCase):
         self.assertFalse(self.capture_path.exists())
         self.assertEqual(self.package_before, regular_file_inventory(self.package_stage.parent))
 
+    def test_prepared_sdk_reference_keeps_inventory_roots_narrow(self):
+        from products.sdk_validation import decode_sdk_validation_records
+        from products.sdk_validation_inputs import REQUEST_NAME as EVIDENCE_REQUEST
+        original_gate = self.validation_gate
+
+        def gate(records, source, destination, **kwargs):
+            decoded, = decode_sdk_validation_records(source, records).values()
+            self.assertEqual(self.capture_path.parent, source)
+            self.assertFalse((source / EVIDENCE_REQUEST).exists())
+            self.assertEqual(self.capture_path / "original/staged-sdks", decoded["stagedSdks"])
+            self.assertEqual("prepared-upload/original/staged-sdks", records[0]["stagedSdks"])
+            self.assertFalse((source / "evidence-source/stagedSdks").exists())
+            self.assertEqual(b"opaque original SDK", (decoded["stagedSdks"] / "sdk").read_bytes())
+            for name in ("packageStage", "runtimeStages", "validationStage", "runtimeAuthorization",
+                         "packageReceipt", "validationReceipt", "compatibilityRequest"):
+                self.assertTrue(decoded[name].is_relative_to(source / "evidence-source"))
+            return original_gate(records, source, destination, **kwargs)
+
+        for failure in (None, "validation-gate", "late-capture"):
+            with self.subTest(failure=failure):
+                self.failure = failure
+                self.destination = self.root / ("narrow-" + str(failure))
+                with patch.object(self, "validation_gate", side_effect=gate), \
+                        patch.object(workflow, "snapshot_regular_tree", wraps=snapshot_regular_tree) as snapshots, \
+                        patch.object(workflow, "_inventory", wraps=workflow._inventory) as inventories:
+                    if failure is None:
+                        result = self.invoke()
+                        self.assertEqual(self.gate_receipt, (self.destination / "shard/phase-receipt.json").read_bytes())
+                        self.assertEqual(b"opaque original SDK", (self.destination / "prepared-upload/original/staged-sdks/sdk").read_bytes())
+                        self.assertEqual(self.producer, result["receipt"]["producer"])
+                    else:
+                        message = "full matcher rejected" if failure == "validation-gate" else "original inputs or preparation capture changed"
+                        with self.assertRaisesRegex(ValueError, message):
+                            self.invoke()
+                        self.assertFalse((self.destination / "shard").exists())
+                        self.assertFalse((self.destination / "prepared-upload").exists())
+                    captured = self.capture_path
+                    self.assertFalse(any(Path(call.args[0]) == captured / "original/staged-sdks"
+                                         for call in snapshots.call_args_list))
+                    roots = [Path(call.args[0]) for call in inventories.call_args_list]
+                    self.assertNotIn(captured.parent, roots)
+                    self.assertIn(captured, roots)
+                    self.assertIn(captured.parent / "evidence-source", roots)
+                    self.gate_mock.assert_called_once()
+
     def test_current_runtime_reuses_selection_replay_and_rejects_changed_controls(self):
         # Real selection/callback composition; source/semantic gates remain the
         # explicit fixture seams. This is not hosted or Windows acceptance.

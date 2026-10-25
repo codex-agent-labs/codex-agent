@@ -3,9 +3,10 @@
 No fixture claims genuine observed workers, signatures, or compiler execution.
 """
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,12 +14,111 @@ from unittest.mock import patch
 from ci import sdk_facade_metadata_inputs as inputs
 from ci.tests import test_product_sdk_platform_metadata as metadata_fixture
 from ci.tests import test_sdk_facade_inputs as request_fixture
-from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree
+from products.inventory import canonical_json_bytes, load_canonical_json_bytes, snapshot_regular_tree, sha256_file, sha256_bytes
 from products.plan import _upstream_record
-from products.registry import SDK_FACADE_TARGETS
+from products.registry import PhaseInstanceId, SDK_FACADE_TARGETS
 
 
 class FacadeMetadataInputsTest(unittest.TestCase):
+    @contextmanager
+    def qualified(self, producer=None):
+        """Real receipt/envelope/output checks; signature, source and APIs are seams."""
+        from reuse_qualification import CompletedFrozenReuse
+        cap = object.__new__(CompletedFrozenReuse)
+        rows, receipts, artifacts = {}, [], {}
+        for target in ("package", *SDK_FACADE_TARGETS):
+            raw = self.f.receipts[target].read_bytes()
+            receipt = load_canonical_json_bytes(raw)
+            identity = PhaseInstanceId(*(receipt[n] for n in ("product", "component", "phase", "target")))
+            row = {n: receipt[n] for n in ("product", "component", "phase", "target", "buildKey")}
+            row.update(receiptSha256=sha256_bytes(raw), objectSha256="sha256:" + "9" * 64, state="retained")
+            rows[identity] = row
+            receipts.append((tuple(getattr(identity, n) for n in ("product", "component", "phase", "target")), raw))
+            artifacts[identity] = {"id": 100, "digest": "sha256:" + "8" * 64, "size_in_bytes": 1234}
+            if target != "package":
+                record = self.records[target]
+                artifacts[identity].update(id=record["artifactId"], digest=record["artifactSha256"])
+                parent = self.f.root / "qualified" / target
+                snapshot_regular_tree(self.f.stages[target], parent / "stage")
+                path = parent / "phase-receipt.json"
+                path.write_bytes(raw)
+                record["validationReceipt"] = path
+        cap._receipts = tuple(receipts)
+        consumer = {"kind": "ci", "producer": producer or {"fixture": "current consumer"}}
+        elected = SimpleNamespace(completed_frozen=cap, consumer=consumer, prior_by_instance=deepcopy(rows),
+                                  plan={"validationCommit": "e" * 40})
+        def observe(row, *, producer, token):
+            self.assertEqual(consumer["producer"], producer)
+            self.assertEqual("explicit-caller-token", token)
+            identity = PhaseInstanceId(*(row[n] for n in ("product", "component", "phase", "target")))
+            return {}, deepcopy(artifacts[identity]), []
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(CompletedFrozenReuse, "_values", side_effect=lambda: ({}, rows)))
+            check = stack.enter_context(patch.object(CompletedFrozenReuse, "check_consumer",
+                side_effect=lambda value: self.assertEqual(consumer, value)))
+            observed = stack.enter_context(patch.object(CompletedFrozenReuse, "observe_extended_sdk", side_effect=observe))
+            yield SimpleNamespace(cap=cap, elected=elected, rows=rows, artifacts=artifacts, observed=observed, check=check)
+
+    def test_qualified_inputs_use_small_stages_with_no_old_archive_reader(self):
+        with self.qualified() as q, self.call(completed_frozen=q.cap, elected=q.elected) as result:
+            self.reader.assert_not_called()
+            self.retained_reader.assert_not_called()
+            self.assertEqual(12, q.observed.call_count)
+            self.assertEqual(11, len(result["expectedContent"]["validations"]))
+            self.assertTrue(all("capture" not in v for v in result["validations"].values()))
+            self.assertEqual(self.f.receipts["package"].read_bytes(), result["package"]["receiptBytes"])
+
+    def test_partial_qualification_uses_all_full_readers(self):
+        with self.qualified() as q:
+            q.rows.pop(PhaseInstanceId("sdk", "sdk-core", "validation", "jvm"))
+            with self.call(completed_frozen=q.cap, elected=q.elected):
+                self.assertEqual(11, self.reader.call_count)
+                q.observed.assert_not_called()
+
+    def test_qualified_scope_identity_locator_and_stage_conflicts_fail_before_join(self):
+        with self.qualified() as q:
+            identity = PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
+            for change in ("plain-authority", "foreign-election", "key", "locator", "revision", "stage"):
+                with self.subTest(change=change):
+                    args = {"completed_frozen": q.cap, "elected": q.elected}
+                    row, record = q.elected.prior_by_instance[identity], self.records["jvm"]
+                    old_row, old_record = deepcopy(row), dict(record)
+                    path = Path(record["validationReceipt"]).parent / "stage" / metadata_fixture.metadata._VALIDATION_PATH
+                    raw = path.read_bytes()
+                    try:
+                        if change == "plain-authority": args["completed_frozen"] = {}
+                        elif change == "foreign-election": args["elected"] = SimpleNamespace(completed_frozen=object())
+                        elif change == "key": row["buildKey"] = "sha256:" + "0" * 64
+                        elif change == "locator": record["artifactId"] += 1
+                        elif change == "revision": args["policy_revision"] = "0" * 40
+                        else: path.write_bytes(b"changed output")
+                        with self.assertRaises(ValueError), self.call(**args):
+                            self.fail("conflicting qualification yielded")
+                    finally:
+                        q.elected.prior_by_instance[identity] = old_row
+                        self.records["jvm"] = old_record
+                        path.write_bytes(raw)
+            self.reader.assert_not_called()
+            self.retained_reader.assert_not_called()
+
+    def test_qualified_source_private_stage_and_authority_stay_bound_until_exit(self):
+        with self.qualified() as q:
+            identity = PhaseInstanceId("sdk", "sdk-core", "validation", "jvm")
+            for change in ("source", "private", "authority", "archive"):
+                source = Path(self.records["jvm"]["validationReceipt"]).parent / "stage" / metadata_fixture.metadata._VALIDATION_PATH
+                source_raw, archive_raw, row = source.read_bytes(), self.archive.read_bytes(), q.rows[identity]
+                try:
+                    with self.subTest(change=change), self.assertRaises(ValueError):
+                        with self.call(completed_frozen=q.cap, elected=q.elected) as result:
+                            if change == "source": source.write_bytes(b"changed")
+                            elif change == "private": (result["validations"]["jvm"]["stage"] / "extra").write_bytes(b"changed")
+                            elif change == "authority": q.rows.pop(identity)
+                            else: self.archive.write_bytes(b"changed")
+                finally:
+                    source.write_bytes(source_raw)
+                    self.archive.write_bytes(archive_raw)
+                    q.rows[identity] = row
+
     def setUp(self):
         self.f = metadata_fixture.PlatformMetadataWriterTest(methodName="runTest")
         self.f.setUp()
@@ -86,7 +186,10 @@ class FacadeMetadataInputsTest(unittest.TestCase):
                 (capture / "original/gradle.log").write_bytes(b"")
             value = {"stage": stage, "receiptPath": receipt, "receiptBytes": raw,
                      "receipt": load_canonical_json_bytes(raw), "capture": capture,
-                     "original": capture / "original", "transport": {"fixture": target}}
+                     "original": capture / "original", "transport": {"artifact": {
+                         "id": SDK_FACADE_TARGETS.index(target) + 1,
+                         "size_in_bytes": (capture / "transport.zip").stat().st_size,
+                         "digest": sha256_file(capture / "transport.zip")}}}
             if self.wrong_receipt == target:
                 value["receipt"] = {**value["receipt"], "trustDomain": "release"}
             try:

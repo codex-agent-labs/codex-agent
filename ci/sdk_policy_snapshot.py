@@ -14,7 +14,7 @@ from ci.products.sdk_apple_validation_admission import apple_validation_policy_a
 from ci.products.sdk_facade_inputs import _request as facade_request, _sources as facade_sources
 from ci.products.sdk_facade_metadata_admission import (_arguments as core_arguments,
     fresh_metadata_arguments)
-from ci.products.sdk_validation_inputs import _request_inventory
+from ci.products.sdk_validation_inputs import _request_paths
 from ci.products import sdk_android_validation_phase
 from ci.products.signing_isolation import require_no_signing_secret
 
@@ -56,14 +56,15 @@ def snapshot_policy_closure(kind, path):
         paths.add(Path(descriptor["evidenceRoot"]))
         paths.update(value for value in arguments.values() if isinstance(value, Path))
         for original in arguments["validations"].values():
-            paths.update(Path(original[name]) for name in ("captureRoot", "facadeRequest", "validationReceipt"))
+            paths.update(Path(original[name]) for name in ("captureRoot", "facadeRequest", "validationReceipt")
+                         if name in original)
             if "nativeCompilerArchive" in original:
                 paths.add(Path(original["nativeCompilerArchive"]))
             request, _ = facade_request(Path(original["facadeRequest"]))
             _, trees, files = facade_sources(request)
             paths.update(trees.values())
             paths.update(files.values())
-            paths.update(_request_inventory(Path(request["compatibilityRequest"])))
+            paths.update(_request_paths(Path(request["compatibilityRequest"])))
     elif kind == "core-metadata-bootstrap":
         from ci.sdk_facade_original_inputs import _fresh_policy_sources
         bootstrap = _fresh_policy_sources(policy)
@@ -77,7 +78,7 @@ def snapshot_policy_closure(kind, path):
         trees, files = sdk_android_validation_phase._contract_sources(arguments["binary_contract_evidence"])
         paths.update(trees.values())
         paths.update(files.values())
-        paths.update(_request_inventory(arguments["compatibility_request"]))
+        paths.update(_request_paths(arguments["compatibility_request"]))
     else:
         raise ValueError("Unsupported SDK caller policy kind")
     digest = _snapshot(paths)

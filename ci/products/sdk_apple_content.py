@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 from .inventory import (
@@ -165,9 +166,11 @@ def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool =
     Native clones avoid rewriting large payloads while preserving independent files.
     Other hosts/filesystems retain the frozen descriptor-based byte-copy path.
     """
+    from runtime_reference_transport import count
     clone = _apple_clone_operation()
     if clone is None:
         snapshot_regular_tree(source, destination, allow_empty=allow_empty)
+        count("appleSnapshotPortableTrees")
         return
     source, destination = (Path(os.path.abspath(path)) for path in (source, destination))
     if source == destination or source in destination.parents or destination in source.parents:
@@ -203,6 +206,10 @@ def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool =
             os.close(parent)
     if fallback:
         snapshot_regular_tree(source, destination, allow_empty=allow_empty)
+        count("appleSnapshotFallbackTrees")
+    else:
+        # File counters may include abandoned partial clones; this counts only completed trees.
+        count("appleSnapshotNativeTrees")
 
 
 def _input_inventory(path: Path, *, allow_empty: bool):
@@ -262,8 +269,18 @@ def _verify_sdk_apple_with_tooling(
                       for name, path in expected_paths.items()}
     if not all(expected_bytes.values()):
         raise ValueError("Apple SDK caller expectations must be nonempty")
-    with tempfile.TemporaryDirectory(prefix="sdk-apple-verification-") as temporary:
+    from runtime_reference_transport import measured_volume
+    tracing = os.environ.get("CODEX_AGENT_THROUGHPUT_TRACE") == "1"
+    private_stat = None
+    started = time.perf_counter_ns()
+    with measured_volume("sdk-apple-verification", Path(tempfile.gettempdir())), \
+            tempfile.TemporaryDirectory(prefix="sdk-apple-verification-") as temporary:
         root = Path(temporary).resolve()
+        if tracing:
+            try:
+                private_stat = root.stat()
+            except OSError:
+                pass  # Optional diagnostics do not change verification.
         for source in (*(source for source, _ in normalized_sources.values()), *expected_paths.values(), java_executable,
                        Path(tooling_evidence), Path(tooling_public_key),
                        *(Path(path) for path in (tooling_keyring, tooling_keys_directory) if path is not None)):
@@ -331,6 +348,27 @@ def _verify_sdk_apple_with_tooling(
     if read_regular_file_bytes(java_executable, max_bytes=128 * 1024 * 1024,
                                reject_symlink_parents=True) != java_bytes:
         raise ValueError("Trusted Java executable changed during Apple SDK verification")
+    if private_stat is not None:
+        try:
+            from .inventory import canonical_json_bytes
+            try:
+                root.lstat()
+                absent = False
+            except FileNotFoundError:
+                absent = True
+            observation = {
+                "schemaVersion": 1, "operation": "sdk-apple-verification",
+                "command": command_name, "policyRevision": policy_revision,
+                "observedAtUnixNs": time.time_ns(),
+                "lifetimeElapsedNs": time.perf_counter_ns() - started,
+                "ownedDirectory": {"path": str(root), "device": private_stat.st_dev,
+                    "inode": private_stat.st_ino, "absentAfterExit": absent},
+                "localVerificationCompleted": True, "remoteCustodyObserved": False,
+            }
+            print("scratch-retirement " + canonical_json_bytes(observation).decode().rstrip("\n"),
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass  # Diagnostic failure must not replace the verified result.
     return before
 
 
