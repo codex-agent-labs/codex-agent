@@ -48,6 +48,24 @@ RETAINED_PARITY_REPORTS = (
 )
 
 
+# Current device raw reports authenticated from the signed33-row capture
+# commitment and complete original nested ZIP08f9; scoped transport only.
+CURRENT_PARITY_SOURCE = {
+    "buildKey": "sha256:eeeae1e4d6c317421f90d63756ae8257798a1c1e814124230e9d13b07c3fe44c",
+    "receiptSha256": "sha256:d5c9b76469dbae2cddc6ec790d4dd992c9512d745e9d4af10b043826b6d119ec",
+    "artifactId": 12550528177,
+    "artifactSha256": "sha256:1dfc8f1b00f5a22d9af20a7612838c685497e4ffaf0c89d4cc13f22ae111ac22",
+    "jobId": 120787177653,
+}
+CURRENT_PARITY_ARCHIVE_BYTES = 1610548444
+CURRENT_PARITY_REPORTS = (
+    {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+     "sha256": "sha256:cd793f6ad482568284e5e31dd02fbec2e6dbef7597a6ae9645fc24741cfc2fe1"},
+    {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+     "sha256": "sha256:ba8100d1a75fde798af0da661290917e669f14dd9c77dec341b14296e053dd42"},
+)
+
+
 def retained_validation_origin(target, build_key, consumer):
     """Select two reviewed successful uploads; selection grants no admission.
 
