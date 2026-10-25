@@ -85,6 +85,16 @@ class SdkNativePhaseTest(unittest.TestCase):
             (self.binary / "outputs/csharp/CodexAgent.dll").write_bytes(b"synthetic compiled C#\n")
             write_output_manifest(self.binary, "sdk", "csharp", "binary", "desktop", "0.3.0",
                                   {"csharp-binary": "outputs/csharp"})
+            from ci.tests.test_tooling_inspector import ToolingInspectorTest
+            fixture = ToolingInspectorTest(methodName="runTest")
+            fixture.setUp()
+            self.addCleanup(fixture.doCleanups)
+            self.inspector_directory = self.root / "private-inspector"
+            self.inspector_directory.mkdir()
+            payload = {**fixture.payload, "inspector-manifest.json": fixture.manifest(fixture.payload)}
+            for name, raw in payload.items():
+                (self.inspector_directory / name).write_bytes(raw)
+            self.inspector_digest = sha256_bytes(payload["inspector-manifest.json"])
         self.calls, self.predecessor_calls = [], []
         self.host, self.return_code, self.launch_error = "linux-x64", 0, False
         self.output_version = "0.3.0"
@@ -100,12 +110,7 @@ class SdkNativePhaseTest(unittest.TestCase):
         self.assertEqual({"SAFE": "explicit child environment"}, arguments["env"])
         self.assertEqual(subprocess.STDOUT, arguments["stderr"])
         self.assertFalse(arguments["check"])
-        if self.binary is not None:
-            self.assertEqual(".", command[command.index("-p") + 1])
-            self.assertIn("ciProductPhase", command)
-            self.assertIn("--offline", command)
-        else:
-            self.assertEqual(["python3", "-B", "-m", "ci.sdk_native_phase", "package", str(self.root)], command[:6])
+        self.assertEqual(["python3", "-B", "-m", "ci.sdk_native_phase", "package", str(self.root)], command[:6])
         fields = dict(value[2:].split("=", 1) for value in command if value.startswith("-P"))
         expected_fields = {
             "codexAgent.product": "sdk", "codexAgent.component": self.plan["component"],
@@ -116,13 +121,14 @@ class SdkNativePhaseTest(unittest.TestCase):
             "codexAgent.nativeWrapperPackageSourcesRoot": str(self.sources),
             "codexAgent.nativeWrapperPackageSdksRoot": str(self.sdks),
             "codexAgent.sdkCompatibilityRequest": str(self.request),
+            "codexAgent.sdkVersion": "0.3.0",
         }
         if self.binary is not None:
             expected_fields["codexAgent.csharpBinaryStageRoot"] = str(self.binary)
             expected_fields["codexAgent.csharpDotnetProfile"] = str(
                 self.root / "gradle/release/toolchains/sdk/csharp.json")
-        else:
-            expected_fields["codexAgent.sdkVersion"] = "0.3.0"
+            expected_fields["codexAgent.csharpInspectorRoot"] = str(self.inspector_directory)
+            expected_fields["codexAgent.csharpInspectorManifestSha256"] = self.inspector_digest
         self.assertEqual(fields, expected_fields)
         arguments["stdout"].write(b"raw Gradle\xff\x00\n")
         if self.launch_error:
@@ -142,9 +148,13 @@ class SdkNativePhaseTest(unittest.TestCase):
             compatibility_request=self.request, predecessor=self.predecessor, environ={},
             csharp_binary_stage=self.binary)
         with ExitStack() as stack:
+            if self.binary is not None:
+                from tooling_inspector import borrowed_inspector
+                arguments["csharp_inspector"] = stack.enter_context(borrowed_inspector(
+                    self.inspector_directory, self.inspector_digest))
             stack.enter_context(patch("native_wrappers.host_classifier", return_value=self.host))
-            stack.enter_context(patch.object(product_reuse, "_runtime_worker_environment", return_value=(
-                {"SAFE": "explicit child environment"}, self.root / "gradlew")))
+            stack.enter_context(patch.object(product_reuse, "_runtime_worker_environment",
+                side_effect=AssertionError("No Gradle environment for package-only work")))
             stack.enter_context(patch.object(product_reuse, "_worker_process_environment", return_value=
                 {"SAFE": "explicit child environment"}))
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
@@ -336,8 +346,6 @@ class SdkNativePhaseTest(unittest.TestCase):
 
     def test_python_package_uses_existing_producer_and_exact_evidence_without_snapshot(self):
         for language in NATIVE_BINDINGS:
-            if language == "csharp":
-                continue
             with self.subTest(language=language):
                 self.fixture(language)
                 for name in ("sdk-compatibility.json", "sdk-runtime-root.pub"):
@@ -350,10 +358,25 @@ class SdkNativePhaseTest(unittest.TestCase):
                     "codexAgent.nativeWrapperPackageSourcesRoot": str(self.sources),
                     "codexAgent.nativeWrapperPackageSdksRoot": str(self.sdks),
                     "codexAgent.sdkCompatibilityRequest": str(self.request)}
+                if language == "csharp":
+                    profile = self.root / "gradle/release/toolchains/sdk/csharp.json"
+                    profile.parent.mkdir(parents=True)
+                    profile.write_bytes(b"fixture profile; producer mocked\n")
+                    fields.update({"codexAgent.csharpBinaryStageRoot": str(self.binary),
+                        "codexAgent.csharpDotnetProfile": str(profile),
+                        "codexAgent.csharpInspectorRoot": str(self.inspector_directory),
+                        "codexAgent.csharpInspectorManifestSha256": self.inspector_digest})
                 before = regular_file_inventory(self.root / "prepared")
-                def package(sources, sdks, output, version, languages):
+                def package(sources, sdks, output, version, languages, **options):
                     self.assertEqual((self.sources, self.sdks, self.stage / "outputs", "0.3.0", (language,)),
                                      (sources, sdks, output, version, languages))
+                    if language == "csharp":
+                        from tooling_inspector import require_inspector
+                        require_inspector(options.pop("csharp_inspector"))
+                        self.assertEqual({"csharp_binary": self.binary / "outputs/csharp",
+                                          "dotnet_profile": profile}, options)
+                    else:
+                        self.assertEqual({}, options)
                     (output / language).mkdir(parents=True)
                     (output / language / "fixture-package").write_bytes(b"simulated unchanged producer output\n")
                 with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
@@ -376,6 +399,18 @@ class SdkNativePhaseTest(unittest.TestCase):
                 write_output_manifest(expected, "sdk", language, "package", "desktop", "0.3.0",
                                       {"evidence": "outputs/evidence", "package": f"outputs/{language}"})
                 self.assertEqual(regular_file_inventory(expected), regular_file_inventory(self.stage))
+
+    def test_csharp_cannot_fall_back_to_building_an_inspector(self):
+        for value in (None, "/arbitrary/inspector.dll"):
+            with self.subTest(value=value):
+                self.fixture("csharp")
+                with self.assertRaisesRegex(ValueError, "live private inspector"):
+                    self.invoke(csharp_inspector=value)
+                self.assertEqual([], self.calls)
+        self.fixture("python")
+        with self.assertRaisesRegex(ValueError, "Only C#"):
+            self.invoke(csharp_inspector="/arbitrary/inspector.dll")
+        self.assertEqual([], self.calls)
 
     def test_python_package_cli_and_original_lifetime_fail_closed(self):
         for kind in ("csharp", "host", "version", "source", "extra", "duplicate", "order",

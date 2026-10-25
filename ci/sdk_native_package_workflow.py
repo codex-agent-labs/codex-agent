@@ -1,6 +1,7 @@
 """Consume one authenticated preparation upload without restaging five SDKs."""
 
 import argparse
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import sys
@@ -80,7 +81,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
                 repository_root=root, environ=environ, token=token, **tooling,
                 **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
-                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
+                **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs, \
+                ExitStack() as inspector_lifetime:
             controls_unchanged()
             selection = inputs["selection"]
             if identity not in selection["consumers"]:
@@ -170,6 +172,10 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
 
             unchanged()
             binary_argument = {"csharp_binary_stage": csharp_binary} if csharp_binary is not None else {}
+            if csharp_binary is not None:
+                from tooling_inspector import authenticated_inspector
+                binary_argument["csharp_inspector"] = inspector_lifetime.enter_context(
+                    authenticated_inspector(sdk_validation_tooling, root, producer["commit"]))
             result = execute_package(ready, producer=producer, sdk_version=selection["sdkVersion"],
                 repository_root=root, destination=destination / "worker", runtime_stages=runtime_stages,
                 prepared_sources=capture / "original/prepared-sources", staged_sdks=capture / "original/staged-sdks",
@@ -181,7 +187,8 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
                 trust_domain="development" if producer["event"] == "pull_request" else "release",
                 destination=candidate)
             binary_gate = ({"binary_stage_root": csharp_binary,
-                            "binary_receipt_path": binary_root / PHASE_RECEIPT_NAME}
+                            "binary_receipt_path": binary_root / PHASE_RECEIPT_NAME,
+                            "csharp_inspector": binary_argument["csharp_inspector"]}
                            if csharp_binary is not None else {})
             verified, raw = verify_sdk_package_inputs(root, result["stage"], candidate / PHASE_RECEIPT_NAME,
                 inputs["sdk"]["directory"] / REQUEST_NAME,

@@ -1,12 +1,14 @@
 """Build the fixed C# resource inspector as release tooling, never SDK output."""
 
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +31,7 @@ FILES = ("VerifySdkRuntimeRoot.deps.json", "VerifySdkRuntimeRoot.dll",
 _MANIFEST = "inspector-manifest.json"
 _LIMITS = {FILES[0]: 64 * 1024, FILES[1]: 1024 * 1024, FILES[2]: 64 * 1024,
            _MANIFEST: 16 * 1024}
+_PRIVATE = object()
 
 
 def verify(files: dict[str, bytes], source_files: list[dict], profile_sha256: str) -> dict:
@@ -71,6 +74,106 @@ def verify(files: dict[str, bytes], source_files: list[dict], profile_sha256: st
     if canonical_json_bytes(options) != canonical_json_bytes(expected_options):
         raise ValueError("C# inspector runtime differs from its fixed net8 configuration")
     return manifest
+
+
+def _private_files(directory: Path) -> dict[str, bytes]:
+    if (not directory.is_absolute() or directory.resolve(strict=True) != directory
+            or {p.name for p in directory.iterdir()} != set(_LIMITS)):
+        raise ValueError("C# inspector requires its exact normalized private directory")
+    return {name: read_regular_file_bytes(directory / name, max_bytes=limit,
+                reject_symlink_parents=True) for name, limit in _LIMITS.items()}
+
+
+class _Inspector:
+    """Private fixed tool lifetime; no receipt, host, or product authority is minted."""
+    def __init__(self, directory, files, key):
+        if key is not _PRIVATE:
+            raise ValueError("C# inspector must come from its private context")
+        self._directory, self._files, self._active = directory, files, True
+
+    def _check(self):
+        require_no_signing_secret(os.environ)
+        if not self._active or _private_files(self._directory) != self._files:
+            raise ValueError("C# inspector expired or changed during use")
+
+    def handoff(self):
+        """Fixed child custody reference; parent authentication must remain alive."""
+        self._check()
+        return self._directory, sha256_bytes(self._files[_MANIFEST])
+
+    def verify_resources(self, assembly, root_key, compatibility):
+        self._check()
+        try:
+            result = subprocess.run([
+                "dotnet", str(self._directory / "VerifySdkRuntimeRoot.dll"),
+                str(assembly), str(root_key), str(compatibility),
+            ], capture_output=True, text=True, check=False, timeout=30)
+            if result.returncode:
+                raise ValueError("C# package embedded SDK Runtime trust resources are invalid: "
+                                 + result.stderr.strip())
+        finally:
+            self._check()
+
+
+def require_inspector(value):
+    if type(value) is not _Inspector:
+        raise ValueError("C# package requires a live private inspector capability")
+    value._check()
+    return value
+
+
+@contextmanager
+def borrowed_inspector(directory: Path, manifest_sha256: str):
+    """Integrity-only child custody, never an independent source of tool trust.
+
+    The fixed parent authenticates the signed tooling and holds its private
+    context through the child AND final package gate. It supplies this exact
+    path/digest; neither an environment override nor an executable is accepted.
+    """
+    require_no_signing_secret(os.environ)
+    require_sha256(manifest_sha256, "C# inspector handoff digest")
+    directory = Path(directory)
+    files = _private_files(directory)
+    if sha256_bytes(files[_MANIFEST]) != manifest_sha256:
+        raise ValueError("C# inspector handoff differs from its parent's manifest")
+    manifest = load_canonical_json_bytes(files[_MANIFEST])
+    verify(files, manifest.get("sourceFiles"), manifest.get("toolchainProfileSha256"))
+    value = _Inspector(directory, files, _PRIVATE)
+    try:
+        yield value
+    finally:
+        try:
+            value._check()
+        finally:
+            value._active = False
+
+
+@contextmanager
+def authenticated_inspector(policy, repository: Path, revision: str):
+    """Authenticate existing tooling once and extract only its tiny fixed inspector."""
+    from products.tooling import _INSPECTOR_PREFIX, verified_tooling_capture
+
+    require_no_signing_secret(os.environ)
+    require_exact_keys(policy, {"evidence", "publicKey", "javaExecutable", "requiredTrustDomain",
+                               "keyring", "keysDirectory"}, "C# inspector tooling policy")
+    with verified_tooling_capture(Path(policy["evidence"]), repository, Path(policy["publicKey"]),
+            required_trust_domain=policy["requiredTrustDomain"],
+            keyring=Path(policy["keyring"]) if policy["keyring"] else None,
+            keys_directory=Path(policy["keysDirectory"]) if policy["keysDirectory"] else None,
+            policy_revision=revision) as jar, tempfile.TemporaryDirectory(prefix="signed-csharp-inspector-") as temporary:
+        directory = Path(temporary).resolve()
+        # The enclosing original-signature/source policy has verified this exact
+        # four-file closure. Read only those members, not every JAR resource.
+        with zipfile.ZipFile(jar) as archive:
+            for name, limit in _LIMITS.items():
+                member = archive.getinfo(_INSPECTOR_PREFIX + name)
+                if not 0 < member.file_size <= limit:
+                    raise ValueError("Signed C# inspector member has invalid size")
+                with (directory / name).open("xb") as output:
+                    output.write(archive.read(member))
+        manifest_sha = sha256_bytes(read_regular_file_bytes(directory / _MANIFEST, max_bytes=_LIMITS[_MANIFEST]))
+        with borrowed_inspector(directory, manifest_sha) as inspector:
+            yield inspector
 
 
 def build(repository: Path, destination: Path) -> dict:

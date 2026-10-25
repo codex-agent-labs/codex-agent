@@ -234,6 +234,7 @@ def _native_sdk_inputs(
 def verify_native_sdk_package_phase(
     stage_root: Path, receipt_path: Path, compatibility_request: Path,
     runtime_stage_root: Path, staged_sdks: Path, sdk_root_public_key: bytes,
+    *, csharp_inspector=None,
 ) -> tuple[dict[str, Any], bytes]:
     """Bind final native package semantics to authenticated content and a receipt.
 
@@ -253,6 +254,11 @@ def verify_native_sdk_package_phase(
     if (receipt["product"] != "sdk" or language not in NATIVE_BINDINGS
             or receipt["phase"] != "package" or receipt["target"] != "desktop"):
         raise ValueError("Native SDK verification requires one native package phase")
+    if csharp_inspector is not None:
+        if language != "csharp":
+            raise ValueError("C# inspector requires an exact C# package selection")
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
     before, sdk_before = regular_file_inventory(stage_root), regular_file_inventory(staged_sdks)
     with tempfile.TemporaryDirectory(prefix="native-sdk-package-") as temporary:
         root = Path(temporary).resolve()
@@ -283,7 +289,8 @@ def verify_native_sdk_package_phase(
         for name in evidence_names:
             if (stage / "outputs/evidence" / name).read_bytes() != (sdks / name).read_bytes():
                 raise ValueError("Native SDK evidence differs from authenticated compatibility or root")
-        verify_native_wrapper_sdk_packages(stage / "outputs", sdks, receipt["productVersion"], language)
+        verify_native_wrapper_sdk_packages(stage / "outputs", sdks, receipt["productVersion"], language,
+            **({"csharp_inspector": csharp_inspector} if csharp_inspector is not None else {}))
     if (regular_file_inventory(stage_root) != before or regular_file_inventory(staged_sdks) != sdk_before
             or read_regular_file_bytes(receipt_path, max_bytes=_LIMIT, reject_symlink_parents=True) != receipt_bytes):
         raise ValueError("Native SDK package sources changed during verification")

@@ -229,6 +229,7 @@ def verify_sdk_package_inputs(
     apple_binary_verification: dict[str, Any] | None = None,
     apple_execution_capture_directory: Path | None = None,
     apple_original_verification: dict[str, Any] | None = None,
+    csharp_inspector=None,
 ) -> tuple[dict[str, Any], bytes]:
     """Verify package semantics, original artifacts and the complete source-input plan.
 
@@ -242,6 +243,11 @@ def verify_sdk_package_inputs(
     stage_root = Path(stage_root)
     receipt, original = _receipt(receipt_path)
     instance = _instance(receipt)
+    if csharp_inspector is not None:
+        if instance != PhaseInstanceId("sdk", "csharp", "package", "desktop"):
+            raise ValueError("C# inspector requires an exact C# package selection")
+        from tooling_inspector import require_inspector
+        require_inspector(csharp_inspector)
     if sum(value is not None for value in (apple_verification, apple_binary_verification, apple_original_verification)) > 1:
         raise ValueError("Apple package verification modes are mutually exclusive")
     if apple_execution_capture_directory is not None:
@@ -469,6 +475,7 @@ def verify_sdk_package_inputs(
             verified, verified_bytes = verify_native_sdk_package_phase(
                 stage, captured_receipt, handoff / REQUEST_NAME, runtime_stage_root, staged_sdks,
                 git_regular_blob_bytes(repository, receipt["producer"]["commit"], SDK_ROOT_PATH, max_bytes=4096),
+                **({"csharp_inspector": csharp_inspector} if csharp_inspector is not None else {}),
             )
             if authorization is not None:
                 # External evidence authenticates the selected default; its signatures
