@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -74,6 +75,12 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
         tooling["sdk_android_metadata_admission"] = sdk_android_metadata_admission
     with tempfile.TemporaryDirectory(prefix="sdk-native-package-") as temporary:
         private = Path(temporary).resolve()
+        private_stat = None
+        if environ.get("CODEX_AGENT_THROUGHPUT_TRACE") == "1":
+            try:
+                private_stat = private.lstat()
+            except OSError:
+                pass  # Optional diagnostics must not change package execution.
         candidate, capture = private / "shard", private / "prepared-upload"
         with sdk_workflow.verified_inputs(plan, discovery, state,
                 requested_scope=(instance,),
@@ -218,7 +225,35 @@ def execute(plan, discovery, state, destination, *, component, expected_build_ke
             raise ValueError("Native package retained preparation capture changed")
         _require_capability_output_separate(destination / "shard", protected)
         publish_regular_tree(candidate, destination / "shard")
-    return verify_phase_shard(destination / "shard", instance)
+    published = verify_phase_shard(destination / "shard", instance)
+    if private_stat is not None:
+        try:
+            try:
+                private.lstat()
+                absent = False
+            except FileNotFoundError:
+                absent = True
+            # Local publication only; the later successful official upload/log
+            # supplies the independent remote-custody join. No object rescans.
+            observation = {
+                "schemaVersion": 1, "operation": "sdk-native-package",
+                "observedAtUnixNs": time.time_ns(),
+                "ownedDirectory": {"path": str(private), "device": private_stat.st_dev,
+                    "inode": private_stat.st_ino, "absentAfterExit": absent},
+                "publishedShard": {"path": str(destination / "shard"),
+                    "buildKey": published["buildKey"], "receiptSha256": published["receiptSha256"],
+                    "objectSha256": published["objectSha256"], "producer": published["receipt"]["producer"]},
+                "preparation": {"component": preparation_component, "buildKey": preparation_build_key,
+                    "artifactId": prepared_artifact_id, "artifactSha256": prepared_artifact_sha256,
+                    "retainedPath": str(destination / "prepared-upload")},
+                "sdkInputs": {"artifactId": sdk_inputs_artifact_id, "artifactSha256": sdk_inputs_artifact_sha256},
+                "remoteCustodyObserved": False,
+            }
+            print("scratch-retirement " + canonical_json_bytes(observation).decode().rstrip("\n"),
+                  file=sys.stderr, flush=True)
+        except OSError:
+            pass  # Diagnostic failure must not replace the verified result.
+    return published
 
 
 def main(argv=None) -> int:

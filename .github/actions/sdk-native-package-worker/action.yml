@@ -149,10 +149,6 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + os.environ['BUILD_KEY'].removeprefix('sha256:') + '\n')
         PY
-    - uses: ./.github/actions/setup-kmp
-      with:
-        cache-read-only: 'true'
-        product-worker: 'true'
     - if: inputs.component == 'python'
       uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
