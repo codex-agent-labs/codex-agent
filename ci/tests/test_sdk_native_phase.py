@@ -5,6 +5,7 @@ or hosted success. The controller still owns full private-candidate admission.
 """
 
 from contextlib import ExitStack
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -37,6 +38,9 @@ class SdkNativePhaseTest(unittest.TestCase):
         self.counter += 1
         self.root = self.base / str(self.counter)
         self.root.mkdir()
+        version = self.root / "gradle/release/versions/sdk.txt"
+        version.parent.mkdir(parents=True)
+        version.write_bytes(b"0.3.0\n")
         self.destination = self.root / "build/worker"
         self.stage = self.root / f"codex-agent-sdk/build/product-stage/sdk/{language}/package"
         self.producer = {"repository": "fixture/repository", "workflowPath": None,
@@ -96,9 +100,12 @@ class SdkNativePhaseTest(unittest.TestCase):
         self.assertEqual({"SAFE": "explicit child environment"}, arguments["env"])
         self.assertEqual(subprocess.STDOUT, arguments["stderr"])
         self.assertFalse(arguments["check"])
-        self.assertEqual(".", command[command.index("-p") + 1])
-        self.assertIn("ciProductPhase", command)
-        self.assertIn("--offline", command)
+        if self.binary is not None:
+            self.assertEqual(".", command[command.index("-p") + 1])
+            self.assertIn("ciProductPhase", command)
+            self.assertIn("--offline", command)
+        else:
+            self.assertEqual(["python3", "-B", "-m", "ci.sdk_native_phase", "package", str(self.root)], command[:6])
         fields = dict(value[2:].split("=", 1) for value in command if value.startswith("-P"))
         expected_fields = {
             "codexAgent.product": "sdk", "codexAgent.component": self.plan["component"],
@@ -114,6 +121,8 @@ class SdkNativePhaseTest(unittest.TestCase):
             expected_fields["codexAgent.csharpBinaryStageRoot"] = str(self.binary)
             expected_fields["codexAgent.csharpDotnetProfile"] = str(
                 self.root / "gradle/release/toolchains/sdk/csharp.json")
+        else:
+            expected_fields["codexAgent.sdkVersion"] = "0.3.0"
         self.assertEqual(fields, expected_fields)
         arguments["stdout"].write(b"raw Gradle\xff\x00\n")
         if self.launch_error:
@@ -136,6 +145,8 @@ class SdkNativePhaseTest(unittest.TestCase):
             stack.enter_context(patch("native_wrappers.host_classifier", return_value=self.host))
             stack.enter_context(patch.object(product_reuse, "_runtime_worker_environment", return_value=(
                 {"SAFE": "explicit child environment"}, self.root / "gradlew")))
+            stack.enter_context(patch.object(product_reuse, "_worker_process_environment", return_value=
+                {"SAFE": "explicit child environment"}))
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
             stack.enter_context(patch.object(worker, "_request_inventory", side_effect=lambda _: {
                 self.request_input: sha256_bytes(self.request_input.read_bytes())}))
@@ -322,6 +333,95 @@ class SdkNativePhaseTest(unittest.TestCase):
             "tasks.register<WriteProductOutputManifestTask>", 1)[0]
         self.assertIn("from(stage.flatMap { it.sdkDirectory })", evidence)
         self.assertNotIn("stageNativeWrapperCAbiSdks", evidence)
+
+    def test_python_package_uses_existing_producer_and_exact_evidence_without_snapshot(self):
+        for language in NATIVE_BINDINGS:
+            if language == "csharp":
+                continue
+            with self.subTest(language=language):
+                self.fixture(language)
+                for name in ("sdk-compatibility.json", "sdk-runtime-root.pub"):
+                    (self.sdks / name).write_bytes(("fixture " + name + "\n").encode())
+                fields = {"codexAgent.product": "sdk", "codexAgent.component": language,
+                    "codexAgent.phase": "package", "codexAgent.target": "desktop",
+                    "codexAgent.sdkVersion": "0.3.0", "codexAgent.candidateCommit": "a" * 40,
+                    "codexAgent.candidateTree": "b" * 40,
+                    "codexAgent.nativeWrapperRuntimeStageRoot": str(self.runtime),
+                    "codexAgent.nativeWrapperPackageSourcesRoot": str(self.sources),
+                    "codexAgent.nativeWrapperPackageSdksRoot": str(self.sdks),
+                    "codexAgent.sdkCompatibilityRequest": str(self.request)}
+                before = regular_file_inventory(self.root / "prepared")
+                def package(sources, sdks, output, version, languages):
+                    self.assertEqual((self.sources, self.sdks, self.stage / "outputs", "0.3.0", (language,)),
+                                     (sources, sdks, output, version, languages))
+                    (output / language).mkdir(parents=True)
+                    (output / language / "fixture-package").write_bytes(b"simulated unchanged producer output\n")
+                with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
+                     patch("native_wrappers.package_all", side_effect=package) as producer, \
+                     patch.object(product_reuse, "_runtime_worker_checkout"), \
+                     patch.object(worker, "_inventory", side_effect=AssertionError("No redundant child inventory")), \
+                     patch.object(worker, "_request_inventory", side_effect=AssertionError("No redundant request scan")), \
+                     patch.object(worker.subprocess, "run", side_effect=AssertionError("No external process")), \
+                     patch("products.inventory.snapshot_regular_tree", side_effect=AssertionError("No extra snapshot")), \
+                     patch.dict(os.environ, {}, clear=True):
+                    worker.main(worker._package_command(self.root, fields)[4:])
+                    producer.assert_called_once()
+                self.assertEqual(before, regular_file_inventory(self.root / "prepared"))
+                expected = self.root / "expected-stage"
+                (expected / f"outputs/{language}").mkdir(parents=True)
+                (expected / f"outputs/{language}/fixture-package").write_bytes(b"simulated unchanged producer output\n")
+                (expected / "outputs/evidence").mkdir()
+                for name in ("sdk-compatibility.json", "sdk-runtime-root.pub"):
+                    (expected / "outputs/evidence" / name).write_bytes((self.sdks / name).read_bytes())
+                write_output_manifest(expected, "sdk", language, "package", "desktop", "0.3.0",
+                                      {"evidence": "outputs/evidence", "package": f"outputs/{language}"})
+                self.assertEqual(regular_file_inventory(expected), regular_file_inventory(self.stage))
+
+    def test_python_package_cli_and_original_lifetime_fail_closed(self):
+        for kind in ("csharp", "host", "version", "source", "extra", "duplicate", "order",
+                     "signing", "online", "relative", "alias", "existing", "source-exit", "failure"):
+            with self.subTest(kind=kind):
+                self.fixture()
+                fields = {"codexAgent.product": "sdk", "codexAgent.component": "python",
+                    "codexAgent.phase": "package", "codexAgent.target": "desktop",
+                    "codexAgent.sdkVersion": "0.3.0", "codexAgent.candidateCommit": "a" * 40,
+                    "codexAgent.candidateTree": "b" * 40,
+                    "codexAgent.nativeWrapperRuntimeStageRoot": str(self.runtime),
+                    "codexAgent.nativeWrapperPackageSourcesRoot": str(self.sources),
+                    "codexAgent.nativeWrapperPackageSdksRoot": str(self.sdks),
+                    "codexAgent.sdkCompatibilityRequest": str(self.request)}
+                if kind == "csharp": fields["codexAgent.component"] = "csharp"
+                if kind == "version": fields["codexAgent.sdkVersion"] = "9.9.9"
+                if kind == "source": fields["codexAgent.candidateCommit"] = "unknown"
+                if kind == "extra": fields["codexAgent.command"] = "compiler"
+                if kind == "relative": fields["codexAgent.nativeWrapperPackageSourcesRoot"] = "relative"
+                if kind == "alias":
+                    alias = self.root / "source-alias"
+                    alias.symlink_to(self.sources, target_is_directory=True)
+                    fields["codexAgent.nativeWrapperPackageSourcesRoot"] = str(alias)
+                if kind == "existing": self.stage.mkdir(parents=True)
+                command = worker._package_command(self.root, fields)[4:]
+                if kind == "duplicate": command.append("-PcodexAgent.product=sdk")
+                if kind == "order": command[-2:] = reversed(command[-2:])
+                environment = {"CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY": ""} if kind == "signing" else {}
+                if kind == "online": environment["CODEX_AGENT_VERIFIED_DEPENDENCY_FETCH"] = "true"
+                def package(*args):
+                    raise ValueError("fixture producer failure")
+                with patch("native_wrappers.host_classifier", return_value="macos-arm64" if kind == "host" else "linux-x64"), \
+                     patch("native_wrappers.package_all", side_effect=package) as producer, \
+                     patch.object(product_reuse, "_runtime_worker_checkout", side_effect=
+                         [None, ValueError("fixture checkout changed")] if kind == "source-exit" else None) as checkout, \
+                     patch.object(worker, "_inventory", side_effect=AssertionError("No redundant child inventory")), \
+                     patch.object(worker, "_request_inventory", side_effect=AssertionError("No redundant request scan")), \
+                     patch.object(worker.subprocess, "run", side_effect=AssertionError("No external process")), \
+                     patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, "fixture checkout changed" if kind == "source-exit" else
+                                                "fixture producer failure" if kind == "failure" else "."):
+                        worker.main(command)
+                    self.assertEqual(int(kind in {"source-exit", "failure"}), producer.call_count)
+                    if kind in {"source-exit", "failure"}:
+                        self.assertEqual(2, checkout.call_count)
+                self.assertFalse((self.stage / "output-manifest.json").exists())
 
 
 if __name__ == "__main__":
