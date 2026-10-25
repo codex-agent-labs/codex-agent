@@ -117,7 +117,8 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         source = (HELPER.parents[3] / '.github/workflows/product-validation.yml').read_text()
         jobs = re.findall(r'^  (sdk-[a-z0-9-]+):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
                           source, re.MULTILINE | re.DOTALL)
-        self.assertEqual(65, len(jobs))
+        # Native validation election now runs in sdk-ios-packages.
+        self.assertEqual(64, len(jobs))
         self.assertTrue({"sdk-checkpoint-9", "sdk-checkpoint-10"} <= {name for name, _ in jobs})
         for name, job in jobs:
             with self.subTest(job=name):
