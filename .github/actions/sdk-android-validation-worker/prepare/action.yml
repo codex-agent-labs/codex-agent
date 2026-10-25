@@ -34,16 +34,16 @@ outputs:
     value: ${{ steps.policy.outputs.plan-path }}
   discovery-root:
     description: Authenticated discovery-root from the shared capture.
-    value: ${{ steps.selected.outputs.discovery-root }}
+    value: ${{ steps.policy.outputs.discovery_root }}
   state-root:
     description: Authenticated state-root from the shared capture.
-    value: ${{ steps.selected.outputs.state-root }}
+    value: ${{ steps.policy.outputs.state_root }}
   sdk-matrix:
     description: Authenticated sdk-matrix from the shared capture.
-    value: ${{ steps.selected.outputs.sdk-matrix }}
+    value: ${{ steps.policy.outputs.sdk_matrix }}
   sdk-workers-required:
     description: Authenticated sdk-workers-required from the shared capture.
-    value: ${{ steps.selected.outputs.sdk-workers-required }}
+    value: ${{ steps.policy.outputs.sdk_workers_required }}
   packageStage:
     description: Authenticated packageStage from the shared capture.
     value: ${{ steps.policy.outputs.packageStage }}
@@ -86,49 +86,46 @@ runs:
         trusted-job-name: product-validation / contract-validation / tooling-attestation
         policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
         plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-    - id: selected
-      uses: ./.github/actions/capture-runtime-state
-      with:
-        plan-directory: ${{ steps.tooling.outputs.plan-directory }}
-        product: sdk
-        sdk-family: android-validation
-        plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
-        artifact-id: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
-        artifact-sha256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
-        state-wave: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
-        sdk-state-wave: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
-        sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-        sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
-        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
     - id: policy
-      name: Stage authenticated original Android inputs
+      name: Capture and stage authenticated original Android inputs
+      uses: ./.github/actions/hydrated-evidence-cache
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        PLAN_DIRECTORY: ${{ steps.tooling.outputs.plan-directory }}
+        ARTIFACT_ID: ${{ fromJSON(inputs.packageWave).outputs.artifact_id }}
+        ARTIFACT_SHA256: ${{ fromJSON(inputs.packageWave).outputs.artifact_digest }}
+        STATE_WAVE: ${{ fromJSON(inputs.packageWave).outputs.state_wave }}
+        SDK_STATE_WAVE: ${{ fromJSON(inputs.packageWave).outputs.sdk_state_wave }}
         BUILD_KEY: ${{ inputs.build-key }}
         SDK_INPUTS_ID: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_id }}
         SDK_INPUTS_SHA256: ${{ fromJSON(inputs.sdkInputs).outputs.artifact_digest }}
         TOOLING_POLICY: ${{ steps.tooling.outputs.tooling-policy }}
         APPLE_POLICY: ${{ steps.tooling.outputs.apple-policy }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        policy=()
-        if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
-        if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
-        if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
-        python3 -B -m ci.sdk_android_validation_policy \
-          --plan "${{ steps.selected.outputs.plan-path }}" \
-          --discovery-root "${{ steps.selected.outputs.discovery-root }}" \
-          --state-root "${{ steps.selected.outputs.state-root }}" \
-          --destination "$GITHUB_WORKSPACE/build/sdk-android-validation-policy" \
-          --expected-build-key "$BUILD_KEY" \
-          --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
-          --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
-          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-          --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
-          --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
-          --sdk-validation-tooling "$TOOLING_POLICY" \
-          --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-          ${policy[@]+"${policy[@]}"}
+      with:
+        mode: execute
+        script: |
+          set -euo pipefail
+          test -z "${CODEX_AGENT_SDK_CHECKPOINT:-}"
+          capture=(--capture-state-wave "${STATE_WAVE:-0}")
+          if [ -n "$SDK_STATE_WAVE" ]; then capture+=(--capture-sdk-state-wave "$SDK_STATE_WAVE"); fi
+          policy=()
+          if [ -n "$APPLE_POLICY" ]; then policy+=(--sdk-apple-validation-policy "$APPLE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE"); fi
+          python3 -B -m ci.sdk_android_validation_policy \
+            --plan "$PLAN_DIRECTORY/impact-plan.json" \
+            --capture-destination "$GITHUB_WORKSPACE/build/runtime-input" \
+            --capture-artifact-id "$ARTIFACT_ID" --capture-artifact-sha256 "$ARTIFACT_SHA256" \
+            "${capture[@]}" \
+            --destination "$GITHUB_WORKSPACE/build/sdk-android-validation-policy" \
+            --expected-build-key "$BUILD_KEY" \
+            --sdk-inputs-artifact-id "$SDK_INPUTS_ID" \
+            --sdk-inputs-artifact-sha256 "$SDK_INPUTS_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json" \
+            --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" \
+            --sdk-validation-tooling "$TOOLING_POLICY" \
+            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
+            ${policy[@]+"${policy[@]}"}
 
