@@ -14,6 +14,41 @@ from ci.tests import test_runtime_aggregate_upload as fixture
 
 
 class AndroidUploadLocatorTest(unittest.TestCase):
+    def test_actual_metadata_route_selects_original_authority_without_device_rebuild(self):
+        source = (Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml").read_text()
+        step = source.split("      - id: retained-device\n", 1)[1].split("\n  android-sdk-apk:", 1)[0]
+        script = textwrap.dedent(step.split("          python3 -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+        key = "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"
+        metadata = dict(product="sdk", component="sdk-android", phase="metadata", target="android", buildKey=key)
+        authority = dict(schemaVersion=1,
+            trustedAndroidWorkflowSha="50b21ae250d6a515f29a2d067628ad4e0bf6f213",
+            trustedSourceCommit="d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
+            trustedSourceTree="678cbafb596df74e698560c4ff6e8319883fb8a6")
+        with tempfile.TemporaryDirectory() as temporary:
+            for index, (changes, ready, expected) in enumerate((
+                    ({}, [metadata], True),
+                    ({}, [{**metadata, "buildKey": "sha256:" + "0" * 64}], False),
+                    ({"PULL_REQUEST": "32"}, [metadata], False),
+                    ({"GITHUB_REPOSITORY": "other/repo"}, [metadata], False),
+                    ({"GITHUB_EVENT_NAME": "merge_group"}, [metadata], False),
+                    ({"GITHUB_RUN_ID": "40140521274", "GITHUB_RUN_ATTEMPT": "2"}, [metadata], False),
+                    ({"GITHUB_RUN_ID": "40140521273"}, [metadata], False),
+                    ({}, [metadata, metadata], False))):
+                output = Path(temporary) / str(index)
+                environment = dict(MATRIX='{"include":[]}', REQUIRED="false", PULL_REQUEST="31",
+                    GITHUB_REPOSITORY=locator.REPOSITORY, GITHUB_EVENT_NAME="pull_request",
+                    GITHUB_RUN_ID="40148209559", GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT=str(output),
+                    ROUTING=json.dumps({"decisions": {"ready": ready}}))
+                with patch.dict(os.environ, {**environment, **changes}, clear=True):
+                    exec(compile(script, "<actual-retained-metadata-routing>", "exec"), {})
+                self.assertEqual(expected, output.exists())
+                if expected:
+                    raw = output.read_text().removeprefix("authority<<ANDROID_AUTHORITY\n").removesuffix("\nANDROID_AUTHORITY\n")
+                    self.assertEqual(locator.canonical_json_bytes(authority), raw.encode())
+        consumer = dict(repository=locator.REPOSITORY, workflowPath=".github/workflows/ci.yml",
+            event="pull_request", pullRequest=31, runId=40148209559, runAttempt=1)
+        self.assertIsNone(locator.retained_android_evidence_origin(key, consumer))
+
     def test_actual_routing_step_skips_only_the_exact_retained_device_key(self):
         source = (Path(__file__).resolve().parents[2] / ".github/workflows/product-validation.yml").read_text()
         step = source.split("      - id: retained-device\n", 1)[1].split("\n  android-sdk-apk:", 1)[0]

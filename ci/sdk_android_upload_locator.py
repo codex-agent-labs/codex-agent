@@ -29,6 +29,18 @@ _OID = re.compile(r"[0-9a-f]{40}")
 
 def retained_android_evidence_origin(build_key, consumer, *, phase="validation"):
     """Select reviewed device evidence, not a validation verdict or new producer."""
+    if (phase == "metadata" and
+            build_key == "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"):
+        from sdk_campaign_original_locator import retained_core_origin
+        origin = retained_core_origin(phase, build_key, consumer, component="sdk-android", target="android")
+        if origin is None:
+            return None
+        # Metadata routing needs only the original caller's authority. The worker
+        # and collector still authenticate the original upload and its contents.
+        return {"authority": {"schemaVersion": 1,
+            "trustedAndroidWorkflowSha": origin["workflow_sha"],
+            "trustedSourceCommit": "d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
+            "trustedSourceTree": origin["producer"]["tree"]}}
     producer = {"repository": REPOSITORY, "workflowPath": ".github/workflows/ci.yml",
         "commit": "986d173ae4c05cf3ec456bef463641376a65e6d3",
         "tree": "554dee42106c5c00e0114d166fb2c52b2a5aa1e0", "event": "pull_request",
