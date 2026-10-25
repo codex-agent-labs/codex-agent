@@ -32,9 +32,9 @@ class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        # Schema4 lists current additions; these exact Apple pins belong to the
-        # preserved completion it references, not its new completedPhases rows.
-        self.assertEqual((12564750112, "dbb333097878fa669b2dbb56f7a1cff701fc708d"),
+        # The SDK62 recipe retains the exact SDK61 completion. Historical raw
+        # report pins below remain separately immutable; current pins are tested next.
+        self.assertEqual((12581293397, "1efd642d68dab730d55bba456a6d18336b4c8f29"),
             (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
         self.assertEqual(
             {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
@@ -54,6 +54,17 @@ class SdkWorkflowTest(unittest.TestCase):
         consumer = dict(repository="codex-agent-labs/codex-agent", workflowPath=".github/workflows/ci.yml",
                         event="pull_request", pullRequest=31, runId=40000000000, runAttempt=1)
         origin = locator.RETAINED_PARITY_SOURCE
+        # Independently held current device receipt/original; raw tiny ZIP bytes
+        # remain fixture data and do not stand in for authenticated report pins.
+        current_origin = {
+            "buildKey": "sha256:eeeae1e4d6c317421f90d63756ae8257798a1c1e814124230e9d13b07c3fe44c",
+            "receiptSha256": "sha256:d5c9b76469dbae2cddc6ec790d4dd992c9512d745e9d4af10b043826b6d119ec",
+            "artifactId": 12550528177,
+            "artifactSha256": "sha256:1dfc8f1b00f5a22d9af20a7612838c685497e4ffaf0c89d4cc13f22ae111ac22",
+            "jobId": 120787177653,
+        }
+        if hasattr(locator, "CURRENT_PARITY_SOURCE"):
+            self.assertEqual(current_origin, locator.CURRENT_PARITY_SOURCE)
         row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
         envelope = dict(receipt={"producer": consumer})
         verified = SimpleNamespace(completed_frozen=cap, consumer={"kind": "ci", "producer": consumer},
@@ -68,22 +79,29 @@ class SdkWorkflowTest(unittest.TestCase):
         outer = io.BytesIO()
         with ZipFile(outer, "w") as archive:
             archive.writestr("execution/apple-validation-evidence.zip", inner.getvalue())
-        artifact = dict(id=origin["artifactId"], digest=origin["artifactSha256"])
-        observed = [{"jobs": [{"id": origin["jobId"]}]}]
-        for defect in (None, "authority", "receipt", "upload", "job", "report"):
-            destination = self.root / ("apple-parity-" + str(defect))
+        cases = [(origin, defect) for defect in (None, "authority", "receipt", "upload", "job", "report")]
+        cases += [(current_origin, defect) for defect in (None, "key", "authority")]
+        for origin, defect in cases:
+            prefix = "CURRENT" if origin is current_origin else "RETAINED"
+            row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
+            artifact = dict(id=origin["artifactId"], digest=origin["artifactSha256"])
+            observed = [{"jobs": [{"id": origin["jobId"]}]}]
+            destination = self.root / ("apple-parity-" + prefix + "-" + str(defect))
             selected = None if defect == "authority" else envelope
             verified.prior_by_instance[identity] = {**row, "receiptSha256": "wrong"} if defect == "receipt" else row
-            with self.subTest(defect=defect), ExitStack() as stack:
+            if defect == "key":
+                verified.prior_by_instance[identity] = {**row, "buildKey": "sha256:" + "0" * 64}
+            with self.subTest(origin=prefix, defect=defect), ExitStack() as stack:
+                stack.enter_context(patch.object(locator, "CURRENT_PARITY_SOURCE", current_origin, create=True))
                 for name in ("check_request", "check_consumer"):
                     stack.enter_context(patch.object(CompletedFrozenReuse, name))
                 stack.enter_context(patch.object(CompletedFrozenReuse, "envelope", return_value=selected))
                 stack.enter_context(patch.object(CompletedFrozenReuse, "observe_extended_sdk", return_value=(None,
                     {**artifact, "id": 1} if defect == "upload" else artifact,
                     [{"jobs": [{"id": 1}]}] if defect == "job" else observed)))
-                stack.enter_context(patch.object(locator, "RETAINED_PARITY_ARCHIVE_BYTES", len(inner.getvalue())))
-                stack.enter_context(patch.object(locator, "RETAINED_PARITY_REPORTS",
-                    [{**r, "sha256": workflow.sha256_bytes(b"wrong")} for r in reports] if defect == "report" else reports))
+                stack.enter_context(patch.object(locator, prefix + "_PARITY_ARCHIVE_BYTES", len(inner.getvalue()), create=True))
+                stack.enter_context(patch.object(locator, prefix + "_PARITY_REPORTS",
+                    [{**r, "sha256": workflow.sha256_bytes(b"wrong")} for r in reports] if defect == "report" else reports, create=True))
                 archive = stack.enter_context(ZipFile(io.BytesIO(outer.getvalue())))
                 opened = stack.enter_context(patch.object(transport, "open_reference_archive",
                     return_value=nullcontext((archive, None))))

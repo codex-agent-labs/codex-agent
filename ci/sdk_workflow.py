@@ -488,6 +488,7 @@ def _completed_apple_parity_files(verified, destination, *, token):
     from reuse_qualification import CompletedFrozenReuse
     from sdk_apple_upload_locator import (
         RETAINED_PARITY_SOURCE, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS,
+        CURRENT_PARITY_SOURCE, CURRENT_PARITY_ARCHIVE_BYTES, CURRENT_PARITY_REPORTS,
     )
     from runtime_reference_archive import (
         open_reference_archive, open_stored_reference_archive, copy_reference_member,
@@ -503,18 +504,23 @@ def _completed_apple_parity_files(verified, destination, *, token):
     envelope = completed.envelope(row)
     if envelope is None:
         raise ValueError("Compact Apple parity lacks its exact qualified original")
-    if any(row[field] != RETAINED_PARITY_SOURCE[field] for field in ("buildKey", "receiptSha256")):
+    matches = [group for group in (
+        (RETAINED_PARITY_SOURCE, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS),
+        (CURRENT_PARITY_SOURCE, CURRENT_PARITY_ARCHIVE_BYTES, CURRENT_PARITY_REPORTS),
+    ) if all(row[field] == group[0][field] for field in ("buildKey", "receiptSha256"))]
+    if len(matches) != 1:
         raise ValueError("Compact Apple parity differs from its reviewed original")
+    source, archive_bytes, report_records = matches[0]
     _, artifact, observed = completed.observe_extended_sdk(row, producer=verified.producer, token=token)
-    if ((artifact["id"], artifact["digest"]) != (RETAINED_PARITY_SOURCE["artifactId"], RETAINED_PARITY_SOURCE["artifactSha256"])
-            or not any(job["id"] == RETAINED_PARITY_SOURCE["jobId"]
+    if ((artifact["id"], artifact["digest"]) != (source["artifactId"], source["artifactSha256"])
+            or not any(job["id"] == source["jobId"]
                        for observation in observed for job in observation["jobs"])):
         raise ValueError("Compact Apple parity changes its independently qualified upload")
     files = {}
     with open_reference_archive(artifact, token) as (archive, stream), \
             open_stored_reference_archive(archive, "execution/apple-validation-evidence.zip",
-                expected_bytes=RETAINED_PARITY_ARCHIVE_BYTES) as reports:
-        for record in RETAINED_PARITY_REPORTS:
+                expected_bytes=archive_bytes) as reports:
+        for record in report_records:
             name = Path(record["relativePath"]).name
             destination_file = destination / name
             copy_reference_member(reports, record["relativePath"], destination_file, record)
