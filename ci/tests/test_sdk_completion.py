@@ -246,6 +246,67 @@ class SdkCompletionTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             completion.main(["--gradle", "--repository-root", "/unused"])
 
+    def test_sdk_configuration_cache_lifecycle_keeps_one_init_and_fresh_authentication(self):
+        # Real generated init/argv/output lifetime; Gradle and native auth are mocked.
+        # This does not establish configuration-cache storage/reuse acceptance.
+        with tempfile.TemporaryDirectory(prefix="sdk-cache-adapter-") as temporary:
+            root = Path(temporary).resolve()
+            policy = root / "caller.json"
+            policy.write_bytes(b"{}\n")
+            report = root / "build/reports/sdk/completed-sdk-evidence.json"
+            for fail_second in (False, True):
+                calls = []
+                def gradle(command, **options):
+                    script = Path(command[command.index("--init-script", command.index("--init-script") + 1) + 1])
+                    init = script.read_text()
+                    self.assertFalse(report.exists(), "No prior-pass report may survive into fresh verification")
+                    self.assertIn("--offline", command)
+                    self.assertIn("--no-build-cache", command)
+                    self.assertIn("--configuration-cache-problems=fail", command)
+                    self.assertNotIn("--no-configuration-cache", command)
+                    self.assertEqual(":verifySdk", command[-1])
+                    self.assertTrue(options["check"])
+                    self.assertIn("abstract org.gradle.process.ExecOperations getProcesses()", init)
+                    self.assertLess(init.index("@org.gradle.api.tasks.TaskAction"), init.index("def captured = new ByteArrayOutputStream()"))
+                    self.assertIn("}.assertNormalExitValue()", init)
+                    self.assertNotIn("doLast", init)
+                    self.assertIn("outputs.upToDateWhen { false }", init)
+                    self.assertIn("setDependsOn([authenticated])", init)
+                    self.assertIn("'--sdk', '--local'", init)
+                    self.assertIn("'--parity-policy'", init)
+                    self.assertIn("'--parity-archive'", init)
+                    self.assertNotIn("verifyRepository", init)
+                    calls.append((list(command), script, init))
+                    report.parent.mkdir(parents=True, exist_ok=True)
+                    report.write_bytes(canonical_json_bytes({"result":"passed", "pass":len(calls)}))
+                    if fail_second and len(calls) == 2:
+                        raise completion.subprocess.CalledProcessError(1, command)
+                with patch.object(completion.subprocess, "run", side_effect=gradle):
+                    if fail_second:
+                        with self.assertRaises(completion.subprocess.CalledProcessError):
+                            completion.run_local_repository_gradle(root, policy, parity_policy=root / "parity.json",
+                                parity_archive=root / "parity.zip", configuration_cache=True)
+                        self.assertFalse(report.exists())
+                    else:
+                        self.assertEqual({"result":"passed", "pass":2}, completion.run_local_repository_gradle(
+                            root, policy, parity_policy=root / "parity.json", parity_archive=root / "parity.zip",
+                            configuration_cache=True))
+                self.assertEqual(2, len(calls))
+                self.assertEqual(calls[0], calls[1])
+                self.assertFalse(calls[0][1].exists(), "Private generated init is removed after both passes")
+        argv = ["--sdk", "--local", "--gradle", "--configuration-cache", "--repository-root", "/actual/repository",
+            "--completed-frozen-policy", "/actual/completed.json", "--parity-policy", "/actual/parity.json",
+            "--parity-archive", "/actual/parity.zip"]
+        with patch.object(completion, "run_local_repository_gradle", return_value={"result":"passed"}) as gate, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(0, completion.main(argv))
+            self.assertIs(gate.call_args.kwargs["configuration_cache"], True)
+        for omitted in ("--sdk", "--local", "--gradle"):
+            with patch.object(completion, "run_local_repository_gradle") as gate, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main([arg for arg in argv if arg != omitted])
+            gate.assert_not_called()
+
     def test_every_unresolved_sdk_identity_rejects_even_when_all_worker_matrices_are_empty(self):
         for identity in self.sdk:
             for state in ("build", "waiting"):
