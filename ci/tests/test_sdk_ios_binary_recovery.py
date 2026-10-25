@@ -607,7 +607,8 @@ class JavascriptPackageRecoveryTest(unittest.TestCase):
                          "288f994ff7d4fd4aaa09317db5a4c30cf8205a7f",
                          "d31b16736102f634665c351e6d0ed139250e8e48",
                          "493d0554ec86651303a221a97d904933903b775e",
-                         "e8d67392cb9e7103eb36d2c43a5ce324cc86cd20"):
+                         "e8d67392cb9e7103eb36d2c43a5ce324cc86cd20",
+                         "8f8b138c41312885be34e397e1ce088d80ec17c8"):
             with self.subTest(original=original):
                 run = {**self.run, "referenced_workflows": [{
                     "path": f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{original}",

@@ -110,16 +110,26 @@ class SdkNativeValidationCliTest(unittest.TestCase):
     def test_in_process_capability_is_forwarded_without_reauthentication_or_policy_replacement(self):
         capability = object()
         with patch('reuse_qualification.completed_frozen_options') as authenticate, \
-                patch.object(workflow, 'execute') as execute:
+                patch.object(workflow, 'execute', autospec=True) as execute:
             self.assertEqual(0, workflow.main(self.argv, _completed_frozen=capability))
             self.assertIs(capability, execute.call_args.kwargs['completed_frozen'])
+            for name in ('completed_frozen_policy', 'sdk_checkpoint_owner', 'sdk_checkpoint'):
+                self.assertNotIn(name, execute.call_args.kwargs)
             authenticate.assert_not_called()
-            execute.reset_mock()
-            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                workflow.main([*self.argv, '--completed-frozen-policy', '/replacement'],
-                    _completed_frozen=capability)
-            execute.assert_not_called()
-            authenticate.assert_not_called()
+            replacements = (
+                ['--completed-frozen-policy', '/replacement'],
+                ['--sdk-checkpoint-owner', '/replacement-owner'],
+                ['--sdk-checkpoint', '{}'],
+                ['--sdk-checkpoint-owner', '/replacement-owner', '--sdk-checkpoint', '{}'],
+            )
+            for replacement in replacements:
+                with self.subTest(replacement=replacement):
+                    execute.reset_mock()
+                    with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+                        workflow.main([*self.argv, *replacement], _completed_frozen=capability)
+                    self.assertEqual(2, rejected.exception.code)
+                    execute.assert_not_called()
+                    authenticate.assert_not_called()
 
 
 if __name__ == "__main__":

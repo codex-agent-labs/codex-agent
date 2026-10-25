@@ -19,7 +19,7 @@ import product_reuse
 import sdk_handoff
 from sdk_phase import NATIVE_RUNTIME_PREDECESSORS
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
-from runtime_reference_transport import count, measured
+from runtime_reference_transport import count, measured, measured_volume
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
@@ -1569,7 +1569,8 @@ def prepare_native(plan, discovery, state, destination, *, component, expected_b
                    reject_symlink_parents=True) for name in ("gradle.log", "execution.json")}
     # This is an external transport envelope, not a product phase or receipt.
     # The receiving worker must authenticate its upload owner and original plan.
-    with tempfile.TemporaryDirectory(prefix="sdk-native-prepared-") as temporary:
+    with measured_volume("native_preparation_handoff", tempfile.gettempdir()), \
+            tempfile.TemporaryDirectory(prefix="sdk-native-prepared-") as temporary:
         upload = Path(temporary).resolve() / "upload"
         (upload / "original-plan").mkdir(parents=True)
         (upload / "original-plan/impact-plan.json").write_bytes(plan_bytes)

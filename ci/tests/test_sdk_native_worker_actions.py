@@ -27,10 +27,24 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
                 family = "${{ format('native-{0}', inputs.preparation-phase) }}" if command == "native-prepare" else "native-package"
                 self.assertIn("product: sdk\n        sdk-family: " + family, action)
                 self.assertLess(action.index("./.github/actions/capture-runtime-state"), action.index("- id: identity"))
-                self.assertLess(action.index("- id: identity"), action.index("./.github/actions/setup-kmp"))
-                self.assertLess(action.index("./.github/actions/setup-kmp"), action.index("ci.sdk_workflow " + command))
-                self.assertIn("cache-read-only: 'true'", action)
-                self.assertIn("product-worker: 'true'", action)
+                if command == "native-prepare":
+                    setups = ("./.github/actions/setup-kmp",)
+                    self.assertIn("cache-read-only: 'true'", action)
+                    self.assertIn("product-worker: 'true'", action)
+                else:
+                    self.assertNotIn("setup-kmp", action)
+                    setups = ("actions/setup-python@", "actions/setup-dotnet@",
+                              "dtolnay/rust-toolchain@", "dart-lang/setup-dart@")
+                    workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
+                    worker = workflow.split("  sdk-native-workers:\n", 1)[1].split("\n  sdk-collect-4:", 1)[0]
+                    self.assertIn('test -f "$JAVA_HOME_17_X64/bin/java"', worker)
+                    self.assertIn('echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"', worker)
+                    self.assertLess(worker.index("Select installed caller Java"), worker.index("- id: tooling"))
+                    self.assertLess(worker.index("- id: tooling"), worker.index("uses: ./.github/actions/sdk-native-package-worker"))
+                    self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", worker)
+                for setup in setups:
+                    self.assertLess(action.index("- id: identity"), action.index(setup))
+                    self.assertLess(action.index(setup), action.index("ci.sdk_workflow " + command))
                 self.assertIn('--keyring "$GITHUB_WORKSPACE/gradle/release/product-signing-keys.json"', action)
                 self.assertIn('--keys-directory "$GITHUB_WORKSPACE/gradle/release/keys"', action)
                 self.assertIn("GITHUB_TOKEN: ${{ github.token }}", action)
@@ -91,7 +105,7 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
                 callers += 1
                 self.assertIn("DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419", step, str(path))
                 self.assertRegex(step, r"dotnet-version: ['\"]8\.0\.419['\"]")
-        self.assertEqual(6, callers)
+        self.assertEqual(8, callers)
         action = (ROOT / ".github/actions/sdk-csharp-binary-worker/action.yml").read_text()
         command = action.split("name: Compile the exact elected C# binary", 1)[1].split("run: |\n", 1)[1]
         guard = textwrap.dedent(command.split("        policies=()", 1)[0])

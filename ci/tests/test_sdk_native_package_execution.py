@@ -261,6 +261,67 @@ class SdkNativePackageExecutionTest(unittest.TestCase):
             return workflow.execute(self.plan_path, self.discovery, self.state, self.destination,
                                     **{**self.arguments, **changes})
 
+    def test_retirement_observation_follows_cleanup_and_final_verification_only(self):
+        # Existing authentication/execution seams; real publication, shard and
+        # TemporaryDirectory cleanup. This is not genuine hosted custody.
+        capture, verify_shard = self.capture, workflow.verify_phase_shard
+        for case in ("success", "trace-off", "late-context", "final-shard"):
+            with self.subTest(case=case):
+                self.destination = self.root / f"build/retirement-{case}"
+                self.events.clear()
+                self.failure = "late-context" if case == "late-context" else None
+                self.arguments["environ"]["CODEX_AGENT_THROUGHPUT_TRACE"] = "0" if case == "trace-off" else "1"
+                observed, log = {}, io.StringIO()
+
+                def capture_identity(plan, destination, **kwargs):
+                    info = destination.parent.lstat()
+                    observed.update(path=str(destination.parent), device=info.st_dev, inode=info.st_ino)
+                    return capture(plan, destination, **kwargs)
+
+                def final_shard(path, instance):
+                    result = verify_shard(path, instance)
+                    if path == self.destination / "shard":
+                        self.assertFalse(os.path.lexists(observed["path"]))
+                        self.assertFalse(self.live)
+                        observed["finalVerified"] = True
+                        if case == "final-shard":
+                            raise ValueError("final public shard rejected")
+                    return result
+
+                with patch.object(self, "capture", side_effect=capture_identity), \
+                        patch.object(workflow, "verify_phase_shard", side_effect=final_shard), redirect_stderr(log):
+                    if case in {"late-context", "final-shard"}:
+                        with self.assertRaisesRegex(ValueError, "late SDK authentication failure|final public shard rejected"):
+                            self.invoke()
+                    else:
+                        result = self.invoke()
+                self.assertFalse(os.path.lexists(observed["path"]))
+                rows = [line.removeprefix("scratch-retirement ") for line in log.getvalue().splitlines()
+                        if line.startswith("scratch-retirement ")]
+                if case != "success":
+                    self.assertEqual([], rows)
+                    continue
+                self.assertTrue(observed["finalVerified"])
+                self.assertEqual(1, len(rows))
+                self.assertLess(len(rows[0]), 4096)
+                observation = load_canonical_json_bytes((rows[0] + "\n").encode())
+                self.assertEqual({name: observed[name] for name in ("path", "device", "inode")}
+                    | {"absentAfterExit": True}, observation["ownedDirectory"])
+                self.assertEqual({"path": str(self.destination / "shard"), "producer": self.producer,
+                    **{name: result[name] for name in ("buildKey", "receiptSha256", "objectSha256")}},
+                    observation["publishedShard"])
+                self.assertEqual({"component": "rust", "buildKey": self.preparation["buildKey"],
+                    "artifactId": 72, "artifactSha256": self.arguments["prepared_artifact_sha256"],
+                    "retainedPath": str(self.destination / "prepared-upload")}, observation["preparation"])
+                self.assertEqual({"artifactId": 71, "artifactSha256": self.arguments["sdk_inputs_artifact_sha256"]},
+                    observation["sdkInputs"])
+                self.assertGreater(observation["observedAtUnixNs"], 0)
+                self.assertFalse(observation["remoteCustodyObserved"])
+                self.assertNotIn("synthetic token", rows[0])
+                self.assertEqual(self.gate_receipt, (self.destination / "shard/phase-receipt.json").read_bytes())
+                self.assertEqual(b"opaque original wrapper", (self.destination /
+                    "prepared-upload/original/prepared-sources/python/source").read_bytes())
+
     def test_original_election_upload_runtime_and_private_admission_precede_publication(self):
         result = self.invoke()
         self.assertEqual(["enter", "inspect", "capture", "materialize", "worker", "gate", "exit-check", "exited"], self.events)

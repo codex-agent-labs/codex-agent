@@ -239,6 +239,57 @@ class SdkNativePrepareWorkflowTest(unittest.TestCase):
                 finally:
                     self.plan_path.write_bytes(self.original_plan_bytes)
 
+    def test_handoff_volume_record_follows_cleanup_and_preserves_rejection(self):
+        import json
+
+        for failure in (False, True):
+            with self.subTest(snapshot_mutation=failure):
+                self.destination = self.root / "build" / ("trace-rejected" if failure else "trace-success")
+                self.events, self.result = [], None
+                temporary_roots = []
+                testcase = self
+
+                class Trace(io.StringIO):
+                    def write(self, value):
+                        if value.startswith("throughput-volume "):
+                            testcase.assertTrue(temporary_roots)
+                            for path in temporary_roots:
+                                testcase.assertFalse(path.exists(), "record must follow private cleanup")
+                        return super().write(value)
+
+                def snapshot(source, destination, **kwargs):
+                    result = snapshot_regular_tree(source, destination, **kwargs)
+                    if self.result is not None and Path(source) == self.result["preparedSources"]:
+                        self.assertFalse(self.live)
+                        self.assertIn("exited", self.events)
+                        temporary_roots.append(Path(destination).parent.parent)
+                        if failure:
+                            (Path(source) / "synthetic").write_bytes(b"changed during upload snapshot")
+                    return result
+
+                stderr = Trace()
+                with patch.dict(os.environ, {"CODEX_AGENT_THROUGHPUT_TRACE": "1"}), \
+                        patch.object(workflow, "snapshot_regular_tree", side_effect=snapshot), \
+                        redirect_stderr(stderr):
+                    if failure:
+                        with self.assertRaisesRegex(ValueError, "outputs or original plan changed before handoff"):
+                            self.invoke()
+                    else:
+                        self.assertIs(self.invoke(), self.result)
+                records = [json.loads(line.removeprefix("throughput-volume "))
+                           for line in stderr.getvalue().splitlines()
+                           if line.startswith("throughput-volume ")]
+                self.assertEqual(1, len(records))
+                record, = records
+                self.assertEqual("native_preparation_handoff", record["operation"])
+                self.assertEqual(not failure, record["success"])
+                self.assertTrue(record["samplerStopped"])
+                self.assertEqual(0, record["sampleErrors"])
+                self.assertGreaterEqual(record["sampleCount"], 2)
+                self.assertGreaterEqual(record["elapsedSeconds"], 0)
+                self.assertEqual(not failure, (self.destination / "upload").exists())
+                self.assertFalse((self.destination / "shard").exists())
+
     def test_returns_exact_prepared_result_only_after_verified_context_exit(self):
         result = self.invoke()
         self.assertIs(result, self.result)
