@@ -137,7 +137,7 @@ CONTROL_FILES |= CACHE_FIXED_FILES
 SDK_FROZEN_REVISION = "ca7dd6d02193df66c1bcba9867255321e74a1fe6"
 SDK_REGISTRY = "ci/products/registry.py"
 # Reviewed caller/publication classifications preserve all 112 product inventories.
-SDK_SELECTION_REVISION = "a54be3dcc42e026137b9cc0f84572cfdbc4c9090"
+SDK_SELECTION_REVISION = "ace0becb637d7fbd6e63df621814dff72ab2a6cf"
 SDK_SELECTOR = "ci/products/selection.py"
 # Reviewed canonical LF writer correction. Historical acceptance never admits
 # the resulting new aggregate key; ordinary production/signature gates do that.

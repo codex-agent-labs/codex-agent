@@ -56,7 +56,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_sdk_selector_pin_matches_reviewed_candidate_control_bytes(self):
         root = HELPER.parents[3]
-        self.assertEqual("a54be3dcc42e026137b9cc0f84572cfdbc4c9090", recovery.SDK_SELECTION_REVISION)
+        self.assertEqual("ace0becb637d7fbd6e63df621814dff72ab2a6cf", recovery.SDK_SELECTION_REVISION)
         self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
                          (root / recovery.SDK_SELECTOR).read_bytes())
 
