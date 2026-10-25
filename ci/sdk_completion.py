@@ -606,6 +606,7 @@ def stage_partial_catalog(state, destination):
 
 
 @verification_scoped
+@products._fresh_ci_observations(share_nested=True)
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--repository-root", type=Path, required=True)

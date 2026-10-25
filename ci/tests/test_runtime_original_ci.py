@@ -380,6 +380,85 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 sdk_workflow.main(argv)
         self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
 
+    def test_completion_and_parity_share_only_same_consumer_historical_observations(self):
+        from contextlib import contextmanager, redirect_stdout, redirect_stderr
+        import io
+        from ci import sdk_completion
+        self.assertIs(adapter, sdk_completion.products)
+        prior_context = adapter._CI_OBSERVATIONS.get()
+        argv = ['--plan', str(self.root / 'plan'), '--discovery-root', str(self.root / 'discovery'),
+                '--state-root', str(self.root / 'state'), '--repository-root', str(self.root),
+                '--completed-frozen-policy', str(self.root / 'policy')]
+        self.measurements = []
+
+        @adapter._fresh_ci_observations
+        def read(environment, *, workflow=None):
+            for _ in range(2):
+                adapter._observe_ci_producer_jobs({'binary': self.producer},
+                    jobs_by_phase={'binary': self.jobs[0]['name']},
+                    trusted_workflow_sha=self.pin if workflow is None else workflow,
+                    token='not-a-real-token')
+
+        for mode, verifier in (('completion', 'require_sdk_completion'),
+                               ('parity', 'require_hosted_sdk_parity')):
+            command = argv + (['--hosted-parity', '--parity-policy', str(self.root / 'parity')]
+                              if mode == 'parity' else [])
+            for current, child, status, expected in (
+                    ('72', '72', 'completed', 1), ('71', '71', 'completed', 4),
+                    ('72', '72', 'in_progress', 4), ('72', '73', 'completed', 2),
+                    (None, None, 'completed', 2), ('invalid', 'invalid', 'completed', 2)):
+                environment = {} if current is None else {'GITHUB_RUN_ID': current, 'GITHUB_RUN_ATTEMPT': '2'}
+                nested = {} if child is None else {'GITHUB_RUN_ID': child, 'GITHUB_RUN_ATTEMPT': '2'}
+
+                @contextmanager
+                def authority(_):
+                    read(nested)
+                    yield {}  # Real observation batching; semantic admission is a separate fixture boundary.
+
+                def verify(*_, **__):
+                    read(nested)
+                    return {'result': 'fixture-only'}
+
+                with self.subTest(mode=mode, current=current, child=child, status=status), \
+                        mock.patch.dict(os.environ, environment, clear=True), \
+                        mock.patch('reuse.api_request', side_effect=self.api(run={**self.run, 'status': status})) as http, \
+                        mock.patch.object(sdk_completion, 'completed_frozen_options', authority), \
+                        mock.patch.object(sdk_completion, verifier, side_effect=verify), \
+                        redirect_stdout(io.StringIO()):
+                    for invocation in (1, 2):
+                        before = http.call_count
+                        self.assertEqual(0, sdk_completion.main(command))
+                        calls = [call for call in http.call_args_list
+                                 if call.args[0].endswith('/actions/runs/71/attempts/2')]
+                        self.measurements.append(dict(mode=mode, current=current, child=child,
+                            status=status, invocation=invocation, totalHttpRequests=http.call_count - before,
+                            cumulativeAttemptRequests=len(calls)))
+                        self.assertEqual(expected * invocation, len(calls))
+                        self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
+
+            for failure in ('wrong-workflow', 'consumer-error'):
+                @contextmanager
+                def authority(_):
+                    read({'GITHUB_RUN_ID': '72', 'GITHUB_RUN_ATTEMPT': '2'})
+                    yield {}
+
+                def fail(*_, **__):
+                    if failure == 'consumer-error':
+                        raise RuntimeError('consumer failed after observation')
+                    read({'GITHUB_RUN_ID': '72', 'GITHUB_RUN_ATTEMPT': '2'}, workflow='0' * 40)
+
+                output = io.StringIO()
+                with self.subTest(mode=mode, failure=failure), \
+                        mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '72', 'GITHUB_RUN_ATTEMPT': '2'}, clear=True), \
+                        mock.patch('reuse.api_request', side_effect=self.api()), \
+                        mock.patch.object(sdk_completion, 'completed_frozen_options', authority), \
+                        mock.patch.object(sdk_completion, verifier, side_effect=fail), \
+                        redirect_stdout(output), redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit if failure == 'wrong-workflow' else RuntimeError):
+                    sdk_completion.main(command)
+                self.assertEqual('', output.getvalue())
+                self.assertIs(prior_context, adapter._CI_OBSERVATIONS.get())
+
     def test_completed_attempt_observations_are_shared_only_inside_one_operation(self):
         from products.restore import verification_session
         with mock.patch('reuse.api_request', side_effect=self.api()) as http:
