@@ -18,7 +18,7 @@ import sdk_workflow
 from impact import effective_pathspecs, inventory
 from receipt import INPUT_NAMES
 from products.inventory import (load_canonical_json_bytes, publish_regular_tree,
-    read_regular_file_bytes, regular_file_inventory, require_sha256,
+    read_regular_file_bytes, regular_file_inventory, require_sha256, canonical_json_bytes,
     snapshot_regular_tree, write_canonical_json, run_git)
 from products.receipt import validate_phase_receipt, verify_output_manifest_identity
 from products.registry import PhaseInstanceId
@@ -223,9 +223,15 @@ def prepare(plan, discovery, state, destination, *, expected_build_key,
 def main(argv=None):
     from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    for name in ("plan", "discovery-root", "state-root", "destination", "repository-root",
+    for name in ("plan", "destination", "repository-root",
                  "keyring", "keys-directory", "sdk-validation-tooling"):
         parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("discovery-root", "state-root", "capture-destination"):
+        parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--capture-artifact-id", type=int)
+    parser.add_argument("--capture-artifact-sha256")
+    parser.add_argument("--capture-state-wave", type=int, choices=range(6))
+    parser.add_argument("--capture-sdk-state-wave", type=int, choices=range(1, 20))
     for name in ("expected-build-key", "sdk-inputs-artifact-sha256", "trusted-workflow-sha"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--sdk-inputs-artifact-id", type=int, required=True)
@@ -242,12 +248,41 @@ def main(argv=None):
     for name in ("sdk_validation_tooling", "sdk_apple_validation_policy"):
         if args[name] is not None:
             args[name] = product_reuse._canonical_control(args[name], "Android caller " + name)
+    incoming = {name: args.pop("capture_" + name) for name in
+                ("destination", "artifact_id", "artifact_sha256", "state_wave", "sdk_state_wave")}
+    combined = any(value is not None for value in incoming.values())
     try:
+        if combined:
+            if (args["phase"] != "validation" or args["discovery"] is not None or args["state"] is not None
+                    or any(incoming[name] is None for name in ("destination", "artifact_id", "artifact_sha256"))):
+                raise ValueError("Android validation requires complete capture controls or existing state roots")
+            runner_output = os.environ.get("GITHUB_OUTPUT")
+            if output is None or not runner_output or Path(runner_output).absolute() != output.absolute():
+                raise ValueError("Android capture output must be the runner-provided GITHUB_OUTPUT")
+            capture, publication = incoming["destination"].resolve(), args["destination"].resolve()
+            if capture == publication or capture in publication.parents or publication in capture.parents:
+                raise ValueError("Android capture and publication destinations overlap")
+            incoming["state_wave"] = incoming["state_wave"] or 0
+        elif args["discovery"] is None or args["state"] is None:
+            raise ValueError("Android policy requires both existing state roots")
         if "retained_sdk_inputs_source" in args:
             args["retained_sdk_inputs_source"] = product_reuse._canonical_control(
                 args["retained_sdk_inputs_source"], "Caller retained SDK input source")
         with metadata_admission_options(args) as admissions, completed_frozen_options(args) as semantic:
-            result = prepare(**args, **admissions, **semantic, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+            result = {}
+            if combined:
+                paths = sdk_workflow.capture(args["plan"], github_output_path=None, **incoming,
+                    family="android-validation", repository_root=args["repository_root"],
+                    trusted_workflow_sha=args["trusted_workflow_sha"],
+                    sdk_validation_tooling=args["sdk_validation_tooling"],
+                    sdk_apple_validation_policy=args["sdk_apple_validation_policy"],
+                    **admissions, **semantic, environ=os.environ, token=os.environ["GITHUB_TOKEN"])
+                args.update(plan=paths["plan_path"], discovery=paths["discovery_root"], state=paths["state_root"])
+                result.update({name: str(paths[name]) for name in
+                               ("input_root", "plan_path", "discovery_root", "state_root")})
+                result.update(sdk_matrix=canonical_json_bytes(paths["matrix"]).decode().strip(),
+                              sdk_workers_required="true" if paths["matrix"]["include"] else "false")
+            result.update(prepare(**args, **admissions, **semantic, environ=os.environ, token=os.environ["GITHUB_TOKEN"]))
         if output is None:
             for name, value in result.items():
                 print(name + "=" + value)

@@ -1,6 +1,8 @@
 """Android validation caller policy binds elected originals, not retained self-claims."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
+import io
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -88,6 +90,94 @@ class AndroidValidationPolicyTests(unittest.TestCase):
 
     def test_metadata_policy_requires_only_metadata_election_not_fresh_validation(self):
         self.check_selected_policy("metadata")
+
+    def test_combined_capture_keeps_one_native_context_and_rejects_failed_gates(self):
+        import reuse_qualification as qualification
+        from products.inventory import canonical_json_bytes
+
+        completed = self.root / "completed.json"
+        native_policy = dict(schemaVersion=1, kind="completed-frozen-reuse", consumerCommit="c" * 40,
+            verifierPolicySha256=_KEY, artifactId=71, artifactSha256=_KEY, runId=72,
+            runAttempt=1, signerCommit="b" * 40, sourceCommit="a" * 40)
+        tooling = self.root / "tooling.json"
+        tooling.write_bytes(canonical_json_bytes({"signed": True}))
+        output = self.root.parent / "github-output"
+        ready = dict(product="sdk", component="sdk-android", phase="validation", target="android", buildKey=_KEY)
+        real_prepare = policy.prepare
+        for case in ("success", "wrong-election", "policy-mutated"):
+            with self.subTest(case=case):
+                completed.write_bytes(canonical_json_bytes(native_policy))
+                output.write_bytes(b"")
+                capture = self.root / ("capture-" + case)
+                lease = []
+                cap = SimpleNamespace(check_consumer=lambda consumer: self.assertTrue(lease[0].exists()))
+                def fetch(destination, **kwargs):
+                    lease.append(destination.parent)
+                    self.assertEqual("c" * 40, kwargs["consumer_commit"])
+                    return cap, {}
+                def capture_original(plan, destination, **kwargs):
+                    self.assertTrue(lease[0].exists())
+                    self.assertIs(cap, kwargs["completed_frozen"])
+                    self.assertEqual(21, kwargs["artifact_id"])
+                    self.assertEqual(_KEY, kwargs["artifact_sha256"])
+                    self.assertTrue(kwargs["allow_earlier_attempt"])
+                    self.assertNotIn("requested_scope", kwargs)
+                    original = destination / "original"
+                    (original / "product-resume-inputs/plan").mkdir(parents=True)
+                    (original / "product-resume-inputs/plan/impact-plan.json").write_bytes(plan.read_bytes())
+                    (original / "product-resume-state").mkdir()
+                    (original / "runtime-state").mkdir()
+                def inspect(*args, **kwargs):
+                    self.assertIs(cap, kwargs["completed_frozen"])
+                    self.assertEqual((policy._VALIDATION,), kwargs["requested_scope"])
+                    self.assertTrue(lease[0].exists())
+                    return {"readyPlans": [ready]}
+                def prepare(**kwargs):
+                    self.assertIs(cap, kwargs["completed_frozen"])
+                    self.assertTrue(lease[0].exists())
+                    self.assertEqual(capture / "original/runtime-state", kwargs["state"])
+                    self.assertEqual(b"", output.read_bytes())
+                    if case == "wrong-election":
+                        # Real existing policy gate, not a fabricated exception.
+                        return real_prepare(**kwargs)
+                    if case == "policy-mutated":
+                        completed.write_bytes(b"changed")
+                    return {"plan-path": str(self.destination / "plan/impact-plan.json")}
+                argv = ["--plan", str(self.plan), "--capture-destination", str(capture),
+                    "--capture-artifact-id", "21", "--capture-artifact-sha256", _KEY,
+                    "--capture-sdk-state-wave", "16", "--destination", str(self.destination),
+                    "--repository-root", str(self.root), "--keyring", str(self.root / "keys.json"),
+                    "--keys-directory", str(self.root / "keys"), "--sdk-validation-tooling", str(tooling),
+                    "--expected-build-key", _KEY, "--sdk-inputs-artifact-id", "19",
+                    "--sdk-inputs-artifact-sha256", _KEY, "--trusted-workflow-sha", "b" * 40,
+                    "--completed-frozen-policy", str(completed), "--github-output", str(output)]
+                with (patch.dict(os.environ, {"GITHUB_TOKEN": "offline", "GITHUB_OUTPUT": str(output)}, clear=True),
+                      patch.object(qualification, "fetch_completed_frozen", side_effect=fetch) as native_fetch,
+                      patch.object(policy.product_reuse, "_validate_plan", return_value={"validationCommit": "d" * 40}),
+                      patch.object(policy.product_reuse, "_consumer", return_value={"kind": "ci"}),
+                      patch.object(policy.product_reuse, "capture_runtime_resume_upload", side_effect=capture_original) as original,
+                      patch.object(policy.product_reuse, "inspect_products", side_effect=inspect) as replay,
+                      patch.object(policy.product_reuse, "_verified_product_state", return_value=SimpleNamespace(
+                          prior_ready_plans={policy._VALIDATION: {"buildKey": "sha256:" + "f" * 64}})),
+                      patch.object(policy, "prepare", side_effect=prepare) as prepared,
+                      redirect_stderr(io.StringIO()) as stderr):
+                    if case == "success":
+                        self.assertEqual(0, policy.main(argv))
+                        self.assertIn("sdk_workers_required=true\n", output.read_text())
+                        self.assertIn('"buildKey":"' + _KEY + '"', output.read_text())
+                        self.assertIn("plan-path=", output.read_text())
+                    else:
+                        with self.assertRaises(SystemExit) as failure:
+                            policy.main(argv)
+                        self.assertEqual(2, failure.exception.code)
+                        self.assertIn("not ready with its exact elected key" if case == "wrong-election"
+                                      else "changed during use", stderr.getvalue())
+                        self.assertEqual(b"", output.read_bytes())
+                    native_fetch.assert_called_once()
+                    original.assert_called_once()
+                    replay.assert_called_once()
+                    prepared.assert_called_once()
+                self.assertFalse(lease[0].exists())
 
     def check_selected_policy(self, selected_phase):
         instance = policy.PhaseInstanceId("sdk", "sdk-android", selected_phase, "android")

@@ -58,9 +58,16 @@ class AndroidValidationChildWorkflowTest(unittest.TestCase):
         # Readiness is authenticated from exact retained predecessors, not the
         # incidental wave in which a package happened to be produced.
         self.assertNotIn("sdk_state_wave == '16'", worker)
-        self.assertEqual(shared.count("uses: ./.github/actions/capture-runtime-state\n"), 1)
+        self.assertNotIn("uses: ./.github/actions/capture-runtime-state\n", shared)
+        self.assertEqual(shared.count("uses: ./.github/actions/hydrated-evidence-cache\n"), 1)
+        self.assertIn("mode: execute", shared)
+        self.assertIn('--capture-destination "$GITHUB_WORKSPACE/build/runtime-input"', shared)
+        self.assertIn('--capture-artifact-id "$ARTIFACT_ID" --capture-artifact-sha256 "$ARTIFACT_SHA256"', shared)
         self.assertNotIn("uses: ./.github/actions/capture-runtime-state\n", worker)
-        self.assertIn("plan-directory: ${{ steps.tooling.outputs.plan-directory }}", shared)
+        self.assertIn("PLAN_DIRECTORY: ${{ steps.tooling.outputs.plan-directory }}", shared)
+        self.assertIn('--plan "$PLAN_DIRECTORY/impact-plan.json"', shared)
+        for name in ("discovery_root", "state_root", "sdk_matrix", "sdk_workers_required"):
+            self.assertIn("value: ${{ steps.policy.outputs." + name + " }}", shared)
         self.assertIn("value: ${{ steps.policy.outputs.plan-path }}", shared)
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", shared)
         for name in ("plan-path", "discovery-root", "state-root", "sdk-matrix", "sdk-workers-required"):

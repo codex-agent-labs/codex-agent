@@ -126,6 +126,64 @@ class SdkCampaignOriginalLocatorTest(TestCase):
             self.assertEqual(origin["job_id"], observed.call_args.kwargs["expected_job_id"])
             self.assertEqual(key, observed.call_args.kwargs["expected_build_key"])
 
+    def test_current_android_metadata_preserves_exact_original_after_rotation(self):
+        key = "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"
+        expected = {'producer': {'commit': 'db89763a59757d36b72da56117f5498efe02acd6',
+                      'event': 'pull_request',
+                      'pullRequest': 31,
+                      'repository': 'codex-agent-labs/codex-agent',
+                      'runAttempt': 2,
+                      'runId': 40140521274,
+                      'tree': '678cbafb596df74e698560c4ff6e8319883fb8a6',
+                      'workflowPath': '.github/workflows/ci.yml'},
+         'artifact_id': 12580069782,
+         'artifact_sha256': 'sha256:5187bcb5f5373a4a819c7b74d60a60e20b7902b03bc6df2b13a1426c0aa72354',
+         'receipt_sha256': 'sha256:8ea0db08c028da06ac21411edfa413ccd4420a4c9ebcb4d13add447ea379f580',
+         'object_sha256': 'sha256:2abc1e8e0aa5307aa305adbe0f04ffd2c666a27abf9bef152a8e79317cdf9a84',
+         'job_id': 121022346984,
+         'workflow_sha': '50b21ae250d6a515f29a2d067628ad4e0bf6f213',
+         'workflow_path': '.github/workflows/sdk-android-metadata-validation.yml',
+         'job_name': 'product-validation / sdk-android-metadata-result / sdk-android-metadata-android',
+         'context': {'repositoryRoot': '/home/runner/work/codex-agent/codex-agent',
+                     'metadataRequest': '/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json'}}
+        producer = expected["producer"]
+        options = {"phase": "metadata", "component": "sdk-android", "target": "android"}
+        # Synthetic later consumers exercise ordering, not future CI identities.
+        consumer = {**self.fixture.producer, "runId": producer["runId"] + 1, "runAttempt": 1}
+        self.assertEqual(expected, locator.retained_core_origin(build_key=key, consumer=consumer, **options))
+        self.assertEqual(expected, locator.retained_core_origin(build_key=key,
+            consumer={**consumer, "runId": producer["runId"], "runAttempt": 3}, **options))
+        for change in ({"repository": "other/repo"}, {"workflowPath": "other.yml"},
+                {"event": "push"}, {"pullRequest": 32}, {"runId": True}, {"runAttempt": False},
+                {"runId": producer["runId"] - 1}, {"runId": producer["runId"], "runAttempt": 1},
+                {"runId": producer["runId"], "runAttempt": 2}):
+            with self.subTest(change=change):
+                self.assertIsNone(locator.retained_core_origin(build_key=key,
+                    consumer={**consumer, **change}, **options))
+        for change in ({"phase": "package"}, {"component": "sdk-core"}, {"target": "common"},
+                {"build_key": "sha256:" + "0" * 64}):
+            self.assertIsNone(locator.retained_core_origin(
+                **{**options, "build_key": key, "consumer": consumer, **change}))
+        with patch.object(locator.products, "_validate_plan", return_value={"event": "pull_request", "remoteBuildAuthorized": True}), \
+                patch.object(locator.products, "_consumer", return_value={"producer": consumer}), \
+                patch.object(locator, "_locate", return_value={name: expected[name] for name in
+                    ("artifact_id", "artifact_sha256")}) as observe:
+            def call():
+                return locator.locate_retained_core_binary_upload(self.fixture.plan_path, self.fixture.repository,
+                    expected_build_key=key, token="synthetic", environ={}, **options)
+            self.assertEqual(expected, call())
+            self.assertEqual(producer, observe.call_args.args[0])
+            self.assertEqual(expected["job_id"], observe.call_args.kwargs["expected_job_id"])
+            self.assertEqual(key, observe.call_args.kwargs["expected_build_key"])
+            self.assertEqual({"metadata": {"path": expected["workflow_path"], "sha": expected["workflow_sha"]}},
+                observe.call_args.kwargs["trusted_workflows_by_phase"])
+            self.assertTrue(observe.call_args.kwargs["name"].endswith(producer["tree"] + "-attempt-2"))
+            for wrong in ({"artifact_id": expected["artifact_id"] + 1}, {"artifact_sha256": "sha256:" + "0" * 64}):
+                observe.return_value = {name: expected[name] for name in ("artifact_id", "artifact_sha256")}
+                observe.return_value.update(wrong)
+                with self.assertRaisesRegex(ValueError, "reviewed successful original"):
+                    call()
+
     def test_current_metadata_keeps_exact_original_and_rejects_other_scope(self):
         key = "sha256:d52f1b139e6b747db4f434d6d748e40bfa7e10e84646e3d8ee684193f44bb578"
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",

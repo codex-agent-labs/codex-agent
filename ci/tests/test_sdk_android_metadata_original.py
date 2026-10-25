@@ -112,6 +112,24 @@ class AndroidMetadataOriginalTest(unittest.TestCase):
             self.held.assert_not_called()
             self.assertLess(max(sizes), f.archive.stat().st_size * 2)
 
+    def test_retained_predecessors_require_native_qualification_before_metadata_body(self):
+        from products.registry import PhaseInstanceId
+        with self.completed_fixture() as f:
+            download = original.product_reuse._download_contract_ci_upload
+            for phase in ("package", "validation"):
+                identity = PhaseInstanceId("sdk", "sdk-android", phase, "android")
+                qualified = f.native.pop(identity)
+                with self.subTest(missing_native_phase=phase):
+                    with self.assertRaisesRegex(ValueError,
+                            "Android predecessor lacks exact native semantic qualification"):
+                        original.verify_completed_android_metadata(
+                            f.envelope, f.validations, **f.arguments)
+                    download.assert_not_called()
+                f.native[identity] = qualified
+            original.verify_completed_android_metadata(f.envelope, f.validations, **f.arguments)
+            self.assertEqual(download.call_count, 1)
+            self.held.assert_not_called()
+
     def test_completed_join_keeps_authority_byte_and_lifetime_guards(self):
         with self.completed_fixture() as f:
             def call(**changes):
