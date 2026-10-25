@@ -187,6 +187,93 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             self.assertNotIn(forbidden, job)
         self.assertIn("ref: ${{ needs.plan.outputs.validation_commit }}", job)
 
+    def test_native_full_reuse_skips_only_empty_continuations_with_existing_gates(self):
+        guarded = (
+            "sdk-ios-binary-plan", "runtime-continuation", "sdk-javascript-metadata-result",
+            "sdk-csharp-binary-result", "sdk-native-packages", "sdk-ios-packages",
+            "sdk-native-validation-result", "sdk-native-result", "sdk-ios-validation-result",
+            "sdk-ios-metadata-result",
+        )
+        # Evaluate these saved conditions only, not a general Actions scheduler.
+        def eligible(name, recovery=True, ready="true", full="true", authorization="true",
+                     runtime_result="success"):
+            job = self.job(name)
+            parents = re.search(r"needs: \[([^\]]+)\]", job)[1].split(", ")
+            values = {parent: {"result": "success", "outputs": {
+                "event_authorized": authorization, "remote_build_authorized": authorization,
+                "native_resume_ready": ready, "native_resume_full_reuse": full,
+                "native_sdk_direct": "false", "ios_validation_direct": "false",
+                "aggregate_state": "completed"}} for parent in parents}
+            if "runtime-continuation" in values:
+                values["runtime-continuation"]["result"] = runtime_result
+            condition = re.search(r"(?ms)^    if: >-\n(.*?)(?=^    \S)", job)[1]
+            condition = " ".join(condition.split())
+            condition = condition.replace("always()", "True").replace("cancelled()", "False")
+            condition = condition.replace("needs.*.result", repr([v["result"] for v in values.values()]))
+            condition = re.sub(r"needs\.([a-z0-9-]+)\.(result|outputs\.[a-z0-9_]+)",
+                lambda m: repr(values[m[1]]["result"] if m[2] == "result" else
+                               values[m[1]]["outputs"].get(m[2].split(".")[1], "")), condition)
+            condition = condition.replace("inputs.runtimeRecoveryOnly", "False")
+            condition = condition.replace("inputs.sdkRecoveryOnly", repr(recovery))
+            condition = re.sub(r"!(?!=)", " not ", condition).replace("&&", " and ").replace("||", " or ")
+            return eval(condition.strip(), {"__builtins__": {}}, {"contains": lambda rows, value: value in rows})
+
+        for name in guarded:
+            self.assertIn("plan", re.search(r"needs: \[([^\]]+)\]", self.job(name))[1].split(", "))
+            for recovery, ready, full in product((False, True), ("", "false", "true"), ("", "false", "true")):
+                with self.subTest(job=name, recovery=recovery, ready=ready, full=full):
+                    self.assertEqual(not (recovery and ready == full == "true"),
+                                     eligible(name, recovery, ready, full))
+                    self.assertFalse(eligible(name, recovery, ready, full, authorization="false"))
+        for name in ("runtime-aggregate-continuation", "sdk-javascript"):
+            with self.subTest(dependent=name):
+                self.assertIn("needs.runtime-continuation.result == 'success'", self.job(name))
+                self.assertFalse(eligible(name, runtime_result="skipped"))
+                self.assertTrue(eligible(name, full="false"))
+        # Resume remains the real successful transport boundary, not an invented
+        # success for a skipped job. Completion still consumes the same needs.
+        self.assertNotIn("!(inputs.sdkRecoveryOnly", self.job("product-resume"))
+        self.assertIn("capture_planned_native_resume", self.job("product-resume"))
+        self.assertIn("needs.product-resume.result == 'success'", self.job("sdk-completion"))
+
+    def test_full_reuse_parent_shell_uses_real_selector_and_rejects_stale_or_failed_branches(self):
+        job = self.job("sdk-completion")
+        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", job)
+        script = textwrap.dedent(match[1])
+        locator = {"artifact_id": "91", "artifact_digest": "sha256:" + "a" * 64,
+                   "state_wave": "0", "sdk_state_wave": ""}
+        needs = {name: {"result": "skipped", "outputs": {}} for name in SELECTOR_JOBS}
+        needs["product-resume"] = {"result": "success", "outputs": {
+            **locator, "wave_failed": "false", "full_reuse": "true"}}
+        cases = [(needs, True)]
+        for field, value in (("full_reuse", "false"), ("full_reuse", ""), ("wave_failed", "true")):
+            rejected = deepcopy(needs)
+            rejected["product-resume"]["outputs"][field] = value
+            cases.append((rejected, False))
+        for name in SELECTOR_JOBS:
+            for status in ("failure", "cancelled"):
+                rejected = deepcopy(needs)
+                rejected[name]["result"] = status
+                cases.append((rejected, False))
+            if name != "product-resume":
+                rejected = deepcopy(needs)
+                rejected[name]["outputs"] = dict(locator)
+                cases.append((rejected, False))
+        for number, (value, success) in enumerate(cases):
+            before = deepcopy(value)
+            with self.subTest(case=number), tempfile.TemporaryDirectory(prefix="sdk-full-reuse-parent-") as temporary:
+                output = Path(temporary) / "output"
+                environment = {name.upper().replace('-', '_'): json.dumps(v) for name, v in value.items()}
+                with patch.dict(os.environ, {**environment, "GITHUB_OUTPUT": str(output)}, clear=True):
+                    if success:
+                        exec(compile(script, "saved-full-reuse-completion-parent", "exec"), {})
+                        self.assertEqual(locator, dict(line.split("=", 1) for line in output.read_text().splitlines()))
+                    else:
+                        with self.assertRaises(ValueError):
+                            exec(compile(script, "saved-full-reuse-completion-parent", "exec"), {})
+                        self.assertFalse(output.exists())
+            self.assertEqual(before, value)
+
     def test_tooling_is_job_local_from_contract_child_not_sdk_plan(self):
         job = self.job("sdk-completion")
         block = job.split("uses: ./.github/actions/capture-sdk-tooling", 1)[1].split("\n      - ", 1)[0]
@@ -438,6 +525,133 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                     "needs.sdk-completion.outputs.phase_count", repr(count)).replace(
                     "needs.plan.outputs.native_resume_full_reuse", repr(reuse)).replace("&&", "and")
                 self.assertEqual(required, eval(actual, {"__builtins__": {}}))
+
+
+    def parity_step(self, marker):
+        source = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
+        matches = [part for part in re.split(r"(?m)^      - ", source) if part.startswith(marker + "\n")]
+        self.assertEqual(1, len(matches), marker)
+        return matches[0]
+
+    def test_hosted_parity_wiring_selects_only_explicit_complete_imported_reuse(self):
+        source = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
+        self.assertIn("reuseCompletedParity:\n        type: boolean\n        default: false", source)
+        self.assertIn("sdk-parity: ${{ inputs.reuseCompletedParity }}", source)
+        self.assertNotIn("parityPolicy:", source)
+        for marker in ("id: tooling", "id: apple-policy", "id: capture"):
+            self.assertIn("if: inputs.importedOnly\n", self.parity_step(marker))
+        self.assertIn("if: inputs.importedOnly && !inputs.reuseCompletedParity",
+                      self.parity_step("name: Verify full parity from authenticated immutable phases"))
+        self.assertIn("if: inputs.importedOnly && inputs.reuseCompletedParity",
+                      self.parity_step("name: Verify approved original parity against current native state"))
+        self.assertIn("if: ${{ !inputs.reuseCompletedParity }}", self.parity_step("id: upload"))
+        self.assertIn("plan-directory: ${{ runner.temp }}/sdk-parity-plan", self.parity_step("id: capture"))
+        self.assertIn("path: ${{ runner.temp }}/sdk-parity-plan", source)
+        parent_source = (ROOT / ".github/workflows/product-validation.yml").read_text()
+        self.assertRegex(parent_source, r"reuseCompletedParity:\n        description: [^\n]+\n        type: boolean\n        default: false")
+        caller = (ROOT / ".github/workflows/ci.yml").read_text()
+        caller_selection = re.search(r"reuseCompletedParity: \$\{\{ (.*?) \}\}", caller)[1]
+        for value in ("", "false", "true", "TRUE", "unknown"):
+            # GitHub string comparisons ignore case; this evaluates only the saved Boolean selector.
+            self.assertEqual(value.casefold() == "true", eval(caller_selection.replace("vars.CODEX_AGENT_REUSE_COMPLETED_SDK_PARITY", repr(value.casefold())), {"__builtins__": {}}))
+        parent = self.job("sdk-parity")
+        selection = re.search(r"reuseCompletedParity: \$\{\{ (.*?) \}\}", parent)[1]
+        for opt_in, recovery, complete, count, full in product((False, True), (False, True), ("", "false", "true"), ("", "61", "62"), ("", "false", "true")):
+            condition = selection.replace("inputs.reuseCompletedParity", repr(opt_in)).replace("inputs.sdkRecoveryOnly", repr(recovery))
+            for field, value in (("complete", complete), ("phase_count", count), ("full_reuse", full)):
+                condition = condition.replace("needs.sdk-completion.outputs." + field, repr(value))
+            self.assertEqual(opt_in and recovery and complete == full == "true" and count == "62",
+                             eval(condition.replace("&&", " and "), {"__builtins__": {}}))
+        guard = textwrap.dedent(self.parity_step("name: Require imported complete state for original parity reuse").split("        run: |\n", 1)[1])
+        correct = {"IMPORTED_ONLY": "true", "SDK_COMPLETE": "true", "SDK_PHASE_COUNT": "62", "SDK_FULL_REUSE": "true"}
+        self.assertEqual(0, subprocess.run(["bash", "-c", guard], env=correct, capture_output=True).returncode)
+        for key in correct:
+            self.assertNotEqual(0, subprocess.run(["bash", "-c", guard], env={**correct, key: ""}, capture_output=True).returncode)
+        merge = self.job("merge-gate")
+        self.assertIn('[[ "$SDK_PARITY_ARTIFACT_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1', merge)
+        download = merge.split("artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}", download)
+        self.assertIn("github-token: ${{ github.token }}", download)
+        self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parent)
+        for gate in ("needs.plan.outputs.event_authorized == 'true'", "needs.plan.outputs.remote_build_authorized == 'true'",
+                     "!contains(needs.*.result, 'failure')", "!contains(needs.*.result, 'cancelled')"):
+            self.assertIn(gate, parent)
+
+    def test_parity_output_keeps_original_run_and_rejects_invalid_reuse_without_fallback(self):
+        step = self.parity_step("id: parity-output")
+        script = textwrap.dedent(re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", step)[1])
+        report = {"result": "passed", "phaseCount": 112, "verificationContext": {
+            "kind": "hosted-original-parity-reuse", "producer": {"runId": 200, "runAttempt": 2}},
+            "sdkParity": {"artifactId": 71, "artifactSha256": "sha256:" + "a" * 64, "producer": {"runId": 100}}}
+        cases = [("true", report, True), ("false", None, True)]
+        for path, value in ((('result',), 'failed'), (('phaseCount',), 111),
+                (('verificationContext', 'producer', 'runId'), 201),
+                (('verificationContext', 'kind'), 'local'),
+                (('sdkParity', 'artifactId'), True), (('sdkParity', 'artifactSha256'), 'bad'),
+                (('sdkParity', 'producer', 'runId'), 0)):
+            changed = deepcopy(report); cursor = changed
+            for field in path[:-1]: cursor = cursor[field]
+            cursor[path[-1]] = value; cases.append(('true', changed, False))
+        cases.append(('unknown', report, False))
+        for selected, value, accepted in cases:
+            with self.subTest(selected=selected, report=value), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); output = root / 'output'
+                if value is not None:
+                    (root / 'sdk-parity-reuse.log').write_text('throughput {"operation":"fixture"}\n' + json.dumps(value) + '\n')
+                environment = {'RUNNER_TEMP': temporary, 'GITHUB_OUTPUT': str(output), 'GITHUB_RUN_ID': '200',
+                    'GITHUB_RUN_ATTEMPT': '2', 'REUSE_COMPLETED_PARITY': selected,
+                    'FRESH_ARTIFACT_ID': '81', 'FRESH_ARTIFACT_SHA256': 'b' * 64}
+                with patch.dict(os.environ, environment, clear=True):
+                    if accepted:
+                        exec(compile(script, 'saved-parity-output', 'exec'), {})
+                        self.assertEqual({'artifact_id': '71' if selected == 'true' else '81',
+                            'artifact_digest': 'sha256:' + ('a' if selected == 'true' else 'b') * 64,
+                            'artifact_run_id': '100' if selected == 'true' else '200'},
+                            dict(row.split('=', 1) for row in output.read_text().splitlines()))
+                    else:
+                        with self.assertRaises((ValueError, KeyError)):
+                            exec(compile(script, 'saved-parity-output', 'exec'), {})
+                        self.assertFalse(output.exists())
+
+    def test_hosted_parity_shell_keeps_current_inputs_and_withholds_outputs_on_failure(self):
+        verify = textwrap.dedent(self.parity_step('name: Verify approved original parity against current native state').split('        run: |\n', 1)[1])
+        publish = textwrap.dedent(self.parity_step('id: parity-output').split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); binary = root / 'bin'; binary.mkdir()
+            wrapper = binary / 'python3'
+            wrapper.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+                'if sys.argv[1:] == ["-"]: os.execv(sys.executable, [sys.executable, "-"])\n'
+                'open(os.environ["ARGV"], "w").write(json.dumps(sys.argv[1:]))\n'
+                'print("throughput fixture")\n'
+                'if os.environ["FAIL"] == "true": raise SystemExit(7)\n'
+                'print(json.dumps({"result":"passed","phaseCount":112,"verificationContext":'
+                '{"kind":"hosted-original-parity-reuse","producer":{"runId":200,"runAttempt":2}},'
+                '"sdkParity":{"artifactId":71,"artifactSha256":"sha256:"+"a"*64,"producer":{"runId":100}}}))\n')
+            wrapper.chmod(0o700)
+            for failure, missing_policy in ((False, False), (True, False), (False, True)):
+                with self.subTest(failure=failure, missing_policy=missing_policy):
+                    work = root / f'{failure}-{missing_policy}'; work.mkdir(); output = work / 'output'; argv = work / 'argv'
+                    environment = {**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                        'RUNNER_TEMP': str(work), 'GITHUB_WORKSPACE': str(root), 'GITHUB_OUTPUT': str(output),
+                        'GITHUB_RUN_ID': '200', 'GITHUB_RUN_ATTEMPT': '2', 'REUSE_COMPLETED_PARITY': 'true',
+                        'PLAN': '/fixture/plan', 'DISCOVERY_ROOT': '/fixture/discovery', 'STATE_ROOT': '/fixture/state',
+                        'SDK_VALIDATION_TOOLING': '/fixture/tooling', 'SDK_APPLE_VALIDATION_POLICY': '/fixture/apple',
+                        'TRUSTED_WORKFLOW_SHA': 'c' * 40, 'CODEX_AGENT_COMPLETED_REUSE_POLICY': '/protected/native',
+                        'CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY': '' if missing_policy else '/protected/parity',
+                        'FAIL': str(failure).lower(), 'ARGV': str(argv)}
+                    result = subprocess.run(['bash', '-c', verify + '\n' + publish], env=environment, capture_output=True, text=True)
+                    if failure or missing_policy:
+                        self.assertNotEqual(0, result.returncode); self.assertFalse(output.exists())
+                        if missing_policy: self.assertFalse(argv.exists())
+                    else:
+                        self.assertEqual(0, result.returncode, result.stderr)
+                        self.assertEqual(['-B', '-m', 'ci.sdk_completion', '--hosted-parity', '--plan', '/fixture/plan',
+                            '--discovery-root', '/fixture/discovery', '--state-root', '/fixture/state',
+                            '--sdk-original-workflow-sha', 'c' * 40, '--sdk-validation-tooling', '/fixture/tooling',
+                            '--sdk-apple-validation-policy', '/fixture/apple', '--repository-root', str(root),
+                            '--completed-frozen-policy', '/protected/native', '--parity-policy', '/protected/parity'],
+                            json.loads(argv.read_text()))
+                        self.assertIn('artifact_run_id=100\n', output.read_text())
 
 
 if __name__ == "__main__":

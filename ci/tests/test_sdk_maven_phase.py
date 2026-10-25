@@ -32,6 +32,8 @@ class MavenPhaseTest(unittest.TestCase):
         self.checkout = self.enterContext(patch.object(worker, "_runtime_worker_checkout"))
         self.environment = self.enterContext(patch.object(worker, "_runtime_worker_environment",
             return_value=({"FIXTURE": "true"}, self.root / "gradlew")))
+        self.python_environment = self.enterContext(patch.object(worker, "_worker_process_environment", create=True,
+            return_value={"FIXTURE": "true"}))
         self.enterContext(patch.object(worker, "_request_inventory", side_effect=lambda path: {path: sha256_file(path)}))
         self.process = self.enterContext(patch.object(worker.subprocess, "run", side_effect=self.produce))
         self.android_seed = self.enterContext(patch('products.gradle_bootstrap.seed_sdk_maven_binary_dependencies'))
@@ -75,8 +77,14 @@ class MavenPhaseTest(unittest.TestCase):
         self.assertEqual(self.root, kwargs["cwd"])
         self.assertEqual(subprocess.STDOUT, kwargs["stderr"])
         self.assertFalse(kwargs["check"])
-        self.assertEqual(1, command.count("ciProductPhase"))
-        self.assertIn("--offline", command)
+        if self.plan["phase"] == "binary":
+            self.assertEqual(1, command.count("ciProductPhase"))
+            self.assertIn("--offline", command)
+        else:
+            self.assertEqual(["python3", "-B", "-m", "ci.sdk_maven_phase", "package", str(self.root)], command[:6])
+            self.assertNotIn("ciProductPhase", command)
+            self.environment.assert_not_called()
+            self.python_environment.assert_called_once()
         base = self.root / ("build" if self.plan["phase"] == "binary" else "codex-agent-sdk/build")
         stage = base / f"product-stage/sdk/{self.plan['component']}/{self.plan['phase']}"
         payload = stage / "outputs/data.bin"
@@ -122,6 +130,51 @@ class MavenPhaseTest(unittest.TestCase):
                             "codexAgent.codexVersion", "codexAgent.codexArchiveSha256", "codexAgent.codexBinarySha256")))
                     finally:
                         fixture.doCleanups()
+
+    def test_python_package_composes_existing_bytes_without_compiler_or_gradle(self):
+        from ci.tests import test_product_sdk_maven as fixture
+        from products.inventory import regular_file_inventory, snapshot_regular_tree
+        from products.sdk_maven import package_sdk_maven, MAVEN_GROUPS
+        for component in ("sdk-core", "sdk-android"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                binary = root / "original/binary"
+                snapshot_regular_tree(fixture._repository(root / "fixture", component), binary / "outputs/maven")
+                fixture._write_binary_inventory(binary, component, "0.2.0")
+                write_output_manifest(binary, "sdk", component, "binary", worker._TARGETS[component],
+                    "0.2.0", {"maven":"outputs/maven", "evidence":"outputs/evidence"})
+                request = root / "request.json"
+                request.write_bytes(b"fixture authenticated compatibility request")
+                fields = {"codexAgent.product":"sdk", "codexAgent.component":component,
+                    "codexAgent.phase":"package", "codexAgent.target":worker._TARGETS[component],
+                    "codexAgent.sdkVersion":"0.2.0", "codexAgent.candidateCommit":"a"*40,
+                    "codexAgent.candidateTree":"b"*40, "codexAgent.sdkCompatibilityRequest":str(request),
+                    "codexAgent.sdkCoreBinaryStageRoot" if component=="sdk-core" else
+                        "codexAgent.sdkAndroidBinaryStageRoot":str(binary)}
+                before = regular_file_inventory(binary)
+                def compatibility(*, output): output.write_bytes(fixture._compatibility())
+                with patch("products.sdk_compatibility.load_sdk_compatibility_request", return_value={}), \
+                     patch("products.sdk_compatibility.produce_sdk_compatibility", side_effect=compatibility), \
+                     patch.object(worker.subprocess, "run", side_effect=AssertionError("No compiler or Gradle process permitted")), \
+                     patch("products.inventory.snapshot_regular_tree", side_effect=AssertionError("No redundant binary snapshot permitted")) as snapshot:
+                    worker.main(worker._package_command(root, fields)[4:])
+                    snapshot.assert_not_called()
+                self.assertFalse((root / "codex-agent-sdk/build/imported-sdk-binary-stages").exists())
+                stage = root / f"codex-agent-sdk/build/product-stage/sdk/{component}/package"
+                expected = root / "reference-stage"
+                declaration = expected / "outputs/evidence/sdk-compatibility.json"
+                declaration.parent.mkdir(parents=True)
+                declaration.write_bytes(fixture._compatibility())
+                package_sdk_maven(binary / "outputs/maven", expected / "outputs/maven", declaration,
+                                  MAVEN_GROUPS[component], "0.2.0", component)
+                write_output_manifest(expected, "sdk", component, "package", worker._TARGETS[component],
+                    "0.2.0", {"evidence":"outputs/evidence", "maven":"outputs/maven"})
+                self.assertEqual(regular_file_inventory(expected), regular_file_inventory(stage))
+                self.assertEqual(before, regular_file_inventory(binary))
+                with self.assertRaisesRegex(ValueError, "fresh normalized"):
+                    worker.main(worker._package_command(root, fields)[4:])
+                with self.assertRaisesRegex(ValueError, "fields are invalid"):
+                    worker.main(worker._package_command(root, {**fields, "codexAgent.command":"compiler"})[4:])
 
     def test_android_dependency_seed_failure_prevents_product_execution(self):
         arguments = self.arguments('sdk-android', 'binary')

@@ -1,6 +1,7 @@
 """Require completion of every selected SDK phase in authenticated replay."""
 
 import argparse
+from contextlib import ExitStack
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -290,14 +291,62 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
     original_recipe = git_inventory(root, producer["tree"], recipe)
     if not original_recipe or original_recipe != git_inventory(root, revision, recipe):
         raise ValueError("Original SDK parity verifier recipe differs from current inputs")
-    content = verify_completed_parity_archive(archive, expected_phases=result["phases"],
-        expected_bytes=artifact["size_in_bytes"], expected_sha256=policy["artifactSha256"])
+    with ExitStack() as held:
+        if archive is None:
+            # Reuse this fresh official observation; do not query metadata again.
+            limit = 32 * 1024 * 1024
+            size = require_integer(artifact["size_in_bytes"], "Original parity archive bytes", 1)
+            if size > limit:
+                raise ValueError("Original parity archive exceeds its transport bound")
+            private = Path(held.enter_context(tempfile.TemporaryDirectory(prefix="sdk-parity-original-")))
+            _, archive = products._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+                destination=private / "parity.zip", limit=limit,
+                artifact_sha256=policy["artifactSha256"], size=size)
+        content = verify_completed_parity_archive(archive, expected_phases=result["phases"],
+            expected_bytes=artifact["size_in_bytes"], expected_sha256=policy["artifactSha256"])
     if read_regular_file_bytes(policy_path, max_bytes=4096, reject_symlink_parents=True) != raw:
         raise ValueError("Original SDK parity caller policy changed during verification")
     return dict(content, producer=producer, jobId=job["id"],
         artifactId=policy["artifactId"], artifactSha256=policy["artifactSha256"],
         policySha256=sha256_bytes(raw), verifierInputsSha256=sha256_bytes(original_recipe.encode()))
 
+
+
+def require_hosted_sdk_parity(plan_path, discovery_root, state_root, *, repository_root,
+                              parity_policy, environ=None, completed_frozen=None, **options):
+    """Reuse an independently approved original policy inside current hosted replay.
+
+    The policy is caller-owned authority, never selected from transported parity
+    reports. Future workflow wiring must provision it from protected review.
+    This verifies reuse; it does not claim a newly executed M11 consumer.
+    """
+    from products.signing_isolation import require_no_signing_secret
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if (environment.get("GITHUB_ACTIONS") != "true" or environment.get("GITHUB_JOB") != "sdk-parity"
+            or not environment.get("GITHUB_TOKEN") or completed_frozen is None):
+        raise ValueError("Hosted parity reuse requires its actual job and native authority")
+    root = Path(repository_root).resolve(strict=True)
+    reports = []
+
+    def consume(state):
+        if state.completed_frozen is not completed_frozen:
+            raise ValueError("Hosted parity replay changed its native authority")
+        completed_frozen.check_consumer(state.consumer)
+        report = _repository_report(state.prior)
+        report["sdkParity"] = _completed_parity(root, state.plan["validationCommit"],
+            state.prior, parity_policy, None, environment["GITHUB_TOKEN"])
+        report["verificationContext"] = {"kind": "hosted-original-parity-reuse", "producer": state.producer}
+        reports.append(report)
+
+    products.inspect_products(plan_path, discovery_root, state_root, repository_root=root,
+        environ=environment, completed_frozen=completed_frozen,
+        _verified_state_consumer=consume, **options)
+    if len(reports) != 1:
+        raise ValueError("Hosted parity requires one authenticated selected-state continuation")
+    if products._git_value(root, "rev-parse", "HEAD^{commit}") != reports[0]["verificationContext"]["producer"]["commit"]:
+        raise ValueError("Hosted parity source changed during verification")
+    return reports[0]
 
 def verify_completed_parity_archive(archive, *, expected_phases, expected_bytes, expected_sha256):
     """Read exact prevalidated parity bytes, NOT grant transport/release authority.
@@ -516,6 +565,8 @@ def main(argv=None):
                         help="Require the complete authenticated Contract/Runtime/SDK phase DAG")
     parser.add_argument("--sdk", action="store_true",
                         help="Require local current SDK closure and authenticated original full parity")
+    parser.add_argument("--hosted-parity", action="store_true",
+                        help="Verify an approved original parity upload against current hosted native state")
     parser.add_argument("--runtime", action="store_true",
                         help="Require only current Contract/Runtime originals, without SDK acquisition")
     parser.add_argument("--runtime-contract-policy", type=Path)
@@ -541,7 +592,13 @@ def main(argv=None):
         parser.error("Standalone Contract inputs require --runtime --local")
     if args.sdk and (not args.local or args.repository or args.parity_policy is None or args.parity_archive is None):
         parser.error("--sdk requires --local and both original parity inputs, without --repository")
-    if not args.sdk and (args.parity_policy is not None or args.parity_archive is not None):
+    if args.hosted_parity:
+        if (args.local or args.sdk or args.repository or args.runtime or args.gradle
+                or args.parity_policy is None or args.parity_archive is not None
+                or args.completed_frozen_policy is None or args.state_root is None
+                or args.partial_catalog_destination is not None or args.github_output is not None):
+            parser.error("Hosted parity requires current state, native policy and original parity policy only")
+    elif not args.sdk and (args.parity_policy is not None or args.parity_archive is not None):
         parser.error("Original parity inputs require --sdk --local")
     if args.repository and (args.partial_catalog_destination is not None or args.github_output is not None):
         parser.error("Repository verification requires its standalone report, not catalog or routing outputs")
@@ -551,7 +608,7 @@ def main(argv=None):
         if (not (args.repository or args.sdk or args.runtime) or args.completed_frozen_policy is None or any(
                 value is not None for name, value in vars(args).items() if name not in {
                     "repository_root", "completed_frozen_policy", "repository", "local", "gradle",
-                    "sdk", "parity_policy", "parity_archive", "runtime",
+                    "sdk", "parity_policy", "parity_archive", "runtime", "hosted_parity",
                     "runtime_contract_policy", "runtime_contract_manifest"})):
             parser.error("Local repository verification accepts only its current source and explicit completed policy")
     elif args.plan is None or args.discovery_root is None:
@@ -577,7 +634,11 @@ def main(argv=None):
             options = {**tooling, **apple, **admissions, **completed,
                 **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
                    if args.sdk_original_workflow_sha is not None else {})}
-            if args.repository:
+            if args.hosted_parity:
+                result = require_hosted_sdk_parity(args.plan, args.discovery_root, args.state_root,
+                    repository_root=args.repository_root, environ=os.environ,
+                    parity_policy=args.parity_policy, **options)
+            elif args.repository:
                 result = require_repository_completion(args.plan, args.discovery_root, args.state_root,
                     repository_root=args.repository_root, environ=os.environ, **options)
             elif args.partial_catalog_destination is None:

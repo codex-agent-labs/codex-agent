@@ -18,6 +18,9 @@ on:
       importedOnly:
         type: boolean
         default: false
+      reuseCompletedParity:
+        type: boolean
+        default: false
       planOutputs:
         type: string
         default: '{}'
@@ -39,6 +42,8 @@ on:
         value: ${{ jobs.sdk-parity.outputs.artifact_id }}
       artifact_digest:
         value: ${{ jobs.sdk-parity.outputs.artifact_digest }}
+      artifact_run_id:
+        value: ${{ jobs.sdk-parity.outputs.artifact_run_id }}
 
 permissions:
   actions: read
@@ -53,17 +58,32 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      artifact_digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+      artifact_id: ${{ steps.parity-output.outputs.artifact_id }}
+      artifact_digest: ${{ steps.parity-output.outputs.artifact_digest }}
+      artifact_run_id: ${{ steps.parity-output.outputs.artifact_run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.validationCommit }}
+      - name: Require imported complete state for original parity reuse
+        if: inputs.reuseCompletedParity
+        env:
+          IMPORTED_ONLY: ${{ inputs.importedOnly }}
+          SDK_COMPLETE: ${{ fromJSON(inputs.sdkOutputs).complete }}
+          SDK_PHASE_COUNT: ${{ fromJSON(inputs.sdkOutputs).phase_count }}
+          SDK_FULL_REUSE: ${{ fromJSON(inputs.sdkOutputs).full_reuse }}
+        run: |
+          set -euo pipefail
+          test "$IMPORTED_ONLY" = true
+          test "$SDK_COMPLETE" = true
+          test "$SDK_PHASE_COUNT" = 62
+          test "$SDK_FULL_REUSE" = true
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          sdk-parity: ${{ inputs.reuseCompletedParity }}
       - if: ${{ !inputs.importedOnly }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -318,6 +338,7 @@ jobs:
         with:
           product: sdk
           plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}
+          plan-directory: ${{ runner.temp }}/sdk-parity-plan
           artifact-id: ${{ fromJSON(inputs.sdkOutputs).artifact_id }}
           artifact-sha256: ${{ fromJSON(inputs.sdkOutputs).artifact_digest }}
           state-wave: ${{ fromJSON(inputs.sdkOutputs).state_wave }}
@@ -326,7 +347,7 @@ jobs:
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
       - name: Verify full parity from authenticated immutable phases
-        if: inputs.importedOnly
+        if: inputs.importedOnly && !inputs.reuseCompletedParity
         env:
           PLAN: ${{ steps.capture.outputs.plan-path }}
           DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
@@ -346,7 +367,32 @@ jobs:
             --sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY" \
             --repository-root "$GITHUB_WORKSPACE" \
             --destination build/ci/sdk-parity-evidence ${reuse[@]+"${reuse[@]}"}
+      - name: Verify approved original parity against current native state
+        if: inputs.importedOnly && inputs.reuseCompletedParity
+        env:
+          PLAN: ${{ steps.capture.outputs.plan-path }}
+          DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
+          STATE_ROOT: ${{ steps.capture.outputs.state-root }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+          test -n "${CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY:-}"
+          test ! -e "$RUNNER_TEMP/sdk-parity-reuse.log"
+          python3 -B -m ci.sdk_completion --hosted-parity --plan "$PLAN" \
+            --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
+            --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+            --sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY" \
+            --parity-policy "$CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY" \
+            | tee "$RUNNER_TEMP/sdk-parity-reuse.log"
       - id: upload
+        if: ${{ !inputs.reuseCompletedParity }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -355,3 +401,42 @@ jobs:
           path: build/ci/sdk-parity-evidence
           compression-level: 0
           retention-days: 90
+      - id: parity-output
+        env:
+          REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity }}
+          FRESH_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          FRESH_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          selected = os.environ['REUSE_COMPLETED_PARITY']
+          if selected == 'true':
+              # The CLI's final JSON is emitted only after all contexts exit;
+              # preceding throughput lines remain diagnostic stdout.
+              lines = (Path(os.environ['RUNNER_TEMP']) / 'sdk-parity-reuse.log').read_text().splitlines()
+              report = json.loads(lines[-1])
+              context = report['verificationContext']
+              if (report['result'] != 'passed' or type(report['phaseCount']) is not int or
+                      report['phaseCount'] != 112 or context['kind'] != 'hosted-original-parity-reuse' or
+                      str(context['producer']['runId']) != os.environ['GITHUB_RUN_ID'] or
+                      str(context['producer']['runAttempt']) != os.environ['GITHUB_RUN_ATTEMPT']):
+                  raise ValueError('Parity reuse report differs from the successful current native verification')
+              parity = report['sdkParity']
+              if type(parity['artifactId']) is not int or type(parity['producer']['runId']) is not int:
+                  raise ValueError('Original parity locator must contain integer IDs')
+              artifact, digest, run = str(parity['artifactId']), parity['artifactSha256'], str(parity['producer']['runId'])
+          elif selected == 'false':
+              artifact = os.environ['FRESH_ARTIFACT_ID']
+              digest = 'sha256:' + os.environ['FRESH_ARTIFACT_SHA256']
+              run = os.environ['GITHUB_RUN_ID']
+          else:
+              raise ValueError('Parity reuse selection must be boolean')
+          if (re.fullmatch('[1-9][0-9]*', artifact) is None or
+                  re.fullmatch('sha256:[0-9a-f]{64}', digest) is None or
+                  re.fullmatch('[1-9][0-9]*', run) is None):
+              raise ValueError('Parity requires an exact original upload and run locator')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'artifact_id={artifact}\nartifact_digest={digest}\nartifact_run_id={run}\n')
+          PY

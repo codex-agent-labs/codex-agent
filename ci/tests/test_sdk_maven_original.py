@@ -335,6 +335,36 @@ class MavenOriginalTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected layout"):
             with self.call(): pass
 
+    def test_python_package_original_keeps_fixed_command_and_legacy_gates(self):
+        from ci.sdk_maven_phase import _package_command
+        for component in ("sdk-core", "sdk-android"):
+            with self.subTest(component=component):
+                fixture = MavenOriginalTest(methodName="runTest")
+                fixture.setUp()
+                try:
+                    fixture.prepare(component=component, phase="package")
+                    path = fixture.original / "worker/execution.json"
+                    execution = original._json(path)
+                    legacy = execution["command"]
+                    with fixture.call(): pass
+                    fields = dict(value[2:].split("=",1) for value in legacy if value.startswith("-P"))
+                    execution["command"] = _package_command(Path(fixture.context["repositoryRoot"]), fields)
+                    write_canonical_json(path, execution)
+                    with fixture.call(): pass
+                    self.assertTrue(fixture.package_gate.called)
+                    for before, after in (("sdkVersion=0.8.7","sdkVersion=0.9.0"),
+                            ("candidateCommit="+"a"*40,"candidateCommit="+"c"*40)):
+                        execution["command"] = [part.replace(before, after) for part in _package_command(
+                            Path(fixture.context["repositoryRoot"]), fields)]
+                        write_canonical_json(path, execution)
+                        with self.assertRaisesRegex(ValueError,"fixed offline command"), fixture.call(): pass
+                    execution["command"] = ["arbitrary-compiler", *_package_command(
+                        Path(fixture.context["repositoryRoot"]), fields)[1:]]
+                    write_canonical_json(path, execution)
+                    with self.assertRaisesRegex(ValueError,"fixed offline command"), fixture.call(): pass
+                finally:
+                    fixture.doCleanups()
+
     def test_fixed_command_requires_independent_original_context(self):
         self.prepare()
         with self.assertRaisesRegex(ValueError, "producer record"), self.call(

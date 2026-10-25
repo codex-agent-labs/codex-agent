@@ -280,7 +280,8 @@ class SdkCompletionTest(unittest.TestCase):
             root = Path(temporary).resolve()
             policy_path, archive = root / "policy.json", root / "original.zip"
             for mutation in ("none", "retrieval", "key", "receipt", "duplicate", "missing", "count",
-                             "inventory", "extra", "archive", "recipe", "job", "window", "policy", "authentication"):
+                             "inventory", "extra", "archive", "recipe", "job", "window", "policy", "authentication",
+                             "fetch", "oversize"):
                 originals, report = deepcopy(rows), deepcopy(baseline)
                 if mutation == "retrieval":
                     originals[0].update(state="reused", source="stable", transportSource="stable")
@@ -309,6 +310,18 @@ class SdkCompletionTest(unittest.TestCase):
                     "2026-10-21T12:30:00Z" if mutation == "window" else "2026-10-20T12:30:00Z"))
                 if mutation == "archive":
                     metadata["size_in_bytes"] += 1
+                metadata["name"] = "codex-agent-sdk-binding-parity-" + producer["tree"]
+                if mutation == "oversize":
+                    metadata["size_in_bytes"] = 32 * 1024 * 1024 + 1
+                original_bytes = archive.read_bytes()
+                def download(artifact, token, destination, limit, digest, size):
+                    self.assertIs(artifact, metadata)
+                    self.assertEqual(32 * 1024 * 1024, limit)
+                    self.assertEqual(len(original_bytes), size)
+                    self.assertEqual(completion.sha256_bytes(original_bytes), digest)
+                    with destination.open("xb") as stream:
+                        stream.write(original_bytes)
+                    return artifact, destination
                 def official(*args, **kwargs):
                     if mutation == "policy":
                         policy_path.write_bytes(b"{}\n")
@@ -317,16 +330,24 @@ class SdkCompletionTest(unittest.TestCase):
                         patch.object(completion.products, "_observe_ci_producer_jobs",
                             side_effect=ValueError("failed original") if mutation == "authentication" else None,
                             return_value=[observation]) as observe, \
-                        patch.object(completion.products, "_contract_ci_upload_metadata", side_effect=official), \
+                        patch.object(completion.products, "_contract_ci_upload_metadata", side_effect=official) as metadata_read, \
+                        patch.object(completion.products, "_download_contract_ci_upload_bytes", side_effect=download) as transport, \
+                        patch.object(completion.products, "_download_contract_ci_upload",
+                            side_effect=AssertionError("A second metadata acquisition is forbidden")), \
                         patch.object(completion, "git_inventory",
                             side_effect=["original", "changed" if mutation == "recipe" else "original"]) as recipe:
-                    if mutation not in ("none", "retrieval"):
+                    supplied_archive = None if mutation in {"fetch", "oversize"} else archive
+                    if mutation not in ("none", "retrieval", "fetch"):
                         with self.assertRaises(ValueError):
                             completion._completed_parity(root, "e" * 40, inspected(rows)["result"],
-                                                         policy_path, archive, "token")
+                                                         policy_path, supplied_archive, "token")
+                        transport.assert_not_called()
                         continue
                     result = completion._completed_parity(root, "e" * 40, inspected(rows)["result"],
-                                                         policy_path, archive, "token")
+                                                         policy_path, supplied_archive, "token")
+                    metadata_read.assert_called_once()
+                    self.assertEqual(1 if mutation == "fetch" else 0, transport.call_count)
+                    self.assertEqual(original_bytes, archive.read_bytes())
                     self.assertEqual(producer, result["producer"])
                     self.assertEqual(112, result["phaseCount"])
                     self.assertEqual(6104, result["satisfied"])
@@ -337,6 +358,107 @@ class SdkCompletionTest(unittest.TestCase):
                         "path": ".github/workflows/sdk-binding-parity.yml", "sha": "d" * 40}},
                         observe.call_args.kwargs["trusted_workflows_by_phase"])
                     self.assertNotIn("native_job_ids_by_phase", observe.call_args.kwargs)
+
+    def test_hosted_parity_reuses_current_private_state_and_rejects_missing_authority_or_phase(self):
+        self.assertTrue(hasattr(completion, "require_hosted_sdk_parity"))
+        # Native/state authentication and original parity are explicit fixture seams;
+        # the real repository closure checker and actual hosted consumer identity run.
+        rows = [phase(item) for item in sorted(PHASE_INSTANCE_IDS)]
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_JOB": "sdk-parity", "GITHUB_TOKEN": "fixture",
+                       "GITHUB_RUN_ID": "21", "GITHUB_RUN_ATTEMPT": "2"}
+        plan = dict(repository="codex-agent-labs/codex-agent", event="pull_request", pullRequest=31,
+                    validationCommit="e" * 40, validationTree="f" * 40)
+        consumer = completion.products._consumer(plan, environment)
+        for mode in ("ok", "incomplete", "authority", "job", "local", "late-state", "late-source"):
+            native = Mock()
+            selected = inspected(rows[:-1] if mode == "incomplete" else rows)["result"]
+            state = Mock(completed_frozen=native, consumer=consumer, producer=consumer["producer"],
+                         plan=plan, prior=selected)
+            original = deepcopy(selected)
+            env = dict(environment)
+            if mode == "job":
+                env["GITHUB_JOB"] = "not-parity"
+            if mode == "local":
+                env.pop("GITHUB_ACTIONS")
+            def inspect(*args, **options):
+                self.assertIs(env, options["environ"])
+                self.assertIs(native, options["completed_frozen"])
+                options["_verified_state_consumer"](state)
+                if mode == "late-state":
+                    raise ValueError("late state failure")
+                return {"result": selected}
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(completion.products, "inspect_products", side_effect=inspect) as replay, \
+                    patch.object(completion.products, "_git_value",
+                        return_value="0" * 40 if mode == "late-source" else plan["validationCommit"]), \
+                    patch.object(completion, "_completed_parity", return_value={"result": "passed", "artifactId": 15}) as parity:
+                def call():
+                    return completion.require_hosted_sdk_parity(*self.paths, repository_root=Path(temporary),
+                        parity_policy=Path("/approved/original.json"), environ=env,
+                        completed_frozen=None if mode == "authority" else native)
+                if mode != "ok":
+                    with self.assertRaises(ValueError):
+                        call()
+                else:
+                    report = call()
+                    self.assertEqual(112, report["phaseCount"])
+                    self.assertEqual("hosted-original-parity-reuse", report["verificationContext"]["kind"])
+                    self.assertEqual(consumer["producer"], report["verificationContext"]["producer"])
+                    self.assertEqual(rows, report["originalPhases"])
+                    native.check_consumer.assert_called_once_with(consumer)
+                    parity.assert_called_once_with(Path(temporary).resolve(), plan["validationCommit"],
+                        selected, Path("/approved/original.json"), None, "fixture")
+                self.assertEqual(original, selected)
+                if mode in {"incomplete", "authority", "job", "local"}:
+                    parity.assert_not_called()
+                if mode in {"authority", "job", "local"}:
+                    replay.assert_not_called()
+
+    def test_hosted_parity_cli_keeps_native_lifetime_and_emits_nothing_on_late_failure(self):
+        self.assertTrue(hasattr(completion, "require_hosted_sdk_parity"))
+        argv = ["--hosted-parity", "--plan", str(self.paths[0]), "--discovery-root", str(self.paths[1]),
+                "--state-root", str(self.paths[2]), "--repository-root", str(self.root),
+                "--completed-frozen-policy", "/approved/native.json", "--parity-policy", "/approved/parity.json"]
+        native = object()
+        events = []
+        report = {"result": "passed", "fixture": "not hosted evidence"}
+        for late in (False, True):
+            @contextmanager
+            def authority(args):
+                self.assertEqual(Path("/approved/native.json"), args.completed_frozen_policy)
+                events.append("enter")
+                yield {"completed_frozen": native}
+                events.append("exit")
+                if late:
+                    raise ValueError("native policy changed")
+            def verify(*args, **options):
+                self.assertEqual("enter", events[-1])
+                self.assertIs(os.environ, options["environ"])
+                self.assertEqual("true", options["environ"]["GITHUB_ACTIONS"])
+                self.assertIs(native, options["completed_frozen"])
+                self.assertEqual(Path("/approved/parity.json"), options["parity_policy"])
+                return report
+            stdout = io.StringIO()
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_JOB": "sdk-parity"}), \
+                    patch.object(completion, "completed_frozen_options", authority), \
+                    patch.object(completion, "require_hosted_sdk_parity", side_effect=verify), \
+                    redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                if late:
+                    with self.assertRaises(SystemExit):
+                        completion.main(argv)
+                    self.assertEqual("", stdout.getvalue())
+                else:
+                    self.assertEqual(0, completion.main(argv))
+                    self.assertEqual(canonical_json_bytes(report).decode(), stdout.getvalue())
+                self.assertEqual("true", os.environ["GITHUB_ACTIONS"])
+        for extra in (["--local"], ["--repository"], ["--parity-archive", "/untrusted/held.zip"],
+                      ["--github-output", "/unused"], ["--partial-catalog-destination", "/unused"]):
+            with patch.object(completion, "require_hosted_sdk_parity") as verify, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion.main(argv + extra)
+            verify.assert_not_called()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            completion.main(argv[:argv.index("--completed-frozen-policy")] + argv[-2:])
 
     def test_local_sdk_routes_root_to_authenticated_closure_and_original_parity_only(self):
         argv = ["--sdk", "--local", "--repository-root", "/actual/repository",

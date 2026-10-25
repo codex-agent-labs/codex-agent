@@ -125,7 +125,11 @@ def _worker(original, receipt, context, contract_version, archive_name):
         fields["codexAgent.sdkCompatibilityRequest"] = context["compatibilityRequest"]
     expected = product_reuse._runtime_worker_command(PurePosixPath(context["repositoryRoot"]) / "gradlew",
         fields, {}, build_directory=".", platform_name="posix")
-    if execution["command"] != expected:
+    commands = [expected]
+    if receipt["phase"] == "package":
+        from sdk_maven_phase import _package_command
+        commands.append(_package_command(PurePosixPath(context["repositoryRoot"]), fields))
+    if execution["command"] not in commands:
         raise ValueError("Original Maven execution differs from the fixed offline command")
 
 
