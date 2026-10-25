@@ -53,7 +53,7 @@ class SdkCheckpointIntakeTest(unittest.TestCase):
             'started_at': '2026-10-24T10:31:00Z', 'completed_at': '2026-10-24T10:40:00Z'}
         self.jobs = [self.collector, self.issuer]
         self.artifacts = {self.source['artifactId']: self.artifact(self.source['artifactId'],
-            f'codex-agent-sdk-wave-7-state-{self.producer["tree"]}-attempt-{self.producer["runAttempt"]}',
+            f'codex-agent-sdk-wave-{completed._COLLECTED_WAVES[self.source["jobName"]]}-state-{self.producer["tree"]}-attempt-{self.producer["runAttempt"]}',
             self.source['artifactSha256'], self.source['artifactBytes'], '10:10:00'),
             992: self.artifact(992, completed.collector_control_artifact_name(self.source),
                 sha256_bytes(b'small controls already qualified by native issuer'), 1000, '10:20:00')}

@@ -1492,9 +1492,13 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
             authenticate_frozen,
             lambda: (_fetch_completed_sdk(Path(destination).parent / "sdk-native", sdk_completion,
                 root=root, revision=revision, frozen=sdk_frozen, token=original["token"],
-                consumer_revision=current_revision) if _checkpoint is None else
+                consumer_revision=current_revision,
+                **({"requalification_baseline": requalification_baseline}
+                   if requalification_baseline is not None else {})) if _checkpoint is None else
                 _checkpoint.validate(root=root, revision=revision, frozen=sdk_frozen,
-                    consumer_revision=current_revision, token=original["token"]))))
+                    consumer_revision=current_revision, token=original["token"],
+                    **({"requalification_baseline": requalification_baseline}
+                       if requalification_baseline is not None else {})))))
         report, qualified, phases, proof = frozen_result
 
     receipts = [row["receipt"] for row in qualified["originals"] if row["receipt"]["product"] == "runtime"]
@@ -1621,7 +1625,8 @@ def _sdk_parent_frozen_spec(root, pins, current, token):
     return historical
 
 
-def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token, consumer_revision=None):
+def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token, consumer_revision=None,
+                         requalification_baseline=None):
     import product_reuse as products
     from products.inventory import git_regular_blob_bytes, tree_entries
     from products.selection import phase_inventory_paths
@@ -1631,10 +1636,12 @@ def _fetch_completed_sdk(destination, pins, *, root, revision, frozen, token, co
         signer_commit=arguments["signer_commit"], source_commit=arguments["source_commit"])
     proof = load_canonical_json_bytes(captured["completion.json"])
     return _validate_completed_sdk(proof, arguments, root=root, revision=revision, frozen=frozen, token=token,
-        **({"consumer_revision": consumer_revision} if consumer_revision is not None else {}))
+        **({"consumer_revision": consumer_revision} if consumer_revision is not None else {}),
+        **({"requalification_baseline": requalification_baseline} if requalification_baseline is not None else {}))
 
 
-def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token, consumer_revision=None):
+def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token, consumer_revision=None,
+                            requalification_baseline=None):
     """Validate only after native subject admission (or an admitted native parent)."""
     import product_reuse as products
     from products.inventory import git_regular_blob_bytes, tree_entries
@@ -1646,7 +1653,9 @@ def _validate_completed_sdk(proof, arguments, *, root, revision, frozen, token, 
     if spec.get("schemaVersion") in (2, 3, 4):
         from completed_sdk_reuse import validate_extension
         return validate_extension(spec, proof, arguments, root=root, revision=revision, frozen=frozen, token=token,
-            **({"consumer_revision": consumer_revision} if spec["schemaVersion"] == 4 else {}))
+            **({"consumer_revision": consumer_revision} if spec["schemaVersion"] == 4 else {}),
+            **({"requalification_baseline": requalification_baseline}
+               if requalification_baseline is not None else {}))
     proof = require_exact_keys(proof, {
         "schemaVersion", "kind", "issuerCommit", "specSha256", "source", "original", "controls", "member", "sdkInputs"},
         "Native completed SDK proof")

@@ -163,6 +163,25 @@ class SdkCheckpointConsumerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'private native'):
                 completed._CheckpointConsumer(self.consumer,{},witness.observation,'synthetic',(),object())
 
+    def test_requalification_baseline_never_replaces_checkpoint_consumer_identity(self):
+        with self.open() as witness, ExitStack() as stack:
+            # Existing validate fixture supplies the native parent/source seams;
+            # execute the real witness wrapper and match with a separate baseline.
+            original = completed.validate_extension
+            baseline = 'd' * 40
+            def validate(spec, proof, arguments, **kwargs):
+                kwargs.update(revision=baseline, requalification_baseline=baseline)
+                return original(spec, proof, arguments, **kwargs)
+            stack.enter_context(patch.object(completed, 'validate_extension', side_effect=validate))
+            self.validate(witness)
+            self.assertEqual(baseline, self.current_inputs.call_args.kwargs['revision'])
+            envelope = self.f.envelope
+            with self.assertRaisesRegex(ValueError, 'exact authenticated subject/consumer'):
+                original(envelope['recipe'], envelope['completion'],
+                    {'signer_commit': envelope['issuerCommit']}, root=self.f.root,
+                    revision=baseline, consumer_revision='f' * 40, token='synthetic',
+                    frozen=self.issued.fixture.base, _checkpoint=witness, requalification_baseline=baseline)
+
     def test_noop_names_only_declared_bootstrap_and_never_fetches_checkpoint(self):
         output={'kind':'existing-sdk-completion','native':self.f.policy['bootstrap'],
             'subjectSha256':self.f.policy['bootstrapProofSha256']}

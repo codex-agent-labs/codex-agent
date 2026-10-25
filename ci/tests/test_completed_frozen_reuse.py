@@ -664,6 +664,43 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             self.assertEqual("d" * 40, cap._revision)
             self.assertEqual("d" * 40, restrict.call_args.args[2])
 
+    def test_sdk_requalification_keeps_consumer_and_restricts_before_capability_return(self):
+        sdk, phase, _, _ = self.sdk_fixture()
+        contract = [receipt for identity, receipt in self.receipts.items() if identity.product == 'contract']
+        baseline, current = 'f' * 40, 'd' * 40
+        original_restrict = qualification._restrict_completed_reuse
+        admitted = []
+        def sdk_auth(*args, **kwargs):
+            self.assertEqual(baseline, kwargs['revision'])
+            self.assertEqual(current, kwargs['consumer_revision'])
+            self.assertEqual(baseline, kwargs['requalification_baseline'])
+            admitted.append(True)
+            return copy.deepcopy(sdk)
+        def restrict(cap, root, revision):
+            self.assertEqual([True], admitted)
+            self.assertEqual(baseline, cap._revision)
+            self.assertIn(product_reuse._identity(phase), cap.completed_phases())
+            # This real SDK-owned path invalidates the admitted original while
+            # leaving Contract/native authority intact.
+            with patch.object(inventory, 'tree_entries', side_effect=lambda root, ref:
+                    [('ci/products/sdk_maven.py', '100644 blob changed')] if ref == current else []), \
+                    patch.object(product_reuse, '_authorities', side_effect=lambda root, ref, phases:
+                        ([row for row in cap._values()[0]['request']['phaseAuthorities']
+                          if product_reuse._identity(row) in phases], None)):
+                return original_restrict(cap, root, revision)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(qualification, '_fetch_completed_sdk', side_effect=sdk_auth), \
+                patch.object(qualification, '_sdk_parent_frozen_spec', return_value=self.spec), \
+                patch.object(qualification, '_capture_completed_contract_receipts', return_value=contract), \
+                patch.object(qualification, '_restrict_completed_reuse', side_effect=restrict):
+            cap, report = self.fetched(Path(temporary).resolve(),
+                sdk_completion={'synthetic': 'independent authority'}, requalification_baseline=baseline)
+            self.assertEqual(current, cap._revision)
+            self.assertIsNone(cap.envelope(phase))
+            self.assertIn(product_reuse._identity_record(product_reuse._identity(phase)), report['invalidatedPhases'])
+            self.assertEqual(0, report['completedSdkPhases'])
+            self.assertEqual(0, report['productBodiesDownloaded'])
+
     def test_independent_native_authorities_overlap_and_both_must_finish_before_capability(self):
         import threading
         sdk, _, _, _ = self.sdk_fixture()

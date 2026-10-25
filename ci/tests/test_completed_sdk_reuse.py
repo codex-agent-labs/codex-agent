@@ -1047,6 +1047,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
                                       collected_wave=9, receipt_hint=False, issuer_revision='a' * 40,
                                       planned_context=False, previous_schema=3):
+        actual_validate_current = completed.validate_current
         import io, json, zipfile
         from contextlib import contextmanager
         from types import SimpleNamespace
@@ -1265,10 +1266,10 @@ class CompletedSdkControlsTest(unittest.TestCase):
                         self.assertEqual(0, report['productPhasesExecuted'])
                         with patch.object(native, '_validate_completed_sdk', return_value={}) as parent_validation, \
                                 patch.object(completed, '_base', return_value=historical_frozen):
-                            def validate(value, revision=issuer_revision):
+                            def validate(value, revision=issuer_revision, **options):
                                 return completed.validate_extension(spec, value, {'signer_commit': issuer_revision},
                                     root=fixture.repository, revision=revision, frozen=historical_frozen, token='synthetic',
-                                    **({'consumer_revision': 'e' * 40} if planned_context else {}))
+                                    **({'consumer_revision': 'e' * 40} if planned_context else {}), **options)
                             # Prior body qualification uses its admitted product
                             # baseline, not the later native signing commit.
                             self.assertEqual(spec, validate(result, revision=None)['extension']['spec'])
@@ -1281,6 +1282,25 @@ class CompletedSdkControlsTest(unittest.TestCase):
                                     side_effect=QualificationIncompatible('current owning inputs changed')):
                                 with self.assertRaisesRegex(QualificationIncompatible, 'current owning inputs'):
                                     validate(result)
+                            if planned_context:
+                                # Real owning-input comparison: explicit historical
+                                # admission must not become current completion.
+                                from products import inventory
+                                request = self.controls[prefix + 'reuse-wave-request.json']
+                                selected = completed._identity(receipt)
+                                authority = next(row for row in request['phaseAuthorities']
+                                                 if completed._identity(row) == selected)
+                                with patch.object(completed, 'validate_current', wraps=actual_validate_current), \
+                                        patch.object(inventory, 'tree_entries', side_effect=lambda root, revision:
+                                            [('new-unclassified-input', '100644 blob changed')]
+                                            if revision == 'e' * 40 else []), \
+                                        patch.object(products, '_authorities', return_value=([authority], None)):
+                                    with self.assertRaisesRegex(QualificationIncompatible, 'owning inputs changed'):
+                                        validate(result)
+                                    admitted = validate(result, requalification_baseline=issuer_revision)
+                                    self.assertEqual(spec, admitted['extension']['spec'])
+                                    with self.assertRaisesRegex(ValueError, 'baseline differs'):
+                                        validate(result, requalification_baseline='f' * 40)
                             if embedded:
                                 changed = deepcopy(result)
                                 changed['members'][0]['bytes'] += 1
