@@ -41,6 +41,81 @@ from products.signing_isolation import require_no_signing_secret
 
 
 _LIMIT = 16 * 1024 * 1024
+DART_PACKAGE_TOOL_FILES = ("bin/dart", "revision", "version")
+
+
+def dart_package_toolchain_policy(root):
+    """Pin the tool identity emitted by Dart's package-only archive recipe."""
+    raw = read_regular_file_bytes(Path(root) / "codex-agent-bindings/dart/package-toolchain.json",
+                                  max_bytes=8192, reject_symlink_parents=True)
+    policy = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "host", "dartVersion", "versionIdentity", "revision", "archiveRoot", "archive",
+    }, "Dart package toolchain policy")
+    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
+            or raw != canonical_json_bytes(policy)
+            or policy["host"] != {"system": "Linux", "architecture": "X64", "distribution": "ubuntu-24.04"}
+            or policy["dartVersion"] != "3.13.2" or policy["archiveRoot"] != "dart-sdk"
+            or policy["revision"] != "60a57cd42d64dc03e9f07aa60a2e250755c1ef28"
+            or policy["versionIdentity"] != 'Dart SDK version: 3.13.2 (stable) (Tue Aug 25 01:01:12 2026 -0700) on "linux_x64"'):
+        raise ValueError("Unsupported Dart package toolchain policy")
+    asset = require_exact_keys(policy["archive"], {
+        "name", "bytes", "sha256", "url", "provenanceUrl", "provenanceSha256",
+    }, "Dart official archive")
+    origin = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.13.2/sdk/"
+    if (asset["name"] != "dartsdk-linux-x64-release.zip"
+            or asset["url"] != origin + asset["name"] + "?generation=1787648765860674"
+            or asset["provenanceUrl"] != origin + asset["name"] + ".sha256sum"):
+        raise ValueError("Dart requires exact official archive/checksum URLs")
+    require_integer(asset["bytes"], "Dart archive length", 1)
+    require_sha256(asset["sha256"], "Dart archive digest")
+    require_sha256(asset["provenanceSha256"], "Dart official checksum metadata digest")
+    return policy
+
+
+def verify_dart_package_toolchain(root, environ):
+    """Authenticate only the installed --version closure; never install here."""
+    from products.sdk_dotnet_toolchain import _host_identity
+
+    policy = dart_package_toolchain_policy(root)
+    prefix = Path(environ.get("CODEX_AGENT_DART_TOOLCHAIN_ROOT", ""))
+    archive_path = Path(environ.get("CODEX_AGENT_DART_TOOLCHAIN_ARCHIVE", ""))
+    if (_host_identity() != ("Linux", "X64", "ubuntu-24.04")
+            or any(not path.is_absolute() or path.resolve(strict=True) != path
+                   for path in (prefix, archive_path))
+            or shutil.which("dart", path=environ.get("PATH", "")) != str(prefix / "bin/dart")):
+        raise ValueError("Dart package host or selected executable differs from its explicit installation")
+    asset = policy["archive"]
+    if (archive_path.stat().st_size != asset["bytes"]
+            or sha256_file(archive_path, reject_symlink_parents=True) != asset["sha256"]):
+        raise ValueError("Dart archive differs from its official pin")
+    expected, seen = [], set()
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.infolist():
+            name = require_relative_path(member.filename.rstrip("/"), "Dart archive member")
+            if name in seen:
+                raise ValueError("Duplicate Dart archive member")
+            seen.add(name)
+            mode = (member.external_attr >> 16) & 0o170000
+            if (member.flag_bits & 1 or mode not in (0, 0o100000, 0o040000)
+                    or not name.startswith(policy["archiveRoot"] + "/")):
+                raise ValueError("Unsupported Dart archive member")
+            relative = name[len(policy["archiveRoot"]) + 1:]
+            if member.is_dir() or relative not in DART_PACKAGE_TOOL_FILES:
+                continue
+            with archive.open(member) as original:
+                digest = "sha256:" + hashlib.file_digest(original, "sha256").hexdigest()
+            expected.append({"relativePath": relative, "bytes": member.file_size, "sha256": digest})
+    if {row["relativePath"] for row in expected} != set(DART_PACKAGE_TOOL_FILES):
+        raise ValueError("Dart archive lacks its package identity closure")
+    if _inventory(prefix, allow_empty=True) != sorted(expected, key=lambda row: row["relativePath"]):
+        raise ValueError("Installed Dart inventory differs from its official archive")
+    if ((prefix / "version").read_bytes() != (policy["dartVersion"] + "\n").encode()
+            or (prefix / "revision").read_bytes() != (policy["revision"] + "\n").encode()):
+        raise ValueError("Installed Dart version/revision differs from policy")
+    observed = subprocess.run([str(prefix / "bin/dart"), "--version"], env=dict(environ), check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10).stdout
+    if observed.strip() != policy["versionIdentity"]:
+        raise ValueError("Installed Dart version differs from policy")
 
 
 def cpp_package_toolchain_policy(root):
@@ -536,6 +611,8 @@ def _package_only(root, fields, environ):
         verify_python_package_toolchain(root, environ)
     elif component == "cpp":
         verify_cpp_package_toolchain(root, environ)
+    elif component == "dart":
+        verify_dart_package_toolchain(root, environ)
     try:
         with inspector_context as capability:
             if capability is not None:

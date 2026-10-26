@@ -261,9 +261,55 @@ runs:
       shell: bash
       run: cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/Cargo.toml" --locked
     - if: inputs.component == 'dart'
-      uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
-      with:
-        sdk: '3.13.2'
+      name: Provision only the immutable Dart package tool closure
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import os, pathlib, shutil, urllib.request, zipfile
+        from ci.sdk_native_phase import DART_PACKAGE_TOOL_FILES, dart_package_toolchain_policy
+        from ci.products.inventory import require_relative_path, sha256_file
+        policy = dart_package_toolchain_policy(pathlib.Path(os.environ['GITHUB_WORKSPACE']))
+        asset = policy['archive']
+        base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'dart-package-toolchain'
+        base.mkdir(exist_ok=True)
+        archive_path = base / asset['name']
+        if not archive_path.exists():
+            with urllib.request.urlopen(asset['url'], timeout=60) as response, archive_path.open('xb') as output:
+                while block := response.read(1024 * 1024):
+                    output.write(block)
+        if (archive_path.stat().st_size != asset['bytes']
+                or sha256_file(archive_path, reject_symlink_parents=True) != asset['sha256']):
+            raise ValueError('Dart archive differs from independent official checksum')
+        prefix = base / policy['archiveRoot']
+        if not prefix.exists():
+            # Packaging only asks Dart for its version. Retain the full original
+            # SDK archive, but install only that executable's identity closure.
+            prefix.mkdir()
+            with zipfile.ZipFile(archive_path) as archive:
+                seen = set()
+                for member in archive.infolist():
+                    name = require_relative_path(member.filename.rstrip('/'), 'Dart archive member')
+                    if name in seen:
+                        raise ValueError('Duplicate Dart archive member')
+                    seen.add(name)
+                    mode = (member.external_attr >> 16) & 0o170000
+                    if (member.flag_bits & 1 or mode not in (0, 0o100000, 0o040000)
+                            or not name.startswith(policy['archiveRoot'] + '/')):
+                        raise ValueError('Unsupported Dart archive member')
+                    relative = name[len(policy['archiveRoot']) + 1:]
+                    if not member.is_dir() and relative in DART_PACKAGE_TOOL_FILES:
+                        target = prefix / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.open(member) as original, target.open('xb') as output:
+                            shutil.copyfileobj(original, output, length=1024 * 1024)
+                        target.chmod(0o755 if relative == 'bin/dart' else 0o644)
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('CODEX_AGENT_DART_TOOLCHAIN_ROOT=' + str(prefix) + '\n')
+            output.write('CODEX_AGENT_DART_TOOLCHAIN_ARCHIVE=' + str(archive_path) + '\n')
+        with open(os.environ['GITHUB_PATH'], 'a') as output:
+            output.write(str(prefix / 'bin') + '\n')
+        PY
     - name: Execute one imported-source package with full admission
       shell: bash
       env:
