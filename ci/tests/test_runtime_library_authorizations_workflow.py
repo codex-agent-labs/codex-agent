@@ -109,7 +109,7 @@ class RuntimeLibraryAuthorizationsWorkflowTest(unittest.TestCase):
         caller = WORKFLOW.with_name("ci.yml").read_text(encoding="utf-8")
         child = workflow_job(caller, "sdk-runtime-library-validation")
         self.assertIn("inputs.purpose == 'sdk-runtime-library-validation'", child)
-        self.assertIn("runtime-library-authorizations.yml@reuse-authority", child)
+        self.assertRegex(child, r"runtime-library-authorizations\.yml@[0-9a-f]{40}(?:\s|$)")
         self.assertIn("validation-only: true", child)
         self.assertIn("inputs.validation-only && github.event.inputs.purpose == 'sdk-runtime-library-validation'", self.delegate)
         self.assertIn("true) projection+=(--sidecars-only)", self.authorize)

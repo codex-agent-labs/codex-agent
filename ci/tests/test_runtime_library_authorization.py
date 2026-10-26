@@ -426,3 +426,54 @@ class ImportedLfsTransportTest(unittest.TestCase):
             self.assertNotIn("unit-secret",str(raised.exception))
             self.assertIsInstance(build.call_args.args[0],_NoRedirect)
             self.assertIsNone(build.call_args.args[0].redirect_request(request,None,302,"redirect",{},"https://untrusted.invalid"))
+
+
+class ImportedDeclaredReleaseKeysTest(unittest.TestCase):
+    """Exercise only the imported policy join using actual tracked public keys."""
+    def test_colocated_root_is_separate_and_declared_key_mutations_reject(self):
+        from contextlib import contextmanager
+        import shutil
+        repository = Path(caller.__file__).resolve()
+        while not (repository / "gradle/release/product-signing-keys.json").is_file():
+            if repository == repository.parent: self.fail("Repository public policy unavailable")
+            repository = repository.parent
+        policy_source=repository / "gradle/release/product-signing-keys.json"
+        keys_source=repository / "gradle/release/keys"
+        policy=load_canonical_json_bytes(policy_source.read_bytes())
+        records=([policy["activeKey"]] if policy["activeKey"] else [])+policy["retiredKeys"]
+        active_name=policy["activeKey"]["keyId"]+".pub"
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();keys=root/"keys";shutil.copytree(keys_source,keys)
+            keyring=root/"keyring.json";keyring.write_bytes(policy_source.read_bytes())
+            root_public=keys/"sdk-runtime-root.pub"
+            delegation=root/"inputs/delegation";(delegation/"keys").mkdir(parents=True)
+            for record in records:
+                name=record["keyId"]+".pub";(delegation/"keys"/name).write_bytes((keys/name).read_bytes())
+            @contextmanager
+            def content(*unused,**ignored):
+                yield dict(rootDelegation=delegation,control={"rootDelegationInventorySha256":"sha256:"+"a"*64,"libraries":[]})
+            public_path_only=root/"public-path-only.pub"
+            public_path_only.write_bytes((keys/active_name).read_bytes())
+            arguments=dict(expected_control_sha256="sha256:"+"b"*64,trusted_source_commit="c"*40,
+                keyring=keyring,keys_directory=keys,root_public_key=root_public,
+                expected_root_public_key_sha256=sha256_bytes(root_public.read_bytes()),
+                # Public file supplies only an existing path; the mocked writer
+                # must stop before any private-key operation or output creation.
+                release_private_key=public_path_only)
+            with patch.dict(os.environ,{},clear=True), \
+                    patch.object(caller,"verified_imported_development_content",side_effect=content), \
+                    patch.object(caller,"_verify_pinned_delegation",return_value=(keyring.read_bytes(),regular_file_inventory(delegation))), \
+                    patch.object(caller,"verified_runtime_libraries",return_value={}), \
+                    patch.object(caller,"_write_library_authorizations",side_effect=RuntimeError("policy join reached writer boundary")) as writer:
+                with self.assertRaisesRegex(RuntimeError,"policy join reached writer boundary"):
+                    caller.produce_imported_runtime_libraries(root/"inputs",root/"control",root/"output",**arguments)
+                writer.assert_called_once();writer.reset_mock()
+                original=(keys/active_name).read_bytes()
+                for mutation in ("changed","missing"):
+                    with self.subTest(mutation=mutation):
+                        if mutation=="changed":(keys/active_name).write_bytes(root_public.read_bytes())
+                        else:(keys/active_name).unlink()
+                        with self.assertRaises((ValueError,FileNotFoundError)):
+                            caller.produce_imported_runtime_libraries(root/"inputs",root/"control",root/"output",**arguments)
+                        writer.assert_not_called();(keys/active_name).write_bytes(original)
+                self.assertFalse((root/"output").exists())

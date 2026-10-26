@@ -291,8 +291,9 @@ def validate_imported_validation_control(raw: bytes, *, expected_sha256: str,
     if (len(raw) > 64 * 1024 or sha256_bytes(raw) != require_sha256(
             expected_sha256, "Protected imported-validation control digest")):
         raise ValueError("Imported-validation control differs from independent pin")
-    value = require_exact_keys(load_canonical_json_bytes(raw), _IMPORTED_CONTROL_KEYS,
-                               "Imported-validation control")
+    value = load_canonical_json_bytes(raw)
+    optional = {"originalCapture"} if type(value) is dict and "originalCapture" in value else set()
+    value = require_exact_keys(value, _IMPORTED_CONTROL_KEYS | optional, "Imported-validation control")
     if (raw != canonical_json_bytes(value) or type(value["schemaVersion"]) is not int
             or value["schemaVersion"] != 2 or value["kind"] != _IMPORTED_KIND
             or value["sourceTrustDomain"] != "development"
@@ -314,6 +315,31 @@ def validate_imported_validation_control(raw: bytes, *, expected_sha256: str,
             require_sha256(library[name], "Imported validation library." + name)
     if [row["target"] for row in libraries] != sorted(NATIVE_TARGETS):
         raise ValueError("Imported validation targets must be exact, sorted and unique")
+    if "originalCapture" in value:
+        from products.inventory import require_integer
+        from products.receipt import validate_producer
+        original = require_exact_keys(value["originalCapture"], {
+            "producer", "workflowSha", "jobId", "artifactId", "artifactSha256", "artifactBytes",
+            "controlSha256", "control"}, "Original imported capture")
+        producer = validate_producer(original["producer"], "Original imported capture producer")
+        if (producer["event"] != "workflow_dispatch" or producer["pullRequest"] is not None
+                or producer["repository"] != "codex-agent-labs/codex-agent"
+                or producer["workflowPath"] != ".github/workflows/ci.yml"):
+            raise ValueError("Original imported capture producer scope differs")
+        if type(original["workflowSha"]) is not str or re.fullmatch(r"[0-9a-f]{40}", original["workflowSha"]) is None:
+            raise ValueError("Original imported capture workflow pin differs")
+        for name in ("jobId", "artifactId", "artifactBytes"):
+            require_integer(original[name], "Original imported capture " + name, 1)
+        if original["artifactBytes"] > 8 * 1024**3:
+            raise ValueError("Original imported capture exceeds its transport bound")
+        require_sha256(original["artifactSha256"], "Original imported capture artifact digest")
+        if type(original["control"]) is not dict or "originalCapture" in original["control"]:
+            raise ValueError("Original capture must reference the initial capture directly")
+        prior = validate_imported_validation_control(canonical_json_bytes(original["control"]),
+            expected_sha256=original["controlSha256"], trusted_source_commit=original["workflowSha"])
+        if ({k: v for k, v in prior.items() if k != "trustedSourceCommit"}
+                != {k: v for k, v in value.items() if k not in {"trustedSourceCommit", "originalCapture"}}):
+            raise ValueError("Original capture changes the exact imported content authorization")
     return value
 
 
@@ -828,9 +854,15 @@ def produce_imported_runtime_libraries(directory: Path, control_path: Path, dest
             scope_started = time.monotonic_ns()
             delegated_keyring,delegation_inventory=_verify_pinned_delegation(verified["rootDelegation"],
                 root_bytes=root_bytes,expected_inventory_sha256=verified["control"]["rootDelegationInventorySha256"])
-            if delegated_keyring!=policy_bytes or regular_file_inventory(verified["rootDelegation"]/'keys')!=policy_inventory:
-                raise ValueError("Existing root delegation differs from exact current release-key policy")
             policy=load_keyring(keyring,keys_directory)
+            records=([policy["activeKey"]] if policy["activeKey"] else [])+policy["retiredKeys"]
+            release_names={record["keyId"]+".pub" for record in records}
+            # The colocated SDK root is pinned separately; only declared release
+            # keys belong to the root-approved signer policy. Keep the full
+            # source directory inventory for the final lifetime check below.
+            release_inventory=[row for row in policy_inventory if row["relativePath"] in release_names]
+            if delegated_keyring!=policy_bytes or regular_file_inventory(verified["rootDelegation"]/'keys')!=release_inventory:
+                raise ValueError("Existing root delegation differs from exact current release-key policy")
             active,public_key=require_active_release_key(policy,keys_directory)
             if active["fingerprint"]==public_key_fingerprint(root_bytes):raise ValueError("Root and product keys must remain separate")
             signing={name:policy[name] for name in ("algorithm","namespace","trustDomain")};signing.update(active)
@@ -980,6 +1012,34 @@ def _receive_imported_lfs_object(row, location, storage):
     return path
 
 
+def _recover_imported_validation_capture(control: dict, token: str) -> dict:
+    """Authenticate a pinned original uploader; do not download or relabel its data."""
+    from product_reuse import (_ci_observation_batch, _observe_ci_producer_jobs,
+        _contract_ci_upload_metadata, _require_artifact_job_window)
+    original = control["originalCapture"]
+    producer = original["producer"]
+    job = "sdk-runtime-library-validation / runtime-library-imported-original-capture"
+    name = f"runtime-imported-validation-inputs-{producer['runId']}-{producer['runAttempt']}"
+    with _ci_observation_batch():
+        observed = _observe_ci_producer_jobs({"capture": producer}, jobs_by_phase={"capture": job},
+            token=token, allow_protected_dispatch=True, dispatch_authorization_job=None,
+            trusted_workflows_by_phase={"capture": {
+                "path": ".github/workflows/runtime-library-authorizations.yml", "sha": original["workflowSha"]}})
+        selected, = [item for item in observed[0]["jobs"] if item["name"] == job]
+        if (selected["id"] != original["jobId"] or selected["run_attempt"] != producer["runAttempt"]
+                or selected["run_id"] != producer["runId"]):
+            raise ValueError("Original imported capture job/attempt differs")
+        artifact = _contract_ci_upload_metadata(original["artifactId"], original["artifactSha256"],
+            name, producer, observed[0]["run"], token)
+        if artifact["size_in_bytes"] != original["artifactBytes"]:
+            raise ValueError("Original imported capture size differs")
+        _require_artifact_job_window(observed[0], job, artifact)
+    return {"originalCapture": original, "observed": observed, "artifact": artifact,
+        "manifestSha256": control["inputManifestSha256"], "downloadedBytes": 0,
+        "lfsBatchRequests": 0, "lfsObjectRequests": 0, "payloadCopies": 0,
+        "scope": "Original successful upload authenticated without download; current consumer provenance remains separate."}
+
+
 def capture_imported_validation_objects(control_path: Path,destination: Path,storage: Path,*,
         expected_control_sha256: str,trusted_source_commit: str) -> dict:
     """Token-only batched intake; exact unique object bytes streamed once each."""
@@ -995,6 +1055,10 @@ def capture_imported_validation_objects(control_path: Path,destination: Path,sto
         raise ValueError("Imported LFS intake requires its explicit observation token")
     control=validate_imported_validation_control(read_regular_file_bytes(control_path,max_bytes=65536,reject_symlink_parents=True),
         expected_sha256=expected_control_sha256,trusted_source_commit=trusted_source_commit)
+    if "originalCapture" in control:
+        result = _recover_imported_validation_capture(control, token)
+        result.update(controlSha256=expected_control_sha256, elapsedNs=time.monotonic_ns()-started)
+        return result
     destination,storage=Path(destination).absolute(),Path(storage).absolute()
     if destination.exists() or storage.exists() or destination.is_symlink() or storage.is_symlink():
         raise ValueError("Capture/cache must be exclusively new")

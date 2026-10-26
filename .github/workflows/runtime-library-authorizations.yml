@@ -440,8 +440,9 @@ jobs:
     outputs:
       source_sha: ${{ steps.approval.outputs.source_sha }}
       control_sha256: ${{ steps.approval.outputs.control_sha256 }}
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+      artifact_id: ${{ steps.intake.outputs.artifact_id || steps.upload.outputs.artifact-id }}
+      artifact_sha256: ${{ steps.intake.outputs.artifact_sha256 || format('sha256:{0}', steps.upload.outputs.artifact-digest) }}
+      artifact_run_id: ${{ steps.intake.outputs.artifact_run_id || github.run_id }}
     steps:
       - name: Require independent imported-original scope before checkout or transfer
         id: approval
@@ -466,6 +467,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Capture only exact unique official LFS inputs without signing keys
+        id: intake
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.approval.outputs.source_sha }}
@@ -477,7 +479,12 @@ jobs:
             --destination "$RUNNER_TEMP/imported-capture" --storage "$RUNNER_TEMP/imported-lfs" \
             --expected-control-sha256 "$CONTROL_SHA256" --trusted-source-commit "$SOURCE_SHA" \
             > "$RUNNER_TEMP/imported-intake-result.json" 2> "$RUNNER_TEMP/imported-intake-error.txt"
+          if jq -e '.originalCapture' "$RUNNER_TEMP/imported-intake-result.json" > /dev/null; then
+            jq -r '.originalCapture | "artifact_id=\(.artifactId)\nartifact_sha256=\(.artifactSha256)\nartifact_run_id=\(.producer.runId)"' \
+              "$RUNNER_TEMP/imported-intake-result.json" >> "$GITHUB_OUTPUT"
+          fi
       - name: Preserve unique immutable inputs once
+        if: steps.intake.outputs.artifact_id == ''
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -537,10 +544,12 @@ jobs:
           path: trusted-source
           fetch-depth: 1
           persist-credentials: false
-      - name: Receive the exact same-run unique object capture
+      - name: Receive the authenticated original unique object capture
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.capture-imported.outputs.artifact_id }}
+          run-id: ${{ needs.capture-imported.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
           merge-multiple: true
           path: imported-capture
       - name: Authenticate unique objects and link only consumed aliases
