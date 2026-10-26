@@ -218,6 +218,21 @@ def _input_inventory(path: Path, *, allow_empty: bool):
     return regular_file_inventory(path, allow_empty=allow_empty)
 
 
+_REPLAY_CAPACITY_GUARD = ContextVar("apple_replay_capacity_guard", default=None)
+
+
+@contextmanager
+def apple_replay_capacity_guard(check):
+    """Add a caller-owned capacity check without replacing any verification gate."""
+    if not callable(check):
+        raise TypeError("Apple replay capacity guard must be callable")
+    token = _REPLAY_CAPACITY_GUARD.set(check)
+    try:
+        yield
+    finally:
+        _REPLAY_CAPACITY_GUARD.reset(token)
+
+
 _PRIVATE_EXECUTION = ContextVar("private_apple_package_execution", default=None)
 
 
@@ -321,6 +336,9 @@ def _verify_sdk_apple_with_tooling(
             required_trust_domain=tooling_trust, keyring=tooling_keyring,
             keys_directory=tooling_keys_directory, policy_revision=policy_revision,
         ) as jar:
+            capacity_guard = _REPLAY_CAPACITY_GUARD.get()
+            if capacity_guard is not None:
+                capacity_guard(command_name, root)
             private_expected = {name: expected / name for name in expected_paths}
             arguments = argument_builder(private_sources, private_expected, root)
             command = [str(java_executable), "-jar", str(jar), command_name]
