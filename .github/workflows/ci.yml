@@ -199,7 +199,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-library-authorizations.yml@455228e859955b6b3d6b6a8986aa724443c02d7c
+    uses: codex-agent-labs/codex-agent/.github/workflows/runtime-library-authorizations.yml@3cd56a3e2fdb4fa7d01832d7f136ef3d79c10b6b
     with:
       validation-only: true
       attestationJson: ${{ inputs.producerJson }}
