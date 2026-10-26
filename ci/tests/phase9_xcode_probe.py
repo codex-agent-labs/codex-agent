@@ -80,7 +80,7 @@ def export_private_image(destination, application, records):
     if 'CandidateCDHashFull sha256=' + code_hash not in records['signature-details']['stderr'].splitlines():
         raise ValueError('Installed Xcode differs from the independently observed Apple code identity')
     recipient = ROOT / 'ci/tests/fixtures/phase9-xcode-recipient.pem'
-    recipient_digest = 'sha256:8111e312e095ba0202c4740eaf1101fca0b3e927d310fcf2b2d73557cc770ca5'
+    recipient_digest = 'sha256:c1aa68f3cd9f6007628b5ca0d1c73502f26168b273b877d1e1136486efcc1c61'
     if sha256_file(recipient, reject_symlink_parents=True) != recipient_digest:
         raise ValueError('Xcode transport recipient differs from the approved local-only key')
     started = time.monotonic_ns()
