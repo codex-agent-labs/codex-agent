@@ -226,10 +226,13 @@ class ToolingReleaseTest(unittest.TestCase):
         self.run["referenced_workflows"] = [{
             "path": f"{REPOSITORY}/{path}@{WORKFLOW_PIN}", "sha": WORKFLOW_PIN,
         }]
-        self.jobs[0]["name"] = job + " (contracts, true, true, true)"
-        with mock.patch("reuse.api_request", side_effect=self.api()):
-            self.attest(trusted_workflow_path=path, trusted_job_name=job)
-        self.assertTrue((self.destination / "tooling-evidence").is_dir())
+        for suffix in (" (contracts, true, true, true)", " (false, contracts, false, false)"):
+            with self.subTest(suffix=suffix):
+                self.jobs[0]["name"] = job + suffix
+                with mock.patch("reuse.api_request", side_effect=self.api()):
+                    self.attest(trusted_workflow_path=path, trusted_job_name=job)
+                self.assertTrue((self.destination / "tooling-evidence").is_dir())
+                shutil.rmtree(self.destination)
 
     def test_partial_child_workflow_pin_fails_before_secret_access(self):
         with self.assertRaisesRegex(ValueError, "pinned together"):
@@ -275,6 +278,9 @@ class ToolingReleaseTest(unittest.TestCase):
             {"jobs": [*self.jobs, dict(self.jobs[0], id=802)]},
             {"jobs": [*self.jobs, dict(self.jobs[0], id=802,
                                        name=self.jobs[0]["name"] + " (contracts, true, true, true)")]},
+            {"jobs": [*self.jobs, dict(self.jobs[0], id=802,
+                                       name=self.jobs[0]["name"] + " (false, contracts, false, false)")]},
+            {"jobs": [dict(self.jobs[0], name=self.jobs[0]["name"] + " (false, contracts, false, false) extra")]},
             {"run": {**self.run, "run_attempt": 1}},
         )
         self.environment.forbid_secret = True

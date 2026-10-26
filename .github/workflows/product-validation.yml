@@ -299,6 +299,7 @@ jobs:
       contract_matrix: ${{ steps.tooling.outputs.contract_matrix }}
       tooling_required: ${{ steps.tooling.outputs.tooling_required }}
       tooling_miss: ${{ steps.tooling.outputs.tooling_miss }}
+      tooling_unsigned_recovery: ${{ steps.tooling.outputs.tooling_unsigned_recovery }}
       tooling_artifact_id: ${{ steps.tooling.outputs.tooling_artifact_id }}
       tooling_artifact_sha256: ${{ steps.tooling.outputs.tooling_artifact_sha256 }}
       tooling_transport_producer: ${{ steps.tooling.outputs.tooling_transport_producer }}
@@ -367,6 +368,7 @@ jobs:
           sys.path.insert(0, 'ci')
           from reuse import github_output, paginated_items
           from tooling_discovery import discover_tooling_ci
+          from tooling_release import RETAINED_UNSIGNED_TOOLING
           from products.inventory import canonical_json_bytes, git_inventory, load_json_bytes, run_git
           from products.tooling import _COMPILER_INPUTS
           repository = Path.cwd().resolve(strict=True)
@@ -395,9 +397,13 @@ jobs:
                   policy_revision=os.environ['POLICY_REVISION'], java_executable=java,
                   token=os.environ['GITHUB_TOKEN'])
               selected = result['selected']
+              # Reuse the reviewed successful unsigned build; signing failed independently.
+              # Its original plan/job/upload and full current compiler/resource policy are
+              # authenticated by the protected caller before any signing-key read.
+              recovery = RETAINED_UNSIGNED_TOOLING if selected is None else None
               values = {'tooling_required': 'true', 'tooling_miss': str(selected is None).lower(),
-                  'contract_matrix': canonical_json_bytes({'include': [] if selected else [
-                      dict(lane='contracts', build=False, test=False, metadata=False)]}).decode().strip()}
+                  'tooling_unsigned_recovery': '' if recovery is None else canonical_json_bytes(recovery).decode().strip(),
+                  'contract_matrix': canonical_json_bytes({'include': []}).decode().strip()}
               if selected is not None:
                   values.update(tooling_artifact_id=str(selected['artifactId']),
                       tooling_artifact_sha256=selected['artifactSha256'],

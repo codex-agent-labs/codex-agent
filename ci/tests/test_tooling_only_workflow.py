@@ -86,11 +86,14 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         tree=ast.parse(textwrap.dedent(body))
         node=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='values' for t in n.targets))
         for selected in (None, {'artifactId':1}):
-            local={'selected':selected,'canonical_json_bytes':lambda value:(json.dumps(value,separators=(',',':'))+'\n').encode(),'dict':dict,'str':str}
+            recovery = {'artifactId': 2} if selected is None else None
+            local={'selected':selected,'recovery':recovery,'canonical_json_bytes':lambda value:(json.dumps(value,separators=(',',':'))+'\n').encode(),'dict':dict,'str':str}
             exec(compile(ast.Module(body=[node],type_ignores=[]),'<saved selector>','exec'),{},local)
             self.assertEqual(local['values']['tooling_miss'],str(selected is None).lower())
             rows=json.loads(local['values']['contract_matrix'])['include']
-            self.assertEqual(rows,[] if selected else [dict(lane='contracts',build=False,test=False,metadata=False)])
+            self.assertEqual(rows, [])
+            self.assertEqual(local['values']['tooling_unsigned_recovery'], '' if recovery is None else local['canonical_json_bytes'](recovery).decode().strip())
+        self.assertIn('from tooling_release import RETAINED_UNSIGNED_TOOLING', job)
 
     def test_no_product_completion_or_new_signing_semantics(self):
         job=self.jobs['tooling-plan']
