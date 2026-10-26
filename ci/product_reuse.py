@@ -739,7 +739,8 @@ def _matching_ci_jobs(jobs, name, *, expected_build_key=None):
         if separator and len(rendered) > limit + 3 and len(name) + len(" (sha256:") + 32 <= limit:
             names.add(rendered[:limit] + "...")
     matrix_name = re.compile(
-        re.escape(name) + r" \(contracts, (?:true|false), (?:true|false), (?:true|false)\)"
+        re.escape(name) + r" \((?:contracts, (?:true|false)|(?:true|false), contracts), "
+        r"(?:true|false), (?:true|false)\)"
     ) if name in {
         "product-validation / product-contracts",
         "product-validation / contract-validation / product-contracts",
