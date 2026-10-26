@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
 from typing import Any
 import zipfile
 
@@ -42,6 +43,135 @@ from products.signing_isolation import require_no_signing_secret
 
 _LIMIT = 16 * 1024 * 1024
 DART_PACKAGE_TOOL_FILES = ("bin/dart", "revision", "version")
+RUST_PACKAGE_TOOL_FILES = {
+    "cargo": ("bin/cargo",),
+    "rustc": ("bin/rustc", "lib/librustc_driver-6108105cd7e839cf.so",
+              "lib/libLLVM.so.22.1-rust-1.95.0-stable", "lib/libLLVM-22-rust-1.95.0-stable.so"),
+}
+RUST_CARGO_CONFIG = b'[net]\noffline = true\n'
+RUST_SPARSE_HEADER = b'\x03\x02\x00\x00\x00etag: "locked"\x00'
+
+
+def rust_package_toolchain_policy(root):
+    """Exact packaging tools; crate checksums remain owned by Cargo.lock."""
+    raw = read_regular_file_bytes(Path(root) / "codex-agent-bindings/rust/package-toolchain.json",
+                                  max_bytes=8192, reject_symlink_parents=True)
+    policy = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "host", "rustVersion", "versionIdentities", "archives", "lockedIndexRecordsSha256",
+    }, "Rust package toolchain policy")
+    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
+            or raw != canonical_json_bytes(policy) or policy["rustVersion"] != "1.95.0"
+            or policy["host"] != {"system": "Linux", "architecture": "X64", "distribution": "ubuntu-24.04"}):
+        raise ValueError("Unsupported Rust package toolchain policy")
+    require_sha256(policy["lockedIndexRecordsSha256"], "Official locked sparse-index records digest")
+    versions = require_exact_keys(policy["versionIdentities"], {"cargo", "rustc"}, "Rust tool identities")
+    if (versions["cargo"] != "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+            or versions["rustc"] != "rustc 1.95.0 (59807616e 2026-04-14);binary: rustc;commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860;commit-date: 2026-04-14;host: x86_64-unknown-linux-gnu;release: 1.95.0;LLVM version: 22.1.2"):
+        raise ValueError("Rust package version identities differ")
+    archives = require_exact_keys(policy["archives"], {"cargo", "rustc"}, "Rust official archives")
+    for component, asset in archives.items():
+        require_exact_keys(asset, {"name", "archiveRoot", "bytes", "sha256", "url", "provenanceUrl", "provenanceSha256"}, "Rust official archive")
+        expected = component + "-1.95.0-x86_64-unknown-linux-gnu"
+        if (asset["archiveRoot"] != expected or asset["name"] != expected + ".tar.xz"
+                or asset["url"] != "https://static.rust-lang.org/dist/2026-04-16/" + asset["name"]
+                or asset["provenanceUrl"] != asset["url"] + ".sha256"):
+            raise ValueError("Rust requires exact official archive/checksum URLs")
+        require_integer(asset["bytes"], "Rust archive length", 1)
+        require_sha256(asset["sha256"], "Rust archive digest")
+        require_sha256(asset["provenanceSha256"], "Rust checksum metadata digest")
+    return policy
+
+
+def rust_locked_packages(root):
+    """The existing lockfile is the sole checksum authority for offline crates."""
+    raw = read_regular_file_bytes(Path(root) / "codex-agent-bindings/rust/Cargo.lock",
+                                  max_bytes=_LIMIT, reject_symlink_parents=True)
+    packages, seen = [], set()
+    for row in tomllib.loads(raw.decode())["package"]:
+        if "source" not in row:
+            continue
+        name, version = row["name"], row["version"]
+        if (row["source"] != "registry+https://github.com/rust-lang/crates.io-index"
+                or not re.fullmatch(r"[a-z0-9_-]+", name) or (name, version) in seen):
+            raise ValueError("Unsupported or duplicate locked Rust dependency")
+        require_semver(version, "Locked crate version")
+        require_sha256("sha256:" + row["checksum"], "Locked crate checksum")
+        seen.add((name, version))
+        suffix = "1/" + name if len(name) == 1 else ("2/" + name if len(name) == 2 else
+                 ("3/" + name[0] + "/" + name if len(name) == 3 else name[:2] + "/" + name[2:4] + "/" + name))
+        packages.append({**row, "indexPath": suffix})
+    return packages
+
+
+def verify_rust_package_toolchain(root, environ):
+    """One child guard for exact tools and isolated, locked offline inputs."""
+    from products.sdk_dotnet_toolchain import _host_identity
+
+    policy = rust_package_toolchain_policy(root)
+    prefix = Path(environ.get("CODEX_AGENT_RUST_TOOLCHAIN_ROOT", ""))
+    archives = Path(environ.get("CODEX_AGENT_RUST_TOOLCHAIN_ARCHIVES", ""))
+    cargo_home = Path(environ.get("CARGO_HOME", ""))
+    if (_host_identity() != ("Linux", "X64", "ubuntu-24.04")
+            or any(not p.is_absolute() or p.resolve(strict=True) != p for p in (prefix, archives, cargo_home))
+            or cargo_home != prefix.parent / "cargo-home" or archives != prefix.parent / "archives"
+            or any(shutil.which(tool, path=environ.get("PATH", "")) != str(prefix / "bin" / tool) for tool in ("cargo", "rustc"))):
+        raise ValueError("Rust host or selected tools differ from the isolated installation")
+    if (environ.get("CARGO_NET_OFFLINE") != "true"
+            or any(value and (name.startswith(("RUSTC", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"))
+                    or name.startswith("CARGO_") and name not in {"CARGO_HOME", "CARGO_NET_OFFLINE"})
+                   for name, value in environ.items())):
+        raise ValueError("Rust package rejects compiler/wrapper or Cargo environment overrides")
+    if (read_regular_file_bytes(cargo_home / "config.toml", max_bytes=4096, reject_symlink_parents=True) != RUST_CARGO_CONFIG
+            or (cargo_home / "config").exists()):
+        raise ValueError("Rust package requires exact isolated offline Cargo configuration")
+    expected = []
+    for component, asset in policy["archives"].items():
+        path = archives / asset["name"]
+        if path.stat().st_size != asset["bytes"] or sha256_file(path, reject_symlink_parents=True) != asset["sha256"]:
+            raise ValueError("Rust archive differs from its official pin")
+        seen = set()
+        with tarfile.open(path, "r|xz") as archive:
+            for member in archive:
+                name = require_relative_path(member.name.rstrip("/"), "Rust archive member")
+                if name in seen:
+                    raise ValueError("Duplicate Rust archive member")
+                seen.add(name)
+                if name == asset["archiveRoot"] and member.isdir():
+                    continue
+                if not name.startswith(asset["archiveRoot"] + "/") or not (member.isdir() or member.isfile()):
+                    raise ValueError("Unsupported Rust archive member")
+                start = asset["archiveRoot"] + "/" + component + "/"
+                relative = name[len(start):] if name.startswith(start) else ""
+                if member.isfile() and relative in RUST_PACKAGE_TOOL_FILES[component]:
+                    with archive.extractfile(member) as original:
+                        digest = "sha256:" + hashlib.file_digest(original, "sha256").hexdigest()
+                    expected.append({"relativePath": relative, "bytes": member.size, "sha256": digest})
+    if ({r["relativePath"] for r in expected} != {n for files in RUST_PACKAGE_TOOL_FILES.values() for n in files}
+            or _inventory(prefix, allow_empty=True) != sorted(expected, key=lambda row: row["relativePath"])):
+        raise ValueError("Installed Rust inventory differs from its official archives")
+    registry = "index.crates.io-1949cf8c6b5b557f"
+    index_records = []
+    for row in rust_locked_packages(root):
+        archive = cargo_home / "registry/cache" / registry / (row["name"] + "-" + row["version"] + ".crate")
+        if sha256_file(archive, reject_symlink_parents=True) != "sha256:" + row["checksum"]:
+            raise ValueError("Offline Rust crate differs from Cargo.lock")
+        record = read_regular_file_bytes(cargo_home / "registry/index" / registry / ".cache" / row["indexPath"],
+                                        max_bytes=_LIMIT, reject_symlink_parents=True)
+        parts = record[len(RUST_SPARSE_HEADER):].split(b"\0")
+        if not record.startswith(RUST_SPARSE_HEADER) or len(parts) != 3 or parts[0].decode() != row["version"] or parts[2]:
+            raise ValueError("Offline Rust index is not the exact locked record")
+        entry = load_canonical_json_bytes(parts[1])
+        if (entry.get("name"), entry.get("vers"), entry.get("cksum")) != (row["name"], row["version"], row["checksum"]):
+            raise ValueError("Offline Rust index differs from Cargo.lock")
+        index_records.append(entry)
+    records_digest = "sha256:" + hashlib.sha256(canonical_json_bytes(sorted(index_records, key=lambda row: (row["name"], row["vers"])))).hexdigest()
+    if records_digest != policy["lockedIndexRecordsSha256"]:
+        raise ValueError("Offline Rust index metadata differs from its official policy pin")
+    for tool, option in (("cargo", "--version"), ("rustc", "-vV")):
+        observed = subprocess.run([str(prefix / "bin" / tool), option], env=dict(environ), check=True,
+                                  capture_output=True, text=True, timeout=10).stdout
+        if ";".join(observed.strip().splitlines()) != policy["versionIdentities"][tool]:
+            raise ValueError("Installed Rust version differs from policy")
 
 
 def dart_package_toolchain_policy(root):
@@ -613,6 +743,8 @@ def _package_only(root, fields, environ):
         verify_cpp_package_toolchain(root, environ)
     elif component == "dart":
         verify_dart_package_toolchain(root, environ)
+    elif component == "rust":
+        verify_rust_package_toolchain(root, environ)
     try:
         with inspector_context as capability:
             if capability is not None:

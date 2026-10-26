@@ -255,11 +255,97 @@ runs:
       with:
         dotnet-version: '8.0.419'
     - if: inputs.component == 'rust'
-      uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
-    - if: inputs.component == 'rust'
-      name: Populate locked dependency cache for the existing offline package recipe
+      name: Provision only the immutable Rust package tools and locked offline cache
       shell: bash
-      run: cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/Cargo.toml" --locked
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PYRUST'
+        import hashlib, os, pathlib, shutil, tarfile, urllib.request
+        from ci.sdk_native_phase import (RUST_CARGO_CONFIG, RUST_PACKAGE_TOOL_FILES, RUST_SPARSE_HEADER,
+                                         rust_package_toolchain_policy, rust_locked_packages)
+        from ci.products.inventory import canonical_json_bytes, load_json_bytes, require_relative_path, sha256_file
+        root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+        policy = rust_package_toolchain_policy(root)
+        base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'rust-package-toolchain'
+        archives, prefix, home = base / 'archives', base / 'toolchain', base / 'cargo-home'
+        for directory in (archives, prefix, home, base / 'locked-index'):
+            directory.mkdir(parents=True, exist_ok=True)
+        for component, asset in policy['archives'].items():
+            path = archives / asset['name']
+            if not path.exists():
+                with urllib.request.urlopen(asset['url'], timeout=60) as response, path.open('xb') as output:
+                    shutil.copyfileobj(response, output, 1024 * 1024)
+            if path.stat().st_size != asset['bytes'] or sha256_file(path, reject_symlink_parents=True) != asset['sha256']:
+                raise ValueError('Rust archive differs from independent official checksum')
+            with tarfile.open(path, 'r|xz') as archive:
+                seen = set()
+                for member in archive:
+                    name = require_relative_path(member.name.rstrip('/'), 'Rust archive member')
+                    if name in seen:
+                        raise ValueError('Duplicate Rust archive member')
+                    seen.add(name)
+                    if name == asset['archiveRoot'] and member.isdir():
+                        continue
+                    if not name.startswith(asset['archiveRoot'] + '/') or not (member.isdir() or member.isfile()):
+                        raise ValueError('Unsupported Rust archive member')
+                    start = asset['archiveRoot'] + '/' + component + '/'
+                    relative = name[len(start):] if name.startswith(start) else ''
+                    if member.isfile() and relative in RUST_PACKAGE_TOOL_FILES[component]:
+                        destination = prefix / relative
+                        if not destination.exists():
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            with archive.extractfile(member) as original, destination.open('xb') as output:
+                                shutil.copyfileobj(original, output, 1024 * 1024)
+                            destination.chmod(member.mode & 0o777)
+        registry = 'index.crates.io-1949cf8c6b5b557f'
+        index_records = []
+        for row in rust_locked_packages(root):
+            name, version = row['name'], row['version']
+            original_index = base / 'locked-index' / name
+            if not original_index.exists():
+                with urllib.request.urlopen('https://index.crates.io/' + row['indexPath'], timeout=60) as response, original_index.open('xb') as output:
+                    shutil.copyfileobj(response, output, 1024 * 1024)
+            matches = [entry for line in original_index.read_bytes().splitlines()
+                       if (entry := load_json_bytes(line)).get('vers') == version]
+            if len(matches) != 1 or (matches[0].get('name'), matches[0].get('cksum')) != (name, row['checksum']):
+                raise ValueError('Official Rust sparse index differs from Cargo.lock')
+            index_records.append(matches[0])
+            # Cargo1.95's fixed v3 sparse-cache framing; retain just the locked version.
+            data = RUST_SPARSE_HEADER + version.encode() + b'\0' + canonical_json_bytes(matches[0]) + b'\0'
+            target = home / 'registry/index' / registry / '.cache' / row['indexPath']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                if target.read_bytes() != data:
+                    raise ValueError('Retained Rust sparse cache differs')
+            else:
+                with target.open('xb') as output:
+                    output.write(data)
+            archive = home / 'registry/cache' / registry / (name + '-' + version + '.crate')
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            if not archive.exists():
+                with urllib.request.urlopen('https://static.crates.io/crates/' + name + '/' + name + '-' + version + '.crate', timeout=60) as response, archive.open('xb') as output:
+                    shutil.copyfileobj(response, output, 1024 * 1024)
+            if sha256_file(archive, reject_symlink_parents=True) != 'sha256:' + row['checksum']:
+                raise ValueError('Rust crate differs from Cargo.lock and official index')
+        records_digest = 'sha256:' + hashlib.sha256(canonical_json_bytes(sorted(index_records, key=lambda row: (row['name'], row['vers'])))).hexdigest()
+        if records_digest != policy['lockedIndexRecordsSha256']:
+            raise ValueError('Official Rust sparse-index metadata differs from pinned policy')
+        for path, data in ((home / 'config.toml', RUST_CARGO_CONFIG),
+                           (home / 'registry/index' / registry / 'config.json',
+                            canonical_json_bytes({'dl': 'https://static.crates.io/crates', 'api': 'https://crates.io'}))):
+            if path.exists():
+                if path.read_bytes() != data:
+                    raise ValueError('Retained Rust registry configuration differs')
+            else:
+                with path.open('xb') as output:
+                    output.write(data)
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('CODEX_AGENT_RUST_TOOLCHAIN_ROOT=' + str(prefix) + '\n')
+            output.write('CODEX_AGENT_RUST_TOOLCHAIN_ARCHIVES=' + str(archives) + '\n')
+            output.write('CARGO_HOME=' + str(home) + '\nCARGO_NET_OFFLINE=true\n')
+        with open(os.environ['GITHUB_PATH'], 'a') as output:
+            output.write(str(prefix / 'bin') + '\n')
+        PYRUST
     - if: inputs.component == 'dart'
       name: Provision only the immutable Dart package tool closure
       shell: bash

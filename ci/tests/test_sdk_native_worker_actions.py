@@ -34,7 +34,7 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
                 else:
                     self.assertNotIn("setup-kmp", action)
                     setups = ("actions/setup-python@", "actions/setup-dotnet@",
-                              "dtolnay/rust-toolchain@", "Provision only the immutable Dart package tool closure")
+                              "Provision only the immutable Rust package tools", "Provision only the immutable Dart package tool closure")
                     workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
                     worker = workflow.split("  sdk-native-workers:\n", 1)[1].split("\n  sdk-collect-4:", 1)[0]
                     self.assertIn('test -f "$JAVA_HOME_17_X64/bin/java"', worker)
@@ -86,8 +86,7 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
         action = self.package
         for component in ("python", "csharp", "rust", "dart"):
             self.assertIn("if: inputs.component == '" + component + "'", action)
-        for pin in ("ece7cb06caefa5fff74198d8649806c4678c61a1", "a98b56852c35b8e3190ac28c8c2271da59106c68",
-                    "a5f673d0ba8626c3977bb416a1612774bc82181b"):
+        for pin in ("ece7cb06caefa5fff74198d8649806c4678c61a1", "a98b56852c35b8e3190ac28c8c2271da59106c68"):
             self.assertIn(pin, action)
         self.assertIn("python-version: '3.11.17'", action)
         self.assertIn("python_package_toolchain_policy(root)", action)
@@ -102,7 +101,10 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
         self.assertIn("dart_package_toolchain_policy(pathlib.Path(os.environ['GITHUB_WORKSPACE']))", action)
         self.assertIn("CODEX_AGENT_DART_TOOLCHAIN_ARCHIVE=", action)
         self.assertNotIn("dart-lang/setup-dart@", action)
-        self.assertIn('cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/Cargo.toml" --locked', action)
+        self.assertIn("rust_package_toolchain_policy(root)", action)
+        self.assertIn("CARGO_NET_OFFLINE=true", action)
+        self.assertNotIn("dtolnay/rust-toolchain@", action)
+        self.assertNotIn("cargo fetch", action)
         self.assertNotIn("cargo package", action)
         self.assertNotIn("native_wrappers.py package", action)
 
