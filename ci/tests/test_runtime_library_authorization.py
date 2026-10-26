@@ -251,3 +251,44 @@ class RuntimeLibraryAuthorizationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImportedOriginalScopeTest(unittest.TestCase):
+    """Parser/isolation checks only; no signing keys or product acceptance."""
+    def scope(self):
+        digest="sha256:"+"a"*64
+        value={name:digest for name in caller._IMPORTED_CONTROL_KEYS}
+        value.update(schemaVersion=2,kind="sdk-runtime-library-imported-validation",
+            trustedSourceCommit="b"*40,sourceTrustDomain="development",inputManifestBytes=1024,
+            libraries=[{name:(target if name=="target" else digest)
+                for name in caller._IMPORTED_LIBRARY_KEYS} for target in sorted(NATIVE_TARGETS)])
+        return value
+
+    def test_scope_is_exact_and_preserves_development_originals(self):
+        value=self.scope();raw=canonical_json_bytes(value)
+        self.assertEqual(value,caller.validate_imported_validation_control(raw,
+            expected_sha256=sha256_bytes(raw),trusted_source_commit=value["trustedSourceCommit"]))
+        for field,new in (("schemaVersion",True),("sourceTrustDomain","release"),("inputManifestBytes",0)):
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                bad=canonical_json_bytes({**value,field:new})
+                caller.validate_imported_validation_control(bad,expected_sha256=sha256_bytes(bad),
+                    trusted_source_commit=value["trustedSourceCommit"])
+
+    def test_scope_rejects_unapproved_source_and_unknown_fields(self):
+        value=self.scope()
+        for new,source in (({**value,"unapproved":True},"b"*40),(value,"c"*40)):
+            raw=canonical_json_bytes(new)
+            with self.assertRaises(ValueError):
+                caller.validate_imported_validation_control(raw,expected_sha256=sha256_bytes(raw),
+                    trusted_source_commit=source)
+
+    def test_observation_token_cannot_enter_imported_signer(self):
+        with patch.dict(os.environ,{"GITHUB_TOKEN":"forbidden"}), \
+                patch.object(caller,"verified_imported_development_content") as gate, \
+                patch.object(caller,"_write_library_authorizations") as signer, \
+                self.assertRaisesRegex(ValueError,"observation token"):
+            caller.produce_imported_runtime_libraries(Path("missing"),Path("missing-control"),Path("missing-output"),
+                expected_control_sha256="sha256:"+"a"*64,trusted_source_commit="b"*40,
+                keyring=Path("missing-keyring"),keys_directory=Path("missing-keys"),root_public_key=Path("missing-root"),
+                expected_root_public_key_sha256="sha256:"+"c"*64,release_private_key=Path("missing-secret"))
+        gate.assert_not_called();signer.assert_not_called()

@@ -688,6 +688,12 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
     """Real scoped member hashing; official CI observation is an explicit seam."""
 
     def test_scoped_capture_retains_original_provenance_and_rejects_tampering(self):
+        self._scoped_capture(1)
+
+    def test_imported_capture_uses_exact_new_authority_and_preserves_all_checks(self):
+        self._scoped_capture(2)
+
+    def _scoped_capture(self, schema):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             raw = b"unit-only signed-evidence placeholder\n"
@@ -698,6 +704,9 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
                     "commit": "d" * 40, "tree": "e" * 40, "event": "workflow_dispatch",
                     "runId": 77, "runAttempt": 2, "pullRequest": None},
                 "targets": {target: files for target in NATIVE_TARGETS}}
+            if schema == 2:
+                policy.update(schemaVersion=2, kind="sdk-runtime-library-imported-validation",
+                              workflowSha=policy["validationCommit"])
             archive_path = root / "unit.zip"
             with ZipFile(archive_path, "w") as archive:
                 archive.writestr("linux-x64/libcodex_agent.so.evidence/fixture.sig", raw)
@@ -707,6 +716,8 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
                 "name": f"codex-agent-runtime-library-authorizations-{policy['validationCommit']}-attestation-77-attempt-2",
                 "archive_download_url": "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/123/zip",
                 "workflow_run": {"id": 77, "head_sha": "d" * 40}, "size_in_bytes": archive_path.stat().st_size}
+            if schema == 2:
+                artifact["name"] = f"runtime-imported-library-authorizations-{policy['validationCommit']}-77-2"
             reads = []
             @contextmanager
             def opened(*args, **kwargs):
@@ -733,6 +744,10 @@ class RuntimeAuthorizationCaptureTest(unittest.TestCase):
                 self.assertEqual(policy["workflowSha"], observe.call_args.kwargs[
                     "trusted_workflows_by_phase"]["authorization"]["sha"])
                 self.assertIsNone(observe.call_args.kwargs["dispatch_authorization_job"])
+                self.assertEqual({"authorization": "sdk-runtime-library-validation / " +
+                    ("runtime-library-release-authorizations" if schema == 1 else
+                     "runtime-library-imported-original-authorizations")},
+                    observe.call_args.kwargs["jobs_by_phase"])
                 self.assertEqual((123, policy["artifactSha256"]), metadata.call_args.args[:2])
                 self.assertEqual(artifact, window.call_args.args[2])
                 with self.assertRaisesRegex(ValueError, "must not exist"):

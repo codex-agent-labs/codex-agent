@@ -82,10 +82,18 @@ def capture_runtime_authorization(policy, target, destination, *, token):
     from products.c_abi import TARGET_SPECS
     from products.receipt import validate_producer
     from runtime_reference_archive import open_reference_archive, copy_reference_member
-    policy = require_exact_keys(policy, {"schemaVersion", "artifactId", "artifactSha256", "producer",
-        "workflowSha", "validationCommit", "targets"}, "Runtime authorization caller policy")
-    if require_integer(policy["schemaVersion"], "Runtime authorization schema", 1) != 1:
+    fields = {"schemaVersion", "artifactId", "artifactSha256", "producer",
+              "workflowSha", "validationCommit", "targets"}
+    if type(policy) is not dict:
+        raise ValueError("Runtime authorization policy must be an object")
+    schema = require_integer(policy.get("schemaVersion"), "Runtime authorization schema", 1)
+    if schema not in (1, 2):
         raise ValueError("Unsupported Runtime authorization policy")
+    policy = require_exact_keys(policy, fields | ({"kind"} if schema == 2 else set()),
+                                "Runtime authorization caller policy")
+    if schema == 2 and (policy["kind"] != "sdk-runtime-library-imported-validation"
+            or policy["workflowSha"] != policy["validationCommit"]):
+        raise ValueError("Imported authorization requires its exact independent source/workflow identity")
     producer = validate_producer(policy["producer"])
     if producer["event"] != "workflow_dispatch":
         raise ValueError("Runtime authorization requires its protected dispatch producer")
@@ -112,13 +120,16 @@ def capture_runtime_authorization(policy, target, destination, *, token):
     if destination.exists() or destination.is_symlink():
         raise ValueError("Runtime authorization destination must not exist")
     started = time.monotonic_ns()
-    job = "sdk-runtime-library-validation / runtime-library-release-authorizations"
+    job = ("sdk-runtime-library-validation / runtime-library-release-authorizations" if schema == 1 else
+           "sdk-runtime-library-validation / runtime-library-imported-original-authorizations")
     observed = product_reuse._observe_ci_producer_jobs({"authorization": producer},
         jobs_by_phase={"authorization": job}, token=token, allow_protected_dispatch=True,
         dispatch_authorization_job=None, trusted_workflows_by_phase={"authorization": {
             "path": ".github/workflows/runtime-library-authorizations.yml", "sha": policy["workflowSha"]}})
-    name = (f"codex-agent-runtime-library-authorizations-{policy['validationCommit']}"
-            f"-attestation-{producer['runId']}-attempt-{producer['runAttempt']}")
+    name = ((f"codex-agent-runtime-library-authorizations-{policy['validationCommit']}"
+             f"-attestation-{producer['runId']}-attempt-{producer['runAttempt']}") if schema == 1 else
+            (f"runtime-imported-library-authorizations-{policy['validationCommit']}"
+             f"-{producer['runId']}-{producer['runAttempt']}"))
     artifact = product_reuse._contract_ci_upload_metadata(policy["artifactId"], policy["artifactSha256"],
         name, producer, observed[0]["run"], token)
     if artifact["size_in_bytes"] > _LIMIT:
