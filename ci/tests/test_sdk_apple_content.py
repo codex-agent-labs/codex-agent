@@ -621,6 +621,32 @@ class ApplePrivateSnapshotTest(unittest.TestCase):
         from types import SimpleNamespace
         return patch.object(content.ctypes, "CDLL", return_value=SimpleNamespace(fclonefileat=operation))
 
+    def test_required_native_clones_reject_every_fallback_and_restore_default(self):
+        before = regular_file_inventory(self.source)
+        for index, code in enumerate((None, errno.ENOTSUP, errno.EXDEV)):
+            def unavailable(*args):
+                raise OSError(code, "unavailable filesystem clone")
+
+            with self.subTest(code=code), patch.object(content, "_apple_clone_operation",
+                    return_value=None if code is None else unavailable), \
+                    patch.object(content, "snapshot_regular_tree", side_effect=AssertionError("tree byte copy")), \
+                    patch.object(content.shutil, "copyfileobj", side_effect=AssertionError("file byte copy")):
+                with self.assertRaisesRegex(ValueError, "fallback is forbidden"), content.require_native_apple_clones():
+                    content.copy_apple_file(self.body, self.root / f"file-{index}")
+                with self.assertRaisesRegex(ValueError, "fallback is forbidden"), content.require_native_apple_clones():
+                    content._snapshot_apple_tree(self.source, self.root / f"tree-{index}")
+                self.assertFalse(content._REQUIRE_NATIVE_CLONES.get())
+        self.assertEqual(before, regular_file_inventory(self.source))
+        with content.require_native_apple_clones():
+            content._snapshot_apple_tree(self.source, self.destination)
+            content.copy_apple_file(self.body, self.root / "native-file")
+        self.assertEqual(before, regular_file_inventory(self.destination))
+        self.assertEqual(self.body.read_bytes(), (self.root / "native-file").read_bytes())
+        self.assertNotEqual(self.body.stat().st_ino, (self.root / "native-file").stat().st_ino)
+        with patch.object(content, "_apple_clone_operation", return_value=None):
+            content.copy_apple_file(self.body, self.root / "default-file")
+        self.assertEqual(self.body.read_bytes(), (self.root / "default-file").read_bytes())
+
     def test_native_snapshot_has_independent_files_and_preserves_bytes_modes_empty_directories(self):
         before = regular_file_inventory(self.source)
         with patch.object(content, "snapshot_regular_tree", side_effect=AssertionError("byte copy")):
