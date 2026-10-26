@@ -360,6 +360,9 @@ class SdkNativePhaseTest(unittest.TestCase):
                     "codexAgent.nativeWrapperPackageSdksRoot": str(self.sdks),
                     "codexAgent.sdkCompatibilityRequest": str(self.request)}
                 if language == "csharp":
+                    recipe = self.root / "codex-agent-bindings/csharp/tools/package_sdk.py"
+                    recipe.parent.mkdir(parents=True)
+                    recipe.write_text("from native_wrappers import package_all\n")
                     profile = self.root / "gradle/release/toolchains/sdk/csharp.json"
                     profile.parent.mkdir(parents=True)
                     profile.write_bytes(b"fixture profile; producer mocked\n")

@@ -723,6 +723,7 @@ def _package_only(root, fields, environ):
     inspector_context = nullcontext()
     if component == "csharp":
         from tooling_inspector import borrowed_inspector
+        recipe = _file(root / "codex-agent-bindings/csharp/tools/package_sdk.py", "Tracked C# package recipe")
         binary = _directory(Path(fields["codexAgent.csharpBinaryStageRoot"]), "Original C# binary")
         profile = _file(root / "gradle/release/toolchains/sdk/csharp.json", "Tracked .NET profile")
         if str(profile) != fields["codexAgent.csharpDotnetProfile"]:
@@ -737,6 +738,11 @@ def _package_only(root, fields, environ):
         _runtime_worker_checkout(root, producer)
 
     unchanged()
+    if component == "csharp":
+        spec = importlib.util.spec_from_file_location("sdk_csharp_package", recipe)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        package_all = module.package_all
     if component == "python":
         verify_python_package_toolchain(root, environ)
     elif component == "cpp":
