@@ -30,6 +30,19 @@ from .tooling import verified_tooling_capture
 from .sdk_apple_package_source import capture_apple_package_sources
 
 
+_REQUIRE_NATIVE_CLONES = ContextVar("require_native_apple_clones", default=False)
+
+
+@contextmanager
+def require_native_apple_clones():
+    """Reject byte-copy fallback for a caller with a native-clone capacity budget."""
+    token = _REQUIRE_NATIVE_CLONES.set(True)
+    try:
+        yield
+    finally:
+        _REQUIRE_NATIVE_CLONES.reset(token)
+
+
 def _apple_clone_operation():
     if sys.platform == "linux":
         import fcntl
@@ -101,6 +114,8 @@ def copy_apple_file(source: Path, destination: Path) -> None:
     """Create an independent private file; the caller still verifies all bytes."""
     clone = _apple_clone_operation()
     if clone is None:
+        if _REQUIRE_NATIVE_CLONES.get():
+            raise ValueError("Native Apple clones are required; byte-copy fallback is forbidden")
         # Existing portable rehydration path; the private tree is verified by the caller.
         with Path(source).open("rb") as original, Path(destination).open("xb") as output:
             shutil.copyfileobj(original, output, length=1024**2)
@@ -114,6 +129,8 @@ def copy_apple_file(source: Path, destination: Path) -> None:
         except OSError as error:
             if error.errno not in {errno.ENOTSUP, errno.EXDEV}:
                 raise
+            if _REQUIRE_NATIVE_CLONES.get():
+                raise ValueError("Native Apple clones are required; byte-copy fallback is forbidden") from error
             output = os.open(Path(destination).name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                              stat.S_IMODE(before.st_mode), dir_fd=parent)
             with os.fdopen(output, "wb") as target, os.fdopen(source_descriptor, "rb", closefd=False) as original:
@@ -169,6 +186,8 @@ def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool =
     from runtime_reference_transport import count
     clone = _apple_clone_operation()
     if clone is None:
+        if _REQUIRE_NATIVE_CLONES.get():
+            raise ValueError("Native Apple clones are required; byte-copy fallback is forbidden")
         snapshot_regular_tree(source, destination, allow_empty=allow_empty)
         count("appleSnapshotPortableTrees")
         return
@@ -190,6 +209,8 @@ def _snapshot_apple_tree(source: Path, destination: Path, *, allow_empty: bool =
         except OSError as error:
             if error.errno not in {errno.ENOTSUP, errno.EXDEV}:
                 raise
+            if _REQUIRE_NATIVE_CLONES.get():
+                raise ValueError("Native Apple clones are required; byte-copy fallback is forbidden") from error
             held = os.fstat(target)
             named = os.stat(destination.name, dir_fd=parent, follow_symlinks=False)
             if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
@@ -216,6 +237,21 @@ def _input_inventory(path: Path, *, allow_empty: bool):
     for ancestor in (path.absolute(), *path.absolute().parents):
         require_regular_directory(ancestor, "Apple SDK input ancestry")
     return regular_file_inventory(path, allow_empty=allow_empty)
+
+
+_REPLAY_CAPACITY_GUARD = ContextVar("apple_replay_capacity_guard", default=None)
+
+
+@contextmanager
+def apple_replay_capacity_guard(check):
+    """Add a caller-owned capacity check without replacing any verification gate."""
+    if not callable(check):
+        raise TypeError("Apple replay capacity guard must be callable")
+    token = _REPLAY_CAPACITY_GUARD.set(check)
+    try:
+        yield
+    finally:
+        _REPLAY_CAPACITY_GUARD.reset(token)
 
 
 _PRIVATE_EXECUTION = ContextVar("private_apple_package_execution", default=None)
@@ -321,6 +357,9 @@ def _verify_sdk_apple_with_tooling(
             required_trust_domain=tooling_trust, keyring=tooling_keyring,
             keys_directory=tooling_keys_directory, policy_revision=policy_revision,
         ) as jar:
+            capacity_guard = _REPLAY_CAPACITY_GUARD.get()
+            if capacity_guard is not None:
+                capacity_guard(command_name, root)
             private_expected = {name: expected / name for name in expected_paths}
             arguments = argument_builder(private_sources, private_expected, root)
             command = [str(java_executable), "-jar", str(jar), command_name]

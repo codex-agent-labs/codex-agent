@@ -15,13 +15,13 @@ on:
       delegationArtifactSha256:
         value: ${{ jobs.delegate.outputs.artifact_sha256 }}
       captureArtifactId:
-        value: ${{ jobs.capture.outputs.artifact_id }}
+        value: ${{ jobs.capture.outputs.artifact_id || jobs.capture-imported.outputs.artifact_id }}
       captureArtifactSha256:
-        value: ${{ jobs.capture.outputs.artifact_sha256 }}
+        value: ${{ jobs.capture.outputs.artifact_sha256 || jobs.capture-imported.outputs.artifact_sha256 }}
       authorizationsArtifactId:
-        value: ${{ jobs.authorize.outputs.artifact_id }}
+        value: ${{ jobs.authorize.outputs.artifact_id || jobs.authorize-imported.outputs.artifact_id }}
       authorizationsArtifactSha256:
-        value: ${{ jobs.authorize.outputs.artifact_sha256 }}
+        value: ${{ jobs.authorize.outputs.artifact_sha256 || jobs.authorize-imported.outputs.artifact_sha256 }}
 
 permissions:
   actions: read
@@ -30,7 +30,7 @@ permissions:
 jobs:
   delegate:
     name: runtime-library-root-delegation
-    if: github.event_name == 'workflow_dispatch' && ((inputs.validation-only && github.event.inputs.purpose == 'sdk-runtime-library-validation') || (!inputs.validation-only && github.event.inputs.purpose == 'runtime-library-authorizations'))
+    if: fromJSON(inputs.attestationJson).schemaVersion == 1 && github.event_name == 'workflow_dispatch' && ((inputs.validation-only && github.event.inputs.purpose == 'sdk-runtime-library-validation') || (!inputs.validation-only && github.event.inputs.purpose == 'runtime-library-authorizations'))
     runs-on: ubuntu-24.04
     environment: sdk-runtime-root-attestation
     outputs:
@@ -430,4 +430,182 @@ jobs:
           name: codex-agent-runtime-library-authorizations-${{ needs.delegate.outputs.validation_commit }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-library-authorizations
           compression-level: 0
+          retention-days: 90
+
+  capture-imported:
+    name: runtime-library-imported-original-capture
+    if: github.event_name == 'workflow_dispatch' && inputs.validation-only && github.event.inputs.purpose == 'sdk-runtime-library-validation' && fromJSON(inputs.attestationJson).schemaVersion == 2 && fromJSON(inputs.attestationJson).kind == 'sdk-runtime-library-imported-validation'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      source_sha: ${{ steps.approval.outputs.source_sha }}
+      control_sha256: ${{ steps.approval.outputs.control_sha256 }}
+      artifact_id: ${{ steps.intake.outputs.artifact_id || steps.upload.outputs.artifact-id }}
+      artifact_sha256: ${{ steps.intake.outputs.artifact_sha256 || format('sha256:{0}', steps.upload.outputs.artifact-digest) }}
+      artifact_run_id: ${{ steps.intake.outputs.artifact_run_id || github.run_id }}
+    steps:
+      - name: Require independent imported-original scope before checkout or transfer
+        id: approval
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_CONTROL_SHA256 }}
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_SOURCE_SHA }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$CONTROL_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          printf '%s\n' "$CONTROL_JSON" > "$RUNNER_TEMP/imported-control.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/imported-control.json" | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+          test "$(jq -er '.trustedSourceCommit' "$RUNNER_TEMP/imported-control.json")" = "$SOURCE_SHA"
+          printf 'source_sha=%s\ncontrol_sha256=%s\n' "$SOURCE_SHA" "$CONTROL_SHA256" >> "$GITHUB_OUTPUT"
+      - name: Check out independently pinned imported-original observer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Capture only exact unique official LFS inputs without signing keys
+        id: intake
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.approval.outputs.source_sha }}
+          CONTROL_SHA256: ${{ steps.approval.outputs.control_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_library_caller.py capture-imported \
+            --control "$RUNNER_TEMP/imported-control.json" \
+            --destination "$RUNNER_TEMP/imported-capture" --storage "$RUNNER_TEMP/imported-lfs" \
+            --expected-control-sha256 "$CONTROL_SHA256" --trusted-source-commit "$SOURCE_SHA" \
+            > "$RUNNER_TEMP/imported-intake-result.json" 2> "$RUNNER_TEMP/imported-intake-error.txt"
+          if jq -e '.originalCapture' "$RUNNER_TEMP/imported-intake-result.json" > /dev/null; then
+            jq -r '.originalCapture | "artifact_id=\(.artifactId)\nartifact_sha256=\(.artifactSha256)\nartifact_run_id=\(.producer.runId)"' \
+              "$RUNNER_TEMP/imported-intake-result.json" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Preserve unique immutable inputs once
+        if: steps.intake.outputs.artifact_id == ''
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: runtime-imported-validation-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/imported-capture
+          compression-level: 0
+          retention-days: 90
+
+      - name: Preserve small imported verification timings and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: ignore
+          overwrite: false
+          name: runtime-imported-capture-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/imported-intake-result.json
+            ${{ runner.temp }}/imported-intake-error.txt
+          retention-days: 90
+
+  authorize-imported:
+    name: runtime-library-imported-original-authorizations
+    needs: capture-imported
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require the same independent source and exact authorization scope
+        id: approval
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_CONTROL_SHA256 }}
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_SOURCE_SHA }}
+          OBSERVED_SOURCE: ${{ needs.capture-imported.outputs.source_sha }}
+          OBSERVED_CONTROL: ${{ needs.capture-imported.outputs.control_sha256 }}
+          ROOT_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_ROOT_PUBLIC_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$CONTROL_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$ROOT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          test "$SOURCE_SHA" = "$OBSERVED_SOURCE"
+          test "$CONTROL_SHA256" = "$OBSERVED_CONTROL"
+          printf '%s\n' "$CONTROL_JSON" > "$RUNNER_TEMP/imported-control.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/imported-control.json" | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Check out the exact original verifier and separate library signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Receive the authenticated original unique object capture
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.capture-imported.outputs.artifact_id }}
+          run-id: ${{ needs.capture-imported.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: imported-capture
+      - name: Authenticate unique objects and link only consumed aliases
+        env:
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_SOURCE_SHA }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_CONTROL_SHA256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_library_caller.py materialize-imported \
+            --capture imported-capture --destination "$RUNNER_TEMP/imported-originals" \
+            --control "$RUNNER_TEMP/imported-control.json" --expected-control-sha256 "$CONTROL_SHA256" \
+            --trusted-source-commit "$SOURCE_SHA" > "$RUNNER_TEMP/imported-materialization-result.json" 2> "$RUNNER_TEMP/imported-materialization-error.txt"
+      - name: Verify all original source and content gates before issuing exact-library claims
+        env:
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_SOURCE_SHA }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_IMPORTED_CONTROL_SHA256 }}
+          ROOT_SHA256: ${{ vars.CODEX_AGENT_SDK_RUNTIME_ROOT_PUBLIC_KEY_SHA256 }}
+          RELEASE_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_PRIVATE_KEY"
+          umask 077
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$RUNNER_TEMP/imported-product-key"
+          unset RELEASE_PRIVATE_KEY
+          trap 'rm -f "$RUNNER_TEMP/imported-product-key"' EXIT
+          python3 -B trusted-source/ci/runtime_phase10_library_caller.py authorize-imported \
+            --directory "$RUNNER_TEMP/imported-originals" --control "$RUNNER_TEMP/imported-control.json" \
+            --destination "$RUNNER_TEMP/imported-library-authorizations" \
+            --expected-control-sha256 "$CONTROL_SHA256" --trusted-source-commit "$SOURCE_SHA" \
+            --keyring trusted-source/gradle/release/product-signing-keys.json \
+            --keys-directory trusted-source/gradle/release/keys \
+            --root-public-key trusted-source/gradle/release/keys/sdk-runtime-root.pub \
+            --expected-root-public-key-sha256 "$ROOT_SHA256" \
+            --release-private-key "$RUNNER_TEMP/imported-product-key" > "$RUNNER_TEMP/imported-library-result.json" 2> "$RUNNER_TEMP/imported-library-error.txt"
+      - name: Preserve real exact-library authorizations and unchanged public delegation
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: runtime-imported-library-authorizations-${{ needs.capture-imported.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/imported-library-authorizations
+          compression-level: 0
+          retention-days: 90
+
+      - name: Preserve small imported verification timings and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: ignore
+          overwrite: false
+          name: runtime-imported-authorization-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/imported-materialization-result.json
+            ${{ runner.temp }}/imported-materialization-error.txt
+            ${{ runner.temp }}/imported-library-result.json
+            ${{ runner.temp }}/imported-library-error.txt
           retention-days: 90

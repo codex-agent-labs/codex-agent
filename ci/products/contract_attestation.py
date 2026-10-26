@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
+import sys
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -40,6 +42,8 @@ from .signatures import (
 _JSON_LIMIT = 16 * 1024 * 1024
 _PAYLOAD_LIMIT = 512 * 1024 * 1024
 _CLOSURE_MANIFEST = "contract-execution-closure.json"
+# Bound only by an existing private SDK byte-verification scope; never a persistent proof.
+_EXECUTION_CLOSURE_SESSION = ContextVar("contract_execution_closure_session", default=None)
 CONTRACT_EXECUTION_CLOSURE_DIRECTORY = "execution-closure"
 _CLOSURE_ARCHIVE = "execution/contract-execution.zip"
 _CLOSURE_RECEIPTS = {phase: f"receipts/{phase}.json" for phase in ("binary", "package", "validation", "metadata")}
@@ -161,9 +165,30 @@ def verify_contract_execution_closure(payload: Path, evidence_directory: Path) -
         verify_regular_file_inventory(evidence, sorted(inventory, key=lambda record: record["relativePath"]), with_kind=False)
         manifest_path.unlink()  # Private snapshot only; retained evidence is immutable.
         snapshot_payload = root / Path(payload).name
-        snapshot_payload.write_bytes(read_regular_file_bytes(payload, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True))
-        if value != _verify_execution_closure_inputs(snapshot_payload, evidence):
-            raise ValueError("Contract execution closure does not bind its exact evidence and payload")
+        payload_bytes = read_regular_file_bytes(payload, max_bytes=_PAYLOAD_LIMIT, reject_symlink_parents=True)
+        # Fresh byte verification above binds every input; signatures and key policy remain outside this cache.
+        # Standalone Runtime bundles omit restore; use only an already-loaded caller session.
+        session = _EXECUTION_CLOSURE_SESSION.get()
+        if session is None:
+            context = getattr(sys.modules.get(f"{__package__}.restore"), "_VERIFICATION_SESSION", None)
+            session = context.get() if context is not None else None
+        key = (snapshot_payload.name, sha256_bytes(payload_bytes), sha256_bytes(contents)) if session is not None else None
+        completed = False
+        if session is not None:
+            with session["lock"]:
+                completed = key in session.get("contractExecutionClosures", ())
+        if not completed:
+            snapshot_payload.write_bytes(payload_bytes)
+        del payload_bytes
+        if not completed:
+            if value != _verify_execution_closure_inputs(snapshot_payload, evidence):
+                raise ValueError("Contract execution closure does not bind its exact evidence and payload")
+            if session is not None:
+                with session["lock"]:
+                    verified = session.setdefault("contractExecutionClosures", set())
+                    # ponytail: retain only 64 small identities; overflow keeps the full verifier.
+                    if len(verified) < 64:
+                        verified.add(key)
     return value
 
 

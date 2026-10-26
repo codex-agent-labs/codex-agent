@@ -660,14 +660,15 @@ def _observe_contract_producer_runs(
 
 def _require_ci_workflow_reference(run, workflow, sha):
     references = require_array(run.get("referenced_workflows"), "Contract original workflow references")
-    selected = [value for value in references if isinstance(value, dict)
-                and isinstance(value.get("path"), str)
-                and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
     protected_path = workflow.split("@", 1)[0] + "@reuse-authority"
-    if (len(selected) != 1 or selected[0].get("sha") != sha
-            or not (selected[0].get("path") == workflow
-                    or selected[0].get("path") == protected_path
-                    and selected[0].get("ref") == "refs/heads/reuse-authority")):
+    # One run may invoke the same workflow at different pinned revisions.
+    # Select the exact authority without removing other original references.
+    selected = [value for value in references if isinstance(value, dict)
+                and value.get("sha") == sha
+                and (value.get("path") == workflow
+                     or value.get("path") == protected_path
+                     and value.get("ref") == "refs/heads/reuse-authority")]
+    if len(selected) != 1:
         raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
 
 
@@ -798,7 +799,9 @@ def _historical_ci_observation(observations, key, attempt, fetch):
     with mutex:
         future = pending.get(key)
         leader = future is None
-        if leader and len(pending) < 64:
+        # Four observation keys per registered phase plus 64 control keys fit
+        # the current 112-phase graph; larger operations still fetch uncached.
+        if leader and len(pending) < 512:
             future = pending[key] = Future()
     if future is None:
         return fetch()

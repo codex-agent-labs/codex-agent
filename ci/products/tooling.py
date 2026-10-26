@@ -262,6 +262,10 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
     The repository is the invoking trusted policy/Git context, never selected by
     placement of an imported plan. This does not grant SDK/host receipt admission.
     """
+    import sys
+    from .sdk_apple_content import _snapshot_apple_tree
+    snapshot_private_tree = _snapshot_apple_tree if sys.platform == "darwin" else snapshot_regular_tree
+
     if use not in {"full", "javascript-validation"} or (use != "full" and policy_revision is None):
         raise ValueError("Tooling consumer scope requires an explicit supported Git policy")
     evidence, repository, public_key = Path(evidence), Path(repository), Path(public_key)
@@ -269,7 +273,7 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
         before = regular_file_inventory(evidence, allow_empty=True)
         root = Path(temporary).resolve()
         captured = root / "evidence"
-        snapshot_regular_tree(evidence, captured, allow_empty=True)
+        snapshot_private_tree(evidence, captured, allow_empty=True)
         key = root / "pinned.pub"
         key.write_bytes(read_regular_file_bytes(public_key, max_bytes=_LIMIT, reject_symlink_parents=True))
         jar = _verify_capture(captured, repository, key, required_trust_domain, keyring, keys_directory,

@@ -152,10 +152,102 @@ runs:
     - if: inputs.component == 'python'
       uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
-        python-version: '3.11'
+        python-version: '3.11.17'
     - if: inputs.component == 'python'
+      name: Provision only the immutable Python package tool closure
       shell: bash
-      run: python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import os, pathlib, subprocess, sys, urllib.request
+        from ci.sdk_native_phase import python_package_toolchain_policy
+        from ci.products.inventory import sha256_file
+        root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+        policy = python_package_toolchain_policy(root)
+        archives = pathlib.Path(os.environ['RUNNER_TEMP']) / 'python-package-toolchain'
+        archives.mkdir(exist_ok=True)
+        for asset in (policy['interpreter'], *policy['wheels']):
+            path = archives / asset['name']
+            verified_identity = None
+            if not path.exists() and asset == policy['interpreter']:
+                # setup-python may retain its completed download under a random
+                # top-level temporary name. Admit only this exact official input.
+                for candidate in archives.parent.iterdir():
+                    if not candidate.is_file() or candidate.is_symlink():
+                        continue
+                    observed = candidate.stat()
+                    if observed.st_size != asset['bytes']:
+                        continue
+                    if sha256_file(candidate, reject_symlink_parents=True) != asset['sha256']:
+                        continue
+                    after = candidate.stat()
+                    verified_identity = (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns)
+                    if (verified_identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                            or observed.st_ctime_ns != after.st_ctime_ns):
+                        raise ValueError('Completed Python setup input changed during verification')
+                    candidate.rename(path)
+                    break
+            if not path.exists():
+                with urllib.request.urlopen(asset['url'], timeout=60) as response, path.open('xb') as output:
+                    while block := response.read(1024 * 1024):
+                        output.write(block)
+            observed = path.stat()
+            if (observed.st_size != asset['bytes']
+                    or (verified_identity is not None and verified_identity !=
+                        (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns))
+                    or (verified_identity is None and sha256_file(path, reject_symlink_parents=True) != asset['sha256'])):
+                raise ValueError('Python tool artifact differs from independent official metadata: ' + asset['name'])
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps',
+                        '--force-reinstall', *(str(archives / wheel['name']) for wheel in policy['wheels'])], check=True)
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('CODEX_AGENT_PYTHON_TOOLCHAIN_ARCHIVES=' + str(archives) + '\n')
+        PY
+    - if: inputs.component == 'cpp'
+      name: Provision only the immutable CMake package tool closure
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import os, pathlib, tarfile, urllib.request
+        from ci.sdk_native_phase import cpp_package_toolchain_policy
+        from ci.products.inventory import require_relative_path, sha256_file
+        policy = cpp_package_toolchain_policy(pathlib.Path(os.environ['GITHUB_WORKSPACE']))
+        asset = policy['archive']
+        base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'cpp-package-toolchain'
+        base.mkdir(exist_ok=True)
+        archive_path = base / asset['name']
+        if not archive_path.exists():
+            with urllib.request.urlopen(asset['url'], timeout=60) as response, archive_path.open('xb') as output:
+                while block := response.read(1024 * 1024):
+                    output.write(block)
+        if (archive_path.stat().st_size != asset['bytes']
+                or sha256_file(archive_path, reject_symlink_parents=True) != asset['sha256']):
+            raise ValueError('CMake archive differs from independent official checksum')
+        prefix = base / policy['archiveRoot']
+        if not prefix.exists():
+            # Retain the original archive; extract only packaging's executable
+            # and module/template closure. The package child authenticates it.
+            prefix.mkdir()
+            with tarfile.open(archive_path, 'r:gz') as archive:
+                seen = set()
+                for member in archive:
+                    name = require_relative_path(member.name.rstrip('/'), 'CMake archive member')
+                    if name in seen:
+                        raise ValueError('Duplicate CMake archive member')
+                    seen.add(name)
+                    if name == policy['archiveRoot'] and member.isdir():
+                        continue
+                    if not name.startswith(policy['archiveRoot'] + '/') or not (member.isdir() or member.isfile()):
+                        raise ValueError('Unsupported CMake archive member')
+                    relative = name[len(policy['archiveRoot']) + 1:]
+                    if member.isfile() and (relative == 'bin/cmake' or relative.startswith('share/cmake-3.31/')):
+                        archive.extract(member, base, filter='data')
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('CODEX_AGENT_CPP_TOOLCHAIN_ROOT=' + str(prefix) + '\n')
+            output.write('CODEX_AGENT_CPP_TOOLCHAIN_ARCHIVE=' + str(archive_path) + '\n')
+        with open(os.environ['GITHUB_PATH'], 'a') as output:
+            output.write(str(prefix / 'bin') + '\n')
+        PY
     - if: inputs.component == 'csharp'
       uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       env:
@@ -163,15 +255,147 @@ runs:
       with:
         dotnet-version: '8.0.419'
     - if: inputs.component == 'rust'
-      uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
-    - if: inputs.component == 'rust'
-      name: Populate locked dependency cache for the existing offline package recipe
+      name: Provision only the immutable Rust package tools and locked offline cache
       shell: bash
-      run: cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/Cargo.toml" --locked
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PYRUST'
+        import hashlib, os, pathlib, shutil, tarfile, urllib.request
+        from ci.sdk_native_phase import (RUST_CARGO_CONFIG, RUST_PACKAGE_TOOL_FILES, RUST_SPARSE_HEADER,
+                                         rust_package_toolchain_policy, rust_locked_packages)
+        from ci.products.inventory import canonical_json_bytes, load_json_bytes, require_relative_path, sha256_file
+        root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+        policy = rust_package_toolchain_policy(root)
+        base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'rust-package-toolchain'
+        archives, prefix, home = base / 'archives', base / 'toolchain', base / 'cargo-home'
+        for directory in (archives, prefix, home, base / 'locked-index'):
+            directory.mkdir(parents=True, exist_ok=True)
+        for component, asset in policy['archives'].items():
+            path = archives / asset['name']
+            if not path.exists():
+                with urllib.request.urlopen(asset['url'], timeout=60) as response, path.open('xb') as output:
+                    shutil.copyfileobj(response, output, 1024 * 1024)
+            if path.stat().st_size != asset['bytes'] or sha256_file(path, reject_symlink_parents=True) != asset['sha256']:
+                raise ValueError('Rust archive differs from independent official checksum')
+            with tarfile.open(path, 'r|xz') as archive:
+                seen = set()
+                for member in archive:
+                    name = require_relative_path(member.name.rstrip('/'), 'Rust archive member')
+                    if name in seen:
+                        raise ValueError('Duplicate Rust archive member')
+                    seen.add(name)
+                    if name == asset['archiveRoot'] and member.isdir():
+                        continue
+                    if not name.startswith(asset['archiveRoot'] + '/') or not (member.isdir() or member.isfile()):
+                        raise ValueError('Unsupported Rust archive member')
+                    start = asset['archiveRoot'] + '/' + component + '/'
+                    relative = name[len(start):] if name.startswith(start) else ''
+                    if member.isfile() and relative in RUST_PACKAGE_TOOL_FILES[component]:
+                        destination = prefix / relative
+                        if not destination.exists():
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            with archive.extractfile(member) as original, destination.open('xb') as output:
+                                shutil.copyfileobj(original, output, 1024 * 1024)
+                            destination.chmod(member.mode & 0o777)
+        registry = 'index.crates.io-1949cf8c6b5b557f'
+        index_records = []
+        for row in rust_locked_packages(root):
+            name, version = row['name'], row['version']
+            original_index = base / 'locked-index' / name
+            if not original_index.exists():
+                with urllib.request.urlopen('https://index.crates.io/' + row['indexPath'], timeout=60) as response, original_index.open('xb') as output:
+                    shutil.copyfileobj(response, output, 1024 * 1024)
+            matches = [entry for line in original_index.read_bytes().splitlines()
+                       if (entry := load_json_bytes(line)).get('vers') == version]
+            if len(matches) != 1 or (matches[0].get('name'), matches[0].get('cksum')) != (name, row['checksum']):
+                raise ValueError('Official Rust sparse index differs from Cargo.lock')
+            index_records.append(matches[0])
+            # Cargo1.95's fixed v3 sparse-cache framing; retain just the locked version.
+            data = RUST_SPARSE_HEADER + version.encode() + b'\0' + canonical_json_bytes(matches[0]) + b'\0'
+            target = home / 'registry/index' / registry / '.cache' / row['indexPath']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                if target.read_bytes() != data:
+                    raise ValueError('Retained Rust sparse cache differs')
+            else:
+                with target.open('xb') as output:
+                    output.write(data)
+            archive = home / 'registry/cache' / registry / (name + '-' + version + '.crate')
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            if not archive.exists():
+                with urllib.request.urlopen('https://static.crates.io/crates/' + name + '/' + name + '-' + version + '.crate', timeout=60) as response, archive.open('xb') as output:
+                    shutil.copyfileobj(response, output, 1024 * 1024)
+            if sha256_file(archive, reject_symlink_parents=True) != 'sha256:' + row['checksum']:
+                raise ValueError('Rust crate differs from Cargo.lock and official index')
+        records_digest = 'sha256:' + hashlib.sha256(canonical_json_bytes(sorted(index_records, key=lambda row: (row['name'], row['vers'])))).hexdigest()
+        if records_digest != policy['lockedIndexRecordsSha256']:
+            raise ValueError('Official Rust sparse-index metadata differs from pinned policy')
+        for path, data in ((home / 'config.toml', RUST_CARGO_CONFIG),
+                           (home / 'registry/index' / registry / 'config.json',
+                            canonical_json_bytes({'dl': 'https://static.crates.io/crates', 'api': 'https://crates.io'}))):
+            if path.exists():
+                if path.read_bytes() != data:
+                    raise ValueError('Retained Rust registry configuration differs')
+            else:
+                with path.open('xb') as output:
+                    output.write(data)
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('CODEX_AGENT_RUST_TOOLCHAIN_ROOT=' + str(prefix) + '\n')
+            output.write('CODEX_AGENT_RUST_TOOLCHAIN_ARCHIVES=' + str(archives) + '\n')
+            output.write('CARGO_HOME=' + str(home) + '\nCARGO_NET_OFFLINE=true\n')
+        with open(os.environ['GITHUB_PATH'], 'a') as output:
+            output.write(str(prefix / 'bin') + '\n')
+        PYRUST
     - if: inputs.component == 'dart'
-      uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
-      with:
-        sdk: '3.13.2'
+      name: Provision only the immutable Dart package tool closure
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -B - <<'PY'
+        import os, pathlib, shutil, urllib.request, zipfile
+        from ci.sdk_native_phase import DART_PACKAGE_TOOL_FILES, dart_package_toolchain_policy
+        from ci.products.inventory import require_relative_path, sha256_file
+        policy = dart_package_toolchain_policy(pathlib.Path(os.environ['GITHUB_WORKSPACE']))
+        asset = policy['archive']
+        base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'dart-package-toolchain'
+        base.mkdir(exist_ok=True)
+        archive_path = base / asset['name']
+        if not archive_path.exists():
+            with urllib.request.urlopen(asset['url'], timeout=60) as response, archive_path.open('xb') as output:
+                while block := response.read(1024 * 1024):
+                    output.write(block)
+        if (archive_path.stat().st_size != asset['bytes']
+                or sha256_file(archive_path, reject_symlink_parents=True) != asset['sha256']):
+            raise ValueError('Dart archive differs from independent official checksum')
+        prefix = base / policy['archiveRoot']
+        if not prefix.exists():
+            # Packaging only asks Dart for its version. Retain the full original
+            # SDK archive, but install only that executable's identity closure.
+            prefix.mkdir()
+            with zipfile.ZipFile(archive_path) as archive:
+                seen = set()
+                for member in archive.infolist():
+                    name = require_relative_path(member.filename.rstrip('/'), 'Dart archive member')
+                    if name in seen:
+                        raise ValueError('Duplicate Dart archive member')
+                    seen.add(name)
+                    mode = (member.external_attr >> 16) & 0o170000
+                    if (member.flag_bits & 1 or mode not in (0, 0o100000, 0o040000)
+                            or not name.startswith(policy['archiveRoot'] + '/')):
+                        raise ValueError('Unsupported Dart archive member')
+                    relative = name[len(policy['archiveRoot']) + 1:]
+                    if not member.is_dir() and relative in DART_PACKAGE_TOOL_FILES:
+                        target = prefix / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.open(member) as original, target.open('xb') as output:
+                            shutil.copyfileobj(original, output, length=1024 * 1024)
+                        target.chmod(0o755 if relative == 'bin/dart' else 0o644)
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write('CODEX_AGENT_DART_TOOLCHAIN_ROOT=' + str(prefix) + '\n')
+            output.write('CODEX_AGENT_DART_TOOLCHAIN_ARCHIVE=' + str(archive_path) + '\n')
+        with open(os.environ['GITHUB_PATH'], 'a') as output:
+            output.write(str(prefix / 'bin') + '\n')
+        PY
     - name: Execute one imported-source package with full admission
       shell: bash
       env:
