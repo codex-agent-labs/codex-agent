@@ -649,7 +649,10 @@ class ContractAttestationTest(unittest.TestCase):
         for relative in re.findall(r'"([^"\n]+)"', declaration):
             target = isolated / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(repository / relative, target)
+            source = (Path(sys.modules[verify_contract_attestation.__module__].__file__)
+                      if relative == "ci/products/contract_attestation.py" else repository / relative)
+            shutil.copyfile(source, target)
+        self.assertFalse((isolated / "ci/products/restore.py").exists())
         command = [sys.executable, "-m", "ci.products.contract_attestation", "materialize",
                    "--payload", str(self.payload), "--metadata-receipt", str(self.receipt),
                    "--attestation", str(attestation), "--signature", str(signature),

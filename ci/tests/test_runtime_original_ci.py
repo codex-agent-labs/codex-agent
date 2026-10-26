@@ -268,6 +268,67 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 observe()
             self.assertEqual(2, sum('/actions/jobs/101' in c.args[0] for c in api.call_args_list))
 
+    def test_full_graph_metadata_reuses_completed_observations_without_sharing_verdicts(self):
+        jobs = [{**self.jobs[0], 'id': 1000 + index, 'run_attempt': 2,
+                 'name': f'product-validation / capacity-{index}'} for index in range(112)]
+        artifacts = [{**self.artifacts['binary'], 'id': 2000 + index,
+                      'name': f'capacity-{index}',
+                      'archive_download_url': f'https://api.github.com/repos/{fixture.REPOSITORY}/actions/artifacts/{2000 + index}/zip'}
+                     for index in range(112)]
+        original = self.api()
+        def http(url, token):
+            if '/actions/jobs/' in url:
+                return json.dumps(next(job for job in jobs if url.endswith('/' + str(job['id'])))).encode()
+            if '/actions/artifacts/' in url:
+                return json.dumps(next(row for row in artifacts if url.endswith('/' + str(row['id'])))).encode()
+            return original(url, token)
+        def observe(job, pin=None):
+            return adapter._observe_ci_producer_jobs({'original': self.producer},
+                jobs_by_phase={'original': job['name']}, trusted_workflow_sha=pin or self.pin,
+                token='not-a-real-token', native_job_ids_by_phase={'original': job['id']})
+        def metadata(row, digest=None):
+            return adapter._contract_ci_upload_metadata(row['id'], digest or row['digest'], row['name'],
+                self.producer, self.run, 'not-a-real-token')
+        self.measurements = []
+        with mock.patch('reuse.api_request', side_effect=http) as requests:
+            for invocation in (1, 2):
+                with adapter._ci_observation_batch(('100', '1')):
+                    for pass_number in (1, 2):
+                        before = requests.call_count
+                        for job, row in zip(jobs, artifacts):
+                            self.assertEqual(job['id'], observe(job)[0]['jobs'][0]['id'])
+                            self.assertEqual(row, metadata(row))
+                        self.measurements.append({'invocation': invocation, 'pass': pass_number,
+                            'httpRequests': requests.call_count - before,
+                            'cachedKeys': len(adapter._CI_OBSERVATIONS.get()['observationGuards'][1])})
+                        self.assertEqual(226 if pass_number == 1 else 0, requests.call_count - before)
+                    with self.assertRaises(ValueError):
+                        observe(jobs[-1], pin='0' * 40)
+                    with self.assertRaises(ValueError):
+                        metadata(artifacts[-1], digest='sha256:' + '0' * 64)
+                    observe(jobs[-1])[0]['jobs'][0]['id'] = -1
+                    self.assertEqual(jobs[-1]['id'], observe(jobs[-1])[0]['jobs'][0]['id'])
+                self.assertIsNone(adapter._CI_OBSERVATIONS.get())
+
+    def test_large_observation_batch_keeps_a_fixed_bound_and_fresh_overflow(self):
+        fetched = []
+        def read(key):
+            def fetch():
+                fetched.append(key)
+                return {'run': {'status': 'completed'}, 'key': key}
+            return adapter._historical_ci_observation(adapter._CI_OBSERVATIONS.get(), key, ('71', '2'), fetch)
+        with adapter._ci_observation_batch(('100', '1')):
+            for key in range(512):
+                self.assertEqual(key, read(key)['key'])
+            self.assertEqual(512, len(adapter._CI_OBSERVATIONS.get()['observationGuards'][1]))
+            read(511)['key'] = 'mutated'
+            self.assertEqual(511, read(511)['key'])
+            for _ in range(2):
+                self.assertEqual('overflow', read('overflow')['key'])
+            self.assertEqual(2, fetched.count('overflow'))
+            self.assertEqual(512, len(adapter._CI_OBSERVATIONS.get()['observationGuards'][1]))
+        self.assertIsNone(adapter._CI_OBSERVATIONS.get())
+
     def test_distinct_native_jobs_share_tested_commit_only_in_private_batch(self):
         from products.restore import bounded_verify
         original = self.api()

@@ -97,6 +97,171 @@ class ContractExecutionClosureTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.capture(output)
 
+    def test_session_reuses_exact_closure_bytes_across_paths_but_not_sessions(self):
+        from ci.products import contract_attestation as verifier
+        from ci.products.restore import verification_session
+
+        output = self.root / "evidence"
+        expected = self.capture(output)
+        relocated = self.root / "relocated"
+        shutil.copytree(output, relocated)
+        moved_payload = self.root / "moved" / self.payload.name
+        moved_payload.parent.mkdir()
+        shutil.copyfile(self.payload, moved_payload)
+        with mock.patch.object(verifier, "_verify_execution_closure_inputs",
+                               wraps=verifier._verify_execution_closure_inputs) as replay:
+            with verification_session():
+                first = verify_contract_execution_closure(self.payload, output)
+                first["files"].clear()
+                self.assertEqual(expected, verify_contract_execution_closure(moved_payload, relocated))
+                self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+                self.assertEqual(1, replay.call_count)
+            with verification_session():
+                self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+            self.assertEqual(2, replay.call_count)
+            verify_contract_execution_closure(self.payload, output)
+            self.assertEqual(3, replay.call_count)
+
+    def test_session_hits_recheck_evidence_payload_and_original_lineage(self):
+        from ci.products import contract_attestation as verifier
+        from ci.products.restore import verification_session
+
+        output = self.root / "evidence"
+        self.capture(output)
+        other_payload, other_receipts, other_archive = execution_closure_fixture(self.root / "other", "other-run")
+        other = self.root / "other-evidence"
+        other_value = capture_contract_execution_closure(other_payload, other_receipts, other_archive, other)
+        self.assertEqual(self.payload.read_bytes(), other_payload.read_bytes())
+        with verification_session(), mock.patch.object(verifier, "_verify_execution_closure_inputs",
+                wraps=verifier._verify_execution_closure_inputs) as replay:
+            verify_contract_execution_closure(self.payload, output)
+            self.assertEqual(other_value, verify_contract_execution_closure(other_payload, other))
+            self.assertEqual(2, replay.call_count)
+            for mutation in ("extra", "missing", "tamper", "symlink", "rebound-archive"):
+                with self.subTest(mutation=mutation):
+                    target = self.root / mutation
+                    shutil.copytree(output, target)
+                    receipt = target / "receipts/binary.json"
+                    if mutation == "extra":
+                        (target / "extra").write_bytes(b"extra")
+                    elif mutation == "missing":
+                        receipt.unlink()
+                    elif mutation == "tamper":
+                        receipt.write_bytes(b"{}\n")
+                    elif mutation == "symlink":
+                        receipt.unlink()
+                        receipt.symlink_to(self.receipts["binary"])
+                    else:
+                        archive = target / "execution/contract-execution.zip"
+                        archive.write_bytes(b"not a ZIP")
+                        manifest = target / "contract-execution-closure.json"
+                        value = load_canonical_json_bytes(manifest.read_bytes())
+                        value["files"] = regular_file_inventory(target, excluded_paths=(manifest.name,))
+                        write_canonical_json(manifest, value)
+                    with self.assertRaises(ValueError):
+                        verify_contract_execution_closure(self.payload, target)
+            changed = self.root / "changed" / self.payload.name
+            changed.parent.mkdir()
+            changed.write_bytes(self.payload.read_bytes() + b"changed")
+            with self.assertRaises(ValueError):
+                verify_contract_execution_closure(changed, output)
+            renamed = self.root / "wrong-name.zip"
+            shutil.copyfile(self.payload, renamed)
+            with self.assertRaises(ValueError):
+                verify_contract_execution_closure(renamed, output)
+
+    def test_session_failure_and_full_cache_keep_the_full_verifier(self):
+        from ci.products import contract_attestation as verifier
+        from ci.products.restore import verification_session
+
+        output = self.root / "evidence"
+        expected = self.capture(output)
+        with verification_session() as session:
+            with mock.patch.object(verifier, "_verify_execution_closure_inputs", side_effect=ValueError("failure")):
+                with self.assertRaisesRegex(ValueError, "failure"):
+                    verify_contract_execution_closure(self.payload, output)
+            self.assertFalse(session.get("contractExecutionClosures"))
+            with mock.patch.object(verifier, "_verify_execution_closure_inputs",
+                                   wraps=verifier._verify_execution_closure_inputs) as replay:
+                self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+                verify_contract_execution_closure(self.payload, output)
+                self.assertEqual(1, replay.call_count)
+        with verification_session() as session, mock.patch.object(verifier, "_verify_execution_closure_inputs",
+                wraps=verifier._verify_execution_closure_inputs) as replay:
+            session["contractExecutionClosures"] = {(str(i), "unused", "unused") for i in range(64)}
+            for _ in range(2):
+                self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+            self.assertEqual(2, replay.call_count)
+            self.assertEqual(64, len(session["contractExecutionClosures"]))
+
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+    def test_session_semantic_reuse_never_reuses_signature_or_trust_admission(self):
+        from ci.products import contract_attestation as verifier
+        from ci.products.restore import verification_session
+        from ci.tests.test_contract_attestation import ContractAttestationTest
+
+        signed = ContractAttestationTest()
+        signed.setUp()
+        self.addCleanup(signed.doCleanups)
+        attestation, signature, expected = signed.build()
+        with verification_session(), mock.patch.object(verifier, "_verify_execution_closure_inputs",
+                wraps=verifier._verify_execution_closure_inputs) as replay, \
+                mock.patch.object(verifier, "verify_manifest_signature",
+                                  wraps=verifier.verify_manifest_signature) as authenticate:
+            for _ in range(2):
+                self.assertEqual(expected, signed.verify(attestation, signature))
+            self.assertEqual(1, replay.call_count)
+            self.assertEqual(2, authenticate.call_count)
+            signature.write_bytes(b"invalid signature")
+            with self.assertRaises(ValueError):
+                signed.verify(attestation, signature)
+            self.assertEqual(3, authenticate.call_count)
+            with self.assertRaises(ValueError):
+                signed.verify(attestation, signature, required_trust_domain="release")
+            self.assertEqual(1, replay.call_count)
+
+    def test_sdk_worker_scope_reuses_closure_and_restores_context_on_failure(self):
+        from ci.products import contract_attestation as verifier
+        from ci.products import sdk_validation as sdk
+
+        output = self.root / "evidence"
+        expected = self.capture(output)
+        self.assertIsNone(verifier._EXECUTION_CLOSURE_SESSION.get())
+        payload_writes = []
+        write = Path.write_bytes
+        def record_write(path, data):
+            if path.name == self.payload.name and path.parent.name.startswith("contract-closure-verify-"):
+                payload_writes.append(path)
+            return write(path, data)
+        with mock.patch.object(verifier, "_verify_execution_closure_inputs",
+                               wraps=verifier._verify_execution_closure_inputs) as replay, \
+                mock.patch.object(Path, "write_bytes", new=record_write):
+            with sdk._byte_inventory_scope():
+                cache = sdk._BYTE_INVENTORIES.get()
+                self.assertIs(cache, verifier._EXECUTION_CLOSURE_SESSION.get())
+                for _ in range(3):
+                    with sdk._byte_inventory_scope():
+                        self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+                self.assertEqual(1, replay.call_count)
+                self.assertEqual(1, len(payload_writes))
+                receipt = output / "receipts/binary.json"
+                original = receipt.read_bytes()
+                receipt.write_bytes(b"tampered\n")
+                with self.assertRaises(ValueError):
+                    verify_contract_execution_closure(self.payload, output)
+                receipt.write_bytes(original)
+            self.assertIsNone(verifier._EXECUTION_CLOSURE_SESSION.get())
+            self.assertEqual({}, cache)
+            with self.assertRaisesRegex(RuntimeError, "scope failure"):
+                with sdk._byte_inventory_scope():
+                    self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+                    self.assertEqual(2, replay.call_count)
+                    raise RuntimeError("scope failure")
+            self.assertIsNone(verifier._EXECUTION_CLOSURE_SESSION.get())
+            self.assertIsNone(sdk._BYTE_INVENTORIES.get())
+            self.assertEqual(expected, verify_contract_execution_closure(self.payload, output))
+            self.assertEqual(3, replay.call_count)
+
     def test_late_closure_mutation_fails_before_publication(self):
         output = self.root / "late-closure"
 

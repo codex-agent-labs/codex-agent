@@ -799,7 +799,9 @@ def _historical_ci_observation(observations, key, attempt, fetch):
     with mutex:
         future = pending.get(key)
         leader = future is None
-        if leader and len(pending) < 64:
+        # Four observation keys per registered phase plus 64 control keys fit
+        # the current 112-phase graph; larger operations still fetch uncached.
+        if leader and len(pending) < 512:
             future = pending[key] = Future()
     if future is None:
         return fetch()

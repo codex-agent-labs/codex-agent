@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -120,6 +121,60 @@ class SdkValidationProjectionTest(unittest.TestCase):
             wrong = {**self.package, field: [] if field == "outputs" else "different"}
             with self.subTest(package_field=field), self.assertRaises(ValueError):
                 proof.receipt_value(receipt, wrong)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Exercises actual macOS private clones")
+    def test_outer_admission_capture_uses_independent_native_files(self):
+        from ci.products import sdk_apple_content
+        expected = [self.args["runtime_authorization"], self.args["package_stage"], self.args["validation_stage"]]
+        before = {root: regular_file_inventory(root) for root in expected}
+        expected_files = sum(map(len, before.values()))
+        def inspect(fields):
+            for phase in ("package", "validation"):
+                original = self.args[f"{phase}_stage"] / "outputs/original.txt"
+                captured = fields[f"--{phase}-stage"] / "outputs/original.txt"
+                self.assertNotEqual((original.stat().st_dev, original.stat().st_ino),
+                                    (captured.stat().st_dev, captured.stat().st_ino))
+                self.assertEqual(1, captured.stat().st_nlink)
+        self.mutate = inspect
+        with patch.object(sdk_apple_content, "snapshot_regular_tree", side_effect=AssertionError("byte copy")), \
+                patch("runtime_reference_transport.count") as count:
+            self.verify()
+        self.assertEqual(expected_files, sum(call.args[1] if len(call.args) > 1 else 1
+            for call in count.call_args_list if call.args[0] == "nativeCloneFiles"))
+        self.assertEqual(3, sum(call.args[0] == "appleSnapshotNativeTrees" for call in count.call_args_list))
+        self.assertEqual(before, {root: regular_file_inventory(root) for root in expected})
+
+    def test_outer_admission_unavailable_clone_keeps_portable_full_gate(self):
+        from ci.products import sdk_apple_content
+        with patch.object(sdk_apple_content, "_apple_clone_operation", return_value=None), \
+                patch.object(sdk_apple_content, "snapshot_regular_tree", wraps=sdk_apple_content.snapshot_regular_tree) as snapshot:
+            self.verify()
+        self.assertEqual(3 if sys.platform == "darwin" else 0, snapshot.call_count)
+        self.assertEqual(1, len(self.calls))
+
+    @unittest.skipUnless(sys.platform == "darwin", "Exercises actual macOS private clones")
+    def test_tooling_capture_clones_and_retains_mutation_rejection(self):
+        from ci.products import sdk_apple_content, tooling
+        evidence = self.root / "original-tooling"
+        evidence.mkdir()
+        (evidence / "held.jar").write_bytes(b"copy-isolation fixture; never executed")
+        key = self.root / "public-key-context"
+        key.write_bytes(b"mocked verification context; not a signing key")
+        original = (evidence / "held.jar").read_bytes()
+        def verify(captured, *_args):
+            jar = captured / "held.jar"
+            self.assertEqual(original, jar.read_bytes())
+            self.assertNotEqual((evidence / "held.jar").stat().st_ino, jar.stat().st_ino)
+            self.assertEqual(1, jar.stat().st_nlink)
+            return jar
+        with patch.object(tooling, "_verify_capture", side_effect=verify), \
+                patch.object(sdk_apple_content, "snapshot_regular_tree", side_effect=AssertionError("byte copy")), \
+                self.assertRaisesRegex(ValueError, "changed during use"):
+            with tooling.verified_tooling_capture(evidence, self.root, key, required_trust_domain="development") as jar:
+                jar.write_bytes(b"mutated independent private capture")
+                self.assertEqual(original, (evidence / "held.jar").read_bytes())
+        self.assertFalse(jar.exists())
+        self.assertEqual(original, (evidence / "held.jar").read_bytes())
 
     def test_verifier_keeps_required_windows_os_paths_without_injected_options_or_credentials(self):
         from ci.products.sdk_validation import _fixed_environment

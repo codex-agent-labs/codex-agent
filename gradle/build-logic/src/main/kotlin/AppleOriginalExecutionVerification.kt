@@ -760,8 +760,10 @@ private fun originalAppleBindingTargetDigests(xcframework: File): Map<String, Ap
         val binary = framework.resolve("CodexAgent")
         val header = framework.resolve("Headers/CodexAgent.h")
         val moduleMap = framework.resolve("Modules/module.modulemap")
-        listOf(binary, header, moduleMap).forEach { it.requiredOriginalAppleFileDigest("Apple binding artifact") }
+        val binaryDigest = binary.requiredOriginalAppleFileDigest("Apple binding artifact")
+        val headerDigest = header.requiredOriginalAppleFileDigest("Apple binding artifact")
+        val moduleMapDigest = moduleMap.requiredOriginalAppleFileDigest("Apple binding artifact")
         AppleBindingTargetDigests(
-            framework.crossLanguageTreeDigest(), binary.releaseDigest(), header.releaseDigest(), moduleMap.releaseDigest(),
+            framework.crossLanguageTreeDigest(), binaryDigest, headerDigest, moduleMapDigest,
         )
     }

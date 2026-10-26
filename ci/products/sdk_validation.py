@@ -156,6 +156,8 @@ def verify_sdk_validation_projection(
         del arguments['shared']
         return shared.verify(**arguments)
     from .tooling import verified_tooling_capture
+    from .sdk_apple_content import _snapshot_apple_tree
+    snapshot_private_tree = _snapshot_apple_tree if sys.platform == "darwin" else snapshot_regular_tree
     if component not in NATIVE_BINDINGS or target not in NATIVE_TARGETS:
         raise ValueError("SDK comparison requires an exact native language/host")
     java_executable = Path(java_executable)
@@ -180,13 +182,13 @@ def verify_sdk_validation_projection(
     with tempfile.TemporaryDirectory(prefix="sdk-validation-proof-") as temporary:
         root = Path(temporary).resolve()
         authorization = root / "runtime-authorization" / target
-        snapshot_regular_tree(runtime_authorization, authorization)
+        snapshot_private_tree(runtime_authorization, authorization)
         if regular_file_inventory(authorization) != authorization_inventory:
             raise ValueError("SDK Runtime authorization changed during capture")
         captured = {}
         for phase, source in stages.items():
             stage = root / "csharp-binary/stage" if phase == "binary" else root / phase
-            snapshot_regular_tree(source, stage)
+            snapshot_private_tree(source, stage)
             if regular_file_inventory(stage) != before[phase]:
                 raise ValueError("SDK original stage changed during capture")
             expected_target = target if phase == "validation" else "desktop"
@@ -287,16 +289,19 @@ memoized_file_inventory.__kwdefaults__ = _inventory_function.__kwdefaults__
 
 @contextmanager
 def _byte_inventory_scope():
-    # This is ONLY the existing bounded byte-hash memo, not restore objects,
-    # qualification state or authentication. No global verifier is replaced.
+    # Bounded byte/closure memo only; no restore objects, qualification state
+    # or authentication. The Contract binding also works in the __main__ worker.
     if _BYTE_INVENTORIES.get() is not None:
         yield
         return
+    from .contract_attestation import _EXECUTION_CLOSURE_SESSION
     cache = {"lock": RLock()}
     token = _BYTE_INVENTORIES.set(cache)
+    closure_token = _EXECUTION_CLOSURE_SESSION.set(cache)
     try:
         yield
     finally:
+        _EXECUTION_CLOSURE_SESSION.reset(closure_token)
         _BYTE_INVENTORIES.reset(token)
         cache.clear()
 
