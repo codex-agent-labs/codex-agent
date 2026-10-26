@@ -382,6 +382,7 @@ class SdkNativePhaseTest(unittest.TestCase):
                     (output / language / "fixture-package").write_bytes(b"simulated unchanged producer output\n")
                 with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
                      patch.object(worker, "verify_python_package_toolchain") as python_tools, \
+                     patch.object(worker, "verify_cpp_package_toolchain") as cpp_tools, \
                      patch("native_wrappers.package_all", side_effect=package) as producer, \
                      patch.object(product_reuse, "_runtime_worker_checkout"), \
                      patch.object(worker, "_inventory", side_effect=AssertionError("No redundant child inventory")), \
@@ -392,6 +393,7 @@ class SdkNativePhaseTest(unittest.TestCase):
                     worker.main(worker._package_command(self.root, fields)[4:])
                     producer.assert_called_once()
                     self.assertEqual(int(language == "python"), python_tools.call_count)
+                    self.assertEqual(int(language == "cpp"), cpp_tools.call_count)
                 self.assertEqual(before, regular_file_inventory(self.root / "prepared"))
                 expected = self.root / "expected-stage"
                 (expected / f"outputs/{language}").mkdir(parents=True)

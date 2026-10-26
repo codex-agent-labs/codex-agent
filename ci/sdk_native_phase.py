@@ -43,6 +43,80 @@ from products.signing_isolation import require_no_signing_secret
 _LIMIT = 16 * 1024 * 1024
 
 
+def cpp_package_toolchain_policy(root):
+    """Exact CMake bytes are an owning C++ package input, not run provenance."""
+    raw = read_regular_file_bytes(Path(root) / "codex-agent-bindings/cpp/package-toolchain.json",
+                                  max_bytes=8192, reject_symlink_parents=True)
+    policy = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "host", "cmakeVersion", "archiveRoot", "archive",
+    }, "C++ package toolchain policy")
+    if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
+            or raw != canonical_json_bytes(policy)
+            or policy["host"] != {"system": "Linux", "architecture": "X64", "distribution": "ubuntu-24.04"}
+            or policy["cmakeVersion"] != "3.31.6"
+            or policy["archiveRoot"] != "cmake-3.31.6-linux-x86_64"):
+        raise ValueError("Unsupported C++ package toolchain policy")
+    asset = require_exact_keys(policy["archive"], {
+        "name", "bytes", "sha256", "url", "provenanceUrl", "provenanceSha256",
+    }, "CMake official archive")
+    origin = "https://github.com/Kitware/CMake/releases/download/v3.31.6/"
+    if (asset["name"] != policy["archiveRoot"] + ".tar.gz"
+            or asset["url"] != origin + asset["name"]
+            or asset["provenanceUrl"] != origin + "cmake-3.31.6-SHA-256.txt"):
+        raise ValueError("CMake requires exact official archive/checksum URLs")
+    require_integer(asset["bytes"], "CMake archive length", 1)
+    require_sha256(asset["sha256"], "CMake archive digest")
+    require_sha256(asset["provenanceSha256"], "CMake official checksum metadata digest")
+    return policy
+
+
+def verify_cpp_package_toolchain(root, environ):
+    """One full child-side check of provisioned tool bytes; never install here."""
+    from products.sdk_dotnet_toolchain import _host_identity
+
+    policy = cpp_package_toolchain_policy(root)
+    prefix = Path(environ.get("CODEX_AGENT_CPP_TOOLCHAIN_ROOT", ""))
+    archive_path = Path(environ.get("CODEX_AGENT_CPP_TOOLCHAIN_ARCHIVE", ""))
+    if (_host_identity() != ("Linux", "X64", "ubuntu-24.04")
+            or any(not path.is_absolute() or path.resolve(strict=True) != path
+                   for path in (prefix, archive_path))
+            or shutil.which("cmake", path=environ.get("PATH", "")) != str(prefix / "bin/cmake")):
+        raise ValueError("C++ package host or selected CMake differs from its explicit installation")
+    asset = policy["archive"]
+    if (archive_path.stat().st_size != asset["bytes"]
+            or sha256_file(archive_path, reject_symlink_parents=True) != asset["sha256"]):
+        raise ValueError("CMake archive differs from its official pin")
+    expected, seen = [], set()
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive:
+            name = require_relative_path(member.name.rstrip("/"), "CMake archive member")
+            if name in seen:
+                raise ValueError("Duplicate CMake archive member")
+            seen.add(name)
+            if name == policy["archiveRoot"] and member.isdir():
+                continue
+            if not name.startswith(policy["archiveRoot"] + "/") or not (member.isdir() or member.isfile()):
+                raise ValueError("Unsupported CMake archive member")
+            if member.isdir():
+                continue
+            relative = name[len(policy["archiveRoot"]) + 1:]
+            # Packaging consumes cmake and its module/template tree, not the GUI,
+            # ctest/cpack executables or documentation shipped beside them.
+            if relative != "bin/cmake" and not relative.startswith("share/cmake-3.31/"):
+                continue
+            with archive.extractfile(member) as original:
+                digest = "sha256:" + hashlib.file_digest(original, "sha256").hexdigest()
+            expected.append({"relativePath": relative, "bytes": member.size, "sha256": digest})
+    if not {"bin/cmake", "share/cmake-3.31/Modules/CMake.cmake"} <= {row["relativePath"] for row in expected}:
+        raise ValueError("CMake archive lacks its executable/module closure")
+    if _inventory(prefix, allow_empty=True) != sorted(expected, key=lambda row: row["relativePath"]):
+        raise ValueError("Installed CMake inventory differs from its official archive")
+    observed = subprocess.run([str(prefix / "bin/cmake"), "--version"], env=dict(environ),
+                              check=True, capture_output=True, text=True, timeout=10).stdout
+    if observed.splitlines()[0] != "cmake version " + policy["cmakeVersion"]:
+        raise ValueError("Installed CMake version differs from policy")
+
+
 def python_package_toolchain_policy(root):
     """Python package source input, bound by phaseInputDigest (not a new profile)."""
     raw = read_regular_file_bytes(Path(root) / "codex-agent-bindings/python/package-toolchain.json",
@@ -460,6 +534,8 @@ def _package_only(root, fields, environ):
     unchanged()
     if component == "python":
         verify_python_package_toolchain(root, environ)
+    elif component == "cpp":
+        verify_cpp_package_toolchain(root, environ)
     try:
         with inspector_context as capability:
             if capability is not None:
