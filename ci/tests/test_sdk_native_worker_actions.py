@@ -89,7 +89,15 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
         for pin in ("ece7cb06caefa5fff74198d8649806c4678c61a1", "a98b56852c35b8e3190ac28c8c2271da59106c68",
                     "a5f673d0ba8626c3977bb416a1612774bc82181b", "65eb853c7ba17dde3be364c3d2858773e7144260"):
             self.assertIn(pin, action)
-        self.assertIn("build==1.3.0 setuptools==80.9.0 wheel==0.45.1", action)
+        self.assertIn("python-version: '3.11.17'", action)
+        self.assertIn("python_package_toolchain_policy(root)", action)
+        self.assertIn("sha256_file(path, reject_symlink_parents=True) != asset['sha256']", action)
+        self.assertIn("'--no-index', '--no-deps'", action)
+        self.assertIn("for candidate in archives.parent.iterdir():", action)
+        self.assertIn("observed.st_size != asset['bytes']", action)
+        self.assertLess(action.index("candidate.rename(path)"), action.index("urllib.request.urlopen(asset['url']"))
+        self.assertLess(action.index("differs from independent official metadata"),
+                        action.index("'--force-reinstall'"))
         self.assertIn("dotnet-version: '8.0.419'", action)
         self.assertIn("sdk: '3.13.2'", action)
         self.assertIn('cargo fetch --manifest-path "$GITHUB_WORKSPACE/codex-agent-bindings/rust/Cargo.toml" --locked', action)

@@ -161,6 +161,7 @@ class SdkNativePhaseTest(unittest.TestCase):
             stack.enter_context(patch.object(worker, "_request_inventory", side_effect=lambda _: {
                 self.request_input: sha256_bytes(self.request_input.read_bytes())}))
             stack.enter_context(patch.object(worker, "verify_sdk_dotnet_toolchain"))
+            stack.enter_context(patch.object(worker, "verify_python_package_identity"))
             stack.enter_context(patch.object(worker.subprocess, "run", side_effect=self.process))
             stack.enter_context(patch("products.restore.finalize_phase_object",
                                       side_effect=AssertionError("premature admission")))
@@ -380,6 +381,7 @@ class SdkNativePhaseTest(unittest.TestCase):
                     (output / language).mkdir(parents=True)
                     (output / language / "fixture-package").write_bytes(b"simulated unchanged producer output\n")
                 with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
+                     patch.object(worker, "verify_python_package_toolchain") as python_tools, \
                      patch("native_wrappers.package_all", side_effect=package) as producer, \
                      patch.object(product_reuse, "_runtime_worker_checkout"), \
                      patch.object(worker, "_inventory", side_effect=AssertionError("No redundant child inventory")), \
@@ -389,6 +391,7 @@ class SdkNativePhaseTest(unittest.TestCase):
                      patch.dict(os.environ, {}, clear=True):
                     worker.main(worker._package_command(self.root, fields)[4:])
                     producer.assert_called_once()
+                    self.assertEqual(int(language == "python"), python_tools.call_count)
                 self.assertEqual(before, regular_file_inventory(self.root / "prepared"))
                 expected = self.root / "expected-stage"
                 (expected / f"outputs/{language}").mkdir(parents=True)
@@ -414,7 +417,7 @@ class SdkNativePhaseTest(unittest.TestCase):
 
     def test_python_package_cli_and_original_lifetime_fail_closed(self):
         for kind in ("csharp", "host", "version", "source", "extra", "duplicate", "order",
-                     "signing", "online", "relative", "alias", "existing", "source-exit", "failure"):
+                     "signing", "online", "relative", "alias", "existing", "toolchain", "source-exit", "failure"):
             with self.subTest(kind=kind):
                 self.fixture()
                 fields = {"codexAgent.product": "sdk", "codexAgent.component": "python",
@@ -443,6 +446,8 @@ class SdkNativePhaseTest(unittest.TestCase):
                 def package(*args):
                     raise ValueError("fixture producer failure")
                 with patch("native_wrappers.host_classifier", return_value="macos-arm64" if kind == "host" else "linux-x64"), \
+                     patch.object(worker, "verify_python_package_toolchain", side_effect=
+                         ValueError("fixture tool mismatch") if kind == "toolchain" else None), \
                      patch("native_wrappers.package_all", side_effect=package) as producer, \
                      patch.object(product_reuse, "_runtime_worker_checkout", side_effect=
                          [None, ValueError("fixture checkout changed")] if kind == "source-exit" else None) as checkout, \

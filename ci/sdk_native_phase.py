@@ -8,20 +8,26 @@ are separate phases; this leaf neither executes nor substitutes for them.
 
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
+import hashlib
+import importlib.metadata
+import importlib.util
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
 import time
 from typing import Any
+import zipfile
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    require_exact_keys, require_integer, require_semver, require_sha256,
+    require_exact_keys, require_integer, require_relative_path, require_semver, require_sha256, sha256_file,
     write_canonical_json,
 )
 from products.receipt import validate_phase_receipt, validate_producer, verify_output_manifest_identity
@@ -35,6 +41,146 @@ from products.signing_isolation import require_no_signing_secret
 
 
 _LIMIT = 16 * 1024 * 1024
+
+
+def python_package_toolchain_policy(root):
+    """Python package source input, bound by phaseInputDigest (not a new profile)."""
+    raw = read_regular_file_bytes(Path(root) / "codex-agent-bindings/python/package-toolchain.json",
+                                  max_bytes=16384, reject_symlink_parents=True)
+    policy = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "host", "pythonVersion", "prefix", "interpreter", "wheels",
+    }, "Python package toolchain policy")
+    if (policy["schemaVersion"] != 1 or raw != canonical_json_bytes(policy)
+            or policy["host"] != {"system": "Linux", "architecture": "X64", "distribution": "ubuntu-24.04"}
+            or policy["pythonVersion"] != "3.11.17"
+            or policy["prefix"] != "/opt/hostedtoolcache/Python/3.11.17/x64"):
+        raise ValueError("Unsupported Python package toolchain policy")
+    wheels = policy["wheels"]
+    expected = {"build": "1.3.0", "packaging": "25.0", "pyproject-hooks": "1.2.0",
+                "setuptools": "80.9.0", "wheel": "0.45.1"}
+    if (not isinstance(wheels, list) or len(wheels) != len(expected)
+            or {w.get("distribution"): w.get("version") for w in wheels} != expected):
+        raise ValueError("Python package tool dependency closure differs from policy")
+    for asset in (policy["interpreter"], *wheels):
+        require_exact_keys(asset, {"name", "bytes", "sha256", "url", "provenanceUrl", "provenanceSha256"}
+                           | ({"distribution", "version", "module"} if asset in wheels else set()),
+                           "Python package tool artifact")
+        name = require_relative_path(asset["name"], "Python tool artifact filename")
+        if "/" in name or not asset["url"].startswith(("https://files.pythonhosted.org/", "https://github.com/actions/python-versions/")):
+            raise ValueError("Python package tools require exact official artifact URLs")
+        require_integer(asset["bytes"], "Python tool artifact length", 1)
+        require_sha256(asset["sha256"], "Python tool artifact digest")
+        require_sha256(asset["provenanceSha256"], "Python tool official metadata digest")
+    return policy
+
+
+def verify_python_package_identity(root, environ):
+    """Cheap parent preflight; the child must still authenticate all tool bytes."""
+    from products.sdk_dotnet_toolchain import _host_identity
+
+    policy = python_package_toolchain_policy(root)
+    prefix = Path(policy["prefix"])
+    executable = prefix / "bin/python3.11"
+    selected = shutil.which("python3", path=environ.get("PATH", ""))
+    if (_host_identity() != ("Linux", "X64", "ubuntu-24.04")
+            or sys.version_info[:3] != tuple(map(int, policy["pythonVersion"].split(".")))
+            or Path(sys.prefix) != prefix or Path(sys.base_prefix) != prefix
+            or Path(sys.executable).resolve() != executable
+            or selected is None or Path(selected).resolve() != executable):
+        raise ValueError("Python package interpreter, prefix or actual host differs from policy")
+    return policy
+
+
+def verify_python_package_toolchain(root, environ):
+    """Authenticate the actual interpreter/tool code before any product output.
+
+    No downloads, installation or self-issued trust receipts. The full check is
+    owned by the package child (including direct CLI use), not repeated by its
+    diagnostic-only parent. Retained official archives are never extracted here.
+    """
+    policy = verify_python_package_identity(root, environ)
+    prefix = Path(policy["prefix"])
+    cache = Path(environ.get("PYTHONPYCACHEPREFIX", ""))
+    if (not cache.is_absolute() or cache.resolve(strict=False) != cache
+            or cache.exists() or cache.is_symlink() or sys.pycache_prefix != str(cache)
+            or not sys.dont_write_bytecode or environ.get("PYTHONDONTWRITEBYTECODE") != "1"):
+        raise ValueError("Python package requires the existing fresh bytecode-cache startup envelope")
+    archives = Path(environ.get("CODEX_AGENT_PYTHON_TOOLCHAIN_ARCHIVES", ""))
+    if not archives.is_absolute() or archives.resolve(strict=True) != archives:
+        raise ValueError("Python package requires an explicit immutable tool archive directory")
+    for asset in (policy["interpreter"], *policy["wheels"]):
+        path = archives / asset["name"]
+        if path.stat().st_size != asset["bytes"] or sha256_file(path, reject_symlink_parents=True) != asset["sha256"]:
+            raise ValueError(f"Python tool artifact differs from its official pin: {asset['name']}")
+
+    # The official Actions archive is rooted at the installation prefix. Compare
+    # executable/runtime/stdlib bytes, never extract or trust a local stamp.
+    runtime_files = set()
+    with tarfile.open(archives / policy["interpreter"]["name"], "r:gz") as archive:
+        for member in archive:
+            name = member.name.removeprefix("./")
+            if not name or member.isdir():
+                continue
+            require_relative_path(name, "Python interpreter archive member")
+            selected_runtime = (name == "bin/python3.11" or name.startswith("lib/libpython3.11.")
+                                or name.startswith("lib/python3.11/"))
+            if (not selected_runtime or "/site-packages/" in name or "/__pycache__/" in name
+                    or name.endswith((".pyc", ".pyo"))):
+                continue
+            if member.issym():
+                installed = prefix / name
+                if not installed.is_symlink() or os.readlink(installed) != member.linkname:
+                    raise ValueError(f"Python runtime link differs from official archive: {name}")
+                continue
+            if not member.isfile() or name in runtime_files:
+                raise ValueError("Python runtime archive contains an unsupported or duplicate member")
+            runtime_files.add(name)
+            with archive.extractfile(member) as original:
+                expected = "sha256:" + hashlib.file_digest(original, "sha256").hexdigest()
+            if sha256_file(prefix / name, reject_symlink_parents=True) != expected:
+                raise ValueError(f"Installed Python runtime differs from official archive: {name}")
+    if not {"bin/python3.11", "lib/libpython3.11.so.1.0", "lib/python3.11/os.py"} <= runtime_files:
+        raise ValueError("Official Python archive lacks the required executable/runtime closure")
+    _require_python_code_inventory(prefix / "lib/python3.11", {prefix / name for name in runtime_files},
+                                   skip={"site-packages", "__pycache__"})
+
+    site = prefix / "lib/python3.11/site-packages"
+    for wheel in policy["wheels"]:
+        distribution = importlib.metadata.distribution(wheel["distribution"])
+        module = importlib.util.find_spec(wheel["module"])
+        if (distribution.version != wheel["version"] or Path(distribution.locate_file("")) != site
+                or module is None or module.origin != str(site / wheel["module"] / "__init__.py")):
+            raise ValueError(f"Python package tool identity differs from policy: {wheel['distribution']}")
+        with zipfile.ZipFile(archives / wheel["name"]) as archive:
+            seen = set()
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                name = require_relative_path(member.filename, "Python tool wheel member")
+                if name in seen or (member.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError("Python tool wheel contains duplicate or symbolic members")
+                seen.add(name)
+                # pip rewrites RECORD and adds installer metadata; neither is tool code.
+                if name.endswith(".dist-info/RECORD"):
+                    continue
+                with archive.open(member) as original:
+                    expected = "sha256:" + hashlib.file_digest(original, "sha256").hexdigest()
+                if sha256_file(site / name, reject_symlink_parents=True) != expected:
+                    raise ValueError(f"Installed Python tool differs from official wheel: {name}")
+            for name in {name.split("/")[0] for name in seen if "/" in name}:
+                _require_python_code_inventory(site / name, {site / name for name in seen},
+                                               skip={"__pycache__"})
+
+
+def _require_python_code_inventory(root, expected, *, skip):
+    """Directory entries only: an extra extension may shadow authenticated source."""
+    for directory, children, files in os.walk(root):
+        children[:] = [name for name in children if name not in skip]
+        if any((Path(directory) / name).is_symlink() for name in children):
+            raise ValueError("Python tool code directory is symbolic")
+        for name in files:
+            if name.endswith((".py", ".so", ".pyc", ".pyo")) and Path(directory) / name not in expected:
+                raise ValueError(f"Unexpected importable Python tool code: {Path(directory) / name}")
 
 
 def route(plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -120,6 +266,8 @@ def execute(
     if HOSTS[host_classifier()][2:4] != (elected_route["runnerOs"], elected_route["runnerArch"]):
         raise ValueError("Native SDK package actual host differs from its elected route")
     root = Path(repository_root).resolve(strict=True)
+    if plan["component"] == "python":
+        verify_python_package_identity(root, environ)
     dotnet_profile = root / "gradle/release/toolchains/sdk/csharp.json" if plan["component"] == "csharp" else None
     if dotnet_profile is not None:
         verify_sdk_dotnet_toolchain(dotnet_profile)
@@ -310,6 +458,8 @@ def _package_only(root, fields, environ):
         _runtime_worker_checkout(root, producer)
 
     unchanged()
+    if component == "python":
+        verify_python_package_toolchain(root, environ)
     try:
         with inspector_context as capability:
             if capability is not None:
