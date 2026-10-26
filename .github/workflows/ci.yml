@@ -115,6 +115,7 @@ jobs:
       attestations: write
     uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority
     with:
+      toolingOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}
       runtimeRecoveryOnly: false
       sdkRecoveryOnly: true
       reuseCompletedParity: ${{ vars.CODEX_AGENT_REUSE_COMPLETED_SDK_PARITY == 'true' }}

@@ -3,6 +3,10 @@ name: Product Validation
 on:
   workflow_call:
     inputs:
+      toolingOnly:
+        description: PR-only toolkit provision/reuse; does not authorize products or full acceptance
+        type: boolean
+        default: false
       reuseCompletedParity:
         description: Reuse the protected original parity report only for a complete native SDK state
         type: boolean
@@ -124,7 +128,7 @@ jobs:
           echo 'approved=true' >> "$GITHUB_OUTPUT"
 
   recovery-controls:
-    if: inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly
+    if: ${{ !inputs.toolingOnly && (inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly) }}
     runs-on: ubuntu-24.04
     outputs:
       publisher_sha: ${{ steps.publication.outputs.publisher-sha }}
@@ -203,7 +207,7 @@ jobs:
           key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
 
   workflow-lint:
-    if: always()
+    if: always() && !inputs.toolingOnly
     needs: [plan, recovery-controls]
     runs-on: ubuntu-24.04
     outputs:
@@ -273,8 +277,158 @@ jobs:
           path: ~/go/bin/actionlint
           key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
 
+  tooling-plan:
+    if: always() && inputs.toolingOnly && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')
+    needs: dispatch-authorization
+    runs-on: ubuntu-24.04
+    outputs:
+      publisher_sha: ${{ steps.publication.outputs.publisher-sha }}
+      source_sha: ${{ steps.publication.outputs.source-sha }}
+      event_authorized: ${{ steps.event-authorization.outputs.authorized }}
+      remote_build_authorized: ${{ steps.impact.outputs.remote_build_authorized }}
+      validation_commit: ${{ steps.impact.outputs.validation_commit }}
+      validation_tree: ${{ steps.impact.outputs.validation_tree }}
+      plan_artifact: codex-agent-ci-plan-${{ steps.impact.outputs.validation_tree }}
+      plan_id: ${{ steps.upload_plan.outputs.artifact-id }}
+      plan_control_id: ${{ steps.upload_plan_control.outputs.artifact-id }}
+      plan_digest: sha256:${{ steps.upload_plan.outputs.artifact-digest }}
+      validation_reused: 'false'
+      contract_next_phase: none
+      contract_reconciliation_required: 'false'
+      native_contract_complete: 'false'
+      contract_matrix: ${{ steps.tooling.outputs.contract_matrix }}
+      tooling_required: ${{ steps.tooling.outputs.tooling_required }}
+      tooling_miss: ${{ steps.tooling.outputs.tooling_miss }}
+      tooling_artifact_id: ${{ steps.tooling.outputs.tooling_artifact_id }}
+      tooling_artifact_sha256: ${{ steps.tooling.outputs.tooling_artifact_sha256 }}
+      tooling_transport_producer: ${{ steps.tooling.outputs.tooling_transport_producer }}
+    steps:
+      - id: publication
+        uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority
+        with:
+          native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          native-workflow-repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          native-workflow-path: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - id: event-authorization
+        env:
+          EVENT_AUTHORIZED: >-
+            ${{ github.event_name == 'merge_group' && github.event.action == 'checks_requested' && github.sha == github.event.merge_group.head_sha && github.ref == github.event.merge_group.head_ref || github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'ci:remote-final' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'merge-ready') && contains(github.event.pull_request.labels.*.name, 'ci:remote-final') && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && needs.dispatch-authorization.result == 'success' && needs.dispatch-authorization.outputs.approved == 'true' && github.sha == inputs.validationCommit }}
+        run: |
+          case "$EVENT_AUTHORIZED" in
+            true|false) ;;
+            *) exit 1 ;;
+          esac
+          echo "authorized=$EVENT_AUTHORIZED" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.validationCommit || github.sha }}
+      - id: impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.baseCommit }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || inputs.validationCommit }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          QUEUE_ENABLED: ${{ vars.CI_MERGE_QUEUE_ENABLED }}
+          DISPATCH_APPROVED: ${{ needs.dispatch-authorization.result == 'success' && needs.dispatch-authorization.outputs.approved == 'true' }}
+        run: |
+          pr="$PR_NUMBER"
+          if [ -z "$pr" ] && [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            pr=${GITHUB_REF#*pr-}
+            pr=${pr%%-*}
+          fi
+          flags=()
+          [ -z "$pr" ] || flags+=(--pull-request "$pr")
+          [ "$DISPATCH_APPROVED" != true ] || flags+=(--dispatch-approved)
+          if [ "$FORCE_FULL" = true ] || { [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$QUEUE_ENABLED" != true ]; }; then
+            flags+=(--full)
+          fi
+          flags+=(--require-android-evidence)
+          python3 ci/impact.py --base "$BASE_SHA" --target HEAD --head "$HEAD_SHA" \
+            --event "$GITHUB_EVENT_NAME" --event-payload "$GITHUB_EVENT_PATH" \
+            --github-ref "$GITHUB_REF" --github-sha "$GITHUB_SHA" \
+            --output build/ci/impact-plan.json \
+            --github-output "$GITHUB_OUTPUT" "${flags[@]}"
+      - id: tooling
+        name: Search original signed tooling before selecting a missing build
+        if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
+          POLICY_REVISION: ${{ steps.impact.outputs.validation_commit }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import os, sys, tempfile
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urlencode
+          sys.path.insert(0, 'ci')
+          from reuse import github_output, paginated_items
+          from tooling_discovery import discover_tooling_ci
+          from products.inventory import canonical_json_bytes, git_inventory, load_json_bytes, run_git
+          from products.tooling import _COMPILER_INPUTS
+          repository = Path.cwd().resolve(strict=True)
+          java = (Path(os.environ['JAVA_HOME_17_X64']) / 'bin/java').resolve(strict=True)
+          with tempfile.TemporaryDirectory(prefix='tooling-only-', dir=os.environ['RUNNER_TEMP']) as temporary:
+              # The reviewed compiler introduction bounds this narrow search.
+              # Current/previous attempts and subsequent control-only commits remain
+              # eligible; every selected upload still passes the full existing gate.
+              introduction = '405608e77a44650bb7e724e0d1bff78b122429b1'
+              revision = os.environ['POLICY_REVISION']
+              run_git(repository, '--no-replace-objects', 'merge-base', '--is-ancestor', introduction, revision)
+              if git_inventory(repository, introduction, _COMPILER_INPUTS) != git_inventory(repository, revision, _COMPILER_INPUTS):
+                  raise ValueError('Tooling-only search requires the reviewed compiler introduction')
+              since = datetime.fromisoformat(run_git(repository, '--no-replace-objects', 'show', '-s',
+                  '--format=%cI', introduction).strip()).astimezone(timezone.utc).isoformat()
+              event = load_json_bytes(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
+              branch = event['pull_request']['head']['ref']
+              query = urlencode(dict(event='pull_request', branch=branch, created='>=' + since))
+              runs = paginated_items('https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs?' + query,
+                                     'workflow_runs', os.environ['GITHUB_TOKEN'])
+              run_ids = tuple(dict.fromkeys([int(os.environ['GITHUB_RUN_ID']),
+                  *sorted((run['id'] for run in runs), reverse=True), 40171845008]))
+              result = discover_tooling_ci(Path(temporary).resolve() / 'capture', repository,
+                  candidate_run_ids=run_ids,
+                  trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                  policy_revision=os.environ['POLICY_REVISION'], java_executable=java,
+                  token=os.environ['GITHUB_TOKEN'])
+              selected = result['selected']
+              values = {'tooling_required': 'true', 'tooling_miss': str(selected is None).lower(),
+                  'contract_matrix': canonical_json_bytes({'include': [] if selected else [
+                      dict(lane='contracts', build=False, test=False, metadata=False)]}).decode().strip()}
+              if selected is not None:
+                  values.update(tooling_artifact_id=str(selected['artifactId']),
+                      tooling_artifact_sha256=selected['artifactSha256'],
+                      tooling_transport_producer=canonical_json_bytes(selected['transportProducer']).decode().strip())
+              # Preserve only the small search report, not another captured JAR copy.
+              (repository / 'build/ci/tooling-discovery.json').write_bytes(canonical_json_bytes({
+                  'schemaVersion': 1, 'selected': selected, 'attempts': result['attempts'],
+                  'searchIntroduction': introduction, 'searchSince': since, 'searchedRunIds': list(run_ids)}))
+              github_output(Path(os.environ['GITHUB_OUTPUT']), values)
+          PYTHON
+      - id: upload_plan_control
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-ci-plan-control-${{ steps.impact.outputs.validation_tree }}
+          path: build/ci/impact-plan.json
+          compression-level: 0
+          retention-days: 90
+      - id: upload_plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-ci-plan-${{ steps.impact.outputs.validation_tree }}
+          path: build/ci
+          compression-level: 0
+          retention-days: 90
+
   plan:
-    if: always()
+    if: always() && !inputs.toolingOnly
     needs: dispatch-authorization
     runs-on: ubuntu-24.04
     outputs:
@@ -604,18 +758,42 @@ jobs:
 
   contract-validation:
     name: contract-validation
-    needs: [plan]
+    needs: [plan, tooling-plan]
     if: >-
-      always() && !cancelled() && needs.plan.result == 'success' &&
-      needs.plan.outputs.event_authorized == 'true' &&
-      needs.plan.outputs.remote_build_authorized == 'true' &&
-      needs.plan.outputs.validation_reused != 'true'
+      always() && !cancelled() &&
+      ((!inputs.toolingOnly && needs.plan.result == 'success' &&
+        needs.plan.outputs.event_authorized == 'true' &&
+        needs.plan.outputs.remote_build_authorized == 'true' &&
+        needs.plan.outputs.validation_reused != 'true') ||
+       (inputs.toolingOnly && needs.tooling-plan.result == 'success' &&
+        needs.tooling-plan.outputs.event_authorized == 'true' &&
+        needs.tooling-plan.outputs.remote_build_authorized == 'true'))
     uses: ./.github/workflows/contract-validation.yml
     with:
-      planOutputs: ${{ toJSON(needs.plan.outputs) }}
-      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
-      trustedSourceSha: ${{ needs.plan.outputs.source_sha }}
+      planOutputs: ${{ inputs.toolingOnly && toJSON(needs.tooling-plan.outputs) || toJSON(needs.plan.outputs) }}
+      trustedWorkflowSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.publisher_sha || needs.plan.outputs.publisher_sha }}
+      trustedSourceSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.source_sha || needs.plan.outputs.source_sha }}
     secrets: inherit
+
+  tooling-only-status:
+    name: Tooling only / authenticated locator
+    needs: [tooling-plan, contract-validation]
+    if: always() && inputs.toolingOnly && needs.tooling-plan.outputs.event_authorized == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful original tooling; never report product acceptance
+        env:
+          PLAN_RESULT: ${{ needs.tooling-plan.result }}
+          CONTRACT_RESULT: ${{ needs.contract-validation.result }}
+          ARTIFACT_ID: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
+          ARTIFACT_SHA256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
+          TRANSPORT_PRODUCER: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$CONTRACT_RESULT" = success
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test -n "$TRANSPORT_PRODUCER"
 
   contract-phase10-pgp-authority:
     name: contract-phase10-pgp-authority
@@ -6229,7 +6407,7 @@ jobs:
 
   merge-gate:
     name: CI / merge-gate
-    if: always()
+    if: always() && !inputs.toolingOnly
     needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:

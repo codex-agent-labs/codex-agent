@@ -1,8 +1,6 @@
 """Protected tooling-attestation workflow boundary checks."""
 
 from pathlib import Path
-import re
-import subprocess
 import unittest
 
 
@@ -60,13 +58,16 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
             "      - name: Authenticate original tooling and establish detached release trust\n", 1,
         )
         signer = signer_and_after.split("      - id: identity\n", 1)[0]
-        self.assertIn("ref: ${{ inputs.trustedWorkflowSha }}", checkout)
+        source_pin = "${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}"
+        self.assertIn("ref: " + source_pin, checkout)
         self.assertIn("path: trusted-source", checkout)
         self.assertIn("fetch-depth: 0", checkout)
         self.assertIn("persist-credentials: false", checkout)
         self.assertIn('[[ "$VALIDATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]', imported)
         self.assertIn('[[ "$VALIDATION_TREE" =~ ^[0-9a-f]{40}$ ]]', imported)
-        self.assertIn("TRUSTED_SOURCE_SHA: ${{ inputs.trustedWorkflowSha }}", imported)
+        self.assertIn("TRUSTED_SOURCE_SHA: " + source_pin, imported)
+        self.assertIn("TRUSTED_SOURCE_SHA: " + source_pin, signer)
+        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}", signer)
         self.assertIn('git -C trusted-source fetch --no-tags origin "$VALIDATION_COMMIT"', imported)
         self.assertIn(
             'test "$(git -C trusted-source rev-parse "$VALIDATION_COMMIT^{tree}")" = "$VALIDATION_TREE"',
@@ -128,18 +129,16 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
             requirement,
         )
 
-    def test_reviewed_pin_contains_the_protected_signer(self):
+    def test_protected_publication_selects_the_signer_source(self):
         caller = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        match = re.search(r"product-validation\.yml@([0-9a-f]{40})", caller)
-        self.assertIsNotNone(match)
-        pin = match.group(1)
-        result = subprocess.run(
-            ["git", "show", f"{pin}:ci/tooling_release.py"],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority", caller)
+        workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
+        self.assertIn("uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority", workflow)
+        self.assertIn("source_sha: ${{ steps.publication.outputs.source-sha }}", workflow)
+        child = workflow.split("\n  contract-validation:\n", 1)[1].split("\n  tooling-only-status:\n", 1)[0]
+        self.assertIn("trustedSourceSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.source_sha || needs.plan.outputs.source_sha }}", child)
+        self.assertIn("trustedWorkflowSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.publisher_sha || needs.plan.outputs.publisher_sha }}", child)
+        signer = (ROOT / "ci/tooling_release.py").read_text(encoding="utf-8")
         for source in (
             "def attest_tooling_ci(",
             "verify_product_release_context(",
@@ -148,17 +147,11 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
             "sign_manifest(fresh / ATTESTATION, private_key, signing)",
             "trusted_workflow_path=None, trusted_job_name=None",
         ):
-            self.assertIn(source, result.stdout)
+            self.assertIn(source, signer)
         self.assertLess(
-            result.stdout.index("_verify_original(original, repository_root)"),
-            result.stdout.index('environment.get("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY")'),
+            signer.index("_verify_original(original, repository_root)"),
+            signer.index('environment.get("CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY")'),
         )
-        child = subprocess.run(
-            ["git", "show", f"{pin}:.github/workflows/contract-validation.yml"],
-            cwd=ROOT, text=True, capture_output=True,
-        )
-        self.assertEqual(0, child.returncode, child.stderr)
-        self.assertEqual(self.source, child.stdout)
 
 
 if __name__ == "__main__":
