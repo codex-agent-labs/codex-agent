@@ -292,3 +292,137 @@ class ImportedOriginalScopeTest(unittest.TestCase):
                 keyring=Path("missing-keyring"),keys_directory=Path("missing-keys"),root_public_key=Path("missing-root"),
                 expected_root_public_key_sha256="sha256:"+"c"*64,release_private_key=Path("missing-secret"))
         gate.assert_not_called();signer.assert_not_called()
+
+
+class ImportedLfsTransportTest(unittest.TestCase):
+    """Transport-only bytes and observations; no keys or product evidence."""
+
+    class Response:
+        def __init__(self, raw, url, status=200):
+            import io
+            self.stream, self.url, self.status = io.BytesIO(raw), url, status
+        def read(self, size): return self.stream.read(size)
+        def geturl(self): return self.url
+        def __enter__(self): return self
+        def __exit__(self, *unused): self.stream.close()
+
+    def inputs(self, root, count=1279):
+        bodies = {sha256_bytes(f"unit-object-{i}".encode())[7:]: f"unit-object-{i}".encode()
+                  for i in range(count)}
+        files = [dict(relativePath=f"unit/{i:04d}",bytes=len(raw),sha256="sha256:"+oid)
+                 for i,(oid,raw) in enumerate(sorted(bodies.items()))]
+        manifest = dict(schemaVersion=1,kind=caller._IMPORTED_KIND,files=files,
+            originals=[],contractStage="unit",runtimeStageRoot="unit",custodyCheckpoint="unit/custody",
+            compatibilityRequest="unit/compatibility",rootDelegation="unit/delegation",sourceMappings=[])
+        raw = canonical_json_bytes(manifest)
+        value = ImportedOriginalScopeTest().scope()
+        value.update(inputManifestBytes=len(raw),inputManifestSha256=sha256_bytes(raw))
+        control = root / "control.json";control.write_bytes(canonical_json_bytes(value))
+        bodies[value["inputManifestSha256"][7:]] = raw
+        return control,value,bodies
+
+    def action(self, oid, size):
+        return dict(oid=oid,size=size,actions={"download": {
+            "href": f"https://github-cloud.githubusercontent.com/alambic/media/{oid}?unit-signature=fixture"}})
+
+    def test_1280_objects_use_14_authenticated_batches_and_four_streams(self):
+        import base64,json,threading
+        from collections import Counter
+        from concurrent.futures import ThreadPoolExecutor
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();control,value,bodies=self.inputs(root)
+            calls=[];lock=threading.Lock();download_threads=set()
+            def opened(request):
+                with lock:calls.append(request)
+                if request.get_method()=="POST":
+                    self.assertEqual(caller._IMPORTED_LFS_ENDPOINT,request.full_url)
+                    self.assertEqual("Basic "+base64.b64encode(b"x-access-token:unit-read-token").decode(),
+                                     request.get_header("Authorization"))
+                    query=json.loads(request.data);self.assertEqual("download",query["operation"])
+                    self.assertLessEqual(len(query["objects"]),100)
+                    data=canonical_json_bytes(dict(objects=[self.action(r["oid"],r["size"]) for r in query["objects"]]))
+                else:
+                    self.assertIsNone(request.get_header("Authorization"))
+                    oid=request.full_url.split("/media/",1)[1].split("?",1)[0];data=bodies[oid]
+                    if oid!=value["inputManifestSha256"][7:]:
+                        with lock:download_threads.add(threading.current_thread().ident)
+                return self.Response(data,request.full_url)
+            with patch.dict(os.environ,{"GH_TOKEN":"unit-read-token"},clear=True), \
+                    patch.object(caller,"_imported_lfs_open",side_effect=opened), \
+                    patch("concurrent.futures.ThreadPoolExecutor",wraps=ThreadPoolExecutor) as workers, \
+                    patch.object(caller.subprocess,"run",side_effect=AssertionError("No transport subprocess")):
+                result=caller.capture_imported_validation_objects(control,root/"capture",root/"storage",
+                    expected_control_sha256=sha256_bytes(control.read_bytes()),trusted_source_commit=value["trustedSourceCommit"])
+            self.assertEqual(14,result["lfsBatchRequests"]);self.assertEqual(1280,result["lfsObjectRequests"])
+            self.assertEqual(0,result["transportSubprocesses"]);self.assertEqual(0,result["payloadCopies"])
+            self.assertEqual(sum(map(len,bodies.values())),result["downloadedBytes"])
+            workers.assert_called_once_with(max_workers=4);self.assertLessEqual(len(download_threads),4)
+            self.assertEqual(14,sum(r.get_method()=="POST" for r in calls))
+            seen=Counter(r.full_url.split("/media/",1)[1].split("?",1)[0] for r in calls if r.get_method()=="GET")
+            self.assertEqual(Counter({oid:1 for oid in bodies}),seen)
+            self.assertEqual(1279,len(list((root/"capture/objects").iterdir())))
+            for path in (root/"capture/objects").iterdir():
+                self.assertEqual(bodies[path.name],path.read_bytes())
+                self.assertEqual(path.stat().st_ino,(root/"storage"/path.name).stat().st_ino)
+            self.assertEqual((root/"capture/manifest.json").stat().st_ino,
+                             (root/"storage"/value["inputManifestSha256"][7:]).stat().st_ino)
+
+    def test_batch_rejects_missing_duplicate_extra_wrong_and_untrusted_actions(self):
+        from copy import deepcopy
+        rows=[dict(sha256="sha256:"+x*64,bytes=1) for x in "ab"]
+        good=dict(objects=[self.action(row["sha256"][7:],1) for row in rows])
+        values=[]
+        for mode in ("missing","duplicate","extra","size","error","host","credentials","header","http","fragment"):
+            value=deepcopy(good);item=value["objects"][0];action=item["actions"]["download"]
+            if mode=="missing":value["objects"].pop()
+            elif mode=="duplicate":value["objects"][1]=deepcopy(item)
+            elif mode=="extra":value["objects"].append(self.action("c"*64,1))
+            elif mode=="size":item["size"]=2
+            elif mode=="error":item["error"]={"code":404}
+            elif mode=="host":action["href"]="https://untrusted.invalid/object?query=unit"
+            elif mode=="credentials":action["href"]="https://user:unit-secret@github-cloud.githubusercontent.com/a?query=unit"
+            elif mode=="header":action["header"]={"Authorization":"unit-secret"}
+            elif mode=="http":action["href"]=action["href"].replace("https:","http:")
+            elif mode=="fragment":action["href"]+="#fragment"
+            values.append((mode,value))
+        for name,value in values:
+            with self.subTest(mode=name),patch.object(caller,"_imported_lfs_open",return_value=self.Response(
+                    canonical_json_bytes(value),caller._IMPORTED_LFS_ENDPOINT)),self.assertRaises(ValueError):
+                caller._imported_lfs_batch(rows,"unit-read-token")
+
+    def test_stream_checks_size_digest_and_keeps_preexisting_files(self):
+        raw=b"exact-unit-object";row=dict(sha256=sha256_bytes(raw),bytes=len(raw))
+        url=self.action(row["sha256"][7:],len(raw))["actions"]["download"]["href"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();path=root/row["sha256"][7:]
+            for candidate in (raw[:-1],raw+b"x",b"x"*len(raw)):
+                with self.subTest(bodyBytes=len(candidate)),patch.object(caller,"_imported_lfs_open",
+                        return_value=self.Response(candidate,url)),self.assertRaises(ValueError):
+                    caller._receive_imported_lfs_object(row,url,root)
+                self.assertFalse(path.exists())
+            path.write_bytes(b"existing immutable bytes")
+            with patch.object(caller,"_imported_lfs_open") as opened,self.assertRaises(FileExistsError):
+                caller._receive_imported_lfs_object(row,url,root)
+            opened.assert_not_called();self.assertEqual(b"existing immutable bytes",path.read_bytes())
+
+    def test_missing_token_rejects_before_network_or_capture_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();control,value,_=self.inputs(root,1)
+            with patch.dict(os.environ,{},clear=True),patch.object(caller,"_imported_lfs_open") as opened, \
+                    self.assertRaisesRegex(ValueError,"explicit observation token"):
+                caller.capture_imported_validation_objects(control,root/"capture",root/"storage",
+                    expected_control_sha256=sha256_bytes(control.read_bytes()),trusted_source_commit=value["trustedSourceCommit"])
+            opened.assert_not_called();self.assertFalse((root/"capture").exists())
+
+    def test_redirect_is_rejected_without_exposing_presigned_url(self):
+        from urllib.error import HTTPError
+        from urllib.request import Request
+        from runtime_reference_transport import _NoRedirect
+        request=Request("https://github-cloud.githubusercontent.com/alambic/media/unit?unit-secret=hidden")
+        with patch("urllib.request.build_opener") as build:
+            build.return_value.open.side_effect=HTTPError(request.full_url,302,"redirect",{},None)
+            with self.assertRaisesRegex(ValueError,"HTTP status 302") as raised:
+                caller._imported_lfs_open(request)
+            self.assertNotIn("unit-secret",str(raised.exception))
+            self.assertIsInstance(build.call_args.args[0],_NoRedirect)
+            self.assertIsNone(build.call_args.args[0].redirect_request(request,None,302,"redirect",{},"https://untrusted.invalid"))

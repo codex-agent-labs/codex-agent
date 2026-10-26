@@ -881,37 +881,144 @@ def _imported_manifest_files(raw: bytes, control: dict) -> tuple[dict, list[dict
     return value,list(unique.values())
 
 
+_IMPORTED_LFS_ENDPOINT = "https://github.com/codex-agent-labs/codex-agent.git/info/lfs/objects/batch"
+_IMPORTED_LFS_BATCH = 100
+
+
+def _imported_lfs_open(request):
+    """Never forward repository credentials or signed URLs through a redirect."""
+    from urllib.request import build_opener
+    from urllib.error import HTTPError, URLError
+    from runtime_reference_transport import _NoRedirect
+    try:
+        return build_opener(_NoRedirect()).open(request, timeout=60)
+    except HTTPError as error:
+        # HTTP bodies and presigned URLs are not durable diagnostics.
+        raise ValueError(f"Imported LFS HTTP status {error.code}") from None
+    except (URLError, TimeoutError):
+        raise ValueError("Imported LFS transport unavailable") from None
+
+
+def _imported_lfs_batch(rows, token):
+    """One authenticated official batch; its exact object set owns blob locations."""
+    import base64
+    from urllib.parse import urlsplit
+    from urllib.request import Request
+    from products.inventory import load_json_bytes
+    if not 1 <= len(rows) <= _IMPORTED_LFS_BATCH:
+        raise ValueError("Imported LFS batch exceeds its fixed bound")
+    expected = {row["sha256"][7:]: row["bytes"] for row in rows}
+    if len(expected) != len(rows):
+        raise ValueError("Imported LFS batch contains duplicate object identities")
+    request = Request(_IMPORTED_LFS_ENDPOINT, method="POST",
+        data=canonical_json_bytes({"operation": "download", "transfers": ["basic"],
+            "objects": [{"oid": oid, "size": size} for oid, size in expected.items()]}),
+        headers={"Authorization": "Basic " + base64.b64encode(
+            ("x-access-token:" + token).encode("ascii")).decode("ascii"),
+            "Accept": "application/vnd.git-lfs+json", "Content-Type": "application/vnd.git-lfs+json"})
+    with _imported_lfs_open(request) as response:
+        if response.status != 200 or response.geturl() != _IMPORTED_LFS_ENDPOINT:
+            raise ValueError("Imported LFS batch endpoint or status changed")
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError("Imported LFS batch response exceeds its bound")
+    value = load_json_bytes(raw)
+    if (type(value) is not dict or value.get("transfer", "basic") != "basic"
+            or value.get("hash_algo", "sha256") != "sha256"
+            or type(value.get("objects")) is not list or len(value["objects"]) != len(expected)):
+        raise ValueError("Imported LFS batch response schema changed")
+    actions = {}
+    for item in value["objects"]:
+        if (type(item) is not dict or item.get("oid") not in expected or item["oid"] in actions
+                or type(item.get("size")) is not int or item["size"] != expected[item["oid"]]
+                or "error" in item or type(item.get("actions")) is not dict
+                or set(item["actions"]) != {"download"}):
+            raise ValueError("Imported LFS batch object differs from the exact requested inventory")
+        action = item["actions"]["download"]
+        if type(action) is not dict or type(action.get("href")) is not str:
+            raise ValueError("Imported LFS download action is malformed")
+        location = urlsplit(action["href"])
+        # The observed official GitHub LFS basic transport supplies a presigned
+        # GitHub content URL without request headers. Never forward the repo token.
+        if (location.scheme != "https" or location.hostname != "github-cloud.githubusercontent.com"
+                or location.username or location.password or location.port not in (None, 443)
+                or location.fragment or not location.path.startswith("/")
+                or not location.query or action.get("header", {}) != {}
+                or any(ord(c) < 32 or ord(c) == 127 for c in action["href"])):
+            raise ValueError("Imported LFS object location is outside the observed GitHub content transport")
+        actions[item["oid"]] = action["href"]
+    if set(actions) != set(expected):
+        raise ValueError("Imported LFS batch omitted an exact requested object")
+    return actions, len(raw)
+
+
+def _receive_imported_lfs_object(row, location, storage):
+    """Stream/hash one pinned object once; incomplete files never become aliases."""
+    import hashlib
+    from urllib.request import Request
+    oid = row["sha256"][7:]
+    path = storage / oid
+    digest, size, created = hashlib.sha256(), 0, False
+    try:
+        output = path.open("xb")
+        created = True
+        with output, _imported_lfs_open(Request(location)) as response:
+            if response.status != 200 or response.geturl() != location:
+                raise ValueError("Imported LFS object status or location changed")
+            while chunk := response.read(min(1024 * 1024, row["bytes"] - size + 1)):
+                size += len(chunk)
+                if size > row["bytes"]:
+                    raise ValueError("Imported LFS object exceeds its exact declared size")
+                digest.update(chunk)
+                output.write(chunk)
+        if size != row["bytes"] or digest.hexdigest() != oid:
+            raise ValueError("Imported LFS object differs from its exact size/digest")
+    except BaseException:
+        if created:
+            path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def capture_imported_validation_objects(control_path: Path,destination: Path,storage: Path,*,
         expected_control_sha256: str,trusted_source_commit: str) -> dict:
-    """Token-only official-repository LFS intake; each exact content object once."""
+    """Token-only batched intake; exact unique object bytes streamed once each."""
     started = time.monotonic_ns()
     from concurrent.futures import ThreadPoolExecutor
-    sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
-    from ci.tests.phase9_ios_mutation import lfs_object,LFS_URL
     from products.signing_isolation import require_no_signing_secret
     require_no_signing_secret(os.environ)
-    if _ROOT_SECRET in os.environ or "RELEASE_PRIVATE_KEY" in os.environ:raise ValueError("Capture must not receive signing keys")
+    if _ROOT_SECRET in os.environ or "RELEASE_PRIVATE_KEY" in os.environ:
+        raise ValueError("Capture must not receive signing keys")
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if (not token or not token.isascii() or len(token) > 8192
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in token)):
+        raise ValueError("Imported LFS intake requires its explicit observation token")
     control=validate_imported_validation_control(read_regular_file_bytes(control_path,max_bytes=65536,reject_symlink_parents=True),
         expected_sha256=expected_control_sha256,trusted_source_commit=trusted_source_commit)
     destination,storage=Path(destination).absolute(),Path(storage).absolute()
-    if destination.exists() or storage.exists():raise ValueError("Capture/cache must be exclusively new")
+    if destination.exists() or storage.exists() or destination.is_symlink() or storage.is_symlink():
+        raise ValueError("Capture/cache must be exclusively new")
     destination.mkdir();storage.mkdir()
-    environment=dict(os.environ,GIT_TERMINAL_PROMPT='0',GIT_CONFIG_COUNT='6',
-        GIT_CONFIG_KEY_0='lfs.storage',GIT_CONFIG_VALUE_0=str(storage),GIT_CONFIG_KEY_1='lfs.url',GIT_CONFIG_VALUE_1=LFS_URL,
-        GIT_CONFIG_KEY_2='credential.helper',GIT_CONFIG_VALUE_2='',GIT_CONFIG_KEY_3='credential.helper',GIT_CONFIG_VALUE_3='!gh auth git-credential',
-        GIT_CONFIG_KEY_4='lfs.fetchinclude',GIT_CONFIG_VALUE_4='',GIT_CONFIG_KEY_5='lfs.fetchexclude',GIT_CONFIG_VALUE_5='')
-    environment.pop('GIT_LFS_SKIP_SMUDGE',None)
     row=dict(relativePath='runtime-validation-import.json',bytes=control['inputManifestBytes'],sha256=control['inputManifestSha256'])
-    manifest,_=lfs_object(row,storage,environment,('git','lfs'))
+    actions,metadata_bytes = _imported_lfs_batch([row], token)
+    manifest = _receive_imported_lfs_object(row, actions[row['sha256'][7:]], storage)
     raw=read_regular_file_bytes(manifest,max_bytes=16*1024*1024,reject_symlink_parents=True)
     value,unique=_imported_manifest_files(raw,control)
-    (destination/'objects').mkdir();(destination/'manifest.json').write_bytes(raw)
-    def receive(row):
-        source,downloaded=lfs_object(row,storage,environment,('git','lfs'))
-        os.link(source,destination/'objects'/row['sha256'][7:])
-        return downloaded
-    with ThreadPoolExecutor(max_workers=4) as pool:downloaded=sum(pool.map(receive,unique))
-    return {'uniqueObjects':len(unique),'downloadedBytes':downloaded,'payloadCopies':0,
+    (destination/'objects').mkdir();os.link(manifest,destination/'manifest.json')
+    batches = 1
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for offset in range(0, len(unique), _IMPORTED_LFS_BATCH):
+            rows = unique[offset:offset + _IMPORTED_LFS_BATCH]
+            actions, response_bytes = _imported_lfs_batch(rows, token)
+            batches += 1; metadata_bytes += response_bytes
+            def receive(row):
+                oid = row['sha256'][7:]
+                source = _receive_imported_lfs_object(row, actions[oid], storage)
+                os.link(source,destination/'objects'/oid)
+            list(pool.map(receive, rows))
+    return {'uniqueObjects':len(unique),'downloadedBytes':len(raw)+sum(row['bytes'] for row in unique),'payloadCopies':0,
+        'lfsBatchRequests':batches,'lfsMetadataResponseBytes':metadata_bytes,'lfsObjectRequests':len(unique)+1,
+        'maxConcurrentDownloads':4,'transportSubprocesses':0,
         'manifestSha256':control['inputManifestSha256'],'controlSha256':expected_control_sha256,
         'elapsedNs':time.monotonic_ns()-started}
 
