@@ -660,14 +660,15 @@ def _observe_contract_producer_runs(
 
 def _require_ci_workflow_reference(run, workflow, sha):
     references = require_array(run.get("referenced_workflows"), "Contract original workflow references")
-    selected = [value for value in references if isinstance(value, dict)
-                and isinstance(value.get("path"), str)
-                and value["path"].split("@", 1)[0] == workflow.split("@", 1)[0]]
     protected_path = workflow.split("@", 1)[0] + "@reuse-authority"
-    if (len(selected) != 1 or selected[0].get("sha") != sha
-            or not (selected[0].get("path") == workflow
-                    or selected[0].get("path") == protected_path
-                    and selected[0].get("ref") == "refs/heads/reuse-authority")):
+    # One run may invoke the same workflow at different pinned revisions.
+    # Select the exact authority without removing other original references.
+    selected = [value for value in references if isinstance(value, dict)
+                and value.get("sha") == sha
+                and (value.get("path") == workflow
+                     or value.get("path") == protected_path
+                     and value.get("ref") == "refs/heads/reuse-authority")]
+    if len(selected) != 1:
         raise ValueError("Contract original CI attempt lacks the caller-pinned workflow")
 
 
