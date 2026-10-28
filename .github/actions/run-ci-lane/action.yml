@@ -415,7 +415,7 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.contract-tooling-only }}" = true ]; then
-          ./gradlew --init-script "$PWD/.github/actions/run-ci-lane/release_tooling.init.gradle" :build-logic:releaseToolingJar --stacktrace
+          ./gradlew --init-script "$PWD/.github/actions/run-ci-lane/release_tooling.init.gradle" :build-logic:releaseToolingJar --info --stacktrace
           python3 -B -m unittest ci.tests.test_tooling_apple_classpath
         else
           ci/run-lane.sh "${{ inputs.lane }}"
