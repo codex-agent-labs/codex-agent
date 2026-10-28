@@ -1,0 +1,222 @@
+name: Contract Promoted Catalog
+
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  catalog:
+    name: contract-promoted-catalog
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    steps:
+      - name: Require independently approved S1048 Contract selection before checkout
+        id: authority
+        env:
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          VALIDATED_TREE: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_VALIDATED_TREE }}
+          VALIDATION_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_VALIDATION_WORKFLOW_SHA }}
+          PROMOTION_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_WORKFLOW_SHA }}
+          HANDOFF_ID: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_HANDOFF_ARTIFACT_ID }}
+          HANDOFF_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_HANDOFF_ARTIFACT_SHA256 }}
+          PHASE_SELECTION_JSON: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_PHASE_SELECTION_JSON }}
+          PHASE_SELECTION_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_PHASE_SELECTION_SHA256 }}
+          CAPTURE_INVENTORY_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PROMOTION_CAPTURE_INVENTORY_SHA256 }}
+        run: |
+          set -euo pipefail
+          for value in "$SOURCE_SHA" "$VALIDATED_TREE" "$VALIDATION_WORKFLOW_SHA" "$PROMOTION_WORKFLOW_SHA"; do
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          done
+          [[ "$HANDOFF_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          for value in "$HANDOFF_SHA256" "$PHASE_SELECTION_SHA256"; do
+            [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          done
+          if [ -n "$CAPTURE_INVENTORY_SHA256" ]; then
+            [[ "$CAPTURE_INVENTORY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          fi
+          test -n "$PHASE_SELECTION_JSON"
+          printf '%s\n' "$PHASE_SELECTION_JSON" > "$RUNNER_TEMP/contract-phase-selection.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/contract-phase-selection.json" | cut -d ' ' -f 1)" = "$PHASE_SELECTION_SHA256"
+          {
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'validated_tree=%s\n' "$VALIDATED_TREE"
+            printf 'validation_workflow_sha=%s\n' "$VALIDATION_WORKFLOW_SHA"
+            printf 'promotion_workflow_sha=%s\n' "$PROMOTION_WORKFLOW_SHA"
+            printf 'handoff_id=%s\n' "$HANDOFF_ID"
+            printf 'handoff_sha256=%s\n' "$HANDOFF_SHA256"
+            printf 'capture_inventory_sha256=%s\n' "$CAPTURE_INVENTORY_SHA256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed Contract promotion verifier only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact landed tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ github.sha }}
+          path: landed-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind the approved S1048 tree to the landed checkout
+        env:
+          VALIDATED_TREE: ${{ steps.authority.outputs.validated_tree }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C landed-source rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C landed-source rev-parse 'HEAD^{tree}')" = "$VALIDATED_TREE"
+          test "$(git -C trusted-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git -C landed-source status --porcelain --untracked-files=no)"
+          test -z "$(git -C trusted-source status --porcelain --untracked-files=no)"
+      - name: Authenticate the exact release-signed equal-tree Contract handoff
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          VALIDATION_WORKFLOW_SHA: ${{ steps.authority.outputs.validation_workflow_sha }}
+          PROMOTION_WORKFLOW_SHA: ${{ steps.authority.outputs.promotion_workflow_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_equal_tree_original.py \
+            --repository-root trusted-source --candidate-root landed-source \
+            --destination "$RUNNER_TEMP/contract-original" \
+            --trusted-source-sha "$SOURCE_SHA" \
+            --trusted-workflow-sha "$VALIDATION_WORKFLOW_SHA" \
+            --trusted-workflow-path .github/workflows/contract-validation.yml \
+            --trusted-job-name 'product-validation / contract-validation / contract-attestation' \
+            --trusted-promotion-workflow-sha "$PROMOTION_WORKFLOW_SHA" \
+            --final-commit "$GITHUB_SHA"
+      - name: Join the original handoff to independently approved S1048 identity
+        env:
+          HANDOFF_ID: ${{ steps.authority.outputs.handoff_id }}
+          HANDOFF_SHA256: ${{ steps.authority.outputs.handoff_sha256 }}
+          VALIDATED_TREE: ${{ steps.authority.outputs.validated_tree }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          jq -e --argjson id "$HANDOFF_ID" --arg digest "$HANDOFF_SHA256" \
+            --arg tree "$VALIDATED_TREE" --arg commit "$GITHUB_SHA" --arg source "$SOURCE_SHA" \
+            '.schemaVersion == 1 and .artifact.id == $id and .artifact.digest == $digest and
+             .finalTree == $tree and .finalCommit == $commit and .trustedSourceCommit == $source' \
+            "$RUNNER_TEMP/contract-original/selection.json" > /dev/null
+          test "sha256:$(sha256sum "$RUNNER_TEMP/contract-original/original-evidence/upload.zip" | cut -d ' ' -f 1)" = "$HANDOFF_SHA256"
+      - name: Capture all four independently pinned official phase uploads without signing secrets
+        id: capture
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: trusted-source
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from ci.contract_catalog_caller import capture_promotable_contract_originals
+          from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          selection = load_canonical_json_bytes(read_regular_file_bytes(
+              root / "contract-phase-selection.json", max_bytes=16 * 1024 * 1024,
+              reject_symlink_parents=True))
+          result = capture_promotable_contract_originals(
+              root / "contract-original/contract-record/handoff",
+              root / "contract-phase-capture", selection=selection,
+              token=os.environ["GITHUB_TOKEN"], environ=os.environ)
+          print(json.dumps(result, sort_keys=True))
+          PY
+      - name: Retain the exact original handoff and four phase uploads
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-promoted-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/contract-original
+            ${{ runner.temp }}/contract-phase-capture
+            ${{ runner.temp }}/contract-phase-selection.json
+          compression-level: 0
+          retention-days: 90
+      - name: Require independent approval of the retained four-upload capture before signing
+        env:
+          PYTHONPATH: trusted-source
+          EXPECTED_CAPTURE_SHA256: ${{ steps.authority.outputs.capture_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          from ci.products.inventory import (
+              canonical_json_bytes, regular_file_inventory, require_sha256, sha256_bytes,
+          )
+
+          expected = require_sha256(os.environ["EXPECTED_CAPTURE_SHA256"],
+                                    "independently approved Contract capture inventory")
+          original = Path(os.environ["RUNNER_TEMP"]) / "contract-phase-capture"
+          actual = sha256_bytes(canonical_json_bytes(regular_file_inventory(original)))
+          if actual != expected:
+              raise ValueError("Contract capture differs from protected S1048 approval")
+          PY
+      - name: Sign only the approved external Contract catalog without an observation token
+        env:
+          PYTHONPATH: trusted-source
+          VALIDATED_TREE: ${{ steps.authority.outputs.validated_tree }}
+          EXPECTED_CAPTURE_SHA256: ${{ steps.authority.outputs.capture_inventory_sha256 }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import os
+          from pathlib import Path
+          import tempfile
+          from ci.contract_catalog_caller import sign_promoted_contract_catalog
+          from ci.products.inventory import load_canonical_json_bytes, read_regular_file_bytes
+          from ci.products.signatures import private_key_bytes
+
+          if (os.environ.get("GITHUB_EVENT_NAME"), os.environ.get("GITHUB_REF"),
+                  os.environ.get("GITHUB_REF_PROTECTED")) != ("push", "refs/heads/main", "true"):
+              raise ValueError("Contract catalog signer requires protected-main push")
+          root = Path(os.environ["RUNNER_TEMP"])
+          selection = load_canonical_json_bytes(read_regular_file_bytes(
+              root / "contract-phase-selection.json", max_bytes=16 * 1024 * 1024,
+              reject_symlink_parents=True))
+          run_id, attempt = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
+          producer = {"repository": "codex-agent-labs/codex-agent",
+              "workflowPath": ".github/workflows/promote.yml", "event": "push",
+              "commit": os.environ["GITHUB_SHA"], "tree": os.environ["VALIDATED_TREE"],
+              "pullRequest": None, "runId": run_id, "runAttempt": attempt}
+          context = {"kind": "promoted-main", "commit": producer["commit"],
+              "tree": producer["tree"], "promotionRunId": run_id,
+              "promotionRunAttempt": attempt}
+          with tempfile.TemporaryDirectory(prefix="contract-catalog-key-") as temporary:
+              key = Path(temporary) / "signing-key"
+              key.touch(mode=0o600, exist_ok=False)
+              key.write_bytes(private_key_bytes(os.environ["CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY"]))
+              sign_promoted_contract_catalog(
+                  root / "contract-original/contract-record/handoff",
+                  root / "contract-phase-capture", root / "contract-promoted-catalog",
+                  selection=selection,
+                  expected_capture_inventory_sha256=os.environ["EXPECTED_CAPTURE_SHA256"],
+                  repository=producer["repository"], context=context, producer=producer,
+                  keyring=root / "contract-original/contract-record/policy/keyring.json",
+                  keys_directory=root / "contract-original/contract-record/policy/keys",
+                  private_key=key, environ=os.environ)
+          PY
+      - name: Preserve the immutable signed Contract catalog
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-promoted-contract-catalog-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/contract-promoted-catalog
+          compression-level: 0
+          retention-days: 90

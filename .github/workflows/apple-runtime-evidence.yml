@@ -12,6 +12,33 @@ on:
       validationTree:
         required: true
         type: string
+      sdkBinaryOnly:
+        description: Select only the three native prerequisites of an elected SDK iOS binary
+        required: false
+        default: false
+        type: boolean
+      trustedWorkflowSha:
+        description: Reviewed product workflow authority for native SDK prerequisite reuse
+        required: false
+        default: ''
+        type: string
+    outputs:
+      native_tests_artifact_id:
+        value: ${{ jobs.native-tests.outputs.artifact_id }}
+      native_tests_artifact_digest:
+        value: ${{ jobs.native-tests.outputs.artifact_digest }}
+      rust_device_artifact_id:
+        value: ${{ jobs.rust-device.outputs.artifact_id }}
+      rust_device_artifact_digest:
+        value: ${{ jobs.rust-device.outputs.artifact_digest }}
+      rust_simulator_artifact_id:
+        value: ${{ jobs.rust-simulator.outputs.artifact_id }}
+      rust_simulator_artifact_digest:
+        value: ${{ jobs.rust-simulator.outputs.artifact_digest }}
+      swift_artifact_id:
+        value: ${{ jobs.swift-tests.outputs.artifact_id }}
+      swift_artifact_digest:
+        value: ${{ jobs.swift-tests.outputs.artifact_digest }}
 
 permissions:
   actions: read
@@ -61,13 +88,17 @@ jobs:
           name: ${{ inputs.planArtifact }}
           path: build/ci
       - id: lanes
-        run: >-
-          python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT"
-          --lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator
-          --lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
-          --lane ios-swift-build --lane ios-swift-tests --lane ios-package
-          --lane ios-privacy-metrics --lane consumer-common
-          --lane consumer-ios-device --lane consumer-ios-simulator
+        env:
+          SDK_BINARY_ONLY: ${{ inputs.sdkBinaryOnly }}
+        run: |
+          lanes=(--lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator)
+          if [ "$SDK_BINARY_ONLY" != true ]; then
+            lanes+=(--lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
+              --lane ios-swift-build --lane ios-swift-tests --lane ios-package
+              --lane ios-privacy-metrics --lane consumer-common
+              --lane consumer-ios-device --lane consumer-ios-simulator)
+          fi
+          python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT" "${lanes[@]}"
 
   native-tests:
     if: needs.select.outputs.native == 'true'
@@ -76,6 +107,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,6 +118,8 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-native-tests
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -95,9 +130,11 @@ jobs:
     if: needs.select.outputs.rust_device == 'true'
     needs: select
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: ${{ inputs.sdkBinaryOnly && 240 || 120 }}
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,6 +144,8 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-rust-device
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -120,6 +159,8 @@ jobs:
     timeout-minutes: 120
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,6 +170,8 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-rust-simulator
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -272,6 +315,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

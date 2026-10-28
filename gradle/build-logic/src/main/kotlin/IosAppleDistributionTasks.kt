@@ -5,12 +5,14 @@ import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.api.tasks.bundling.Zip
+import org.gradle.kotlin.dsl.named
 import org.gradle.kotlin.dsl.register
 
 data class IosAppleDistributionTasks(
     val appleDistributionDirectory: Provider<Directory>,
     val releaseXCFrameworkDirectory: Provider<Directory>,
     val privacyManifestFile: RegularFile,
+    val sdkCompatibilityFile: Provider<RegularFile>?,
     val prepareCodexAgentReleaseXCFramework: TaskProvider<PrepareCodexAgentReleaseXCFrameworkTask>,
     val packageCodexAgentAppleDistribution: TaskProvider<Zip>,
     val verifyCodexAgentSwiftPackage: TaskProvider<Exec>,
@@ -18,8 +20,39 @@ data class IosAppleDistributionTasks(
     val verifyIosLicensePackaging: TaskProvider<VerifyIosLicensePackagingTask>,
 )
 
+internal fun requirePairedAppleFrameworkImports(device: Boolean, simulator: Boolean) {
+    check(device == simulator) {
+        "Imported Apple device and simulator frameworks must be supplied together"
+    }
+}
+
+internal fun Project.usesAppleBinaryPackageInputs(): Boolean {
+    val mode = providers.gradleProperty("codexAgent.iosPackageFromBinary").orNull ?: return false
+    check(mode == "true" &&
+        providers.gradleProperty("codexAgent.product").orNull == "sdk" &&
+        providers.gradleProperty("codexAgent.component").orNull == "sdk-ios" &&
+        providers.gradleProperty("codexAgent.phase").orNull == "package" &&
+        providers.gradleProperty("codexAgent.target").orNull == "ios") {
+        "Apple binary package mode requires the exact SDK iOS package phase"
+    }
+    listOf("codexAgent.sdkIosBinaryStageRoot", "codexAgent.sdkCompatibilityRequest").forEach {
+        check(!providers.gradleProperty(it).orNull.isNullOrBlank()) { "Apple binary package mode requires $it" }
+    }
+    listOf(
+        IOS_VERIFIED_DISTRIBUTION_PROPERTY, "codexAgent.iosExpectedDistributionProof",
+        "codexAgent.iosExpectedSdkCompatibility", "codexAgent.iosNativeEvidenceDirectory",
+        "codexAgent.iosDeviceFrameworkDirectory", "codexAgent.iosSimulatorFrameworkDirectory",
+    ).forEach {
+        check(!providers.gradleProperty(it).isPresent) { "Apple binary package mode rejects override $it" }
+    }
+    check(!providers.environmentVariable("CODEX_AGENT_IMPORTED_SWIFT_ZIP").isPresent) {
+        "Apple binary package mode rejects imported Swift ZIP override"
+    }
+    return true
+}
+
 fun Project.registerIosAppleDistributionTasks(
-    expectedSwiftTestCount: Int,
+    expectedSwiftTestIdentifiers: List<String>,
     pinnedRustToolchain: String,
     appleFrameworkToolchainIdentity: Provider<String>,
     importedDeviceFramework: TaskProvider<ImportCodexAgentFrameworkTask>?,
@@ -32,22 +65,39 @@ fun Project.registerIosAppleDistributionTasks(
     val licenseFile = rootProject.layout.projectDirectory.file("LICENSE")
     val thirdPartyNotices = rootProject.layout.projectDirectory.file("THIRD_PARTY_NOTICES.md")
     val codexLicense = rootProject.layout.projectDirectory.file(
-        "codex-agent-runtime-android/src/main/assets/openai-codex-LICENSE.txt",
+        "legal/openai-codex/openai-codex-LICENSE.txt",
     )
     val codexNotice = rootProject.layout.projectDirectory.file(
-        "codex-agent-runtime-android/src/main/assets/openai-codex-NOTICE.txt",
+        "legal/openai-codex/openai-codex-NOTICE.txt",
     )
-
-    val assembleDependency: Any = if (importedDeviceFramework != null && importedSimulatorFramework != null) {
-        tasks.register<AssembleImportedCodexAgentXCFrameworkTask>("assembleCodexAgentReleaseXCFrameworkFromImports") {
-            dependsOn(importedDeviceFramework, importedSimulatorFramework)
-            deviceFrameworkDirectory.set(importedDeviceFramework.flatMap { it.importedFrameworkDirectory })
-            simulatorFrameworkDirectory.set(importedSimulatorFramework.flatMap { it.importedFrameworkDirectory })
-            appleToolchainIdentity.set(appleFrameworkToolchainIdentity)
-            xcframeworkDirectory.set(assembledXCFrameworkDirectory)
-        }
+    val sdkCompatibility = if (providers.gradleProperty("codexAgent.sdkCompatibilityRequest").isPresent) {
+        project(":codex-agent-sdk").layout.buildDirectory.file(
+            providers.gradleProperty("codexAgent.candidateTree").map {
+                "sdk-compatibility/$it/META-INF/codex-agent/sdk-compatibility.json"
+            },
+        )
     } else {
-        "assembleCodexAgentReleaseXCFramework"
+        null
+    }
+
+    val assembleDependency: Any = when {
+        importedDeviceFramework != null && importedSimulatorFramework != null ->
+            tasks.register<AssembleImportedCodexAgentXCFrameworkTask>("assembleCodexAgentReleaseXCFrameworkFromImports") {
+                dependsOn(importedDeviceFramework, importedSimulatorFramework)
+                deviceFrameworkDirectory.set(importedDeviceFramework.flatMap { it.importedFrameworkDirectory })
+                simulatorFrameworkDirectory.set(importedSimulatorFramework.flatMap { it.importedFrameworkDirectory })
+                appleToolchainIdentity.set(appleFrameworkToolchainIdentity)
+                xcframeworkDirectory.set(assembledXCFrameworkDirectory)
+            }
+        importedDeviceFramework == null && importedSimulatorFramework == null ->
+            "assembleCodexAgentReleaseXCFramework"
+        else -> providers.provider {
+            requirePairedAppleFrameworkImports(
+                importedDeviceFramework != null,
+                importedSimulatorFramework != null,
+            )
+            "assembleCodexAgentReleaseXCFramework"
+        }
     }
     val prepareCodexAgentReleaseXCFramework =
         tasks.register<PrepareCodexAgentReleaseXCFrameworkTask>("prepareCodexAgentReleaseXCFramework") {
@@ -62,6 +112,10 @@ fun Project.registerIosAppleDistributionTasks(
     val stageCodexAgentAppleDistribution =
         tasks.register<StageCodexAgentAppleDistributionTask>("stageCodexAgentAppleDistribution") {
             dependsOn(prepareCodexAgentReleaseXCFramework)
+            if (sdkCompatibility != null) {
+                dependsOn(":codex-agent-sdk:generateNativeWrapperSdkCompatibility")
+                this.sdkCompatibility.set(sdkCompatibility)
+            }
             packageManifest.set(layout.projectDirectory.file("apple/Package.swift"))
             sourcesDirectory.set(layout.projectDirectory.dir("apple/Sources"))
             testsDirectory.set(layout.projectDirectory.dir("apple/Tests"))
@@ -102,7 +156,7 @@ fun Project.registerIosAppleDistributionTasks(
             }
             runtimeName.set("iOS 26.5")
             deviceTypeIdentifier.set("com.apple.CoreSimulator.SimDeviceType.iPhone-17")
-            this.expectedTestCount.set(expectedSwiftTestCount)
+            this.expectedTestIdentifiers.set(expectedSwiftTestIdentifiers)
             derivedDataDirectory.set(layout.buildDirectory.dir("swift-simulator-compilation-derived-data"))
             simulatorDevicesFile.set(layout.buildDirectory.file("simulator-devices.json"))
             resultBundleDirectory.set(layout.buildDirectory.dir("swift-authentication-tests.xcresult"))
@@ -133,6 +187,7 @@ fun Project.registerIosAppleDistributionTasks(
         appleDistributionDirectory,
         releaseXCFrameworkDirectory,
         privacyManifestFile,
+        sdkCompatibility,
         prepareCodexAgentReleaseXCFramework,
         packageCodexAgentAppleDistribution,
         verifyCodexAgentSwiftPackage,

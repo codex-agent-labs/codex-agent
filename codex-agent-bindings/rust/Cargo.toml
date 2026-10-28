@@ -1,0 +1,29 @@
+[package]
+name = "codex-agent"
+version = "0.8.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "GPL-3.0-or-later"
+description = "Idiomatic Rust bindings for the local Codex Agent Desktop/Host C SDK"
+repository = "https://github.com/codex-agent-labs/codex-agent"
+readme = "README.md"
+keywords = ["codex", "agent", "ffi"]
+categories = ["api-bindings"]
+include = ["src/**", "native/**", "build.rs", "LICENSE", "README.md", "Cargo.toml"]
+
+[package.metadata.codex-agent]
+c-abi = "1.13.0"
+native-targets = ["osx-arm64", "osx-x64", "linux-arm64", "linux-x64", "win-x64"]
+library-override = "CODEX_AGENT_LIBRARY"
+
+[dependencies]
+base64 = "0.22.1"
+futures-core = "0.3.32"
+libloading = "0.8.9"
+serde_json = "1.0.149"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

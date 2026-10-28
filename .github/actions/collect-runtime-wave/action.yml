@@ -1,0 +1,310 @@
+name: Collect a Runtime product wave
+description: Preserve every original worker result, advance the same planner, and upload state before the final failure gate.
+inputs:
+  checkpoint-controls:
+    default: 'false'
+    description: Emit bounded source controls for an approved checkpoint consumer.
+  plan-directory:
+    default: ''
+    description: Existing same-job exact plan download, still validated by each consumer.
+  product:
+    default: runtime
+    description: Fixed runtime, sdk JavaScript, or sdk-ios-binary collection scope.
+  sdk-state-wave:
+    default: ''
+    description: Optional exact SDK predecessor state wave.
+  sdk-family:
+    default: ''
+    description: Optional exact SDK family projection selected by ci.sdk_workflow.
+  sdk-worker-workflow-path:
+    default: ''
+    description: Caller-pinned original Core worker child workflow path, paired with its job.
+  sdk-worker-job-name:
+    default: ''
+    description: Caller-pinned original Core worker child job, paired with its workflow path.
+  sdk-validation-tooling:
+    default: ''
+    description: Caller-provisioned tooling policy path, not retained-state authority.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Caller-provisioned Apple validation policy path, not retained-state authority.
+  sdk-facade-metadata-policy:
+    default: ''
+    description: Caller-provisioned Core metadata admission descriptor, not retained-state authority.
+  core-metadata-caller:
+    default: ''
+    description: Independent successful Core metadata worker outputs for full collection admission.
+  sdk-android-metadata-policy:
+    default: ''
+    description: Caller-provisioned Android metadata admission descriptor, not retained-state authority.
+  plan-id:
+    required: true
+    description: Original plan upload ID.
+  artifact-id:
+    required: true
+    description: Original predecessor state upload ID.
+  artifact-sha256:
+    required: true
+    description: Original predecessor state digest.
+  trusted-workflow-sha:
+    required: true
+    description: Reviewed product workflow revision.
+  state-wave:
+    required: true
+    description: Fixed predecessor wave.
+  wave:
+    required: true
+    description: Runtime waves one through five; SDK families use the exact wave assigned by ci.sdk_workflow.
+  tree:
+    required: true
+    description: Exact tested tree.
+outputs:
+  checkpoint-inputs:
+    description: Untrusted exact source/control upload selectors for the downstream native issuer.
+    value: ${{ steps.upload_controls.outputs.artifact-id && format('{{"source":{0},"controlArtifact":{{"artifactId":{1},"artifactSha256":"sha256:{2}"}}}}', steps.controls.outputs.source, steps.upload_controls.outputs.artifact-id, steps.upload_controls.outputs.artifact-digest) || '' }}
+  control-artifact-id:
+    value: ${{ steps.upload_controls.outputs.artifact-id }}
+  control-artifact-sha256:
+    value: ${{ steps.upload_controls.outputs.artifact-digest && format('sha256:{0}', steps.upload_controls.outputs.artifact-digest) || '' }}
+  routing:
+    value: ${{ steps.routing.outputs.routing }}
+  sdk-matrix:
+    value: ${{ steps.collect.outputs.sdk_matrix }}
+  sdk-workers-required:
+    value: ${{ steps.collect.outputs.sdk_workers_required }}
+  artifact-id:
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-sha256:
+    value: sha256:${{ steps.upload.outputs.artifact-digest }}
+  runtime-matrix:
+    value: ${{ steps.collect.outputs.runtime_matrix }}
+  runtime-workers-required:
+    value: ${{ steps.collect.outputs.runtime_workers_required }}
+  wave-failed:
+    value: ${{ steps.collect.outputs.wave_failed }}
+  full-reuse:
+    value: ${{ steps.collect.outputs.full_reuse }}
+  aggregate-payload-complete:
+    value: ${{ steps.collect.outputs.aggregate_payload_complete }}
+  aggregate-key:
+    value: ${{ steps.collect.outputs.aggregate_key }}
+  aggregate-receipt-sha256:
+    value: ${{ steps.collect.outputs.aggregate_receipt_sha256 }}
+runs:
+  using: composite
+  steps:
+    - id: captured
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        plan-directory: ${{ inputs.plan-directory }}
+        preflight-wave: ${{ inputs.wave }}
+        defer-transport: ${{ inputs.product == 'sdk' && env.CODEX_AGENT_SDK_CHECKPOINT != '' && 'true' || 'false' }}
+        product: ${{ inputs.product }}
+        sdk-state-wave: ${{ inputs.sdk-state-wave }}
+        sdk-family: ${{ inputs.sdk-family }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+        sdk-facade-metadata-policy: ${{ inputs.sdk-facade-metadata-policy }}
+        sdk-android-metadata-policy: ${{ inputs.sdk-android-metadata-policy }}
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.artifact-id }}
+        artifact-sha256: ${{ inputs.artifact-sha256 }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        state-wave: ${{ inputs.state-wave }}
+    - id: collect
+      uses: ./.github/actions/hydrated-evidence-cache
+      env:
+        COLLECT_INPUT_ROOT: ${{ steps.captured.outputs.input-root }}
+        CAPTURE_DEFERRED: ${{ steps.captured.outputs.transport-deferred }}
+        PLAN_DIRECTORY: ${{ inputs.plan-directory || 'build/runtime-plan' }}
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        ARTIFACT_SHA256: ${{ inputs.artifact-sha256 }}
+        SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
+        CHECKPOINT_CONTROLS: ${{ inputs.checkpoint-controls }}
+        WAVE: ${{ inputs.wave }}
+        STATE_WAVE: ${{ inputs.state-wave }}
+        PRODUCT: ${{ inputs.product }}
+        SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_WORKER_WORKFLOW_PATH: ${{ inputs.sdk-worker-workflow-path }}
+        SDK_WORKER_JOB_NAME: ${{ inputs.sdk-worker-job-name }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        SDK_FACADE_METADATA_POLICY: ${{ inputs.sdk-facade-metadata-policy }}
+        CORE_METADATA_CALLER: ${{ inputs.core-metadata-caller }}
+        SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        mode: execute
+        script: |
+          set -euo pipefail
+          case "$PRODUCT" in
+            runtime) test -z "$SDK_FAMILY"; command=(python3 -B ci/runtime_workflow.py collect); state=(--state-wave "$STATE_WAVE") ;;
+            sdk)
+              command=(python3 -B -m ci.sdk_workflow collect); state=()
+              if [ -n "$SDK_FAMILY" ]; then
+                case "$SDK_FAMILY" in
+                  csharp-binary|native-package|ios-package|javascript-metadata|native-validation|native-metadata|ios-validation|ios-metadata|core-binary|core-package|core-validation|core-metadata|android-binary|android-package|android-validation|android-metadata) state=(--family "$SDK_FAMILY") ;;
+                  *) echo 'Unknown SDK family' >&2; exit 1 ;;
+                esac
+              fi ;;
+            sdk-ios-binary) test -z "$SDK_FAMILY"; command=(python3 -B -m ci.sdk_workflow collect); state=(--ios-binary) ;;
+            *) echo 'Unknown product collection scope' >&2; exit 1 ;;
+          esac
+          case "$CHECKPOINT_CONTROLS" in
+            false) ;;
+            true) test "$PRODUCT" = sdk; test -n "$SDK_FAMILY"; state+=(--checkpoint-controls) ;;
+            *) echo 'Unknown checkpoint controls choice' >&2; exit 1 ;;
+          esac
+          if [ -n "${SDK_VALIDATION_TOOLING:-}" ]; then
+            state+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+          fi
+          if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+            state+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+          fi
+          if [ -n "${SDK_WORKER_WORKFLOW_PATH:-}" ] || [ -n "${SDK_WORKER_JOB_NAME:-}" ]; then
+            state+=(--sdk-worker-workflow-path "$SDK_WORKER_WORKFLOW_PATH" --sdk-worker-job-name "$SDK_WORKER_JOB_NAME")
+          fi
+          if [ -n "${SDK_FACADE_METADATA_POLICY:-}" ]; then
+            test "$PRODUCT" = sdk
+            state+=(--sdk-facade-metadata-policy "$SDK_FACADE_METADATA_POLICY")
+          fi
+          if [ -n "${CORE_METADATA_CALLER:-}" ]; then
+            test "$PRODUCT" = sdk
+            test "$SDK_FAMILY" = core-metadata
+            state+=(--core-metadata-caller "$CORE_METADATA_CALLER")
+          fi
+          if [ -n "${SDK_ANDROID_METADATA_POLICY:-}" ]; then
+            test "$PRODUCT" = sdk
+            state+=(--sdk-android-metadata-policy "$SDK_ANDROID_METADATA_POLICY")
+          fi
+          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+            state+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+          fi
+          if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
+            test "$PRODUCT" = sdk
+            case "$SDK_FAMILY:$WAVE:${GITHUB_JOB:-}" in
+              ios-metadata:10:sdk-collect-10|core-binary:11:sdk-collect-11|core-package:12:sdk-collect-12) ;;
+              *) exit 1 ;;
+            esac
+            test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+            state+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$CODEX_AGENT_SDK_CHECKPOINT")
+          fi
+          source=()
+          case "${CAPTURE_DEFERRED:-false}" in
+            false)
+              : "${COLLECT_INPUT_ROOT:?Missing authenticated predecessor root}"
+              source=(--input-root "$COLLECT_INPUT_ROOT") ;;
+            true)
+              test "$PRODUCT" = sdk
+              test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+              test -n "${CODEX_AGENT_SDK_CHECKPOINT:-}"
+              test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+              source=(--capture-plan "$PLAN_DIRECTORY/impact-plan.json"
+                --capture-destination "$GITHUB_WORKSPACE/build/runtime-input"
+                --capture-artifact-id "$ARTIFACT_ID" --capture-artifact-sha256 "$ARTIFACT_SHA256"
+                --capture-state-wave "$STATE_WAVE" --repository-root "$GITHUB_WORKSPACE")
+              if [ -n "$SDK_STATE_WAVE" ]; then source+=(--capture-sdk-state-wave "$SDK_STATE_WAVE"); fi
+              COLLECT_INPUT_ROOT="$GITHUB_WORKSPACE/build/runtime-input/original" ;;
+            *) exit 1 ;;
+          esac
+          "${command[@]}" "${source[@]}" \
+            --destination build/runtime-next --wave "$WAVE" ${state[@]+"${state[@]}"} \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+          # Pinned native/aggregate signers consume waves 4/5 as full envelopes.
+          # SDK waves and earlier Runtime waves reference authenticated predecessors.
+          if [ "$PRODUCT" != runtime ] || [ "$WAVE" -le 3 ]; then
+            reference_wave=(--state-wave "$WAVE")
+            if [ "$PRODUCT" != runtime ]; then reference_wave=(--state-wave 0 --sdk-state-wave "$WAVE"); fi
+            python3 -B ci/runtime_workflow.py export-references \
+              --handoff build/runtime-next/handoff --base-root "$COLLECT_INPUT_ROOT" \
+              --base-capture "${COLLECT_INPUT_ROOT%/original}/capture-transport.json" \
+              --destination build/runtime-reference-handoff "${reference_wave[@]}"
+          fi
+    - id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-state-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: ${{ (inputs.product != 'runtime' || inputs.wave == '1' || inputs.wave == '2' || inputs.wave == '3') && 'build/runtime-reference-handoff' || 'build/runtime-next/handoff' }}
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - id: controls
+      if: inputs.checkpoint-controls == 'true' && inputs.product == 'sdk' && inputs.sdk-family != '' && steps.collect.outputs.wave_failed == 'false'
+      shell: bash
+      env:
+        WAVE: ${{ inputs.wave }}
+        ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        ARTIFACT_SHA256: sha256:${{ steps.upload.outputs.artifact-digest }}
+        WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B ci/completed_sdk_reuse.py stage-collector-controls \
+          --handoff build/runtime-next/handoff \
+          --reference-path build/runtime-reference-handoff/runtime-references.json \
+          --destination build/runtime-collector-controls \
+          --wave "$WAVE" --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+          --workflow-sha "$WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+    - id: upload_controls
+      if: steps.controls.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.controls.outputs.artifact_name }}
+        path: build/runtime-collector-controls
+        if-no-files-found: error
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - id: routing
+      if: steps.collect.outputs.wave_failed == 'false'
+      shell: bash
+      env:
+        ROUTING: ${{ steps.collect.outputs.routing_decisions }}
+        ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        ARTIFACT_SHA256: sha256:${{ steps.upload.outputs.artifact-digest }}
+        STATE_WAVE: ${{ inputs.product == 'runtime' && inputs.wave || '0' }}
+        SDK_STATE_WAVE: ${{ inputs.product != 'runtime' && inputs.wave || '' }}
+        PLAN_ID: ${{ inputs.plan-id }}
+        PLAN_PATH: ${{ steps.captured.outputs.plan-path }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+      run: |
+        python3 -B - <<'PY'
+        import json, os, sys
+        from ci.sdk_native_continuation import main
+        from pathlib import Path
+        plan = json.loads(Path(os.environ['PLAN_PATH']).read_text())
+        os.environ['VALIDATION_COMMIT'] = plan['validationCommit']
+        os.environ['VALIDATION_TREE'] = plan['validationTree']
+        sys.argv = ['routing', 'bind']
+        main()
+        PY
+    - if: ${{ failure() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: |
+          build/runtime-next
+          build/runtime-preflight.json
+          build/runtime-input/capture-transport.json
+          build/runtime-plan
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90
+    - if: ${{ success() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: codex-agent-${{ inputs.product == 'sdk-ios-binary' && 'sdk' || inputs.product }}-wave-${{ inputs.wave }}-diagnostics-${{ inputs.tree }}-attempt-${{ github.run_attempt }}
+        path: |
+          build/runtime-next/collection/collection.json
+          build/runtime-input/capture-transport.json
+          build/runtime-plan
+        if-no-files-found: warn
+        overwrite: false
+        include-hidden-files: true
+        compression-level: 0
+        retention-days: 90

@@ -1,0 +1,7 @@
+gradle.beforeProject { project ->
+    if (project.path != ':') return
+    // Debug cache paths affect DWARF string ordering and the ELF build ID.
+    def expected = "${System.getenv('RUNNER_TEMP')}/codex-runtime-konan-linux-x64"
+    if (!System.getenv('RUNNER_TEMP') || System.getenv('KONAN_DATA_DIR') != expected)
+        throw new GradleException('Linux x64 requires its fresh stable Kotlin/Native home')
+}

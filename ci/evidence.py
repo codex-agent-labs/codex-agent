@@ -9,6 +9,7 @@ import json
 import shutil
 from pathlib import Path
 
+from impact import validate_remote_build_authorization
 from receipt import validate_receipt
 
 
@@ -32,6 +33,14 @@ def main() -> None:
     plan = json.loads(arguments.plan.read_text(encoding="utf-8"))
     if plan.get("schemaVersion") != 1 or not plan.get("mergeReady"):
         raise ValueError("Android evidence requires one merge-ready schema-v1 impact plan")
+    authorized, reason = validate_remote_build_authorization(plan)
+    expected_reason = {
+        "pull_request": "pull-request-final",
+        "merge_group": "merge-group",
+        "workflow_dispatch": "protected-dispatch",
+    }.get(plan.get("event"))
+    if not authorized or reason != expected_reason:
+        raise ValueError("Android evidence requires an authorized impact plan")
     tree = plan.get("validationTree")
     if not isinstance(tree, str) or len(tree) != 40 or any(character not in "0123456789abcdef" for character in tree):
         raise ValueError("Android evidence plan has an invalid validation tree")

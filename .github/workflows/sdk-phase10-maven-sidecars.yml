@@ -1,0 +1,502 @@
+name: SDK Phase-10 Maven Sidecars
+
+on:
+  workflow_call:
+    outputs:
+      coreArtifactId:
+        value: ${{ jobs.sidecars.outputs.core_id }}
+      coreArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.core_sha256 }}
+      androidArtifactId:
+        value: ${{ jobs.sidecars.outputs.android_id }}
+      androidArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.android_sha256 }}
+      iosArtifactId:
+        value: ${{ jobs.sidecars.outputs.ios_id }}
+      iosArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.ios_sha256 }}
+      recordArtifactId:
+        value: ${{ jobs.sidecars.outputs.record_id }}
+      recordArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.record_sha256 }}
+      indexAdmissionArtifactId:
+        value: ${{ jobs.sidecars.outputs.index_admission_id }}
+      indexAdmissionArtifactSha256:
+        value: ${{ jobs.sidecars.outputs.index_admission_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sidecars:
+    name: sdk-phase10-maven-sidecars
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'sdk-phase10-maven-sidecars'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    env:
+      PYTHONPATH: ${{ github.workspace }}/trusted-source
+    outputs:
+      core_id: ${{ steps.upload-core.outputs.artifact-id }}
+      core_sha256: sha256:${{ steps.upload-core.outputs.artifact-digest }}
+      android_id: ${{ steps.upload-android.outputs.artifact-id }}
+      android_sha256: sha256:${{ steps.upload-android.outputs.artifact-digest }}
+      ios_id: ${{ steps.upload-ios.outputs.artifact-id }}
+      ios_sha256: sha256:${{ steps.upload-ios.outputs.artifact-digest }}
+      record_id: ${{ steps.upload-record.outputs.artifact-id }}
+      record_sha256: sha256:${{ steps.upload-record.outputs.artifact-digest }}
+      index_admission_id: ${{ steps.upload-index-admission.outputs.artifact-id }}
+      index_admission_sha256: sha256:${{ steps.upload-index-admission.outputs.artifact-digest }}
+    steps:
+      - name: Require independently approved original, signed index and PGP authorities before checkout
+        id: approval
+        env:
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          CAMPAIGN_CONTROL: ${{ vars.CODEX_AGENT_SDK_PHASE10_CONTROL_JSON }}
+          CAMPAIGN_CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_PHASE10_CONTROL_APPROVED_SHA256 }}
+          MAVEN_CONTROL: ${{ vars.CODEX_AGENT_SDK_MAVEN_CONTROL_JSON }}
+          MAVEN_CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_MAVEN_CONTROL_APPROVED_SHA256 }}
+          RECORD_PRODUCER: ${{ vars.CODEX_AGENT_SDK_RECORD_PRODUCER_JSON }}
+          RECORD_PRODUCER_SHA256: ${{ vars.CODEX_AGENT_SDK_RECORD_PRODUCER_APPROVED_SHA256 }}
+          RECORD_ARTIFACT_ID: ${{ vars.CODEX_AGENT_SDK_RECORD_ARTIFACT_ID }}
+          RECORD_ARTIFACT_SHA256: ${{ vars.CODEX_AGENT_SDK_RECORD_ARTIFACT_SHA256 }}
+          RECORD_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_SDK_RECORD_WORKFLOW_SHA }}
+          INDEX_SHA256: ${{ vars.CODEX_AGENT_SDK_INDEX_APPROVED_SHA256 }}
+          SIGNATURE_SHA256: ${{ vars.CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256 }}
+          PGP_PUBLIC_KEY: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY }}
+          PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          for digest in "$CAMPAIGN_CONTROL_SHA256" "$MAVEN_CONTROL_SHA256" "$RECORD_PRODUCER_SHA256" "$RECORD_ARTIFACT_SHA256" "$INDEX_SHA256" "$SIGNATURE_SHA256" "$PGP_KEY_SHA256"; do
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          done
+          [[ "$RECORD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$RECORD_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test -n "$CAMPAIGN_CONTROL"
+          test -n "$MAVEN_CONTROL"
+          test -n "$RECORD_PRODUCER"
+          test -n "$PGP_PUBLIC_KEY"
+          printf '%s\n' "$CAMPAIGN_CONTROL" > "$RUNNER_TEMP/sdk-campaign-control.json"
+          printf '%s\n' "$MAVEN_CONTROL" > "$RUNNER_TEMP/sdk-maven-control.json"
+          printf '%s\n' "$RECORD_PRODUCER" > "$RUNNER_TEMP/sdk-record-producer.json"
+          printf '%s' "$PGP_PUBLIC_KEY" > "$RUNNER_TEMP/publication-pgp-public-key.asc"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-campaign-control.json" | cut -d ' ' -f 1)" = "$CAMPAIGN_CONTROL_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-maven-control.json" | cut -d ' ' -f 1)" = "$MAVEN_CONTROL_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-record-producer.json" | cut -d ' ' -f 1)" = "$RECORD_PRODUCER_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/publication-pgp-public-key.asc" | cut -d ' ' -f 1)" = "$PGP_KEY_SHA256"
+          test "$(jq -er '.trustedSourceCommit' "$RUNNER_TEMP/sdk-campaign-control.json")" = "$SOURCE_SHA"
+          test "$(jq -er '.signedIndexSha256' "$RUNNER_TEMP/sdk-maven-control.json")" = "$INDEX_SHA256"
+          test "$(jq -er '.signatureSha256' "$RUNNER_TEMP/sdk-maven-control.json")" = "$SIGNATURE_SHA256"
+          test "$(jq -er '.pgpPublicKeySha256' "$RUNNER_TEMP/sdk-maven-control.json")" = "$PGP_KEY_SHA256"
+          test "$(jq -er '.keyringSha256' "$RUNNER_TEMP/sdk-maven-control.json")" = "$(jq -er '.keyringSha256' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          test "$(jq -er '.keysInventorySha256' "$RUNNER_TEMP/sdk-maven-control.json")" = "$(jq -er '.keysInventorySha256' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          test "$(jq -er '.planSha256' "$RUNNER_TEMP/sdk-maven-control.json")" = "$(jq -er '.planSha256' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          fingerprint=$(gpg --batch --with-colons --show-keys "$RUNNER_TEMP/publication-pgp-public-key.asc" | awk -F: '$1 == "pub" {pub++} $1 == "fpr" && pub == 1 && !fpr {fpr=$10} END {if (pub != 1 || !fpr) exit 1; print fpr}')
+          [[ "$fingerprint" =~ ^[0-9A-F]{40}$|^[0-9A-F]{64}$ ]] || exit 1
+          original_commit="$(jq -er '.originalProducer.commit' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          original_tree="$(jq -er '.originalProducer.tree' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          original_run="$(jq -er '.originalProducer.runId' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          plan_id="$(jq -er '.planArtifactId' "$RUNNER_TEMP/sdk-campaign-control.json")"
+          [[ "$original_commit" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$original_tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$original_run" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$plan_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+          for component in sdk-core sdk-android sdk-ios; do
+            id="$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .artifactId' "$RUNNER_TEMP/sdk-maven-control.json")"
+            run="$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .producer.runId' "$RUNNER_TEMP/sdk-maven-control.json")"
+            commit="$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .producer.commit' "$RUNNER_TEMP/sdk-maven-control.json")"
+            package_plan_id="$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .planArtifactId' "$RUNNER_TEMP/sdk-maven-control.json")"
+            [[ "$id" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$run" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$package_plan_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+            printf '%s_id=%s\n%s_run=%s\n%s_commit=%s\n%s_plan_id=%s\n' "${component#sdk-}" "$id" "${component#sdk-}" "$run" "${component#sdk-}" "$commit" "${component#sdk-}" "$package_plan_id" >> "$GITHUB_OUTPUT"
+          done
+          {
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'original_commit=%s\noriginal_tree=%s\noriginal_run=%s\nplan_id=%s\n' "$original_commit" "$original_tree" "$original_run" "$plan_id"
+            printf 'pgp_fingerprint=%s\n' "$fingerprint"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the exact original SDK source as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.original_commit }}
+          path: original-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out original Core package producer as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.core_commit }}
+          path: package-roots/sdk-core
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out original Android package producer as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.android_commit }}
+          path: package-roots/sdk-android
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out original iOS package producer as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.approval.outputs.ios_commit }}
+          path: package-roots/sdk-ios
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download the independently selected original plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.plan_id }}
+          run-id: ${{ steps.approval.outputs.original_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: original-plan
+      - name: Download the independently selected original Core package plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.core_plan_id }}
+          run-id: ${{ steps.approval.outputs.core_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: package-plan-raw/sdk-core
+      - name: Download the independently selected original Android package plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.android_plan_id }}
+          run-id: ${{ steps.approval.outputs.android_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: package-plan-raw/sdk-android
+      - name: Download the independently selected original iOS package plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.ios_plan_id }}
+          run-id: ${{ steps.approval.outputs.ios_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: package-plan-raw/sdk-ios
+      - name: Download the independently selected Core receipt carrier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.core_id }}
+          run-id: ${{ steps.approval.outputs.core_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: receipt-carriers/sdk-core
+      - name: Download the independently selected Android receipt carrier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.android_id }}
+          run-id: ${{ steps.approval.outputs.android_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: receipt-carriers/sdk-android
+      - name: Download the independently selected iOS receipt carrier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.approval.outputs.ios_id }}
+          run-id: ${{ steps.approval.outputs.ios_run }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: receipt-carriers/sdk-ios
+      - name: Hold protected SDK replay policy and exact receipt bytes
+        env:
+          MAVEN_CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_MAVEN_CONTROL_APPROVED_SHA256 }}
+          AUTHORITY_JSON: ${{ vars.CODEX_AGENT_SDK_AUTHORITY_JSON }}
+          ELECTION_CORE_ANDROID: ${{ vars.CODEX_AGENT_SDK_ELECTION_CORE_ANDROID_JSON }}
+          ELECTION_NATIVE: ${{ vars.CODEX_AGENT_SDK_ELECTION_NATIVE_JSON }}
+          ELECTION_APPLE_JS: ${{ vars.CODEX_AGENT_SDK_ELECTION_APPLE_JS_JSON }}
+          SEMANTIC_CORE_ANDROID: ${{ vars.CODEX_AGENT_SDK_SEMANTIC_CORE_ANDROID_JSON }}
+          SEMANTIC_NATIVE: ${{ vars.CODEX_AGENT_SDK_SEMANTIC_NATIVE_JSON }}
+          SEMANTIC_APPLE_JS: ${{ vars.CODEX_AGENT_SDK_SEMANTIC_APPLE_JS_JSON }}
+          SDK_VALIDATION_TOOLING: ${{ vars.CODEX_AGENT_SDK_VALIDATION_TOOLING_JSON }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ vars.CODEX_AGENT_SDK_APPLE_POLICY_JSON }}
+          SDK_FACADE_METADATA_POLICY: ${{ vars.CODEX_AGENT_SDK_FACADE_POLICY_JSON }}
+          SDK_ANDROID_METADATA_POLICY: ${{ vars.CODEX_AGENT_SDK_ANDROID_POLICY_JSON }}
+          CUSTODY_CATALOGS: ${{ vars.CODEX_AGENT_SDK_CUSTODY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/sdk-policy" "$RUNNER_TEMP/sdk-release-keys" "$RUNNER_TEMP/sdk-package-receipts" "$RUNNER_TEMP/sdk-package-producers"
+          test -n "$AUTHORITY_JSON"
+          printf '%s\n' "$AUTHORITY_JSON" > "$RUNNER_TEMP/sdk-policy/authority.json"
+          for name in ELECTION_CORE_ANDROID ELECTION_NATIVE ELECTION_APPLE_JS SEMANTIC_CORE_ANDROID SEMANTIC_NATIVE SEMANTIC_APPLE_JS; do
+            test -n "${!name}"
+            printf '%s\n' "${!name}" > "$RUNNER_TEMP/sdk-policy/$name.json"
+          done
+          for name in SDK_VALIDATION_TOOLING SDK_APPLE_VALIDATION_POLICY SDK_FACADE_METADATA_POLICY SDK_ANDROID_METADATA_POLICY CUSTODY_CATALOGS; do
+            if test -n "${!name}"; then printf '%s\n' "${!name}" > "$RUNNER_TEMP/sdk-policy/$name.json"; fi
+          done
+          jq -cS '.originalProducer' "$RUNNER_TEMP/sdk-campaign-control.json" > "$RUNNER_TEMP/sdk-policy/original-producer.json"
+          jq -cS '.authorityProducer' "$RUNNER_TEMP/sdk-campaign-control.json" > "$RUNNER_TEMP/sdk-policy/authority-producer.json"
+          while IFS= read -r key_id; do
+            [[ "$key_id" =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
+            cp "trusted-source/gradle/release/keys/$key_id.pub" "$RUNNER_TEMP/sdk-release-keys/$key_id.pub"
+          done < <(jq -r '[.activeKey.keyId] + [.retiredKeys[].keyId] | .[]' trusted-source/gradle/release/product-signing-keys.json)
+          python3 -B - "$RUNNER_TEMP/sdk-maven-control.json" "$RUNNER_TEMP/sdk-package-receipts" "$RUNNER_TEMP/sdk-package-producers" <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'trusted-source')
+          from ci.products.inventory import read_regular_file_bytes, sha256_bytes, canonical_json_bytes
+          from ci.sdk_phase10_maven_caller import _selection
+          control = _selection(read_regular_file_bytes(Path(sys.argv[1]),
+              max_bytes=16 * 1024 * 1024, reject_symlink_parents=True),
+              os.environ['MAVEN_CONTROL_SHA256'])
+          destination = Path(sys.argv[2])
+          producers = Path(sys.argv[3])
+          for row in control['packages']:
+              component = row['component']
+              source = Path('receipt-carriers') / component / 'shard/phase-receipt.json'
+              raw = read_regular_file_bytes(source, max_bytes=16 * 1024 * 1024,
+                                            reject_symlink_parents=True)
+              if sha256_bytes(raw) != row['receiptSha256']:
+                  raise ValueError(component + ' receipt differs from independent approval')
+              (destination / (component + '.json')).write_bytes(raw)
+              (producers / (component + '.json')).write_bytes(canonical_json_bytes(row['producer']))
+          PY
+      - name: Authenticate original plan and full official signed SDK index without signing access
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRUSTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          CAMPAIGN_CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_PHASE10_CONTROL_APPROVED_SHA256 }}
+          RECORD_PRODUCER_SHA256: ${{ vars.CODEX_AGENT_SDK_RECORD_PRODUCER_APPROVED_SHA256 }}
+          RECORD_ARTIFACT_ID: ${{ vars.CODEX_AGENT_SDK_RECORD_ARTIFACT_ID }}
+          RECORD_ARTIFACT_SHA256: ${{ vars.CODEX_AGENT_SDK_RECORD_ARTIFACT_SHA256 }}
+          RECORD_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_SDK_RECORD_WORKFLOW_SHA }}
+          CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_AUTHORITY_APPROVED_SHA256 }}
+          CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_KEYRING_APPROVED_SHA256 }}
+          CODEX_AGENT_PRODUCT_KEYS_INVENTORY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_KEYS_INVENTORY_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_INDEX_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_INDEX_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256 }}
+          INDEX_SHA256: ${{ vars.CODEX_AGENT_SDK_INDEX_APPROVED_SHA256 }}
+          SIGNATURE_SHA256: ${{ vars.CODEX_AGENT_SDK_SIGNATURE_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_VALIDATION_TOOLING_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_VALIDATION_TOOLING_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_APPLE_POLICY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_APPLE_POLICY_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_FACADE_POLICY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_FACADE_POLICY_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_ANDROID_POLICY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_ANDROID_POLICY_APPROVED_SHA256 }}
+          CODEX_AGENT_SDK_CUSTODY_APPROVED_SHA256: ${{ vars.CODEX_AGENT_SDK_CUSTODY_APPROVED_SHA256 }}
+        run: |
+          set -euo pipefail
+          control="$RUNNER_TEMP/sdk-campaign-control.json"
+          input="$RUNNER_TEMP/sdk-policy"
+          python3 -B trusted-source/ci/sdk_phase10_original_plan.py \
+            --plan "$PWD/original-plan/impact-plan.json" --repository-root "$PWD/original-source" \
+            --destination "$RUNNER_TEMP/sdk-original-plan-capture" \
+            --original-producer "$input/original-producer.json" \
+            --expected-original-producer-sha256 "$(jq -er '.originalProducerSha256' "$control")" \
+            --plan-artifact-id "$(jq -er '.planArtifactId' "$control")" \
+            --plan-artifact-sha256 "$(jq -er '.planArtifactSha256' "$control")" \
+            --expected-plan-sha256 "$(jq -er '.planSha256' "$control")" \
+            --trusted-workflow-sha "$(jq -er '.trustedWorkflowSha' "$control")"
+          mkdir "$RUNNER_TEMP/sdk-package-plan-captures"
+          for component in sdk-core sdk-android sdk-ios; do
+            producer="$RUNNER_TEMP/sdk-package-producers/$component.json"
+            python3 -B trusted-source/ci/sdk_phase10_original_plan.py \
+              --plan "$PWD/package-plan-raw/$component/impact-plan.json" \
+              --repository-root "$PWD/package-roots/$component" \
+              --destination "$RUNNER_TEMP/sdk-package-plan-captures/$component" \
+              --original-producer "$producer" \
+              --expected-original-producer-sha256 "$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .producerSha256' "$RUNNER_TEMP/sdk-maven-control.json")" \
+              --plan-artifact-id "$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .planArtifactId' "$RUNNER_TEMP/sdk-maven-control.json")" \
+              --plan-artifact-sha256 "$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .planArtifactSha256' "$RUNNER_TEMP/sdk-maven-control.json")" \
+              --expected-plan-sha256 "$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .planSha256' "$RUNNER_TEMP/sdk-maven-control.json")" \
+              --trusted-workflow-sha "$(jq -er --arg name "$component" '.packages[] | select(.component == $name) | .planWorkflowSha' "$RUNNER_TEMP/sdk-maven-control.json")"
+          done
+          optional=()
+          for item in SDK_VALIDATION_TOOLING SDK_APPLE_VALIDATION_POLICY SDK_FACADE_METADATA_POLICY SDK_ANDROID_METADATA_POLICY CUSTODY_CATALOGS; do
+            if test -f "$input/$item.json"; then
+              flag="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"
+              optional+=("--${flag//_/-}" "$input/$item.json")
+            fi
+          done
+          python3 -B trusted-source/ci/sdk_phase10_protected_inputs.py stage \
+            --control "$control" \
+            --approved-control-sha256 "$CAMPAIGN_CONTROL_SHA256" \
+            --trusted-source "$PWD/trusted-source" \
+            --trusted-source-commit "$TRUSTED_SOURCE_SHA" \
+            --original-checkout "$PWD/original-source" \
+            --plan "$PWD/original-plan/impact-plan.json" \
+            --authority "$input/authority.json" \
+            --approved-authority-sha256 "$(jq -er '.authoritySha256' "$control")" \
+            --election-core-android "$input/ELECTION_CORE_ANDROID.json" \
+            --election-native "$input/ELECTION_NATIVE.json" \
+            --election-apple-js "$input/ELECTION_APPLE_JS.json" \
+            --semantic-core-android "$input/SEMANTIC_CORE_ANDROID.json" \
+            --semantic-native "$input/SEMANTIC_NATIVE.json" \
+            --semantic-apple-js "$input/SEMANTIC_APPLE_JS.json" \
+            --keyring "$PWD/trusted-source/gradle/release/product-signing-keys.json" \
+            --keys-directory "$RUNNER_TEMP/sdk-release-keys" \
+            --approved-keyring-sha256 "$(jq -er '.keyringSha256' "$control")" \
+            --approved-keys-inventory-sha256 "$(jq -er '.keysInventorySha256' "$control")" \
+            "${optional[@]}" --destination "$RUNNER_TEMP/sdk-protected-inputs"
+          sdk_wave=()
+          if test "$(jq -r '.sdkStateWave' "$control")" != null; then
+            sdk_wave+=(--sdk-state-wave "$(jq -er '.sdkStateWave' "$control")")
+          fi
+          python3 -B trusted-source/ci/sdk_phase10_release_index_admission.py \
+            --plan "$RUNNER_TEMP/sdk-original-plan-capture/plan/impact-plan.json" \
+            --repository-root "$PWD/original-source" \
+            --authority-file "$input/authority.json" \
+            --authority-producer "$input/authority-producer.json" \
+            --expected-authority-producer-sha256 "$(jq -er '.authorityProducerSha256' "$control")" \
+            --authority-artifact-id "$(jq -er '.authorityArtifactId' "$control")" \
+            --authority-artifact-sha256 "$(jq -er '.authorityArtifactSha256' "$control")" \
+            --authority-workflow-sha "$(jq -er '.authorityWorkflowSha' "$control")" \
+            --authority-workflow-path .github/workflows/sdk-phase10-later-authority.yml \
+            --authority-job-name 'sdk-phase10-authority / sdk-phase10-authority' \
+            --trusted-workflow-sha "$(jq -er '.trustedWorkflowSha' "$control")" \
+            --state-artifact-id "$(jq -er '.stateArtifactId' "$control")" \
+            --state-artifact-sha256 "$(jq -er '.stateArtifactSha256' "$control")" \
+            --state-wave "$(jq -er '.stateWave' "$control")" "${sdk_wave[@]}" \
+            --original-run-id "$(jq -er '.originalProducer.runId' "$control")" \
+            --original-run-attempt "$(jq -er '.originalProducer.runAttempt' "$control")" \
+            --election-core-android "$input/ELECTION_CORE_ANDROID.json" \
+            --election-native "$input/ELECTION_NATIVE.json" \
+            --election-apple-js "$input/ELECTION_APPLE_JS.json" \
+            --semantic-core-android "$input/SEMANTIC_CORE_ANDROID.json" \
+            --semantic-native "$input/SEMANTIC_NATIVE.json" \
+            --semantic-apple-js "$input/SEMANTIC_APPLE_JS.json" \
+            --keyring-path "$PWD/trusted-source/gradle/release/product-signing-keys.json" \
+            --keys-directory "$RUNNER_TEMP/sdk-protected-inputs/keys" \
+            --expected-keys-inventory-sha256 "$(jq -er '.keysInventorySha256' "$control")" \
+            "${optional[@]}" \
+            --original-producer "$input/original-producer.json" \
+            --record-producer "$RUNNER_TEMP/sdk-record-producer.json" \
+            --expected-original-producer-sha256 "$(jq -er '.originalProducerSha256' "$control")" \
+            --expected-record-producer-sha256 "$RECORD_PRODUCER_SHA256" \
+            --record-artifact-id "$RECORD_ARTIFACT_ID" \
+            --record-artifact-sha256 "$RECORD_ARTIFACT_SHA256" \
+            --trusted-record-workflow-sha "$RECORD_WORKFLOW_SHA" \
+            --expected-index-sha256 "$INDEX_SHA256" \
+            --expected-signature-sha256 "$SIGNATURE_SHA256" \
+            --destination "$RUNNER_TEMP/sdk-admitted-index"
+      - name: Capture exact three official package objects without signing secrets
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_MAVEN_CONTROL_APPROVED_SHA256 }}
+        run: |
+          set -euo pipefail
+          prepared=$(python3 -B trusted-source/ci/sdk_phase10_maven_caller.py prepare \
+            --control "$RUNNER_TEMP/sdk-maven-control.json" \
+            --destination "$RUNNER_TEMP/sdk-maven-prepared" \
+            --approved-control-sha256 "$CONTROL_SHA256" \
+            --signed-index "$RUNNER_TEMP/sdk-admitted-index/signed-pair/product-index.json" \
+            --signature "$RUNNER_TEMP/sdk-admitted-index/signed-pair/product-index.sig" \
+            --keyring "$RUNNER_TEMP/sdk-admitted-index/replay-evidence/product-signing-keys.json" \
+            --keys-directory "$RUNNER_TEMP/sdk-admitted-index/replay-evidence/keys" \
+            --original-plan "$RUNNER_TEMP/sdk-original-plan-capture/plan/impact-plan.json" \
+            --original-root "$PWD/original-source" \
+            --receipts-directory "$RUNNER_TEMP/sdk-package-receipts" \
+            --package-plan-captures-directory "$RUNNER_TEMP/sdk-package-plan-captures" \
+            --package-roots-directory "$PWD/package-roots" \
+            --pgp-public-key "$RUNNER_TEMP/publication-pgp-public-key.asc")
+          preparation_sha=$(python3 -c 'import json,re,sys; value=json.load(sys.stdin)["preparationSha256"]; assert re.fullmatch(r"sha256:[0-9a-f]{64}", value); print(value)' <<< "$prepared")
+          printf 'preparation_sha256=%s\n' "$preparation_sha" >> "$GITHUB_OUTPUT"
+      - name: Sign only held originals externally with no observation token
+        env:
+          SIGNING_IN_MEMORY_KEY: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          SIGNING_IN_MEMORY_KEY_PASSWORD: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+          PREPARATION_SHA256: ${{ steps.prepare.outputs.preparation_sha256 }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_MAVEN_CONTROL_APPROVED_SHA256 }}
+          PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+          PGP_FINGERPRINT: ${{ steps.approval.outputs.pgp_fingerprint }}
+        run: |
+          set -euo pipefail
+          unset GITHUB_TOKEN GH_TOKEN GITHUB_API_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          test -n "$SIGNING_IN_MEMORY_KEY"
+          test -n "$SIGNING_IN_MEMORY_KEY_PASSWORD"
+          mkdir -m 700 "$RUNNER_TEMP/sdk-pgp-home"
+          printf '%s' "$SIGNING_IN_MEMORY_KEY" | gpg --homedir "$RUNNER_TEMP/sdk-pgp-home" --batch --import
+          printf '%s' "$SIGNING_IN_MEMORY_KEY_PASSWORD" | \
+            python3 -B trusted-source/ci/sdk_phase10_maven_caller.py sign \
+              --prepared "$RUNNER_TEMP/sdk-maven-prepared" \
+              --destination "$RUNNER_TEMP/sdk-maven-signed" \
+              --expected-preparation-sha256 "$PREPARATION_SHA256" \
+              --expected-control-sha256 "$CONTROL_SHA256" \
+              --expected-pgp-key-sha256 "$PGP_KEY_SHA256" \
+              --signing-home "$RUNNER_TEMP/sdk-pgp-home" \
+              --signing-fingerprint "$PGP_FINGERPRINT"
+      - name: Verify exact sidecars before upload
+        env:
+          PREPARATION_SHA256: ${{ steps.prepare.outputs.preparation_sha256 }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_SDK_MAVEN_CONTROL_APPROVED_SHA256 }}
+          PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          unset GITHUB_TOKEN GH_TOKEN GITHUB_API_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          python3 -B trusted-source/ci/sdk_phase10_maven_caller.py verify \
+            --signed "$RUNNER_TEMP/sdk-maven-signed" \
+            --expected-preparation-sha256 "$PREPARATION_SHA256" \
+            --expected-control-sha256 "$CONTROL_SHA256" \
+            --expected-pgp-key-sha256 "$PGP_KEY_SHA256"
+      - name: Upload exact Core Maven sidecars
+        id: upload-core
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-core-phase10-maven-${{ steps.approval.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-maven-signed/maven-sidecars/sdk-core
+          compression-level: 0
+          retention-days: 90
+      - name: Upload exact Android Maven sidecars
+        id: upload-android
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-android-phase10-maven-${{ steps.approval.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-maven-signed/maven-sidecars/sdk-android
+          compression-level: 0
+          retention-days: 90
+      - name: Upload exact iOS Maven sidecars
+        id: upload-ios
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-ios-phase10-maven-${{ steps.approval.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-maven-signed/maven-sidecars/sdk-ios
+          compression-level: 0
+          retention-days: 90
+      - name: Upload exact custody and signed-index evidence
+        id: upload-record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-phase10-maven-record-${{ steps.approval.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-maven-signed
+          compression-level: 0
+          retention-days: 90
+      - name: Upload exact official signed-index admission evidence
+        id: upload-index-admission
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-sdk-phase10-maven-index-admission-${{ steps.approval.outputs.original_tree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-admitted-index
+          compression-level: 0
+          retention-days: 90

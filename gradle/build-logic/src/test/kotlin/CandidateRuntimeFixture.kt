@@ -12,6 +12,18 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 internal val FIXTURE_ANDROID_RUNTIME_BYTES = "Android ARM64 runtime".encodeToByteArray()
+private const val FIXTURE_JVM_RUNTIME_ENTRYPOINT =
+    "io.github.codex_agent_labs.codexagent.appserver.runtime.JvmRuntimeEvidenceMain"
+private const val FIXTURE_NODE_RUNTIME_ENTRY = "codex-agent-codex-agent-runtime-desktop.js"
+private val FIXTURE_NODE_WASM_RUNTIME_ENTRIES = setOf(
+    "codex-agent-codex-agent-runtime-desktop.mjs",
+    "codex-agent-codex-agent-runtime-desktop.uninstantiated.mjs",
+    "codex-agent-codex-agent-runtime-desktop.wasm",
+    "custom-formatters.js",
+)
+private const val FIXTURE_RUNTIME_BUNDLE_DIRECTORY_ENV = "CODEX_AGENT_RUNTIME_BUNDLE_DIRECTORY"
+private const val FIXTURE_RUNTIME_DATA_DIRECTORY_ENV = "CODEX_AGENT_RUNTIME_DATA_DIRECTORY"
+private const val FIXTURE_RUNTIME_WORKSPACE_ENV = "CODEX_AGENT_WORKSPACE"
 
 internal class CandidateRuntimeReleaseFixture(
     root: File,
@@ -37,39 +49,48 @@ internal class CandidateRuntimeReleaseFixture(
                 "openai-codex-LICENSE.txt" to "license".encodeToByteArray(),
                 "openai-codex-NOTICE.txt" to "notice".encodeToByteArray(),
             )
-            nodeEvidenceWriteZip(payload + ("codex-runtime-manifest.json" to runtimeManifestFixture(
+            writeBytes(zipBytes(payload + ("codex-runtime-manifest.json" to runtimeManifestFixture(
                 version, target, spec.classifier, payload, setOf(executable, supervisorExecutable),
-            )))
+            ))))
         }
-    }
-    private val classifierProofs = desktopRuntimeEvidenceTargets.keys.associateWith { target ->
-        inspectDesktopClassifier(target, readDesktopCodexManifest(distributionManifest), classifiers.getValue(target))
     }
     val desktopEvidence = desktopRuntimeEvidenceTargets.keys.map { target ->
         root.resolve(desktopRuntimeEvidenceFileName(target)).apply {
-            atomicWriteJson(buildDesktopRuntimeEvidence(DesktopRuntimeEvidenceValues(
-                commit, target, appServerSha, supervisorSha, classifiers.getValue(target).releaseDigest(),
-            )))
+            runProductPythonModule("runtime_evidence", listOf(
+                "build-desktop",
+                "--candidate-commit", commit,
+                "--target", target,
+                "--binary-sha256", appServerSha,
+                "--supervisor-sha256", supervisorSha,
+                "--classifier-archive-sha256", classifiers.getValue(target).releaseDigest(),
+                "--output", absolutePath,
+            ))
         }
     }
     val jvmRunner = root.resolve(JVM_RUNTIME_RUNNER_ARCHIVE).apply {
-        nodeEvidenceWriteZip(linkedMapOf(
-            "classes/${JVM_RUNTIME_RUNNER_ENTRYPOINT.replace('.', '/')}.class" to "class".encodeToByteArray(),
+        writeBytes(zipBytes(linkedMapOf(
+            "classes/${FIXTURE_JVM_RUNTIME_ENTRYPOINT.replace('.', '/')}.class" to "class".encodeToByteArray(),
             "lib/runtime.jar" to "jar".encodeToByteArray(),
-        ))
+        )))
     }
     val jvmEvidence = desktopRuntimeEvidenceTargets.keys.map { target ->
         root.resolve(jvmRuntimeEvidenceFileName(target)).apply {
-            atomicWriteJson(buildJvmRuntimeEvidence(JvmRuntimeEvidenceValues(
-                commit, target, classifierProofs.getValue(target), jvmRunner,
-            )))
+            runProductPythonModule("runtime_evidence", listOf(
+                "build-jvm",
+                "--candidate-commit", commit,
+                "--target", target,
+                "--manifest", distributionManifest.absolutePath,
+                "--classifier", classifiers.getValue(target).absolutePath,
+                "--runner", jvmRunner.absolutePath,
+                "--output", absolutePath,
+            ))
         }
     }
     val nodeRunner = root.resolve(NODE_RUNTIME_RUNNER_ARCHIVE).apply {
-        nodeEvidenceWriteZip(mapOf(NODE_RUNTIME_RUNNER_ENTRY to "compiled JS runner".encodeToByteArray()))
+        writeBytes(zipBytes(mapOf(FIXTURE_NODE_RUNTIME_ENTRY to "compiled JS runner".encodeToByteArray())))
     }
     val nodeWasmRunner = root.resolve(NODE_WASM_RUNTIME_RUNNER_ARCHIVE).apply {
-        nodeEvidenceWriteZip(nodeWasmRuntimeRunnerEntries.associateWith { it.encodeToByteArray() })
+        writeBytes(zipBytes(FIXTURE_NODE_WASM_RUNTIME_ENTRIES.associateWith { it.encodeToByteArray() }))
     }
     val nodeEvidence = writeNodeEvidence(root, NODE_RUNTIME_JS_BACKEND, nodeRunner)
     val nodeWasmEvidence = writeNodeEvidence(root, NODE_RUNTIME_WASM_BACKEND, nodeWasmRunner)
@@ -112,18 +133,25 @@ internal class CandidateRuntimeReleaseFixture(
 
     fun writeCentralBundle(output: File, runtime: ByteArray = androidRuntime): File = output.apply {
         parentFile.mkdirs()
-        nodeEvidenceWriteZip(mapOf(
+        writeBytes(zipBytes(mapOf(
             "io/github/codex-agent-labs/codex-agent-runtime-android/$version/" +
                 "codex-agent-runtime-android-$version.aar" to zipBytes(mapOf(AAR_RUNTIME_ENTRY to runtime)),
-        ))
+        )))
     }
 
     private fun writeNodeEvidence(root: File, backend: String, runner: File): List<File> =
         desktopRuntimeEvidenceTargets.keys.map { target ->
             root.resolve(nodeRuntimeEvidenceFileName(target, backend)).apply {
-                atomicWriteJson(buildNodeRuntimeEvidence(NodeRuntimeEvidenceValues(
-                    commit, target, backend, classifierProofs.getValue(target), runner,
-                )))
+                runProductPythonModule("runtime_evidence", listOf(
+                    "build-node",
+                    "--candidate-commit", commit,
+                    "--target", target,
+                    "--backend", backend,
+                    "--manifest", distributionManifest.absolutePath,
+                    "--classifier", classifiers.getValue(target).absolutePath,
+                    "--runner", runner.absolutePath,
+                    "--output", absolutePath,
+                ))
             }
         }
 
@@ -167,9 +195,9 @@ internal fun runtimeManifestFixture(
 internal fun assertRuntimeBundleEnvironment(environment: Map<String, String>, target: String) {
     assertEquals(
         setOf(
-            RUNTIME_BUNDLE_DIRECTORY_ENV,
-            RUNTIME_DATA_DIRECTORY_ENV,
-            RUNTIME_WORKSPACE_ENV,
+            FIXTURE_RUNTIME_BUNDLE_DIRECTORY_ENV,
+            FIXTURE_RUNTIME_DATA_DIRECTORY_ENV,
+            FIXTURE_RUNTIME_WORKSPACE_ENV,
             "CODEX_HOME",
             "CODEX_SQLITE_HOME",
             "CODEX_AGENT_DESKTOP_TARGET",
@@ -177,13 +205,13 @@ internal fun assertRuntimeBundleEnvironment(environment: Map<String, String>, ta
         environment.keys,
     )
     assertEquals(target, environment["CODEX_AGENT_DESKTOP_TARGET"])
-    val bundle = File(environment.getValue(RUNTIME_BUNDLE_DIRECTORY_ENV))
+    val bundle = File(environment.getValue(FIXTURE_RUNTIME_BUNDLE_DIRECTORY_ENV))
     assertTrue(bundle.isDirectory)
-    val data = File(environment.getValue(RUNTIME_DATA_DIRECTORY_ENV))
+    val data = File(environment.getValue(FIXTURE_RUNTIME_DATA_DIRECTORY_ENV))
     assertTrue(data.isDirectory)
     assertEquals(data.absolutePath, environment["CODEX_HOME"])
     assertEquals(data.absolutePath, environment["CODEX_SQLITE_HOME"])
-    assertTrue(File(environment.getValue(RUNTIME_WORKSPACE_ENV)).isDirectory)
+    assertTrue(File(environment.getValue(FIXTURE_RUNTIME_WORKSPACE_ENV)).isDirectory)
     assertTrue(
         bundle.resolve(
             "codex-agent-runtime-desktop-0.2.0-${desktopRuntimeEvidenceTargets.getValue(target).classifier}.zip",

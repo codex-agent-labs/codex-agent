@@ -1,0 +1,250 @@
+"""iOS SDK property translation fixtures, not Apple execution evidence."""
+
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from sdk_ios_phase import FRESH_EXPORT_TASK, TASK, fresh_export_properties, package_properties, properties  # noqa: E402
+
+
+class SdkIosPhaseTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="sdk-ios-phase-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.contract = self.root / "contract"
+        self.distribution = self.root / "verified-distribution"
+        self.native = self.root / "native-evidence"
+        for directory in (self.contract, self.distribution, self.native):
+            directory.mkdir()
+        self.request = self.root / "compatibility-request.json"
+        self.request.write_bytes(b"caller-authenticated request fixture\n")
+        self.compatibility = self.root / "sdk-compatibility.json"
+        self.compatibility.write_bytes(b"caller-authenticated compatibility fixture\n")
+        self.proof = self.root / "original-apple-proof.json"
+        self.proof.write_bytes(b"caller-authenticated original proof fixture\n")
+        self.calls = []
+        self.commit = "a" * 40
+        self.tree = "b" * 40
+        self.record = {
+            "stage": self.contract,
+            "receiptPath": self.root / "contract-receipt.json",
+            "receipt": {
+                "product": "contract", "component": "contract",
+                "phase": "binary", "target": "common", "productVersion": "0.2.0",
+            },
+        }
+
+    @staticmethod
+    def plan(**changes):
+        return {
+            "product": "sdk", "component": "sdk-ios",
+            "phase": "package", "target": "ios", **changes,
+        }
+
+    def predecessor(self, *identity):
+        self.calls.append(identity)
+        return self.record
+
+    def translate(self, **changes):
+        return properties(
+            self.plan(), predecessor=self.predecessor,
+            verified_distribution=changes.get("verified_distribution", self.distribution),
+            native_evidence=changes.get("native_evidence", self.native),
+            compatibility_request=changes.get("compatibility_request", self.request),
+            expected_sdk_compatibility=changes.get("expected_sdk_compatibility", self.compatibility),
+            expected_distribution_proof=changes.get("expected_distribution_proof", self.proof),
+        )
+
+    def fresh_translate(self, **changes):
+        return fresh_export_properties(
+            changes.get("plan", self.plan()), predecessor=self.predecessor,
+            native_evidence=changes.get("native_evidence", self.native),
+            compatibility_request=changes.get("compatibility_request", self.request),
+            candidate_commit=changes.get("candidate_commit", self.commit),
+            candidate_tree=changes.get("candidate_tree", self.tree),
+        )
+
+    def test_exact_original_inputs_route_to_the_existing_transported_verifier(self):
+        self.assertEqual(
+            ":codex-agent-runtime-ios:verifyTransportedCodexAgentIosSdkPackageClosure", TASK,
+        )
+        self.assertEqual({
+            "codexAgent.contractBinaryStage": str(self.contract),
+            "codexAgent.contractVersion": "0.2.0",
+            "codexAgent.iosVerifiedDistributionDirectory": str(self.distribution),
+            "codexAgent.iosNativeEvidenceDirectory": str(self.native),
+            "codexAgent.sdkCompatibilityRequest": str(self.request),
+            "codexAgent.iosExpectedSdkCompatibility": str(self.compatibility),
+            "codexAgent.iosExpectedDistributionProof": str(self.proof),
+        }, self.translate())
+        self.assertEqual([("contract", "contract", "binary", "common")], self.calls)
+
+    def test_unsupported_identity_rejects_before_inputs_or_callback(self):
+        for changes in (
+            {"product": "runtime"}, {"component": "sdk-core"},
+            {"phase": "binary"}, {"phase": "validation"}, {"target": "common"},
+        ):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "Unsupported"):
+                properties(
+                    self.plan(**changes), predecessor=self.predecessor,
+                    verified_distribution=Path("relative"), native_evidence=Path("relative"),
+                    compatibility_request=Path("relative"),
+                    expected_sdk_compatibility=Path("relative"), expected_distribution_proof=Path("relative"),
+                )
+        self.assertEqual([], self.calls)
+
+    def test_crosspaired_or_invalid_contract_receipt_fails_closed(self):
+        original = self.record
+        for field, value in (
+            ("product", "sdk"), ("component", "sdk-core"), ("phase", "metadata"),
+            ("target", "ios"), ("productVersion", "not-semver"),
+        ):
+            self.record = {
+                **original,
+                "receipt": {**original["receipt"], field: value},
+            }
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.translate()
+        self.record = original
+
+    def test_missing_relative_symbolic_or_wrong_input_types_are_rejected(self):
+        empty = self.root / "empty-request"
+        empty.write_bytes(b"")
+        request_link = self.root / "request-link"
+        request_link.symlink_to(self.request)
+        directory_link = self.root / "distribution-link"
+        directory_link.symlink_to(self.distribution, target_is_directory=True)
+        cases = (
+            {"verified_distribution": Path("relative")},
+            {"verified_distribution": self.root / "missing"},
+            {"verified_distribution": self.request},
+            {"verified_distribution": directory_link},
+            {"native_evidence": Path("relative")},
+            {"native_evidence": self.root / "missing"},
+            {"compatibility_request": Path("relative")},
+            {"compatibility_request": self.root / "missing"},
+            {"compatibility_request": self.distribution},
+            {"compatibility_request": request_link},
+            {"compatibility_request": empty},
+            {"expected_sdk_compatibility": empty},
+            {"expected_sdk_compatibility": request_link},
+            {"expected_distribution_proof": self.root / "missing"},
+            {"expected_distribution_proof": request_link},
+            {"expected_distribution_proof": Path("relative")},
+        )
+        for changes in cases:
+            self.calls.clear()
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.translate(**changes)
+            self.assertEqual([], self.calls)
+
+        contract_link = self.root / "contract-link"
+        contract_link.symlink_to(self.contract, target_is_directory=True)
+        self.record = {**self.record, "stage": contract_link}
+        with self.assertRaises(ValueError):
+            self.translate()
+
+    def test_fresh_original_inputs_route_only_to_the_existing_exporter(self):
+        self.assertEqual(
+            ":codex-agent-runtime-ios:exportCodexAgentIosVerifiedDistribution",
+            FRESH_EXPORT_TASK,
+        )
+        translated = self.fresh_translate()
+        self.assertEqual({
+            "codexAgent.candidateCommit": self.commit,
+            "codexAgent.candidateTree": self.tree,
+            "codexAgent.iosContractBinaryStage": str(self.contract),
+            "codexAgent.contractVersion": "0.2.0",
+            "codexAgent.iosNativeEvidenceDirectory": str(self.native),
+            "codexAgent.sdkCompatibilityRequest": str(self.request),
+        }, translated)
+        self.assertFalse(any(name.startswith("codexAgent.iosExpected") for name in translated))
+        self.assertNotIn("codexAgent.iosVerifiedDistributionDirectory", translated)
+        self.assertEqual([("contract", "contract", "binary", "common")], self.calls)
+
+    def test_canonical_package_requires_both_original_binary_and_apple_inputs(self):
+        binary = self.root / "sdk-binary"
+        binary.mkdir()
+        record = {
+            "stage": binary,
+            "receipt": {"product": "sdk", "component": "sdk-ios", "phase": "binary",
+                        "target": "ios", "productVersion": "0.8.0"},
+        }
+
+        def original(*identity):
+            if identity == ("contract", "contract", "binary", "common"):
+                return self.predecessor(*identity)
+            self.assertEqual(("sdk", "sdk-ios", "binary", "ios"), identity)
+            self.calls.append(identity)
+            return record
+
+        def translate(**changes):
+            return package_properties(
+                changes.get("plan", self.plan()), sdk_version=changes.get("sdk_version", "0.8.0"),
+                predecessor=original, verified_distribution=self.distribution,
+                native_evidence=self.native, compatibility_request=self.request,
+                expected_sdk_compatibility=self.compatibility, expected_distribution_proof=self.proof,
+            )
+
+        expected = self.translate()
+        self.calls.clear()
+        expected.update({
+            "codexAgent.product": "sdk", "codexAgent.component": "sdk-ios",
+            "codexAgent.phase": "package", "codexAgent.target": "ios",
+            "codexAgent.sdkIosBinaryStageRoot": str(binary),
+        })
+        self.assertEqual(expected, translate())
+        self.assertEqual([("contract", "contract", "binary", "common"),
+                          ("sdk", "sdk-ios", "binary", "ios")], self.calls)
+        # Contract and SDK are independently versioned; never relabel either.
+        self.assertEqual("0.2.0", expected["codexAgent.contractVersion"])
+        receipt = record["receipt"]
+        for field, value in (("product", "runtime"), ("component", "sdk-core"),
+                             ("phase", "package"), ("target", "common"),
+                             ("productVersion", "0.8.1"), ("productVersion", "invalid")):
+            record["receipt"] = {**receipt, field: value}
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                translate()
+        record["receipt"] = receipt
+        link = self.root / "binary-link"
+        link.symlink_to(binary, target_is_directory=True)
+        for path in (Path("relative"), self.root / "missing-binary", link):
+            record["stage"] = path
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                translate()
+        for changes in ({"sdk_version": "invalid"}, {"plan": self.plan(phase="binary")}):
+            self.calls.clear()
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                translate(**changes)
+            self.assertEqual([], self.calls)
+
+    def test_fresh_identity_paths_and_contract_receipt_fail_closed(self):
+        for changes in (
+            {"plan": self.plan(component="sdk-core")},
+            {"candidate_commit": "A" * 40},
+            {"candidate_tree": "not-a-tree"},
+            {"native_evidence": Path("relative")},
+            {"compatibility_request": self.root / "missing"},
+        ):
+            self.calls.clear()
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.fresh_translate(**changes)
+            self.assertEqual([], self.calls)
+
+        original = self.record
+        for field, value in (("phase", "metadata"), ("productVersion", "invalid")):
+            self.record = {**original, "receipt": {**original["receipt"], field: value}}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.fresh_translate()
+        self.record = {**original, "stage": self.root / "missing-contract"}
+        with self.assertRaises(ValueError):
+            self.fresh_translate()
+        self.record = original
+
+
+if __name__ == "__main__":
+    unittest.main()
