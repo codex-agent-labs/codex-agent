@@ -12,11 +12,12 @@ import tempfile
 from .inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     require_array, require_exact_keys, require_integer,
-    require_object, require_regular_directory, sha256_bytes, snapshot_regular_tree,
+    require_object, require_regular_directory, sha256_bytes,
 )
 from .receipt import output_inventory_digest, validate_phase_receipt, verify_output_manifest_identity
 from .registry import NATIVE_BINDINGS, NATIVE_TARGETS
 from .restore import memoized_file_inventory as regular_file_inventory
+from .sdk_apple_content import _snapshot_apple_tree as snapshot_regular_tree
 from .sdk_inputs import REQUEST_NAME, stage_sdk_inputs
 from .sdk_package import _require_capability_output_separate, csharp_binary_inputs
 from .sdk_validation_inputs import _request_inventory

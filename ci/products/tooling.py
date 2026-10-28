@@ -230,11 +230,20 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
     # The authenticated build recipe and all Kotlin source above define this
     # resource allow-list. Verify every actual embedded resource against Git;
     # do not maintain a second parser/list of Kotlin's packaging declarations.
+    # Literal, reviewed consumer aliases only. Old policy revisions continue to
+    # authenticate their original producer resources without requiring new aliases.
+    consumer_sources = {
+        "ci/products/runtime_evidence.py": ".github/actions/run-ci-lane/verified-consumers/runtime_evidence.py",
+        "ci/products/inventory.py": ".github/actions/run-ci-lane/verified-consumers/inventory.py",
+        "ci/products/sdk_inputs.py": ".github/actions/run-ci-lane/verified-consumers/sdk_inputs.py",
+    }
     sources = {}
     for path in resources:
-        fields = entries.get(path, "").split("\t", 3)
-        if len(fields) != 4 or fields[0] not in {"100644", "100755"} or fields[1] != "blob" or fields[3] != path:
-            raise ValueError(f"Authenticated tooling resource lacks a regular Git blob: {path}")
+        consumer = consumer_sources.get(path)
+        source = consumer if consumer in entries else path
+        fields = entries.get(source, "").split("\t", 3)
+        if len(fields) != 4 or fields[0] not in {"100644", "100755"} or fields[1] != "blob" or fields[3] != source:
+            raise ValueError(f"Authenticated tooling resource lacks a regular Git blob: {source}")
         sources[path] = fields[2]
     blobs = read_blobs(repository, sources.values(), max_bytes=64 * 1024 * 1024,
                        total_bytes=512 * 1024 * 1024)

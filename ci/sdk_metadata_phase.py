@@ -15,7 +15,7 @@ from typing import Any
 from products.inventory import (
     load_canonical_json_bytes, publish_regular_tree,
     read_regular_file_bytes, require_exact_keys, require_integer,
-    require_semver, require_sha256, snapshot_regular_tree, write_canonical_json,
+    require_semver, require_sha256, write_canonical_json,
 )
 from products.receipt import validate_phase_receipt, validate_producer, verify_output_manifest_identity
 from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
@@ -24,6 +24,7 @@ from products.sdk_inputs import REQUEST_NAME, stage_sdk_inputs
 from products.sdk_native_metadata import _inventory
 from products.sdk_native_metadata_admission import verify_sdk_native_metadata_admission
 from products.sdk_package import _require_capability_output_separate
+from products.sdk_apple_content import _snapshot_apple_tree as snapshot_regular_tree
 from products.sdk_validation import VerifiedSdkValidationProjection
 from products.sdk_validation_inputs import _request_inventory
 

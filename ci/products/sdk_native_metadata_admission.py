@@ -10,12 +10,13 @@ import tempfile
 
 from .inventory import (
     git_product_versions, git_regular_blob_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    run_git, snapshot_regular_tree,
+    run_git,
 )
 from .plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from .receipt import validate_phase_receipt
 from .registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
 from .sdk_native_metadata import _inventory, verify_sdk_native_metadata_content
+from .sdk_apple_content import _snapshot_apple_tree as snapshot_regular_tree
 from .sdk_package import _require_capability_output_separate, csharp_binary_inputs
 from .sdk_validation import VerifiedSdkValidationProjection
 from .selection import phase_git_inventory
