@@ -23,8 +23,19 @@ allprojects {
                 '--repository', repository.absolutePath, '--destination', inspectorOutput.get().asFile.absolutePath)
             doFirst { inspectorFiles.delete { delete(inspectorOutput) } }
         }
+        def consumerSources = ['runtime_evidence.py', 'inventory.py', 'sdk_inputs.py'].collectEntries { name ->
+            [("python/ci/products/${name}"): new File(repository,
+                ".github/actions/run-ci-lane/verified-consumers/${name}").canonicalFile]
+        }
         tasks.withType(org.gradle.jvm.tasks.Jar).configureEach {
             if (name == 'releaseToolingJar') {
+                // Explicit current consumers; ordinary producer resources stay unchanged.
+                inputs.files(consumerSources.values()).withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
+                from(consumerSources.values()) { into('python/ci/products') }
+                eachFile { entry ->
+                    def source = consumerSources[entry.path]
+                    if (source != null && entry.file.canonicalFile != source) entry.exclude()
+                }
                 dependsOn(inspector)
                 from(inspectorOutput) { into('tools/csharp-runtime-inspector') }
             }

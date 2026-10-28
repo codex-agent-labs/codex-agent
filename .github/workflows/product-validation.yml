@@ -359,6 +359,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
           POLICY_REVISION: ${{ steps.impact.outputs.validation_commit }}
+          REVIEWED_SOURCE_SHA: ${{ steps.publication.outputs.source-sha }}
         run: |
           python3 -B - <<'PYTHON'
           import os, sys, tempfile
@@ -370,40 +371,97 @@ jobs:
           from tooling_discovery import discover_tooling_ci
           from tooling_release import RETAINED_UNSIGNED_TOOLING
           from products.inventory import canonical_json_bytes, git_inventory, load_json_bytes, run_git
-          from products.tooling import _COMPILER_INPUTS
+          from products.tooling import _COMPILER_INPUTS, _INSPECTOR_INPUTS
           repository = Path.cwd().resolve(strict=True)
           java = (Path(os.environ['JAVA_HOME_17_X64']) / 'bin/java').resolve(strict=True)
           with tempfile.TemporaryDirectory(prefix='tooling-only-', dir=os.environ['RUNNER_TEMP']) as temporary:
               # The reviewed compiler introduction bounds this narrow search.
               # Current/previous attempts and subsequent control-only commits remain
               # eligible; every selected upload still passes the full existing gate.
-              introduction = '405608e77a44650bb7e724e0d1bff78b122429b1'
+              introduction = os.environ['REVIEWED_SOURCE_SHA']
+              search_floor = '405608e77a44650bb7e724e0d1bff78b122429b1'
               revision = os.environ['POLICY_REVISION']
               run_git(repository, '--no-replace-objects', 'merge-base', '--is-ancestor', introduction, revision)
               if git_inventory(repository, introduction, _COMPILER_INPUTS) != git_inventory(repository, revision, _COMPILER_INPUTS):
                   raise ValueError('Tooling-only search requires the reviewed compiler introduction')
+              # Keep the old search floor so a control-only publication cannot hide
+              # compatible tooling from an earlier reviewed compiler-equivalent source.
+              run_git(repository, '--no-replace-objects', 'merge-base', '--is-ancestor', search_floor, introduction)
               since = datetime.fromisoformat(run_git(repository, '--no-replace-objects', 'show', '-s',
-                  '--format=%cI', introduction).strip()).astimezone(timezone.utc).isoformat()
+                  '--format=%cI', search_floor).strip()).astimezone(timezone.utc).isoformat()
               event = load_json_bytes(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
               branch = event['pull_request']['head']['ref']
               query = urlencode(dict(event='pull_request', branch=branch, created='>=' + since))
               runs = paginated_items('https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs?' + query,
                                      'workflow_runs', os.environ['GITHUB_TOKEN'])
               run_ids = tuple(dict.fromkeys([int(os.environ['GITHUB_RUN_ID']),
-                  *sorted((run['id'] for run in runs), reverse=True), 40171845008]))
+                  *sorted((run['id'] for run in runs), reverse=True), 40333301688, 40171845008]))
               result = discover_tooling_ci(Path(temporary).resolve() / 'capture', repository,
                   candidate_run_ids=run_ids,
                   trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
                   policy_revision=os.environ['POLICY_REVISION'], java_executable=java,
                   token=os.environ['GITHUB_TOKEN'])
               selected = result['selected']
-              # Reuse the reviewed successful unsigned build; signing failed independently.
-              # Its original plan/job/upload and full current compiler/resource policy are
-              # authenticated by the protected caller before any signing-key read.
-              recovery = RETAINED_UNSIGNED_TOOLING if selected is None else None
+              # These exact 43 resources belong to the reviewed unsigned locator's
+              # original JAR (sha256:a49c7be5fa9014dc7c1d60d4d63e862f5f7f2a691c958d355830920aca2ea4eb).
+              # Compiler/inspector equality binds its assembly recipe; these exact Git
+              # blobs bind embedded source. This is eligibility, not artifact admission:
+              # the protected caller still verifies original jobs/uploads and full policy.
+              retained_resources = (
+                  'ci/native_wrappers.py',
+                  'ci/products/__init__.py',
+                  'ci/products/aggregate.py',
+                  'ci/products/c_abi.py',
+                  'ci/products/contract.py',
+                  'ci/products/contract_attestation.py',
+                  'ci/products/contract_model.py',
+                  'ci/products/contract_projection.py',
+                  'ci/products/index.py',
+                  'ci/products/inventory.py',
+                  'ci/products/plan.py',
+                  'ci/products/receipt.py',
+                  'ci/products/registry.py',
+                  'ci/products/restore.py',
+                  'ci/products/runtime_adapter_content.py',
+                  'ci/products/runtime_adapter_validation.py',
+                  'ci/products/runtime_aggregate.py',
+                  'ci/products/runtime_attestation.py',
+                  'ci/products/runtime_evidence.py',
+                  'ci/products/runtime_flags.py',
+                  'ci/products/runtime_identity.py',
+                  'ci/products/runtime_validation_projection.py',
+                  'ci/products/sdk_compatibility.py',
+                  'ci/products/sdk_csharp_binary.py',
+                  'ci/products/sdk_dotnet_toolchain.py',
+                  'ci/products/sdk_inputs.py',
+                  'ci/products/sdk_native.py',
+                  'ci/products/sdk_package.py',
+                  'ci/products/sdk_runtime_content.py',
+                  'ci/products/sdk_runtime_root.py',
+                  'ci/products/sdk_validation.py',
+                  'ci/products/selection.py',
+                  'ci/products/signatures.py',
+                  'ci/products/test_results.py',
+                  'ci/products/toolchain.py',
+                  'ci/products/zip_central_directory.py',
+                  'codex-agent-bindings/cpp/tools/verify_imported_package.py',
+                  'codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs',
+                  'codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/VerifySdkRuntimeRoot.csproj',
+                  'codex-agent-runtime-desktop/native/c-api/abi-contract.json',
+                  'codex-agent-runtime-desktop/native/c-api/exports/linux.map',
+                  'codex-agent-runtime-desktop/native/c-api/exports/macos.exports',
+                  'codex-agent-runtime-desktop/native/c-api/exports/windows.def',
+              )
+              recovery_inputs = _COMPILER_INPUTS + _INSPECTOR_INPUTS + retained_resources
+              recovery = None
+              if selected is None and git_inventory(repository, RETAINED_UNSIGNED_TOOLING['producer']['commit'], recovery_inputs) == git_inventory(repository, revision, recovery_inputs):
+                  recovery = RETAINED_UNSIGNED_TOOLING
+              missing_build = selected is None and recovery is None
               values = {'tooling_required': 'true', 'tooling_miss': str(selected is None).lower(),
                   'tooling_unsigned_recovery': '' if recovery is None else canonical_json_bytes(recovery).decode().strip(),
-                  'contract_matrix': canonical_json_bytes({'include': []}).decode().strip()}
+                  'contract_matrix': canonical_json_bytes({'include': [
+                      {'lane': 'contracts', 'build': False, 'test': False, 'metadata': False}
+                  ] if missing_build else []}).decode().strip()}
               if selected is not None:
                   values.update(tooling_artifact_id=str(selected['artifactId']),
                       tooling_artifact_sha256=selected['artifactSha256'],
@@ -411,7 +469,7 @@ jobs:
               # Preserve only the small search report, not another captured JAR copy.
               (repository / 'build/ci/tooling-discovery.json').write_bytes(canonical_json_bytes({
                   'schemaVersion': 1, 'selected': selected, 'attempts': result['attempts'],
-                  'searchIntroduction': introduction, 'searchSince': since, 'searchedRunIds': list(run_ids)}))
+                  'searchIntroduction': introduction, 'searchFloor': search_floor, 'searchSince': since, 'searchedRunIds': list(run_ids)}))
               github_output(Path(os.environ['GITHUB_OUTPUT']), values)
           PYTHON
       - id: upload_plan_control

@@ -78,6 +78,9 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         self.assertIn('git_inventory(repository, introduction, _COMPILER_INPUTS) != git_inventory(repository, revision, _COMPILER_INPUTS)',job)
         self.assertIn("created='>=' + since",job)
         self.assertIn('40171845008',job)
+        self.assertIn('40333301688',job)
+        self.assertIn("introduction = os.environ['REVIEWED_SOURCE_SHA']",job)
+        self.assertIn("search_floor = '405608e77a44650bb7e724e0d1bff78b122429b1'",job)
         self.assertNotIn('/actions/artifacts',job)
         self.assertIn('result = discover_tooling_ci(',job)
         self.assertNotIn('product_reuse.py discover',job)
@@ -85,15 +88,42 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         body=re.search(r"(?ms)          python3 -B - <<'PYTHON'\n(.*?)^          PYTHON",job)[1]
         tree=ast.parse(textwrap.dedent(body))
         node=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='values' for t in n.targets))
-        for selected in (None, {'artifactId':1}):
-            recovery = {'artifactId': 2} if selected is None else None
-            local={'selected':selected,'recovery':recovery,'canonical_json_bytes':lambda value:(json.dumps(value,separators=(',',':'))+'\n').encode(),'dict':dict,'str':str}
+        for selected, recovery in ((None, None), (None, {'artifactId': 2}), ({'artifactId': 1}, None)):
+            missing_build = selected is None and recovery is None
+            local={'selected':selected,'recovery':recovery,'missing_build':missing_build,'canonical_json_bytes':lambda value:(json.dumps(value,separators=(',',':'))+'\n').encode(),'dict':dict,'str':str}
             exec(compile(ast.Module(body=[node],type_ignores=[]),'<saved selector>','exec'),{},local)
             self.assertEqual(local['values']['tooling_miss'],str(selected is None).lower())
             rows=json.loads(local['values']['contract_matrix'])['include']
-            self.assertEqual(rows, [])
+            self.assertEqual(rows, [{'lane':'contracts','build':False,'test':False,'metadata':False}] if missing_build else [])
             self.assertEqual(local['values']['tooling_unsigned_recovery'], '' if recovery is None else local['canonical_json_bytes'](recovery).decode().strip())
         self.assertIn('from tooling_release import RETAINED_UNSIGNED_TOOLING', job)
+
+    def test_unsigned_recovery_requires_exact_compiler_inspector_and_original_resource_inputs(self):
+        body=re.search(r"(?ms)          python3 -B - <<'PYTHON'\n(.*?)^          PYTHON",self.jobs['tooling-plan'])[1]
+        tree=ast.parse(textwrap.dedent(body))
+        block=next(n.body for n in tree.body if isinstance(n,ast.With))
+        start=next(i for i,n in enumerate(block) if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id=='retained_resources' for x in n.targets))
+        stop=next(i for i,n in enumerate(block) if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id=='values' for x in n.targets))
+        code=compile(ast.Module(body=block[start:stop],type_ignores=[]),'<saved recovery selection>','exec')
+        locator={'producer':{'commit':'original'},'artifactId':7}
+        for changed in (None,'compiler','inspector','ci/products/sdk_inputs.py'):
+            with self.subTest(changed=changed):
+                calls=[]
+                def inventory(repository,revision,paths):
+                    calls.append((revision,paths))
+                    return tuple((p,'changed' if revision=='current' and p==changed else 'original') for p in paths)
+                values={'selected':None,'repository':object(),'revision':'current',
+                        '_COMPILER_INPUTS':('compiler',),'_INSPECTOR_INPUTS':('inspector',),
+                        'RETAINED_UNSIGNED_TOOLING':locator,'git_inventory':inventory}
+                exec(code,{},values)
+                self.assertEqual(43,len(values['retained_resources']))
+                self.assertEqual(43,len(set(values['retained_resources'])))
+                self.assertEqual(values['recovery'],locator if changed is None else None)
+                self.assertEqual(values['missing_build'],changed is not None)
+                self.assertEqual(len(calls),2)
+        values['selected']={'artifactId':1};calls.clear();exec(code,{},values)
+        self.assertEqual(calls,[])
+        self.assertIsNone(values['recovery']);self.assertFalse(values['missing_build'])
 
     def test_no_product_completion_or_new_signing_semantics(self):
         job=self.jobs['tooling-plan']
