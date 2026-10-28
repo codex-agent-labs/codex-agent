@@ -370,6 +370,7 @@ jobs:
           from reuse import github_output, paginated_items
           from tooling_discovery import discover_tooling_ci
           from tooling_release import RETAINED_UNSIGNED_TOOLING
+          from tooling_capture import _ensure_original_source
           from products.inventory import canonical_json_bytes, git_inventory, load_json_bytes, run_git
           from products.tooling import _COMPILER_INPUTS, _INSPECTOR_INPUTS
           repository = Path.cwd().resolve(strict=True)
@@ -454,8 +455,10 @@ jobs:
               )
               recovery_inputs = _COMPILER_INPUTS + _INSPECTOR_INPUTS + retained_resources
               recovery = None
-              if selected is None and git_inventory(repository, RETAINED_UNSIGNED_TOOLING['producer']['commit'], recovery_inputs) == git_inventory(repository, revision, recovery_inputs):
-                  recovery = RETAINED_UNSIGNED_TOOLING
+              if selected is None:
+                  _ensure_original_source(repository, RETAINED_UNSIGNED_TOOLING['producer'])
+                  if git_inventory(repository, RETAINED_UNSIGNED_TOOLING['producer']['commit'], recovery_inputs) == git_inventory(repository, revision, recovery_inputs):
+                      recovery = RETAINED_UNSIGNED_TOOLING
               missing_build = selected is None and recovery is None
               values = {'tooling_required': 'true', 'tooling_miss': str(selected is None).lower(),
                   'tooling_unsigned_recovery': '' if recovery is None else canonical_json_bytes(recovery).decode().strip(),
