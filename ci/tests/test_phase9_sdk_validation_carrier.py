@@ -3,8 +3,10 @@ import ast
 import copy
 import json
 import os
+import inspect
 from pathlib import Path
 import tempfile
+import textwrap
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -146,8 +148,64 @@ class SdkCarrierTest(unittest.TestCase):
 
     def test_carrier_and_test_own_zero_of_all_112_product_inputs(self):
         self.assertEqual(112, len(ALL_INSTANCES))
-        for path in ('ci/tests/phase9_sdk_validation.py', 'ci/tests/test_phase9_sdk_validation_carrier.py'):
+        for path in ('ci/tests/phase9_sdk_validation.py', 'ci/tests/test_phase9_sdk_validation_carrier.py',
+                     '.github/workflows/portable-reuse-proof.yml',
+                     'ci/tests/fixtures/phase9-sdk-validation-missing-five.json'):
             self.assertFalse([instance for instance in ALL_INSTANCES if phase_inventory_paths([path], instance)])
+
+    def test_retry_selects_only_five_original_missing_plans(self):
+        path = carrier.ROOT / 'ci/tests/fixtures/phase9-sdk-validation-missing-five.json'
+        raw = path.read_bytes(); pin = sha256_bytes(raw)
+        original = json.loads(path.with_name('phase9-sdk-validation-selection.json').read_bytes())
+        workflow = (carrier.ROOT / '.github/workflows/portable-reuse-proof.yml').read_text().split(
+            '\n  phase9-sdk-host-validation:', 1)[1]
+        expected = {'macos-x64': ['sdk-core'], 'windows-x64': ['cpp', 'dart', 'python', 'sdk-core']}
+        self.assertIn('SDK_SELECTION_SHA256: ' + pin, workflow)
+        self.assertIn("'selectionSha256': '" + pin + "'", workflow)
+        for target, components in expected.items():
+            spec, host, _ = carrier.selection(path, pin, target)
+            self.assertEqual(set(expected), set(spec['hosts']))
+            self.assertEqual(components, sorted(host['plans']))
+            self.assertIn("components: '" + json.dumps(components, separators=(',', ':')) + "'", workflow)
+            self.assertEqual(host['plans'], {name: original['hosts'][target]['plans'][name] for name in components})
+        for component in ('python', 'cpp', 'csharp', 'rust', 'dart', 'core'):
+            block = workflow.split('      - id: ' + component + '\n', 1)[1].split('\n      - ', 1)[0]
+            self.assertIn("contains(fromJSON(matrix.components), '" +
+                          ('sdk-core' if component == 'core' else component) + "')", block)
+
+    def test_hosted_core_probe_binds_required_git_blob_limits(self):
+        from products.inventory import git_regular_blob_bytes
+        workflow = (carrier.ROOT / '.github/workflows/portable-reuse-proof.yml').read_text()
+        block = workflow.split('      - id: core-dependencies\n', 1)[1].split('      - id: core\n', 1)[0]
+        syntax = ast.parse(textwrap.dedent(block.split('        run: |\n', 1)[1]))
+        calls = [node for node in ast.walk(syntax) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == 'git_regular_blob_bytes']
+        self.assertEqual(2, len(calls))
+        for call in calls:
+            keywords = {item.arg: eval(compile(ast.Expression(item.value), '<bound limit>', 'eval'),
+                                       {'__builtins__': {}}) for item in call.keywords}
+            inspect.signature(git_regular_blob_bytes).bind(*([None] * len(call.args)), **keywords)
+            self.assertGreater(keywords['max_bytes'], 0)
+            self.assertLessEqual(keywords['max_bytes'], 16 * 1024**2)
+
+    def test_windows_carrier_uses_short_runner_temp_before_intake(self):
+        workflow = (carrier.ROOT / '.github/workflows/portable-reuse-proof.yml').read_text()
+        block = workflow.split('name: Check exact election, actual host and storage before acquisition\n', 1)[1]
+        block = block.split('      - uses:', 1)[0].split('        run: |\n', 1)[1]
+        for target in ('windows-x64', 'macos-x64'):
+            env_file = self.root / target
+            env_file.write_text('')
+            with patch.dict(os.environ, SDK_TARGET=target, RUNNER_TEMP=str(self.root),
+                            GITHUB_ENV=str(env_file), SDK_SELECTION_SHA256='fixture', SDK_TREE='tree',
+                            SDK_COMPONENTS='["sdk-core"]'), \
+                    patch.object(carrier, 'hosted_context'), \
+                    patch.object(carrier, 'selection', return_value=(
+                        {'source': {'tree': 'tree'}}, {'files': [], 'plans': {'sdk-core': {}}}, None)), \
+                    patch('shutil.disk_usage', return_value=SimpleNamespace(free=32 * 1024**3)) as disk:
+                exec(compile(textwrap.dedent(block), '<host storage preflight>', 'exec'), {})
+            expected = 'SDK_CARRIER=' + str(self.root / 'p9') + '\n' if target == 'windows-x64' else ''
+            self.assertEqual(expected, env_file.read_text())
+            disk.assert_called_once_with(self.root if target == 'windows-x64' else Path.cwd())
 
     def test_election_matches_real_planner_native_cardinality_and_core_none(self):
         # Reuse planner-only fixtures; no signatures, host or product evidence.

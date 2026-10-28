@@ -1329,12 +1329,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
           - target: macos-x64
             runner: macos-26-intel
+            components: '["sdk-core"]'
           - target: windows-x64
             runner: windows-2025
+            components: '["cpp","dart","python","sdk-core"]'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 100
     env:
@@ -1344,7 +1344,8 @@ jobs:
       GIT_CONFIG_KEY_0: core.autocrlf
       GIT_CONFIG_VALUE_0: 'false'
       SDK_TARGET: ${{ matrix.target }}
-      SDK_SELECTION_SHA256: sha256:8a7ee32946e450dc8433d20f1f996ca688f187b2c21ce15d8514101d1e69959b
+      SDK_COMPONENTS: ${{ matrix.components }}
+      SDK_SELECTION_SHA256: sha256:e32b5a732fbab6771bb591fe800292dae83a3670dabb6941aa0684edb2f57229
       SDK_TREE: 154946541b10f9e1f2d172e4c626d0ff7cb8769f
       SDK_CARRIER: ${{ github.workspace }}/build/phase9-sdk-host-validation
       DEVELOPER_DIR: ${{ matrix.target == 'macos-x64' && '/Applications/Xcode_26.6.app/Contents/Developer' || '' }}
@@ -1362,15 +1363,21 @@ jobs:
       - name: Check exact election, actual host and storage before acquisition
         shell: python
         run: |
-          import os, pathlib, shutil
+          import json, os, pathlib, shutil
           from ci.tests.phase9_sdk_validation import hosted_context, selection
           target = os.environ['SDK_TARGET']
+          storage = pathlib.Path.cwd()
+          if target == 'windows-x64':
+              storage = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
+              with open(os.environ['GITHUB_ENV'], 'a') as output:
+                  output.write('SDK_CARRIER=' + str(storage / 'p9') + '\n')
           hosted_context(target)
-          spec, host, _ = selection(pathlib.Path('ci/tests/fixtures/phase9-sdk-validation-selection.json'),
+          spec, host, _ = selection(pathlib.Path('ci/tests/fixtures/phase9-sdk-validation-missing-five.json'),
               os.environ['SDK_SELECTION_SHA256'], target)
           assert spec['source']['tree'] == os.environ['SDK_TREE']
+          assert sorted(host['plans']) == json.loads(os.environ['SDK_COMPONENTS'])
           unique = {r['sha256']: r['bytes'] for r in host['files']}
-          assert shutil.disk_usage('.').free >= 2 * sum(unique.values()) + 8 * 1024**3
+          assert shutil.disk_usage(storage).free >= 2 * sum(unique.values()) + 8 * 1024**3
           pathlib.Path('build').mkdir(exist_ok=True)
       - uses: ./.github/actions/setup-kmp
         with:
@@ -1387,13 +1394,13 @@ jobs:
         run: |
           import os, pathlib
           from ci.tests.phase9_sdk_validation import prepare
-          prepare(pathlib.Path('ci/tests/fixtures/phase9-sdk-validation-selection.json').resolve(),
+          prepare(pathlib.Path('ci/tests/fixtures/phase9-sdk-validation-missing-five.json').resolve(),
               os.environ['SDK_SELECTION_SHA256'], os.environ['SDK_TARGET'],
               pathlib.Path(os.environ['SDK_CARRIER']).resolve(),
               pathlib.Path(os.environ['RUNNER_TEMP']).resolve() / 'phase9-sdk-lfs')
       - id: python
         name: Execute only missing python validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && contains(fromJSON(matrix.components), 'python') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1407,12 +1414,12 @@ jobs:
         with:
           name: phase9-sdk-python-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/results/python
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python-dependency-seed/**/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python-dependency-seed/seed-timing.json
-            build/phase9-sdk-host-validation/source/codex-agent-sdk/build/product-stage/sdk/python/validation
+            ${{ env.SDK_CARRIER }}/results/python
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python-dependency-seed/**/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/python-dependency-seed/seed-timing.json
+            ${{ env.SDK_CARRIER }}/source/codex-agent-sdk/build/product-stage/sdk/python/validation
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
@@ -1420,7 +1427,7 @@ jobs:
           retention-days: 90
       - id: cpp
         name: Execute only missing cpp validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.msvc.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.msvc.outcome == 'success' && contains(fromJSON(matrix.components), 'cpp') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1434,19 +1441,19 @@ jobs:
         with:
           name: phase9-sdk-cpp-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/results/cpp
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp-dependency-seed/**/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp-dependency-seed/seed-timing.json
-            build/phase9-sdk-host-validation/source/codex-agent-sdk/build/product-stage/sdk/cpp/validation
+            ${{ env.SDK_CARRIER }}/results/cpp
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp-dependency-seed/**/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/cpp-dependency-seed/seed-timing.json
+            ${{ env.SDK_CARRIER }}/source/codex-agent-sdk/build/product-stage/sdk/cpp/validation
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
           overwrite: false
           retention-days: 90
       - id: dotnet
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && contains(fromJSON(matrix.components), 'csharp') }}
         continue-on-error: true
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         env:
@@ -1455,7 +1462,7 @@ jobs:
           dotnet-version: '8.0.419'
       - id: csharp
         name: Execute only missing csharp validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.dotnet.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.dotnet.outcome == 'success' && contains(fromJSON(matrix.components), 'csharp') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1469,23 +1476,23 @@ jobs:
         with:
           name: phase9-sdk-csharp-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/results/csharp
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp-dependency-seed/**/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp-dependency-seed/seed-timing.json
-            build/phase9-sdk-host-validation/source/codex-agent-sdk/build/product-stage/sdk/csharp/validation
+            ${{ env.SDK_CARRIER }}/results/csharp
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp-dependency-seed/**/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/csharp-dependency-seed/seed-timing.json
+            ${{ env.SDK_CARRIER }}/source/codex-agent-sdk/build/product-stage/sdk/csharp/validation
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
           overwrite: false
           retention-days: 90
       - id: rust-tools
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && contains(fromJSON(matrix.components), 'rust') }}
         continue-on-error: true
         uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
       - id: rust-cache
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.rust-tools.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.rust-tools.outcome == 'success' && contains(fromJSON(matrix.components), 'rust') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1494,7 +1501,7 @@ jobs:
           subprocess.run(['cargo', 'fetch', '--manifest-path', str(manifest), '--locked'], check=True)
       - id: rust
         name: Execute only missing rust validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.rust-cache.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.rust-cache.outcome == 'success' && contains(fromJSON(matrix.components), 'rust') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1508,25 +1515,25 @@ jobs:
         with:
           name: phase9-sdk-rust-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/results/rust
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust-dependency-seed/**/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust-dependency-seed/seed-timing.json
-            build/phase9-sdk-host-validation/source/codex-agent-sdk/build/product-stage/sdk/rust/validation
+            ${{ env.SDK_CARRIER }}/results/rust
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust-dependency-seed/**/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/rust-dependency-seed/seed-timing.json
+            ${{ env.SDK_CARRIER }}/source/codex-agent-sdk/build/product-stage/sdk/rust/validation
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
           overwrite: false
           retention-days: 90
       - id: dart-cache
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && contains(fromJSON(matrix.components), 'dart') }}
         continue-on-error: true
         uses: ./.github/actions/provision-sdk-dart-cache
         with:
           revision: ${{ github.event.pull_request.head.sha }}
       - id: dart-config
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.dart-cache.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.dart-cache.outcome == 'success' && contains(fromJSON(matrix.components), 'dart') }}
         continue-on-error: true
         shell: python
         env:
@@ -1552,7 +1559,7 @@ jobs:
               stream.write('dart=' + str(dart) + '\n')
       - id: dart
         name: Execute only missing dart validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.dart-config.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.dart-config.outcome == 'success' && contains(fromJSON(matrix.components), 'dart') }}
         continue-on-error: true
         shell: python
         env:
@@ -1570,12 +1577,12 @@ jobs:
         with:
           name: phase9-sdk-dart-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/results/dart
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart-dependency-seed/**/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart-dependency-seed/seed-timing.json
-            build/phase9-sdk-host-validation/source/codex-agent-sdk/build/product-stage/sdk/dart/validation
+            ${{ env.SDK_CARRIER }}/results/dart
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart-dependency-seed/**/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/dart-dependency-seed/seed-timing.json
+            ${{ env.SDK_CARRIER }}/source/codex-agent-sdk/build/product-stage/sdk/dart/validation
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
@@ -1583,7 +1590,7 @@ jobs:
           retention-days: 90
       - id: core-dependencies
         name: Provision the exact missing Core native consumer dependencies
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target != 'linux-arm64' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target != 'linux-arm64' && contains(fromJSON(matrix.components), 'sdk-core') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1613,11 +1620,11 @@ jobs:
           with transport.fixture_environment(read(carrier / 'preparation.json')['environment']):
               revision = producer['commit']
               version = tomllib.loads(git_regular_blob_bytes(source, revision,
-                  'gradle/libs.versions.toml').decode())['versions']['kotlin']
+                  'gradle/libs.versions.toml', max_bytes=2 * 1024**2).decode())['versions']['kotlin']
               suffix = 'macos-x86_64.tar.gz' if target == 'macos-x64' else 'windows-x86_64.zip'
               name = 'kotlin-native-prebuilt-' + version + '-' + suffix
               expected = _metadata_checksum(git_regular_blob_bytes(source, revision,
-                  RUNTIME_VERIFICATION_METADATA), name)
+                  RUNTIME_VERIFICATION_METADATA, max_bytes=16 * 1024**2), name)
               archive = setup / name
               url = 'https://github.com/JetBrains/kotlin/releases/download/v' + version + '/' + name
               tick = time.monotonic_ns()
@@ -1637,7 +1644,7 @@ jobs:
                   environment=dict(environment, GITHUB_ACTIONS='false'))
       - id: core
         name: Execute only missing Core validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.core-dependencies.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && steps.core-dependencies.outcome == 'success' && contains(fromJSON(matrix.components), 'sdk-core') }}
         continue-on-error: true
         shell: python
         run: |
@@ -1651,20 +1658,20 @@ jobs:
         with:
           name: phase9-sdk-core-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/results/sdk-core
-            build/phase9-sdk-host-validation/source/build/product-stage/sdk/sdk-core/validation/${{ matrix.target }}
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core/host-observation
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core-dependency-seed/**/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core-dependency-seed/seed-timing.json
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/execution
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/consumer-inputs
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/compiler-inputs.json
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/inputs/inputs.json
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/inputs/maven-inventory.json
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/publication-metadata.json
-            build/phase9-sdk-host-validation/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/report.json
+            ${{ env.SDK_CARRIER }}/results/sdk-core
+            ${{ env.SDK_CARRIER }}/source/build/product-stage/sdk/sdk-core/validation/${{ matrix.target }}
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core/host-observation
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core-dependency-seed/**/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/sdk-core-dependency-seed/seed-timing.json
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/execution
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/consumer-inputs
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/compiler-inputs.json
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/inputs/inputs.json
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/inputs/maven-inventory.json
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/publication-metadata.json
+            ${{ env.SDK_CARRIER }}/source/build/imported-sdk-facade-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/report.json
           if-no-files-found: warn
           include-hidden-files: true
           compression-level: 0
@@ -1679,9 +1686,8 @@ jobs:
           import json, os, pathlib
           outcomes = json.loads(os.environ['CONSUMER_STEPS'])
           target = os.environ['SDK_TARGET']
-          components = ['python', 'cpp', 'csharp', 'rust', 'dart']
-          if target != 'linux-arm64':
-              components.append('core')
+          components = ['core' if name == 'sdk-core' else name
+              for name in json.loads(os.environ['SDK_COMPONENTS'])]
           root = pathlib.Path(os.environ['SDK_CARRIER'])
           root.mkdir(parents=True, exist_ok=True)
           result = {'schemaVersion': 1, 'target': target,
@@ -1698,7 +1704,7 @@ jobs:
         with:
           name: phase9-sdk-shared-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            build/phase9-sdk-host-validation/*.json
+            ${{ env.SDK_CARRIER }}/*.json
             ${{ steps.dart-cache.outputs.diagnostics != '' && format('{0}/execution.json', steps.dart-cache.outputs.diagnostics) || '' }}
             ${{ steps.dart-cache.outputs.diagnostics != '' && format('{0}/pub.log', steps.dart-cache.outputs.diagnostics) || '' }}
             ${{ runner.temp }}/phase9-sdk-dart-config/execution.json
@@ -1706,8 +1712,8 @@ jobs:
             ${{ runner.temp }}/phase9-sdk-core-dependencies/*.json
             ${{ runner.temp }}/phase9-sdk-core-dependencies/probe/*.json
             ${{ runner.temp }}/phase9-sdk-core-dependencies/probe/*.log
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/runtime-reuse-qualification/*.json
-            build/phase9-sdk-host-validation/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/runtime-reuse-qualification/*.log
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/runtime-reuse-qualification/*.json
+            ${{ env.SDK_CARRIER }}/source/build/phase9-sdk-host-validation/${{ env.SDK_TREE }}/${{ matrix.target }}/runtime-reuse-qualification/*.log
           if-no-files-found: warn
           compression-level: 0
           overwrite: false
@@ -1717,7 +1723,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: phase9-sdk-status-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/phase9-sdk-host-validation/${{ matrix.target }}-status.json
+          path: ${{ env.SDK_CARRIER }}/${{ matrix.target }}-status.json
           if-no-files-found: error
           overwrite: false
           retention-days: 90
@@ -1746,15 +1752,14 @@ jobs:
           import json, os, pathlib
           assert os.environ['COLLECTION_RESULT'] == 'success', 'A collection job failed'
           root = pathlib.Path('statuses')
-          targets = {'linux-arm64', 'macos-x64', 'windows-x64'}
+          selected = {'macos-x64': ['core'], 'windows-x64': ['cpp', 'dart', 'python', 'core']}
+          targets = set(selected)
           assert {p.name for p in root.iterdir()} == {t + '-status.json' for t in targets}
           for target in sorted(targets):
               value = json.loads((root / (target + '-status.json')).read_bytes())
-              components = {name: 'success' for name in ('python', 'cpp', 'csharp', 'rust', 'dart')}
-              if target != 'linux-arm64':
-                  components['core'] = 'success'
+              components = {name: 'success' for name in selected[target]}
               assert value == {'schemaVersion': 1, 'target': target,
-                  'selectionSha256': 'sha256:8a7ee32946e450dc8433d20f1f996ca688f187b2c21ce15d8514101d1e69959b',
+                  'selectionSha256': 'sha256:e32b5a732fbab6771bb591fe800292dae83a3670dabb6941aa0684edb2f57229',
                   'prepare': 'success', 'components': components,
                   'phaseAdmission': False, 'releaseAdmission': False}, value
-          print('Seventeen missing executions collected; independent artifact admission remains required.')
+          print('Five missing executions collected; independent artifact admission remains required.')
