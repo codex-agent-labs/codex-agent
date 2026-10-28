@@ -114,16 +114,49 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
                     return tuple((p,'changed' if revision=='current' and p==changed else 'original') for p in paths)
                 values={'selected':None,'repository':object(),'revision':'current',
                         '_COMPILER_INPUTS':('compiler',),'_INSPECTOR_INPUTS':('inspector',),
-                        'RETAINED_UNSIGNED_TOOLING':locator,'git_inventory':inventory}
+                        'RETAINED_UNSIGNED_TOOLING':locator,'git_inventory':inventory,
+                        '_ensure_original_source':lambda repository,producer:calls.append(('ensure',producer))}
                 exec(code,{},values)
                 self.assertEqual(43,len(values['retained_resources']))
                 self.assertEqual(43,len(set(values['retained_resources'])))
                 self.assertEqual(values['recovery'],locator if changed is None else None)
                 self.assertEqual(values['missing_build'],changed is not None)
-                self.assertEqual(len(calls),2)
+                self.assertEqual(calls[0], ('ensure', locator['producer']))
+                self.assertEqual(len(calls),3)
         values['selected']={'artifactId':1};calls.clear();exec(code,{},values)
         self.assertEqual(calls,[])
         self.assertIsNone(values['recovery']);self.assertFalse(values['missing_build'])
+
+    def test_missing_unsigned_source_is_imported_before_inventory_comparison(self):
+        import subprocess
+        import sys
+        from unittest import mock
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
+        import tooling_capture
+        from tooling_release import RETAINED_UNSIGNED_TOOLING
+        body=re.search(r"(?ms)          python3 -B - <<'PYTHON'\n(.*?)^          PYTHON",self.jobs['tooling-plan'])[1]
+        block=next(n.body for n in ast.parse(textwrap.dedent(body)).body if isinstance(n,ast.With))
+        node=next(n for n in block if isinstance(n,ast.If) and ast.unparse(n.test)=='selected is None')
+        producer=RETAINED_UNSIGNED_TOOLING['producer'];head='c'*40;calls=[]
+        def inventory(repository, revision, paths):
+            # The full existing commit/tree/unchanged-HEAD join must finish first.
+            self.assertEqual(6,git.call_count)
+            calls.append(revision)
+            return 'old' if revision==producer['commit'] else 'new'
+        values={'selected':None,'recovery':None,'repository':Path('/fixture'),
+                'revision':'current','recovery_inputs':('compiler',),
+                'RETAINED_UNSIGNED_TOOLING':RETAINED_UNSIGNED_TOOLING,
+                '_ensure_original_source':tooling_capture._ensure_original_source,
+                'git_inventory':inventory}
+        with mock.patch.object(tooling_capture,'run_git',side_effect=(
+                head,subprocess.CalledProcessError(128,['git','cat-file']),
+                '',producer['commit'],producer['tree'],head)) as git:
+            exec(compile(ast.Module(body=[node],type_ignores=[]),'<saved missing-source recovery>','exec'),{},values)
+        self.assertEqual(git.call_args_list[2],mock.call(Path('/fixture'),'fetch','--no-tags',
+            '--no-write-fetch-head','--no-recurse-submodules','--no-auto-maintenance',
+            'https://github.com/codex-agent-labs/codex-agent.git',producer['commit']))
+        self.assertEqual(calls,[producer['commit'],'current'])
+        self.assertIsNone(values['recovery'])
 
     def test_no_product_completion_or_new_signing_semantics(self):
         job=self.jobs['tooling-plan']
