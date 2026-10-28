@@ -1,6 +1,8 @@
 """Bounded carrier controls; fixtures are not hosted or product evidence."""
 import ast
 import copy
+import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -212,6 +214,59 @@ class SdkCarrierTest(unittest.TestCase):
                 carrier.prepare(self.root / 'missing.json', 'sha256:' + '0' * 64,
                     'linux-arm64', self.root / 'fresh', self.root / 'storage')
             receive.assert_not_called()
+
+    def test_intake_batches_only_missing_objects_and_keeps_independent_files(self):
+        from ci.tests.test_runtime_library_authorization import ImportedLfsTransportTest
+        import runtime_phase10_library_caller as transport
+        bodies = {sha256_bytes(f'sdk-intake-fixture-{i}'.encode()): f'sdk-intake-fixture-{i}'.encode()
+                  for i in range(102)}
+        records = [dict(relativePath=f'files/{i}', sha256=digest, bytes=len(raw))
+                   for i, (digest, raw) in enumerate(bodies.items())]
+        records.append(dict(records[0], relativePath='duplicate'))
+        storage = self.root / 'storage'; storage.mkdir()
+        first = records[0]['sha256']; (storage / first[7:]).write_bytes(bodies[first])
+        requests = []
+        def opened(request):
+            requests.append(request)
+            if request.get_method() == 'POST':
+                self.assertEqual(transport._IMPORTED_LFS_ENDPOINT, request.full_url)
+                self.assertTrue(request.get_header('Authorization').startswith('Basic '))
+                query = json.loads(request.data)
+                self.assertEqual('download', query['operation'])
+                self.assertLessEqual(len(query['objects']), 100)
+                self.assertNotIn(first[7:], [row['oid'] for row in query['objects']])
+                rows = [ImportedLfsTransportTest().action(row['oid'], row['size']) for row in query['objects']]
+                raw = canonical_json_bytes({'objects': rows})
+            else:
+                self.assertIsNone(request.get_header('Authorization'))
+                digest = request.full_url.split('/media/', 1)[1].split('?', 1)[0]
+                raw = bodies['sha256:' + digest]
+            return ImportedLfsTransportTest.Response(raw, request.full_url)
+        with patch.dict(os.environ, {'GH_TOKEN': 'unit-read-token'}), \
+                patch.object(transport, '_imported_lfs_open', side_effect=opened), \
+                patch.object(transport.subprocess, 'run', side_effect=AssertionError('No transport subprocess')):
+            result = carrier.receive(records, self.root / 'inputs', storage)
+        self.assertEqual(2, result['lfsBatchRequests'])
+        self.assertEqual(101, result['lfsObjectRequests'])
+        self.assertEqual(1, result['reusedCacheObjects'])
+        self.assertEqual(0, result['transportSubprocesses'])
+        self.assertEqual(sum(len(raw) for digest, raw in bodies.items() if digest != first), result['downloadedBytes'])
+        for row in records:
+            path = self.root / 'inputs' / row['relativePath']
+            self.assertEqual(bodies[row['sha256']], path.read_bytes())
+            self.assertEqual(1, path.stat().st_nlink)
+            self.assertNotEqual(path.stat().st_ino, (storage / row['sha256'][7:]).stat().st_ino)
+        (self.root / 'inputs/duplicate').write_bytes(b'changed independent fixture')
+        self.assertEqual(bodies[first], (storage / first[7:]).read_bytes())
+        with patch.dict(os.environ, {'GH_TOKEN': 'unit-read-token'}), \
+                patch.object(transport, '_imported_lfs_open', side_effect=AssertionError('Cached bytes need no network')):
+            result = carrier.receive(records, self.root / 'cached-inputs', storage)
+            self.assertEqual(0, result['lfsBatchRequests'])
+            self.assertEqual(0, result['downloadedBytes'])
+            self.assertEqual(102, result['reusedCacheObjects'])
+            (storage / first[7:]).write_bytes(b'x' * len(bodies[first]))
+            with self.assertRaisesRegex(ValueError, 'Existing SDK cache object'):
+                carrier.receive(records, self.root / 'rejected-inputs', storage)
 
 
 if __name__ == '__main__':

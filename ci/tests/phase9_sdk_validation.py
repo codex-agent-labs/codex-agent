@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 import time
@@ -17,11 +18,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'ci'))
 sys.path.insert(0, str(ROOT))
 from ci.tests import phase9_ios_mutation as transport
-from ci.tests.phase9_ios_package_check import receive
 from native_wrappers import host_classifier
 from products.inventory import (canonical_json_bytes, git_product_versions,
     load_canonical_json_bytes, read_regular_file_bytes, require_exact_keys,
-    require_relative_path, require_sha256, sha256_bytes, write_canonical_json)
+    require_relative_path, require_regular_directory, require_sha256, sha256_bytes,
+    sha256_file, write_canonical_json)
+from products.sdk_apple_content import copy_apple_file
+from runtime_phase10_library_caller import (
+    _IMPORTED_LFS_BATCH, _imported_lfs_batch, _receive_imported_lfs_object)
 from products.plan import (NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST,
     native_runtime_validation_dependencies, plan_phase)
 from products.receipt import compute_build_key, validate_phase_receipt, validate_producer
@@ -268,6 +272,53 @@ def elect(destination, spec, host, component, target):
     if plan != host['plans'][component] or plan['buildKey'] in spec['checkpoint']['retainedKeys']:
         raise ValueError('SDK exact key changed or is already retained; do not rebuild')
     return plan, original
+
+
+def receive(records, destination, storage):
+    """Shared authenticated batches and streams; independent consumed-file clones."""
+    require_no_signing_secret(os.environ)
+    token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+    if (not token or not token.isascii() or len(token) > 8192 or
+            any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in token)):
+        raise ValueError('SDK intake requires its explicit observation token')
+    require_regular_directory(storage, 'SDK object cache')
+    if storage.resolve(strict=True) != storage:
+        raise ValueError('SDK object cache must be normalized')
+    destination.mkdir()
+    started = time.monotonic_ns()
+    unique = {row['sha256']: row for row in records}
+    missing, objects = [], {}
+    for digest, row in unique.items():
+        path = storage / digest[7:]
+        if path.exists() or path.is_symlink():
+            if path.stat().st_size != row['bytes'] or sha256_file(path, reject_symlink_parents=True) != digest:
+                raise ValueError('Existing SDK cache object differs from its exact selection')
+            objects[digest] = path
+        else:
+            missing.append(row)
+    cached_ns = time.monotonic_ns() - started
+    batches = metadata_bytes = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for offset in range(0, len(missing), _IMPORTED_LFS_BATCH):
+            rows = missing[offset:offset + _IMPORTED_LFS_BATCH]
+            actions, size = _imported_lfs_batch(rows, token)
+            batches += 1; metadata_bytes += size
+            paths = pool.map(lambda row: _receive_imported_lfs_object(
+                row, actions[row['sha256'][7:]], storage), rows)
+            objects.update((row['sha256'], path) for row, path in zip(rows, paths))
+    acquired = time.monotonic_ns()
+    for row in records:
+        target = member(destination, row['relativePath'])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copy_apple_file(objects[row['sha256']], target)
+        if target.stat().st_size != row['bytes'] or target.stat().st_nlink != 1:
+            raise ValueError('SDK intake requires independent exact input files')
+    return dict(uniqueObjects=len(unique), uniqueBytes=sum(row['bytes'] for row in unique.values()),
+        downloadedBytes=sum(row['bytes'] for row in missing), reusedCacheObjects=len(unique)-len(missing),
+        lfsBatchRequests=batches, lfsMetadataResponseBytes=metadata_bytes,
+        lfsObjectRequests=len(missing), maxConcurrentDownloads=4, transportSubprocesses=0,
+        cachedObjectVerificationNs=cached_ns, acquisitionNs=acquired-started,
+        materializationNs=time.monotonic_ns()-acquired, elapsedNs=time.monotonic_ns()-started)
 
 
 def prepare(selection_path, selection_sha256, target, destination, storage):
