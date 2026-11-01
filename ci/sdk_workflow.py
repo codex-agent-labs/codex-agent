@@ -791,24 +791,35 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                     copy(record["validationReceipt"], lane / "receipts" / (target + ".json"))
                 # Existing verifier stages the original producer's source,
                 # canonical inputs, bootstrap and raw compiler/test evidence.
-                handoff = lane / "inputs"
-                command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
-                    "--repository", str(root), "--component", language,
-                    "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
-                command.extend(("--receipt", str(package_receipts[language])))
-                for option, key in (("stage", "packageStage"),
-                        ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
-                        ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
-                        ("validation-receipt", "validationReceipt")):
-                    command.extend(("--" + option, str(primary[key])))
-                run(command)
+                selected = lane / "parity-inputs"
+                capability = lane / "hosts/linux-x64/outputs/capability"
+                with tempfile.TemporaryDirectory(prefix="handoff-", dir=lane) as scoped:
+                    handoff = Path(scoped) / "inputs"
+                    command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
+                        "--repository", str(root), "--component", language,
+                        "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
+                    command.extend(("--receipt", str(package_receipts[language])))
+                    for option, key in (("stage", "packageStage"),
+                            ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
+                            ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
+                            ("validation-receipt", "validationReceipt")):
+                        command.extend(("--" + option, str(primary[key])))
+                    run(command)
+                    for relative in ("bootstrap/bootstrap-evidence.json", "validation-source/capability-claims.tsv"):
+                        source_file = handoff / relative
+                        copy(source_file, selected / relative)
+                        if read_regular_file_bytes(source_file) != read_regular_file_bytes(selected / relative):
+                            raise ValueError("Selected parity handoff file changed during capture")
+                    if (memoized_file_inventory(handoff / "validation/outputs/capability")
+                            != memoized_file_inventory(capability)):
+                        raise ValueError("Verified parity handoff differs from private capability")
                 config["native"][language] = {"packageStage": str(primary["packageStage"]),
                     "packageReceipt": str(package_receipts[language]), "request": str(primary["compatibilityRequest"]),
                     "runtime": str(primary["runtimeStages"]), "sdks": str(primary["stagedSdks"]),
                     "validationStages": str(lane / "hosts"), "validationReceipts": str(lane / "receipts"),
-                    "bootstrap": str(handoff / "bootstrap/bootstrap-evidence.json"),
-                    "claims": str(handoff / "validation-source/capability-claims.tsv"),
-                    "capability": str(handoff / "validation/outputs/capability"),
+                    "bootstrap": str(selected / "bootstrap/bootstrap-evidence.json"),
+                    "claims": str(selected / "validation-source/capability-claims.tsv"),
+                    "capability": str(capability),
                     "output": str(private / (language + "-parity.json"))}
             native_script = private / "native.init.gradle"
             native_script.write_text(IMPORTED_NATIVE_PARITY_INIT)

@@ -254,6 +254,9 @@ class SdkWorkflowTest(unittest.TestCase):
         stage, receipt = original / "stage", original / "phase.json"
         stage.mkdir()
         (stage / "evidence").write_bytes(b"synthetic original stage\n")
+        capability = stage / "outputs/capability"
+        capability.mkdir(parents=True)
+        (capability / "evidence").write_bytes(b"synthetic original capability\n")
         receipt.write_bytes(b"synthetic original receipt\n")
         record = {name: stage for name in ("packageStage", "runtimeStages", "stagedSdks",
                                          "validationStage", "runtimeAuthorization", "binaryStage")}
@@ -265,6 +268,7 @@ class SdkWorkflowTest(unittest.TestCase):
             "keyring": None, "keysDirectory": None, "javaExecutable": "java"}
         before = workflow.regular_file_inventory(original)
         commands = []
+        handoffs = []
 
         def consumer(command, **kwargs):
             commands.append(command)
@@ -272,6 +276,19 @@ class SdkWorkflowTest(unittest.TestCase):
             if failure == "child":
                 raise workflow.subprocess.CalledProcessError(1, command)
             if "verify-native" in command:
+                self.assertTrue(all(not path.exists() for path in handoffs))
+                handoff = Path(command[command.index("--validation-inputs-output") + 1])
+                handoffs.append(handoff)
+                for relative, contents in (
+                        ("bootstrap/bootstrap-evidence.json", b"synthetic bootstrap\n"),
+                        ("validation-source/capability-claims.tsv", b"synthetic claims\n"),
+                        ("sdks/disposable", b"synthetic full handoff input\n")):
+                    target = handoff / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(contents)
+                workflow.snapshot_regular_tree(capability, handoff / "validation/outputs/capability")
+                if failure == "capability":
+                    (handoff / "validation/outputs/capability/evidence").write_bytes(b"changed")
                 package = Path(command[command.index("--receipt") + 1])
                 self.assertEqual(receipt.read_bytes(), package.read_bytes())
                 self.assertEqual(workflow.regular_file_inventory(stage),
@@ -281,6 +298,7 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertEqual(workflow.regular_file_inventory(stage),
                         workflow.regular_file_inventory(package.parent / "csharp-binary/stage"))
             if "--init-script" in command:
+                self.assertTrue(all(not path.exists() for path in handoffs))
                 self.assertIn(str(self.repository / ".github/actions/run-ci-lane/release_tooling.init.gradle"), command)
                 if ":codex-agent-core:verifyJavaBindingParity" in command:
                     path = next(value.split("=", 1)[1] for value in command
@@ -300,6 +318,15 @@ class SdkWorkflowTest(unittest.TestCase):
                     self.assertIn("file(original.bootstrap)", native_init)
                     self.assertIn("spec.classifier.substring('c-abi-'.length())", native_init)
                     config = workflow.product_reuse.load_json_bytes(Path(config_path).read_bytes())
+                    for values in config["native"].values():
+                        self.assertEqual(b"synthetic bootstrap\n", Path(values["bootstrap"]).read_bytes())
+                        self.assertEqual(b"synthetic claims\n", Path(values["claims"]).read_bytes())
+                        self.assertEqual(Path(values["validationStages"]) / "linux-x64/outputs/capability",
+                                         Path(values["capability"]))
+                        self.assertEqual(workflow.regular_file_inventory(capability),
+                                         workflow.regular_file_inventory(Path(values["capability"])))
+                        self.assertEqual(set(workflow.NATIVE_TARGETS),
+                                         {path.name for path in Path(values["validationStages"]).iterdir()})
                     if ":verifyImportedSdkBindingParity" in command:
                         self.assertTrue(Path(config["nonNative"]["java"]).is_file())
                         self.assertIn("deriveCrossLanguageNativeWrapperBindingReceipt(input)", native_init)
@@ -331,7 +358,7 @@ class SdkWorkflowTest(unittest.TestCase):
                 output = Path(command[command.index("--output") + 1])
                 output.write_bytes(b"synthetic derived audit or receipt\n")
 
-        for failure in (None, "original", "context", "child"):
+        for failure in (None, "original", "context", "child", "capability"):
             @contextmanager
             def authenticated(*args, **kwargs):
                 yield inputs
@@ -339,6 +366,7 @@ class SdkWorkflowTest(unittest.TestCase):
                     raise ValueError("Original parity inputs changed during use")
             destination = self.repository / ("result-" + str(failure))
             commands.clear()
+            handoffs.clear()
             diagnostic = io.StringIO()
             with patch.object(workflow, "verified_parity_inputs", side_effect=authenticated) as authenticate, \
                     patch.object(workflow, "verified_tooling_capture", return_value=nullcontext(receipt)) as tool_auth, \
@@ -348,7 +376,8 @@ class SdkWorkflowTest(unittest.TestCase):
                 if failure:
                     error = workflow.subprocess.CalledProcessError if failure == "child" else ValueError
                     message = {"original": "Original parity inputs changed",
-                               "context": "Parity package context changed", "child": "exit status 1"}[failure]
+                               "context": "Parity package context changed", "child": "exit status 1",
+                               "capability": "Verified parity handoff differs from private capability"}[failure]
                     with self.assertRaisesRegex(error, message):
                         workflow.execute_parity(self.plan, self.discovery, self.state, destination,
                             repository_root=self.repository, environ={}, sdk_validation_tooling=tooling)
@@ -364,8 +393,10 @@ class SdkWorkflowTest(unittest.TestCase):
                                   "runtime-authorization" in Path(call.args[1]).parts]
                 self.assertEqual(5, len(authorizations))  # Shared once, not 25 copies.
             self.assertEqual(before, workflow.regular_file_inventory(original))
-            if failure == "child":
-                self.assertIn("synthetic consumer log", diagnostic.getvalue())
+            self.assertTrue(all(not path.exists() for path in handoffs))
+            if failure in {"child", "capability"}:
+                if failure == "child":
+                    self.assertIn("synthetic consumer log", diagnostic.getvalue())
                 self.assertEqual(1, len(commands))
                 continue
             audits = [command[command.index("--phase") + 1] for command in commands
