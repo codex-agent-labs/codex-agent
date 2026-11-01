@@ -127,6 +127,7 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
         STATE_WAVE: ${{ inputs.preparation-state-wave }}
         SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
         PREPARATION_PHASE: ${{ inputs.preparation-phase }}
         PREPARATION_TARGET: ${{ inputs.preparation-target }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
@@ -146,6 +147,7 @@ runs:
         esac
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ "$phase" = metadata ]; then selected+=(--metadata-component "$PREPARATION_COMPONENT"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         reuse=()
         if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
