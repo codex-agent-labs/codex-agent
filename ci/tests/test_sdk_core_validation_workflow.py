@@ -18,7 +18,8 @@ CHILD = WORKFLOW.with_name("sdk-core-validation.yml")
 
 class CoreValidationWorkflowTest(unittest.TestCase):
     def test_cpp_failure_diagnostics_are_scoped_and_collect_both_failures(self):
-        block = WORKFLOW.with_name("portable-reuse-proof.yml").read_text().split("  cpp-failure-diagnostics:\n", 1)[1]
+        source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
+        block = re.search(r"(?ms)^  cpp-failure-diagnostics:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", source)[0]
         for required in ("ci:cpp-failure-diagnostics", "pull_request.number == 31", "head.repo.fork == false",
                          "runs-on: windows-2025", "persist-credentials: false", "GIT_CONFIG_VALUE_0: 'false'",
                          "uses: ./.github/actions/setup-msvc", "cpp-mock-linkage", "cpp-leaf-codegen", "overwrite: false",

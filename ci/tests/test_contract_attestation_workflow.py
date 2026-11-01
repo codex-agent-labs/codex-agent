@@ -108,8 +108,8 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority", caller)
         self.assertNotIn("trustedWorkflowSha:", caller)
         parent = workflow_job(self.parent, "contract-validation")
-        self.assertIn("trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}", parent)
-        self.assertIn("trustedSourceSha: ${{ needs.plan.outputs.source_sha }}", parent)
+        self.assertIn("trustedWorkflowSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.publisher_sha || needs.plan.outputs.publisher_sha }}", parent)
+        self.assertIn("trustedSourceSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.source_sha || needs.plan.outputs.source_sha }}", parent)
         self.assertIn("TRUSTED_SOURCE_SHA: ${{ inputs.trustedSourceSha || inputs.trustedWorkflowSha }}", self.job)
 
     def test_complete_external_capture_upload_is_immutable(self):
@@ -144,8 +144,13 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
         declared = set(re.findall(r"(?m)^      ([a-z0-9_]+):\n        value:", self.workflow))
         consumed = set(re.findall(r"needs\.contract-validation\.outputs\.([a-z0-9_]+)", self.parent))
         self.assertTrue(consumed <= declared, consumed - declared)
-        self.assertIn("needs: [plan]", workflow_job(self.parent, "contract-validation"))
-        self.assertIn("always() && !cancelled() && needs.plan.result == 'success'", workflow_job(self.parent, "contract-validation"))
+        parent = workflow_job(self.parent, "contract-validation")
+        self.assertIn("needs: [plan, tooling-plan]", parent)
+        self.assertIn("always() && !cancelled()", parent)
+        for mode, job in (("!inputs.toolingOnly", "plan"), ("inputs.toolingOnly", "tooling-plan")):
+            self.assertIn(f"({mode} && needs.{job}.result == 'success'", parent)
+            for flag in ("event_authorized", "remote_build_authorized"):
+                self.assertIn(f"needs.{job}.outputs.{flag} == 'true'", parent)
         forward = workflow_job(self.workflow, 'contract-attestation')
         self.assertIn('always() && !cancelled()', forward)
         self.assertIn("needs.contract-continuation.result == 'success'", forward)

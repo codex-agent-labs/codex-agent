@@ -32,9 +32,9 @@ class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        # The partial106 recipe retains the exact SDK62 completion. Historical raw
+        # The final112 recipe inherits the exact native106 completion. Historical raw
         # report pins below remain separately immutable; current pins are tested next.
-        self.assertEqual((12601859860, "3de725d9b716e05cc5d10d1abf4a3a80c464365b"),
+        self.assertEqual((13068764359, "1072e0cc6c55bb6b15935cd948e7e8b2661ebd32"),
             (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
         self.assertEqual(
             {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",

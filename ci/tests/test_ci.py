@@ -144,9 +144,10 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertIn("'SDK custody / complete' ||", gate)
         self.assertIn("'Contract record / complete' ||", gate)
         self.assertIn("'SDK authority / complete' ||", gate)
-        self.assertIn("'SDK Runtime trust / complete' || 'CI / merge-gate'", gate)
+        self.assertIn("'SDK Runtime trust / complete' ||", gate)
+        self.assertIn("inputs.purpose == 'runtime-library-authorizations' && 'Runtime library authorizations / complete' || 'CI / merge-gate'", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation]", gate)
+        self.assertIn("needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]", gate)
         self.assertIn('test "$PRODUCT_VALIDATION_RESULT" = success', gate)
         self.assertIn('test "$SDK_CUSTODY_RESULT" = skipped', gate)
         product_caller = caller.split("\n  product-validation:\n", 1)[1]

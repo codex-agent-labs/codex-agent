@@ -65,15 +65,18 @@ class SdkCoreBinaryWorkflowTest(unittest.TestCase):
                                         ("10", original, False), ("10", {}, True)):
             with self.subTest(wave=wave, outputs=bool(outputs)), tempfile.TemporaryDirectory() as temporary:
                 output = Path(temporary) / "github-output"
-                needs = {"sdk-core-binary": {"outputs": outputs}}
+                needs = {"sdk-core-binary": {"outputs": outputs},
+                         "sdk-checkpoint-11": {"result": "skipped", "outputs": {}}}
                 selected = {"artifact_id": "52", "artifact_digest": "sha256:" + "b" * 64,
                             "state_wave": "0", "sdk_state_wave": wave}
                 with patch.dict(os.environ, {"RESULTS": json.dumps(needs), "GITHUB_OUTPUT": str(output),
+                                         "PRECEDING_CHECKPOINT": "", "SDK_CHECKPOINTS": "false",
                                          "IOS_METADATA_RESULT": json.dumps({"result": "success", "outputs": {}})}, clear=True), \
                         patch.object(sdk_native_continuation, "select_native_state", return_value=selected):
                     if accepted:
                         exec(compile(script, "saved-core-binary-result", "exec"), {})
                         rows = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                        self.assertEqual("", rows["checkpoint"])
                         self.assertEqual(original if wave == "11" else {},
                                          {name: rows[name] for name in original if name in rows})
                     else:

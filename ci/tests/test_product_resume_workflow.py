@@ -299,7 +299,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         worker = workflow_job(self.workflow, 'sdk-ios-validation')
         self.assertIn('uses: ./.github/actions/sdk-ios-validation-worker', worker)
         self.assertIn('restore-reuse-qualification@reuse-authority', worker)
-        self.assertIn('sdk_completion --plan', workflow_job(self.workflow, 'sdk-completion'))
+        self.assertIn('sdk_completion capture --plan', workflow_job(self.workflow, 'sdk-completion'))
 
     def test_sdk_recovery_full_parity_uses_authenticated_state_and_no_legacy_inputs(self):
         legacy = workflow_job(self.workflow, "sdk-native-wrappers")
@@ -313,7 +313,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         parity = workflow_job(self.workflow, "sdk-parity")
         self.assertIn("needs.sdk-completion.outputs.complete == 'true'", parity)
         self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parity)
-        self.assertIn("importedOnly: ${{ inputs.sdkRecoveryOnly }}", parity)
+        self.assertIn("importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}", parity)
         imported = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
         self.assertIn("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", imported)
         self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", imported)
@@ -326,7 +326,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("if: inputs.nativeWrappers && !inputs.importedOnly", imported)
         # A genuine changed auxiliary helper can build through the existing
         # tooling-only route; Contract product ownership must remain complete.
-        guard = self.workflow.split("- name: Require unchanged Contract ownership before SDK continuation", 1)[1].split("      - id:", 1)[0]
+        guard = self.workflow.split("- name: Require unchanged Contract ownership before SDK continuation", 1)[1].split("\n      - ", 1)[0]
         self.assertIn('test "$CONTRACT_NEXT_PHASE" = none', guard)
         self.assertNotIn("TOOLING_MISS", guard)
         contract = (ROOT / ".github/workflows/contract-validation.yml").read_text()
@@ -341,27 +341,32 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}", guard)
         script = textwrap.dedent(guard.split("        run: |\n", 1)[1])
         self.assertEqual('test "$CONTRACT_NEXT_PHASE" = none', script.strip())
-        cases = ((False, False, False, "skipped", True, "", False),
-                 (True, False, False, "skipped", True, "", False),
-                 (True, True, True, "skipped", True, "", False),
-                 (True, True, False, "failure", True, "", False),
-                 (True, True, False, "cancelled", True, "", False),
-                 (True, True, False, "success", False, "", False),
-                 (True, True, False, "success", True, "none", True),
-                 (True, True, False, "success", True, "", True),
-                 (True, True, False, "success", True, "binary", True),
-                 (True, True, False, "success", True, "metadata", True))
-        for authorized, remote, full_reuse, outcome, sdk, phase, enabled in cases:
-            values = {"inputs.sdkRecoveryOnly": sdk, "steps.product-reuse.outcome": outcome,
+        cases = ((False, False, False, "skipped", True, False, "", False),
+                 (True, False, False, "skipped", True, False, "", False),
+                 (True, True, True, "skipped", True, False, "", False),
+                 (True, True, False, "failure", True, False, "", False),
+                 (True, True, False, "cancelled", True, False, "", False),
+                 (True, True, False, "success", False, False, "", False),
+                 (True, True, False, "success", True, False, "none", True),
+                 (True, True, False, "success", True, False, "", True),
+                 (True, True, False, "success", True, False, "binary", True),
+                 (True, True, False, "success", True, False, "metadata", True),
+                 (True, True, False, "success", False, True, "none", True),
+                 (True, True, False, "success", False, True, "binary", True),
+                 (True, True, False, "failure", False, True, "none", False),
+                 (True, True, True, "skipped", False, True, "", False))
+        for authorized, remote, full_reuse, outcome, sdk, acceptance, phase, enabled in cases:
+            values = {"inputs.sdkRecoveryOnly": sdk, "inputs.fullReuseAcceptanceOnly": acceptance,
+                "steps.product-reuse.outcome": outcome,
                 "steps.event-authorization.outputs.authorized": str(authorized).lower(),
                 "steps.impact.outputs.remote_build_authorized": str(remote).lower(),
                 "steps.validation-reuse.outputs.reused": str(full_reuse).lower()}
             def evaluate(expression):
                 for name, value in values.items():
                     expression = expression.replace(name, repr(value))
-                return eval(expression.replace("&&", "and"), {"__builtins__": {}})
+                return eval(expression.replace("&&", "and").replace("||", "or"), {"__builtins__": {}})
             with self.subTest(authorized=authorized, remote=remote, full_reuse=full_reuse,
-                              outcome=outcome, sdk=sdk, phase=phase):
+                              outcome=outcome, sdk=sdk, acceptance=acceptance, phase=phase):
                 self.assertEqual(authorized and remote and not full_reuse, evaluate(producer_if))
                 self.assertEqual(enabled, evaluate(guard_if))
                 if enabled:

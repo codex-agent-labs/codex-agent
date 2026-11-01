@@ -14,7 +14,7 @@ NAMES = ('contract-continuation', 'runtime-linux-arm64-supervisor',
          *(f'runtime-workers-{i}' for i in range(1, 5)),
          *(f'runtime-collect-{i}' for i in range(1, 6)),
          'runtime-continuation', 'runtime-aggregate', 'runtime-aggregate-continuation',
-         'sdk-ios-binary-plan', 'sdk-ios-binary', 'sdk-collect-3')
+         'sdk-ios-binary', 'sdk-collect-3')
 
 
 class RuntimeToolingWorkflowTest(unittest.TestCase):
@@ -49,7 +49,7 @@ class RuntimeToolingWorkflowTest(unittest.TestCase):
                               'policy-revision: ${{ needs.plan.outputs.validation_commit }}', job)
                 self.assertNotIn('needs.sdk-plan', job)
                 for step in re.split(r'(?=^      - )', job, flags=re.M):
-                    if any('uses: ./.github/actions/' + action in step for action in (
+                    if any(re.search(r'uses: \./\.github/actions/' + action + r'\s*$', step, re.M) for action in (
                             'capture-runtime-state', 'run-runtime-product-phase', 'collect-runtime-wave',
                             'sdk-ios-binary-worker')):
                         self.assertLess(capture, job.index(step))
@@ -60,6 +60,19 @@ class RuntimeToolingWorkflowTest(unittest.TestCase):
                         self.assertIn('--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"', step)
                         self.assertIn('${tooling[@]+"${tooling[@]}"}', step)
         self.assertEqual(4, self.job('contract-continuation').count('ci/product_reuse.py advance-contract'))
+
+    def test_ios_binary_plan_routes_current_transition_without_replaying_originals(self):
+        job = self.job('sdk-ios-binary-plan')
+        self.assertIn('uses: ./.github/actions/capture-runtime-state/route', job)
+        self.assertIn('family: ios-binary', job)
+        for field, output in (('routing', 'routing'), ('artifact-id', 'artifact_id'),
+                              ('artifact-sha256', 'artifact_digest')):
+            self.assertIn(field + ': ${{ needs.product-resume.outputs.' + output + ' }}', job)
+        for field, output in (('plan-id', 'plan_id'), ('validation-commit', 'validation_commit'),
+                              ('validation-tree', 'validation_tree'), ('trusted-workflow-sha', 'publisher_sha')):
+            self.assertIn(field + ': ${{ needs.plan.outputs.' + output + ' }}', job)
+        self.assertNotIn('capture-sdk-tooling', job)
+        self.assertNotIn('Select installed caller Java', job)
 
     def test_installed_java_selection_uses_host_architecture_and_fails_when_missing(self):
         scripts = []

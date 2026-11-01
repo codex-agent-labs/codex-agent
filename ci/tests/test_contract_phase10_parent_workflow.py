@@ -82,7 +82,7 @@ class ContractPhase10ParentWorkflowTest(unittest.TestCase):
         for name in ("contract-phase10-pgp-authority", "contract-phase10-maven",
                      "contract-phase10-output-record"):
             self.assertIn(name, gate.split("    runs-on:", 1)[0])
-        self.assertIn("CONTRACT_PHASE10_REQUIRED: ${{ github.event_name != 'workflow_dispatch' && needs.contract-validation.outputs.contract_complete == 'true' }}", gate)
+        self.assertIn("CONTRACT_PHASE10_REQUIRED: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name != 'workflow_dispatch' && needs.contract-validation.outputs.contract_complete == 'true' }}", gate)
         for value in ("CONTRACT_PHASE10_PGP_RESULT", "CONTRACT_PHASE10_MAVEN_RESULT",
                       "CONTRACT_PHASE10_RECORD_RESULT", "CONTRACT_PHASE10_MAVEN_ARTIFACT_SHA256",
                       "CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID", "CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256"):

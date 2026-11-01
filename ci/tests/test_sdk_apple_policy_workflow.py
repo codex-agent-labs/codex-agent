@@ -1,6 +1,7 @@
 """Caller-policy routing only; stub processes do not authenticate hosted state."""
 
 import os
+from collections import Counter
 from pathlib import Path
 import re
 import shutil
@@ -88,13 +89,13 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
             r'ci/product_reuse\.py (?:advance-contract|resume-products|execute-runtime-[a-z-]+)|'
             r'ci/runtime_workflow\.py (?:matrix|continuation)|'
             r'-m ci\.sdk_workflow --plan\b|'
-            r'-m ci\.sdk_completion\b)')
-        count = 0
+            r'-m ci\.sdk_completion (?:capture )?--plan\b)')
+        routes = []
         for name, job in self.jobs.items():
             for step in self.steps(job):
                 if not replay.search(step) and 'inspected = inspect_products(' not in step:
                     continue
-                count += 1
+                routes.append(name)
                 with self.subTest(job=name, step=step.splitlines()[0]):
                     self.assertIn('SDK_APPLE_VALIDATION_POLICY: ${{ ' + self.policy_output(job) + ' }}', step)
                     if 'inspected = inspect_products(' in step:
@@ -104,38 +105,53 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                     else:
                         self.assertIn('--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"', step)
                         self.assertIn('${tooling[@]+"${tooling[@]}"}', step)
-        self.assertGreaterEqual(count, 12)
+        # Matrix/continuation replay now lives in the shared capture action;
+        # the current-head acceptance reporter consumes a tiny report, not originals.
+        self.assertEqual(Counter({'contract-continuation': 4, 'product-resume': 1,
+            'runtime-linux-arm64-supervisor': 1, 'runtime-aggregate': 1,
+            'sdk-inputs': 1, 'sdk-completion': 1, 'sdk-partial-catalog': 1}), Counter(routes))
 
     def test_representative_shells_preserve_optional_arguments_and_child_failure(self):
         selected = []
         for name, command in (('contract-continuation', 'ci/product_reuse.py advance-contract'),
                               ('product-resume', 'ci/product_reuse.py resume-products'),
-                              ('product-resume', 'ci/runtime_workflow.py matrix'),
-                              ('runtime-continuation', 'ci/runtime_workflow.py continuation'),
                               ('runtime-aggregate', 'ci/product_reuse.py execute-runtime-aggregate'),
                               ('sdk-inputs', '-m ci.sdk_workflow --plan'),
-                              ('sdk-completion', '-m ci.sdk_completion --plan')):
+                              ('sdk-completion', '-m ci.sdk_completion capture --plan')):
             step = next(step for step in self.steps(self.jobs[name]) if command in step)
-            selected.append((name, textwrap.dedent(step.split('        run: |\n', 1)[1])
-                             .replace('${{ inputs.trustedWorkflowSha }}', 'fixture-caller-workflow-sha')))
+            script = textwrap.dedent(re.split(r'\n +(?:run|script): \|\n', step, maxsplit=1)[1])
+            script = script.replace('${{ inputs.trustedWorkflowSha }}', 'fixture-caller-workflow-sha')
+            script = script.replace('${{ needs.plan.outputs.publisher_sha }}', 'fixture-caller-workflow-sha')
+            selected.append((name, script, {}))
+        action = (ROOT / '.github/actions/capture-runtime-state/action.yml').read_text()
+        script = textwrap.dedent(action.split('    - id: capture\n', 1)[1].split('        script: |\n', 1)[1])
+        selected.extend((name, script, environment) for name, environment in (
+            ('runtime-capture', {'STATE_PRODUCT': 'runtime', 'SDK_FAMILY': '', 'CONTINUATION': 'selected'}),
+            ('native-capture', {'STATE_PRODUCT': 'sdk', 'SDK_FAMILY': 'native-package', 'CONTINUATION': ''})))
         with tempfile.TemporaryDirectory(prefix='apple-policy-workflow-') as temporary:
             root = Path(temporary)
             stub = root / 'python3'
             stub.write_text('#!/bin/sh\nprintf \'%s\\0\' "$@" > "$RECORDED_ARGS"\nexit "$CHILD_STATUS"\n')
             stub.chmod(0o700)
-            for name, script in selected:
+            for name, script, extra_environment in selected:
                 for policy in ('', '/caller policies/apple validation.json'):
                     for status in (0, 17):
                         with self.subTest(job=name, policy=policy, status=status):
                             recorded, output = root / 'argv', root / 'output'
                             output.unlink(missing_ok=True)
                             environment = {key: '/original inputs/' + key for key in
-                                ('PLAN', 'DISCOVERY', 'STATE', 'DISCOVERY_ROOT', 'STATE_ROOT')}
+                                ('PLAN', 'DISCOVERY', 'STATE', 'DISCOVERY_ROOT', 'STATE_ROOT', 'PLAN_DIRECTORY')}
+                            environment.update({key: '' for key in ('SDK_STATE_WAVE', 'PREFLIGHT_WAVE',
+                                'COMPONENT', 'PHASE', 'TARGET', 'BUILD_KEY')})
                             environment.update(PATH=str(root), RECORDED_ARGS=str(recorded), CHILD_STATUS=str(status),
                                 GITHUB_OUTPUT=str(output), GITHUB_WORKSPACE=str(root / 'checkout'),
                                 SDK_SOURCE='released-default', SDK_VALIDATION_TOOLING='/caller policies/tooling.json',
-                                SDK_APPLE_VALIDATION_POLICY=policy, BUILD_KEY='sha256:' + 'a' * 64,
+                                SDK_APPLE_VALIDATION_POLICY=policy, SDK_RECOVERY_ONLY='false',
+                                NATIVE_CONTRACT_COMPLETE='false', STATE_WAVE='0', ROUTING='{}', PLAN_ID='1',
+                                ARTIFACT_ID='2', ARTIFACT_SHA256='sha256:' + 'a' * 64,
+                                STATE_ARTIFACT_ID='2', STATE_ARTIFACT_SHA256='sha256:' + 'a' * 64,
                                 TRUSTED_WORKFLOW_SHA='fixture-caller-workflow-sha')
+                            environment.update(extra_environment)
                             completed = subprocess.run([shutil.which('bash'), '-e', '-c', script], env=environment,
                                                        capture_output=True, text=True, cwd=root)
                             self.assertEqual(status, completed.returncode, completed.stderr)
@@ -153,24 +169,30 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
         # Real canonical reader, mocked replay boundary: not source/evidence admission.
         if str(ROOT / 'ci') not in sys.path:
             sys.path.insert(0, str(ROOT / 'ci'))
-        from ci import product_reuse, reuse
+        from ci import sdk_workflow
         from ci.products.inventory import canonical_json_bytes
-        step = next(step for step in self.steps(self.jobs['sdk-native-plan'])
-                    if 'inspected = inspect_products(' in step)
-        script = textwrap.dedent(step.split("          python3 - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
+        # The routing job no longer replays. The shared capture owns the canonical
+        # caller-policy reader and invokes the same native-package matrix helper.
+        job = self.jobs['sdk-native-plan']
+        self.assertIn('uses: ./.github/actions/capture-runtime-state/route', job)
+        self.assertIn('family: native-package', job)
+        self.assertNotIn('inspect_products(', job)
         with tempfile.TemporaryDirectory(prefix='apple-policy-inspection-') as temporary:
             root = Path(temporary).resolve(strict=True)
             policy_path = root / 'caller apple policy.json'
             policy = {'fixture': 'caller policy forwarded, semantic replay explicitly mocked'}
             policy_path.write_bytes(canonical_json_bytes(policy))
             for selected in ('', str(policy_path)):
-                environment = {key: str(root / key) for key in ('PLAN', 'DISCOVERY', 'STATE', 'GITHUB_OUTPUT')}
-                environment.update(SDK_VALIDATION_TOOLING='', SDK_APPLE_VALIDATION_POLICY=selected,
-                                   TRUSTED_WORKFLOW_SHA='fixture-caller-workflow-sha')
-                with self.subTest(policy=selected), patch.dict(os.environ, environment, clear=True), \
-                        patch.object(product_reuse, 'inspect_products', return_value={'readyPlans': []}) as inspect, \
-                        patch.object(reuse, 'github_output'), patch.object(Path, 'cwd', return_value=ROOT):
-                    exec(compile(script, '<native-preparation-policy>', 'exec'), {})
+                arguments = ['matrix', '--plan', str(root / 'plan'), '--discovery-root', str(root / 'discovery'),
+                    '--state-root', str(root / 'state'), '--github-output', str(root / 'output'),
+                    '--repository-root', str(ROOT), '--family', 'native-package',
+                    '--trusted-workflow-sha', 'fixture-caller-workflow-sha']
+                if selected:
+                    arguments.extend(('--sdk-apple-validation-policy', selected))
+                with self.subTest(policy=selected), patch.dict(os.environ, {}, clear=True), \
+                        patch.object(sdk_workflow.product_reuse, 'inspect_products', return_value={'readyPlans': []}) as inspect, \
+                        patch.object(sdk_workflow, 'github_output'):
+                    sdk_workflow.main(arguments)
                 if selected:
                     self.assertEqual(policy, inspect.call_args.kwargs['sdk_apple_validation_policy'])
                 else:

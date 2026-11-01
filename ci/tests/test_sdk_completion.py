@@ -7,6 +7,7 @@ or CI proof. The production inspector retains all original evidence validation.
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -720,6 +721,99 @@ class SdkCompletionTest(unittest.TestCase):
             self.assertEqual(0, completion.main(argv))
         self.assertEqual(["enter", "exit"], events)
 
+    def test_capture_completion_uses_one_live_authority_and_full_unchanged_gate(self):
+        from products.restore import _VERIFICATION_SESSION
+        value = inspected([phase(identity) for identity in sorted(PHASE_INSTANCE_IDS)])
+        expected = self.call(value)
+        capability = object()
+        for state_wave, sdk_wave in ((0, None), (1, None), (0, 8)):
+            with self.subTest(state_wave=state_wave, sdk_wave=sdk_wave), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                destination, output = root / "capture", root / "output"
+                events = []
+                @contextmanager
+                def authority(args):
+                    self.assertEqual(Path("/policy/native.json"), args.completed_frozen_policy)
+                    self.assertIsNotNone(_VERIFICATION_SESSION.get())
+                    events.append("enter")
+                    yield {"completed_frozen": capability}
+                    self.assertIsNotNone(_VERIFICATION_SESSION.get())
+                    events.append("exit")
+                def capture(*args, **kwargs):
+                    self.assertEqual(["enter"], events)
+                    self.assertIs(capability, kwargs["completed_frozen"])
+                    self.assertTrue(kwargs["allow_earlier_attempt"])
+                    self.assertNotIn("requested_scope", kwargs)
+                    events.append("capture")
+                def inspect(*args, **kwargs):
+                    self.assertEqual(["enter", "capture"], events)
+                    self.assertIsNotNone(_VERIFICATION_SESSION.get())
+                    self.assertIs(capability, kwargs["completed_frozen"])
+                    self.assertNotIn("requested_scope", kwargs)
+                    original = destination / "original"
+                    discovery = original / "product-resume-state"
+                    self.assertEqual((original / "product-resume-inputs/plan/impact-plan.json", discovery,
+                        original / "runtime-state" if state_wave or sdk_wave is not None else discovery), args)
+                    self.assertEqual("d" * 40, kwargs["sdk_original_workflow_sha"])
+                    events.append("inspect")
+                    return value
+                real_output = completion.github_output
+                def publish(path, result):
+                    self.assertEqual(["enter", "capture", "inspect", "exit"], events)
+                    self.assertIsNone(_VERIFICATION_SESSION.get())
+                    self.assertEqual(expected, result)
+                    events.append("publish")
+                    real_output(path, result)
+                argv = ["capture", "--plan", str(self.paths[0]), "--destination", str(destination),
+                    "--repository-root", str(root), "--github-output", str(output),
+                    "--artifact-id", "91", "--artifact-sha256", "sha256:" + "a" * 64,
+                    "--trusted-workflow-sha", "d" * 40, "--state-wave", str(state_wave),
+                    "--completed-frozen-policy", "/policy/native.json"]
+                if sdk_wave is not None:
+                    argv += ["--sdk-state-wave", str(sdk_wave)]
+                with patch.object(completion, "completed_frozen_options", authority), \
+                        patch.object(completion.products, "capture_runtime_resume_upload", side_effect=capture) as captured, \
+                        patch.object(completion.products, "inspect_products", side_effect=inspect) as inspected_once, \
+                        patch.object(completion, "github_output", side_effect=publish):
+                    self.assertEqual(0, completion._capture_main(argv[1:]))
+                captured.assert_called_once()
+                inspected_once.assert_called_once()
+                self.assertEqual(["enter", "capture", "inspect", "exit", "publish"], events)
+                self.assertEqual("complete=true\nphaseCount=62\nfullReuse=true\n", output.read_text())
+
+    def test_capture_completion_publishes_nothing_on_capture_gate_or_owner_exit_failure(self):
+        from products.restore import verification_session
+        for failure in ("capture", "gate", "authority-exit", "session-exit"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); output = root / "output"
+                @contextmanager
+                def authority(args):
+                    yield {"completed_frozen": object()}
+                    if failure == "authority-exit":
+                        raise ValueError("authority lifetime changed")
+                @contextmanager
+                def session():
+                    with verification_session():
+                        yield
+                    if failure == "session-exit":
+                        raise ValueError("session exit failed")
+                value = inspected([phase(identity) for identity in self.sdk])
+                if failure == "gate":
+                    value = inspected([phase(self.sdk[0], "waiting")])
+                argv = ["capture", "--plan", str(self.paths[0]), "--destination", str(root / "capture"),
+                    "--repository-root", str(root), "--github-output", str(output),
+                    "--artifact-id", "91", "--artifact-sha256", "sha256:" + "a" * 64,
+                    "--trusted-workflow-sha", "d" * 40]
+                with patch.object(completion, "completed_frozen_options", authority), \
+                        patch.object(completion, "verification_session", session), \
+                        patch.object(completion.products, "capture_runtime_resume_upload",
+                            side_effect=ValueError("original capture failed") if failure == "capture" else None), \
+                        patch.object(completion.products, "inspect_products", return_value=value) as inspect, \
+                        redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    completion._capture_main(argv[1:])
+                self.assertFalse(output.exists())
+                self.assertEqual(0 if failure == "capture" else 1, inspect.call_count)
+
     def test_completed_apple_validations_do_not_complete_unresolved_ios_metadata(self):
         validations = sorted(identity for identity in self.sdk
                              if identity.component == "sdk-ios" and identity.phase == "validation")
@@ -822,6 +916,238 @@ class SdkCompletionTest(unittest.TestCase):
                 completion.main(argv)
             stage.assert_not_called()
             self.assertFalse(output.exists())
+
+
+class CurrentHeadAcceptanceTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="current-head-fixture-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.plan_path, self.destination = self.root / "impact-plan.json", self.root / "accepted"
+        self.plan = dict(repository="codex-agent-labs/codex-agent", event="pull_request", pullRequest=31,
+            validationCommit="a" * 40, validationTree="b" * 40, mergeReady=True,
+            remoteBuildAuthorized=True, remoteBuildAuthorizationReason="pull-request-final")
+        self.plan_raw = (json.dumps(self.plan, indent=2) + "\n").encode()
+        self.plan_path.write_bytes(self.plan_raw)
+        self.environment = dict(completion._ACCEPTANCE_FLAGS, GITHUB_ACTIONS="true", GITHUB_JOB="merge-gate",
+            GITHUB_TOKEN="fixture-only", GITHUB_REPOSITORY=self.plan["repository"], GITHUB_EVENT_NAME="pull_request",
+            GITHUB_SHA=self.plan["validationCommit"], GITHUB_RUN_ID="21", GITHUB_RUN_ATTEMPT="2")
+        self.producer = completion.products._consumer(self.plan, self.environment)["producer"]
+        self.report = completion._repository_report(inspected([phase(item) for item in sorted(PHASE_INSTANCE_IDS)])["result"])
+        self.report.update(verificationContext={"kind": "hosted-original-parity-reuse", "producer": self.producer},
+            sdkParity=dict(result="passed", reportSha256="sha256:" + "d" * 64,
+                phaseCount=112, languageCount=11, satisfied=6104, excluded=12, scenarioCount=14,
+                producer=dict(self.producer, commit="e" * 40, tree="f" * 40, runId=12, runAttempt=1),
+                jobId=13, artifactId=14, artifactSha256="sha256:" + "1" * 64,
+                policySha256="sha256:" + "2" * 64, verifierInputsSha256="sha256:" + "3" * 64))
+        names = ("product-validation / sdk-parity / sdk-parity", "product-validation / workflow-lint",
+                 "product-validation / product-resume", "product-validation / sdk-completion")
+        self.jobs = [dict(id=100 + i, name=name, run_id=21, head_sha="9" * 40,
+            status="completed", conclusion="success", started_at="2026-11-01T10:00:00Z",
+            completed_at="2026-11-01T10:05:00Z") for i, name in enumerate(names)]
+        self.observation = dict(run={"id": 21, "head_sha": "9" * 40, "status": "in_progress"}, jobs=self.jobs)
+        self.report_raw = canonical_json_bytes(self.report)
+        self.set_archive({"hosted-parity-report.json": self.report_raw})
+
+    def set_archive(self, members):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            for name, raw in members.items():
+                archive.writestr(name, raw)
+        self.archive_raw = stream.getvalue()
+        self.artifact = dict(id=22, name="codex-agent-hosted-parity-report-" + self.producer["tree"],
+            digest=completion.sha256_bytes(self.archive_raw), size_in_bytes=len(self.archive_raw), expired=False,
+            archive_download_url="https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/22/zip",
+            workflow_run={"id": 21, "head_sha": "9" * 40}, created_at="2026-11-01T10:03:00Z")
+        self.options = dict(report_sha256=completion.sha256_bytes(self.report_raw), report_artifact_id=22,
+            report_artifact_sha256=self.artifact["digest"], trusted_workflow_sha="4" * 40,
+            repository_root=self.root, destination=self.destination, environ=self.environment)
+
+    @contextmanager
+    def authenticated(self):
+        def download(artifact, producer, run, token, *, destination, limit, artifact_sha256, size):
+            self.assertIs(self.artifact, artifact)
+            self.assertEqual(self.producer, producer)
+            self.assertEqual("fixture-only", token)
+            self.assertEqual(1024 * 1024, limit)
+            self.assertEqual(self.options["report_artifact_sha256"], artifact_sha256)
+            self.assertEqual(self.artifact["size_in_bytes"], size)
+            destination.write_bytes(self.archive_raw)
+            return artifact, destination
+        with patch.object(completion.products, "_validate_plan", return_value=self.plan) as plan, \
+                patch.object(completion.products, "_git_value",
+                    side_effect=lambda root, command, revision: self.producer["tree" if "tree" in revision else "commit"]), \
+                patch.object(completion.products, "_observe_ci_producer_jobs", return_value=[self.observation]) as observe, \
+                patch.object(completion.products, "api_json", return_value=self.artifact) as api, \
+                patch.object(completion.products, "_reuse_contract_ci_upload", side_effect=download) as transfer, \
+                patch.object(completion.products, "inspect_products", side_effect=AssertionError("No native/body replay")), \
+                patch.object(completion, "completed_frozen_options", side_effect=AssertionError("No requalification")), \
+                patch.object(completion, "_completed_parity", side_effect=AssertionError("No parity replay")):
+            yield plan, observe, api, transfer
+
+    def call(self):
+        return completion.write_current_head_acceptance(self.plan_path, **self.options)
+
+    def test_exact_report_and_plan_survive_single_acquisition_and_owner_exits(self):
+        events = []
+        @contextmanager
+        def owner():
+            events.append("enter")
+            yield
+            events.append("exit")
+        original_publish = completion.publish_regular_tree
+        def publish(*args, **kwargs):
+            self.assertEqual(["enter", "exit"], events)
+            original_publish(*args, **kwargs)
+        with self.authenticated() as (plan, observe, api, transfer), \
+                patch.object(completion, "verification_session", owner), \
+                patch.object(completion, "publish_regular_tree", side_effect=publish):
+            result = self.call()
+            plan.assert_called_once_with(self.plan_path, self.root)
+            observe.assert_called_once()
+            self.assertEqual(set(self.jobs[i]["name"] for i in range(4)),
+                             set(observe.call_args.kwargs["jobs_by_phase"].values()))
+            self.assertEqual({key: self.producer for key in ("parity", "controls", "resume", "completion")},
+                             observe.call_args.args[0])
+            for role, value in observe.call_args.kwargs["trusted_workflows_by_phase"].items():
+                self.assertEqual({"sha": "4" * 40, "path": ".github/workflows/" + (
+                    "sdk-binding-parity.yml" if role == "parity" else "product-validation.yml")}, value)
+            api.assert_called_once()
+            transfer.assert_called_once()
+        self.assertEqual({"impact-plan.json", "hosted-parity-report.json", "current-head-acceptance.json"},
+                         {path.name for path in self.destination.iterdir()})
+        self.assertEqual(self.plan_raw, (self.destination / "impact-plan.json").read_bytes())
+        self.assertEqual(self.report_raw, (self.destination / "hosted-parity-report.json").read_bytes())
+        self.assertEqual("current-head-product-acceptance", result["kind"])
+        self.assertEqual(self.producer, result["producer"])
+        self.assertEqual({"parity": 100, "controls": 101, "resume": 102, "completion": 103}, result["jobs"])
+        self.assertNotIn("lanes", result)
+        self.assertEqual(canonical_json_bytes(result), (self.destination / "current-head-acceptance.json").read_bytes())
+
+    def test_gate_flags_and_current_environment_fail_before_acceptance(self):
+        original = dict(self.environment)
+        for field in (*completion._ACCEPTANCE_FLAGS, "GITHUB_ACTIONS", "GITHUB_JOB", "GITHUB_TOKEN",
+                      "GITHUB_REPOSITORY", "GITHUB_EVENT_NAME", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            self.environment.update(original)
+            self.environment[field] = "" if field == "GITHUB_TOKEN" else "wrong"
+            with self.subTest(field=field), self.authenticated() as (_, observe, _, transfer), self.assertRaises(ValueError):
+                self.call()
+            self.assertFalse(self.destination.exists())
+            observe.assert_not_called()
+            transfer.assert_not_called()
+        self.environment.update(original)
+
+    def test_structural_reader_rejects_incomplete_or_inconsistent_reports(self):
+        mutations = [lambda r: r.update(phaseCount=111), lambda r: r.update(schemaVersion=True),
+            lambda r: r["originalPhases"].pop(),
+            lambda r: r["originalPhases"].__setitem__(1, deepcopy(r["originalPhases"][0])),
+            lambda r: r["originalPhases"][0].update(state="waiting"),
+            lambda r: r["products"][0].update(receiptSha256="sha256:" + "0" * 64),
+            lambda r: r["edges"].pop(), lambda r: r["edges"][0].update(producerReceiptSha256="sha256:" + "0" * 64),
+            lambda r: r["verificationContext"].update(kind="local"),
+            lambda r: r["verificationContext"]["producer"].update(runId=20),
+            lambda r: r["sdkParity"].update(result="failed"),
+            lambda r: r["sdkParity"].update(satisfied=6103),
+            lambda r: r["sdkParity"].update(artifactId=True),
+            lambda r: r["sdkParity"].update(policySha256="unpinned"),
+            lambda r: r["sdkParity"]["producer"].update(event="merge_group", pullRequest=None),
+            lambda r: r.update(unexpected=True)]
+        for index, mutate in enumerate(mutations):
+            report = deepcopy(self.report)
+            mutate(report)
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                completion.validate_current_head_report(report, self.producer)
+
+    def test_official_upload_identity_window_and_transport_fail_closed(self):
+        original = deepcopy(self.artifact)
+        for field, value in (("id", 23), ("name", "unrelated"), ("expired", True),
+                ("digest", "sha256:" + "0" * 64), ("workflow_run", {"id": 20, "head_sha": "9" * 40}),
+                ("created_at", "2026-11-01T11:00:00Z"), ("size_in_bytes", 1024 * 1024 + 1)):
+            self.artifact.clear()
+            self.artifact.update(deepcopy(original), **{field: value})
+            with self.subTest(field=field), self.authenticated() as (_, _, _, transfer), self.assertRaises(ValueError):
+                self.call()
+            transfer.assert_not_called()
+            self.assertFalse(self.destination.exists())
+        self.artifact.clear()
+        self.artifact.update(original)
+        self.archive_raw += b"corruption"
+        with self.authenticated(), self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.destination.exists())
+
+    def test_exact_archive_member_and_report_semantics_required(self):
+        cases = [{"other.json": self.report_raw},
+            {"hosted-parity-report.json": self.report_raw, "extra": b"extra"},
+            {"hosted-parity-report.json": self.report_raw.replace(b'"phaseCount":112', b'"phaseCount":111')},
+            {"hosted-parity-report.json": b" " + self.report_raw}]
+        for members in cases:
+            self.set_archive(members)
+            with self.subTest(members=list(members)), self.authenticated(), self.assertRaises(ValueError):
+                self.call()
+            self.assertFalse(self.destination.exists())
+        malformed = deepcopy(self.report)
+        malformed["edges"].pop()
+        self.report_raw = canonical_json_bytes(malformed)
+        self.set_archive({"hosted-parity-report.json": self.report_raw})
+        with self.authenticated(), self.assertRaises(ValueError):
+            self.call()
+        self.assertFalse(self.destination.exists())
+
+    def test_authentication_late_scope_and_input_failure_publish_nothing(self):
+        for failure in ("official", "scope-exit", "plan-replaced", "source-changed", "environment-changed"):
+            self.plan_path.write_bytes(self.plan_raw)
+            @contextmanager
+            def owner():
+                yield
+                if failure == "scope-exit":
+                    raise ValueError("late verification failure")
+                if failure == "plan-replaced":
+                    self.plan_path.unlink()
+                    self.plan_path.write_bytes(self.plan_raw)
+                if failure == "environment-changed":
+                    self.environment["GITHUB_RUN_ATTEMPT"] = "3"
+            with self.subTest(failure=failure), self.authenticated() as (_, observe, _, _), \
+                    patch.object(completion, "verification_session", owner):
+                if failure == "official":
+                    observe.side_effect = ValueError("unsuccessful original job")
+                if failure == "source-changed":
+                    completion.products._git_value.side_effect = lambda *args: "0" * 40
+                with self.assertRaises(ValueError):
+                    self.call()
+                self.assertFalse(self.destination.exists())
+
+    def test_plan_and_destination_safety_precede_network(self):
+        original = self.plan_path.with_name("original.json")
+        self.plan_path.rename(original)
+        self.plan_path.symlink_to(original)
+        with self.authenticated() as (_, observe, _, _), self.assertRaises(ValueError):
+            self.call()
+        observe.assert_not_called()
+        self.plan_path.unlink()
+        original.rename(self.plan_path)
+        self.destination.mkdir()
+        with self.authenticated() as (_, observe, _, _), self.assertRaises(ValueError):
+            self.call()
+        observe.assert_not_called()
+
+    def test_acceptance_cli_contract_and_failure_output(self):
+        argv = ["--plan", str(self.plan_path), "--report-sha256", self.options["report_sha256"],
+            "--report-artifact-id", "22", "--report-artifact-sha256", self.options["report_artifact_sha256"],
+            "--trusted-workflow-sha", "4" * 40, "--repository-root", str(self.root),
+            "--destination", str(self.destination)]
+        with patch.dict(os.environ, self.environment, clear=True), self.authenticated(), redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(0, completion._acceptance_main(argv))
+        self.assertEqual("current-head-product-acceptance", json.loads(output.getvalue())["kind"])
+        for extra in (["--local"], ["--completed-frozen-policy", "/unused"], ["--report-directory", "/unused"]):
+            with patch.object(completion, "write_current_head_acceptance") as writer, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion._acceptance_main(argv + extra)
+            writer.assert_not_called()
+        with patch.object(completion, "write_current_head_acceptance", side_effect=ValueError("bad original")), \
+                redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            completion._acceptance_main(argv)
+        self.assertEqual("", output.getvalue())
 
 
 if __name__ == "__main__":

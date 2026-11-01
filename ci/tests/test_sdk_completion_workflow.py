@@ -4,6 +4,7 @@ The workflow's selector call is executed with an explicit routing mock. Actual
 state/source authentication remains covered by the completion and replay suites.
 """
 
+import hashlib
 import importlib
 from itertools import product
 from copy import deepcopy
@@ -59,6 +60,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         for name in ("sdk-workers-1", "sdk-workers-2", "sdk-catalog"):
             job = self.job(name)
             condition = re.search(r"(?ms)^    if: >-\n(.*?)(?=^    \S)", job)[1]
+            wrapper = re.fullmatch(r"\s*!inputs.fullReuseAcceptanceOnly && \((.*)\)\s*", condition, re.S)
+            self.assertIsNotNone(wrapper)
+            condition = wrapper[1]
             clauses = [value.strip() for value in condition.split("&&")]
             self.assertEqual(["always()", "!cancelled()"], clauses[:2])
             if name == "sdk-catalog":
@@ -213,6 +217,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             condition = re.sub(r"needs\.([a-z0-9-]+)\.(result|outputs\.[a-z0-9_]+)",
                 lambda m: repr(values[m[1]]["result"] if m[2] == "result" else
                                values[m[1]]["outputs"].get(m[2].split(".")[1], "")), condition)
+            condition = condition.replace("inputs.fullReuseAcceptanceOnly", "False")
             condition = condition.replace("inputs.runtimeRecoveryOnly", "False")
             condition = condition.replace("inputs.sdkRecoveryOnly", repr(recovery))
             condition = re.sub(r"!(?!=)", " not ", condition).replace("&&", " and ").replace("||", " or ")
@@ -285,7 +290,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn("trusted-workflow-path: .github/workflows/contract-validation.yml", block)
         self.assertNotIn("needs.sdk-plan.outputs.tooling_", job)
         self.assertLess(job.index("select_sdk_completion_state"), job.index("./.github/actions/capture-sdk-tooling"))
-        self.assertLess(job.index("./.github/actions/capture-sdk-tooling"), job.index("./.github/actions/capture-runtime-state"))
+        self.assertLess(job.index("./.github/actions/capture-sdk-tooling"), job.index("./.github/actions/hydrated-evidence-cache"))
 
     def test_apple_policy_uses_original_plan_and_captured_tooling_only_when_required(self):
         job = self.job("sdk-completion")
@@ -305,7 +310,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertNotIn("steps.capture.outputs", policy)
         for earlier, later in ((tooling, download), (download, policy)):
             self.assertLess(job.index(earlier), job.index(later))
-        self.assertLess(job.index(policy), job.index("uses: ./.github/actions/capture-runtime-state"))
+        self.assertLess(job.index(policy), job.index("uses: ./.github/actions/hydrated-evidence-cache"))
 
     def test_parent_snippet_forwards_selector_tuple_and_never_outputs_on_failure(self):
         job = self.job("sdk-completion")
@@ -335,35 +340,27 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         self.assertEqual(locator, dict(line.split("=", 1) for line in output.read_text().splitlines()))
                 select.assert_called_once_with(needs)
 
-    def test_capture_uses_only_selected_parent_and_completion_uses_captured_paths(self):
+    def test_capture_completion_uses_only_selected_parent_and_preserves_output_contract(self):
         job = self.job("sdk-completion")
-        outputs = job.split("    outputs:\n", 1)[1].split("    steps:\n", 1)[0]
-        for name in ("artifact_id", "artifact_digest", "state_wave", "sdk_state_wave"):
-            self.assertIn(name + ": ${{ steps.parent.outputs." + name + " }}", outputs)
-            self.assertNotIn(name + ": ${{ steps.capture.outputs." + name + " }}", outputs)
-        capture = job.split("      - id: capture\n", 1)[1].split("\n      - ", 1)[0]
-        self.assertIn("uses: ./.github/actions/capture-runtime-state", capture)
-        self.assertIn("product: sdk", capture)
-        self.assertIn("plan-id: ${{ needs.plan.outputs.plan_id }}", capture)
-        for flag, field in (("artifact-id", "artifact_id"), ("artifact-sha256", "artifact_digest"),
-                            ("state-wave", "state_wave"), ("sdk-state-wave", "sdk_state_wave")):
-            self.assertIn(flag + ": ${{ steps.parent.outputs." + field + " }}", capture)
-        self.assertIn("sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}", capture)
-        self.assertIn("sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}", capture)
-        self.assertIn("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}", capture)
+        self.assertNotIn("uses: ./.github/actions/capture-runtime-state", job)
+        self.assertNotIn("steps.capture.outputs", job)
         completion = job.split("        id: completion\n", 1)[1]
-        for name, output in (("PLAN", "plan-path"), ("DISCOVERY_ROOT", "discovery-root"), ("STATE_ROOT", "state-root")):
-            self.assertIn(name + ": ${{ steps.capture.outputs." + output + " }}", completion)
-        self.assertIn("SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}", completion)
-        self.assertIn("SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}", completion)
-        self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}", completion)
-        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", completion)
+        self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", completion)
+        self.assertIn("mode: execute", completion)
+        for name, output in (("ARTIFACT_ID", "artifact_id"), ("ARTIFACT_SHA256", "artifact_digest"),
+                             ("STATE_WAVE", "state_wave"), ("SDK_STATE_WAVE", "sdk_state_wave")):
+            self.assertIn(name + ": ${{ steps.parent.outputs." + output + " }}", completion)
         for name, output in (("complete", "complete"), ("phase_count", "phaseCount"), ("full_reuse", "fullReuse")):
             self.assertIn(name + ": ${{ steps.completion.outputs." + output + " }}", job)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", completion)
+        self.assertIn("if: steps.tooling.outputs.plan-directory == ''", job)
+        action = (ROOT / ".github/actions/hydrated-evidence-cache/action.yml").read_text()
+        for output in ("complete", "phaseCount", "fullReuse"):
+            self.assertIn("  " + output + ":\n", action)
 
     def test_final_shell_invokes_only_fixed_completion_cli_with_optional_policy(self):
         block = self.job("sdk-completion").split("        id: completion\n", 1)[1]
-        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        script = textwrap.dedent(block.split("          script: |\n", 1)[1])
         with tempfile.TemporaryDirectory(prefix="sdk-completion-shell-") as temporary:
             root = Path(temporary)
             executable = root / "python3"
@@ -380,8 +377,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         arguments = root / "arguments.json"
                         output = root / "output"
                         env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
-                            "PLAN": "/captured plan/impact-plan.json", "DISCOVERY_ROOT": "/captured discovery",
-                            "STATE_ROOT": "/captured state", "SDK_VALIDATION_TOOLING": policy,
+                            "PLAN_DIRECTORY": "/held plan", "ARTIFACT_ID": "91",
+                            "ARTIFACT_SHA256": "sha256:" + "a" * 64, "STATE_WAVE": "0",
+                            "SDK_STATE_WAVE": "8", "SDK_VALIDATION_TOOLING": policy,
                             "TRUSTED_WORKFLOW_SHA": "c" * 40,
                             "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_OUTPUT": str(output),
                             "GITHUB_TOKEN": "not-a-command-argument", "ARGV_CAPTURE": str(arguments), "MOCK_EXIT": str(status)}
@@ -391,14 +389,16 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         process = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT,
                                                  capture_output=True, text=True)
                         self.assertEqual(status, process.returncode, process.stderr)
-                        expected = ["-B", "-m", "ci.sdk_completion", "--plan", env["PLAN"],
-                            "--discovery-root", env["DISCOVERY_ROOT"], "--state-root", env["STATE_ROOT"],
-                            "--sdk-original-workflow-sha", env["TRUSTED_WORKFLOW_SHA"],
+                        expected = ["-B", "-m", "ci.sdk_completion", "capture", "--plan", env["PLAN_DIRECTORY"] + "/impact-plan.json",
+                            "--destination", env["GITHUB_WORKSPACE"] + "/build/runtime-input",
+                            "--artifact-id", env["ARTIFACT_ID"], "--artifact-sha256", env["ARTIFACT_SHA256"],
+                            "--state-wave", env["STATE_WAVE"], "--trusted-workflow-sha", env["TRUSTED_WORKFLOW_SHA"],
                             "--repository-root", env["GITHUB_WORKSPACE"], "--github-output", str(output)]
                         if policy:
                             expected.extend(("--sdk-validation-tooling", policy))
                         if apple_policy:
                             expected.extend(("--sdk-apple-validation-policy", apple_policy))
+                        expected.extend(("--sdk-state-wave", "8"))
                         self.assertEqual(expected, json.loads(arguments.read_text()))
                         self.assertFalse(output.exists(), "The wrapper must not manufacture completion output")
 
@@ -558,12 +558,13 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             self.assertEqual(value.casefold() == "true", eval(caller_selection.replace("vars.CODEX_AGENT_REUSE_COMPLETED_SDK_PARITY", repr(value.casefold())), {"__builtins__": {}}))
         parent = self.job("sdk-parity")
         selection = re.search(r"reuseCompletedParity: \$\{\{ (.*?) \}\}", parent)[1]
-        for opt_in, recovery, complete, count, full in product((False, True), (False, True), ("", "false", "true"), ("", "61", "62"), ("", "false", "true")):
+        for opt_in, recovery, acceptance, complete, count, full in product((False, True), (False, True), (False, True), ("", "false", "true"), ("", "61", "62"), ("", "false", "true")):
             condition = selection.replace("inputs.reuseCompletedParity", repr(opt_in)).replace("inputs.sdkRecoveryOnly", repr(recovery))
+            condition = condition.replace("inputs.fullReuseAcceptanceOnly", repr(acceptance))
             for field, value in (("complete", complete), ("phase_count", count), ("full_reuse", full)):
                 condition = condition.replace("needs.sdk-completion.outputs." + field, repr(value))
-            self.assertEqual(opt_in and recovery and complete == full == "true" and count == "62",
-                             eval(condition.replace("&&", " and "), {"__builtins__": {}}))
+            self.assertEqual(opt_in and (recovery or acceptance) and complete == full == "true" and count == "62",
+                             eval(condition.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}}))
         guard = textwrap.dedent(self.parity_step("name: Require imported complete state for original parity reuse").split("        run: |\n", 1)[1])
         correct = {"IMPORTED_ONLY": "true", "SDK_COMPLETE": "true", "SDK_PHASE_COUNT": "62", "SDK_FULL_REUSE": "true"}
         self.assertEqual(0, subprocess.run(["bash", "-c", guard], env=correct, capture_output=True).returncode)
@@ -599,7 +600,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             with self.subTest(selected=selected, report=value), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); output = root / 'output'
                 if value is not None:
-                    (root / 'sdk-parity-reuse.log').write_text('throughput {"operation":"fixture"}\n' + json.dumps(value) + '\n')
+                    (root / 'sdk-parity-reuse.log').write_text('throughput {"operation":"fixture"}\n' + json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n')
                 environment = {'RUNNER_TEMP': temporary, 'GITHUB_OUTPUT': str(output), 'GITHUB_RUN_ID': '200',
                     'GITHUB_RUN_ATTEMPT': '2', 'REUSE_COMPLETED_PARITY': selected,
                     'FRESH_ARTIFACT_ID': '81', 'FRESH_ARTIFACT_SHA256': 'b' * 64}
@@ -608,8 +609,17 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         exec(compile(script, 'saved-parity-output', 'exec'), {})
                         self.assertEqual({'artifact_id': '71' if selected == 'true' else '81',
                             'artifact_digest': 'sha256:' + ('a' if selected == 'true' else 'b') * 64,
-                            'artifact_run_id': '100' if selected == 'true' else '200'},
+                            'artifact_run_id': '100' if selected == 'true' else '200',
+                            **({'report_sha256': 'sha256:' + hashlib.sha256(
+                                (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()).hexdigest()}
+                               if selected == 'true' else {})},
                             dict(row.split('=', 1) for row in output.read_text().splitlines()))
+                        member = root / 'hosted-parity-report/hosted-parity-report.json'
+                        if selected == 'true':
+                            self.assertEqual((json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode(),
+                                             member.read_bytes())
+                        else:
+                            self.assertFalse(member.exists())
                     else:
                         with self.assertRaises((ValueError, KeyError)):
                             exec(compile(script, 'saved-parity-output', 'exec'), {})
@@ -628,7 +638,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 'if os.environ["FAIL"] == "true": raise SystemExit(7)\n'
                 'print(json.dumps({"result":"passed","phaseCount":112,"verificationContext":'
                 '{"kind":"hosted-original-parity-reuse","producer":{"runId":200,"runAttempt":2}},'
-                '"sdkParity":{"artifactId":71,"artifactSha256":"sha256:"+"a"*64,"producer":{"runId":100}}}))\n')
+                '"sdkParity":{"artifactId":71,"artifactSha256":"sha256:"+"a"*64,"producer":{"runId":100}}},sort_keys=True,separators=(",",":")))\n')
             wrapper.chmod(0o700)
             for failure, missing_policy in ((False, False), (True, False), (False, True)):
                 with self.subTest(failure=failure, missing_policy=missing_policy):
@@ -654,6 +664,139 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                             '--completed-frozen-policy', '/protected/native', '--parity-policy', '/protected/parity'],
                             json.loads(argv.read_text()))
                         self.assertIn('artifact_run_id=100\n', output.read_text())
+
+    def test_acceptance_only_disables_product_jobs_and_keeps_real_control_checks(self):
+        caller = (ROOT / '.github/workflows/ci.yml').read_text()
+        for setting in ('runtimeRecoveryOnly: false', 'sdkRecoveryOnly: false',
+                        "fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')) }}"):
+            self.assertIn(setting, caller)
+        allowed = {'dispatch-authorization', 'workflow-lint', 'plan', 'contract-validation',
+                   'product-resume', 'sdk-completion', 'sdk-parity', 'merge-gate'}
+        jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
+        self.assertEqual(101, len(jobs))
+        for name in jobs:
+            condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
+            # The leading conjunction short-circuits even an always() producer.
+            if name not in allowed:
+                self.assertRegex(self.job(name),
+                    r'(?m)^    if: >-\n      !inputs.fullReuseAcceptanceOnly &&')
+                expression = re.search(r'(?ms)^    if: >-\n(.*?)(?=^    \S)', self.job(name))[1].strip()
+                self.assertTrue(expression.startswith('!inputs.fullReuseAcceptanceOnly && ('))
+                self.assertTrue(expression.endswith(')'))
+            else:
+                self.assertFalse(condition.strip().startswith('!inputs.fullReuseAcceptanceOnly'))
+        lint = self.job('workflow-lint')
+        self.assertIn('python3 -m unittest discover -s ci/tests -v', lint)
+        self.assertIn('./gradlew -p gradle/build-logic test', lint)
+        self.assertIn('"$HOME/go/bin/actionlint"', lint)
+        self.assertNotIn('fullReuseAcceptanceOnly', lint)
+        for name in ('product-resume', 'sdk-completion'):
+            self.assertIn("(!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success')",
+                          self.job(name))
+
+    def test_saved_acceptance_plan_guard_rejects_misses_before_transport_upload(self):
+        job = self.job('plan')
+        step = job.split('      - name: Require complete retained inputs for current-head acceptance\n', 1)[1].split('\n      - ', 1)[0]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        self.assertLess(job.index('id: full-reuse-guard'), job.index('id: upload_native_resume'))
+        self.assertLess(job.index('id: full-reuse-guard'), job.index('id: upload_plan_control'))
+        valid = dict(RUNTIME_RECOVERY_ONLY='false', SDK_RECOVERY_ONLY='false', TOOLING_ONLY='false',
+            REUSE_COMPLETED_PARITY='true', EVENT_AUTHORIZED='true', REMOTE_BUILD_AUTHORIZED='true',
+            NATIVE_CONTRACT_COMPLETE='true', CONTRACT_NEXT_PHASE='none', CONTRACT_MATRIX='{"include":[]}',
+            TOOLING_MISS='false', NATIVE_RESUME_READY='true', FULL_REUSE='true', TARGET_JOBS_REQUIRED='false',
+            RUNTIME_WORKERS_REQUIRED='false', RUNTIME_MATRIX='{"include":[]}', SUPERVISOR_KEY='',
+            ROUTING=json.dumps({'ready': [], 'preparation': {'preparation_required': False}}))
+        cases = [(valid, True)]
+        for name, value in valid.items():
+            cases.append(({**valid, name: 'unexpected' if value == '' else ''}, False))
+        for routing in ({'ready': ['missing'], 'preparation': {'preparation_required': False}},
+                        {'ready': [], 'preparation': {'preparation_required': True}},
+                        {'ready': [], 'preparation': {'preparation_required': 'false'}}):
+            cases.append(({**valid, 'ROUTING': json.dumps(routing)}, False))
+        for number, (environment, accepted) in enumerate(cases):
+            with self.subTest(case=number):
+                result = subprocess.run(['bash', '-c', script], env={**os.environ, **environment},
+                                        capture_output=True, text=True, cwd=ROOT)
+                self.assertEqual(accepted, result.returncode == 0, result.stderr)
+
+    def test_acceptance_parity_cannot_fall_back_to_fresh_work(self):
+        condition = re.search(r'(?ms)^    if: >-\n(.*?)(?=^    \S)', self.job('sdk-parity'))[1]
+        condition = ' '.join(condition.split())
+        valid = {'inputs.fullReuseAcceptanceOnly': True, 'inputs.runtimeRecoveryOnly': False,
+            'inputs.sdkRecoveryOnly': False, 'inputs.reuseCompletedParity': True,
+            'needs.plan.result': 'success', 'needs.sdk-completion.result': 'success',
+            'needs.plan.outputs.event_authorized': 'true', 'needs.plan.outputs.remote_build_authorized': 'true',
+            'needs.plan.outputs.validation_reused': 'false', 'needs.plan.outputs.lane_ios_swift_tests_test': 'true',
+            'needs.plan.outputs.native_wrappers': 'true', 'needs.sdk-completion.outputs.complete': 'true',
+            'needs.sdk-completion.outputs.phase_count': '62', 'needs.sdk-completion.outputs.full_reuse': 'true'}
+        def evaluate(values):
+            expression = condition.replace('always()', 'True').replace('needs.*.result', repr(['success', 'skipped']))
+            for key in sorted(values, key=len, reverse=True):
+                expression = expression.replace(key, repr(values[key]))
+            expression = re.sub(r'!(?!=)', ' not ', expression).replace('&&', ' and ').replace('||', ' or ')
+            return eval(expression.strip(), {'__builtins__': {}}, {'contains': lambda rows, value: value in rows})
+        self.assertTrue(evaluate(valid))
+        for key in ('needs.plan.result', 'needs.sdk-completion.result', 'needs.sdk-completion.outputs.complete',
+                    'needs.sdk-completion.outputs.phase_count', 'needs.sdk-completion.outputs.full_reuse'):
+            for value in ('', 'false', 'failure', 'skipped'):
+                with self.subTest(key=key, value=value):
+                    self.assertFalse(evaluate({**valid, key: value}))
+        self.assertFalse(evaluate({**valid, 'inputs.reuseCompletedParity': False}))
+
+    def test_current_report_and_distinct_acceptance_cli_preserve_legacy_branch(self):
+        parity = (ROOT / '.github/workflows/sdk-binding-parity.yml').read_text()
+        upload = self.parity_step('id: upload_report')
+        self.assertIn('if: inputs.reuseCompletedParity\n', upload)
+        self.assertIn('path: ${{ runner.temp }}/hosted-parity-report/hosted-parity-report.json', upload)
+        self.assertIn('overwrite: false', upload)
+        self.assertLess(parity.index('id: parity-output'), parity.index('id: upload_report'))
+        for name, expression in (
+                ('report_sha256', 'steps.parity-output.outputs.report_sha256'),
+                ('report_artifact_id', 'steps.upload_report.outputs.artifact-id')):
+            self.assertIn(name + ': ${{ ' + expression + ' }}', parity)
+            self.assertIn('value: ${{ jobs.sdk-parity.outputs.' + name + ' }}', parity)
+        gate = self.job('merge-gate')
+        for marker in ('name: Require an exact receipt set', 'name: Stage the exact reusable validation artifact'):
+            block = gate.split('      - ' + marker + '\n', 1)[1].split('\n      - ', 1)[0]
+            self.assertIn('if: ${{ !inputs.fullReuseAcceptanceOnly }}', block)
+        block = gate.split('      - name: Authenticate current-head acceptance without restoring product bodies\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', block)
+        for name in ('FULL_REUSE_ACCEPTANCE_ONLY', 'RUNTIME_RECOVERY_ONLY', 'SDK_RECOVERY_ONLY',
+                     'FULL_ACCEPTANCE_CURRENT', 'PLAN_RESULT', 'WORKFLOW_LINT_RESULT', 'PRODUCT_RESUME_RESULT',
+                     'SDK_COMPLETION_RESULT', 'SDK_PARITY_RESULT', 'PRODUCT_FULL_REUSE', 'SDK_COMPLETE',
+                     'SDK_PHASE_COUNT', 'TOOLING_MISS', 'TARGET_JOBS_REQUIRED'):
+            self.assertRegex(block, rf'(?m)^          {name}: \$\{{\{{ .+ \}}\}}$')
+        for variable, field in (('REPORT_SHA256', 'report_sha256'), ('REPORT_ARTIFACT_ID', 'report_artifact_id'),
+                                ('REPORT_ARTIFACT_SHA256', 'report_artifact_sha256')):
+            self.assertIn(variable + ': ${{ needs.sdk-parity.outputs.' + field + ' }}', block)
+        script = textwrap.dedent(block.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            python = directory / 'python3'
+            python.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+                'open(os.environ["ARGV"],"w").write(json.dumps(sys.argv[1:]))\n'
+                'raise SystemExit(int(os.environ["STATUS"]))\n')
+            python.chmod(0o700)
+            env = {**os.environ, 'PATH': str(directory) + os.pathsep + os.environ['PATH'],
+                'REPORT_SHA256': 'sha256:' + 'a' * 64, 'REPORT_ARTIFACT_ID': '71',
+                'REPORT_ARTIFACT_SHA256': 'sha256:' + 'b' * 64, 'TRUSTED_WORKFLOW_SHA': 'c' * 40,
+                'GITHUB_WORKSPACE': '/current source', 'ARGV': str(directory / 'argv')}
+            for status in (0, 7):
+                with self.subTest(status=status):
+                    process = subprocess.run(['bash', '-c', script], env={**env, 'STATUS': str(status)},
+                                             capture_output=True, text=True)
+                    self.assertEqual(status, process.returncode, process.stderr)
+                    self.assertEqual(['-B', '-m', 'ci.sdk_completion', 'acceptance', '--plan',
+                        'build/ci/current-plan/impact-plan.json', '--report-sha256', env['REPORT_SHA256'],
+                        '--report-artifact-id', '71', '--report-artifact-sha256', env['REPORT_ARTIFACT_SHA256'],
+                        '--trusted-workflow-sha', env['TRUSTED_WORKFLOW_SHA'], '--repository-root',
+                        '/current source', '--destination', 'build/ci/current-head-acceptance'],
+                        json.loads((directory / 'argv').read_text()))
+        distinct = gate.split('      - name: Preserve distinct current-head acceptance evidence\n', 1)[1]
+        self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', distinct)
+        self.assertIn('name: codex-agent-current-head-acceptance-${{ needs.plan.outputs.validation_tree }}', distinct)
+        self.assertIn('path: build/ci/current-head-acceptance\n', distinct)
+        self.assertIn('overwrite: false', distinct)
 
 
 if __name__ == "__main__":
