@@ -109,6 +109,7 @@ runs:
       with:
         product: sdk
         sdk-family: native-metadata
+        sdk-metadata-component: ${{ inputs.component }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}
@@ -126,6 +127,7 @@ runs:
         ARTIFACT_SHA256: ${{ inputs.preparation-state-sha256 }}
         STATE_WAVE: ${{ inputs.preparation-state-wave }}
         SDK_STATE_WAVE: ${{ inputs.preparation-sdk-state-wave }}
+        PREPARATION_COMPONENT: ${{ inputs.preparation-component }}
         PREPARATION_PHASE: ${{ inputs.preparation-phase }}
         PREPARATION_TARGET: ${{ inputs.preparation-target }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
@@ -145,6 +147,7 @@ runs:
         esac
         selected=()
         if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi
+        if [ "$phase" = metadata ]; then selected+=(--metadata-component "$PREPARATION_COMPONENT"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then selected+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
         reuse=()
         if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
@@ -290,6 +293,26 @@ runs:
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'native-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)
+        PY
+    - name: Retain native metadata worker diagnostics
+      if: always() && steps.identity.outcome == 'success'
+      shell: bash
+      run: |
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE']) / 'build/sdk-worker'
+        for name in ('execution.json', 'gradle.log'):
+            source = root / 'candidate/worker' / name
+            if not source.is_symlink() and not source.exists():
+                continue
+            if source.is_symlink() or not source.is_file():
+                raise ValueError('Native metadata diagnostic must be a regular file')
+            destination = root / 'worker' / name
+            if destination.exists() or destination.is_symlink():
+                raise FileExistsError(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(destination)
         PY
     - if: always() && steps.identity.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -791,24 +791,35 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                     copy(record["validationReceipt"], lane / "receipts" / (target + ".json"))
                 # Existing verifier stages the original producer's source,
                 # canonical inputs, bootstrap and raw compiler/test evidence.
-                handoff = lane / "inputs"
-                command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
-                    "--repository", str(root), "--component", language,
-                    "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
-                command.extend(("--receipt", str(package_receipts[language])))
-                for option, key in (("stage", "packageStage"),
-                        ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
-                        ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
-                        ("validation-receipt", "validationReceipt")):
-                    command.extend(("--" + option, str(primary[key])))
-                run(command)
+                selected = lane / "parity-inputs"
+                capability = lane / "hosts/linux-x64/outputs/capability"
+                with tempfile.TemporaryDirectory(prefix="handoff-", dir=lane) as scoped:
+                    handoff = Path(scoped) / "inputs"
+                    command = [sys.executable, "-m", "ci.products.sdk_package", "verify-native",
+                        "--repository", str(root), "--component", language,
+                        "--validation-target", "linux-x64", "--validation-inputs-output", str(handoff)]
+                    command.extend(("--receipt", str(package_receipts[language])))
+                    for option, key in (("stage", "packageStage"),
+                            ("compatibility-request", "compatibilityRequest"), ("runtime-stages", "runtimeStages"),
+                            ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
+                            ("validation-receipt", "validationReceipt")):
+                        command.extend(("--" + option, str(primary[key])))
+                    run(command)
+                    for relative in ("bootstrap/bootstrap-evidence.json", "validation-source/capability-claims.tsv"):
+                        source_file = handoff / relative
+                        copy(source_file, selected / relative)
+                        if read_regular_file_bytes(source_file) != read_regular_file_bytes(selected / relative):
+                            raise ValueError("Selected parity handoff file changed during capture")
+                    if (memoized_file_inventory(handoff / "validation/outputs/capability")
+                            != memoized_file_inventory(capability)):
+                        raise ValueError("Verified parity handoff differs from private capability")
                 config["native"][language] = {"packageStage": str(primary["packageStage"]),
                     "packageReceipt": str(package_receipts[language]), "request": str(primary["compatibilityRequest"]),
                     "runtime": str(primary["runtimeStages"]), "sdks": str(primary["stagedSdks"]),
                     "validationStages": str(lane / "hosts"), "validationReceipts": str(lane / "receipts"),
-                    "bootstrap": str(handoff / "bootstrap/bootstrap-evidence.json"),
-                    "claims": str(handoff / "validation-source/capability-claims.tsv"),
-                    "capability": str(handoff / "validation/outputs/capability"),
+                    "bootstrap": str(selected / "bootstrap/bootstrap-evidence.json"),
+                    "claims": str(selected / "validation-source/capability-claims.tsv"),
+                    "capability": str(capability),
                     "output": str(private / (language + "-parity.json"))}
             native_script = private / "native.init.gradle"
             native_script.write_text(IMPORTED_NATIVE_PARITY_INIT)
@@ -1241,7 +1252,11 @@ def _write_matrix(ready_plans, github_output_path, *, ios_binary=False, family=N
     return value
 
 
-def _read_scope(ios_binary, family):
+def _read_scope(ios_binary, family, *, metadata_component=None):
+    if metadata_component is not None:
+        if ios_binary or family != "native-metadata" or metadata_component not in NATIVE_BINDINGS:
+            raise ValueError("A metadata component requires its exact native metadata family")
+        return (PhaseInstanceId("sdk", metadata_component, "metadata", "desktop"),)
     selected = tuple(instance for instance in product_reuse.PHASE_INSTANCE_IDS
         if (product_reuse._sdk_family_worker_instance(instance, family) if family is not None else
             (product_reuse._sdk_ios_binary_worker_instance if ios_binary else
@@ -1253,6 +1268,7 @@ def _read_scope(ios_binary, family):
 
 
 def matrix(plan, discovery, state, github_output_path, *, repository_root=None, environ=None, ios_binary=False, family=None,
+           metadata_component=None,
            trusted_workflow_sha=None,
            sdk_validation_tooling=None, sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None):
@@ -1263,7 +1279,7 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
         product_reuse._sdk_family_worker_instance(None, family)
         if ios_binary:
             raise ValueError("SDK family and binary projection are mutually exclusive")
-    selected = _read_scope(ios_binary, family)
+    selected = _read_scope(ios_binary, family, metadata_component=metadata_component)
     inspected = product_reuse.inspect_products(plan, discovery, state,
         repository_root=repository_root, environ=environ,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
@@ -1272,6 +1288,9 @@ def matrix(plan, discovery, state, github_output_path, *, repository_root=None, 
         **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission))
+    if metadata_component is not None and any(product_reuse._identity(ready) not in selected
+            for ready in inspected["readyPlans"]):
+        raise ValueError("Scoped metadata election returned another component")
     if family == "native-package":
         from sdk_native_continuation import select_preparation_anchor
         anchor = select_preparation_anchor(inspected["readyPlans"])
@@ -1287,7 +1306,7 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
             repository_root=None, environ=None, token, ios_binary=False, family=None, sdk_validation_tooling=None,
             sdk_apple_validation_policy=None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, scope_inputs=False,
-    completed_frozen=None):
+    completed_frozen=None, metadata_component=None):
     """Capture exact original state, then replay SDK readiness independently."""
     if type(ios_binary) is not bool:
         raise ValueError("SDK binary projection must be boolean")
@@ -1299,12 +1318,15 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
             {None, 'javascript-metadata', 'native-package', 'native-validation', 'native-metadata',
              'csharp-binary', 'core-binary', 'android-binary'}):
         raise ValueError('SDK capture scope requires a worker with independent scoped admission')
+    if metadata_component is not None and not scope_inputs:
+        raise ValueError("A metadata component requires scoped input capture")
+    selected = _read_scope(ios_binary, family, metadata_component=metadata_component) if scope_inputs else None
     product_reuse.capture_runtime_resume_upload(plan, destination, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, trusted_workflow_sha=trusted_workflow_sha,
         state_wave=state_wave, **({"sdk_state_wave": sdk_state_wave} if sdk_state_wave is not None else {}),
         repository_root=repository_root, environ=environ, token=token, allow_earlier_attempt=True,
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
-        **({'requested_scope': _read_scope(ios_binary, family)} if scope_inputs else {}))
+        **({'requested_scope': selected} if scope_inputs else {}))
     original = destination / "original"
     paths = {"input_root": original,
         "plan_path": original / "product-resume-inputs/plan/impact-plan.json",
@@ -1312,6 +1334,7 @@ def capture(plan, destination, github_output_path, *, artifact_id, artifact_sha2
         "state_root": original / ("runtime-state" if state_wave or sdk_state_wave is not None else "product-resume-state")}
     value = matrix(paths["plan_path"], paths["discovery_root"], paths["state_root"], github_output_path,
                    repository_root=repository_root, environ=environ,
+                   **({"metadata_component": metadata_component} if metadata_component is not None else {}),
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
                    trusted_workflow_sha=trusted_workflow_sha, **({"ios_binary": True} if ios_binary else {}),
                    **_caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
@@ -1699,6 +1722,7 @@ def _workflow_main(argv, *, _continuation=None):
     captured.add_argument("--state-wave", type=int, default=0)
     captured.add_argument("--sdk-state-wave", type=int)
     captured.add_argument("--scope-inputs", action="store_true")
+    captured.add_argument("--metadata-component", choices=sorted(NATIVE_BINDINGS))
     captured.add_argument("--preparation-destination", type=Path)
     captured.add_argument("--preparation-artifact-id", type=int)
     captured.add_argument("--preparation-artifact-sha256")
