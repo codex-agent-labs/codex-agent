@@ -48,7 +48,7 @@ class AcquisitionTests(unittest.TestCase):
         issuer, parent = "a" * 40, "b" * 40
         document = {"policy": {"sdkCompletion": {"signerCommit": issuer}}}
         value = {"approvedVerifiers": [issuer, parent]}
-        root = Path("unused")
+        root, token = Path("unused"), "synthetic-content-read-token"
         original = {"schemaVersion": 1, "sdkInputs": {"source": "exact original"}}
         extension = {"schemaVersion": 3, "parent": {"signerCommit": parent, "sourceCommit": parent},
                      "completedPhases": [{"phase": "package"}]}
@@ -60,27 +60,94 @@ class AcquisitionTests(unittest.TestCase):
             inherited = version != 1
             rows = [canonical_json_bytes(current), canonical_json_bytes(original)] if inherited else [canonical_json_bytes(original)]
             with self.subTest(version=version), \
+                    patch("reuse_qualification._ensure_native_issuer_commit") as acquire, \
                     patch("reuse_qualification._sdk_completed_spec_path", side_effect=lambda root, commit: commit + ".json") as select, \
                     patch("products.inventory.git_regular_blob_bytes", side_effect=rows) as read, \
                     patch("completed_sdk_reuse._spec") as validate:
-                self.assertEqual((original, 2 if inherited else 1), consumer.completed_sdk_spec(root, document, value))
+                self.assertEqual((original, 2 if inherited else 1), consumer.completed_sdk_spec(root, document, value, token))
                 self.assertEqual([issuer, parent] if inherited else [issuer], [call.args[1] for call in select.call_args_list])
+                self.assertEqual([(root, commit, token) for commit in ([issuer, parent] if inherited else [issuer])],
+                    [call.args for call in acquire.call_args_list])
                 self.assertEqual([call.args[1] + ".json" for call in read.call_args_list], [call.args[2] for call in read.call_args_list])
                 if inherited:
                     validate.assert_called_once_with(current)
                 else:
                     validate.assert_not_called()
-        with patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
+        with patch("reuse_qualification._ensure_native_issuer_commit"), \
+                patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
                 patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(current)) as read, \
                 patch("completed_sdk_reuse._spec", side_effect=ValueError("invalid source context")), \
                 self.assertRaisesRegex(ValueError, "invalid source context"):
-            consumer.completed_sdk_spec(root, document, value)
+            consumer.completed_sdk_spec(root, document, value, token)
         self.assertEqual(1, read.call_count)
-        with patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
+        with patch("reuse_qualification._ensure_native_issuer_commit"), \
+                patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json"), \
                 patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(extension)) as read, \
                 patch("completed_sdk_reuse._spec"), self.assertRaisesRegex(ValueError, "independently approved"):
-            consumer.completed_sdk_spec(root, document, {"approvedVerifiers": [issuer]})
+            consumer.completed_sdk_spec(root, document, {"approvedVerifiers": [issuer]}, token)
         self.assertEqual(1, read.call_count)
+
+    def test_completed_sdk_recipe_acquires_missing_approved_issuer_and_parent(self):
+        from products.inventory import canonical_json_bytes
+        issuer, parent = "a" * 40, "b" * 40
+        root, token = Path("unused"), "synthetic-content-read-token"
+        document = {"policy": {"sdkCompletion": {"signerCommit": issuer}}}
+        value = {"approvedVerifiers": [issuer, parent]}
+        original = {"schemaVersion": 1, "sdkInputs": {"source": "exact original"}}
+        for version in (1, 2, 3, 4):
+            current = {"schemaVersion": version, "parent": {
+                "signerCommit": parent, "sourceCommit": parent}, "completedPhases": [{}]}
+            available, events = set(), []
+
+            def acquire(actual_root, commit, actual_token):
+                self.assertEqual((root, token), (actual_root, actual_token))
+                self.assertIn(commit, value["approvedVerifiers"])
+                events.append(("acquire", commit))
+                available.add(commit)
+
+            def select(actual_root, commit):
+                self.assertEqual(root, actual_root)
+                if commit not in available:
+                    raise subprocess.CalledProcessError(128, ["git", "ls-tree", commit])
+                events.append(("read", commit))
+                return commit + ".json"
+
+            rows = [canonical_json_bytes(current), canonical_json_bytes(original)] if version != 1 else [canonical_json_bytes(original)]
+            with self.subTest(version=version), \
+                    patch("reuse_qualification._ensure_native_issuer_commit", side_effect=acquire), \
+                    patch("reuse_qualification._sdk_completed_spec_path", side_effect=select), \
+                    patch("products.inventory.git_regular_blob_bytes", side_effect=rows), \
+                    patch("completed_sdk_reuse._spec"):
+                self.assertEqual((original, 2 if version != 1 else 1),
+                    consumer.completed_sdk_spec(root, document, value, token))
+                self.assertEqual([("acquire", issuer), ("read", issuer)] + (
+                    [("acquire", parent), ("read", parent)] if version != 1 else []), events)
+
+    def test_completed_sdk_recipe_rejects_unapproved_or_unavailable_commits_before_read(self):
+        from products.inventory import canonical_json_bytes
+        issuer, parent = "a" * 40, "b" * 40
+        document = {"policy": {"sdkCompletion": {"signerCommit": issuer}}}
+        extension = {"schemaVersion": 4, "parent": {
+            "signerCommit": parent, "sourceCommit": parent}, "completedPhases": [{}]}
+        for fault in ("issuer-approval", "parent-approval", "parent-source-approval", "issuer-fetch", "parent-fetch"):
+            value = {"approvedVerifiers": [parent] if fault == "issuer-approval" else [issuer, parent]}
+            current = copy.deepcopy(extension)
+            if fault == "parent-approval": value["approvedVerifiers"].remove(parent)
+            if fault == "parent-source-approval": current["parent"]["sourceCommit"] = "c" * 40
+
+            def acquire(root, commit, token):
+                if fault == "issuer-fetch" or (fault == "parent-fetch" and commit == parent):
+                    raise ValueError("exact issuer acquisition failed")
+
+            with self.subTest(fault=fault), \
+                    patch("reuse_qualification._ensure_native_issuer_commit", side_effect=acquire) as ensure, \
+                    patch("reuse_qualification._sdk_completed_spec_path", return_value="fixed.json") as select, \
+                    patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(current)) as read, \
+                    patch("completed_sdk_reuse._spec"), self.assertRaises(ValueError):
+                consumer.completed_sdk_spec(Path("unused"), document, value, "synthetic-token")
+            self.assertEqual(0 if fault == "issuer-approval" else 2 if fault == "parent-fetch" else 1, ensure.call_count)
+            self.assertEqual(0 if fault in ("issuer-approval", "issuer-fetch") else 1, select.call_count)
+            self.assertEqual(select.call_count, read.call_count)
 
     def test_requalification_requires_an_approved_baseline_with_exact_git_custody(self):
         from products.inventory import canonical_json_bytes

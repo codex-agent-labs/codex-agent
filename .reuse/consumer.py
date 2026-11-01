@@ -366,11 +366,14 @@ def completed_descriptor(raw, value):
     return document
 
 
-def completed_sdk_spec(root, document, value):
+def completed_sdk_spec(root, document, value, token):
     """Resolve the retained source through the approved native issuer's fixed parent."""
     from products.inventory import git_regular_blob_bytes, load_canonical_json_bytes
-    from reuse_qualification import _sdk_completed_spec_path
+    from reuse_qualification import _ensure_native_issuer_commit, _sdk_completed_spec_path
     issuer = document["policy"]["sdkCompletion"]["signerCommit"]
+    if issuer not in value["approvedVerifiers"]:
+        raise ValueError("Native SDK issuer is not independently approved")
+    _ensure_native_issuer_commit(root, issuer, token)
     spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
         issuer, _sdk_completed_spec_path(root, issuer), max_bytes=16 * 1024 * 1024))
     count = 1
@@ -381,6 +384,7 @@ def completed_sdk_spec(root, document, value):
             raise ValueError("Incremental native parent is not independently approved")
         count += len(spec["completedPhases"])
         parent = spec["parent"]["signerCommit"]
+        _ensure_native_issuer_commit(root, parent, token)
         spec = load_canonical_json_bytes(git_regular_blob_bytes(root,
             parent, _sdk_completed_spec_path(root, parent), max_bytes=16 * 1024 * 1024))
     if type(spec.get("schemaVersion")) is not int or spec["schemaVersion"] != 1:
@@ -472,7 +476,7 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
         parity_raw = authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"])
         sdk_parity_policy(parity_raw)
     acquired = [history(root, record) for record in document["gitHistory"]]
-    spec, _ = completed_sdk_spec(root, document, value)
+    spec, _ = completed_sdk_spec(root, document, value, os.environ.get("GITHUB_TOKEN", ""))
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
         raise ValueError("Approved SDK source pin differs from the native issuer's fixed source")
     # The optional descriptor is separate; legacy completed_descriptor stays exact.
@@ -530,7 +534,7 @@ def verify_completed(root, work, value, token):
            if "requalificationBaseline" in policy else {}),
         revision=git(root, "rev-parse", "HEAD").decode().strip(), token=token,
         **qualification._native_pin_arguments(pins))
-    _, expected_sdk = completed_sdk_spec(root, document, value)
+    _, expected_sdk = completed_sdk_spec(root, document, value, token)
     invalidated = report.get("invalidatedPhases", [])
     if (report["productBodiesDownloaded"] != 0
             or report["completedFrozenPhases"] + report["completedSdkPhases"] + len(invalidated) != 50 + expected_sdk
