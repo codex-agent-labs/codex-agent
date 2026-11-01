@@ -2268,6 +2268,10 @@ def _prime_runtime_artifact_metadata(sources, token):
     batch = _CI_OBSERVATIONS.get()
     if batch is None:
         raise ValueError("Runtime artifact metadata requires a fresh observation batch")
+    current = batch.get("currentAttempt")
+    shared = (batch.get("shareNested") is True and isinstance(current, tuple) and len(current) == 2
+              and all(isinstance(value, str) and value.isdecimal() for value in current))
+    cached = dict(batch.get("artifactMetadata", {})) if shared else {}
     groups, owners = {}, {}
     for source in sources:
         run = require_integer(source["receipt"]["producer"]["runId"], "Original artifact run", 1)
@@ -2279,6 +2283,12 @@ def _prime_runtime_artifact_metadata(sources, token):
 
     def first_page(group):
         run, wanted = group
+        if shared and str(run) != current[0] and all(
+                isinstance(row := cached.get((token, identity)), dict) and row.get("id") == identity
+                and isinstance(row.get("workflow_run"), dict) and row["workflow_run"].get("id") == run
+                for identity in wanted):
+            count('artifactMetadataPageReuses')
+            return {(token, identity): cached[token, identity] for identity in wanted}
         count('artifactMetadataPageReads')
         response = require_object(api_json(
             f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run}/artifacts"
@@ -2296,7 +2306,12 @@ def _prime_runtime_artifact_metadata(sources, token):
     # Only known positive IDs are used; absent entries keep their individual GET.
     # Full metadata/job/window/native-locator validation still follows for each.
     pages = bounded_verify(first_page, (group for group in groups.items() if len(group[1]) > 1))
-    batch["artifactMetadata"] = {key: row for page in pages for key, row in page.items()}
+    # Keep unrelated positives only inside the explicit shared lifetime. Remove
+    # this call's old rows so incomplete refreshes retain individual-GET fallback.
+    for identity in owners:
+        cached.pop((token, identity), None)
+    cached.update({key: row for page in pages for key, row in page.items()})
+    batch["artifactMetadata"] = cached
 
 
 @measured

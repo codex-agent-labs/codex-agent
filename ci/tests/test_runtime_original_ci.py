@@ -87,10 +87,16 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 original['name'], self.producer, self.run if run is None else run, token)
 
         with mock.patch.object(adapter, 'api_json', side_effect=read) as api:
-            with adapter._ci_observation_batch():
+            with adapter._ci_observation_batch(('999', '1'), share_nested=True):
                 adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+                with adapter._ci_observation_batch(('999', '1')):
+                    adapter._prime_runtime_artifact_metadata(sources, 'fixture')
                 for phase in fixture.PHASES:
                     self.assertEqual(self.artifacts[phase], metadata(phase))
+                with self.assertRaisesRegex(ValueError, 'caller-bound transport identity'):
+                    adapter._contract_ci_upload_metadata(self.artifacts['binary']['id'],
+                        'sha256:' + '0' * 64, self.artifacts['binary']['name'],
+                        self.producer, self.run, 'fixture')
                 self.assertEqual(1, api.call_count)
                 metadata('binary')['expired'] = True
                 self.assertFalse(metadata('binary')['expired'])
@@ -137,9 +143,11 @@ class RuntimeOriginalCiTest(unittest.TestCase):
         for field, value in (('digest', 'sha256:' + '0' * 64), ('name', 'wrong'), ('expired', True),
                 ('size_in_bytes', 0), ('archive_download_url', 'https://wrong.invalid/zip'),
                 ('workflow_run', {**first['workflow_run'], 'id': 999})):
-            with self.subTest(field=field), adapter._ci_observation_batch(), \
+            with self.subTest(field=field), adapter._ci_observation_batch(('999', '1'), share_nested=True), \
                     mock.patch.object(adapter, 'api_json', return_value={
-                        'total_count': 1, 'artifacts': [{**first, field: value}]}):
+                        'total_count': len(sources),
+                        'artifacts': [{**first, field: value}, *list(self.artifacts.values())[1:]]}):
+                adapter._prime_runtime_artifact_metadata(sources, 'fixture')
                 adapter._prime_runtime_artifact_metadata(sources, 'fixture')
                 with self.assertRaises(ValueError):
                     metadata()
@@ -148,6 +156,73 @@ class RuntimeOriginalCiTest(unittest.TestCase):
             adapter._prime_runtime_artifact_metadata([sources[0], {**sources[0], 'receipt': {
                 **sources[0]['receipt'], 'producer': {**self.producer, 'runId': 999}}}], 'fixture')
         api.assert_not_called()
+
+    def test_native_artifact_prime_refreshes_unshared_incomplete_or_changed_context(self):
+        sources = [{"receipt": json.loads(self.receipts[phase].read_bytes()),
+                    "artifactId": self.artifacts[phase]['id']} for phase in fixture.PHASES]
+        rows = list(self.artifacts.values())
+        for case in ('unshared', 'no-current-scope', 'incomplete', 'new-id', 'token', 'current-run',
+                     'wrong-id', 'wrong-run', 'new-scope'):
+            with self.subTest(case=case), mock.patch.object(adapter, 'api_json',
+                    side_effect=lambda *_: {
+                        'total_count': len(rows), 'artifacts': copy.deepcopy(rows)}) as api:
+                current = ('71', '99') if case == 'current-run' else ('999', '1')
+                if case == 'no-current-scope':
+                    current = None
+                with adapter._ci_observation_batch(current, share_nested=case != 'unshared'):
+                    adapter._prime_runtime_artifact_metadata(sources[:2] if case == 'new-id' else sources,
+                                                             'fixture')
+                    cached = adapter._CI_OBSERVATIONS.get()['artifactMetadata']
+                    key = ('fixture', rows[0]['id'])
+                    if case == 'incomplete':
+                        del cached[key]
+                    elif case == 'wrong-id':
+                        cached[key]['id'] = 999
+                    elif case == 'wrong-run':
+                        cached[key]['workflow_run']['id'] = 999
+                    if case != 'new-scope':
+                        adapter._prime_runtime_artifact_metadata(sources,
+                            'other-token' if case == 'token' else 'fixture')
+                if case == 'new-scope':
+                    with adapter._ci_observation_batch(current, share_nested=True):
+                        adapter._prime_runtime_artifact_metadata(sources, 'fixture')
+                self.assertEqual(2, api.call_count)
+
+    def test_native_artifact_prime_preserves_other_groups_but_not_absent_refreshed_ids(self):
+        sources = [{"receipt": json.loads(self.receipts[phase].read_bytes()),
+                    "artifactId": self.artifacts[phase]['id']} for phase in fixture.PHASES]
+        rows = copy.deepcopy(list(self.artifacts.values()))
+        for source, row in zip(sources[2:], rows[2:]):
+            source['receipt']['producer']['runId'] = 91
+            row['workflow_run']['id'] = 91
+        def read(url, token):
+            if '/runs/' in url:
+                selected = rows[:2] if '/runs/71/' in url else rows[2:]
+                return {'total_count': len(selected), 'artifacts': copy.deepcopy(selected)}
+            return copy.deepcopy(next(row for row in rows if url.endswith('/' + str(row['id']))))
+        with mock.patch.object(adapter, 'api_json', side_effect=read) as api, \
+                adapter._ci_observation_batch(('999', '1'), share_nested=True):
+            for group in (sources[:2], sources[2:], sources):
+                adapter._prime_runtime_artifact_metadata(group, 'fixture')
+            for source, row in zip(sources, rows):
+                self.assertEqual(row, adapter._contract_ci_upload_metadata(row['id'], row['digest'],
+                    row['name'], source['receipt']['producer'], self.run, 'fixture'))
+            self.assertEqual(2, api.call_count)
+
+        # A changed requested group must replace its own stale positives, while
+        # an absent refreshed ID falls back to its independently checked GET.
+        sources[2]['receipt']['producer']['runId'] = 71
+        rows[2]['workflow_run']['id'] = 71
+        first = rows[0]
+        with mock.patch.object(adapter, 'api_json', side_effect=[
+                {'total_count': 2, 'artifacts': rows[:2]},
+                {'total_count': 2, 'artifacts': rows[1:3]}, first]) as api, \
+                adapter._ci_observation_batch(('999', '1'), share_nested=True):
+            adapter._prime_runtime_artifact_metadata(sources[:2], 'fixture')
+            adapter._prime_runtime_artifact_metadata(sources[:3], 'fixture')
+            self.assertEqual(first, adapter._contract_ci_upload_metadata(first['id'], first['digest'],
+                first['name'], self.producer, self.run, 'fixture'))
+            self.assertEqual(3, api.call_count)
 
     def test_single_artifact_metadata_is_shared_without_sharing_admission(self):
         from products.restore import bounded_verify
