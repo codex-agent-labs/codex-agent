@@ -156,7 +156,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
                       'f339db79f75765d8dca66b4acee1cd7e88163cea',
                       '6077e16066e7ee8cfd6c59088c4859dba2ebb146',
                       '4552e2da1684d5af0b86386bf94e5113326761c5',
-                      '39a98de51cdc803d958187dc69e7940529b6d8e1'):
+                      '39a98de51cdc803d958187dc69e7940529b6d8e1',
+                      '8e3c5272c0ae38b225b772f264105908a0344dbb'):
             with self.subTest(prior=prior):
                 run = copy.deepcopy(self.fixture.run)
                 run['referenced_workflows'] = [
@@ -172,6 +173,14 @@ class ToolingDiscoveryTest(unittest.TestCase):
                     run['referenced_workflows'][0]['sha'] = WORKFLOW_PIN
                     with self.assertRaises(ValueError):
                         tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
+        unknown = 'e' * 40
+        run = copy.deepcopy(self.fixture.run)
+        run['referenced_workflows'] = [
+            {'path': f'codex-agent-labs/codex-agent/.github/workflows/{name}@{unknown}', 'sha': unknown}
+            for name in ('product-validation.yml', 'contract-validation.yml')]
+        with mock.patch.object(tooling_discovery, 'api_json', return_value=run), \
+                self.assertRaisesRegex(ValueError, 'lacks a reviewed publisher'):
+            tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
 
     def setUp(self):
         fixture = capture_fixture.ToolingCaptureTest(methodName="runTest")
