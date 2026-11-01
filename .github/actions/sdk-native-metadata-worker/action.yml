@@ -109,6 +109,7 @@ runs:
       with:
         product: sdk
         sdk-family: native-metadata
+        sdk-metadata-component: ${{ inputs.component }}
         sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
         sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
         plan-id: ${{ inputs.plan-id }}

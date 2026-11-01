@@ -24,8 +24,54 @@ from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import collection_admission_scope
 
 
+def _completed_validation_content(receipt, package, manifest):
+    """Project qualified facts only; this function grants no authority.
+
+    Keep exact byte equivalence with sdk_package.native_validation_content,
+    without reading its already-qualified source or output bodies again.
+    """
+    from products.inventory import sha256_bytes
+    from products.receipt import output_inventory_digest
+    component, target = receipt["component"], receipt["target"]
+    inputs = {row["relativePath"]: row for row in receipt["inputs"]["inventory"]}
+    outputs = {row["relativePath"]: row for row in receipt["outputs"]}
+    program = {"python": "tests/test_enum_parity.py", "csharp": "tests/CodexAgent.Tests/Program.cs",
+        "rust": "tests/enum_parity.rs", "cpp": "tests/value_parity_test.cpp",
+        "dart": "test/enum_parity_test.dart"}[component]
+    sources = {"claims.tsv": f"codex-agent-bindings/{component}/parity/capability-claims.tsv",
+               "test-program-source": f"codex-agent-bindings/{component}/{program}"}
+    if component == "cpp":
+        sources["package-negative-source.py"] = "codex-agent-bindings/cpp/tests/test_installed_package_tamper.py"
+    paths = {"compiler-evidence.tsv": "outputs/capability/compiler-evidence.tsv",
+        "executed-tests.tsv": "outputs/capability/executed-tests.tsv",
+        "installed.tsv": f"outputs/installed/evidence/{component}/{target}.tsv"}
+    files = [{"relativePath": name, "bytes": inventory[path]["bytes"], "sha256": inventory[path]["sha256"]}
+             for inventory, selected in ((inputs, sources), (outputs, paths)) for name, path in selected.items()]
+    if component != "csharp" and any(inputs[sources["test-program-source"]][field] !=
+            outputs["outputs/capability/test-program"][field] for field in ("bytes", "sha256")):
+        raise ValueError("Qualified SDK test program differs from original source")
+    contract, = [row["contractProjection"] for row in receipt["inputs"]["upstreamArtifacts"]
+                 if row["product"] == "contract"]
+    if (contract["manifestSha256"] != sha256_bytes(canonical_json_bytes(manifest)) or
+            any(contract[field] != manifest[field] for field in ("contractDigest", "canonicalCoverageDigest"))):
+        raise ValueError("Qualified SDK Contract differs from its authenticated manifest")
+    package_edge, = [row for row in receipt["inputs"]["upstreamArtifacts"]
+                     if (row["product"], row["component"], row["phase"], row["target"]) ==
+                        ("sdk", component, "package", "desktop")]
+    if (package_edge["buildKey"] != package["buildKey"] or
+            package_edge["outputsDigest"] != output_inventory_digest(package["outputs"])):
+        raise ValueError("Qualified SDK validation differs from its exact package")
+    cases = [{"caseId": case, "expectedExit": "zero" if case == "baseline" else "nonzero", "result": "passed"}
+             for case in sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3",
+                                 "missing-sidecar", "missing-loader"))] if component == "cpp" else []
+    return dict(schemaVersion=2, kind="sdk-native-validation-content", component=component, target=target,
+        sdkVersion=package["productVersion"], packageOutputsDigest=output_inventory_digest(package["outputs"]),
+        **{field: manifest[field] for field in ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")},
+        files=sorted(files, key=lambda row: row["relativePath"]), packageNegativeCases=cases)
+
+
 def completed_validation_recovery(completed, request, tooling, context):
-    """Recover full host gates, not projections asserted by a retained report.
+    """Reuse qualified host semantics; recover full gates for other originals.
 
     One private verification session owns shared K/R, package and host categories.
     Only consumed, independently qualified objects and caller-pinned sidecars are
@@ -101,13 +147,82 @@ def completed_validation_recovery(completed, request, tooling, context):
     private = session["root"] / ("native-sdk-recovery-" + str(len(pool)))
     private.mkdir()
     stages, authorizations, captured_authorizations = {}, {}, {}
-    common = {}
+    common, qualified_contract, qualified_projections = {}, {}, {}
+    observed_qualified = set()
     ordinary_records = request.get("sdkValidationEvidence", [])
     ordinary = decode_sdk_validation_records(root, ordinary_records)
 
     def check():
         if _VERIFICATION_SESSION.get() is not session or authority() != original_authority:
             raise ValueError("Native SDK recovery outlived or changed its caller authority")
+        if qualified_contract and memoized_file_inventory(qualified_contract["root"]) != qualified_contract["inventory"]:
+            raise ValueError("Qualified SDK Contract controls changed during recovery")
+
+    def authorization_for(target):
+        if target not in captured_authorizations:
+            directory = private / "authorizations" / target
+            capture_runtime_authorization(authorization, target, directory, token=context["token"])
+            captured_authorizations[target] = directory
+        authorizations[target] = captured_authorizations[target]
+        return captured_authorizations[target]
+
+    def qualified_hosts(instance, envelopes, package):
+        from completed_sdk_reuse import source_predecessors
+        from products.registry import phase_instance_dependencies
+        from products.sdk_validation import VerifiedSdkValidationProjection, _VERIFIED, _checked_native_content
+        dependencies = sdk_validation_dependencies(instance)
+        package_id = PhaseInstanceId("sdk", instance.component, "package", "desktop")
+        required = (*dependencies, package_id,
+            *((PhaseInstanceId("sdk", "csharp", "binary", "desktop"),) if instance.component == "csharp" else ()))
+        extension = sdk.get("extension")
+        if (not dependencies or extension is None or extension["spec"]["schemaVersion"] != 4 or
+                any(identity not in phases for identity in required) or
+                not set(required).issubset(product_reuse._identity(row) for row in extension["spec"]["originals"])):
+            return None  # Mixed/new hosts retain the ordinary full admission.
+        if len(envelopes) != len(dependencies):
+            raise ValueError("Qualified SDK recovery requires exactly five selected hosts")
+        context_phases = {**phases, **source_predecessors(extension["spec"])}
+        for identity, envelope in zip((*dependencies, package_id), (*envelopes, package), strict=True):
+            if completed.envelope(phases[identity], envelope["receiptBytes"]) != envelope:
+                raise ValueError("Qualified SDK recovery differs from the selected original")
+            upstream = envelope["receipt"]["inputs"]["upstreamArtifacts"]
+            actual = {product_reuse._identity(row): row for row in upstream}
+            if (set(actual) != set(phase_instance_dependencies(identity)) or
+                    any(dependency not in context_phases or row["buildKey"] != context_phases[dependency]["buildKey"]
+                        for dependency, row in actual.items())):
+                raise ValueError("Qualified SDK recovery changes its admitted dependencies")
+        if not qualified_contract:
+            directory = private / "qualified-contract"
+            directory.mkdir()
+            for name, contents in extension["proof"]["contractFiles"].items():
+                # The concrete capability validated the exact nine-file inventory.
+                path = directory / product_reuse.require_relative_path(name, "Qualified Contract control").removeprefix("contract-input/")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents, encoding="utf-8")
+            trust = product_reuse._release_trust(root, request["repositoryRevision"], private / "qualified-policy")
+            if trust is None:
+                raise ValueError("Qualified SDK recovery requires current Git public-key policy")
+            manifest = completed.verify_contract_handoff(directory, keyring=trust.keyring, keys_directory=trust.keys)
+            qualified_contract.update(root=directory, manifest=manifest, inventory=memoized_file_inventory(directory))
+        for identity in required:
+            if identity not in observed_qualified:
+                completed.observe_extended_sdk(phases[identity], producer=producer, token=context["token"])
+                observed_qualified.add(identity)
+        result = []
+        for identity, envelope in zip(dependencies, envelopes, strict=True):
+            key = envelope["receiptSha256"], package["receiptSha256"]
+            if key not in qualified_projections:
+                content = canonical_json_bytes(_completed_validation_content(
+                    envelope["receipt"], package["receipt"], qualified_contract["manifest"]))
+                _checked_native_content(content, package["receipt"], instance.component, identity.target)
+                qualified_projections[key] = VerifiedSdkValidationProjection(envelope["receiptBytes"], content, _VERIFIED)
+                count("nativeSdkQualifiedProjectionReuses")
+            proof = qualified_projections[key]
+            proof.output_inventory(envelope["receiptSha256"], envelope["receipt"]["outputs"], identity=envelope["receipt"])
+            proof.receipt_value(envelope["receipt"], package["receipt"])
+            authorization_for(identity.target)
+            result.append(proof)
+        return tuple(result)
 
     def original(instance):
         record = phases[instance]
@@ -225,11 +340,7 @@ def completed_validation_recovery(completed, request, tooling, context):
                 authorizations[identity.target] = ordinary[envelope["receiptSha256"]]["runtimeAuthorization"]
                 continue
             validation = original(identity)
-            if identity.target not in captured_authorizations:
-                directory = private / "authorizations" / identity.target
-                capture_runtime_authorization(authorization, identity.target, directory, token=context["token"])
-                captured_authorizations[identity.target] = directory
-            authorizations[identity.target] = captured_authorizations[identity.target]
+            authorization_for(identity.target)
             paths = dict(packageStage=package_value["stage"], packageReceipt=package_value["receiptPath"],
                 compatibilityRequest=shared["compatibility_request"], runtimeStages=shared["runtime_stages"],
                 stagedSdks=shared["staged_sdks"], validationStage=validation["stage"],
@@ -248,6 +359,11 @@ def completed_validation_recovery(completed, request, tooling, context):
 
     @measured
     def verify_completed_sdk_hosts(instance, envelopes, package):
+        check()
+        qualified = qualified_hosts(instance, envelopes, package)
+        if qualified is not None:
+            check()
+            return qualified
         recovered = recover_records(instance, envelopes, package)
         if recovered is None:
             return None

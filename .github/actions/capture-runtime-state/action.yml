@@ -37,6 +37,9 @@ inputs:
   sdk-family:
     default: ''
     description: Optional exact SDK family projection selected by ci.sdk_workflow.
+  sdk-metadata-component:
+    default: ''
+    description: Elected native metadata language; capture only its dependency closure before the worker checks its exact key.
   sdk-validation-tooling:
     default: ''
     description: Caller-provisioned tooling policy path; never obtained from the captured state.
@@ -164,6 +167,7 @@ runs:
         DEFER_TRANSPORT: ${{ inputs.defer-transport }}
         SDK_STATE_WAVE: ${{ inputs.sdk-state-wave }}
         SDK_FAMILY: ${{ inputs.sdk-family }}
+        SDK_METADATA_COMPONENT: ${{ inputs.sdk-metadata-component }}
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         PREPARATION_ARTIFACT_ID: ${{ inputs.preparation-artifact-id }}
         PREPARATION_ARTIFACT_SHA256: ${{ inputs.preparation-artifact-sha256 }}
@@ -212,6 +216,12 @@ runs:
             fi
             if [ -n "$COMPONENT$PHASE$TARGET$BUILD_KEY" ]; then
               selected=(--component "$COMPONENT" --phase "$PHASE" --target "$TARGET" --expected-build-key "$BUILD_KEY")
+            fi
+            if [ -n "${SDK_METADATA_COMPONENT:-}" ]; then
+              test "$STATE_PRODUCT" = sdk
+              test "$SDK_FAMILY" = native-metadata
+              test -z "$PREFLIGHT_WAVE"
+              selected+=(--metadata-component "$SDK_METADATA_COMPONENT")
             fi
             if [ -n "$CONTINUATION" ]; then
               test "$STATE_PRODUCT" = runtime

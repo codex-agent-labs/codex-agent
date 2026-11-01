@@ -19,6 +19,185 @@ from products.restore import finalize_phase_object, verify_phase_shard
 
 
 class CompletedMetadataRecoveryScopeTest(unittest.TestCase):
+    @staticmethod
+    def qualified_fixture(root, component, target):
+        from products.receipt import output_inventory_digest
+        from products.registry import phase_instance_dependencies
+        identity = PhaseInstanceId("sdk", component, "validation", target)
+        package_id = PhaseInstanceId("sdk", component, "package", "desktop")
+        key = lambda value: sha256_bytes(str(value).encode())
+        manifest = {field: key(field) for field in ("contractDigest", "canonicalApiDigest", "canonicalCoverageDigest")}
+        program = {"python": "tests/test_enum_parity.py", "csharp": "tests/CodexAgent.Tests/Program.cs",
+            "rust": "tests/enum_parity.rs", "cpp": "tests/value_parity_test.cpp",
+            "dart": "test/enum_parity_test.dart"}[component]
+        source_rows, output_rows = [], []
+
+        def write(path, body):
+            destination = root / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(body)
+            return dict(bytes=len(body), sha256=sha256_bytes(body))
+
+        for name, relative in (("capability-claims.tsv", "parity/capability-claims.tsv"),
+                ("test-program-source", program),
+                *(((("test_installed_package_tamper.py", "tests/test_installed_package_tamper.py"),))
+                  if component == "cpp" else ())):
+            data = write("validation-source/" + name, (component + ":" + name).encode())
+            source_rows.append(dict(relativePath=f"codex-agent-bindings/{component}/{relative}", **data))
+        for relative in ("outputs/capability/compiler-evidence.tsv", "outputs/capability/executed-tests.tsv",
+                f"outputs/installed/evidence/{component}/{target}.tsv", "outputs/capability/test-program"):
+            body = (component + ":" + relative).encode()
+            if relative.endswith("/test-program") and component != "csharp":
+                body = (root / "validation-source/test-program-source").read_bytes()
+            output_rows.append(dict(kind="native-wrapper-capability", relativePath=relative,
+                **write("validation/" + relative, body)))
+        if component == "cpp":
+            cases = sorted(("baseline", "tampered-0", "tampered-1", "tampered-2", "tampered-3", "missing-sidecar", "missing-loader"))
+            table = "caseId\texpectedExit\tactualExitCode\tstatus\tlogPath\n" + "".join(
+                f"{case}\t{'zero' if case == 'baseline' else 'nonzero'}\t0\tpassed\tlog\n" for case in cases)
+            write("validation/outputs/package-negatives/package-tamper-results.tsv", table.encode())
+        write("contract/contract-manifest.json", canonical_json_bytes(manifest))
+        def receipt_id(value):
+            return dict(zip(("product", "component", "phase", "target"),
+                            (value.product, value.component, value.phase, value.target)))
+        package = dict(**receipt_id(package_id), productVersion="0.8.0", buildKey=key(package_id),
+            outputs=[dict(kind="package", relativePath="outputs/package", bytes=3, sha256=key("pkg"))],
+            inputs=dict(upstreamArtifacts=[dict(**receipt_id(dependency), buildKey=key(dependency))
+                for dependency in phase_instance_dependencies(package_id)]))
+        upstream = []
+        for dependency in phase_instance_dependencies(identity):
+            row = dict(**receipt_id(dependency), buildKey=key(dependency))
+            if dependency.product == "contract":
+                row["contractProjection"] = dict(manifestSha256=sha256_bytes(canonical_json_bytes(manifest)),
+                    **{field: manifest[field] for field in ("contractDigest", "canonicalCoverageDigest")})
+            if dependency == package_id:
+                row["outputsDigest"] = output_inventory_digest(package["outputs"])
+            upstream.append(row)
+        receipt = dict(**receipt_id(identity), productVersion="0.8.0", buildKey=key(identity),
+            inputs=dict(inventory=sorted(source_rows, key=lambda row: row["relativePath"]), upstreamArtifacts=upstream),
+            outputs=sorted(output_rows, key=lambda row: row["relativePath"]))
+        return receipt, package, manifest
+
+    def test_qualified_projection_matches_existing_content_serializer_for_all_languages(self):
+        from products import sdk_package
+        for component in ("cpp", "csharp", "dart", "python", "rust"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                receipt, package, manifest = self.qualified_fixture(root, component, "macos-arm64")
+                # Only prior authentication is mocked: the existing serializer
+                # reads real tiny source/output fixtures and the C++ result table.
+                with patch.object(sdk_package, "_receipt", side_effect=lambda path:
+                        (package if path.name == "sdk-package.json" else receipt, b"fixture")), \
+                        patch.object(sdk_package, "_verify_native_validation_stage"):
+                    expected = sdk_package.native_validation_content(root, component, "macos-arm64")
+                self.assertEqual(canonical_json_bytes(expected), canonical_json_bytes(
+                    workflow._completed_validation_content(receipt, package, manifest)))
+                wrong = deepcopy(manifest)
+                wrong["canonicalApiDigest"] = "sha256:" + "a" * 64
+                with self.assertRaisesRegex(ValueError, "authenticated manifest"):
+                    workflow._completed_validation_content(receipt, package, wrong)
+                wrong_package = dict(package, buildKey="sha256:" + "b" * 64)
+                with self.assertRaisesRegex(ValueError, "exact package"):
+                    workflow._completed_validation_content(receipt, wrong_package, manifest)
+
+    def test_all_qualified_hosts_reuse_content_with_original_observations_and_authorizations(self):
+        from types import SimpleNamespace
+        from reuse_qualification import CompletedFrozenReuse
+        from products.plan import sdk_validation_dependencies
+        from products.registry import phase_instance_dependencies
+        from products.restore import verification_session
+        from products.sdk_validation import VerifiedSdkValidationProjection
+        for component in ("python", "csharp"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                root = Path(temporary).resolve()
+                identity = PhaseInstanceId("sdk", component, "metadata", "desktop")
+                dependencies = sdk_validation_dependencies(identity)
+                originals, phases = {}, {}
+                for dependency in dependencies:
+                    receipt, package, manifest = self.qualified_fixture(root / dependency.target, component, dependency.target)
+                    originals[dependency] = receipt
+                package_id = PhaseInstanceId("sdk", component, "package", "desktop")
+                originals[package_id] = package
+                if component == "csharp":
+                    binary = PhaseInstanceId("sdk", "csharp", "binary", "desktop")
+                    originals[binary] = dict(product="sdk", component="csharp", phase="binary", target="desktop",
+                                            buildKey=sha256_bytes(str(binary).encode()))
+                for dependency, receipt in list(originals.items()):
+                    raw = canonical_json_bytes(receipt)
+                    originals[dependency] = dict(receipt=receipt, receiptBytes=raw, receiptSha256=sha256_bytes(raw),
+                                                objectSha256=sha256_bytes(b"object"))
+                    phases[dependency] = dict(product=dependency.product, component=dependency.component,
+                        phase=dependency.phase, target=dependency.target, buildKey=receipt["buildKey"],
+                        receiptSha256=sha256_bytes(raw), objectSha256=sha256_bytes(b"object"))
+                context_phases = {dependency: dict(buildKey=sha256_bytes(str(dependency).encode()))
+                    for value in (*dependencies, package_id) for dependency in phase_instance_dependencies(value)}
+                source = root / "source.json"
+                source.write_bytes(canonical_json_bytes({"fixture": "source"}))
+                for name in ("java", "public.pub"):
+                    (root / name).write_bytes(b"fixture")
+                (root / "evidence").mkdir()
+                tooling = dict(evidence=str(root / "evidence"), publicKey=str(root / "public.pub"),
+                    javaExecutable=str(root / "java"), requiredTrustDomain="development", keyring=None, keysDirectory=None)
+                context = dict(repository_root=root, plan_path=root / "plan", trusted_workflow_sha="a" * 40,
+                    token="fixture", environ=dict(CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE=str(source),
+                        CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION='{"fixture":"authorization"}'))
+                request = dict(versions={"sdk": "0.8.0"}, repositoryRevision="b" * 40)
+                capability = object.__new__(CompletedFrozenReuse)
+                sdk = dict(spec=dict(sdkInputs=dict(source={"fixture": "source"}, runtimeSource={})),
+                    extension=dict(spec=dict(schemaVersion=4, originals=list(phases.values())), proof=dict(contractFiles={
+                        "contract-input/contract-manifest.json": canonical_json_bytes(manifest).decode()})))
+                for name, value in (("check_request", None), ("check_consumer", None),
+                        ("_values", ({}, phases)), ("sdk_original", sdk)):
+                    stack.enter_context(patch.object(CompletedFrozenReuse, name, return_value=value))
+                stack.enter_context(patch.object(workflow.product_reuse, "_validate_plan", return_value={}))
+                stack.enter_context(patch.object(workflow.product_reuse, "_consumer", return_value={"producer": {}}))
+                stack.enter_context(patch("completed_sdk_reuse.source_predecessors", return_value=context_phases))
+                stack.enter_context(patch.object(CompletedFrozenReuse, "envelope", side_effect=lambda row, raw=None:
+                    originals[workflow.product_reuse._identity(row)]))
+                observed = stack.enter_context(patch.object(CompletedFrozenReuse, "observe_extended_sdk"))
+                contract = stack.enter_context(patch.object(CompletedFrozenReuse, "verify_contract_handoff", return_value=manifest))
+                stack.enter_context(patch.object(workflow.product_reuse, "_release_trust",
+                    return_value=SimpleNamespace(keyring=root / "keyring", keys=root / "keys")))
+                capture = stack.enter_context(patch.object(CompletedFrozenReuse, "capture_object",
+                    side_effect=AssertionError("No qualified comparison body capture")))
+                full_gate = stack.enter_context(patch("products.sdk_validation_inputs.sdk_validation_provider",
+                    side_effect=AssertionError("No repeated qualified host gate")))
+                auth = stack.enter_context(patch("sdk_native_validation_workflow.capture_runtime_authorization"))
+                envelopes = tuple(originals[value] for value in dependencies)
+                with verification_session():
+                    recovery = workflow.completed_validation_recovery(capability, request, tooling, context)
+                    proofs = recovery["verify"](identity, envelopes, originals[package_id])
+                    self.assertEqual(proofs, recovery["verify"](identity, envelopes, originals[package_id]))
+                    self.assertTrue(all(type(value) is VerifiedSdkValidationProjection for value in proofs))
+                    self.assertEqual(5, len(proofs))
+                    self.assertEqual(5, auth.call_count)
+                    self.assertEqual(7 if component == "csharp" else 6, observed.call_count)
+                    self.assertEqual(set(NATIVE_TARGETS), set(recovery["authorizations"]))
+                    contract.assert_called_once()
+                    capture.assert_not_called()
+                    full_gate.assert_not_called()
+                    for proof, envelope in zip(proofs, envelopes, strict=True):
+                        proof.receipt_value(envelope["receipt"], package)
+                    wrong = [dict(envelopes[0], receiptBytes=b"wrong"), *envelopes[1:]]
+                    with self.assertRaisesRegex(ValueError, "selected original"):
+                        recovery["verify"](identity, wrong, originals[package_id])
+                    old_scope = sdk["extension"]["spec"]["originals"]
+                    sdk["extension"]["spec"]["originals"] = old_scope[1:]
+                    with patch.object(CompletedFrozenReuse, "capture_sdk_input_members",
+                            side_effect=ValueError("ordinary fallback reached")) as fallback:
+                        with self.assertRaisesRegex(ValueError, "ordinary fallback reached"):
+                            recovery["verify"](identity, envelopes, originals[package_id])
+                        fallback.assert_called_once()
+                    sdk["extension"]["spec"]["originals"] = old_scope
+                    context_phases[next(iter(context_phases))]["buildKey"] = "changed"
+                    with self.assertRaisesRegex(ValueError, "admitted dependencies"):
+                        recovery["verify"](identity, envelopes, originals[package_id])
+                    context["environ"]["CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION"] = '{}'
+                    with self.assertRaisesRegex(ValueError, "changed its caller authority"):
+                        recovery["verify"](identity, envelopes, originals[package_id])
+                with self.assertRaisesRegex(ValueError, "outlived"):
+                    recovery["verify"](identity, envelopes, originals[package_id])
+
     def test_current_runtime_common_inputs_capture_compatible_sdk_once_without_legacy_fallback(self):
         # Composition only: exact reviewed selectors, mocked authentication boundaries.
         from contextlib import nullcontext

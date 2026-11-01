@@ -677,6 +677,40 @@ class SdkWorkflowTest(unittest.TestCase):
                     else:
                         self.assertNotIn("requested_scope", captured.call_args.kwargs)
 
+    def test_native_metadata_capture_scopes_transport_and_election_to_one_language(self):
+        for component in workflow.NATIVE_BINDINGS:
+            expected = (workflow.PhaseInstanceId("sdk", component, "metadata", "desktop"),)
+            self.inspect.return_value = {"readyPlans": [{"product": "sdk", "component": component,
+                "phase": "metadata", "target": "desktop", "buildKey": "sha256:" + "a" * 64}]}
+            with self.subTest(component=component), \
+                    patch.object(workflow.product_reuse, "capture_runtime_resume_upload") as captured:
+                result = workflow.capture(self.plan, self.repository / "capture",
+                    self.repository / (component + "-capture-output"), **self.upload_for_capture(),
+                    repository_root=self.repository, environ={}, token="fixture", family="native-metadata",
+                    scope_inputs=True, metadata_component=component)
+                self.assertEqual(expected, captured.call_args.kwargs["requested_scope"])
+                self.assertEqual(expected, self.inspect.call_args.kwargs["requested_scope"])
+                self.assertEqual([component], [r["component"] for r in result["matrix"]["include"]])
+                self.assertEqual("sha256:" + "a" * 64, result["matrix"]["include"][0]["buildKey"])
+
+    def test_native_metadata_component_rejects_invalid_scope_before_capture(self):
+        for family, component, scoped in (("native-validation", "rust", True),
+                ("native-metadata", "rust", False), ("native-metadata", "javascript", True)):
+            with self.subTest(family=family, component=component, scoped=scoped), \
+                    patch.object(workflow.product_reuse, "capture_runtime_resume_upload") as captured:
+                with self.assertRaises(ValueError):
+                    workflow.capture(self.plan, self.repository / "capture", None,
+                        **self.upload_for_capture(), token="fixture", family=family,
+                        scope_inputs=scoped, metadata_component=component)
+                captured.assert_not_called()
+        self.inspect.return_value = {"readyPlans": [{"product": "sdk", "component": "cpp",
+            "phase": "metadata", "target": "desktop", "buildKey": "sha256:" + "a" * 64}]}
+        output = self.repository / "wrong-component-output"
+        with self.assertRaisesRegex(ValueError, "another component"):
+            workflow.matrix(self.plan, self.discovery, self.state, output,
+                family="native-metadata", metadata_component="rust", repository_root=self.repository, environ={})
+        self.assertFalse(output.exists())
+
     def test_matrix_forwards_exact_caller_workflow_pin_only_when_supplied(self):
         pin = "c" * 40
         self.inspect.return_value = {"readyPlans": []}
