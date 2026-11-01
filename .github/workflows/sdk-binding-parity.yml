@@ -44,6 +44,12 @@ on:
         value: ${{ jobs.sdk-parity.outputs.artifact_digest }}
       artifact_run_id:
         value: ${{ jobs.sdk-parity.outputs.artifact_run_id }}
+      report_sha256:
+        value: ${{ jobs.sdk-parity.outputs.report_sha256 }}
+      report_artifact_id:
+        value: ${{ jobs.sdk-parity.outputs.report_artifact_id }}
+      report_artifact_sha256:
+        value: ${{ jobs.sdk-parity.outputs.report_artifact_sha256 }}
 
 permissions:
   actions: read
@@ -61,6 +67,9 @@ jobs:
       artifact_id: ${{ steps.parity-output.outputs.artifact_id }}
       artifact_digest: ${{ steps.parity-output.outputs.artifact_digest }}
       artifact_run_id: ${{ steps.parity-output.outputs.artifact_run_id }}
+      report_sha256: ${{ steps.parity-output.outputs.report_sha256 }}
+      report_artifact_id: ${{ steps.upload_report.outputs.artifact-id }}
+      report_artifact_sha256: ${{ inputs.reuseCompletedParity && format('sha256:{0}', steps.upload_report.outputs.artifact-digest) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -411,12 +420,14 @@ jobs:
           python3 - <<'PY'
           import json, os, re
           from pathlib import Path
+          from ci.products.inventory import load_canonical_json_bytes, sha256_bytes
           selected = os.environ['REUSE_COMPLETED_PARITY']
           if selected == 'true':
               # The CLI's final JSON is emitted only after all contexts exit;
               # preceding throughput lines remain diagnostic stdout.
-              lines = (Path(os.environ['RUNNER_TEMP']) / 'sdk-parity-reuse.log').read_text().splitlines()
-              report = json.loads(lines[-1])
+              lines = (Path(os.environ['RUNNER_TEMP']) / 'sdk-parity-reuse.log').read_bytes().splitlines(keepends=True)
+              raw_report = lines[-1]
+              report = load_canonical_json_bytes(raw_report)
               context = report['verificationContext']
               if (report['result'] != 'passed' or type(report['phaseCount']) is not int or
                       report['phaseCount'] != 112 or context['kind'] != 'hosted-original-parity-reuse' or
@@ -437,6 +448,25 @@ jobs:
                   re.fullmatch('sha256:[0-9a-f]{64}', digest) is None or
                   re.fullmatch('[1-9][0-9]*', run) is None):
               raise ValueError('Parity requires an exact original upload and run locator')
+          if selected == 'true':
+              if len(raw_report) > 1024 * 1024:
+                  raise ValueError('Hosted parity report exceeds its control bound')
+              report_directory = Path(os.environ['RUNNER_TEMP']) / 'hosted-parity-report'
+              report_directory.mkdir()
+              (report_directory / 'hosted-parity-report.json').write_bytes(raw_report)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              if selected == 'true':
+                  output.write('report_sha256=' + sha256_bytes(raw_report) + '\n')
               output.write(f'artifact_id={artifact}\nartifact_digest={digest}\nartifact_run_id={run}\n')
           PY
+      - id: upload_report
+        name: Preserve the successful current-run native parity report
+        if: inputs.reuseCompletedParity
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-hosted-parity-report-${{ inputs.validationTree }}
+          path: ${{ runner.temp }}/hosted-parity-report/hosted-parity-report.json
+          compression-level: 0
+          retention-days: 90

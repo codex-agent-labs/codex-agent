@@ -30,6 +30,10 @@ on:
         required: false
         default: false
         type: boolean
+      fullReuseAcceptanceOnly:
+        description: Current-head Phase9 acceptance using only authenticated completed products and original parity; any miss fails
+        type: boolean
+        default: false
       runtimeAggregateRequalification:
         description: Requalify changed aggregate inputs within SDK-only recovery; never enable Runtime workers or Phase 10
         required: false
@@ -128,7 +132,8 @@ jobs:
           echo 'approved=true' >> "$GITHUB_OUTPUT"
 
   recovery-controls:
-    if: ${{ !inputs.toolingOnly && (inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly) }}
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (!inputs.toolingOnly && (inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly))
     runs-on: ubuntu-24.04
     outputs:
       publisher_sha: ${{ steps.publication.outputs.publisher-sha }}
@@ -278,7 +283,8 @@ jobs:
           key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
 
   tooling-plan:
-    if: always() && inputs.toolingOnly && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (always() && inputs.toolingOnly && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only'))
     needs: dispatch-authorization
     runs-on: ubuntu-24.04
     outputs:
@@ -645,7 +651,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           # Composed native resume may recover an unqualified original package here.
           CODEX_AGENT_COLD_APPLE_WORKSPACE: 'true'
-          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           java_executable=$(readlink -f "$JAVA_HOME_17_X64/bin/java")
@@ -719,11 +725,56 @@ jobs:
               output.write('contract_matrix=' + json.dumps({'include': contracts}, separators=(',', ':')) + '\n')
           PY
       - name: Require unchanged Contract ownership before SDK continuation
-        if: inputs.sdkRecoveryOnly && steps.product-reuse.outcome == 'success'
+        if: (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && steps.product-reuse.outcome == 'success'
         env:
           CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}
         run: |
           test "$CONTRACT_NEXT_PHASE" = none
+      - name: Require complete retained inputs for current-head acceptance
+        id: full-reuse-guard
+        if: inputs.fullReuseAcceptanceOnly
+        env:
+          RUNTIME_RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          TOOLING_ONLY: ${{ inputs.toolingOnly }}
+          REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity }}
+          EVENT_AUTHORIZED: ${{ steps.event-authorization.outputs.authorized }}
+          REMOTE_BUILD_AUTHORIZED: ${{ steps.impact.outputs.remote_build_authorized }}
+          NATIVE_CONTRACT_COMPLETE: ${{ steps.product-reuse.outputs.native_contract_complete }}
+          CONTRACT_NEXT_PHASE: ${{ steps.product-reuse.outputs.contract_next_phase }}
+          CONTRACT_MATRIX: ${{ steps.product-selection.outputs.contract_matrix }}
+          TOOLING_MISS: ${{ steps.product-reuse.outputs.tooling_miss }}
+          NATIVE_RESUME_READY: ${{ steps.product-reuse.outputs.native_resume_ready }}
+          FULL_REUSE: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
+          TARGET_JOBS_REQUIRED: ${{ steps.product-reuse.outputs.native_resume_target_jobs_required }}
+          RUNTIME_WORKERS_REQUIRED: ${{ steps.product-reuse.outputs.native_resume_runtime_workers_required }}
+          RUNTIME_MATRIX: ${{ steps.product-reuse.outputs.native_resume_runtime_matrix }}
+          SUPERVISOR_KEY: ${{ steps.product-reuse.outputs.native_resume_supervisor_key }}
+          ROUTING: ${{ steps.product-reuse.outputs.native_resume_routing_decisions }}
+        run: |
+          set -euo pipefail
+          test "$RUNTIME_RECOVERY_ONLY" = false
+          test "$SDK_RECOVERY_ONLY" = false
+          test "$TOOLING_ONLY" = false
+          test "$REUSE_COMPLETED_PARITY" = true
+          test "$EVENT_AUTHORIZED" = true
+          test "$REMOTE_BUILD_AUTHORIZED" = true
+          test "$NATIVE_CONTRACT_COMPLETE" = true
+          test "$CONTRACT_NEXT_PHASE" = none
+          test "$CONTRACT_MATRIX" = '{"include":[]}'
+          test "$TOOLING_MISS" = false
+          test "$NATIVE_RESUME_READY" = true
+          test "$FULL_REUSE" = true
+          test "$TARGET_JOBS_REQUIRED" = false
+          test "$RUNTIME_WORKERS_REQUIRED" = false
+          test "$RUNTIME_MATRIX" = '{"include":[]}'
+          test -z "$SUPERVISOR_KEY"
+          python3 -B - <<'PYTHON'
+          import json, os
+          decisions = json.loads(os.environ['ROUTING'])
+          if decisions['ready'] != [] or decisions['preparation']['preparation_required'] is not False:
+              raise ValueError('Current-head acceptance cannot schedule a missing SDK phase')
+          PYTHON
       - id: upload_native_resume
         if: steps.product-reuse.outputs.native_resume_ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -767,7 +818,7 @@ jobs:
         name: Select the completed native SDK routing shortcut
         if: steps.product-reuse.outputs.native_resume_ready == 'true'
         env:
-          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
           ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
           RETAINED_SDK_INPUTS_SOURCE: ${{ steps.retained-sdk-inputs.outputs.source }}
           ROUTING: ${{ steps.product-reuse.outputs.native_resume_routing_decisions }}
@@ -800,7 +851,8 @@ jobs:
 
   product:
     name: product-${{ matrix.lane }}
-    if: '!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'' && needs.plan.outputs.validation_reused != ''true'' && needs.plan.outputs.product_matrix != ''[]'''
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.product_matrix != '[]')
     needs: [workflow-lint, plan]
     strategy:
       fail-fast: false
@@ -845,7 +897,8 @@ jobs:
   tooling-only-status:
     name: Tooling only / authenticated locator
     needs: [tooling-plan, contract-validation]
-    if: always() && inputs.toolingOnly && needs.tooling-plan.outputs.event_authorized == 'true'
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (always() && inputs.toolingOnly && needs.tooling-plan.outputs.event_authorized == 'true')
     runs-on: ubuntu-24.04
     steps:
       - name: Require successful original tooling; never report product acceptance
@@ -866,6 +919,7 @@ jobs:
     name: contract-phase10-pgp-authority
     needs: [plan, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -873,6 +927,7 @@ jobs:
       needs.contract-validation.result == 'success' &&
       needs.contract-validation.outputs.contract_complete == 'true' &&
       needs.contract-validation.outputs.contract_attestation_result == 'success'
+      )
     runs-on: ubuntu-24.04
     environment: product-attestation
     outputs:
@@ -895,6 +950,7 @@ jobs:
     name: contract-phase10-maven
     needs: [plan, contract-validation, contract-phase10-pgp-authority]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -902,6 +958,7 @@ jobs:
       needs.contract-validation.result == 'success' &&
       needs.contract-validation.outputs.contract_complete == 'true' &&
       needs.contract-phase10-pgp-authority.result == 'success'
+      )
     uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-maven.yml@reuse-authority
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -919,11 +976,13 @@ jobs:
     name: contract-phase10-output-record
     needs: [plan, contract-phase10-maven]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.contract-phase10-maven.result == 'success'
+      )
     uses: codex-agent-labs/codex-agent/.github/workflows/contract-phase10-output-record.yml@reuse-authority
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -934,6 +993,7 @@ jobs:
   product-resume:
     name: product-resume
     if: >-
+      (!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success') &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
@@ -1102,7 +1162,7 @@ jobs:
                   output.write(name + '=' + value + '\n')
           PY
       - name: Require full Runtime reuse before SDK continuation
-        if: inputs.sdkRecoveryOnly
+        if: inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly
         env:
           RUNTIME_WORKERS_REQUIRED: ${{ steps.forward.outputs.runtime_workers_required || steps.resume.outputs.runtime_workers_required }}
           SUPERVISOR_KEY: ${{ steps.forward.outputs.supervisor_key || steps.resume.outputs.supervisor_key }}
@@ -1136,7 +1196,7 @@ jobs:
         name: Select completed native SDK routing after ordinary resume
         if: inputs.sdkRecoveryOnly && !inputs.runtimeAggregateRequalification && steps.resume.outcome == 'success' && steps.upload_resume.outcome == 'success'
         env:
-          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
           ORIGINAL_RUNTIME_HANDOFF: ${{ inputs.runtimeAggregateHandoffRecovery }}
           RETAINED_SDK_INPUTS_SOURCE: ${{ needs.plan.outputs.retained_sdk_inputs_source }}
           ROUTING: ${{ steps.resume.outputs.routing_decisions }}
@@ -1170,7 +1230,8 @@ jobs:
   runtime-linux-arm64-supervisor:
     name: runtime-linux-arm64-supervisor
     needs: [plan, product-resume, contract-validation]
-    if: inputs.sdkRecoveryOnly != true && always() && needs.product-resume.result == 'success' && needs.product-resume.outputs.supervisor_key != ''
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (inputs.sdkRecoveryOnly != true && always() && needs.product-resume.result == 'success' && needs.product-resume.outputs.supervisor_key != '')
     runs-on: ubuntu-24.04-arm
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
@@ -1271,12 +1332,14 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, product-resume, runtime-linux-arm64-supervisor, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success' &&
       needs.product-resume.outputs.runtime_workers_required == 'true' &&
       needs.product-resume.outputs.wave_failed != 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.product-resume.outputs.runtime_matrix) }}
@@ -1365,10 +1428,12 @@ jobs:
     name: runtime-collect-1
     needs: [plan, product-resume, runtime-workers-1, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.product-resume.result == 'success' &&
       needs.product-resume.outputs.runtime_workers_required == 'true' &&
       needs.product-resume.outputs.wave_failed != 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -1428,12 +1493,14 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, runtime-collect-1, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-collect-1.result == 'success' &&
       needs.runtime-collect-1.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-1.outputs.wave_failed != 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.runtime-collect-1.outputs.runtime_matrix) }}
@@ -1520,10 +1587,12 @@ jobs:
     name: runtime-collect-2
     needs: [plan, runtime-collect-1, runtime-workers-2, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.runtime-collect-1.result == 'success' &&
       needs.runtime-collect-1.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-1.outputs.wave_failed != 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -1583,12 +1652,14 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, runtime-collect-2, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-collect-2.result == 'success' &&
       needs.runtime-collect-2.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-2.outputs.wave_failed != 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.runtime-collect-2.outputs.runtime_matrix) }}
@@ -1675,10 +1746,12 @@ jobs:
     name: runtime-collect-3
     needs: [plan, runtime-collect-2, runtime-workers-3, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.runtime-collect-2.result == 'success' &&
       needs.runtime-collect-2.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-2.outputs.wave_failed != 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -1738,12 +1811,14 @@ jobs:
     name: runtime-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}
     needs: [plan, runtime-collect-3, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-collect-3.result == 'success' &&
       needs.runtime-collect-3.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-3.outputs.wave_failed != 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.runtime-collect-3.outputs.runtime_matrix) }}
@@ -1830,10 +1905,12 @@ jobs:
     name: runtime-collect-4
     needs: [plan, runtime-collect-3, runtime-workers-4, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.sdkRecoveryOnly &&
       always() && needs.runtime-collect-3.result == 'success' &&
       needs.runtime-collect-3.outputs.runtime_workers_required == 'true' &&
       needs.runtime-collect-3.outputs.wave_failed != 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -1894,6 +1971,7 @@ jobs:
     name: runtime-continuation
     needs: [plan, product-resume, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       needs.product-resume.outputs.native_sdk_direct != 'true' &&
@@ -1901,6 +1979,7 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     outputs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
@@ -2048,6 +2127,7 @@ jobs:
     name: runtime-signing-prepare-${{ matrix.target }}
     needs: [workflow-lint, plan, runtime-continuation, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2056,6 +2136,7 @@ jobs:
       needs.runtime-continuation.outputs.aggregate_state != 'not-selected' &&
       needs.runtime-continuation.outputs.native_attestation_matrix != '{"include":[]}' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -2117,6 +2198,7 @@ jobs:
     name: runtime-native-attestation-${{ matrix.target }}
     needs: [workflow-lint, plan, runtime-continuation, runtime-signing-prepare-native]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2126,6 +2208,7 @@ jobs:
       needs.runtime-continuation.outputs.aggregate_state != 'not-selected' &&
       needs.runtime-continuation.outputs.native_attestation_matrix != '{"include":[]}' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     environment: product-attestation
     permissions:
@@ -2213,6 +2296,7 @@ jobs:
     name: runtime-runtime-aggregate-metadata-aggregate
     needs: [plan, runtime-continuation, runtime-native-attestation, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
@@ -2221,6 +2305,7 @@ jobs:
       needs.runtime-continuation.outputs.aggregate_required == 'true' &&
       (needs.runtime-native-attestation.result == 'success' ||
        (needs.runtime-native-attestation.result == 'skipped' && needs.runtime-continuation.outputs.retained_native_artifact_id != ''))
+      )
     # KGP exposes all five native publications with C interops only on macOS.
     # Imported publication assembly still has no Runtime compiler/linker edges.
     runs-on: macos-15
@@ -2347,11 +2432,13 @@ jobs:
     name: runtime-collect-5
     needs: [plan, runtime-continuation, runtime-aggregate, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success' &&
       needs.runtime-continuation.outputs.aggregate_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -2412,12 +2499,14 @@ jobs:
     name: runtime-aggregate-continuation
     needs: [plan, product-resume, runtime-continuation, runtime-collect-5, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       needs.product-resume.outputs.native_sdk_direct != 'true' &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success' &&
       needs.runtime-continuation.outputs.aggregate_state != 'not-selected' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     outputs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
@@ -2439,7 +2528,7 @@ jobs:
         id: parent
         env:
           PREDECESSORS: ${{ toJSON(needs) }}
-          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -2529,6 +2618,7 @@ jobs:
     name: runtime-signing-prepare-aggregate
     needs: [workflow-lint, plan, runtime-aggregate-continuation, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2536,6 +2626,7 @@ jobs:
       needs.runtime-aggregate-continuation.result == 'success' &&
       needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -2594,6 +2685,7 @@ jobs:
     name: runtime-aggregate-attestation
     needs: [workflow-lint, plan, runtime-continuation, runtime-native-attestation, runtime-aggregate-continuation, runtime-signing-prepare-aggregate]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       (!inputs.sdkRecoveryOnly || inputs.runtimeAggregateRequalification) &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2602,6 +2694,7 @@ jobs:
       needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
       needs.runtime-signing-prepare-aggregate.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     environment: product-attestation
     permissions:
@@ -2719,12 +2812,14 @@ jobs:
     name: runtime-phase10-maven
     needs: [plan, contract-phase10-pgp-authority, runtime-aggregate-attestation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
       always() && !cancelled() && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.contract-phase10-pgp-authority.result == 'success' &&
       needs.runtime-aggregate-attestation.result == 'success'
+      )
     uses: codex-agent-labs/codex-agent/.github/workflows/runtime-phase10-maven.yml@reuse-authority
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -2741,6 +2836,7 @@ jobs:
     name: sdk-inputs
     needs: [workflow-lint, plan, product-resume, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2753,6 +2849,7 @@ jobs:
        (inputs.sdkRecoveryOnly && needs.runtime-aggregate-continuation.result == 'success' &&
         needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
         inputs.runtimeAggregateHandoffRecovery != ''))))
+      )
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -2897,7 +2994,8 @@ jobs:
           retention-days: 90
 
   android:
-    if: '!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'' && needs.plan.outputs.validation_reused != ''true'' && needs.plan.outputs.lane_android == ''true'''
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true')
     needs: [workflow-lint, plan]
     runs-on: ubuntu-24.04
     outputs:
@@ -2924,6 +3022,7 @@ jobs:
 
   android-runtime-evidence:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -2931,6 +3030,7 @@ jobs:
       needs.plan.outputs.android_evidence_required == 'true' &&
       ((!inputs.sdkRecoveryOnly && needs.android.result == 'success') ||
        (inputs.sdkRecoveryOnly && needs.android-sdk-apk.result == 'success'))
+      )
     needs: [plan, android, android-sdk-apk]
     permissions:
       actions: read
@@ -2947,7 +3047,8 @@ jobs:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   desktop:
-    if: always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_desktop == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.any_desktop == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled'))
     needs: [workflow-lint, plan, product]
     uses: ./.github/workflows/desktop-runtime-evidence.yml
     with:
@@ -2962,6 +3063,7 @@ jobs:
 
   sdk-native-wrappers:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly && always() && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
@@ -2969,6 +3071,7 @@ jobs:
       needs.sdk-csharp-binary-result.result == 'success' &&
       needs.sdk-csharp-binary-result.outputs.artifact_id != '' &&
       needs.sdk-native-prepare.result == 'success'
+      )
     needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]
     uses: ./.github/workflows/sdk-validation.yml
     with:
@@ -3003,12 +3106,14 @@ jobs:
 
   apple:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly &&
       always() && needs.workflow-lint.result == 'success' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' &&
       ((!inputs.sdkRecoveryOnly && needs.plan.outputs.any_apple == 'true') ||
        (inputs.sdkRecoveryOnly && needs.runtime-continuation.result == 'success' &&
         needs.sdk-ios-binary-plan.result == 'success' && needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true'))
+      )
     needs: [workflow-lint, plan, runtime-continuation, sdk-ios-binary-plan]
     uses: ./.github/workflows/apple-runtime-evidence.yml
     with:
@@ -3019,7 +3124,8 @@ jobs:
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
 
   consumers:
-    if: always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled'))
     needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple]
     uses: ./.github/workflows/sdk-consumer-validation.yml
     with:
@@ -3031,6 +3137,7 @@ jobs:
   sdk-ios-binary-plan:
     needs: [plan, product-resume, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
@@ -3038,6 +3145,7 @@ jobs:
       always() &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.product-resume.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -3064,11 +3172,13 @@ jobs:
     name: sdk-sdk-ios-binary-ios
     needs: [plan, product-resume, sdk-ios-binary-plan, apple, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && (!inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly) && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-binary-plan.result == 'success' && needs.apple.result == 'success' &&
       needs.apple.outputs.native_tests_artifact_id != '' && needs.apple.outputs.rust_device_artifact_id != '' &&
       needs.apple.outputs.rust_simulator_artifact_id != '' &&
       needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -3128,9 +3238,11 @@ jobs:
     name: sdk-collect-3
     needs: [plan, sdk-ios-binary-plan, sdk-ios-binary, runtime-continuation, runtime-aggregate-continuation, contract-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-ios-binary-plan.result == 'success' &&
       needs.sdk-ios-binary-plan.outputs.sdk_workers_required == 'true' &&
       needs.runtime-continuation.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -3203,6 +3315,7 @@ jobs:
   sdk-plan:
     needs: [workflow-lint, plan, product-resume, contract-validation, runtime-continuation, runtime-aggregate-continuation, runtime-aggregate-attestation, sdk-ios-binary-plan, sdk-collect-3]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -3216,6 +3329,7 @@ jobs:
         needs.runtime-aggregate-continuation.outputs.aggregate_payload_complete == 'true' &&
         inputs.runtimeAggregateHandoffRecovery != '')) &&
       needs.sdk-ios-binary-plan.result == 'success'))
+      )
     runs-on: ubuntu-24.04
     outputs:
       ios_validation_direct: ${{ steps.capture.outputs.ios-validation-direct }}
@@ -3303,6 +3417,7 @@ jobs:
     name: sdk-javascript-${{ matrix.phase }}-node
     needs: [plan, sdk-plan, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && !cancelled() &&
       needs.plan.result == 'success' &&
       needs.sdk-plan.result == 'success' &&
@@ -3310,6 +3425,7 @@ jobs:
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.outputs.sdk_workers_required == 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -3364,8 +3480,10 @@ jobs:
     name: sdk-collect-1
     needs: [plan, sdk-plan, sdk-workers-1]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-plan.result == 'success' &&
       needs.sdk-plan.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -3423,6 +3541,7 @@ jobs:
     name: sdk-javascript-${{ matrix.phase }}-node
     needs: [plan, sdk-plan, sdk-collect-1, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && !cancelled() &&
       needs.plan.result == 'success' &&
       needs.sdk-plan.result == 'success' &&
@@ -3432,6 +3551,7 @@ jobs:
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-collect-1.outputs.wave_failed == 'false' &&
       needs.sdk-collect-1.outputs.sdk_workers_required == 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-collect-1.outputs.sdk_matrix || '{"include":[]}') }}
@@ -3485,9 +3605,11 @@ jobs:
     name: sdk-collect-2
     needs: [plan, sdk-plan, sdk-collect-1, sdk-workers-2]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-collect-1.result == 'success' &&
       needs.sdk-collect-1.outputs.wave_failed == 'false' &&
       needs.sdk-collect-1.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
@@ -3541,10 +3663,12 @@ jobs:
 
   sdk-javascript:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !inputs.runtimeRecoveryOnly &&
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.runtime-continuation.result == 'success'
+      )
     needs: [plan, runtime-continuation, sdk-plan, sdk-collect-1, sdk-collect-2]
     runs-on: ubuntu-24.04
     outputs:
@@ -3615,11 +3739,13 @@ jobs:
     name: sdk-csharp-binary-plan
     needs: [plan, sdk-plan, sdk-javascript-metadata-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript-metadata-result.result == 'success' &&
       needs.sdk-javascript-metadata-result.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -3648,12 +3774,14 @@ jobs:
     name: sdk-csharp-binary-desktop
     needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-csharp-binary-plan.result == 'success' &&
       needs.sdk-csharp-binary-plan.outputs.sdk_workers_required == 'true' &&
       needs.sdk-inputs.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-csharp-binary-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -3707,9 +3835,11 @@ jobs:
     name: sdk-collect-19
     needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-csharp-binary-plan.result == 'success' &&
       needs.sdk-csharp-binary-plan.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -3766,11 +3896,13 @@ jobs:
     name: sdk-csharp-binary-result
     needs: [plan, sdk-plan, sdk-javascript-metadata-result, sdk-csharp-binary-plan, sdk-csharp-binary, sdk-collect-19]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -3801,11 +3933,13 @@ jobs:
   sdk-native-plan:
     needs: [plan, sdk-plan, sdk-csharp-binary-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-csharp-binary-result.result == 'success' &&
       needs.sdk-csharp-binary-result.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -3839,11 +3973,13 @@ jobs:
     name: sdk-native-prepare
     needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.result == 'success' &&
       needs.sdk-native-plan.outputs.preparation_required == 'true' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     outputs:
@@ -3909,12 +4045,14 @@ jobs:
     name: sdk-${{ matrix.component }}-package-desktop
     needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-prepare, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.result == 'success' &&
       needs.sdk-native-prepare.result == 'success' &&
       needs.sdk-native-plan.outputs.sdk_workers_required == 'true' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-native-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -3977,10 +4115,12 @@ jobs:
     name: sdk-collect-4
     needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-prepare, sdk-native-workers]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-plan.result == 'success' &&
       needs.sdk-native-plan.outputs.sdk_workers_required == 'true' &&
       needs.sdk-native-prepare.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4035,11 +4175,13 @@ jobs:
 
   sdk-native-packages:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     needs: [plan, sdk-plan, sdk-csharp-binary-result, sdk-native-plan, sdk-native-workers, sdk-collect-4, sdk-native-prepare]
     runs-on: ubuntu-24.04
     outputs:
@@ -4071,11 +4213,13 @@ jobs:
   sdk-ios-package-plan:
     needs: [plan, sdk-plan, sdk-native-packages]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-packages.result == 'success' &&
       needs.sdk-native-packages.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -4104,11 +4248,13 @@ jobs:
     name: sdk-sdk-ios-package-ios
     needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-package-plan.result == 'success' &&
       needs.sdk-ios-package-plan.outputs.sdk_workers_required == 'true' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-package-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -4167,11 +4313,13 @@ jobs:
     name: sdk-collect-5
     needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-packages.result == 'success' &&
       needs.sdk-ios-package-plan.result == 'success' &&
       needs.sdk-ios-package-plan.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4264,11 +4412,13 @@ jobs:
 
   sdk-ios-packages:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     needs: [plan, sdk-plan, sdk-native-packages, sdk-ios-package-plan, sdk-ios-package, sdk-collect-5]
     runs-on: ubuntu-24.04
     outputs:
@@ -4319,11 +4469,13 @@ jobs:
   sdk-javascript-metadata-plan:
     needs: [plan, sdk-plan, sdk-javascript]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript.result == 'success' &&
       needs.sdk-javascript.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -4352,11 +4504,13 @@ jobs:
     name: sdk-javascript-metadata-node
     needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript-metadata-plan.result == 'success' &&
       needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-javascript-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -4412,11 +4566,13 @@ jobs:
     name: sdk-collect-6
     needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-javascript.result == 'success' &&
       needs.sdk-javascript-metadata-plan.result == 'success' &&
       needs.sdk-javascript-metadata-plan.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4473,11 +4629,13 @@ jobs:
 
   sdk-javascript-metadata-result:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     needs: [plan, sdk-plan, sdk-javascript, sdk-javascript-metadata-plan, sdk-javascript-metadata, sdk-collect-6]
     runs-on: ubuntu-24.04
     outputs:
@@ -4511,12 +4669,14 @@ jobs:
     environment: product-read
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-prepare, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-packages.result == 'success' &&
       needs.sdk-ios-packages.outputs.sdk_workers_required == 'true' &&
       needs.sdk-native-prepare.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-packages.outputs.sdk_matrix || '{"include":[]}') }}
@@ -4660,10 +4820,12 @@ jobs:
     environment: product-read
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-packages.result == 'success' &&
       needs.sdk-ios-packages.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4723,11 +4885,13 @@ jobs:
 
   sdk-native-validation-result:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     needs: [plan, sdk-plan, sdk-ios-packages, sdk-native-validation, sdk-collect-7]
     runs-on: ubuntu-24.04
     outputs:
@@ -4759,11 +4923,13 @@ jobs:
   sdk-native-metadata-plan:
     needs: [plan, sdk-plan, sdk-native-validation-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.sdk-plan.outputs.ios_validation_direct != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-validation-result.result == 'success' &&
       needs.sdk-native-validation-result.outputs.artifact_id != '' &&
       needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -4792,12 +4958,14 @@ jobs:
     name: sdk-${{ matrix.component }}-metadata-${{ matrix.target }}
     needs: [plan, sdk-plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-prepare, sdk-inputs]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-metadata-plan.result == 'success' &&
       needs.sdk-native-metadata-plan.outputs.sdk_workers_required == 'true' &&
       needs.sdk-native-prepare.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-native-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -4864,11 +5032,13 @@ jobs:
     name: sdk-collect-8
     needs: [plan, sdk-plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-validation-result.result == 'success' &&
       needs.sdk-native-metadata-plan.result == 'success' &&
       needs.sdk-native-metadata-plan.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -4925,11 +5095,13 @@ jobs:
 
   sdk-native-result:
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     needs: [plan, sdk-native-validation-result, sdk-native-metadata-plan, sdk-native-metadata, sdk-collect-8, sdk-plan, sdk-javascript, sdk-javascript-metadata-result, sdk-csharp-binary-result, sdk-native-packages, sdk-ios-packages]
     runs-on: ubuntu-24.04
     outputs:
@@ -4981,11 +5153,13 @@ jobs:
     name: ${{ needs.plan.outputs.native_ios_worker_ready == 'true' && 'sdk-ios-validation-ordinary-inactive' || format('sdk-sdk-ios-validation-{0}', matrix.target) }}
     needs: [plan, sdk-plan, sdk-native-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.native_ios_worker_ready != 'true' && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-native-result.outputs.sdk_matrix || '{"include":[]}') }}
@@ -5055,11 +5229,13 @@ jobs:
     name: ${{ needs.plan.outputs.native_ios_worker_ready == 'true' && format('sdk-sdk-ios-validation-{0}', matrix.target) || 'sdk-ios-validation-native-inactive' }}
     needs: [plan, workflow-lint]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && !cancelled() && needs.plan.result == 'success' &&
       needs.workflow-lint.result == 'success' &&
       needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' && github.event_name != 'workflow_dispatch' &&
       needs.plan.outputs.native_ios_worker_ready == 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.native_ios_matrix || '{"include":[]}') }}
@@ -5079,10 +5255,12 @@ jobs:
   sdk-ios-validation-outcome:
     needs: [plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       all_failed: ${{ steps.outcome.outputs.all_failed }}
@@ -5128,6 +5306,7 @@ jobs:
     name: sdk-apple-signing-prepare-${{ matrix.target }}
     needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.sdk-plan.result == 'success' &&
@@ -5137,6 +5316,7 @@ jobs:
       needs.sdk-ios-validation-outcome.outputs.signing_required == 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-validation-outcome.outputs.signing_matrix || needs.sdk-native-result.outputs.sdk_matrix || '{"include":[]}') }}
@@ -5189,6 +5369,7 @@ jobs:
     name: sdk-apple-validation-attestation-${{ matrix.target }}
     needs: [workflow-lint, plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome, sdk-apple-signing-prepare]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       github.event_name != 'workflow_dispatch' && needs.workflow-lint.result == 'success' &&
@@ -5198,6 +5379,7 @@ jobs:
       needs.sdk-ios-validation-outcome.outputs.signing_required == 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: product-attestation
@@ -5241,6 +5423,7 @@ jobs:
   sdk-collect-9:
     needs: [plan, sdk-plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
@@ -5249,6 +5432,7 @@ jobs:
       needs.sdk-ios-validation-outcome.outputs.all_failed != 'true' &&
       needs.sdk-native-result.result == 'success' &&
       needs.sdk-native-result.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
@@ -5314,11 +5498,13 @@ jobs:
   sdk-ios-validation-result:
     needs: [plan, sdk-native-result, sdk-ios-validation, sdk-ios-validation-native, sdk-ios-validation-outcome, sdk-apple-signing-prepare, sdk-apple-validation-attestation, sdk-collect-9]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -5349,10 +5535,12 @@ jobs:
   sdk-ios-metadata-plan:
     needs: [plan, sdk-plan, sdk-ios-validation-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-validation-result.result == 'success' &&
       needs.sdk-ios-validation-result.outputs.artifact_id != '' && needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -5379,7 +5567,8 @@ jobs:
 
   sdk-checkpoint-9:
     needs: [plan, sdk-collect-9]
-    if: inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-9.result == 'success'
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-9.result == 'success')
     permissions:
       contents: read
       actions: read
@@ -5395,6 +5584,7 @@ jobs:
     name: sdk-sdk-ios-metadata-${{ matrix.target }}
     needs: [plan, sdk-plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-checkpoint-9]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-validation-result.result == 'success' && needs.sdk-plan.result == 'success' &&
@@ -5402,6 +5592,7 @@ jobs:
       needs.sdk-ios-metadata-plan.outputs.sdk_workers_required == 'true' &&
       (!inputs.sdkCheckpoints || needs.sdk-checkpoint-9.result == 'skipped' ||
        (needs.sdk-checkpoint-9.result == 'success' && needs.sdk-checkpoint-9.outputs.checkpoint != ''))
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-ios-metadata-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -5462,11 +5653,13 @@ jobs:
   sdk-collect-10:
     needs: [plan, sdk-plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-checkpoint-9]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-ios-validation-result.result == 'success' && needs.sdk-plan.result == 'success' &&
       needs.sdk-ios-metadata-plan.result == 'success' &&
       needs.sdk-ios-metadata-plan.outputs.sdk_workers_required == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.collect.outputs.artifact-id }}
@@ -5535,10 +5728,12 @@ jobs:
   sdk-checkpoint-10:
     needs: [plan, sdk-collect-10, sdk-checkpoint-9]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-10.result == 'success' &&
       (needs.sdk-checkpoint-9.result == 'skipped' ||
        (needs.sdk-checkpoint-9.result == 'success' && needs.sdk-checkpoint-9.outputs.checkpoint != ''))
+      )
     permissions:
       contents: read
       actions: read
@@ -5554,11 +5749,13 @@ jobs:
   sdk-ios-metadata-result:
     needs: [plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-collect-10]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       !(inputs.sdkRecoveryOnly && needs.plan.outputs.native_resume_ready == 'true' &&
         needs.plan.outputs.native_resume_full_reuse == 'true') &&
       !inputs.runtimeRecoveryOnly &&
       always() && !cancelled() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.result.outputs.artifact_id }}
@@ -5589,6 +5786,7 @@ jobs:
   sdk-core-binary-wave:
     needs: [plan, sdk-plan, sdk-ios-metadata-result, sdk-checkpoint-10]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
@@ -5596,6 +5794,7 @@ jobs:
       needs.sdk-ios-metadata-result.outputs.artifact_id != '' &&
       (!inputs.sdkCheckpoints || needs.sdk-checkpoint-10.result == 'skipped' ||
        (needs.sdk-checkpoint-10.result == 'success' && needs.sdk-checkpoint-10.outputs.checkpoint != ''))
+      )
     permissions:
       contents: read
       actions: read
@@ -5616,10 +5815,12 @@ jobs:
   sdk-core-package-plan:
     needs: [plan, sdk-plan, sdk-core-binary-wave]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-core-binary-wave.result == 'success' &&
       needs.sdk-core-binary-wave.outputs.artifact_id != '' && needs.sdk-plan.result == 'success'
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -5647,12 +5848,14 @@ jobs:
   sdk-core-package-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-binary-wave, sdk-core-package-plan]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-core-binary-wave.result == 'success' &&
       needs.sdk-core-binary-wave.outputs.artifact_id != '' &&
       needs.sdk-core-package-plan.result == 'success'
+      )
     uses: ./.github/workflows/sdk-core-package-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -5668,11 +5871,13 @@ jobs:
   sdk-core-validation-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-package-wave]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-core-package-wave.result == 'success' &&
       needs.sdk-core-package-wave.outputs.artifact_id != ''
+      )
     uses: ./.github/workflows/sdk-core-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -5686,11 +5891,13 @@ jobs:
   sdk-core-metadata-wave:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-core-validation-wave.result == 'success' &&
       needs.sdk-core-validation-wave.outputs.artifact_id != ''
+      )
     uses: ./.github/workflows/sdk-core-metadata-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -5705,12 +5912,14 @@ jobs:
   sdk-android-binary-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave, sdk-core-metadata-wave]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-core-validation-wave.result == 'success' &&
       needs.sdk-core-metadata-wave.result == 'success' &&
       needs.sdk-core-metadata-wave.outputs.artifact_id != ''
+      )
     uses: ./.github/workflows/sdk-android-binary-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -5726,11 +5935,13 @@ jobs:
   sdk-android-package-plan:
     needs: [plan, sdk-plan, sdk-android-binary-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
       needs.sdk-android-binary-result.result == 'success' &&
       needs.sdk-android-binary-result.outputs.artifact_id != ''
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -5758,6 +5969,7 @@ jobs:
   sdk-android-package-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-plan]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
@@ -5765,6 +5977,7 @@ jobs:
       needs.sdk-core-metadata-wave.result == 'success' &&
       needs.sdk-android-binary-result.result == 'success' &&
       needs.sdk-android-package-plan.result == 'success'
+      )
     uses: ./.github/workflows/sdk-android-package-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -5782,11 +5995,13 @@ jobs:
   sdk-android-validation-plan:
     needs: [plan, sdk-plan, sdk-android-package-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
       needs.sdk-android-package-result.result == 'success' &&
       needs.sdk-android-package-result.outputs.artifact_id != ''
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -5851,6 +6066,7 @@ jobs:
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && inputs.sdkRecoveryOnly &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -5860,6 +6076,7 @@ jobs:
       needs.sdk-android-validation-plan.result == 'success' &&
       needs.sdk-android-validation-plan.outputs.sdk_workers_required == 'true' &&
       needs.sdk-android-validation-plan.outputs.retained_android_authority == ''
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sdk-android-validation-plan.outputs.sdk_matrix || '{"include":[]}') }}
@@ -5929,11 +6146,13 @@ jobs:
   sdk-android-validation-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan, android-runtime-evidence]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-android-package-result.result == 'success' &&
       needs.sdk-android-validation-plan.result == 'success'
+      )
     uses: ./.github/workflows/sdk-android-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -5950,11 +6169,13 @@ jobs:
   sdk-android-metadata-plan:
     needs: [plan, sdk-plan, sdk-android-validation-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' &&
       needs.sdk-android-validation-result.result == 'success' &&
       needs.sdk-android-validation-result.outputs.artifact_id != ''
+      )
     runs-on: ubuntu-24.04
     outputs:
       sdk_matrix: ${{ steps.capture.outputs.sdk-matrix }}
@@ -5982,12 +6203,14 @@ jobs:
   sdk-android-metadata-result:
     needs: [plan, sdk-plan, sdk-inputs, sdk-android-package-result, sdk-android-validation-plan, sdk-android-validation-result, sdk-android-metadata-plan, android-runtime-evidence]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.sdk-plan.result == 'success' && needs.sdk-inputs.result == 'success' &&
       needs.sdk-android-package-result.result == 'success' &&
       needs.sdk-android-validation-result.result == 'success' &&
       needs.sdk-android-metadata-plan.result == 'success'
+      )
     uses: ./.github/workflows/sdk-android-metadata-validation.yml
     with:
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
@@ -6005,6 +6228,7 @@ jobs:
   sdk-completion:
     needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result]
     if: >-
+      (!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success') &&
       !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -6092,51 +6316,54 @@ jobs:
         with:
           plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
           tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
-      - id: capture
-        uses: ./.github/actions/capture-runtime-state
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.tooling.outputs.plan-directory == ''
         with:
-          plan-directory: ${{ steps.tooling.outputs.plan-directory }}
-          product: sdk
-          plan-id: ${{ needs.plan.outputs.plan_id }}
-          artifact-id: ${{ steps.parent.outputs.artifact_id }}
-          artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}
-          state-wave: ${{ steps.parent.outputs.state_wave }}
-          sdk-state-wave: ${{ steps.parent.outputs.sdk_state_wave }}
-          sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
-          sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
-          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
-      - name: Require every selected SDK phase to be complete
+          artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || needs.plan.outputs.plan_id }}
+          path: build/runtime-plan
+          merge-multiple: true
+      - name: Capture original state and require every selected SDK phase to be complete
         id: completion
+        uses: ./.github/actions/hydrated-evidence-cache
         env:
-          PLAN: ${{ steps.capture.outputs.plan-path }}
-          DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
-          STATE_ROOT: ${{ steps.capture.outputs.state-root }}
+          PLAN_DIRECTORY: ${{ steps.tooling.outputs.plan-directory || 'build/runtime-plan' }}
+          ARTIFACT_ID: ${{ steps.parent.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.parent.outputs.artifact_digest }}
+          STATE_WAVE: ${{ steps.parent.outputs.state_wave }}
+          SDK_STATE_WAVE: ${{ steps.parent.outputs.sdk_state_wave }}
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tooling=()
-          if [ -n "$SDK_VALIDATION_TOOLING" ]; then
-            tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
-          fi
-          if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
-            tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
-          fi
-          if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
-            tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
-          fi
-          python3 -B -m ci.sdk_completion --plan "$PLAN" \
-            --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
-            --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
-            --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
-            ${tooling[@]+"${tooling[@]}"}
+        with:
+          mode: execute
+          script: |
+            set -euo pipefail
+            tooling=()
+            if [ -n "$SDK_VALIDATION_TOOLING" ]; then
+              tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
+            fi
+            if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then
+              tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY")
+            fi
+            if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
+              tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
+            fi
+            if [ -n "$SDK_STATE_WAVE" ]; then
+              tooling+=(--sdk-state-wave "$SDK_STATE_WAVE")
+            fi
+            python3 -B -m ci.sdk_completion capture --plan "$PLAN_DIRECTORY/impact-plan.json" \
+              --destination "$GITHUB_WORKSPACE/build/runtime-input" \
+              --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+              --state-wave "$STATE_WAVE" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+              --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
+              ${tooling[@]+"${tooling[@]}"}
 
   sdk-partial-catalog:
     name: sdk-partial-catalog
     needs: [plan, contract-validation, sdk-completion, sdk-collect-3, sdk-collect-1, sdk-collect-2, sdk-collect-19, sdk-collect-4, sdk-collect-5, sdk-collect-6, sdk-collect-7, sdk-collect-8, sdk-collect-9, sdk-collect-10, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && github.event_name == 'pull_request' &&
       needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -6169,6 +6396,7 @@ jobs:
        needs.sdk-collect-8.result == 'failure' || needs.sdk-collect-8.result == 'cancelled' ||
        needs.sdk-collect-9.result == 'failure' || needs.sdk-collect-9.result == 'cancelled' ||
        needs.sdk-collect-10.result == 'failure' || needs.sdk-collect-10.result == 'cancelled')
+      )
     runs-on: ubuntu-24.04
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
@@ -6318,6 +6546,7 @@ jobs:
     name: sdk-catalog
     needs: [plan, contract-validation, sdk-completion]
     if: >-
+      !inputs.fullReuseAcceptanceOnly && (
       always() && !cancelled() &&
       needs.plan.result == 'success' &&
       needs.contract-validation.result == 'success' &&
@@ -6328,6 +6557,7 @@ jobs:
       needs.sdk-completion.outputs.complete == 'true' &&
       needs.sdk-completion.outputs.phase_count == '62' &&
       needs.plan.outputs.native_resume_full_reuse != 'true'
+      )
     runs-on: ubuntu-24.04
     outputs:
       artifact_name: ${{ steps.identity.outputs.name }}
@@ -6444,6 +6674,12 @@ jobs:
 
   sdk-parity:
     if: >-
+      (!inputs.fullReuseAcceptanceOnly ||
+       (needs.plan.result == 'success' && inputs.reuseCompletedParity &&
+        needs.sdk-completion.result == 'success' &&
+        needs.sdk-completion.outputs.complete == 'true' &&
+        needs.sdk-completion.outputs.phase_count == '62' &&
+        needs.sdk-completion.outputs.full_reuse == 'true')) &&
       !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
@@ -6462,8 +6698,8 @@ jobs:
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       nodeJs: ${{ fromJSON(needs.plan.outputs.lane_node_js) }}
       nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
-      importedOnly: ${{ inputs.sdkRecoveryOnly }}
-      reuseCompletedParity: ${{ inputs.reuseCompletedParity && inputs.sdkRecoveryOnly && needs.sdk-completion.outputs.complete == 'true' && needs.sdk-completion.outputs.phase_count == '62' && needs.sdk-completion.outputs.full_reuse == 'true' }}
+      importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
+      reuseCompletedParity: ${{ inputs.reuseCompletedParity && (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && needs.sdk-completion.outputs.complete == 'true' && needs.sdk-completion.outputs.phase_count == '62' && needs.sdk-completion.outputs.full_reuse == 'true' }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
       sdkOutputs: ${{ toJSON(needs.sdk-completion.outputs) }}
@@ -6497,7 +6733,7 @@ jobs:
           CONTRACT_ATTESTATION_RESULT: ${{ needs.contract-validation.outputs.contract_attestation_result }}
           CONTRACT_ATTESTATION_ARTIFACT_ID: ${{ needs.contract-validation.outputs.contract_attestation_artifact_id }}
           CONTRACT_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.contract-validation.outputs.contract_attestation_artifact_digest }}
-          CONTRACT_PHASE10_REQUIRED: ${{ github.event_name != 'workflow_dispatch' && needs.contract-validation.outputs.contract_complete == 'true' }}
+          CONTRACT_PHASE10_REQUIRED: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name != 'workflow_dispatch' && needs.contract-validation.outputs.contract_complete == 'true' }}
           CONTRACT_PHASE10_PGP_RESULT: ${{ needs.contract-phase10-pgp-authority.result }}
           CONTRACT_PHASE10_MAVEN_RESULT: ${{ needs.contract-phase10-maven.result }}
           CONTRACT_PHASE10_MAVEN_ARTIFACT_ID: ${{ needs.contract-phase10-maven.outputs.phase10OutputArtifactId }}
@@ -6531,7 +6767,7 @@ jobs:
           SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
           PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
-          NATIVE_WRAPPERS_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
+          NATIVE_WRAPPERS_REQUIRED: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
           NATIVE_WRAPPERS_RESULT: ${{ needs.sdk-native-wrappers.result }}
           SDK_PARITY_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true') }}
           SDK_PARITY_RESULT: ${{ needs.sdk-parity.result }}
@@ -6629,22 +6865,24 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - if: ${{ !inputs.fullReuseAcceptanceOnly }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.plan.outputs.plan_artifact }}
           path: build/ci/plan
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !inputs.fullReuseAcceptanceOnly }}
         with:
           pattern: codex-agent-ci-*
           path: build/ci/receipts
-      - if: needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_node_js == 'true'
+      - if: ${{ !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_node_js == 'true') }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/receipts/sdk-javascript
       - name: Restore the exact reused native-wrapper release
         id: restore-reused-native-wrapper-release
-        if: needs.plan.outputs.validation_reused == 'true'
+        if: ${{ !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.validation_reused == 'true') }}
         run: |
           source=build/ci/plan/reused-native-wrapper-release
           if [ ! -d "$source" ]; then
@@ -6657,6 +6895,7 @@ jobs:
           cp -R "$source" build/ci/native-wrapper-release
           echo 'restored=true' >> "$GITHUB_OUTPUT"
       - name: Require an exact receipt set
+        if: ${{ !inputs.fullReuseAcceptanceOnly }}
         env:
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
@@ -6673,7 +6912,7 @@ jobs:
             python3 ci/receipt.py aggregate --plan build/ci/plan/impact-plan.json \
               --receipts build/ci/receipts --output build/ci/validation-receipt.json "${auxiliary[@]}"
           fi
-      - if: needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')
+      - if: ${{ !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')) }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}
@@ -6681,6 +6920,7 @@ jobs:
           run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}
           path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
+        if: ${{ !inputs.fullReuseAcceptanceOnly }}
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
           M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
@@ -6718,6 +6958,7 @@ jobs:
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !inputs.fullReuseAcceptanceOnly }}
         with:
           if-no-files-found: error
           overwrite: true
@@ -6725,7 +6966,7 @@ jobs:
           path: build/ci/final-validation/*
           compression-level: 0
           retention-days: 90
-      - if: steps.restore-reused-native-wrapper-release.outputs.restored == 'true'
+      - if: ${{ !inputs.fullReuseAcceptanceOnly && (steps.restore-reused-native-wrapper-release.outputs.restored == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -6733,5 +6974,51 @@ jobs:
           include-hidden-files: true
           name: codex-agent-native-wrapper-packages-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/native-wrapper-release
+          compression-level: 0
+          retention-days: 90
+      - name: Read only the current plan control
+        if: inputs.fullReuseAcceptanceOnly
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
+          path: build/ci/current-plan
+          merge-multiple: true
+      - name: Authenticate current-head acceptance without restoring product bodies
+        if: inputs.fullReuseAcceptanceOnly
+        env:
+          FULL_REUSE_ACCEPTANCE_ONLY: ${{ inputs.fullReuseAcceptanceOnly }}
+          RUNTIME_RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly }}
+          SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly }}
+          FULL_ACCEPTANCE_CURRENT: ${{ needs.workflow-lint.outputs.full_acceptance_current }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          WORKFLOW_LINT_RESULT: ${{ needs.workflow-lint.result }}
+          PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
+          SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
+          SDK_PARITY_RESULT: ${{ needs.sdk-parity.result }}
+          PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
+          SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
+          SDK_PHASE_COUNT: ${{ needs.sdk-completion.outputs.phase_count }}
+          TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
+          TARGET_JOBS_REQUIRED: ${{ needs.product-resume.outputs.target_jobs_required }}
+          REPORT_SHA256: ${{ needs.sdk-parity.outputs.report_sha256 }}
+          REPORT_ARTIFACT_ID: ${{ needs.sdk-parity.outputs.report_artifact_id }}
+          REPORT_ARTIFACT_SHA256: ${{ needs.sdk-parity.outputs.report_artifact_sha256 }}
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B -m ci.sdk_completion acceptance --plan build/ci/current-plan/impact-plan.json \
+            --report-sha256 "$REPORT_SHA256" --report-artifact-id "$REPORT_ARTIFACT_ID" \
+            --report-artifact-sha256 "$REPORT_ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --repository-root "$GITHUB_WORKSPACE" \
+            --destination build/ci/current-head-acceptance
+      - name: Preserve distinct current-head acceptance evidence
+        if: inputs.fullReuseAcceptanceOnly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          name: codex-agent-current-head-acceptance-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/current-head-acceptance
           compression-level: 0
           retention-days: 90

@@ -17,6 +17,12 @@ inputs:
     required: false
     description: Existing caller-owned capture command, only for execute mode.
 outputs:
+  complete:
+    description: Fixed SDK completion command output after all owning scopes exit.
+  phaseCount:
+    description: Exact selected SDK count from the existing completion gate.
+  fullReuse:
+    description: Full authenticated replay result from the existing completion gate.
   routing_decisions:
     description: Routing hints emitted by the authenticated transition.
   aggregate_key:

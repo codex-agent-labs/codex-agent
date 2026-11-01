@@ -19,9 +19,10 @@ from products.inventory import (
     canonical_json_bytes, require_array, require_boolean, require_exact_keys,
     require_integer, require_object, require_sha256, require_string, read_regular_file_bytes,
     load_canonical_json_bytes, sha256_bytes, git_inventory, verified_zip_contents,
+    publish_regular_tree,
 )
 from reuse import github_output
-from products.restore import verification_scoped
+from products.restore import verification_scoped, verification_session
 
 
 LOCAL_REPOSITORY_INIT = """\
@@ -605,6 +606,213 @@ def stage_partial_catalog(state, destination):
     return stage_partial_sdk_catalog(replace(state, prior_by_instance=selected), destination)
 
 
+def validate_current_head_report(report, producer):
+    """Check an authenticated job's report shape; never issue reuse authority."""
+    producer = products.validate_producer(producer, "Expected current producer")
+    report = require_exact_keys(report, {
+        "schemaVersion", "result", "phaseCount", "products", "edges", "originalPhases",
+        "sdkParity", "verificationContext",
+    }, "Current-head repository report")
+    # Reuse the existing complete-DAG validator for structural consistency only.
+    # The observed original job, not this reconstructed container, proves semantics.
+    expected = _repository_report({"schemaVersion": 1, "result": "complete", "fullReuse": True,
+        "phases": report["originalPhases"], "matrices": {"contract": [], "runtime": [], "sdk": []},
+        "continuationRequirements": []})
+    if (require_integer(report["schemaVersion"], "Report schema", 1) != 1
+            or require_integer(report["phaseCount"], "Report phase count", 1) != 112
+            or sum(row["product"] == "sdk" for row in report["originalPhases"]) != 62
+            or any(report[key] != value for key, value in expected.items())):
+        raise ValueError("Current-head report differs from the complete repository DAG")
+    context = require_exact_keys(report["verificationContext"], {"kind", "producer"}, "Report context")
+    if (context["kind"] != "hosted-original-parity-reuse"
+            or products.validate_producer(context["producer"]) != producer):
+        raise ValueError("Current-head report has a different hosted producer")
+    parity = require_exact_keys(report["sdkParity"], {
+        "result", "reportSha256", "phaseCount", "languageCount", "satisfied", "excluded",
+        "scenarioCount", "producer", "jobId", "artifactId", "artifactSha256", "policySha256",
+        "verifierInputsSha256",
+    }, "Authenticated original parity")
+    counts = {"phaseCount": 112, "languageCount": 11, "satisfied": 6104, "excluded": 12, "scenarioCount": 14}
+    original = products.validate_producer(parity["producer"], "Original parity producer")
+    if (parity["result"] != "passed" or any(require_integer(parity[key], key, 0) != value
+            for key, value in counts.items()) or original["repository"] != producer["repository"]
+            or original["workflowPath"] != ".github/workflows/ci.yml"
+            or original["event"] != "pull_request" or original["pullRequest"] != 31):
+        raise ValueError("Current-head report lacks complete authenticated original parity")
+    for key in ("reportSha256", "artifactSha256", "policySha256", "verifierInputsSha256"):
+        require_sha256(parity[key], "Original parity " + key)
+    for key in ("jobId", "artifactId"):
+        require_integer(parity[key], "Original parity " + key, 1)
+    return report
+
+
+_ACCEPTANCE_FLAGS = {
+    "FULL_REUSE_ACCEPTANCE_ONLY": "true", "RUNTIME_RECOVERY_ONLY": "false", "SDK_RECOVERY_ONLY": "false",
+    "FULL_ACCEPTANCE_CURRENT": "true", "PLAN_RESULT": "success", "WORKFLOW_LINT_RESULT": "success",
+    "PRODUCT_RESUME_RESULT": "success", "SDK_COMPLETION_RESULT": "success", "SDK_PARITY_RESULT": "success",
+    "PRODUCT_FULL_REUSE": "true", "SDK_COMPLETE": "true", "SDK_PHASE_COUNT": "62",
+    "TOOLING_MISS": "false", "TARGET_JOBS_REQUIRED": "false",
+}
+
+
+def write_current_head_acceptance(plan_path, *, report_sha256,
+        report_artifact_id, report_artifact_sha256, trusted_workflow_sha, repository_root,
+        destination, environ=None):
+    """Publish external current-head evidence, never a lane/product/promotion receipt."""
+    from products.inventory import _open_regular_file, _stat_identity
+    from products.sdk_package import _require_capability_output_separate
+    from products.signing_isolation import require_no_signing_secret
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if (environment.get("GITHUB_ACTIONS") != "true" or environment.get("GITHUB_JOB") != "merge-gate"
+            or not environment.get("GITHUB_TOKEN")
+            or any(environment.get(key) != value for key, value in _ACCEPTANCE_FLAGS.items())):
+        raise ValueError("Current-head acceptance requires successful full-reuse-only workflow gates")
+    bound_environment = {key: environment.get(key) for key in (*_ACCEPTANCE_FLAGS,
+        "GITHUB_ACTIONS", "GITHUB_JOB", "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_EVENT_NAME",
+        "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")}
+    root = Path(repository_root).resolve(strict=True)
+    plan_path, destination = (Path(path).absolute() for path in (plan_path, destination))
+    report_name = "hosted-parity-report.json"
+    _require_capability_output_separate(destination, [plan_path])
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Current-head acceptance destination must be fresh")
+    require_sha256(report_sha256, "Current report SHA")
+    require_sha256(report_artifact_sha256, "Current report upload SHA")
+    require_integer(report_artifact_id, "Current report upload ID", 1)
+    report_limit = archive_limit = 1024 * 1024
+    jobs = {"parity": "product-validation / sdk-parity / sdk-parity",
+        "controls": "product-validation / workflow-lint", "resume": "product-validation / product-resume",
+        "completion": "product-validation / sdk-completion"}
+    with ExitStack() as held:
+        descriptor, before = _open_regular_file(plan_path, "Acceptance plan", reject_symlink_parents=True)
+        held.callback(os.close, descriptor)
+        plan_identity = _stat_identity(before)
+        plan_raw = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+        plan = products._validate_plan(plan_path, root)
+        if not products.validate_remote_build_authorization(plan)[0] or plan["mergeReady"] is not True:
+            raise ValueError("Current-head acceptance requires an authorized merge-ready plan")
+        producer = products.validate_producer(products._consumer(plan, environment)["producer"])
+        if any(environment.get(key) != producer[field] for key, field in (
+                ("GITHUB_REPOSITORY", "repository"), ("GITHUB_EVENT_NAME", "event"), ("GITHUB_SHA", "commit"))):
+            raise ValueError("Current-head acceptance environment differs from its plan")
+        token = environment["GITHUB_TOKEN"]
+        with verification_session(), products._ci_observation_batch(
+                (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True):
+            observation, = products._observe_ci_producer_jobs({key: producer for key in jobs},
+                jobs_by_phase=jobs, token=token, trusted_workflows_by_phase={key: {
+                    "path": ".github/workflows/" + ("sdk-binding-parity.yml" if key == "parity"
+                                                     else "product-validation.yml"),
+                    "sha": trusted_workflow_sha} for key in jobs})
+            artifact = products._contract_ci_upload_metadata(report_artifact_id, report_artifact_sha256,
+                "codex-agent-hosted-parity-report-" + producer["tree"], producer, observation["run"], token)
+            products._require_artifact_job_window(observation, jobs["parity"], artifact)
+            size = require_integer(artifact["size_in_bytes"], "Current report upload bytes", 1)
+            if size > archive_limit:
+                raise ValueError("Current report upload exceeds its small transport bound")
+            with tempfile.TemporaryDirectory(prefix="current-head-report-") as temporary:
+                archive = Path(temporary) / "report.zip"
+                products._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+                    destination=archive, limit=archive_limit, artifact_sha256=report_artifact_sha256, size=size)
+                inventory, retained, transport = verified_zip_contents(archive,
+                    max_archive_bytes=archive_limit, max_members=1, max_entry_bytes=report_limit,
+                    max_total_bytes=report_limit, retained_paths=(report_name,),
+                    max_retained_bytes=report_limit, require_sorted=False)
+                report_raw = retained.get(report_name, b"")
+                if (transport != {"bytes": size, "sha256": report_artifact_sha256}
+                        or inventory != [{"relativePath": report_name, "bytes": len(report_raw),
+                                          "sha256": report_sha256}]
+                        or retained != {report_name: report_raw}):
+                    raise ValueError("Current report is not the exact authenticated upload member")
+                validate_current_head_report(load_canonical_json_bytes(report_raw), producer)
+        if (_stat_identity(os.fstat(descriptor)) != plan_identity or _stat_identity(plan_path.lstat()) != plan_identity
+                or read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024,
+                                           reject_symlink_parents=True) != plan_raw):
+            raise ValueError("Acceptance input changed during verification")
+        if (products._git_value(root, "rev-parse", "HEAD^{commit}") != producer["commit"]
+                or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
+                or any(environment.get(key) != value for key, value in bound_environment.items())):
+            raise ValueError("Current-head acceptance context changed during verification")
+        require_no_signing_secret(environment)
+        receipt = {"schemaVersion": 1, "kind": "current-head-product-acceptance", "result": "passed",
+            "mode": "full-reuse-only", "producer": producer, "trustedWorkflowSha": trusted_workflow_sha,
+            "impactPlan": {"path": "impact-plan.json", "sha256": sha256_bytes(plan_raw)},
+            "report": {"path": report_name, "sha256": report_sha256,
+                "artifactId": report_artifact_id, "artifactSha256": report_artifact_sha256},
+            "currentHeadChecks": dict(_ACCEPTANCE_FLAGS),
+            "jobs": {key: products._matching_ci_jobs(observation["jobs"], name)[0]["id"]
+                     for key, name in jobs.items()}}
+    # Only accepted evidence is published, after every verification/observation exit.
+    with tempfile.TemporaryDirectory(prefix="current-head-acceptance-") as temporary:
+        staged = Path(temporary).resolve(strict=True)
+        for name, raw in (("impact-plan.json", plan_raw), (report_name, report_raw),
+                          ("current-head-acceptance.json", canonical_json_bytes(receipt))):
+            (staged / name).write_bytes(raw)
+        publish_regular_tree(staged, destination)
+    return receipt
+
+
+def _acceptance_main(argv):
+    parser = argparse.ArgumentParser(description="Record current-head full-reuse acceptance", allow_abbrev=False)
+    for name in ("plan", "repository-root", "destination"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    for name in ("report-sha256", "report-artifact-sha256", "trusted-workflow-sha"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--report-artifact-id", type=int, required=True)
+    args = vars(parser.parse_args(argv))
+    args["plan_path"] = args.pop("plan")
+    try:
+        result = write_current_head_acceptance(**args)
+        print(canonical_json_bytes(result).decode().strip())
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
+    return 0
+
+
+def _capture_main(argv):
+    """Capture the selected original and complete its full SDK closure once."""
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for name in ("plan", "destination", "repository-root", "github-output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--artifact-id", type=int, required=True)
+    parser.add_argument("--artifact-sha256", required=True)
+    parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--state-wave", type=int, default=0)
+    parser.add_argument("--sdk-state-wave", type=int)
+    for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
+        parser.add_argument("--" + name, type=Path)
+    add_metadata_admission_arguments(parser)
+    add_completed_frozen_argument(parser)
+    args = parser.parse_args(argv)
+    try:
+        # This process owns one capability and one verification lifetime. No
+        # captured matrix or serialized success substitutes for the full gate.
+        with verification_session(), products._ci_observation_batch(
+                tuple(str(os.environ.get(name)) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")),
+                share_nested=True), metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
+            policies = {name: products._canonical_control(path, "Caller SDK policy")
+                        for name in ("sdk_validation_tooling", "sdk_apple_validation_policy")
+                        if (path := getattr(args, name)) is not None}
+            products.capture_runtime_resume_upload(args.plan, args.destination,
+                artifact_id=args.artifact_id, artifact_sha256=args.artifact_sha256,
+                trusted_workflow_sha=args.trusted_workflow_sha, state_wave=args.state_wave,
+                **({"sdk_state_wave": args.sdk_state_wave} if args.sdk_state_wave is not None else {}),
+                repository_root=args.repository_root, environ=os.environ,
+                token=os.environ.get("GITHUB_TOKEN", ""), allow_earlier_attempt=True, **completed)
+            original = args.destination / "original"
+            discovery = original / "product-resume-state"
+            state = original / "runtime-state" if args.state_wave or args.sdk_state_wave is not None else discovery
+            result = require_sdk_completion(original / "product-resume-inputs/plan/impact-plan.json",
+                discovery, state, repository_root=args.repository_root, environ=os.environ,
+                sdk_original_workflow_sha=args.trusted_workflow_sha,
+                **policies, **admissions, **completed)
+        # All original, policy and native-custody exits precede output publication.
+        github_output(args.github_output, result)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
+    return 0
+
+
 @verification_scoped
 @products._fresh_ci_observations(share_nested=True)
 def main(argv=None):
@@ -734,4 +942,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    command = sys.argv[1:2]
+    raise SystemExit(_capture_main(sys.argv[2:]) if command == ["capture"] else
+                     _acceptance_main(sys.argv[2:]) if command == ["acceptance"] else main())
