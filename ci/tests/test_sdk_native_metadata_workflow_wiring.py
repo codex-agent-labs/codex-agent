@@ -111,6 +111,56 @@ class SdkNativeMetadataWorkflowWiringTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "workers or collection failed"):
             self.result(self.needs(worker="failure"))
 
+    def test_metadata_diagnostics_retain_original_files_without_moving_inputs(self):
+        action = (ROOT / ".github/actions/sdk-native-metadata-worker/action.yml").read_text()
+        match = re.search(
+            r"(?ms)^    - name: Retain native metadata worker diagnostics\n(.*?)^        PY$", action)
+        self.assertIsNotNone(match)
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", match[1])
+        self.assertLess(match.end(), action.index("uses: actions/upload-artifact@"))
+        script = textwrap.dedent(match[1].split("        python3 -B - <<'PY'\n", 1)[1])
+        for available in (("execution.json", "gradle.log"), ("gradle.log",), ("execution.json",), ()):
+            with self.subTest(available=available), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "build/sdk-worker/candidate/worker"
+                inputs = source / "inputs/original.bin"
+                inputs.parent.mkdir(parents=True)
+                inputs.write_bytes(b"retained original input")
+                input_identity = inputs.stat()
+                originals = {}
+                for name in available:
+                    path = source / name
+                    contents = (name + "\noriginal command or log\n").encode()
+                    path.write_bytes(contents)
+                    originals[name] = contents, path.stat()
+                with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(root)}, clear=True):
+                    exec(compile(script, "retain-metadata-diagnostics", "exec"), {})
+                destination = root / "build/sdk-worker/worker"
+                self.assertEqual(bool(available), destination.exists())
+                self.assertEqual(set(available), {p.name for p in destination.iterdir()} if available else set())
+                for name, (contents, before) in originals.items():
+                    moved = destination / name
+                    self.assertEqual(contents, moved.read_bytes())
+                    self.assertEqual((before.st_dev, before.st_ino, before.st_mode),
+                                     (moved.stat().st_dev, moved.stat().st_ino, moved.stat().st_mode))
+                    self.assertFalse((source / name).exists())
+                self.assertEqual(b"retained original input", inputs.read_bytes())
+                self.assertEqual((input_identity.st_dev, input_identity.st_ino),
+                                 (inputs.stat().st_dev, inputs.stat().st_ino))
+                self.assertFalse((destination / "inputs").exists())
+        for name in ("execution.json", "gradle.log"):
+            self.assertIn(f"          build/sdk-worker/worker/{name}\n", action)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "build/sdk-worker/candidate/worker/gradle.log"
+            source.parent.mkdir(parents=True)
+            source.symlink_to("missing-diagnostic")
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(root)}, clear=True):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    exec(compile(script, "retain-metadata-diagnostics", "exec"), {})
+            self.assertTrue(source.is_symlink())
+            self.assertFalse((root / "build/sdk-worker/worker").exists())
+
     def test_final_gate_forwards_collected_or_noop_state_and_rejects_mutation(self):
         self.assertEqual(self.locator("82", "8"), self.result(self.needs()))
 
