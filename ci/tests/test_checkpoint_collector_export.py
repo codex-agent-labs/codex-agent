@@ -8,10 +8,10 @@ import runtime_reference_transport as transport
 from products.inventory import regular_file_inventory,snapshot_regular_tree,write_canonical_json
 from products.restore import object_relative_path
 from ci.tests.test_checkpoint_collector_execution import CORE
-from ci.tests.test_checkpoint_collector_handoff import CheckpointCollectorHandoffTest
+from ci.tests import test_checkpoint_collector_handoff as handoff_fixture
 
 
-class CheckpointCollectorExportTest(CheckpointCollectorHandoffTest):
+class CheckpointCollectorExportTest(handoff_fixture.CheckpointCollectorHandoffTest):
     measurements=[]
     export_measurements=[]
 
@@ -65,7 +65,7 @@ class ReferenceExportSelectionTest(unittest.TestCase):
             for directory in (base,handoff):write(directory,'product-resume-inputs/control.json',b'unchanged controls')
             capture=root/'capture.json';write_canonical_json(capture,{'artifact':{'id':101,'digest':'sha256:'+'e'*64},'stateWave':1})
             delta=root/'delta'
-            with CheckpointCollectorHandoffTest.reads(self,[old]) as opened:
+            with handoff_fixture.CheckpointCollectorHandoffTest.reads(self,[old]) as opened:
                 value=transport.stage_reference_handoff(handoff,base,capture,delta,state_wave=2)
             self.assertEqual([],opened)
             self.assertEqual('product-resume-state/old/'+needed,next(row['sourcePath'] for row in value['references']

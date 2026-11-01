@@ -18,9 +18,9 @@ class SdkToolingActionForwardingTest(unittest.TestCase):
     def test_capture_forwards_exact_tooling_path_for_sdk_projections(self):
         cases = (
             ({"STATE_PRODUCT": "sdk", "SDK_FAMILY": "native-validation", "SDK_STATE_WAVE": "6"},
-             ["--sdk-state-wave", "6", "--family", "native-validation"]),
+             ["--sdk-state-wave", "6", "--family", "native-validation", "--scope-inputs"]),
             ({"STATE_PRODUCT": "sdk", "SDK_FAMILY": "native-metadata", "SDK_STATE_WAVE": "7"},
-             ["--sdk-state-wave", "7", "--family", "native-metadata"]),
+             ["--sdk-state-wave", "7", "--family", "native-metadata", "--scope-inputs"]),
             ({"STATE_PRODUCT": "sdk-ios-binary", "SDK_STATE_WAVE": "2"},
              ["--sdk-state-wave", "2", "--ios-binary"]),
         )

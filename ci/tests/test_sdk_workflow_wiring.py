@@ -111,9 +111,8 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if not root:
                     child_names.add(path.name)
                     self.assertRegex(text, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        # Includes the deployed Core/Android collector split (+5 collectors,
-        # minus the Android validator's superseded restore entry).
-        self.assertEqual(56, restored)
+        # Includes the deployed Core/Android collectors and retained-input readers.
+        self.assertEqual(65, restored)
         parent = (ROOT / ".github/workflows/product-validation.yml").read_text()
         for name in child_names:
             job = next(body for _, body in re.findall(
@@ -139,7 +138,8 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         planner_gate = planner.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0].strip()
         binary_gate = " &&\n      needs.sdk-ios-binary-plan.result == 'success'"
         self.assertEqual(input_gate, planner_gate.replace(binary_gate, ""))
-        self.assertTrue(planner_gate.endswith(binary_gate + "))"))
+        self.assertTrue(planner_gate.startswith("!inputs.fullReuseAcceptanceOnly && ("))
+        self.assertTrue(planner_gate.endswith(binary_gate + "))\n      )"))
         for name in ("sdk-workers-1", "sdk-workers-2", "sdk-csharp-binary"):
             dependencies = re.search(r"    needs: \[(.*?)\]", self.job(name))[1].split(", ")
             self.assertIn("sdk-plan", dependencies)
@@ -156,7 +156,8 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         self.assertIn("refresh: true", cold)
         text = (ROOT / ".github/workflows/reuse-qualification.yml").read_text()
         self.assertRegex(text, r"(?s)refresh:\n.*?default: false\n")
-        self.assertIn("if: inputs.refresh != true", text)
+        preserved = text.split("\n  preserved:\n", 1)[1].split("\n  qualify:\n", 1)[0]
+        self.assertIn("if: inputs.sdk-checkpoint == '' && inputs.refresh != true && inputs.completed-sdk != true", preserved)
         self.assertIn("ref: ${{ fromJSON(toJSON(job)).workflow_sha }}", text)
         self.assertIn("ISSUER_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}", text)
         self.assertIn("ci/reuse_qualification.py issue-frozen", text)

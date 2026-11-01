@@ -46,7 +46,7 @@ class NativePrepareToolingActionTest(unittest.TestCase):
                     SDK_APPLE_VALIDATION_POLICY=apple)
                 self.assertEqual(0, result.returncode, result.stderr)
                 selected = ['--sdk-state-wave', wave] if wave else []
-                selected += ['--family', 'native-package']
+                selected += ['--family', 'native-package', '--scope-inputs']
                 if policy:
                     selected += ['--sdk-validation-tooling', policy]
                 if apple:

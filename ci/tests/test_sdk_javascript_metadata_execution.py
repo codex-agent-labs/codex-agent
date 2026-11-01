@@ -40,7 +40,7 @@ class SdkJavaScriptMetadataExecutionTest(unittest.TestCase):
                              runId=71, runAttempt=2, pullRequest=31)
         self.validation_producer = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
                                     "runId": 70, "runAttempt": 1}
-        for identity, version in ((CONTRACT_BINARY, "0.2.0"), (SDK_VALIDATION, "0.2.9")):
+        for identity, version in ((SDK_VALIDATION, "0.2.9"),):
             directory = self.originals / self.name(identity)
             stage = directory / "stage"
             (stage / "outputs").mkdir(parents=True)

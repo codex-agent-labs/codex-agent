@@ -336,13 +336,14 @@ The core tasks write content-hash-bound evidence under
   package proofs.
 - The same binding report directory contains `python-parity.json`,
   `csharp-parity.json`, `rust-parity.json`, `cpp-parity.json`, and
-  `dart-parity.json`; every strict merge-gate-derived native receipt also binds
+  `dart-parity.json`; every strict native parity receipt also binds
   exact installed-package consumer proof from all five hosts.
 
-Only a successful exact five-host merge-gate run may derive the strict C and
-native-wrapper receipts from those exact artifacts. M11 then produces
-`binding-obligations-m11.json` over all eleven languages; local producer output
-cannot substitute for that final-head distributed receipt.
+The hosted SDK parity job authenticates the exact five-host originals before
+deriving strict C and native-wrapper receipts. M11 then produces
+`binding-obligations-m11.json` over all eleven languages. The final merge gate
+separately requires current-head acceptance; local producer output cannot
+substitute for the authenticated distributed parity evidence.
 
 For a binding, add the smallest idiomatic public artifact projection and a real
 consumer test. Extend that language's evidence derivation so each exact
@@ -363,36 +364,34 @@ report. The current focused gates are:
   -PcodexAgent.sdkBindingEvidenceDirectory="$M11_EVIDENCE_DIR" \
   -PcodexAgent.sdkCanonicalApiReport="$CONTRACT_API_REPORT" \
   -PcodexAgent.sdkCanonicalCoverageReceipt="$CONTRACT_COVERAGE_RECEIPT"
-./gradlew verifySdk \
-  -PcodexAgent.sdkBindingEvidenceDirectory="$M11_EVIDENCE_DIR" \
-  -PcodexAgent.sdkCanonicalApiReport="$CONTRACT_API_REPORT" \
-  -PcodexAgent.sdkCanonicalCoverageReceipt="$CONTRACT_COVERAGE_RECEIPT"
-./gradlew verifyRepository \
-  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
-  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
+python3 -m ci.sdk_completion --sdk --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY" \
+  --parity-policy "$PARITY_POLICY" --parity-archive "$PARITY_ARCHIVE"
+python3 -m ci.sdk_completion --repository --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY"
 # macOS only
 ./gradlew verifyIosRuntime
 ```
 
-Set the three SDK variables to the exact M11 evidence directory and Contract
-API/coverage files before running either SDK gate. Set the four
-`verifyRepository` variables to existing imported evidence directories and
-their `development` or `release` trust domain before running it.
+Set the three focused parity variables to the exact M11 evidence directory and
+Contract API/coverage files. For completed Phase-9 SDK and repository acceptance,
+use the adapters above with independently reviewed policies and original parity
+evidence, as described in [repository boundaries](docs/REPOSITORY_BOUNDARIES.md#commands-and-release-status).
+The adapters preserve successful products and do not create missing receipts.
 `verifyContract` produces only canonical Contract and Kotlin evidence.
 `verifySdkBindingParity` verifies only the exact imported eleven-language
-receipt set against separately supplied Contract API and coverage evidence;
-`verifySdk` includes that gate plus facade publication and consumer checks;
-`verifyRepository` aggregates independently supplied product receipts without
-rebuilding their owners. Native-wrapper parity requires all authoritative five-host release and consumer inputs together;
+receipt set against separately supplied Contract API and coverage evidence.
+The SDK adapter verifies the completed SDK selection and authenticated hosted
+parity; the repository adapter reconciles the independently supplied product
+receipts without rebuilding their owners. Native-wrapper parity requires all
+authoritative five-host release and consumer inputs together;
 missing inputs fail the gate instead of producing a no-op success. On macOS,
 root `verifyIosRuntime` verifies the iOS runtime and
-Apple receipts. Only a successful merge-gate run can collect all five
-matching-host C SDK and installed-package proofs, derive the C/native receipts,
-run the exact eleven-receipt M11 audit, and preserve the canonical API, coverage,
-packages, receipts, and audit through promotion and release-candidate
-verification.
+Apple receipts. Hosted SDK parity collects all five matching-host C SDK and
+installed-package proofs, derives the C/native receipts, and runs the exact
+eleven-receipt M11 audit. Original canonical API, coverage, package, receipt,
+and audit bytes remain immutable; promotion and release-candidate acceptance
+are separate gates.
 An active pair without verified projection evidence is `missing`. A future
 phase pair remains applicable but `pending`: M7.5 historically activated
 Kotlin, Java, Swift, Objective-C, and JavaScript/TypeScript; M8 also activates

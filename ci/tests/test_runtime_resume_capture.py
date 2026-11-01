@@ -162,7 +162,8 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             self.capture_members(self.root / 'build/planned-unbounded-format', self.contents)
         with self.assertRaisesRegex(ValueError, 'transport limit'):
             self.capture(self.root / 'build/planned-oversized',
-                         artifact={**self.artifact, 'size_in_bytes': 32 * 1024**2 + 1})
+                         artifact={**self.artifact, 'size_in_bytes':
+                                   product_reuse._PLANNED_RESUME_ZIP_LIMITS['max_archive_bytes'] + 1})
 
     def test_late_original_mutation_cannot_publish(self):
         destination = self.root / "build/rejected-resume-late-copy"

@@ -190,14 +190,23 @@ class RuntimeNativeCollectionTest(unittest.TestCase):
         failed, invalid, *successful = NATIVE_TARGETS
         next(job for job in self.jobs if job["name"] == f"product-validation / runtime-{failed}-binary-{failed}")["conclusion"] = "failure"
         destination = self.root / "build/native-mixed"
-        result, _, _, _, _ = self.collect(destination, shard_failure=invalid)
+        result, _, _, download, verifier = self.collect(destination, shard_failure=invalid)
         rows = self.rows(result)
         for component in (failed, invalid):
             row = rows[component]
             self.assertEqual("failure", row["result"])
             self.assertTrue(row["reason"])
             self.assertIsNone(row["shardDirectory"])
-            self.assertEqual(b"", (destination / row["originalDirectory"] / "gradle.log").read_bytes())
+            self.assertEqual(next(artifact for artifact in self.artifacts
+                                  if artifact["name"] == row["artifactName"]), row["artifact"])
+        # A failed official job keeps its remote diagnostics locator, not body authority.
+        self.assertIsNone(rows[failed]["originalDirectory"])
+        self.assertEqual(b"", (destination / rows[invalid]["originalDirectory"] / "gradle.log").read_bytes())
+        self.assertEqual({artifact["id"] for artifact in self.artifacts
+                          if artifact["id"] != rows[failed]["artifact"]["id"]},
+                         {call.args[0]["id"] for call in download.call_args_list})
+        self.assertEqual(4, download.call_count)
+        self.assertEqual(4, verifier.call_count)
         for component in successful:
             self.assertEqual("success", rows[component]["result"])
             self.assertTrue((destination / rows[component]["shardDirectory"]).is_dir())

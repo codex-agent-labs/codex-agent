@@ -110,14 +110,21 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
 
     def test_every_dotnet_setup_is_isolated_and_binary_rejects_wrong_sdk_before_replay(self):
         callers = 0
+        phase9_callers = 0
         for path in (ROOT / ".github").rglob("*.yml"):
             for step in re.split(r"(?m)^\s*- (?:uses|if|name|id):", path.read_text()):
                 if "actions/setup-dotnet@" not in step:
                     continue
                 callers += 1
-                self.assertIn("DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419", step, str(path))
+                directory = "codex-agent-dotnet-8.0.419"
+                if path == ROOT / ".github/workflows/portable-reuse-proof.yml" and step.startswith(" dotnet\n"):
+                    self.assertIn("contains(fromJSON(matrix.components), 'csharp')", step)
+                    directory = "phase9-dotnet-8.0.419"
+                    phase9_callers += 1
+                self.assertIn("DOTNET_INSTALL_DIR: ${{ runner.temp }}/" + directory, step, str(path))
                 self.assertRegex(step, r"dotnet-version: ['\"]8\.0\.419['\"]")
-        self.assertEqual(8, callers)
+        self.assertEqual(9, callers)
+        self.assertEqual(1, phase9_callers)
         action = (ROOT / ".github/actions/sdk-csharp-binary-worker/action.yml").read_text()
         command = action.split("name: Compile the exact elected C# binary", 1)[1].split("run: |\n", 1)[1]
         guard = textwrap.dedent(command.split("        policies=()", 1)[0])

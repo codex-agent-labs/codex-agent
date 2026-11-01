@@ -146,10 +146,10 @@ class CollectorProcessTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'closed'):self.cap.completed_phases()
 
 
-from ci.tests.test_checkpoint_collector_export import CheckpointCollectorExportTest
+from ci.tests import test_checkpoint_collector_export as export_fixture
 
 
-class CollectorProcessExecutionTest(CheckpointCollectorExportTest):
+class CollectorProcessExecutionTest(export_fixture.CheckpointCollectorExportTest):
     measurements=[]
     export_measurements=[]
 

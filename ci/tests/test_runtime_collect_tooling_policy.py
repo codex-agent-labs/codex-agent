@@ -33,16 +33,17 @@ class RuntimeCollectToolingPolicyTest(unittest.TestCase):
                         patch.object(workflow.products, "runtime_worker_matrix", return_value={"include": []}) as matrix, \
                         patch.object(workflow.products, "inspect_products", return_value=self.case.final_fixture("retained")) as inspect:
                     self.case.collect(destination, wave, **optional)
-                for gate in (collector, advance, inspect if wave == 5 else matrix):
+                for gate in (collector, advance):
                     gate.assert_called_once()
                     if supplied:
                         self.assertIs(self.policy, gate.call_args.kwargs["sdk_validation_tooling"])
-                    elif gate is inspect:
-                        # Existing continuation forwards its default None to inspection.
-                        self.assertIsNone(gate.call_args.kwargs["sdk_validation_tooling"])
                     else:
                         self.assertNotIn("sdk_validation_tooling", gate.call_args.kwargs)
-                (matrix if wave == 5 else inspect).assert_not_called()
+                # The verified transition emits routing from its own replay.
+                self.assertTrue(advance.call_args.kwargs["routing_output"])
+                self.assertEqual(wave, advance.call_args.kwargs["runtime_collection_wave"])
+                matrix.assert_not_called()
+                inspect.assert_not_called()
                 self.assertEqual(wave == 5, collector.call_args.kwargs.get("runtime_aggregate_only", False))
                 self.assertEqual(wave == 5, advance.call_args.kwargs.get("runtime_aggregate_only", False))
                 self.assertEqual(wave != 5, advance.call_args.kwargs.get("runtime_workers_only", False))

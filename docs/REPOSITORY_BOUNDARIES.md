@@ -118,9 +118,9 @@ target-independent invocation supplies its required predecessor stages.
 not a whole-graph build command.
 
 The existing combined candidate and publish workflows are a migration baseline,
-not commands for a product-specific `0.8.0` release. Separate Contract and
-Runtime candidate workflow sources exist; the SDK candidate and three publish
-entry workflows are not yet implemented. Source presence is not activation or
+not commands for a product-specific `0.8.0` release. Separate Contract, Runtime,
+and SDK candidate workflow sources exist; the three product publish entry
+workflows are not yet implemented. Source presence is not activation or
 release acceptance. They remain
 subject to the local, protected, and five-host acceptance gates in
 [releasing](RELEASING.md).

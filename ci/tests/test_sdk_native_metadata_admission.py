@@ -109,8 +109,7 @@ class SdkNativeMetadataAdmissionTest(unittest.TestCase):
                 return _RUN(command, **kwargs)
             return self.support.execute(command, **kwargs)
         with patch("ci.products.sdk_native_metadata_admission.verify_sdk_native_metadata_content", side_effect=content), \
-                patch("ci.products.sdk_native_metadata.verified_tooling_capture", self.support.tooling), \
-                patch("ci.products.sdk_native_metadata.stage_sdk_inputs", self.support.capture_inputs), \
+                patch("ci.products.sdk_native_metadata.native_metadata_tooling", self.support.tooling_owner), \
                 patch("ci.products.sdk_native_metadata._request_inventory", side_effect=lambda _: {
                     self.support.request_source: sha256_bytes(self.support.request_source.read_bytes())}), \
                 patch("ci.products.sdk_native_metadata.subprocess.run", side_effect=execute):

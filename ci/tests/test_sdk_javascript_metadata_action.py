@@ -35,7 +35,7 @@ class SdkJavaScriptMetadataActionTest(unittest.TestCase):
         self.assertIn("product-worker: 'true'", action)
         self.assertIn("if: always() && steps.identity.outcome == 'success'", action)
         self.assertIn('name: codex-agent-sdk-worker-javascript-metadata-node-${{ steps.identity.outputs.key_hex }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}', action)
-        self.assertIn('path: build/sdk-worker\n', action)
+        self.assertIn("path: |\n          build/sdk-worker/shard\n          build/sdk-worker/worker/execution.json\n          build/sdk-worker/worker/gradle.log\n          ${{ job.status != 'success' && 'build/sdk-worker' || '' }}", action)
         self.assertIn('include-hidden-files: true', action)
         self.assertNotIn('original-consumer-directory:', action)
         self.assertNotIn('capture-sdk-tooling', action)

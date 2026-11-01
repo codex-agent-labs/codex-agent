@@ -39,10 +39,11 @@ class NativePythonPackageContentTest(unittest.TestCase):
                 "nativeWrapperPackageSdksRoot": str(sdks), "sdkCompatibilityRequest": str(request),
             }.items()}
             before = regular_file_inventory(inputs)
-            # Host/source admission is deliberately a fixture seam. The actual
+            # Host/source/toolchain admission is deliberately a fixture seam. The actual
             # package producer, archive checks and canonical manifest writer run.
             with patch("native_wrappers.host_classifier", return_value="linux-x64"), \
                     patch("product_reuse._runtime_worker_checkout"), \
+                    patch.object(worker, "verify_dart_package_toolchain") as toolchain, \
                     patch("native_wrappers.run", side_effect=AssertionError("Unexpected build/pub command")):
                 worker._package_only(root, fields, {})
                 expected = root / "existing-task-composition"
@@ -62,6 +63,8 @@ class NativePythonPackageContentTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     worker._package_only(root, fields, {})
                 self.assertFalse((actual / "output-manifest.json").exists())
+                self.assertEqual(2, toolchain.call_count)
+                self.assertTrue(all(call.args == (root, {}) for call in toolchain.call_args_list))
 
 
 if __name__ == "__main__":

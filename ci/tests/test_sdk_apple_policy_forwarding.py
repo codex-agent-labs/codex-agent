@@ -129,7 +129,7 @@ class ApplePolicyForwardingTest(unittest.TestCase):
             with patch.object(workflow.product_reuse, "_product_materialization_paths", return_value=(self.discovery, self.discovery, self.destination)), \
                     patch.object(workflow.product_reuse, "collect_runtime_workers", return_value={"rows": []}) as collect, \
                     patch.object(workflow.product_reuse, "advance_products", return_value={"fixture": "advanced", "matrices": {"sdk": []}}) as advance, \
-                    patch.object(workflow, "snapshot_regular_tree"), \
+                    patch.object(workflow.product_reuse, "snapshot_reuse_inputs"), \
                     patch.object(workflow, "matrix", return_value={"include": []}) as matrix:
                 workflow.collect(self.discovery, self.destination, self.output, wave=1,
                     trusted_workflow_sha="a" * 40, **self.common, **self.optional(present))

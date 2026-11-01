@@ -84,7 +84,7 @@ class SdkInputReceiverTest(unittest.TestCase):
                 patch("reuse.api_request", side_effect=AssertionError("unexpected receiver network")):
             with receiver.verified_inputs(self.plan, self.discovery, self.state, **{**self.options, **changes}) as value:
                 selection.assert_called_once_with(self.plan, self.discovery, self.state, self.repository,
-                                                self.options["environ"], sdk_validation_tooling=None,
+                                                self.options["environ"], sdk_validation_tooling=None, requested_scope=None,
                                                 trusted_workflow_sha=self.options["trusted_workflow_sha"])
                 yield value
 
@@ -153,6 +153,15 @@ class SdkInputReceiverTest(unittest.TestCase):
         (self.runtime / "aggregate-input" / name).write_bytes(signed.read_bytes())
         (self.runtime / "aggregate-input" / signature.name).write_bytes(signature.read_bytes())
         (self.runtime / "aggregate-input/public-key.pub").write_bytes(public.read_bytes())
+        # The compact original-upload proof must use the same authenticated
+        # aggregate signer; rotate its signature without changing observations.
+        proof = self.runtime / "original-evidence/transport/original-ci-phases.json"
+        original_proof = load_canonical_json_bytes(proof.read_bytes())
+        signed_proof = signed.parent / proof.name
+        signed_proof.write_bytes(canonical_json_bytes({**original_proof, "signing": signing}))
+        proof_signature = sign_manifest(signed_proof, private, signing)
+        proof.write_bytes(signed_proof.read_bytes())
+        proof.with_suffix(".sig").write_bytes(proof_signature.read_bytes())
         self.options.update(keyring=keyring, keys_directory=keys)
 
         # Full original carrier verification, not a mocked signature-only proof.

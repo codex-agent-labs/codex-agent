@@ -78,6 +78,19 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                 job = workflow_job(source, name)
                 condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
                                       job, re.MULTILINE | re.DOTALL).group(1)
+                condition = ' '.join(condition.removeprefix('>-').split())
+                if name == 'sdk-parity':
+                    prefix = ("(!inputs.fullReuseAcceptanceOnly || (needs.plan.result == 'success' && "
+                              "inputs.reuseCompletedParity && needs.sdk-completion.result == 'success' && "
+                              "needs.sdk-completion.outputs.complete == 'true' && "
+                              "needs.sdk-completion.outputs.phase_count == '62' && "
+                              "needs.sdk-completion.outputs.full_reuse == 'true')) && ")
+                    self.assertTrue(condition.startswith(prefix), condition)
+                    condition = condition.removeprefix(prefix)
+                else:
+                    wrapper = re.fullmatch(r"!inputs.fullReuseAcceptanceOnly && \(\s*(.*?)\s*\)", condition)
+                    self.assertIsNotNone(wrapper, condition)
+                    condition = wrapper[1]
                 if name == 'sdk-ios-binary-plan':
                     prefix = ("!(inputs.sdkRecoveryOnly && "
                               "needs.plan.outputs.native_resume_ready == 'true' && "
@@ -95,7 +108,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
     def test_sdk_caller_reuses_the_current_signed_runtime_without_requalification(self):
         root = HELPER.parents[3]
         caller = (root / recovery.CI).read_text()
-        self.assertIn('runtimeRecoveryOnly: false\n      sdkRecoveryOnly: true', caller)
+        self.assertIn('runtimeRecoveryOnly: false\n      sdkRecoveryOnly: false', caller)
+        self.assertIn("fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && "
+                      "contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')) }}", caller)
         self.assertIn('runtimeAggregateRequalification: false', caller)
         self.assertNotIn('runtimeNativeHandoffRecovery:', caller)
         locator, = re.findall(r"^      runtimeAggregateHandoffRecovery: '(.*)'$", caller, re.MULTILINE)
@@ -125,6 +140,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                 condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
                                       job, re.MULTILINE | re.DOTALL).group(1)
                 expression = ' '.join(condition.removeprefix('>-').split())
+                expression = expression.replace('inputs.fullReuseAcceptanceOnly', 'False')
                 expression = expression.replace('inputs.runtimeRecoveryOnly', 'True')
                 expression = expression.replace('inputs.sdkCheckpoints', 'True')
                 expression = expression.replace('inputs.sdkRecoveryOnly', 'False')
@@ -145,8 +161,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         self.assertIn(b'trustedWorkflowSha: ${{ inputs.trustedWorkflowSha }}', caller)
         self.assertEqual(caller, recovery._activated_ci(caller, "b" * 40))
         for name in (b'trustedWorkflowSha', b'trustedSourceSha'):
-            invalid = caller.replace(b'      sdkRecoveryOnly: true\n',
-                b'      sdkRecoveryOnly: true\n      ' + name + b': ' + b'a' * 40 + b'\n')
+            anchor = b'      runtimeRecoveryOnly: false\n'
+            self.assertEqual(1, caller.count(anchor))
+            invalid = caller.replace(anchor, anchor + b'      ' + name + b': ' + b'a' * 40 + b'\n')
+            self.assertNotEqual(caller, invalid)
             with self.subTest(name=name), self.assertRaises(ValueError):
                 recovery._activated_ci(invalid, "b" * 40)
 

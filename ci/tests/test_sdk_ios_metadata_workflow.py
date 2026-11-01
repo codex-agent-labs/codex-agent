@@ -100,7 +100,7 @@ class SdkIosMetadataWorkflowTest(unittest.TestCase):
 
     def test_collection_waits_for_failed_worker_and_preserves_exact_wave(self):
         job = self.job('sdk-collect-10')
-        self.assertEqual({'plan', 'sdk-plan', PARENT, 'sdk-ios-metadata-plan', 'sdk-ios-metadata'}, self.needs(job))
+        self.assertEqual({'plan', 'sdk-plan', PARENT, 'sdk-checkpoint-9', 'sdk-ios-metadata-plan', 'sdk-ios-metadata'}, self.needs(job))
         condition = self.condition(job)
         self.assertIn('always()', condition)
         self.assertIn("needs.sdk-ios-metadata-plan.outputs.sdk_workers_required == 'true'", condition)
@@ -157,10 +157,11 @@ class SdkIosMetadataWorkflowTest(unittest.TestCase):
     def test_completion_requires_metadata_terminal_and_still_runs_full_sdk_check(self):
         completion = self.completion_job('sdk-completion')
         self.assertTrue({'sdk-native-result', PARENT, 'sdk-ios-metadata-result'} <= self.needs(completion))
-        self.assertIn('RESULTS: ${{ toJSON(needs) }}', completion)
+        self.assertIn('SDK_IOS_METADATA_RESULT: ${{ toJSON(needs.sdk-ios-metadata-result) }}', completion)
+        self.assertIn("needs = {name: json.loads(os.environ[name.upper().replace('-', '_')]) for name in _JOBS}", completion)
         self.assertIn('select_sdk_completion_state', completion)
-        self.assertIn('python3 -B -m ci.sdk_completion --plan "$PLAN"', completion)
-        self.assertIn('sdk-apple-validation-policy:', completion)
+        self.assertIn('python3 -B -m ci.sdk_completion capture --plan "$PLAN_DIRECTORY/impact-plan.json"', completion)
+        self.assertIn('--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"', completion)
         self.assertNotIn('sdk_workers_required', self.condition(completion))
         self.assertIn('sdk-completion', self.needs(self.job('merge-gate')))
 

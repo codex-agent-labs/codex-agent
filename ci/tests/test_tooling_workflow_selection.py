@@ -20,8 +20,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         cls.selection = cls.source.split("      - id: product-selection\n", 1)[1].split(
             "      - id: upload_plan\n", 1,
         )[0]
-        embedded = cls.selection.split("          python3 - <<'PY'\n", 1)[1].rsplit(
-            "          PY", 1,
+        embedded = cls.selection.split("          python3 - <<'PY'\n", 1)[1].split(
+            "\n          PY\n", 1,
         )[0]
         cls.script = textwrap.dedent(embedded)
 
@@ -162,7 +162,7 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
             checker.chmod(0o755)
             environment = {**os.environ, "PATH": temporary + os.pathsep + os.environ["PATH"]}
             subprocess.run(["bash", "-e", "-c", script], cwd=temporary, env=environment, check=True)
-            self.assertEqual(f"--init-script {Path(temporary).resolve()}/.github/actions/run-ci-lane/release_tooling.init.gradle :build-logic:releaseToolingJar --stacktrace\n", log.read_text())
+            self.assertEqual(f"--init-script {Path(temporary).resolve()}/.github/actions/run-ci-lane/release_tooling.init.gradle :build-logic:releaseToolingJar --info --stacktrace\n", log.read_text())
             self.assertEqual("-B -m unittest ci.tests.test_tooling_apple_classpath\n", checks.read_text())
             checker.write_text("#!/bin/sh\nexit 7\n")
             failed = subprocess.run(["bash", "-e", "-c", script], cwd=temporary, env=environment)

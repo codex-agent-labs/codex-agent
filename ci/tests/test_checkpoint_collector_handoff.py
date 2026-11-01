@@ -6,12 +6,13 @@ from unittest.mock import patch
 
 import product_reuse as adapter
 import sdk_workflow as workflow
-from ci.tests.test_checkpoint_collector_execution import CheckpointCollectorExecutionTest,CORE,CHILD,WORKER,PIN
+from ci.tests import test_checkpoint_collector_execution as execution_fixture
+from ci.tests.test_checkpoint_collector_execution import CORE,CHILD,WORKER,PIN
 from products.inventory import load_canonical_json,regular_file_inventory,write_canonical_json
 import reuse_qualification as native
 
 
-class CheckpointCollectorHandoffTest(CheckpointCollectorExecutionTest):
+class CheckpointCollectorHandoffTest(execution_fixture.CheckpointCollectorExecutionTest):
     measurements=[]
 
     def test_outer_collector_handoff_and_next_consumer_do_not_reopen_qualified_contract_bodies(self):

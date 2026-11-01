@@ -16,7 +16,10 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
             for match in re.finditer(r"(?m)^([ \t]*)(- )?uses: android-actions/setup-android@[^\n]+\n", text):
                 callers.append(path)
                 indent = match[1] + ("  " if match[2] else "")
-                self.assertTrue(text[match.end():].startswith(
+                remaining = text[match.end():]
+                if remaining.startswith(indent + "if: "):
+                    remaining = remaining.split("\n", 1)[1]
+                self.assertTrue(remaining.startswith(
                     indent + "with:\n" + indent + "  packages: platform-tools\n"), path)
         self.assertGreaterEqual(len(callers), 7)
 

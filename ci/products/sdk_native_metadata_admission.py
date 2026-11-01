@@ -15,7 +15,7 @@ from .inventory import (
 from .plan import NOT_APPLICABLE_FLAGS_DIGEST, NOT_APPLICABLE_TOOLCHAIN_DIGEST, plan_phase
 from .receipt import validate_phase_receipt
 from .registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
-from .sdk_native_metadata import _inventory, verify_sdk_native_metadata_content
+from .sdk_native_metadata import _inventory, _require_tooling_owner, verify_sdk_native_metadata_content
 from .sdk_apple_content import _snapshot_apple_tree as snapshot_regular_tree
 from .sdk_package import _require_capability_output_separate, csharp_binary_inputs
 from .sdk_validation import VerifiedSdkValidationProjection
@@ -33,6 +33,7 @@ def verify_sdk_native_metadata_admission(
     tooling_evidence: Path, tooling_public_key: Path, java_executable: Path,
     policy_revision: str, required_trust_domain: str,
     tooling_keyring: Path | None = None, tooling_keys_directory: Path | None = None,
+    _tooling_owner=None,
 ) -> tuple[dict, bytes]:
     """Return the original receipt only after exact source, plan and content replay.
 
@@ -40,6 +41,12 @@ def verify_sdk_native_metadata_admission(
     metadata planning. Their receipt/package binding is checked by plan_phase;
     this entry never constructs a projection from the metadata JSON itself.
     """
+    if _tooling_owner is not None:
+        _require_tooling_owner(_tooling_owner, dict(repository=repository,
+            java_executable=java_executable, tooling_evidence=tooling_evidence,
+            tooling_public_key=tooling_public_key, policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory))
     if component not in NATIVE_BINDINGS:
         raise ValueError("Native SDK metadata admission requires an exact language")
     repository = Path(repository)
@@ -103,7 +110,8 @@ def verify_sdk_native_metadata_admission(
             compatibility_request=compatibility_request, tooling_evidence=tooling_evidence,
             tooling_public_key=tooling_public_key, java_executable=java_executable,
             policy_revision=policy_revision, required_trust_domain=required_trust_domain,
-            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory)
+            tooling_keyring=tooling_keyring, tooling_keys_directory=tooling_keys_directory,
+            _tooling_owner=_tooling_owner)
         if verified_bytes != raw["metadata_receipt"] or verified != metadata:
             raise ValueError("Native SDK metadata full gate returned a different original receipt")
         for name, source in trees.items():

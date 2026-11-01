@@ -15,8 +15,8 @@ SDK publication is dependency-ordered and resumable. All three candidates
 must validate before the first irreversible publication. Phase 11 may verify,
 sign external publication-context evidence, forward, and upload exact Phase-10
 bytes; it may not compile, link, run product tests, or repackage reusable
-product payloads. Contract and Runtime candidate workflow sources exist; SDK
-candidate and the three product publish entry workflows remain pending.
+product payloads. Contract, Runtime, and SDK candidate workflow sources exist;
+the three product publish entry workflows remain pending.
 Their protected activation and complete release acceptance are not established
 by the Phase-9 [artifact inventory](ARTIFACT_MATRIX.md).
 
@@ -185,17 +185,16 @@ actionlint
 export DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
 ./gradlew :codex-agent-runtime-ios:preflightIosRuntime
 ./gradlew verifyIosRuntime
-./gradlew verifyRepository \
-  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
-  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
+python3 -m ci.sdk_completion --repository --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY"
 ```
 
 None of these commands requires a connected Android phone.
-For `verifyRepository`, set the four variables to existing imported Contract,
-Runtime, and SDK evidence directories and their `development` or `release`
-trust domain; the earlier commands do not create that full evidence set.
+For completed Phase-9 repository acceptance, `COMPLETED_POLICY` must name an
+independently reviewed policy for the retained originals. The adapter consumes
+that evidence; the earlier commands do not create the full evidence set. See
+[repository boundaries](REPOSITORY_BOUNDARIES.md#commands-and-release-status)
+for the current SDK and Runtime acceptance commands.
 Follow the [iOS development verification order](RUNTIME_IOS.md#verification)
 before starting the expensive Apple gate; it includes the scoped clean,
 simulator-only Swift typecheck, source freeze, disk budget, and exact-evidence

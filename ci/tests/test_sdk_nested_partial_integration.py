@@ -219,31 +219,42 @@ class NestedSdkPlannerReplayTest(unittest.TestCase):
             "GITHUB_OUTPUT": str(selector_output), "GITHUB_WORKSPACE": str(self.repository),
             "GITHUB_REPOSITORY": repository, "PLAN": str(self.plan_path),
             "TRUSTED_WORKFLOW_SHA": pin, "GITHUB_TOKEN": "synthetic-token"}
+        source_api = f"https://api.github.com/repos/{repository}"
+        observed = {
+            source_api + "/actions/runs/7/attempts/2": run,
+            source_api + "/git/commits/" + self.producer["commit"]: commit,
+        }
+        detail = artifact
+        def official(url, token):
+            self.assertEqual("synthetic-token", token)
+            return detail if url == source_api + "/actions/artifacts/101" else observed[url]
+        def pages(url, field, token):
+            self.assertEqual("synthetic-token", token)
+            return {
+                (source_api + "/actions/runs/7/attempts/2/jobs", "jobs"): [job],
+                (source_api + "/actions/runs/7/artifacts", "artifacts"): [artifact],
+            }[(url, field)]
         # This Contract fixture has a synthetic impact plan (lanes={}); its
         # existing plan/selection seam does not replace the saved selector or locator.
         with patch.dict(os.environ, environment, clear=True), \
                 patch.object(packaged_product_reuse, "_validate_plan", return_value=self.plan), \
-                patch.object(packaged_product_reuse, "api_json") as parent_api, \
-                patch.object(packaged_product_reuse, "paginated_items", return_value=[job]), \
-                patch.object(adapter, "api_json") as child_api, \
-                patch.object(adapter, "paginated_items") as child_pages:
-            parent_api.side_effect = [run, commit]
-            child_api.side_effect = [run, commit, {**artifact, "digest": "sha256:" + "0" * 64}]
-            child_pages.side_effect = [[job], [artifact]]
+                patch.object(packaged_product_reuse, "api_json", side_effect=official), \
+                patch.object(packaged_product_reuse, "paginated_items", side_effect=pages), \
+                patch.object(adapter, "api_json", side_effect=official), \
+                patch.object(adapter, "paginated_items", side_effect=pages):
+            detail = {**artifact, "digest": "sha256:" + "0" * 64}
             with self.assertRaises(ValueError):
                 exec(compile(textwrap.dedent(selector[1]), "saved-sdk-partial-parent", "exec"), {})
             self.assertFalse(selector_output.exists())
-            parent_api.side_effect = [run, commit]
-            child_api.side_effect = [run, commit, artifact]
-            child_pages.side_effect = [[job], [artifact]]
+            detail = artifact
             exec(compile(textwrap.dedent(selector[1]), "saved-sdk-partial-parent", "exec"), {})
         selected = dict(line.split("=", 1) for line in selector_output.read_text().splitlines())
         self.assertEqual({"artifact_id": "101", "artifact_digest": artifact["digest"],
                           "state_wave": "0", "sdk_state_wave": "11"}, selected)
         captured = self.scratch / "nested-upload"
         with self.control_seams(), \
-                patch.object(adapter, "api_json", side_effect=[run, commit, artifact]), \
-                patch.object(adapter, "paginated_items", return_value=[job]), \
+                patch.object(adapter, "api_json", side_effect=official), \
+                patch.object(adapter, "paginated_items", side_effect=pages), \
                 patch.object(adapter, "download_artifact_to_file",
                     side_effect=lambda _artifact, _token, destination, **_:
                         Path(destination).write_bytes(raw)):

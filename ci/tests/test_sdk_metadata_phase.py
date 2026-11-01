@@ -4,12 +4,13 @@ Original host/CI/tooling authority is not established by these synthetic fixture
 The full metadata admission gate has its own real Git/planner regression suite.
 """
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -62,11 +63,20 @@ class SdkMetadataPhaseTest(unittest.TestCase):
         self.predecessor_calls.append(identity)
         return self.records[identity]
 
-    def capture_sdk(self, request, output):
+    def capture_sdk(self, request, output, *, diagnostics=None):
         self.assertEqual(self.support.args["compatibility_request"], request)
         output.mkdir(parents=True)
         (output / worker.REQUEST_NAME).write_bytes(request.read_bytes())
         (output / "original-empty-diagnostic").write_bytes(b"")
+
+    @contextmanager
+    def tooling_owner(self, **authority):
+        expected = {name: self.support.args[name] for name in (
+            "tooling_evidence", "tooling_public_key", "java_executable", "policy_revision", "required_trust_domain")}
+        expected.update(repository=self.root, tooling_keyring=None, tooling_keys_directory=None)
+        self.assertEqual(expected, authority)
+        self.held_tooling = SimpleNamespace(stage=self.capture_sdk)
+        yield self.held_tooling
 
     def process(self, command, **kwargs):
         self.process_calls.append(command)
@@ -102,6 +112,7 @@ class SdkMetadataPhaseTest(unittest.TestCase):
 
     def admission(self, **arguments):
         self.admission_calls.append(arguments)
+        self.assertIs(self.held_tooling, arguments["_tooling_owner"])
         self.assertIs(self.proofs, arguments["sdk_validation_projections"])
         self.assertEqual(self.root, arguments["repository"])
         self.assertEqual(self.stage, arguments["metadata_stage"])
@@ -135,7 +146,7 @@ class SdkMetadataPhaseTest(unittest.TestCase):
             stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
             stack.enter_context(patch.object(worker, "_request_inventory", side_effect=lambda _: {
                 self.support.request_source: sha256_bytes(self.support.request_source.read_bytes())}))
-            stack.enter_context(patch.object(worker, "stage_sdk_inputs", side_effect=self.capture_sdk))
+            stack.enter_context(patch.object(worker, "native_metadata_tooling", self.tooling_owner))
             stack.enter_context(patch.object(worker.subprocess, "run", side_effect=self.process))
             stack.enter_context(patch.object(worker, "verify_sdk_native_metadata_admission", side_effect=self.admission))
             return worker.execute(self.plan, **{**arguments, **changes})

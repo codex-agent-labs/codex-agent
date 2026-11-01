@@ -129,7 +129,10 @@ class MetadataCliTest(unittest.TestCase):
 
         def output(*args, **kwargs):
             self.assertIn("enter", events)
-            self.assertNotIn("exit", events)
+            if operation == "require_sdk_completion":
+                self.assertEqual(["enter", "execute", "exit"], events)
+            else:
+                self.assertNotIn("exit", events)
             for name, path in self.paths.items():
                 self.assertNotIn(name, repr((args, kwargs)))
                 self.assertNotIn(str(path), repr((args, kwargs)))
@@ -144,7 +147,7 @@ class MetadataCliTest(unittest.TestCase):
             stack.enter_context(patch.object(products, "_canonical_control", return_value={"fixture": "tooling"}))
             stack.enter_context(patch.object(module, "github_output", side_effect=output))
             if module is products:
-                stack.enter_context(patch.object(products, "publish_regular_tree", side_effect=output))
+                stack.enter_context(patch.object(products, "_publish_discovery_handoff", side_effect=output))
             if failure:
                 with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
                     module.main([*argv, *options])
@@ -153,7 +156,7 @@ class MetadataCliTest(unittest.TestCase):
                 self.assertEqual(0, module.main([*argv, *options]))
             self.assertEqual(0 if failure == "enter" else 1, worker.call_count)
             if operation in {"require_sdk_completion", "discover"}:
-                self.assertEqual(0 if failure == "enter" else 1, events.count("output"))
+                self.assertEqual(0 if failure == "enter" or (operation == "require_sdk_completion" and failure) else 1, events.count("output"))
             self.assertEqual(["enter"] if failure == "enter" else ["enter", "execute", "exit"],
                              [event for event in events if event != "output"])
 
@@ -174,7 +177,7 @@ class MetadataCliTest(unittest.TestCase):
         self.assertEqual(7, len(routes))
         self.check_routes(routes)
 
-    def test_completion_output_stays_inside_policy_lifetime(self):
+    def test_completion_output_waits_for_policy_lifetime_exit(self):
         self.check_routes([self.completion_route()])
 
     def test_object_switches_and_missing_policy_values_fail_before_policy_or_execution(self):

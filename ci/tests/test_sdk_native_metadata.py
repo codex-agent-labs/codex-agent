@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ci.products.inventory import canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory, sha256_bytes
@@ -13,6 +14,7 @@ from ci.products.plan import _upstream_record
 from ci.products.receipt import output_inventory_digest, write_output_manifest
 from ci.products.registry import NATIVE_BINDINGS, NATIVE_TARGETS
 from ci.products.sdk_inputs import REQUEST_NAME
+from ci.products import sdk_native_metadata as native_metadata
 from ci.products.sdk_native_metadata import verify_sdk_native_metadata_content
 from ci.products.sdk_package import native_metadata_content
 from ci.tests.product_chain_support import write_receipt
@@ -104,6 +106,15 @@ class SdkNativeMetadataTest(unittest.TestCase):
         self.assertEqual("development", policy["required_trust_domain"])
         yield self.root / "synthetic-authenticated.jar"
 
+    @contextmanager
+    def tooling_owner(self, *, owner=None, **authority):
+        self.assertIsNone(owner)
+        expected = {name: self.args[name] for name in (
+            "repository", "tooling_evidence", "tooling_public_key", "java_executable", "policy_revision", "required_trust_domain")}
+        expected.update(tooling_keyring=None, tooling_keys_directory=None)
+        self.assertEqual(expected, authority)
+        yield SimpleNamespace(jar=self.root / "synthetic-authenticated.jar", stage=self.capture_inputs)
+
     def capture_inputs(self, request, output, *, request_directory):
         self.assertNotEqual(request, self.args["compatibility_request"])
         self.assertEqual(self.args["compatibility_request"].read_bytes(), request.read_bytes())
@@ -134,8 +145,7 @@ class SdkNativeMetadataTest(unittest.TestCase):
         return subprocess.CompletedProcess(command, 0)
 
     def verify(self, **overrides):
-        with patch("ci.products.sdk_native_metadata.verified_tooling_capture", self.tooling), \
-                patch("ci.products.sdk_native_metadata.stage_sdk_inputs", self.capture_inputs), \
+        with patch("ci.products.sdk_native_metadata.native_metadata_tooling", self.tooling_owner), \
                 patch("ci.products.sdk_native_metadata._request_inventory", side_effect=lambda _: {
                     self.request_source: sha256_bytes(self.request_source.read_bytes())}), \
                 patch("ci.products.sdk_native_metadata.subprocess.run", side_effect=self.execute):
@@ -219,6 +229,17 @@ class SdkNativeMetadataTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify(policy_revision=None)
         self.assertEqual([], self.calls)
+        authority = {name: self.args[name] for name in (
+            "repository", "tooling_evidence", "tooling_public_key", "java_executable", "required_trust_domain")}
+        authority.update(policy_revision=None, tooling_keyring=None, tooling_keys_directory=None)
+        with patch.object(native_metadata, "verified_tooling_capture") as capture, \
+                patch("ci.products.sdk_validation._SharedCollection.authority_key",
+                      side_effect=AssertionError("Invalid policy reached authority I/O")) as key:
+            with self.assertRaisesRegex(ValueError, "exact caller-pinned Git policy"):
+                with native_metadata.native_metadata_tooling(**authority):
+                    self.fail("Invalid policy must never authorize executable staging")
+            capture.assert_not_called()
+            key.assert_not_called()
 
 
 if __name__ == "__main__":

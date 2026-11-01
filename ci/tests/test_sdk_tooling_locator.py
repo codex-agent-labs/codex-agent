@@ -123,26 +123,30 @@ class SdkToolingLocatorTest(unittest.TestCase):
                 self.assertIsNone(values)
 
     def test_tooling_capture_precedes_state_capture_and_forwards_only_its_policy(self):
-        self.assertIn("needs: [plan, contract-validation,", self.job)
+        self.assertIn("needs: [workflow-lint, plan, product-resume, contract-validation,", self.job)
         self.assertIn("needs: [tooling-attestation]", self.locator_job)
         self.assertNotIn("runtime-continuation", self.locator_job)
         self.assertNotIn("sdk-inputs", self.locator_job)
-        tooling = self.job.index("      - id: tooling\n")
         parent = self.job.index("      - id: parent\n")
         capture = self.job.index("      - id: capture\n")
-        self.assertLess(tooling, parent)
+        self.assertNotIn("capture-sdk-tooling", self.job)
         self.assertLess(parent, capture)
         self.assertIn("fromJSON(inputs.planOutputs).tooling_required == 'true'", self.locator_job)
         for binding in (
-            "artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}",
-            "artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}",
-            "transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}",
+            "tooling_artifact_id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}",
+            "tooling_artifact_sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}",
+            "tooling_transport_producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}",
         ):
-            self.assertIn(binding, self.job[tooling:parent])
-        self.assertIn(
-            "sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}",
-            self.job[capture:],
-        )
+            self.assertIn(binding, self.job[:parent])
+        for binding in (
+            "uses: ./.github/actions/capture-runtime-state/route",
+            "family: javascript",
+            "routing: ${{ steps.parent.outputs.routing }}",
+            "artifact-id: ${{ steps.parent.outputs.artifact_id }}",
+            "artifact-sha256: ${{ steps.parent.outputs.artifact_digest }}",
+            "trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}",
+        ):
+            self.assertIn(binding, self.job[capture:])
 
     def test_each_worker_and_collector_captures_the_immutable_locator_locally(self):
         jobs = (
@@ -150,11 +154,21 @@ class SdkToolingLocatorTest(unittest.TestCase):
             ("sdk-collect-1", "sdk-workers-2", "      - id: collect\n"),
             ("sdk-workers-2", "sdk-collect-2", "      - uses: ./.github/actions/sdk-javascript-worker\n"),
             ("sdk-collect-2", "sdk-javascript", "      - id: collect\n"),
-            ("sdk-native-plan", "sdk-native-prepare", "      - id: capture\n"),
             ("sdk-native-prepare", "sdk-native-workers", "      - id: prepare\n"),
             ("sdk-native-workers", "sdk-collect-4", "      - uses: ./.github/actions/sdk-native-package-worker\n"),
             ("sdk-collect-4", "sdk-native-packages", "      - id: collect\n"),
         )
+        route = self.source_text.split("\n  sdk-native-plan:\n", 1)[1].split("\n  sdk-native-prepare:\n", 1)[0]
+        self.assertNotIn("capture-sdk-tooling", route)
+        for binding in (
+            "uses: ./.github/actions/capture-runtime-state/route",
+            "family: native-package",
+            "routing: ${{ needs.sdk-csharp-binary-result.outputs.routing }}",
+            "artifact-id: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}",
+            "artifact-sha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}",
+            "trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}",
+        ):
+            self.assertIn(binding, route)
         for name, following, consumer_marker in jobs:
             job = self.source_text.split(f"\n  {name}:\n", 1)[1].split(
                 f"\n  {following}:\n", 1,
@@ -173,7 +187,7 @@ class SdkToolingLocatorTest(unittest.TestCase):
                     "artifact-id: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}",
                     "artifact-sha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}",
                     "transport-producer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}",
-                    "trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}",
+                    "trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}",
                     "trusted-workflow-path: .github/workflows/contract-validation.yml",
                     "trusted-job-name: product-validation / contract-validation / tooling-attestation",
                     "policy-revision: ${{ needs.plan.outputs.validation_commit }}",
@@ -194,7 +208,7 @@ class SdkToolingLocatorTest(unittest.TestCase):
         self.assertIn('contract-validation', gate.split('    steps:', 1)[0])
         for name, end, marker in (
             ('product-resume', 'runtime-linux-arm64-supervisor', 'ci/product_reuse.py resume-products'),
-            ('sdk-inputs', 'android', 'uses: ./.github/actions/capture-runtime-state'),
+            ('sdk-inputs', 'android', 'python3 -B -m ci.sdk_workflow --plan'),
         ):
             job = self.source_text.split(f'\n  {name}:\n', 1)[1].split(f'\n  {end}:\n', 1)[0]
             with self.subTest(job=name):

@@ -70,7 +70,7 @@ class SdkCampaignOriginalWorkerTest(TestCase):
                     trusted_workflow_sha=fixture_module.PIN, token="synthetic-token", environ={},
                     trusted_workflow_path=path, trusted_job_name=job):
                 pass
-        with self.fixture.official_api({self.instance: self.ready}, {self.instance: self.raw}) as (query, _, _):
+        with self.fixture.official_api({self.instance: self.ready}, {self.instance: self.raw}) as (query, _, download):
             with self.assertRaisesRegex(ValueError, "caller-pinned workflow"):
                 with worker.held_fresh_sdk_worker_upload(
                         self.instance, self.original, self.transport,
@@ -80,7 +80,11 @@ class SdkCampaignOriginalWorkerTest(TestCase):
                         trusted_workflow_path=".github/workflows/sdk-validation.yml",
                         trusted_job_name=job):
                     pass
-            self.assertEqual(1, query.call_count)
+            self.assertCountEqual([
+                f"https://api.github.com/repos/{self.fixture.producer['repository']}/actions/runs/{self.fixture.producer['runId']}/attempts/{self.fixture.producer['runAttempt']}",
+                f"https://api.github.com/repos/{self.fixture.producer['repository']}/git/commits/{self.fixture.producer['commit']}",
+            ], [call.args[0] for call in query.call_args_list])
+            download.assert_not_called()
         with patch.object(worker.product_reuse, "api_json") as query, \
              self.assertRaisesRegex(ValueError, "pinned together"):
             with worker.held_fresh_sdk_worker_upload(

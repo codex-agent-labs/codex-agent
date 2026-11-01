@@ -67,13 +67,15 @@ class SdkFamilyActionsTest(unittest.TestCase):
             output = root / "output with spaces"
             environment = {
                 "PATH": str(binary), "RECORDED_ARGS": str(record), "RECORDED_TOKEN": str(token),
+                "GITHUB_WORKSPACE": str(root),
                 "GITHUB_OUTPUT": str(output), "GITHUB_TOKEN": "synthetic environment-only token",
                 "ARTIFACT_ID": "71", "ARTIFACT_SHA256": "sha256:" + "a" * 64,
                 "TRUSTED_WORKFLOW_SHA": "b" * 40, "STATE_WAVE": "0", "STATE_PRODUCT": "runtime",
                 "SDK_STATE_WAVE": "", "SDK_FAMILY": "", "COMPONENT": "", "PHASE": "", "TARGET": "",
                 "BUILD_KEY": "", "PRODUCT": "runtime", "COLLECT_INPUT_ROOT": "/original input/with spaces",
                 "PLAN_DIRECTORY": "build/runtime-plan", "PREFLIGHT_WAVE": "",
-                "WAVE": "1", "SDK_APPLE_VALIDATION_POLICY": "", "CONTINUATION": "", **changes,
+                "WAVE": "1", "CHECKPOINT_CONTROLS": "false",
+                "SDK_APPLE_VALIDATION_POLICY": "", "CONTINUATION": "", **changes,
             }
             result = subprocess.run([self.shell, "--noprofile", "--norc", "-c", script], cwd=root,
                                     env=environment, capture_output=True, text=True, check=False)
@@ -173,15 +175,19 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 self.assertIsNone(args)
                 self.assertIsNone(token)
 
-    def test_binary_worker_scopes_inputs_while_preflight_keeps_full_state(self):
+    def test_binary_worker_scopes_inputs_while_preflight_defers_full_state_to_collector(self):
         for family in ("core-binary", "android-binary"):
             for preflight in ("", "11"):
                 with self.subTest(family=family, preflight=preflight):
                     result, args, _, output = self.run_action("capture", STATE_PRODUCT="sdk",
                         SDK_FAMILY=family, PREFLIGHT_WAVE=preflight)
                     self.assertEqual(0, result.returncode, result.stderr)
-                    selected = ["--family", family] + ([] if preflight else ["--scope-inputs"])
-                    self.assertEqual(self.capture_arguments(output, selected, sdk=True), args)
+                    selected = (["--repository-root", str(Path(output).parent)] if preflight
+                                else ["--family", family, "--scope-inputs"])
+                    expected = self.capture_arguments(output, selected, sdk=True)
+                    if preflight:
+                        expected[3] = "capture-transport"
+                    self.assertEqual(expected, args)
 
     def test_collect_routes_exact_family_and_preserves_legacy_scopes(self):
         cases = [({"PRODUCT": "sdk", "SDK_FAMILY": family, "WAVE": str(wave)}, True,

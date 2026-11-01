@@ -110,8 +110,11 @@ class RustCapabilitiesTest(unittest.TestCase):
                     loader = (source / "src/CodexAgent/Interop/NativeLibraryLoader.CapabilityProjection.cs").read_text()
                     self.assertEqual(2, loader.count("Digest(File.ReadAllBytes(path)) != expected"))
                     self.assertIn("ValidateLoadedLibrary(handle, compatibility, RuntimeTarget, true);", loader)
+                    projected = (source / "tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs").read_bytes()
+                    diagnostic = b"Console.Error.Write(process.StandardError.ReadToEnd());"
+                    self.assertEqual(2, projected.count(diagnostic))
                     self.assertEqual((repository / "codex-agent-bindings/csharp/tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs").read_bytes(),
-                                     (source / "tests/CodexAgent.Tests/RuntimeLoaderSecurity.cs").read_bytes())
+                                     projected.replace(diagnostic, b"_ = process.StandardError.ReadToEnd();"))
                 if language != "csharp":
                     self.assertEqual(root_public, (source / resource).read_bytes())
                 self.assertEqual(regular_file_inventory(authorization), regular_file_inventory(sidecar))

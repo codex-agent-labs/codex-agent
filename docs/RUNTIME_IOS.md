@@ -176,16 +176,15 @@ rustup toolchain install 1.95.0 --profile minimal \
 ./gradlew :codex-agent-runtime-ios:verifyCodexAgentSwiftSimulatorCompilation
 # Freeze the source tree here; do not edit it during either remaining gate.
 ./gradlew verifyIosRuntime
-./gradlew verifyRepository \
-  -PcodexAgent.repositoryContractEvidenceDirectory="$CONTRACT_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryRuntimeEvidenceDirectory="$RUNTIME_EVIDENCE_DIR" \
-  -PcodexAgent.repositorySdkEvidenceDirectory="$SDK_EVIDENCE_DIR" \
-  -PcodexAgent.repositoryTrustDomain="$PRODUCT_TRUST_DOMAIN"
+python3 -m ci.sdk_completion --repository --local --gradle --repository-root . \
+  --completed-frozen-policy "$COMPLETED_POLICY"
 ```
 
-`verifyRepository` also requires separately imported Contract, Runtime, and
-SDK evidence; set the four variables to those directories and their
-`development` or `release` trust domain before running it.
+The repository acceptance adapter requires a separately reviewed
+`COMPLETED_POLICY` for the retained Contract, Runtime, and SDK originals; the
+iOS gate does not create that complete evidence set. See
+[repository boundaries](REPOSITORY_BOUNDARIES.md#commands-and-release-status)
+for the current acceptance inputs.
 
 The preflight requires 40 GiB free by default. Override that only for a
 deliberately smaller check with
