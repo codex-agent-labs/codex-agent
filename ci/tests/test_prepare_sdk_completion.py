@@ -101,6 +101,52 @@ class PrepareSdkCompletionTest(unittest.TestCase):
         self.controls[self.old_path]['result'] = 'failure'
         self.assertEqual('success', controls[self.old_path]['result'])
 
+    def sparse_inherited_receipt(self):
+        old = self.previous['extension']['spec']['completedPhases'][0]
+        obj = {'relativePath': 'runtime-state/original-objects/' + object_relative_path(
+            old['buildKey'], old['receiptSha256']), 'bytes': 37, 'sha256': old['objectSha256']}
+        path = obj['relativePath'] + '/phase-receipt.json'
+        self.controls[path] = self.controls.pop(self.old_path)
+        proof = self.previous['extension']['proof']
+        proof['controls'] = {path: proof['controls'][self.old_path]}
+        proof['members'] = [{**obj, 'relativePath': 'shard/' + object_relative_path(
+            old['buildKey'], old['receiptSha256'])}]
+        old['receiptPath'] = path
+        self.previous['extension']['spec'].update(stateRoot='runtime-state',
+            receiptObjects=[{**obj, 'receipt': deepcopy(self.old_receipt)}])
+        self.policy['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(proof))
+        self.bind()
+        self.references['inventory'] = [row for row in self.references['inventory']
+                                        if row['relativePath'] != path]
+        self.source['referenceControlSha256'] = sha256_bytes(canonical_json_bytes(self.references))
+        return obj
+
+    def test_sparse_collector_inherits_only_the_exact_prior_native_descriptor(self):
+        obj = self.sparse_inherited_receipt()
+        before = canonical_json_bytes([self.references, self.previous])
+        recipe, _, report = self.run_prepare()
+        self.assertEqual((1, 1), (report['inheritedSdkObjects'], report['newSdkObjectsRequiringQualification']))
+        self.assertIn({**obj, 'receipt': self.old_receipt}, recipe['receiptObjects'])
+        self.assertEqual(before, canonical_json_bytes([self.references, self.previous]))
+        self.assertNotIn(obj['relativePath'], {row['relativePath'] for row in self.references['inventory']})
+
+    def test_sparse_receipt_inheritance_does_not_waive_new_inventory_or_prior_proof(self):
+        for case in ('new-object-absent', 'prior-subject', 'prior-size', 'prior-receipt'):
+            self.setUp()
+            self.sparse_inherited_receipt()
+            if case == 'new-object-absent':
+                self.references['inventory'] = [row for row in self.references['inventory']
+                    if row['relativePath'] != self.object['relativePath']]
+                self.source['referenceControlSha256'] = sha256_bytes(canonical_json_bytes(self.references))
+            elif case == 'prior-subject':
+                self.policy['reuseCompletionProofSha256'] = sha256_bytes(b'wrong native proof')
+            elif case == 'prior-size':
+                self.previous['extension']['spec']['receiptObjects'][0]['bytes'] += 1
+            else:
+                self.previous['extension']['spec']['receiptObjects'][0]['receipt']['producer']['runId'] += 1
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.run_prepare()
+
     def test_exact_reference_plan_receipt_and_object_substitutions_fail(self):
         for case in ('reference', 'plan-whitespace', 'receipt', 'object', 'object-size', 'result', 'missing-original', 'duplicate-original'):
             self.setUp()

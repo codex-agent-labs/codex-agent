@@ -40,8 +40,9 @@ class SdkCheckpointChainTest(unittest.TestCase):
         f.artifacts[996] = f.artifact(996,
             f'codex-agent-sdk-wave-10-state-{f.producer["tree"]}-attempt-{f.producer["runAttempt"]}',
             self.source['artifactSha256'], self.source['artifactBytes'], '10:50:00')
-        c.workflow += (b'\n  sdk-checkpoint-10:\n    needs: [sdk-checkpoint-9, sdk-collect-10]\n'
-            b'    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority\n')
+        if b'\n  sdk-checkpoint-10:\n' not in c.workflow:
+            c.workflow += (b'\n  sdk-checkpoint-10:\n    needs: [sdk-checkpoint-9, sdk-collect-10]\n'
+                b'    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority\n')
         self.controls = deepcopy(c.issued.fixture.controls)
         self.references = deepcopy(c.issued.fixture.references)
         self.reads = []; self.number = 0; self.tamper = False
@@ -188,7 +189,11 @@ class SdkCheckpointChainTest(unittest.TestCase):
             with self.subTest(case=case):
                 self.fixture.workflow, current, self.fixture.output, self.controls = deepcopy(saved)
                 self.current.clear(); self.current.update(current)
-                if case == 'edge': self.fixture.workflow = self.fixture.workflow.replace(b'[sdk-checkpoint-9, sdk-collect-10]', b'[sdk-collect-10]')
+                if case == 'edge':
+                    self.fixture.workflow = self.fixture.workflow.replace(
+                        b'[sdk-checkpoint-9, sdk-collect-10]', b'[sdk-collect-10]').replace(
+                        b'[plan, sdk-collect-10, sdk-checkpoint-9]', b'[plan, sdk-collect-10]')
+                    self.assertNotEqual(saved[0], self.fixture.workflow)
                 elif case == 'role': self.current['name'] = 'unrelated job'
                 elif case == 'subject': self.fixture.output['subjectSha256'] = sha256_bytes(b'wrong outer')
                 else:

@@ -591,6 +591,41 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None, _checkpoint=
     return qualified
 
 
+def _inherited_receipt_objects(spec, prior, *, _checkpoint=None):
+    """Read exact descriptors from the pinned prior subject, not current inventory."""
+    extension = prior.get("extension")
+    if extension is None:
+        raise ValueError("Receipt inheritance requires an earlier incremental completion")
+    old, proof = extension["spec"], extension["proof"]
+    if _checkpoint is not None:
+        if type(_checkpoint) is not _CheckpointConsumer:
+            raise ValueError("Receipt inheritance requires an authenticated checkpoint")
+        _checkpoint.inherit(spec, prior)
+    if (old["schemaVersion"] not in (3, 4) or old["parent"] != spec["parent"]
+            or sha256_bytes(canonical_json_bytes(prior["proof"])) != spec["parentProofSha256"]
+            or _checkpoint is None and sha256_bytes(canonical_json_bytes(proof)) != spec["reuseCompletionProofSha256"]):
+        raise ValueError("Inherited receipt changes its pinned native subject or parent")
+    earlier = _records(old["completedPhases"], "Prior receipt phases")
+    objects = _receipt_objects(old)
+    result = {}
+    from products.restore import object_relative_path
+    for instance, member in zip(sorted(earlier), proof["members"], strict=True):
+        phase = earlier[instance]
+        path = phase["receiptPath"]
+        if path not in objects:
+            continue
+        row, _ = objects[path]
+        receipt = validate_phase_receipt(proof["controls"][path])
+        validate_file_record(member, "Native inherited object", with_kind=False)
+        if (member["relativePath"] != "shard/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
+                or any(member[field] != row[field] for field in ("bytes", "sha256"))
+                or _identity(receipt) != instance or receipt["buildKey"] != phase["buildKey"]
+                or sha256_bytes(canonical_json_bytes(receipt)) != phase["receiptSha256"]):
+            raise ValueError("Inherited receipt differs from its native collected declaration")
+        result[path] = {**row, "receipt": receipt}
+    return result
+
+
 def _observe_incremental_originals(originals, receipts, qualified, token, *, _checkpoint=None):
     """Fresh bounded provenance; only authenticated inherited objects pin jobs."""
     import product_reuse as products
@@ -863,6 +898,21 @@ def issue_extension(spec, work, *, root, revision, frozen, token, _checkpoint=No
     if sha256_bytes(canonical_json_bytes(sdk["proof"])) != spec["parentProofSha256"]:
         raise ValueError("Incremental issuer parent differs from its fixed subject")
 
+    prior = None
+
+    def previous_completion():
+        if _checkpoint is not None:
+            return _checkpoint.prior
+        previous_frozen = native._sdk_parent_frozen_spec(root, spec["reuseCompletion"], frozen, token)
+        from products.inventory import git_regular_blob_bytes
+        previous_issuer = spec["reuseCompletion"]["signerCommit"]
+        previous_spec = load_canonical_json_bytes(git_regular_blob_bytes(root, previous_issuer,
+            native._sdk_completed_spec_path(root, previous_issuer), max_bytes=LIMIT))
+        previous_revision = _inventory_revision(previous_spec, root, token=token)
+        return native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
+            root=root, revision=previous_revision, frozen=previous_frozen, token=token,
+            consumer_revision=inventory_revision, requalification_baseline=previous_revision)
+
     def download(source, path, *, contract=False):
         artifact, observed, locator = observe_source(source, token, contract=contract)
         products._download_contract_ci_upload(source["artifactId"], source["artifactSha256"], artifact["name"],
@@ -884,6 +934,7 @@ def issue_extension(spec, work, *, root, revision, frozen, token, _checkpoint=No
 
     from contextlib import nullcontext
     source_range_bytes = 0
+    inherited_receipts = set()
     if _checkpoint is not None:
         controls, source = _checkpoint.controls, _checkpoint.source
         source_archive = nullcontext(None)
@@ -906,11 +957,22 @@ def issue_extension(spec, work, *, root, revision, frozen, token, _checkpoint=No
                     runAttempt=producer["runAttempt"])
         receipt_objects = _receipt_objects(spec)
         # Reviewed Git may carry the exact small receipt, never body authority.
-        # Bind its containing object to the authenticated collector inventory;
+        # Bind its object to current inventory or an exact prior authenticated descriptor;
         # fresh original/job/upload and full object gates below remain mandatory.
         hints = {row["relativePath"] + "/phase-receipt.json": row["receipt"]
                  for row in spec.get("receiptObjects", []) if "receipt" in row}
-        declared = {row["relativePath"]: row for path, (row, _) in receipt_objects.items() if path in hints}
+        if hints and "reuseCompletion" in spec:
+            # Authenticate the existing subject before borrowing its declarations.
+            # Their absence from this sparse collector is not an inventory claim.
+            prior = previous_completion()
+            previous_objects = _inherited_receipt_objects(spec, prior)
+            for path, (row, _) in receipt_objects.items():
+                if path in hints and path in previous_objects:
+                    if {**row, "receipt": hints[path]} != previous_objects[path]:
+                        raise ValueError("Inherited receipt differs from its native collected declaration")
+                    inherited_receipts.add(path)
+        declared = {row["relativePath"]: row for path, (row, _) in receipt_objects.items()
+                    if path in hints and path not in inherited_receipts}
         wanted = {row["relativePath"]: row for row in spec["controls"]
                   if row["relativePath"] not in receipt_objects}
         wanted.update((row["relativePath"], row) for path, (row, _) in receipt_objects.items() if path not in hints)
@@ -982,22 +1044,14 @@ def issue_extension(spec, work, *, root, revision, frozen, token, _checkpoint=No
                          original_revision=inventory_revision)
         qualified = {}
         if "reuseCompletion" in spec or _checkpoint is not None and _checkpoint.previous is not None:
-            if _checkpoint is None:
-                previous_frozen = native._sdk_parent_frozen_spec(root, spec["reuseCompletion"], frozen, token)
-                from products.inventory import git_regular_blob_bytes
-                previous_issuer = spec["reuseCompletion"]["signerCommit"]
-                previous_spec = load_canonical_json_bytes(git_regular_blob_bytes(root, previous_issuer,
-                    native._sdk_completed_spec_path(root, previous_issuer), max_bytes=LIMIT))
-                previous_revision = _inventory_revision(previous_spec, root, token=token)
-                prior = native._fetch_completed_sdk(work / "previous", spec["reuseCompletion"],
-                    root=root, revision=previous_revision, frozen=previous_frozen, token=token,
-                    consumer_revision=inventory_revision, requalification_baseline=previous_revision)
-            else:
-                prior = _checkpoint.prior
+            if prior is None:
+                prior = previous_completion()
             # Both subjects bind their original product source; only exact
             # matching keys/receipts/objects inherit body qualification.
             qualified = _qualified_members(spec, prior, phases, receipts, root=root,
                 _checkpoint=_checkpoint.previous if _checkpoint is not None else None)
+        if any(_identity(receipt_objects[path][1]) not in qualified for path in inherited_receipts):
+            raise ValueError("Inherited receipt lacks exact native object qualification")
         available = _records(request["availableObjects"], "Incremental original objects")
         observation_started = time.perf_counter()
         observations = _observe_incremental_originals(originals, receipts, qualified, token,
@@ -1108,6 +1162,7 @@ def prepare_collected_extension(policy, source, references, controls, originals,
     retained = {path: controls[path] for path in (SOURCE_PLAN,
         *(prefix + name for name in ("producer.json", "reuse-wave-request.json", "reuse-wave-result.json")))}
     phases, objects = [], []
+    inherited_receipts, previous_objects = set(), None
     for instance, phase in sorted(selected.items()):
         matches = [(path, value) for path, value in controls.items()
                    if type(value) is dict and _identity(value) == instance
@@ -1121,10 +1176,19 @@ def prepare_collected_extension(policy, source, references, controls, originals,
         else:
             receipt = matches[0][1]
             obj = prefix + "original-objects/" + object_relative_path(phase["buildKey"], phase["receiptSha256"])
-            if obj not in inventory or inventory[obj]["sha256"] != phase["objectSha256"]:
+            declaration = inventory.get(obj)
+            if declaration is None:
+                if previous_objects is None:
+                    previous_objects = _inherited_receipt_objects({**policy, "source": source}, previous_sdk,
+                        _checkpoint=_checkpoint)
+                inherited_object = previous_objects.get(obj + "/phase-receipt.json")
+                if inherited_object is not None and inherited_object["receipt"] == receipt:
+                    declaration = {key: value for key, value in inherited_object.items() if key != "receipt"}
+                    inherited_receipts.add(instance)
+            if declaration is None or declaration["sha256"] != phase["objectSha256"]:
                 raise ValueError("Collected receipt lacks its exact inventoried object")
             path = obj + "/phase-receipt.json"
-            objects.append({**inventory[obj], "receipt": receipt})
+            objects.append({**declaration, "receipt": receipt})
         retained[path] = receipt
         phases.append({**{key: phase[key] for key in IDENTITY + OBJECT}, "receiptPath": path})
     pins = []
@@ -1144,6 +1208,8 @@ def prepare_collected_extension(policy, source, references, controls, originals,
     revision = _inventory_revision(spec, root)
     validate_current(request, admitted, receipts, root=root, revision=revision, original_revision=revision)
     qualified = _qualified_members(spec, previous_sdk, admitted, receipts, root=root, _checkpoint=_checkpoint)
+    if not inherited_receipts <= set(qualified):
+        raise ValueError("Inherited receipt lacks exact native object qualification")
     # Detach review outputs from caller-owned dictionaries; no live capability is returned.
     spec, retained = (load_canonical_json_bytes(canonical_json_bytes(value)) for value in (spec, retained))
     report = {"preparationOnly": True, "qualificationIssued": False,

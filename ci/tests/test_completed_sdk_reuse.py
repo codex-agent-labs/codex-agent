@@ -1044,6 +1044,11 @@ class CompletedSdkControlsTest(unittest.TestCase):
             collected_wave=8, receipt_hint=True, planned_context=True, reused=True,
             previous_schema=4, issuer_revision='d' * 40)
 
+    def test_sparse_collector_uses_prior_native_descriptor_without_current_inventory(self):
+        self.check_v3_issuer_original_member('python', 'metadata', 'desktop', collected=True,
+            collected_wave=8, receipt_hint=True, planned_context=True, reused=True,
+            previous_schema=4, issuer_revision='d' * 40, sparse_inherited=True)
+
     def test_schema4_issuer_validates_previous_owning_inputs_before_current_inheritance(self):
         self.check_v3_issuer_original_member('python', 'metadata', 'desktop', collected=True,
             collected_wave=8, receipt_hint=True, planned_context=True, reused=True,
@@ -1051,7 +1056,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
 
     def check_v3_issuer_original_member(self, component, phase_name, target, *, collected=False, reused=False,
                                       collected_wave=9, receipt_hint=False, issuer_revision='a' * 40,
-                                      planned_context=False, previous_schema=3, previous_input_change=False):
+                                      planned_context=False, previous_schema=3, previous_input_change=False,
+                                      sparse_inherited=False):
         actual_validate_current = completed.validate_current
         import io, json, zipfile
         from contextlib import contextmanager
@@ -1160,6 +1166,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 'source': {'inventoryCommit': 'b' * 40}}, 'proof': {
                 'controls': deepcopy(self.controls), 'originals': [{'original': 71}],
                 'members': [{'relativePath': name, 'bytes': len(body), 'sha256': phase['objectSha256']}]}}}
+            if sparse_inherited:
+                previous['extension']['spec'].update(stateRoot=spec['stateRoot'],
+                    receiptObjects=deepcopy(spec['receiptObjects']))
             spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(previous['extension']['proof']))
         current_frozen, historical_frozen = deepcopy(self.base), deepcopy(self.base)
         if planned_context:
@@ -1234,7 +1243,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
                                 if not embedded or row['relativePath'] != self.receipt_path}
                     objects = {row['relativePath']: {k: v for k, v in row.items() if k != 'receipt'}
                                for row in spec.get('receiptObjects', [])}
-                    self.assertEqual(objects if receipt_hint else None, inventory_only)
+                    self.assertEqual(objects if receipt_hint and not sparse_inherited else None, inventory_only)
+                    if sparse_inherited:
+                        self.assertTrue(objects.keys().isdisjoint(wanted))
                     if not receipt_hint: expected.update(objects)
                     self.assertEqual(expected, wanted)
                     self.assertEqual(spec['source']['workflowSha'], trusted_workflow_sha)
