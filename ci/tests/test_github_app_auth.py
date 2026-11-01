@@ -63,7 +63,9 @@ class GitHubAppAuthTest(unittest.TestCase):
                  'repositories': [{'id': auth.REPOSITORY_ID, 'full_name': auth.REPOSITORY}]}
         opener = Mock()
         def response(*args, **kwargs):
-            return io.BytesIO(json.dumps(value).encode())
+            result = io.BytesIO(json.dumps(value).encode())
+            result.headers = {'Date': 'Thu, 01 Jan 1970 00:16:40 GMT'}
+            return result
         opener.open.side_effect = response
         with patch.object(auth.time, 'time', return_value=1000), \
                 patch.object(auth.subprocess, 'run', return_value=Mock(returncode=0, stdout=b'signed')) as signer, \
@@ -80,6 +82,32 @@ class GitHubAppAuthTest(unittest.TestCase):
             value['token'] = 'ghs_5367146_' + 'x' * 500 + '.jwt-body.signature-123'
             self.assertEqual(value['token'], auth._mint(('123', '456', str(self.key)))[0])
             self.assertIsNone(auth._NoRedirect().redirect_request(None))
+
+    def test_lifetime_rejection_reports_only_safe_timing_and_keeps_exact_bounds(self):
+        token = 'ghs_' + 'private' * 8
+        value = {'token': token, 'expires_at': '1970-01-01T01:16:40Z',
+                 'permissions': {**auth.PERMISSIONS, 'metadata': 'read'},
+                 'repositories': [{'id': auth.REPOSITORY_ID, 'full_name': auth.REPOSITORY}]}
+        for remaining in (0, 300, 301, 3600, 3660, 3660.001, 7200):
+            for date in ('Thu, 01 Jan 1970 00:16:40 GMT', token + '\ninvalid-header'):
+                with self.subTest(remaining=remaining, valid_date=date.startswith('Thu')):
+                    response = io.BytesIO(json.dumps(value).encode())
+                    response.headers = {'Date': date}
+                    opener = Mock()
+                    opener.open.return_value = response
+                    with patch.object(auth.time, 'time', return_value=4600 - remaining), \
+                            patch.object(auth.subprocess, 'run', return_value=Mock(returncode=0, stdout=b'signed')), \
+                            patch.object(auth.urllib.request, 'build_opener', return_value=opener):
+                        if 300 < remaining <= 3660:
+                            self.assertEqual((token, 4600), auth._mint(('123', '456', str(self.key))))
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'invalid token lifetime') as failure:
+                                auth._mint(('123', '456', str(self.key)))
+                            message = str(failure.exception)
+                            self.assertIn(f'remainingSeconds={remaining:.3f}', message)
+                            self.assertIn('serverEpoch=' + ('1000' if date.startswith('Thu') else 'None'), message)
+                            self.assertNotIn(token, message)
+                            self.assertNotIn('\n', message)
 
     def test_protected_workflow_wiring_and_narrow_hosted_proof(self):
         root = Path(__file__).resolve().parents[2]

@@ -64,6 +64,7 @@ class SdkNativePreparedUploadTest(unittest.TestCase):
     def test_exact_upload_preserves_raw_plans_all_languages_and_empty_log(self):
         result = self.call()
         self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.producer, result["originalProducer"])
         self.assertEqual(self.artifact, result["artifact"])
         self.assertEqual(self.phase, result["phasePlan"])
         self.assertEqual(self.run, result["observed"][0]["run"])
@@ -95,7 +96,7 @@ class SdkNativePreparedUploadTest(unittest.TestCase):
             elif case == "pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
             elif case == "artifact-run": self.artifact["workflow_run"]["id"] = 72
             elif case == "artifact-head": self.artifact["workflow_run"]["head_sha"] = "e" * 40
-            elif case == "name": self.artifact["name"] = self.artifact["name"].replace("attempt-2", "attempt-1")
+            elif case == "name": self.artifact["name"] += "-wrong"
             elif case == "digest": self.artifact["digest"] = "sha256:" + "d" * 64
             elif case == "before": self.artifact["created_at"] = "2026-09-11T09:59:59Z"
             elif case == "after": self.artifact["created_at"] = "2026-09-11T10:30:01Z"
@@ -103,6 +104,41 @@ class SdkNativePreparedUploadTest(unittest.TestCase):
             else: self.commit["parents"].reverse()
             with self.subTest(case=case), self.assertRaises(ValueError):
                 self.call()
+            self.assertFalse(self.output.exists())
+
+    def test_retry_reuses_exact_earlier_preparation_without_rewriting_its_producer(self):
+        current = {**self.producer, "runAttempt": 3}
+        with patch.object(self, "api", wraps=self.api) as api:
+            result = self.call(environ={"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "3"})
+        self.assertEqual(current, result["captureProducer"])
+        self.assertEqual(self.producer, result["originalProducer"])
+        self.assertEqual(self.run, result["observed"][0]["run"])
+        self.assertEqual(self.phase, result["phasePlan"])
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+        for name, raw in self.files.items():
+            self.assertEqual(raw, (self.output / "original" / name).read_bytes())
+        urls = [call.args[0] for call in api.call_args_list]
+        self.assertEqual(1, urls.count(self.artifact["archive_download_url"]))
+        self.assertTrue(any("/attempts/2/jobs?" in url for url in urls))
+        self.assertFalse(any("/attempts/3" in url for url in urls))
+
+    def test_retry_rejects_future_foreign_failed_or_relabeled_preparation(self):
+        baseline = deepcopy((self.run, self.jobs, self.artifact, self.files))
+        for case in ("future", "foreign-run", "failed-job", "wrong-observed-attempt",
+                     "relabeled-producer", "failed-execution"):
+            self.run, self.jobs, self.artifact, self.files = deepcopy(baseline)
+            if case == "future": self.artifact["name"] = self.artifact["name"].replace("attempt-2", "attempt-4")
+            elif case == "foreign-run": self.artifact["workflow_run"]["id"] = 72
+            elif case == "failed-job": self.jobs[0]["conclusion"] = "failure"
+            elif case == "wrong-observed-attempt": self.run["run_attempt"] = 3
+            else:
+                execution = deepcopy(self.execution)
+                if case == "relabeled-producer": execution["producer"]["runAttempt"] = 3
+                else: execution["returnCode"] = 1
+                self.files["diagnostics/execution.json"] = canonical_json_bytes(execution)
+                self.archive()
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                self.call(environ={"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "3"})
             self.assertFalse(self.output.exists())
 
     def test_exact_layout_plans_and_nonempty_five_language_sources_required(self):

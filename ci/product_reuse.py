@@ -9768,10 +9768,14 @@ def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase
             raise ValueError("Native preparation capture requires an authorized PR or merge-group plan")
         producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
         job = "product-validation / sdk-native-prepare"
-        observed = _observe_ci_producer_jobs({"native-prepared": producer},
+        prefix = f"codex-agent-sdk-native-prepared-{producer['tree']}"
+        original_producer = _retry_upload_producer(
+            producer, artifact_id, artifact_sha256, prefix, job, token)
+        observed = _observe_ci_producer_jobs({"native-prepared": original_producer},
             jobs_by_phase={"native-prepared": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
-        name = f"codex-agent-sdk-native-prepared-{producer['tree']}-attempt-{producer['runAttempt']}"
-        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
+        name = f"{prefix}-attempt-{original_producer['runAttempt']}"
+        artifact, raw = _download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, original_producer, observed[0]["run"], token)
         _require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
         archive.write_bytes(raw)
@@ -9799,14 +9803,15 @@ def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase
             "Native preparation execution")
         command = require_array(execution["command"], "Native preparation command")
         if (require_integer(execution["schemaVersion"], "Native preparation execution schema", 1) != 1
-                or execution["producer"] != producer or execution["buildKey"] != phase["buildKey"]
+                or execution["producer"] != original_producer or execution["buildKey"] != phase["buildKey"]
                 or type(execution["returnCode"]) is not int or execution["returnCode"] != 0
                 or execution["launchError"] is not None
                 or any(type(argument) is not str for argument in command) or command.count(TASK) != 1):
             raise ValueError("Native preparation execution differs from its observed successful producer")
         require_integer(execution["elapsedNs"], "Native preparation elapsed time", 0)
+        # The retry captures unchanged preparation bytes; it is not their producer.
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
-                     "phasePlan": phase}
+                     "originalProducer": original_producer, "phasePlan": phase}
         write_canonical_json(prepared / "capture-transport.json", transport)
         transport_bytes = canonical_json_bytes(transport)
         expected_files = sorted([
