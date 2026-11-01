@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import base64
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import re
 import subprocess
 from threading import Event, Lock, Thread
@@ -101,6 +102,7 @@ def _mint(configuration):
                  'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json'})
     with urllib.request.build_opener(_NoRedirect()).open(request, timeout=60) as response:
         value = json.loads(response.read(1024 * 1024))
+        server_date = response.headers.get('Date')
     permissions = value.get('permissions', {})
     repositories = value.get('repositories', [])
     if (permissions != {**PERMISSIONS, 'metadata': 'read'}
@@ -112,8 +114,19 @@ def _mint(configuration):
         raise ValueError('GitHub read App returned an invalid token')
     expires = datetime.strptime(value['expires_at'], '%Y-%m-%dT%H:%M:%SZ').replace(
         tzinfo=timezone.utc).timestamp()
-    if not time.time() + 300 < expires <= time.time() + 3660:
-        raise ValueError('GitHub read App returned an invalid token lifetime')
+    received_at = time.time()
+    remaining = expires - received_at
+    if not 300 < remaining <= 3660:
+        # Diagnose clock/expiry failures without logging credentials or raw headers.
+        try:
+            parsed_date = parsedate_to_datetime(server_date)
+            server_epoch = int(parsed_date.timestamp()) if parsed_date.tzinfo is not None else None
+        except (TypeError, ValueError, OverflowError):
+            server_epoch = None
+        raise ValueError('GitHub read App returned an invalid token lifetime '
+            f'(requestEpoch={now}, receivedEpoch={received_at:.3f}, '
+            f'expiryEpoch={expires:.0f}, serverEpoch={server_epoch}, '
+            f'remainingSeconds={remaining:.3f})')
     if os.environ.get('GITHUB_ACTIONS') == 'true':
         print(f'::add-mask::{token}', flush=True)
     count('githubAppTokenRenewals')

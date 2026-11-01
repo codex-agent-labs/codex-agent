@@ -2268,6 +2268,10 @@ def _prime_runtime_artifact_metadata(sources, token):
     batch = _CI_OBSERVATIONS.get()
     if batch is None:
         raise ValueError("Runtime artifact metadata requires a fresh observation batch")
+    current = batch.get("currentAttempt")
+    shared = (batch.get("shareNested") is True and isinstance(current, tuple) and len(current) == 2
+              and all(isinstance(value, str) and value.isdecimal() for value in current))
+    cached = dict(batch.get("artifactMetadata", {})) if shared else {}
     groups, owners = {}, {}
     for source in sources:
         run = require_integer(source["receipt"]["producer"]["runId"], "Original artifact run", 1)
@@ -2279,6 +2283,12 @@ def _prime_runtime_artifact_metadata(sources, token):
 
     def first_page(group):
         run, wanted = group
+        if shared and str(run) != current[0] and all(
+                isinstance(row := cached.get((token, identity)), dict) and row.get("id") == identity
+                and isinstance(row.get("workflow_run"), dict) and row["workflow_run"].get("id") == run
+                for identity in wanted):
+            count('artifactMetadataPageReuses')
+            return {(token, identity): cached[token, identity] for identity in wanted}
         count('artifactMetadataPageReads')
         response = require_object(api_json(
             f"https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/{run}/artifacts"
@@ -2296,7 +2306,12 @@ def _prime_runtime_artifact_metadata(sources, token):
     # Only known positive IDs are used; absent entries keep their individual GET.
     # Full metadata/job/window/native-locator validation still follows for each.
     pages = bounded_verify(first_page, (group for group in groups.items() if len(group[1]) > 1))
-    batch["artifactMetadata"] = {key: row for page in pages for key, row in page.items()}
+    # Keep unrelated positives only inside the explicit shared lifetime. Remove
+    # this call's old rows so incomplete refreshes retain individual-GET fallback.
+    for identity in owners:
+        cached.pop((token, identity), None)
+    cached.update({key: row for page in pages for key, row in page.items()})
+    batch["artifactMetadata"] = cached
 
 
 @measured
@@ -9768,10 +9783,14 @@ def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase
             raise ValueError("Native preparation capture requires an authorized PR or merge-group plan")
         producer = validate_producer(_consumer(plan, os.environ if environ is None else environ)["producer"])
         job = "product-validation / sdk-native-prepare"
-        observed = _observe_ci_producer_jobs({"native-prepared": producer},
+        prefix = f"codex-agent-sdk-native-prepared-{producer['tree']}"
+        original_producer = _retry_upload_producer(
+            producer, artifact_id, artifact_sha256, prefix, job, token)
+        observed = _observe_ci_producer_jobs({"native-prepared": original_producer},
             jobs_by_phase={"native-prepared": job}, trusted_workflow_sha=trusted_workflow_sha, token=token)
-        name = f"codex-agent-sdk-native-prepared-{producer['tree']}-attempt-{producer['runAttempt']}"
-        artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer, observed[0]["run"], token)
+        name = f"{prefix}-attempt-{original_producer['runAttempt']}"
+        artifact, raw = _download_contract_ci_upload(
+            artifact_id, artifact_sha256, name, original_producer, observed[0]["run"], token)
         _require_artifact_job_window(observed[0], job, artifact)
         archive = prepared / "transport.zip"
         archive.write_bytes(raw)
@@ -9799,14 +9818,15 @@ def capture_sdk_native_prepared_upload(plan_path, destination, *, expected_phase
             "Native preparation execution")
         command = require_array(execution["command"], "Native preparation command")
         if (require_integer(execution["schemaVersion"], "Native preparation execution schema", 1) != 1
-                or execution["producer"] != producer or execution["buildKey"] != phase["buildKey"]
+                or execution["producer"] != original_producer or execution["buildKey"] != phase["buildKey"]
                 or type(execution["returnCode"]) is not int or execution["returnCode"] != 0
                 or execution["launchError"] is not None
                 or any(type(argument) is not str for argument in command) or command.count(TASK) != 1):
             raise ValueError("Native preparation execution differs from its observed successful producer")
         require_integer(execution["elapsedNs"], "Native preparation elapsed time", 0)
+        # The retry captures unchanged preparation bytes; it is not their producer.
         transport = {"artifact": artifact, "captureProducer": producer, "observed": observed,
-                     "phasePlan": phase}
+                     "originalProducer": original_producer, "phasePlan": phase}
         write_canonical_json(prepared / "capture-transport.json", transport)
         transport_bytes = canonical_json_bytes(transport)
         expected_files = sorted([
