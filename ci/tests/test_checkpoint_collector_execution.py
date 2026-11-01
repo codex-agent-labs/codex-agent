@@ -1,7 +1,7 @@
 """Real Core collection/advance and next replay; synthetic CI/native admission only."""
 from contextlib import ExitStack,contextmanager
 from copy import deepcopy
-import io,json,os,shutil
+import io,json,os,shutil,unittest
 from pathlib import Path
 from unittest.mock import patch
 import zipfile
@@ -11,8 +11,8 @@ import reuse_qualification as native
 from products.inventory import canonical_json_bytes,load_canonical_json,regular_file_inventory,sha256_bytes,write_canonical_json
 from products.receipt import write_output_manifest
 from products.restore import CARRIER_REFERENCES_NAME,finalize_phase_object,object_relative_path
-from ci.tests.test_product_contract_resume import ContractProductResumeTest
-from ci.tests.test_runtime_adapter_collection import RuntimeAdapterCollectionTest
+from ci.tests import test_product_contract_resume as contract_fixture
+from ci.tests import test_runtime_adapter_collection as collection_fixture
 
 CORE=adapter.PhaseInstanceId('sdk','sdk-core','binary','common')
 CHILD='.github/workflows/sdk-core-binary-validation.yml'
@@ -20,7 +20,13 @@ WORKER='product-validation / sdk-core-binary-wave / sdk-core-binary-common'
 PIN='c'*40
 
 
-class CheckpointCollectorExecutionTest(ContractProductResumeTest):
+@unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen is required")
+class CheckpointCollectorExecutionTest(unittest.TestCase):
+    # Borrow fixture setup, not the JVM tests that require its original selection.
+    setUpClass=classmethod(contract_fixture.ContractProductResumeTest.setUpClass.__func__)
+    setUp=contract_fixture.ContractProductResumeTest.setUp
+    tearDown=contract_fixture.ContractProductResumeTest.tearDown
+    completed_contract_fixture=contract_fixture.ContractProductResumeTest.completed_contract_fixture
     measurements=[]
 
     @classmethod
@@ -36,7 +42,7 @@ class CheckpointCollectorExecutionTest(ContractProductResumeTest):
 
     @contextmanager
     def official(self,ready,body):
-        with RuntimeAdapterCollectionTest.official_api(self,{CORE:ready},{CORE:body}) as observed:
+        with collection_fixture.RuntimeAdapterCollectionTest.official_api(self,{CORE:ready},{CORE:body}) as observed:
             original=observed[0].side_effect
             def api(url,token):
                 result=original(url,token)

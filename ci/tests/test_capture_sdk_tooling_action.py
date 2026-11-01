@@ -45,7 +45,8 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         self.action = (ROOT / '.github/actions/capture-sdk-tooling/action.yml').read_text()
 
     def execute(self):
-        code = self.action.split("        python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0]
+        capture = self.action.split('    - id: capture\n', 1)[1]
+        code = capture.split("        python3 -B - <<'PY'\n", 1)[1].split('\n        PY', 1)[0]
         with patch.dict(os.environ, self.environment, clear=True):
             exec(compile(textwrap.dedent(code), '<capture-sdk-tooling-action>', 'exec'), {})
 
@@ -203,8 +204,18 @@ class CaptureSdkToolingActionTest(unittest.TestCase):
         inputs = self.action.split('inputs:\n', 1)[1].split('outputs:\n', 1)[0]
         import re
         self.assertEqual({'artifact-id', 'artifact-sha256', 'transport-producer', 'trusted-workflow-sha',
-                          'trusted-workflow-path', 'trusted-job-name', 'policy-revision', 'plan-id'},
+                          'trusted-workflow-path', 'trusted-job-name', 'policy-revision', 'plan-id',
+                          'read-app-id', 'read-installation-id', 'read-app-private-key'},
                          set(re.findall(r'^  ([a-z0-9-]+):$', inputs, re.MULTILINE)))
+        preparation, capture = self.action.split('    - id: capture\n', 1)
+        self.assertIn("if: inputs.read-app-id != '' || inputs.read-installation-id != '' || inputs.read-app-private-key != ''",
+                      preparation)
+        self.assertIn('from runtime_reference_transport import configure_read_app\n        configure_read_app()', preparation)
+        for variable, name in (('READ_APP_ID', 'read-app-id'), ('READ_INSTALLATION_ID', 'read-installation-id'),
+                               ('READ_APP_PRIVATE_KEY', 'read-app-private-key')):
+            self.assertIn(variable + ': ${{ inputs.' + name + ' }}', preparation)
+            self.assertNotIn(variable, capture)
+            self.assertNotIn('inputs.' + name, capture)
         for forbidden in ('--keyring', '--public-key', '--evidence', 'secrets.', 'setup-java', 'setup-kmp',
                           'java -jar', './gradlew', 'ci.tooling_release'):
             self.assertNotIn(forbidden, self.action)
