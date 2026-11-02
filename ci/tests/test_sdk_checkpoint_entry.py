@@ -175,3 +175,33 @@ class CheckpointWorkflowPermissionsTest(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class HistoricalCheckpointCliTest(unittest.TestCase):
+    def test_historical_selector_is_explicit_and_cannot_replace_current_policy_or_same_run_selector(self):
+        import argparse
+        parser=argparse.ArgumentParser()
+        native.add_completed_frozen_argument(parser)
+        parsed=parser.parse_args(["--sdk-historical-checkpoint","{}"])
+        self.assertEqual("{}",parsed.sdk_historical_checkpoint)
+        for args in (
+                {"sdk_historical_checkpoint":"{}"},
+                {"completed_frozen_policy":Path("unused"),"sdk_historical_checkpoint":"{}","sdk_checkpoint":"{}"},
+                {"completed_frozen_policy":Path("unused"),"sdk_historical_checkpoint":"{}","sdk_checkpoint_owner":Path("unused")}):
+            with self.subTest(args=args),patch.object(native,"fetch_completed_frozen") as admit,                    self.assertRaisesRegex(ValueError,"own explicit current-policy"):
+                with native.completed_frozen_options(args):
+                    self.fail("ambiguous or unowned selector must not yield")
+            admit.assert_not_called()
+
+    def test_history_reference_requires_current_baseline_and_exact_bounded_fields(self):
+        policy={"schemaVersion":1,"kind":"completed-frozen-reuse","consumerCommit":"c"*40,
+            "verifierPolicySha256":"sha256:"+"a"*64,"artifactId":1,"artifactSha256":"sha256:"+"a"*64,
+            "runId":1,"runAttempt":1,"signerCommit":"a"*40,"sourceCommit":"a"*40,
+            "sdkCheckpointHistory":{"path":"/private/current-history.json","sha256":"sha256:"+"b"*64}}
+        with self.assertRaisesRegex(ValueError,"current native SDK baseline"):native.validate_completed_reuse_policy(policy)
+        policy["sdkCompletion"]={key:policy[key] for key in
+            ("artifactId","artifactSha256","runId","runAttempt","signerCommit","sourceCommit")}
+        self.assertIn("sdkCheckpointHistory",native.validate_completed_reuse_policy(policy))
+        for field,value in (("path","relative.json"),("sha256","untrusted")):
+            changed=deepcopy(policy);changed["sdkCheckpointHistory"][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):native.validate_completed_reuse_policy(changed)

@@ -227,3 +227,59 @@ class PackageCheckpointCollectorTest(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class HistoricalCheckpointWaveWiringTest(unittest.TestCase):
+    def test_javascript_three_phase_route_issues_collect6_for_later_plan_without_enabling_other_waves(self):
+        import re
+        import tempfile
+        import sdk_phase
+        from products.registry import PHASE_INSTANCE_IDS, phase_instance_dependencies
+        source = (Path(__file__).resolve().parents[2]/".github/workflows/product-validation.yml").read_text()
+        jobs = completed._checkpoint_workflow_jobs(source.encode())
+        route = sdk_phase.CHECKPOINT_ROUTES["product-validation / sdk-collect-6"]
+        self.assertEqual(("javascript-metadata", 6), (route.family, route.wave))
+        javascript = {key for key in PHASE_INSTANCE_IDS if key.product == "sdk" and key.component == "javascript"}
+        self.assertEqual({"package", "validation", "metadata"}, {key.phase for key in javascript})
+        metadata = next(key for key in javascript if key.phase == "metadata")
+        validation = next(key for key in javascript if key.phase == "validation")
+        self.assertIn(validation, phase_instance_dependencies(metadata))
+        def block(name):
+            return re.search(r"^  "+re.escape(name)+r":\n.*?(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)",
+                             source, re.M|re.S).group()
+        for wave in (6, 8):
+            issuer = jobs[f"sdk-checkpoint-{wave}"]
+            self.assertEqual(["plan", f"sdk-collect-{wave}"], completed._checkpoint_needs(jobs, f"sdk-checkpoint-{wave}"))
+            self.assertEqual("codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority", issuer["uses"])
+            self.assertIn("inputs.sdkCheckpoints", block(f"sdk-checkpoint-{wave}"))
+            self.assertIn(f"needs.sdk-collect-{wave}.result == 'success'", block(f"sdk-checkpoint-{wave}"))
+            self.assertEqual("${{ needs.sdk-collect-"+str(wave)+".outputs.checkpoint_inputs || '{}' }}",
+                             issuer["with"]["sdk-checkpoint"])
+        self.assertIn("sdk-family: javascript-metadata", block("sdk-collect-6"))
+        for name in ("sdk-collect-6", "sdk-collect-8"):
+            self.assertIn("checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}", block(name))
+            self.assertIn("checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}", block(name))
+        for name in ("plan", "product-resume"):
+            self.assertIn("checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}", block(name))
+            self.assertIn('--sdk-historical-checkpoint auto', block(name))
+        for name in ("sdk-checkpoint-4", "sdk-checkpoint-7"):
+            self.assertNotIn(name, jobs)
+        # Real collector entrypoint; product collection and advance remain explicit fixture seams.
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve()
+            original=root/"inputs"
+            for name in ("product-resume-inputs", "product-resume-state", "runtime-state"):
+                (original/name).mkdir(parents=True)
+            def collect(*args, **kwargs):
+                self.assertEqual("javascript-metadata", kwargs["sdk_family"])
+                return {"rows":[]}
+            def advance(*args, **kwargs):
+                self.assertEqual("javascript-metadata", kwargs["sdk_family"])
+                self.assertTrue(kwargs["checkpoint_controls"])
+                self.assertEqual((), kwargs["failed_instances"])
+                Path(args[4]).mkdir(parents=True)
+                return {"matrices":{"sdk":[]}}
+            with patch.object(products, "collect_runtime_workers", side_effect=collect) as collected, \
+                    patch.object(products, "advance_products", side_effect=advance) as advanced:
+                workflow.collect(original, root/"collected", root/"output", wave=6, family="javascript-metadata",
+                    repository_root=root, trusted_workflow_sha="a"*40, token="synthetic", checkpoint_controls=True)
+            self.assertEqual((1,1),(collected.call_count,advanced.call_count))

@@ -342,4 +342,532 @@ class SdkCheckpointConsumerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'closed'):cap.completed_phases()
 
 
+
+class HistoricalCheckpointConsumerTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture = SdkCheckpointConsumerTest()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.f = self.fixture.f
+        self.owner = deepcopy(self.f.policy)
+        self.owner.update(issuerCommit="b"*40, collectorWorkflowSha="b"*40)
+        self.history = {"schemaVersion":1, "kind":"sdk-checkpoint-history",
+            "consumerCommit":"9"*40, "currentOwner":self.owner,
+            "historicalPolicies":[{"sha256":sha256_bytes(canonical_json_bytes(self.f.policy)),
+                                   "policy":deepcopy(self.f.policy)}]}
+        self.policy = {"schemaVersion":1, "kind":"completed-frozen-reuse",
+            "consumerCommit":"9"*40, "verifierPolicySha256":"sha256:"+"a"*64,
+            **self.owner["bootstrap"], "sdkCompletion":deepcopy(self.owner["bootstrap"])}
+        self.selection = {"ownerPolicySha256":self.history["historicalPolicies"][0]["sha256"],
+                          "checkpoint":deepcopy(self.fixture.output)}
+        self.producer = {**self.f.producer, "runId":self.f.producer["runId"]+1,
+                         "commit":"e"*40, "tree":"d"*40}
+        self.consumer = {"kind":"ci", "producer":self.producer}
+        self.bind_current()
+
+    def bind_current(self):
+        self.current_run = deepcopy(self.f.run)
+        self.current_run.update(id=self.producer["runId"], run_attempt=self.producer["runAttempt"],
+                                status="in_progress", conclusion=None)
+        self.current_run["referenced_workflows"] = [{"path":native.REPOSITORY+
+            "/.github/workflows/product-validation.yml@"+self.owner["collectorWorkflowSha"],
+            "sha":self.owner["collectorWorkflowSha"]}]
+        self.current_commit = {**deepcopy(self.f.commit), "sha":self.producer["commit"],
+                               "tree":{"sha":self.producer["tree"]}}
+        self.current_job = {"id":1001, "name":"product-validation / plan",
+            "run_id":self.producer["runId"], "head_sha":self.current_run["head_sha"],
+            "status":"in_progress", "conclusion":None, "started_at":"2026-10-24T11:00:00Z"}
+
+    def api(self, url, token):
+        base = "https://api.github.com/repos/"+native.REPOSITORY
+        attempt = base+f"/actions/runs/{self.producer['runId']}/attempts/{self.producer['runAttempt']}"
+        if url == attempt: value = self.current_run
+        elif url.startswith(attempt+"/jobs?"): value = {"jobs":[self.current_job]}
+        elif url == base+"/git/commits/"+self.producer["commit"] and self.producer["commit"] != self.f.producer["commit"]:
+            value = self.current_commit
+        else: return self.f.api(url,token)
+        return json.dumps(deepcopy(value)).encode()
+
+    @contextmanager
+    def boundaries(self):
+        with self.fixture.boundaries(), patch.object(reuse,"api_request",side_effect=self.api):
+            yield
+
+    @contextmanager
+    def open(self):
+        self.f.number += 1
+        with self.boundaries(), completed.historical_checkpoint_consumer(
+                self.history,self.selection,self.f.root/str(self.f.number),
+                root=self.f.root,current_policy=self.policy,consumer=self.consumer,job="plan",token="synthetic") as witness:
+            yield witness
+
+    def validate(self, witness, *, wrong_key=False):
+        issued=self.fixture.issued
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(native,"_validate_completed_sdk",return_value=deepcopy(issued.fixture.parent_sdk)))
+            stack.enter_context(patch.object(completed,"_base",return_value=issued.fixture.base))
+            stack.enter_context(patch.object(completed,"_contract_files"))
+            stack.enter_context(patch.object(completed,"_inventory_revision",return_value=self.f.producer["commit"]))
+            current=stack.enter_context(patch.object(completed,"validate_current",
+                side_effect=ValueError("current key differs") if wrong_key else None))
+            locators={completed._identity(row["instance"]):row for row in self.f.envelope["completion"]["originals"]}
+            def original(record,receipt,locator,token):
+                self.assertEqual(locators[completed._identity(receipt)],locator)
+                return {},[],locator
+            stack.enter_context(patch.object(completed._HistoricalCheckpointConsumer,"original",side_effect=original))
+            stack.enter_context(patch.object(completed,"observe_source",
+                return_value=({},[],self.f.envelope["completion"]["contractSource"])))
+            result=witness.validate(root=self.f.root,revision=self.producer["commit"],consumer_revision=self.producer["commit"],
+                frozen=issued.fixture.base,token="synthetic")
+            self.assertEqual(self.f.producer["commit"],current.call_args.kwargs["revision"])
+            self.assertEqual(self.f.producer["commit"],current.call_args.kwargs["original_revision"])
+            return result
+
+    def test_rotated_owner_and_later_consumer_keep_original_native_and_current_key_gates(self):
+        with self.open() as witness:
+            self.assertIs(type(witness),completed._HistoricalCheckpointConsumer)
+            value=self.validate(witness)
+            self.assertEqual(self.f.envelope["completion"],value["extension"]["proof"])
+            self.assertEqual(self.owner["bootstrap"],witness.bootstrap())
+            witness.check(consumer=self.consumer,token="synthetic")
+            self.assertEqual([990],self.f.downloads)
+            self.assertEqual(1,len(self.f.verified))
+            with self.assertRaisesRegex(ValueError,"current key"):
+                self.validate(witness,wrong_key=True)
+            with self.assertRaisesRegex(ValueError,"separate current-source"):
+                witness.inherit({}, {})
+        with self.assertRaisesRegex(ValueError,"closed"): witness.check()
+
+    def test_later_attempt_keeps_original_attempt_and_same_producer_path_rejects_it(self):
+        self.producer.update(self.f.producer)
+        self.producer["runAttempt"] += 1
+        self.bind_current()
+        with self.open() as witness:
+            witness.check(consumer=self.consumer)
+            self.assertEqual(self.f.producer["runAttempt"],self.selection["checkpoint"]["source"]["producer"]["runAttempt"])
+        with self.fixture.boundaries(), self.assertRaisesRegex(ValueError,"current consumer edge"):
+            with completed.checkpoint_consumer(self.f.policy,self.fixture.output,self.f.root/"old-path",
+                    root=self.f.root,consumer=self.consumer,job="sdk-ios-metadata",token="synthetic"):
+                self.fail("old same-producer path must remain strict")
+
+    def test_unapproved_owner_current_policy_and_failed_original_reject(self):
+        original=deepcopy((self.history,self.policy,self.selection,self.current_run,self.current_job,self.f.collector,self.f.issuer))
+        for fault in ("owner","history-hash","current-consumer","baseline","current-workflow","current-run","current-attempt","current-repository","current-fork","current-job","source-tree","collector","issuer","subject"):
+            (self.history,self.policy,self.selection,self.current_run,self.current_job,self.f.collector,self.f.issuer)=deepcopy(original)
+            self.f.jobs=[self.f.collector,self.f.issuer,self.fixture.current,deepcopy(self.fixture.issued.job)]
+            if fault=="owner":self.selection["ownerPolicySha256"]="sha256:"+"0"*64
+            elif fault=="history-hash":self.history["historicalPolicies"][0]["policy"]["issuerCommit"]="f"*40
+            elif fault=="current-consumer":self.policy["consumerCommit"]="f"*40
+            elif fault=="baseline":self.policy["sdkCompletion"]["artifactId"]+=1
+            elif fault=="current-workflow":self.current_run["referenced_workflows"]=[]
+            elif fault=="current-run":self.current_run["id"]+=1
+            elif fault=="current-attempt":self.current_run["run_attempt"]+=1
+            elif fault=="current-repository":self.current_run["repository"]["full_name"]="untrusted/repository"
+            elif fault=="current-fork":self.current_run["head_repository"]["fork"]=True
+            elif fault=="current-job":self.current_job.update(status="completed",conclusion="failure")
+            elif fault=="source-tree":self.current_commit["tree"]={"sha":"f"*40}
+            elif fault=="collector":self.f.collector["conclusion"]="failure"
+            elif fault=="issuer":self.f.issuer["conclusion"]="failure"
+            else:self.selection["checkpoint"]["subjectSha256"]="sha256:"+"0"*64
+            with self.subTest(fault=fault),self.assertRaises(ValueError):
+                with self.open():self.fail("invalid history must not yield")
+            self.current_commit["tree"]={"sha":self.producer["tree"]}
+
+    def test_explicit_cli_holds_history_and_expires_witness_after_sync_and_deferred_use(self):
+        f=self.f
+        plan=f.root/"historical-plan.json";plan.write_text(self.f.spec["sourcePlan"])
+        history=f.root/"historical-policy.json";history.write_bytes(canonical_json_bytes(self.history))
+        policy=f.root/"historical-caller.json"
+        self.policy["sdkCheckpointHistory"]={"path":str(history),"sha256":sha256_bytes(history.read_bytes())}
+        policy.write_bytes(canonical_json_bytes(self.policy))
+        current_plan={**json.loads(self.f.spec["sourcePlan"]),"validationCommit":self.producer["commit"],"validationTree":self.producer["tree"]}
+        environment={"GITHUB_REPOSITORY":native.REPOSITORY,"GITHUB_EVENT_NAME":"pull_request","GITHUB_REF":"refs/pull/31/merge",
+            "GITHUB_SHA":self.producer["commit"],"GITHUB_RUN_ID":str(self.producer["runId"]),
+            "GITHUB_RUN_ATTEMPT":str(self.producer["runAttempt"]),"GITHUB_JOB":"plan","GITHUB_TOKEN":"synthetic"}
+        witnesses=[]
+        def admit(destination,**kw):
+            self.assertEqual(self.producer["commit"],kw["revision"])
+            self.assertEqual(self.policy["consumerCommit"],kw["consumer_commit"])
+            self.assertEqual(self.policy["sdkCompletion"],kw["sdk_completion"])
+            witnesses.append(kw["_checkpoint"])
+            sdk=self.validate(kw["_checkpoint"])
+            request,phases,receipts=completed.validate_controls(
+                self.f.spec,sdk["extension"]["proof"]["controls"],self.fixture.issued.fixture.base)
+            spec=deepcopy(self.fixture.issued.fixture.base)
+            spec["request"].setdefault("availableObjects",deepcopy(spec["expectedResult"]["phases"]))
+            identities={completed._identity(row) for row in phases}
+            for field in ("availableObjects","phaseAuthorities"):
+                spec["request"][field]=sorted([*spec["request"][field],
+                    *(row for row in request[field] if completed._identity(row) in identities)],key=completed._identity)
+            spec["expectedResult"]["phases"]=sorted([*spec["expectedResult"]["phases"],*phases],key=completed._identity)
+            spec["request"]["repositoryRevision"]=self.producer["commit"]
+            return native.CompletedFrozenReuse(spec,receipts,native._COMPLETED_FROZEN,
+                revision=self.producer["commit"],sdk=sdk,_checkpoint=kw["_checkpoint"]),{}
+        for deferred in (False,True):
+            with self.boundaries(),patch.dict(os.environ,environment,clear=True),                    patch.object(products,"_validate_plan",return_value=current_plan),                    patch.object(native,"fetch_completed_frozen",side_effect=admit):
+                args={"plan":plan,"repository_root":f.root,"completed_frozen_policy":policy,
+                      "sdk_historical_checkpoint":json.dumps(self.selection)}
+                with native.completed_frozen_options(args,defer=deferred) as options:
+                    cap=options["completed_frozen_future"].result(timeout=5) if deferred else options["completed_frozen"]
+                    self.assertIs(type(cap),native.CompletedFrozenReuse)
+                    cap.check_consumer(self.consumer)
+                    self.assertNotIn("sdk_historical_checkpoint",args)
+            with self.assertRaisesRegex(ValueError,"closed"):witnesses[-1].check()
+            with self.assertRaisesRegex(ValueError,"closed"):cap.check_consumer(self.consumer)
+        with self.boundaries(),patch.dict(os.environ,environment,clear=True),                patch.object(products,"_validate_plan",return_value=current_plan),                patch.object(native,"fetch_completed_frozen",side_effect=admit),self.assertRaisesRegex(ValueError,"historical owner policy changed"):
+            with native.completed_frozen_options({"plan":plan,"repository_root":f.root,"completed_frozen_policy":policy,
+                    "sdk_historical_checkpoint":json.dumps(self.selection)}):
+                history.write_bytes(history.read_bytes()+b" ")
+        with self.assertRaisesRegex(ValueError,"closed"):witnesses[-1].check()
+
+
+
+    def test_auto_cli_uses_current_policy_and_one_live_factory_before_export(self):
+        f = self.f
+        plan = f.root/"auto-plan.json"
+        plan.write_text(f.spec["sourcePlan"])
+        history = f.root/"auto-history.json"
+        history.write_bytes(canonical_json_bytes(self.history))
+        policy = f.root/"auto-policy.json"
+        self.policy["sdkCheckpointHistory"] = {"path":str(history), "sha256":sha256_bytes(history.read_bytes())}
+        policy.write_bytes(canonical_json_bytes(self.policy))
+        current_plan = {**json.loads(f.spec["sourcePlan"]),
+            "validationCommit":self.producer["commit"], "validationTree":self.producer["tree"]}
+        env = {"GITHUB_REPOSITORY":native.REPOSITORY, "GITHUB_EVENT_NAME":"pull_request",
+            "GITHUB_REF":"refs/pull/31/merge", "GITHUB_SHA":self.producer["commit"],
+            "GITHUB_RUN_ID":str(self.producer["runId"]), "GITHUB_RUN_ATTEMPT":str(self.producer["runAttempt"]),
+            "GITHUB_JOB":"plan", "GITHUB_TOKEN":"synthetic"}
+        held = []
+        class Live:
+            def check_consumer(inner, consumer):
+                held[-1].check(consumer=consumer)
+        def admit(destination, **kwargs):
+            held.append(kwargs["_checkpoint"])
+            held[-1].check(consumer=self.consumer)
+            self.assertEqual(self.producer["commit"],kwargs["revision"])
+            self.assertEqual(self.policy["consumerCommit"],kwargs["consumer_commit"])
+            self.assertEqual(self.policy["sdkCompletion"],kwargs["sdk_completion"])
+            return Live(), {}
+        with self.boundaries(), patch.dict(os.environ, env, clear=True), \
+                patch.object(products,"_validate_plan",return_value=current_plan), \
+                patch.object(completed,"discover_historical_checkpoint",return_value=(self.selection,f.raw)) as discovery, \
+                patch.object(native,"fetch_completed_frozen",side_effect=admit) as gate:
+            with native.completed_frozen_options({"plan":plan,"repository_root":f.root,
+                    "completed_frozen_policy":policy,"sdk_historical_checkpoint":"auto"}) as options:
+                options["completed_frozen"].check_consumer(self.consumer)
+                self.assertEqual(1, discovery.call_count)
+                self.assertEqual(1, gate.call_count)
+                self.assertEqual([], f.downloads)
+                self.assertEqual(1, len(f.verified))
+            with self.assertRaisesRegex(ValueError,"closed"):
+                held[-1].check()
+            env["GITHUB_JOB"] = "unregistered-worker"
+            with patch.dict(os.environ,env,clear=True), self.assertRaisesRegex(ValueError,"actual current CI source"):
+                with native.completed_frozen_options({"plan":plan,"repository_root":f.root,
+                        "completed_frozen_policy":policy,"sdk_historical_checkpoint":"auto"}):
+                    self.fail("unregistered job cannot discover or export checkpoint authority")
+            self.assertEqual(1, discovery.call_count)
+
+    def prepare_wave6_discovery(self):
+        f = self.f
+        f.policy["collectors"] = sorted(set(f.policy["collectors"]) | {"product-validation / sdk-collect-6"})
+        f.source["jobName"] = "product-validation / sdk-collect-6"
+        f.spec["source"] = deepcopy(f.source)
+        f.envelope["sourceCheckpoint"]["source"] = deepcopy(f.source)
+        f.collector["name"] = f.source["jobName"]
+        f.identity = completed.checkpoint_archive_identity(f.policy, f.source,
+            **{k: v for k, v in native._native_pin_arguments(f.selector).items()
+               if k in ("signer_commit", "source_commit", "run_id", "run_attempt")})
+        f.issuer["name"] = f.identity["jobName"]
+        f.artifacts[f.source["artifactId"]]["name"] = (
+            f"codex-agent-sdk-wave-6-state-{f.producer['tree']}-attempt-{f.producer['runAttempt']}")
+        f.artifacts[992]["name"] = completed.collector_control_artifact_name(f.source)
+        f.envelope["ownerPolicySha256"] = sha256_bytes(canonical_json_bytes(f.policy))
+        f.envelope["completion"]["specSha256"] = sha256_bytes(canonical_json_bytes(f.spec))
+        f.envelope["completion"]["source"] = products._runtime_original_locator(
+            f.artifacts[f.source["artifactId"]], f.source["workflowSha"],
+            PhaseInstanceId("sdk", "javascript", "metadata", "node"), f.collector)
+        self.history["historicalPolicies"] = [{"sha256": f.envelope["ownerPolicySha256"], "policy": deepcopy(f.policy)}]
+        f.upload()
+        return {completed._identity(row): {field: row[field] for field in completed.IDENTITY + completed.OBJECT}
+                for row in f.spec["completedPhases"][:1]}
+
+    def test_auto_wave6_discovery_acquires_once_then_requires_original_and_current_native_custody(self):
+        retained = self.prepare_wave6_discovery()
+        f = self.f
+        def download(artifact, token, destination, limit, digest, size):
+            self.assertEqual(990, artifact["id"])
+            self.assertEqual(2 * completed.LIMIT, limit)
+            self.assertEqual((sha256_bytes(f.raw), len(f.raw)), (digest, size))
+            Path(destination).write_bytes(f.raw)
+            return artifact, destination
+        reports = []
+        acquire = native._fetch_qualification_archive
+        def capture(*args, **kwargs):
+            value = acquire(*args, **kwargs)
+            reports.append(value[0])
+            return value
+        with self.boundaries(), ExitStack() as stack:
+            stack.enter_context(patch.object(native, "_fetch_qualification_archive", side_effect=capture))
+            stack.enter_context(patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(f.spec)))
+            current = {completed._identity(row): {field: row[field] for field in completed.IDENTITY + completed.OBJECT}
+                       for row in f.spec["completedPhases"]}
+            stack.enter_context(patch.object(completed, "_current_checkpoint_baseline", side_effect=[retained, current]))
+            listed = stack.enter_context(patch.object(products, "_catalog_artifacts", return_value=[f.artifacts[990]]))
+            transfer = stack.enter_context(patch.object(products, "_download_contract_ci_upload_bytes", side_effect=download))
+            selection, raw = completed.discover_historical_checkpoint(
+                self.history, self.policy, root=f.root, consumer=self.consumer, token="synthetic")
+            self.assertEqual("product-validation / sdk-collect-6", selection["checkpoint"]["source"]["jobName"])
+            self.assertEqual(f.producer, selection["checkpoint"]["source"]["producer"])
+            self.assertEqual(1, listed.call_count)
+            self.assertEqual(1, transfer.call_count)
+            self.assertEqual([], f.verified)  # Selector bytes have no authority.
+            with completed.historical_checkpoint_consumer(
+                    self.history, selection, f.root/"automatic", root=f.root, current_policy=self.policy,
+                    consumer=self.consumer, job="plan", token="synthetic", _archive_bytes=raw) as witness:
+                self.assertIs(type(witness), completed._HistoricalCheckpointConsumer)
+                witness.check(consumer=self.consumer)
+                self.assertEqual(1, len(f.verified))
+                self.assertEqual([], f.downloads)  # Original bytes, no second acquisition.
+                self.assertEqual(0, reports[-1]["downloadedQualificationBytes"])
+                self.assertEqual(len(raw), reports[-1]["heldCheckpointArchiveBytes"])
+            with self.assertRaisesRegex(ValueError, "closed"):
+                witness.check()
+            with self.assertRaisesRegex(ValueError, "fresh original transport"):
+                with completed.historical_checkpoint_consumer(
+                        self.history, selection, f.root/"changed-transport", root=f.root, current_policy=self.policy,
+                        consumer=self.consumer, job="plan", token="synthetic", _archive_bytes=raw+b"x"):
+                    self.fail("changed discovery bytes cannot acquire authority")
+            self.assertEqual(1, len(f.verified))
+
+    def test_auto_discovery_skips_complete_baseline_and_never_overwrites_retained_or_adds_owner(self):
+        from products.registry import PHASE_INSTANCE_IDS
+        retained = self.prepare_wave6_discovery()
+        f = self.f
+        complete = {key: {} for key in PHASE_INSTANCE_IDS if key.product == "sdk"
+                    and key != PhaseInstanceId("sdk", "sdk-ios", "binary", "ios")}
+        self.assertEqual(61, len(complete))
+        with patch.object(native, "_ensure_native_issuer_commit"), \
+                patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(f.spec)), \
+                patch.object(completed, "_current_checkpoint_baseline", return_value=complete), \
+                patch.object(products, "_catalog_artifacts") as listed:
+            self.assertEqual((None, None), completed.discover_historical_checkpoint(
+                self.history, self.policy, root=f.root, consumer=self.consumer, token="synthetic"))
+            listed.assert_not_called()
+        original = deepcopy(f.envelope)
+        for case in ("unknown-owner", "missing-baseline", "conflicting-tuple"):
+            f.envelope = deepcopy(original)
+            if case == "unknown-owner":
+                f.envelope["ownerPolicySha256"] = "sha256:"+"0"*64
+            elif case == "missing-baseline":
+                f.envelope["recipe"]["completedPhases"].pop(0)
+            else:
+                f.envelope["recipe"]["completedPhases"][0]["objectSha256"] = "sha256:"+"0"*64
+            f.upload()
+            def download(artifact, token, destination, *args):
+                Path(destination).write_bytes(f.raw)
+                return artifact, destination
+            with self.subTest(case=case), patch.object(native, "_ensure_native_issuer_commit"), \
+                    patch("products.inventory.git_regular_blob_bytes", return_value=canonical_json_bytes(f.spec)), \
+                    patch.object(completed, "_current_checkpoint_baseline", side_effect=[retained,
+                        {completed._identity(row): {field: row[field] for field in completed.IDENTITY + completed.OBJECT}
+                         for row in f.envelope["recipe"]["completedPhases"]}]), \
+                    patch.object(products, "_catalog_artifacts", return_value=[f.artifacts[990]]), \
+                    patch.object(products, "_download_contract_ci_upload_bytes", side_effect=download):
+                if case == "conflicting-tuple":
+                    with self.assertRaisesRegex(ValueError, "conflicts"):
+                        completed.discover_historical_checkpoint(
+                            self.history, self.policy, root=f.root, consumer=self.consumer, token="synthetic")
+                else:
+                    self.assertEqual((None, None), completed.discover_historical_checkpoint(
+                        self.history, self.policy, root=f.root, consumer=self.consumer, token="synthetic"))
+        self.assertEqual([], f.verified)
+
+
+    def test_discovery_skips_newer_stale_112_hint_for_older_current_javascript_checkpoint(self):
+        # Selection is deliberately not admission: native/Git formats are fixture
+        # seams; the real inventory/dependency eligibility calculation runs here.
+        import io
+        import zipfile
+        from products.registry import PHASE_INSTANCE_IDS
+        self.prepare_wave6_discovery()
+        f = self.f
+        original_revision, new_revision = "1"*40, "2"*40
+        ids = sorted(key for key in PHASE_INSTANCE_IDS if key.product == "sdk"
+                     and key != PhaseInstanceId("sdk", "sdk-ios", "binary", "ios"))
+        rows = [{**products._identity_record(key), **{name:"sha256:"+"1"*64 for name in completed.OBJECT}}
+                for key in ids]
+        baseline = {"source":{"inventoryCommit":original_revision}, "completedPhases":rows}
+        baseline["source"]["producer"] = deepcopy(f.producer)
+        old = deepcopy(f.envelope)
+        old["recipe"] = deepcopy(baseline)
+        old["recipe"]["source"] = deepcopy(f.source)
+        old["recipe"]["source"]["inventoryCommit"] = original_revision
+        old["sourceCheckpoint"]["source"] = deepcopy(old["recipe"]["source"])
+        newer = deepcopy(old)
+        newer["recipe"]["source"]["inventoryCommit"] = new_revision
+        newer["sourceCheckpoint"]["source"] = deepcopy(newer["recipe"]["source"])
+        for row in newer["recipe"]["completedPhases"]:
+            if row["component"] == "javascript":
+                for field in completed.OBJECT:
+                    row[field] = "sha256:"+"2"*64
+        # Keep exact required selector source shape: inventoryCommit equals producer.commit.
+        for value in (old, newer):
+            value["recipe"]["source"]["producer"]["commit"] = value["recipe"]["source"]["inventoryCommit"]
+            value["sourceCheckpoint"]["source"] = deepcopy(value["recipe"]["source"])
+        def archive(value):
+            out=io.BytesIO()
+            with zipfile.ZipFile(out,"w") as z:
+                z.writestr("completion.json",canonical_json_bytes(value))
+                z.writestr("bundle.jsonl",b"untrusted discovery fixture; not a native signature")
+            return out.getvalue()
+        bodies={993:archive(old),992:archive(newer)}
+        artifacts=[{**f.artifacts[990],"id":key,"digest":sha256_bytes(raw),"size_in_bytes":len(raw),
+            "archive_download_url":f"https://api.github.com/repos/{native.REPOSITORY}/actions/artifacts/{key}/zip"}
+            for key,raw in bodies.items()]
+        reads=[]
+        def download(artifact,token,destination,*args):
+            reads.append(artifact["id"])
+            Path(destination).write_bytes(bodies[artifact["id"]])
+            return artifact,destination
+        def tree(root,revision):
+            return [("codex-agent-bindings/javascript/package.json",
+                     "old" if revision==original_revision else "new")]
+        with patch.object(native,"_ensure_native_issuer_commit"), \
+                patch("products.inventory.git_regular_blob_bytes",return_value=canonical_json_bytes(baseline)), \
+                patch.object(completed,"_spec"), \
+                patch.object(completed,"_inventory_revision",side_effect=lambda spec,*args,**kwargs:spec["source"]["inventoryCommit"]), \
+                patch("products.inventory.tree_entries",side_effect=tree), \
+                patch.object(products,"_catalog_artifacts",return_value=artifacts), \
+                patch.object(products,"_download_contract_ci_upload_bytes",side_effect=download):
+            retained=completed._current_checkpoint_baseline(baseline,f.root,self.producer["commit"],"synthetic")
+            self.assertEqual(109,51+len(retained))
+            selected,raw=completed.discover_historical_checkpoint(
+                self.history,self.policy,root=f.root,consumer=self.consumer,token="synthetic")
+            self.assertEqual(992,selected["checkpoint"]["native"]["artifactId"])
+            self.assertEqual([993,992],reads)
+            self.assertEqual(bodies[992],raw)
+        self.assertEqual([],f.verified)  # Actual factory/signature/current-source gates must still follow.
+
+    def test_factory_to_native_export_restricts_changed_javascript_and_keeps_109_originals(self):
+        # Synthetic native/Git boundaries; real factory, sealed capability and
+        # dependency restriction. No actual hosted proof or product is executed.
+        from ci.tests.test_completed_frozen_reuse import CompletedFrozenReuseTest, POLICY
+        from ci.tests.test_products import phase_receipt
+        from products import inventory
+        from products.plan import _phase_version_identity
+        from products.receipt import compute_build_key, validate_phase_receipt
+        from products.registry import PHASE_INSTANCE_IDS
+        fixture = CompletedFrozenReuseTest()
+        fixture.setUp()
+        sdk, parent_phase, _, _ = fixture.sdk_fixture()
+        parent_receipt = sdk["original"]["receipt"]
+        parent_id = products._identity(parent_phase)
+        request = deepcopy(fixture.spec["request"])
+        request["availableObjects"].append(parent_phase)
+        request["phaseAuthorities"].append({
+            **{field: parent_receipt[field] for field in completed.IDENTITY},
+            **{field: parent_receipt["inputs"][field] for field in
+               ("flagsDigest", "toolchainProfileDigest", "outputSchemaVersion")}})
+        phases, receipts = [], []
+        for instance in sorted(PHASE_INSTANCE_IDS):
+            if instance.product != "sdk" or instance == parent_id:
+                continue
+            receipt = phase_receipt()
+            receipt.update({field:getattr(instance, field) for field in completed.IDENTITY})
+            receipt["productVersion"] = request["versions"]["sdk"]
+            receipt["inputs"]["versionIdentity"] = _phase_version_identity(instance, request["versions"])
+            receipt["buildKey"] = compute_build_key(**{
+                field:receipt[field] for field in (*completed.IDENTITY, "inputs")})
+            validate_phase_receipt(receipt)
+            phase = {**{field:receipt[field] for field in (*completed.IDENTITY, "buildKey")},
+                "receiptSha256":sha256_bytes(canonical_json_bytes(receipt)),
+                "objectSha256":sha256_bytes(("synthetic:" + str(instance)).encode()), "state":"retained"}
+            phases.append(phase)
+            receipts.append(receipt)
+            request["availableObjects"].append(phase)
+            request["phaseAuthorities"].append({
+                **{field:receipt[field] for field in completed.IDENTITY},
+                **{field:receipt["inputs"][field] for field in
+                   ("flagsDigest", "toolchainProfileDigest", "outputSchemaVersion")}})
+        self.assertEqual(61, len(phases))
+        source_revision = self.f.spec["source"]["inventoryCommit"]
+        sdk["extension"] = {"spec":{"schemaVersion":4,
+            "source":{"inventoryCommit":source_revision},
+            "sourcePredecessors":[{field:row[field] for field in (*completed.IDENTITY,*completed.OBJECT)}
+                                  for row in [*fixture.spec["expectedResult"]["phases"],parent_phase]],
+            "completedPhases":phases}, "proof":{"controls":{}}}
+        native_controls = {"qualification.json":b"synthetic native subject",
+            "bundle.jsonl":b"synthetic native bundle", "proof.json":canonical_json_bytes(fixture.proof)}
+        js = {instance for instance in PHASE_INSTANCE_IDS
+              if instance.product == "sdk" and instance.component == "javascript"}
+        package_path = "codex-agent-bindings/javascript/package.json"
+        for changed, partial in ((False, False), (True, False), (True, True)):
+            active_sdk = deepcopy(sdk)
+            pairs = [(phase, receipt) for phase, receipt in zip(phases, receipts)
+                     if not partial or (phase["component"], phase["phase"]) == ("javascript", "metadata")]
+            active_phases, active_receipts = ([pair[index] for pair in pairs] for index in (0, 1))
+            active_ids = {products._identity(phase) for phase in active_phases}
+            active_sdk["extension"]["spec"]["completedPhases"] = active_phases
+            active_sdk["extension"]["spec"]["sourcePredecessors"] = [
+                {field: row[field] for field in (*completed.IDENTITY, *completed.OBJECT)}
+                for row in request["availableObjects"] if products._identity(row) not in active_ids]
+            with self.subTest(changed=changed, partial=partial), self.open() as witness, ExitStack() as stack:
+                stack.enter_context(patch.object(native,"_compatible_verifier",return_value=True))
+                stack.enter_context(patch.object(native,"_ensure_native_issuer_commit"))
+                stack.enter_context(patch.object(native,"_fetch_qualification_archive",
+                    return_value=({"downloadedQualificationBytes":1234},native_controls)))
+                stack.enter_context(patch.object(native,"_authenticate_bytes",return_value=fixture.qualified))
+                stack.enter_context(patch.object(inventory,"git_regular_blob_bytes",
+                    return_value=canonical_json_bytes(fixture.spec)))
+                stack.enter_context(patch.object(native,"_sdk_parent_frozen_spec",return_value=fixture.spec))
+                stack.enter_context(patch.object(native,"_capture_completed_contract_receipts",
+                    return_value=[r for i,r in fixture.receipts.items() if i.product=="contract"]))
+                stack.enter_context(patch.object(native,"_completed_sdk_controls",
+                    return_value=(request,parent_phase,parent_receipt,{})))
+                stack.enter_context(patch.object(completed,"_base",return_value=fixture.spec))
+                stack.enter_context(patch.object(completed,"validate_controls",
+                    return_value=(request,active_phases,active_receipts)))
+                original = stack.enter_context(patch.object(completed,"_inventory_revision",
+                    return_value=source_revision))
+                def semantic(spec, proof, arguments, **kwargs):
+                    self.assertEqual(self.f.spec, spec)
+                    self.assertEqual(self.f.envelope["completion"], proof)
+                    self.assertEqual(source_revision, kwargs["revision"])
+                    self.assertEqual(source_revision, kwargs["requalification_baseline"])
+                    self.assertEqual(self.producer["commit"], kwargs["consumer_revision"])
+                    self.assertIs(witness, kwargs["_checkpoint"])
+                    return deepcopy(active_sdk)
+                admitted = stack.enter_context(patch.object(completed,"validate_extension",side_effect=semantic))
+                stack.enter_context(patch.object(inventory,"tree_entries",side_effect=lambda root, revision:
+                    [(package_path,"new" if changed and revision==self.producer["commit"] else "old")]))
+                stack.enter_context(patch.object(products,"_authorities",side_effect=lambda root, revision, ids:
+                    (sorted([r for r in request["phaseAuthorities"] if products._identity(r) in ids],
+                            key=products._identity),None)))
+                stack.enter_context(patch.object(products,"_versions",return_value=request["versions"]))
+                stack.enter_context(patch("products.restore.verify_object",
+                    side_effect=AssertionError("no unchanged product body replay")))
+                cap, report = native.fetch_completed_frozen(self.f.root/"native-projection",
+                    consumer_commit=self.policy["consumerCommit"],verifier_policy_sha256=POLICY,
+                    repository_root=self.f.root,revision=self.producer["commit"],
+                    sdk_completion=self.policy["sdkCompletion"],_checkpoint=witness,
+                    signer_commit="b"*40,source_commit="a"*40,artifact_id=71,
+                    artifact_sha256=POLICY,run_id=72,run_attempt=1,token="synthetic")
+                self.assertEqual(1, admitted.call_count)
+                original.assert_called_once_with(self.f.spec,self.f.root,token="synthetic")
+                self.assertEqual(51 if partial else 109 if changed else 112,len(cap.completed_phases()))
+                self.assertEqual(js & active_ids if changed else set(),{
+                    products._identity(row) for row in report["invalidatedPhases"]})
+                self.assertEqual(0,report["productBodiesDownloaded"])
+                for phase,receipt in pairs:
+                    if changed and products._identity(phase) in js:
+                        self.assertIsNone(cap.envelope(phase))
+                        self.assertNotIn(phase["objectSha256"],cap.deferred_objects())
+                        self.assertIsNone(cap.phase_plan(products._identity(phase),{},None,[]))
+                    else:
+                        self.assertEqual(receipt,cap.envelope(phase,canonical_json_bytes(receipt))["receipt"])
+                cap.check_consumer(self.consumer)
+            with self.assertRaisesRegex(ValueError,"closed"):
+                cap.completed_phases()
+
 if __name__=='__main__':unittest.main()

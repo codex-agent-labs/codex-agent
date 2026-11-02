@@ -239,3 +239,27 @@ class SdkCheckpointIntakeTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CheckpointHistoryPolicyTest(unittest.TestCase):
+    def test_history_is_bounded_explicit_policy_not_artifact_supplied_authority(self):
+        fixture=SdkCheckpointIntakeTest();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        owner=deepcopy(fixture.policy)
+        digest=sha256_bytes(canonical_json_bytes(owner))
+        value={"schemaVersion":1,"kind":"sdk-checkpoint-history","consumerCommit":"c"*40,
+               "currentOwner":owner,"historicalPolicies":[{"sha256":digest,"policy":owner}]}
+        self.assertEqual(value,completed.validate_checkpoint_history(value))
+        for fault in ("extra","kind","version","consumer","record","digest","duplicate","nested"):
+            changed=deepcopy(value)
+            if fault=="extra":changed["artifactAuthority"]=True
+            elif fault=="kind":changed["kind"]="sdk-checkpoint"
+            elif fault=="version":changed["schemaVersion"]=True
+            elif fault=="consumer":changed["consumerCommit"]="reuse-authority"
+            elif fault=="record":changed["historicalPolicies"][0]["source"]="artifact"
+            elif fault=="digest":changed["historicalPolicies"][0]["sha256"]="sha256:"+"0"*64
+            elif fault=="duplicate":changed["historicalPolicies"]*=2
+            else:changed["historicalPolicies"][0]["policy"]["historicalPolicies"]=[]
+            with self.subTest(fault=fault),self.assertRaises(ValueError):
+                completed.validate_checkpoint_history(changed)
+        self.assertEqual([],fixture.downloads)
+        self.assertEqual([],fixture.urls)

@@ -46,7 +46,8 @@ class SdkCheckpointIssuerTest(unittest.TestCase):
                         bytes=len(self.body), sha256=self.verified['objectSha256'])
         f.bind()
         old = f.previous['extension']; old['spec'].update(
-            originals=[f.originals[0]], contractControls=f.policy['contractControls'], contractFiles=f.policy['contractFiles'])
+            originals=[f.originals[0]], source=deepcopy(f.source),
+            contractControls=f.policy['contractControls'], contractFiles=f.policy['contractFiles'])
         self.old_locator = {'original':'already native-qualified'}
         old['proof']['originals'] = [self.old_locator]
         old_phase = old['spec']['completedPhases'][0]
@@ -110,7 +111,11 @@ class SdkCheckpointIssuerTest(unittest.TestCase):
                 wraps=products._prime_runtime_artifact_metadata))
             stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
             stack.enter_context(patch.object(products,'_validate_plan',return_value={}))
-            stack.enter_context(patch.object(completed,'_inventory_revision',return_value=self.producer['commit']))
+            stack.enter_context(patch.object(completed,'_inventory_revision',
+                side_effect=lambda spec,root,**kw:spec['source']['inventoryCommit']))
+            stack.enter_context(patch.object(native,'_sdk_completed_spec_path',return_value='fixed-native-recipe.json'))
+            stack.enter_context(patch('products.inventory.git_regular_blob_bytes',
+                return_value=canonical_json_bytes(f.previous['extension']['spec'])))
             stack.enter_context(patch.object(completed,'validate_current'))
             stack.enter_context(patch.object(completed,'_base',return_value=f.base))
             stack.enter_context(patch.object(native,'_sdk_parent_frozen_spec',return_value=f.base))
@@ -163,6 +168,18 @@ class SdkCheckpointIssuerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'private authenticated'):
             completed.issue_extension(value['recipe'],self.root/'bad',root=self.root,revision=self.policy['issuerCommit'],
                 frozen={},token='synthetic',_checkpoint={})
+
+    def test_rotated_source_authenticates_bootstrap_at_its_original_inventory_only(self):
+        original_revision = '1' * 40
+        self.fixture.previous['extension']['spec']['source']['inventoryCommit'] = original_revision
+        before = canonical_json_bytes(self.fixture.previous)
+        report, _ = self.issue()
+        self.assertEqual(original_revision, self.native_fetch.call_args.kwargs['revision'])
+        self.assertEqual(original_revision, self.native_fetch.call_args.kwargs['requalification_baseline'])
+        self.assertEqual(self.producer['commit'], self.native_fetch.call_args.kwargs['consumer_revision'])
+        self.assertEqual([445], self.member_reads)
+        self.assertEqual(len(self.body), report['verifiedObjectBytes'])
+        self.assertEqual(before, canonical_json_bytes(self.fixture.previous))
 
     def test_tampered_new_body_never_publishes_checkpoint(self):
         self.tamper=True

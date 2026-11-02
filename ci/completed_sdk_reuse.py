@@ -448,7 +448,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token,
     import reuse_qualification as native
     originals = _spec(spec)
     if _checkpoint is not None:
-        if type(_checkpoint) is not _CheckpointConsumer:
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer):
             raise ValueError("Checkpoint semantics require a private authenticated consumer witness")
         _checkpoint.match(spec, proof, arguments, consumer_revision, token)
     if source_predecessor_context(spec):
@@ -821,8 +821,16 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
             prior = predecessor.validate(root=root, revision=None, frozen=parent_frozen,
                 consumer_revision=source["inventoryCommit"], token=token)
         else:
-            prior = native._fetch_completed_sdk(work / "previous", policy["bootstrap"], root=root, revision=None,
-                frozen=parent_frozen, token=token, consumer_revision=source["inventoryCommit"])
+            # Inheritance authenticates the approved prior subject at its own
+            # signed source, then the new collected controls gate current keys.
+            from products.inventory import git_regular_blob_bytes
+            prior_issuer = policy["bootstrap"]["signerCommit"]
+            prior_spec = load_canonical_json_bytes(git_regular_blob_bytes(root, prior_issuer,
+                native._sdk_completed_spec_path(root, prior_issuer), max_bytes=LIMIT))
+            prior_revision = _inventory_revision(prior_spec, root, token=token)
+            prior = native._fetch_completed_sdk(work / "previous", policy["bootstrap"], root=root,
+                revision=prior_revision, frozen=parent_frozen, token=token,
+                consumer_revision=source["inventoryCommit"], requalification_baseline=prior_revision)
         old = prior.get("extension")
         if (old is None or old["spec"]["parent"] != policy["parent"]
                 or sha256_bytes(canonical_json_bytes(prior["proof"])) != policy["parentProofSha256"]
@@ -1294,13 +1302,14 @@ def fetch_checkpoint_envelope(policy, source, selector, work, *, token):
         return _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation)
 
 
-def _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation):
+def _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation, *, _archive_bytes=None):
     import reuse_qualification as native
     import product_reuse as products
     from datetime import datetime
     from products.inventory import require_integer
     report, captured = native._fetch_qualification_archive(work, **arguments, token=token,
-        _completed_sdk=True, _checkpoint=(policy, source), _fresh_observation=observation)
+        _completed_sdk=True, _checkpoint=(policy, source), _fresh_observation=observation,
+        **({"_archive_bytes": _archive_bytes} if _archive_bytes is not None else {}))
     # No recipe, policy or predecessor identity is accepted from JSON until the
     # entire artifact and this exact subject pass the existing native verifier.
     native._authenticate_native_subject(captured["completion.json"], captured["bundle.jsonl"],
@@ -1852,6 +1861,272 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
         finally:
             witness._active = False
             witness._originals.clear()
+
+
+
+def validate_checkpoint_history(value):
+    """Independent current-owner policy, never authority from an artifact."""
+    import reuse_qualification as native
+    value = load_canonical_json_bytes(canonical_json_bytes(value))
+    require_exact_keys(value, {"schemaVersion", "kind", "consumerCommit", "currentOwner", "historicalPolicies"},
+                       "Protected checkpoint history")
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or value["kind"] != "sdk-checkpoint-history"
+            or len(canonical_json_bytes(value)) > LIMIT):
+        raise ValueError("Unsupported or excessive protected checkpoint history")
+    native._commit(value["consumerCommit"])
+    current = validate_checkpoint_owner(value["currentOwner"])
+    records = value["historicalPolicies"]
+    if type(records) is not list:
+        raise ValueError("Checkpoint history must be an explicit policy list")
+    seen = set()
+    for record in records:
+        require_exact_keys(record, {"sha256", "policy"}, "Approved historical checkpoint owner")
+        policy = validate_checkpoint_owner(record["policy"])
+        digest = require_sha256(record["sha256"], "Historical checkpoint owner digest")
+        if (len(canonical_json_bytes(policy)) > 16 * 1024
+                or digest != sha256_bytes(canonical_json_bytes(policy)) or digest in seen):
+            raise ValueError("Historical checkpoint owner is changed, repeated or excessive")
+        seen.add(digest)
+        # The original owner can have another bootstrap, issuer and publisher.
+        # This consumer still needs the same independently admitted root parent.
+        if any(policy[field] != current[field] for field in ("parent", "parentProofSha256")):
+            raise ValueError("Historical checkpoint changes the independently admitted root parent")
+    return value
+
+
+
+def _current_checkpoint_baseline(spec, root, revision, token):
+    """Current-key discovery hints only; native admission remains mandatory."""
+    import reuse_qualification as native
+    from products.inventory import tree_entries
+    from products.registry import phase_instance_dependencies
+    from products.selection import phase_inventory_paths
+    _spec(spec)
+    original = _inventory_revision(spec, root, token=token)
+    before, after = (dict(tree_entries(root, commit)) for commit in (original, revision))
+    changed = native._changed_inventory_paths(before, after)
+    invalid = {instance for instance in PHASE_INSTANCE_IDS if phase_inventory_paths(changed, instance)}
+    while True:
+        extra = {instance for instance in PHASE_INSTANCE_IDS
+                 if any(parent in invalid for parent in phase_instance_dependencies(instance))}
+        if extra <= invalid:
+            break
+        invalid.update(extra)
+    return {instance: {field: row[field] for field in IDENTITY + OBJECT}
+            for instance, row in _records(spec["completedPhases"], "Baseline SDK tuples").items()
+            if instance not in invalid}
+
+
+def discover_historical_checkpoint(history, current_policy, *, root, consumer, token):
+    """Return untrusted locators plus one held ZIP; this never grants admission.
+
+    The independent baseline determines which exact tuples must be preserved.
+    The caller still enters historical_checkpoint_consumer and the normal
+    current-key native factory, including all original-owner/job/window checks.
+    """
+    import io
+    import re
+    import stat
+    import tempfile
+    import zipfile
+    import product_reuse as products
+    import reuse_qualification as native
+    from products.inventory import git_regular_blob_bytes, read_regular_file_bytes, require_integer
+    history = validate_checkpoint_history(history)
+    native.validate_completed_reuse_policy(current_policy)
+    require_exact_keys(consumer, {"kind", "producer"}, "Historical discovery consumer")
+    producer = validate_producer(consumer["producer"])
+    if (consumer["kind"] != "ci" or producer["repository"] != native.REPOSITORY
+            or producer["event"] != "pull_request" or producer["pullRequest"] != 31
+            or producer["workflowPath"] != ".github/workflows/ci.yml"
+            or history["consumerCommit"] != current_policy["consumerCommit"]
+            or history["currentOwner"]["bootstrap"] != current_policy.get("sdkCompletion")):
+        raise ValueError("Historical discovery differs from its approved current source")
+    signer = current_policy["sdkCompletion"]["signerCommit"]
+    native._ensure_native_issuer_commit(root, signer, token)
+    baseline = load_canonical_json_bytes(git_regular_blob_bytes(root, signer,
+        native._sdk_completed_spec_path(root, signer), max_bytes=LIMIT))
+    retained = _current_checkpoint_baseline(baseline, root, producer["commit"], token)
+    # The schema1 iOS parent is composed separately by the existing native reader.
+    if len(retained) == sum(instance.product == "sdk" for instance in PHASE_INSTANCE_IDS) - 1:
+        return None, None
+    policies = {row["sha256"]: row["policy"] for row in history["historicalPolicies"]}
+    policies[sha256_bytes(canonical_json_bytes(history["currentOwner"]))] = history["currentOwner"]
+    api = f"https://api.github.com/repos/{native.REPOSITORY}/actions/artifacts"
+    artifacts = products._catalog_artifacts(api, token)
+    candidates = []
+    for artifact in artifacts:
+        name = artifact.get("name") if type(artifact) is dict else None
+        match = re.fullmatch(r"sdk-completed-checkpoint-([0-9]+)-([0-9]+)-([0-9]+)-state-([0-9]+)", name or "")
+        if match is None or artifact.get("expired") is not False:
+            continue
+        wave, run, attempt, state = map(int, match.groups())
+        if ((run, attempt) >= (producer["runId"], producer["runAttempt"])
+                or wave not in {4, 6, 7, 8}):
+            continue
+        artifact_id = require_integer(artifact.get("id"), "Discovered checkpoint artifact", 1)
+        digest = require_sha256(artifact.get("digest"), "Discovered checkpoint digest")
+        size = require_integer(artifact.get("size_in_bytes"), "Discovered checkpoint bytes", 1)
+        if (size > 2 * LIMIT or artifact.get("archive_download_url") != f"{api}/{artifact_id}/zip"
+                or type(artifact.get("workflow_run")) is not dict
+                or artifact["workflow_run"].get("id") != run):
+            raise ValueError("Discovered checkpoint transport is malformed")
+        candidates.append(((run, attempt, state, artifact_id), artifact, digest, size))
+    for _, artifact, digest, size in sorted(candidates, reverse=True):
+        with tempfile.TemporaryDirectory(prefix="sdk-checkpoint-discovery-") as temporary:
+            archive_path = Path(temporary).resolve(strict=True) / "checkpoint.zip"
+            products._download_contract_ci_upload_bytes(artifact, token, archive_path, 2 * LIMIT, digest, size)
+            raw = read_regular_file_bytes(archive_path, max_bytes=2 * LIMIT, reject_symlink_parents=True)
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            members = archive.infolist()
+            if (len(members) != 2 or {row.filename for row in members} != {"completion.json", "bundle.jsonl"}
+                    or sum(row.file_size for row in members) > 2 * LIMIT
+                    or any(row.file_size > LIMIT or stat.S_IFMT(row.external_attr >> 16) not in (0, stat.S_IFREG)
+                           for row in members)):
+                raise ValueError("Discovered checkpoint is not bounded native evidence")
+            subject = archive.read("completion.json")
+        envelope = load_canonical_json_bytes(subject)
+        owner_digest = envelope.get("ownerPolicySha256") if type(envelope) is dict else None
+        if owner_digest not in policies:
+            continue  # Discovery cannot add an owner to independent protected policy.
+        owner = policies[owner_digest]
+        source = _collector_control_source(envelope["sourceCheckpoint"]["source"])
+        output = {"kind": "sdk-checkpoint", "source": source, "subjectSha256": sha256_bytes(subject),
+            "native": {"artifactId": artifact["id"], "artifactSha256": digest,
+                "runId": source["producer"]["runId"], "runAttempt": source["producer"]["runAttempt"],
+                "signerCommit": owner["issuerCommit"], "sourceCommit": source["producer"]["commit"]}}
+        _, identity = checkpoint_selection(owner, output)
+        if identity["artifactName"] != artifact["name"]:
+            raise ValueError("Discovered checkpoint name differs from its exact source")
+        if envelope["recipe"]["source"] != source:
+            raise ValueError("Discovered checkpoint recipe changes its original source")
+        # Git/source metadata is only an untrusted selection hint here. A stale
+        # full proof must not hide an older proof with genuinely current keys.
+        # The native factory still authenticates all selected bytes and performs
+        # its own typed current-input projection before exporting any capability.
+        eligible = _current_checkpoint_baseline(envelope["recipe"], root, producer["commit"], token)
+        if not set(retained) <= set(eligible):
+            continue
+        if any(eligible[key] != row for key, row in retained.items()):
+            raise ValueError("Discovered checkpoint conflicts with current baseline tuples")
+        if eligible == retained:
+            continue
+        return {"ownerPolicySha256": owner_digest, "checkpoint": output}, raw
+    return None, None
+
+
+class _HistoricalCheckpointConsumer(_CheckpointConsumer):
+    """Original native custody and a distinct, live current-consumer observation."""
+    __slots__ = ("_current_observation",)
+
+    def __init__(self, consumer, custody, observation, current_observation, token, bootstrap, seal):
+        if seal is not _CHECKPOINT_CONSUMER:
+            raise ValueError("Historical checkpoint requires private native/current authentication")
+        super().__init__(consumer, custody, observation, token, (), seal, bootstrap=bootstrap)
+        self._current_observation = current_observation
+
+    def check(self, *, consumer=None, token=None):
+        super().check(consumer=consumer, token=token)
+        if self._current_observation._raw is None:
+            raise ValueError("Historical checkpoint current observation is closed")
+
+    def inherit(self, spec, prior):
+        raise ValueError("Historical checkpoint issuance requires its separate current-source admission")
+
+    def validate(self, *, root, revision, frozen, consumer_revision, token, requalification_baseline=None):
+        self.check(token=token)
+        envelope = load_canonical_json_bytes(self._subject)
+        # The signed source authenticates historical semantics. The native
+        # caller must restrict this proof to current keys before export.
+        original_revision = _inventory_revision(envelope["recipe"], root, token=token)
+        return super().validate(root=root, revision=original_revision, frozen=frozen,
+            consumer_revision=consumer_revision, token=token,
+            requalification_baseline=original_revision)
+
+
+@contextmanager
+def historical_checkpoint_consumer(history, selection, work, *, root, current_policy, consumer, job, token,
+                                   _archive_bytes=None):
+    """An approved old owner and current source remain independent authorities.
+
+    This factory grants only a private native witness. fetch_completed_frozen still
+    authenticates its current approved verifier, parent and exact current inputs
+    before any CompletedFrozenReuse capability can exist.
+    """
+    import product_reuse as products
+    import reuse_qualification as native
+    from datetime import datetime
+    from products.inventory import require_integer
+    history = validate_checkpoint_history(history)
+    selection, current_policy, consumer = (load_canonical_json_bytes(canonical_json_bytes(value))
+                                          for value in (selection, current_policy, consumer))
+    native.validate_completed_reuse_policy(current_policy)
+    current_owner = history["currentOwner"]
+    if (history["consumerCommit"] != current_policy["consumerCommit"]
+            or current_owner["bootstrap"] != current_policy.get("sdkCompletion")):
+        raise ValueError("Checkpoint history differs from the current approved caller policy")
+    require_exact_keys(selection, {"ownerPolicySha256", "checkpoint"}, "Historical checkpoint selector")
+    digest = require_sha256(selection["ownerPolicySha256"], "Selected original owner digest")
+    policies = {row["sha256"]: row["policy"] for row in history["historicalPolicies"]}
+    policies[sha256_bytes(canonical_json_bytes(current_owner))] = current_owner
+    if digest not in policies:
+        raise ValueError("Historical checkpoint owner is not independently approved")
+    original_owner = policies[digest]
+    output = selection["checkpoint"]
+    selected = checkpoint_selection(original_owner, output)
+    if selected is None:
+        raise ValueError("Historical selection must name a real issued checkpoint")
+    arguments, identity = selected
+    require_exact_keys(consumer, {"kind", "producer"}, "Historical checkpoint current consumer")
+    producer = validate_producer(consumer["producer"])
+    source = output["source"]
+    if (consumer["kind"] != "ci" or job not in {"plan", "product-resume"}
+            or any(producer[field] != source["producer"][field] for field in
+                   ("repository", "event", "pullRequest", "workflowPath"))
+            or (source["producer"]["runId"], source["producer"]["runAttempt"])
+               >= (producer["runId"], producer["runAttempt"])):
+        raise ValueError("Historical checkpoint requires its distinct later registered CI consumer")
+    with products._fresh_ci_observation(source["producer"], token) as original_observation:
+        custody = _fetch_checkpoint_envelope(original_owner, source, arguments, identity, work,
+            token, original_observation,
+            **({"_archive_bytes": _archive_bytes} if _archive_bytes is not None else {}))
+        if custody["subjectSha256"] != output["subjectSha256"]:
+            raise ValueError("Historical checkpoint changes its exact native subject")
+        with products._fresh_ci_observation(producer, token) as current_observation:
+            current = products._fresh_ci_observation_values(current_observation, producer, token)
+            run = current["run"]
+            if (run.get("id") != producer["runId"] or run.get("run_attempt") != producer["runAttempt"]
+                    or run.get("event") != producer["event"] or run.get("path") != producer["workflowPath"]
+                    or (run.get("status"), run.get("conclusion")) != ("in_progress", None)
+                    or any(type(run.get(field)) is not dict
+                           or run[field].get("full_name") != producer["repository"]
+                           or run[field].get("fork") is not False
+                           for field in ("repository", "head_repository"))):
+                raise ValueError("Historical checkpoint current run differs from its exact trusted producer")
+            products._require_ci_workflow_reference(current["run"],
+                f"{native.REPOSITORY}/.github/workflows/product-validation.yml@"
+                + current_owner["collectorWorkflowSha"], current_owner["collectorWorkflowSha"])
+            matches = products._matching_ci_jobs(current["jobs"], "product-validation / " + job)
+            if len(matches) != 1:
+                raise ValueError("Historical checkpoint current job is missing or ambiguous")
+            current_job, issuer = matches[0], custody["transport"]["checkpointIssuerJob"]
+            require_integer(current_job.get("id"), "Historical checkpoint current job ID", 1)
+            if (current_job["id"] in (source["jobId"], issuer["id"])
+                    or current_job.get("run_id") != producer["runId"]
+                    or current_job.get("head_sha") != current["run"]["head_sha"]
+                    or (current_job.get("status"), current_job.get("conclusion")) != ("in_progress", None)
+                    or datetime.fromisoformat(current_job["started_at"].replace("Z", "+00:00"))
+                       < datetime.fromisoformat(issuer["completed_at"].replace("Z", "+00:00"))):
+                raise ValueError("Historical checkpoint is not bound to its actual later current job")
+            witness = _HistoricalCheckpointConsumer(consumer, custody, original_observation,
+                current_observation, token, current_policy["sdkCompletion"], _CHECKPOINT_CONSUMER)
+            try:
+                yield witness
+            finally:
+                witness._active = False
+                witness._originals.clear()
+
 
 
 def _collector_control_source(source):
