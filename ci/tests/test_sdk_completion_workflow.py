@@ -676,20 +676,25 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
 
     def test_acceptance_only_disables_product_jobs_and_keeps_real_control_checks(self):
         caller = (ROOT / '.github/workflows/ci.yml').read_text()
-        for setting in ('runtimeRecoveryOnly: false', 'sdkRecoveryOnly: false',
-                        "fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')) }}"):
+        for setting in ('runtimeRecoveryOnly: false',
+                        "sdkRecoveryOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}",
+                        "fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') || contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery'))) }}"):
             self.assertIn(setting, caller)
         allowed = {'dispatch-authorization', 'workflow-lint', 'plan', 'contract-validation',
                    'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(102, len(jobs))
+        self.assertEqual(106, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
             if name not in allowed:
+                prefix = ('always() && !cancelled() && '
+                          if name in {'sdk-checkpoint-4', 'sdk-checkpoint-6', 'sdk-checkpoint-7', 'sdk-checkpoint-8'}
+                          else '')
                 self.assertRegex(self.job(name),
-                    r'(?m)^    if: >-\n      !inputs.fullReuseAcceptanceOnly &&')
+                    r'(?m)^    if: >-\n      ' + re.escape(prefix) + r'!inputs.fullReuseAcceptanceOnly &&')
                 expression = re.search(r'(?ms)^    if: >-\n(.*?)(?=^    \S)', self.job(name))[1].strip()
+                expression = expression.removeprefix(prefix)
                 if name != 'sdk-completion':
                     self.assertTrue(expression.startswith('!inputs.fullReuseAcceptanceOnly && ('))
                     self.assertTrue(expression.endswith(')'))

@@ -56,7 +56,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
 
     def test_sdk_selector_pin_matches_reviewed_candidate_control_bytes(self):
         root = HELPER.parents[3]
-        self.assertEqual("ace0becb637d7fbd6e63df621814dff72ab2a6cf", recovery.SDK_SELECTION_REVISION)
+        self.assertEqual("8324aba46be110b6753c3a9c6bc745c821dbb772", recovery.SDK_SELECTION_REVISION)
         self.assertEqual(recovery._blob(root, recovery.SDK_SELECTION_REVISION, recovery.SDK_SELECTOR),
                          (root / recovery.SDK_SELECTOR).read_bytes())
 
@@ -111,9 +111,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
     def test_sdk_caller_reuses_the_current_signed_runtime_without_requalification(self):
         root = HELPER.parents[3]
         caller = (root / recovery.CI).read_text()
-        self.assertIn('runtimeRecoveryOnly: false\n      sdkRecoveryOnly: false', caller)
+        self.assertIn('runtimeRecoveryOnly: false\n' + recovery.SDK_RECOVERY_CALLER.decode(), caller)
         self.assertIn("fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && "
-                      "contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')) }}", caller)
+                      "(contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') || "
+                      "contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery'))) }}", caller)
         self.assertIn('runtimeAggregateRequalification: false', caller)
         self.assertNotIn('runtimeNativeHandoffRecovery:', caller)
         locator, = re.findall(r"^      runtimeAggregateHandoffRecovery: '(.*)'$", caller, re.MULTILINE)
@@ -136,8 +137,10 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         jobs = re.findall(r'^  (sdk-[a-z0-9-]+):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
                           source, re.MULTILINE | re.DOTALL)
         # Native validation election now runs in sdk-ios-packages.
-        self.assertEqual(65, len(jobs))
-        self.assertTrue({"sdk-checkpoint-9", "sdk-checkpoint-10"} <= {name for name, _ in jobs})
+        self.assertEqual(69, len(jobs))
+        self.assertTrue({"sdk-checkpoint-4", "sdk-checkpoint-6", "sdk-checkpoint-7",
+                         "sdk-checkpoint-8", "sdk-checkpoint-9", "sdk-checkpoint-10"}
+                        <= {name for name, _ in jobs})
         for name, job in jobs:
             with self.subTest(job=name):
                 condition = re.search(r'^    if: (.*?)(?=^    [a-z][a-z-]*:)',
