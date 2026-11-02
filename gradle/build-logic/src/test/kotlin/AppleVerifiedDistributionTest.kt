@@ -6,8 +6,9 @@ import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
+import java.util.zip.ZipFile
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -36,8 +37,26 @@ class AppleVerifiedDistributionTest {
     }
 
     @Test
+    fun `decoration compatibility accepts canonical and reversed declaration order`() = fixture().use {
+        it.writeCompatibility("{\"schemaVersion\":1,\"sdkVersion\":\"0.8.0\"}\n".toByteArray())
+        val artifacts = it.canonicalDecorationArtifacts("0.8.0")
+        val originalBytes = artifacts.mapValues { (_, file) -> file.readBytes().toList() }
+        val declarations = ZipFile(artifacts.getValue("CodexAgent-0.8.0.xcframework.zip")).use { archive ->
+            archive.entries().asSequence().filterNot { entry -> entry.isDirectory }
+                .map { entry -> entry.name }.toList()
+        }
+        assertEquals(swiftCompatibilityPaths.sorted(), declarations)
+        assertFalse(declarations == swiftCompatibilityPaths.toList(), "Fixture must exercise the different canonical order")
+        verifyAppleSdkCompatibility(artifacts, "0.8.0", it.compatibilitySha256)
+        assertEquals(originalBytes, artifacts.mapValues { (_, file) -> file.readBytes().toList() })
+
+        val reversed = it.decorationArtifacts("0.8.0", swiftPaths = swiftCompatibilityPaths.reversedArray())
+        verifyAppleSdkCompatibility(reversed, "0.8.0", it.compatibilitySha256)
+    }
+
+    @Test
     fun `decoration compatibility rejects stale version digest and declaration placement`() {
-        listOf("version", "digest", "source-path", "missing-simulator", "extra-declaration").forEach { failure ->
+        listOf("version", "digest", "source-path", "missing-simulator", "extra-declaration", "duplicate-declaration").forEach { failure ->
             fixture().use { current ->
                 val declaredVersion = if (failure == "version") "0.2.0" else "0.8.0"
                 current.writeCompatibility("{\"schemaVersion\":1,\"sdkVersion\":\"$declaredVersion\"}\n".toByteArray())
@@ -46,6 +65,7 @@ class AppleVerifiedDistributionTest {
                 val swiftPaths = when (failure) {
                     "missing-simulator" -> arrayOf(swiftCompatibilityPaths.first())
                     "extra-declaration" -> swiftCompatibilityPaths + "extra/sdk-compatibility.json"
+                    "duplicate-declaration" -> swiftCompatibilityPaths + swiftCompatibilityPaths.first()
                     else -> swiftCompatibilityPaths
                 }
                 val artifacts = current.decorationArtifacts("0.8.0", sourcePaths, swiftPaths)
@@ -244,6 +264,21 @@ private class VerifiedDistributionFixture : AutoCloseable {
 
     fun verify() = verifyAppleVerifiedDistribution(distribution, nativeEvidence, identity)
 
+    fun canonicalDecorationArtifacts(version: String): Map<String, File> {
+        val directory = root.canonicalFile.resolve("canonical-decoration").apply { mkdirs() }
+        val compatibility = root.canonicalFile.resolve("canonical-compatibility.json").apply {
+            writeBytes(sdkCompatibility)
+        }
+        return linkedMapOf(
+            "CodexAgentPackage-$version.zip" to arrayOf("META-INF/codex-agent/sdk-compatibility.json"),
+            "CodexAgent-$version.xcframework.zip" to swiftCompatibilityPaths,
+        ).mapValues { (name, paths) ->
+            directory.resolve(name).also { archive ->
+                writeAppleSdkZip(paths.associateWith { compatibility }, archive)
+            }
+        }
+    }
+
     fun decorationArtifacts(
         version: String,
         sourcePaths: Array<String> = arrayOf("META-INF/codex-agent/sdk-compatibility.json"),
@@ -274,11 +309,11 @@ private class VerifiedDistributionFixture : AutoCloseable {
 
     private fun File.zip(vararg paths: String, payload: ByteArray = sdkCompatibility) {
         outputStream().use { output ->
-            ZipOutputStream(output).use { archive ->
+            ZipArchiveOutputStream(output).use { archive ->
                 paths.forEach { path ->
-                    archive.putNextEntry(ZipEntry(path))
+                    archive.putArchiveEntry(ZipArchiveEntry(path))
                     archive.write(payload)
-                    archive.closeEntry()
+                    archive.closeArchiveEntry()
                 }
             }
         }

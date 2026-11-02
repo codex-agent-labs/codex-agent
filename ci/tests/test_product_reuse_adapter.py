@@ -787,6 +787,88 @@ class ContractOriginalCiPublicationTest(unittest.TestCase):
 
 
 class ProductReuseAdapterTest(unittest.TestCase):
+    def test_discovery_listing_scope_shares_inflight_hints_and_expires(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        url = "https://api.github.test/repos/owner/repo/actions/artifacts"
+        rows = [{"id": 1}]
+        entered, release, follower = Event(), Event(), Event()
+
+        def acquire(*args):
+            entered.set()
+            self.assertTrue(release.wait(timeout=5))
+            return rows
+
+        def following(listing):
+            follower.set()
+            return listing(url, "synthetic")
+
+        with mock.patch.object(product_reuse, "_catalog_artifacts", side_effect=acquire) as scan:
+            with product_reuse._artifact_listing_scope() as listing, ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(listing, url, "synthetic")
+                self.assertTrue(entered.wait(timeout=5))
+                second = pool.submit(following, listing)
+                self.assertTrue(follower.wait(timeout=5))
+                release.set()
+                left, right = first.result(timeout=5), second.result(timeout=5)
+                self.assertEqual(rows, left)
+                self.assertEqual(rows, right)
+                self.assertIsNot(left, right)
+                self.assertIs(left[0], right[0])  # Read-only hints; no deep map copy.
+                left.clear()
+                self.assertEqual(rows, listing(url, "synthetic"))
+                self.assertEqual(1, scan.call_count)
+                listing(url + "/different", "synthetic")
+                listing(url, "different-synthetic")
+                self.assertEqual(3, scan.call_count)
+            with self.assertRaisesRegex(ValueError, "scope is closed"):
+                listing(url, "synthetic")
+            with product_reuse._artifact_listing_scope() as next_listing:
+                self.assertEqual(rows, next_listing(url, "synthetic"))
+            self.assertEqual(4, scan.call_count)
+
+        error = ValueError("incomplete listing")
+        with mock.patch.object(product_reuse, "_catalog_artifacts", side_effect=error) as scan:
+            with product_reuse._artifact_listing_scope() as listing:
+                for _ in range(2):
+                    with self.assertRaises(ValueError) as failure:
+                        listing(url, "synthetic")
+                    self.assertIs(error, failure.exception)
+                self.assertEqual(1, scan.call_count)
+
+    def test_discovery_cli_shares_hints_until_native_context_exits(self):
+        from contextlib import contextmanager
+        import reuse_qualification as native
+        url = "https://api.github.test/repos/owner/repo/actions/artifacts"
+        held, events = [], []
+
+        @contextmanager
+        def admission(arguments, **kwargs):
+            self.assertTrue(kwargs["defer"])
+            listing = kwargs["_artifact_listing"]
+            held.append(listing)
+            listing(url, "synthetic")
+            yield {}
+            listing(url, "synthetic")
+            events.append("native-exit")
+
+        def discover(*args, **kwargs):
+            self.assertIs(held[0], kwargs["_artifact_listing"])
+            kwargs["_artifact_listing"](url, "synthetic")
+            events.append("discovery")
+
+        with mock.patch.object(product_reuse, "_catalog_artifacts", return_value=[]) as scan, \
+                mock.patch.object(native, "completed_frozen_options", side_effect=admission), \
+                mock.patch.object(product_reuse, "discover", side_effect=discover):
+            self.assertEqual(0, product_reuse.main([
+                "discover", "--plan", "plan.json", "--destination", "discovery",
+                "--github-output", "output", "--sdk-historical-checkpoint", "auto",
+            ]))
+            self.assertEqual(1, scan.call_count)
+        self.assertEqual(["discovery", "native-exit"], events)
+        with self.assertRaisesRegex(ValueError, "scope is closed"):
+            held[0](url, "synthetic")
+
     def test_catalog_accepts_object_bound_and_rejects_oversized_member_before_extraction(self) -> None:
         limits = product_reuse._CATALOG_ZIP_LIMITS
         self.assertEqual(product_reuse.OBJECT_ZIP_LIMITS["max_archive_bytes"],
@@ -1395,6 +1477,20 @@ class ProductReuseAdapterTest(unittest.TestCase):
                     "id": 7, "run_attempt": 1, "head_sha": COMMIT,
                 }), \
                 mock.patch.object(product_reuse, "_materialize_catalog", side_effect=materialize) as downloaded:
+            with product_reuse._artifact_listing_scope() as listing:
+                listing("https://api.github.test/repos/codex-agent-labs/codex-agent/actions/artifacts", "token")
+                catalogs = product_reuse._discover_catalogs(
+                    impact_plan(changed=["known.kt"]), self.root / "catalogs", trust,
+                    {"GITHUB_TOKEN": "token", "GITHUB_API_URL": "https://api.github.test",
+                     "GITHUB_REPOSITORY": "codex-agent-labs/codex-agent"},
+                    {"contract": "0.2.0", "runtime-release": "0.2.0",
+                     "runtime-compatibility": "0.2.0", "sdk": "0.2.0"},
+                    _artifact_listing=listing,
+                )
+            self.assertEqual(1, listed.call_count)
+            listed.reset_mock()
+            headers.reset_mock()
+            downloaded.reset_mock()
             catalogs = product_reuse._discover_catalogs(
                 impact_plan(changed=["known.kt"]), self.root / "catalogs", trust,
                 {

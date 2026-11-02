@@ -135,6 +135,36 @@ class GitHubAppAuthTest(unittest.TestCase):
         self.assertIn('PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}', caller)
         self.assertNotIn('secrets: inherit', caller)
 
+    def test_every_checkpoint_call_explicitly_forwards_environment_read_secret(self):
+        import re
+        root = Path(__file__).resolve().parents[2]
+        workflows = root / '.github/workflows'
+        checkpoint_edges = set()
+        named = 'PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}'
+        for path in workflows.glob('*.yml'):
+            for match in re.finditer(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     path.read_text(), re.MULTILINE | re.DOTALL):
+                job, body = match.groups()
+                if ('uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority' in body
+                        and re.search(r'^      sdk-checkpoint:', body, re.MULTILINE)):
+                    checkpoint_edges.add((path.name, job))
+                    self.assertIn(named, body, (path.name, job))
+                    self.assertNotIn('secrets: inherit', body)
+                    self.assertIn('      authority_read_token:', body)
+        self.assertEqual({('product-validation.yml', f'sdk-checkpoint-{wave}')
+                          for wave in (4, 6, 7, 8, 9, 10)} |
+                         {('sdk-core-binary-validation.yml', 'sdk-checkpoint-11')}, checkpoint_edges)
+        parent = (workflows / 'product-validation.yml').read_text().split(
+            '  sdk-core-binary-wave:\n', 1)[1].split('\n  sdk-core-package-plan:', 1)[0]
+        self.assertIn(named, parent)
+        self.assertNotIn('secrets: inherit', parent)
+        child = (workflows / 'sdk-core-binary-validation.yml').read_text().split('\njobs:', 1)[0]
+        self.assertIn('      PRODUCT_READ_APP_PRIVATE_KEY:\n', child)
+        issuer = (workflows / 'reuse-qualification.yml').read_text().split(
+            '  completed-sdk-checkpoint:\n', 1)[1]
+        self.assertIn('environment: product-read', issuer)
+        self.assertIn('READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}', issuer)
+
     def test_transport_reuses_existing_digest_and_redirect_checks(self):
         artifact = {'archive_download_url': self.url}
         with patch.object(auth, 'token_for', return_value='app'), \

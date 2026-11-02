@@ -1964,7 +1964,8 @@ def _current_checkpoint_baseline(spec, root, revision, token):
             if instance not in invalid}
 
 
-def discover_historical_checkpoint(history, current_policy, *, root, consumer, token, _issuer_source=None):
+def discover_historical_checkpoint(history, current_policy, *, root, consumer, token, _issuer_source=None,
+                                   _artifact_listing=None):
     """Return untrusted locators plus one held ZIP; this never grants admission.
 
     The independent baseline determines which exact tuples must be preserved.
@@ -2009,7 +2010,8 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
     policies = {row["sha256"]: row["policy"] for row in history["historicalPolicies"]}
     policies[sha256_bytes(canonical_json_bytes(history["currentOwner"]))] = history["currentOwner"]
     api = f"https://api.github.com/repos/{native.REPOSITORY}/actions/artifacts"
-    artifacts = products._catalog_artifacts(api, token)
+    listing = products._catalog_artifacts if _artifact_listing is None else _artifact_listing
+    artifacts = listing(api, token)
     candidates = []
     for artifact in artifacts:
         name = artifact.get("name") if type(artifact) is dict else None

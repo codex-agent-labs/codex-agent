@@ -182,7 +182,7 @@ internal fun verifyAppleSdkCompatibility(
         ZipFile(archiveFile).use { archive ->
             val entries = archive.entries().asSequence().filterNot { it.isDirectory }.toList()
             val declarations = entries.filter { it.name.substringAfterLast('/') == "sdk-compatibility.json" }
-            check(declarations.map { it.name } == expectedPaths) {
+            check(declarations.map { it.name }.sorted() == expectedPaths.sorted()) {
                 "Apple SDK compatibility path inventory mismatch: ${archiveFile.name}"
             }
             declarations.map { entry -> archive.getInputStream(entry).use { it.readBytes() } }

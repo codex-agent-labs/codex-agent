@@ -1771,7 +1771,7 @@ def validate_completed_reuse_policy(policy):
 
 
 @contextmanager
-def completed_frozen_options(arguments, *, defer=False):
+def completed_frozen_options(arguments, *, defer=False, _artifact_listing=None):
     """Authenticate explicit CLI policy once for this invocation, without ambient fallback."""
     import os
     values = vars(arguments) if not isinstance(arguments, dict) else arguments
@@ -1877,7 +1877,8 @@ def completed_frozen_options(arguments, *, defer=False):
                 selection, archive_bytes = historical_output, None
                 if selection == "auto":
                     selection, archive_bytes = discover_historical_checkpoint(history, policy, root=root,
-                        consumer=products._consumer(plan, os.environ), token=os.environ.get("GITHUB_TOKEN", ""))
+                        consumer=products._consumer(plan, os.environ), token=os.environ.get("GITHUB_TOKEN", ""),
+                        **({"_artifact_listing": _artifact_listing} if _artifact_listing is not None else {}))
                 if selection is not None:
                     witness = checkpoint_scope.enter_context(historical_checkpoint_consumer(
                         history, selection, Path(temporary).resolve() / "checkpoint", root=root,

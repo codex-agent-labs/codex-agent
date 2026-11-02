@@ -4197,6 +4197,7 @@ jobs:
       sdk-checkpoint: ${{ needs.sdk-collect-4.outputs.checkpoint_inputs || '{}' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-native-packages:
     if: >-
@@ -4670,6 +4671,7 @@ jobs:
       sdk-checkpoint: ${{ needs.sdk-collect-6.outputs.checkpoint_inputs || '{}' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-javascript-metadata-result:
     if: >-
@@ -4945,6 +4947,7 @@ jobs:
       sdk-checkpoint: ${{ needs.sdk-collect-7.outputs.checkpoint_inputs || '{}' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-native-validation-result:
     if: >-
@@ -5174,6 +5177,7 @@ jobs:
       sdk-checkpoint: ${{ needs.sdk-collect-8.outputs.checkpoint_inputs || '{}' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-native-result:
     if: >-
@@ -5661,6 +5665,7 @@ jobs:
       sdk-checkpoint: ${{ needs.sdk-collect-9.outputs.checkpoint_inputs || '{}' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-ios-metadata:
     name: sdk-sdk-ios-metadata-${{ matrix.target }}
@@ -5827,6 +5832,7 @@ jobs:
       sdk-preceding-checkpoint: ${{ needs.sdk-checkpoint-9.outputs.checkpoint }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-ios-metadata-result:
     needs: [plan, sdk-ios-validation-result, sdk-ios-metadata-plan, sdk-ios-metadata, sdk-collect-10]
@@ -5892,6 +5898,7 @@ jobs:
       sdkCheckpoints: ${{ inputs.sdkCheckpoints }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
 
   sdk-core-package-plan:

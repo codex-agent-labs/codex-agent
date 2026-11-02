@@ -182,16 +182,55 @@ class SdkIosPackageActionTest(unittest.TestCase):
             source = self.python_script(block)
             compile(source, "ios-package-action", "exec")
 
-    def test_failed_execution_retains_attempt_unique_immutable_complete_worker_tree(self):
+    def test_upload_keeps_complete_success_and_scopes_failed_attempt_evidence(self):
         upload = self.action.split("uses: actions/upload-artifact@", 1)[1]
         self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
         self.assertIn(
             "name: codex-agent-sdk-worker-sdk-ios-package-ios-${{ steps.identity.outputs.key_hex }}-"
             "${{ inputs.tree }}-attempt-${{ github.run_attempt }}", upload,
         )
-        for value in ("path: build/sdk-ios-worker", "if-no-files-found: warn", "overwrite: false",
+        for value in ("if-no-files-found: warn", "overwrite: false",
                       "include-hidden-files: true", "compression-level: 0"):
             self.assertIn(value, upload)
+
+        match = re.search(r"(?m)^        path: (.*)$", upload)
+        self.assertIsNotNone(match)
+        paths = (re.findall(r"(?m)^          (.+)$", upload[match.end():])
+                 if match[1] == "|" else [match[1]])
+        conditional = "${{ job.status == 'success' && 'build/sdk-ios-worker' || '' }}"
+        base = "build/sdk-ios-worker"
+        retained = {
+            "shard/phase-object.json", "shard/phase-receipt.json", "shard/v1/object.zip",
+            "worker/execution.json", "worker/package.log", "worker/gradle.log",
+            "package-execution/input-binding.json",
+            "package-execution/events/00-toolchain-before-xcode/stdout",
+            "package-execution/events/06-assemble-xcframework/execution.json",
+            "apple-package-execution.json", "original-plan/impact-plan.json",
+            "recovered-production/production-origin/transport.json",
+            "recovered-production/production-origin/worker/package.log",
+            "unverified-package/phase-object.json", "unverified-package/phase-receipt.json",
+            "unverified-package/v1/object.zip",
+        }
+        files = retained | {
+            "inputs/producer.json", "inputs/phase-plan.json",
+            "inputs/sdk-sdk-ios-binary-ios/stage/outputs/apple-binary/original.a",
+            "inputs/contract-contract-metadata-common/phase-receipt.json",
+            "worker/not-a-declared-diagnostic.tmp", "future-success-control.json",
+        }
+        for status in ("success", "failure", "cancelled"):
+            with self.subTest(status=status):
+                selected_paths = [base if rule == conditional else rule for rule in paths
+                                  if rule != conditional or status == "success"]
+                selected = {name for name in files if any(
+                    base + "/" + name == rule or (base + "/" + name).startswith(rule + "/")
+                    for rule in selected_paths)}
+                self.assertEqual(files if status == "success" else retained, selected)
+                # Multiple literal paths keep the same artifact root/prefix in both branches.
+                self.assertEqual(base, os.path.commonpath(selected_paths))
+                self.assertIn("unverified-package/v1/object.zip", selected)
+                self.assertIn("package-execution/events/00-toolchain-before-xcode/stdout", selected)
+        self.assertEqual(1, paths.count(conditional))
+        self.assertNotIn("build/sdk-ios-worker/inputs", paths)
 
 
 if __name__ == "__main__":

@@ -538,6 +538,7 @@ class HistoricalCheckpointConsumerTest(unittest.TestCase):
             "GITHUB_RUN_ID":str(self.producer["runId"]), "GITHUB_RUN_ATTEMPT":str(self.producer["runAttempt"]),
             "GITHUB_JOB":"plan", "GITHUB_TOKEN":"synthetic"}
         held = []
+        listing = lambda url, token: []
         class Live:
             def check_consumer(inner, consumer):
                 held[-1].check(consumer=consumer)
@@ -553,9 +554,11 @@ class HistoricalCheckpointConsumerTest(unittest.TestCase):
                 patch.object(completed,"discover_historical_checkpoint",return_value=(self.selection,f.raw)) as discovery, \
                 patch.object(native,"fetch_completed_frozen",side_effect=admit) as gate:
             with native.completed_frozen_options({"plan":plan,"repository_root":f.root,
-                    "completed_frozen_policy":policy,"sdk_historical_checkpoint":"auto"}) as options:
+                    "completed_frozen_policy":policy,"sdk_historical_checkpoint":"auto"},
+                    _artifact_listing=listing) as options:
                 options["completed_frozen"].check_consumer(self.consumer)
                 self.assertEqual(1, discovery.call_count)
+                self.assertIs(listing, discovery.call_args.kwargs["_artifact_listing"])
                 self.assertEqual(1, gate.call_count)
                 self.assertEqual([], f.downloads)
                 self.assertEqual(1, len(f.verified))
@@ -615,8 +618,11 @@ class HistoricalCheckpointConsumerTest(unittest.TestCase):
             stack.enter_context(patch.object(completed, "_current_checkpoint_baseline", side_effect=[retained, current]))
             listed = stack.enter_context(patch.object(products, "_catalog_artifacts", return_value=[f.artifacts[990]]))
             transfer = stack.enter_context(patch.object(products, "_download_contract_ci_upload_bytes", side_effect=download))
+            listing = stack.enter_context(products._artifact_listing_scope())
+            listing(f"https://api.github.com/repos/{native.REPOSITORY}/actions/artifacts", "synthetic")
             selection, raw = completed.discover_historical_checkpoint(
-                self.history, self.policy, root=f.root, consumer=self.consumer, token="synthetic")
+                self.history, self.policy, root=f.root, consumer=self.consumer, token="synthetic",
+                _artifact_listing=listing)
             self.assertEqual("product-validation / sdk-collect-6", selection["checkpoint"]["source"]["jobName"])
             self.assertEqual(f.producer, selection["checkpoint"]["source"]["producer"])
             self.assertEqual(1, listed.call_count)

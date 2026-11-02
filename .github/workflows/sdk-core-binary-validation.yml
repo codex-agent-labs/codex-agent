@@ -27,6 +27,9 @@ on:
       authority_read_token:
         description: Read-only protected reuse authority; scoped to qualification restoration
         required: false
+      PRODUCT_READ_APP_PRIVATE_KEY:
+        description: Forward only to the protected product-read checkpoint issuer
+        required: false
     outputs:
       checkpoint:
         value: ${{ jobs.sdk-core-binary-result.outputs.checkpoint }}
@@ -246,6 +249,7 @@ jobs:
       sdk-preceding-checkpoint: ${{ inputs.sdkCheckpoint }}
     secrets:
       authority_read_token: ${{ secrets.authority_read_token }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   sdk-core-binary-result:
     needs: [sdk-core-binary-plan, sdk-core-binary, sdk-collect-11, sdk-checkpoint-11]
