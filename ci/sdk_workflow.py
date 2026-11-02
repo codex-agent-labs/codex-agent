@@ -1681,10 +1681,10 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         package_options = {}
         if phase == "package":
             java_home = Path(environ.get("JAVA_HOME", ""))
-            if not java_home.is_absolute() or java_home.resolve(strict=True) != java_home:
+            if not java_home.is_absolute():
                 raise ValueError("JavaScript package requires the explicit current Java home")
             package_options = {"sdk_validation_tooling": sdk_validation_tooling,
-                               "java_executable": java_home / "bin/java"}
+                               "java_executable": (java_home / "bin/java").resolve(strict=True)}
         result = execute(ready, producer=producer, sdk_version=selection["sdkVersion"], trust_domain=trust,
             repository_root=root, destination=destination / "worker", predecessor=original, environ=environ,
             compatibility_request=inputs["sdk"]["directory"] / REQUEST_NAME if phase == "package" else None,
