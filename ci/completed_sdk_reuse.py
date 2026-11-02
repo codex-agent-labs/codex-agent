@@ -148,6 +148,8 @@ def validate_controls(spec, controls, base):
     producer = validate_producer(spec["source"]["producer"])
     request = controls[prefix + "reuse-wave-request.json"]
     result = controls[prefix + "reuse-wave-result.json"]
+    if SUBSET_FAILURES in controls:
+        _successful_subset_controls(spec["source"], controls)
     if collected_validation(spec):
         from product_reuse import _same_run_state_consumer
         _same_run_state_consumer({"producer": producer}, controls[prefix + "producer.json"])
@@ -448,7 +450,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token,
     import reuse_qualification as native
     originals = _spec(spec)
     if _checkpoint is not None:
-        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer):
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer, _HistoricalCheckpointIssuer):
             raise ValueError("Checkpoint semantics require a private authenticated consumer witness")
         _checkpoint.match(spec, proof, arguments, consumer_revision, token)
     if source_predecessor_context(spec):
@@ -544,7 +546,7 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None, _checkpoint=
         raise ValueError("Object reuse requires an earlier incremental native completion")
     old, proof = extension["spec"], extension["proof"]
     if _checkpoint is not None:
-        if type(_checkpoint) is not _CheckpointConsumer:
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointIssuer):
             raise ValueError("Checkpoint inheritance requires a private authenticated predecessor")
         _checkpoint.inherit(spec, prior)
     if (old["schemaVersion"] not in (3, 4) or old["parent"] != spec["parent"]
@@ -598,7 +600,7 @@ def _inherited_receipt_objects(spec, prior, *, _checkpoint=None):
         raise ValueError("Receipt inheritance requires an earlier incremental completion")
     old, proof = extension["spec"], extension["proof"]
     if _checkpoint is not None:
-        if type(_checkpoint) is not _CheckpointConsumer:
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointIssuer):
             raise ValueError("Receipt inheritance requires an authenticated checkpoint")
         _checkpoint.inherit(spec, prior)
     if (old["schemaVersion"] not in (3, 4) or old["parent"] != spec["parent"]
@@ -777,7 +779,8 @@ def _checkpoint_originals(controls, prior, base, source, observation, token):
     return [result[instance] for instance in sorted(result)]
 
 
-def issue_checkpoint(policy, source, control_selector, work, *, root, revision, frozen, token, previous=None):
+def issue_checkpoint(policy, source, control_selector, work, *, root, revision, frozen, token, previous=None,
+                     history=None, current_policy=None, _previous_archive_bytes=None):
     """Prepare one flat completion envelope for the existing protected signer.
 
     This core operation does not sign, upload or provision its caller-owned policy.
@@ -796,7 +799,15 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
     previous = (load_canonical_json_bytes(canonical_json_bytes(previous)) if previous is not None else
         {"kind": "existing-sdk-completion", "native": policy["bootstrap"],
          "subjectSha256": policy["bootstrapProofSha256"]})
-    checkpoint_selection(policy, previous)
+    historical = previous if "ownerPolicySha256" in previous else None
+    if historical is not None:
+        history = validate_checkpoint_history(history)
+        if history["currentOwner"] != policy or current_policy is None:
+            raise ValueError("Historical issuance requires its independent current owner and consumer policy")
+        previous = require_exact_keys(historical, {"ownerPolicySha256", "checkpoint"},
+                                      "Historical issuer selector")["checkpoint"]
+    else:
+        checkpoint_selection(policy, previous)
     identity = checkpoint_archive_identity(policy, source, signer_commit=revision,
         source_commit=source["producer"]["commit"], run_id=source["producer"]["runId"],
         run_attempt=source["producer"]["runAttempt"])
@@ -807,13 +818,24 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
         collected = fetch_collector_controls(source, control_selector, work / "controls",
             producer=source["producer"], job_name=source["jobName"], workflow_sha=policy["collectorWorkflowSha"],
             token=token, _fresh_observation=observation)
+        subset_report = {}
+        if SUBSET_FAILURES in collected["controls"]:
+            failure = _successful_subset_controls(source, collected["controls"])
+            subset_report = {"successfulSubset": True, "originalWaveFailed": True,
+                             "failedPhasesPreserved": len(failure["failedPhases"])}
         _ensure_observed_sdk_commit(root, source["producer"], token)
         plan_path = work / "source-plan.json"
         plan_path.write_bytes(collected["controls"][SOURCE_PLAN].encode("utf-8"))
         products._validate_plan(plan_path, root, expected_revision=source["producer"]["commit"])
         parent_frozen = native._sdk_parent_frozen_spec(root, policy["bootstrap"], frozen, token)
         predecessor = None
-        if previous["kind"] == "sdk-checkpoint":
+        if historical is not None:
+            predecessor = lifetime.enter_context(_historical_checkpoint_issuer(history, historical, work / "previous",
+                root=root, current_policy=current_policy, source=source, token=token,
+                _archive_bytes=_previous_archive_bytes))
+            prior = predecessor.validate(root=root, revision=None, frozen=parent_frozen,
+                consumer_revision=source["inventoryCommit"], token=token)
+        elif previous["kind"] == "sdk-checkpoint":
             predecessor = lifetime.enter_context(checkpoint_consumer(policy, previous, work / "previous",
                 root=root, consumer={"kind": "ci", "producer": source["producer"]},
                 job="sdk-checkpoint-" + str(_COLLECTED_WAVES[source["jobName"]]), token=token,
@@ -850,7 +872,7 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
             _checkpoint=predecessor)
         if (preparation["newSdkObjectsRequiringQualification"] == 0
                 and preparation["selectedSdkPhases"] == len(old["spec"]["completedPhases"])):
-            return {"reusedCheckpoint": previous["native"], "reusedCheckpointOutput": previous,
+            return {**subset_report, "reusedCheckpoint": previous["native"], "reusedCheckpointOutput": previous,
                 "reusedCheckpointSubjectSha256": previous["subjectSha256"],
                 "checkpointControlUploadBytes": collected["controlArchive"]["bytes"],
                 "checkpointPreparation": preparation, "verifiedObjectBytes": 0,
@@ -868,10 +890,13 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
         envelope = {"schemaVersion": 1, "kind": "completed-sdk-checkpoint", "issuerCommit": revision,
             "ownerPolicySha256": sha256_bytes(canonical_json_bytes(policy)), "recipe": recipe,
             "completion": completion, "sourceCheckpoint": {"source": source, "controlArtifact": control_selector},
-            "precedingCheckpoint": {"native": previous["native"], "subjectSha256": previous["subjectSha256"]}}
+            "precedingCheckpoint": {"native": previous["native"], "subjectSha256": previous["subjectSha256"],
+                **({"ownerPolicySha256": historical["ownerPolicySha256"], "source": previous["source"]}
+                   if historical is not None else {})}}
         if len(canonical_json_bytes(envelope)) > LIMIT:
             raise ValueError("Checkpoint completion exceeds its bounded native subject")
         write_canonical_json(work / "completion.json", envelope)
+    report.update(subset_report)
     report.update(checkpointControlUploadBytes=collected["controlArchive"]["bytes"],
         checkpointPreparation=preparation, checkpointArtifactName=identity["artifactName"],
         checkpointSeconds=str(time.perf_counter() - started), nativeAttestationIssued=False)
@@ -1169,6 +1194,9 @@ def prepare_collected_extension(policy, source, references, controls, originals,
     inventory = {row["relativePath"]: row for row in references["inventory"]}
     retained = {path: controls[path] for path in (SOURCE_PLAN,
         *(prefix + name for name in ("producer.json", "reuse-wave-request.json", "reuse-wave-result.json")))}
+    if SUBSET_FAILURES in controls:
+        _successful_subset_controls(source, controls)
+        retained[SUBSET_FAILURES] = controls[SUBSET_FAILURES]
     phases, objects = [], []
     inherited_receipts, previous_objects = set(), None
     for instance, phase in sorted(selected.items()):
@@ -1302,7 +1330,7 @@ def fetch_checkpoint_envelope(policy, source, selector, work, *, token):
         return _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation)
 
 
-def _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation, *, _archive_bytes=None):
+def _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation, *, _archive_bytes=None, _history=None):
     import reuse_qualification as native
     import product_reuse as products
     from datetime import datetime
@@ -1322,8 +1350,10 @@ def _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token,
             or envelope["issuerCommit"] != policy["issuerCommit"]
             or envelope["ownerPolicySha256"] != sha256_bytes(canonical_json_bytes(policy))):
         raise ValueError("Native checkpoint differs from its independent owner policy")
-    preceding = require_exact_keys(envelope["precedingCheckpoint"], {"native", "subjectSha256"},
-                                   "Preceding native checkpoint")
+    preceding = envelope["precedingCheckpoint"]
+    historical = type(preceding) is dict and "ownerPolicySha256" in preceding
+    require_exact_keys(preceding, {"native", "subjectSha256"} | ({"ownerPolicySha256", "source"} if historical else set()),
+                       "Preceding native checkpoint")
     bootstrap = preceding == {"native": policy["bootstrap"], "subjectSha256": policy["bootstrapProofSha256"]}
     if not bootstrap:
         # Signed custody history, not a recursive instruction to fetch old proofs.
@@ -1333,8 +1363,24 @@ def _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token,
         for name in ("artifact_id", "run_id", "run_attempt"):
             require_integer(pins[name], "Preceding native checkpoint " + name, 1)
         require_sha256(pins["artifact_sha256"], "Preceding native checkpoint digest")
-        if (any(pins[name] != arguments[name] for name in
-                ("signer_commit", "source_commit", "run_id", "run_attempt"))
+        if historical:
+            history = validate_checkpoint_history(_history)
+            owners = {row["sha256"]: row["policy"] for row in history["historicalPolicies"]}
+            owners[sha256_bytes(canonical_json_bytes(history["currentOwner"]))] = history["currentOwner"]
+            owner = owners.get(require_sha256(preceding["ownerPolicySha256"], "Preceding checkpoint owner"))
+            if owners.get(envelope["ownerPolicySha256"]) != policy or owner is None:
+                raise ValueError("Historical predecessor changes its independently approved owner")
+            old_source = _collector_control_source(preceding["source"])
+            checkpoint_archive_identity(owner, old_source, **{key: pins[key] for key in
+                ("signer_commit", "source_commit", "run_id", "run_attempt")})
+            native_edge = (owner == policy and old_source["producer"] == source["producer"]
+                and (_COLLECTED_WAVES[old_source["jobName"]], _COLLECTED_WAVES[source["jobName"]]) in _NATIVE_CHECKPOINT_EDGES)
+            if ((not native_edge and (pins["run_id"], pins["run_attempt"]) >= (arguments["run_id"], arguments["run_attempt"]))
+                    or pins["artifact_id"] in (arguments["artifact_id"], source["artifactId"])
+                    or old_source["jobId"] == source["jobId"]):
+                raise ValueError("Historical predecessor changes its registered edge or chronology")
+        elif (any(pins[name] != arguments[name] for name in
+                  ("signer_commit", "source_commit", "run_id", "run_attempt"))
                 or pins["artifact_id"] in (arguments["artifact_id"], source["artifactId"])):
             raise ValueError("Native checkpoint changes its approved preceding campaign")
     source_checkpoint = require_exact_keys(envelope["sourceCheckpoint"], {"source", "controlArtifact"},
@@ -1918,7 +1964,7 @@ def _current_checkpoint_baseline(spec, root, revision, token):
             if instance not in invalid}
 
 
-def discover_historical_checkpoint(history, current_policy, *, root, consumer, token):
+def discover_historical_checkpoint(history, current_policy, *, root, consumer, token, _issuer_source=None):
     """Return untrusted locators plus one held ZIP; this never grants admission.
 
     The independent baseline determines which exact tuples must be preserved.
@@ -1943,6 +1989,15 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
             or history["consumerCommit"] != current_policy["consumerCommit"]
             or history["currentOwner"]["bootstrap"] != current_policy.get("sdkCompletion")):
         raise ValueError("Historical discovery differs from its approved current source")
+    issuer_wave = None
+    if _issuer_source is not None:
+        _issuer_source = _collector_control_source(_issuer_source)
+        issuer_wave = _COLLECTED_WAVES[_issuer_source["jobName"]]
+        if _issuer_source["producer"] != producer or issuer_wave not in {4, 6, 7, 8}:
+            raise ValueError("Checkpoint discovery changes its exact current issuer source")
+        checkpoint_archive_identity(history["currentOwner"], _issuer_source,
+            signer_commit=history["currentOwner"]["issuerCommit"], source_commit=producer["commit"],
+            run_id=producer["runId"], run_attempt=producer["runAttempt"])
     signer = current_policy["sdkCompletion"]["signerCommit"]
     native._ensure_native_issuer_commit(root, signer, token)
     baseline = load_canonical_json_bytes(git_regular_blob_bytes(root, signer,
@@ -1962,7 +2017,9 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
         if match is None or artifact.get("expired") is not False:
             continue
         wave, run, attempt, state = map(int, match.groups())
-        if ((run, attempt) >= (producer["runId"], producer["runAttempt"])
+        same_attempt = (run, attempt) == (producer["runId"], producer["runAttempt"])
+        if ((run, attempt) > (producer["runId"], producer["runAttempt"])
+                or same_attempt and (wave, issuer_wave) not in _NATIVE_CHECKPOINT_EDGES
                 or wave not in {4, 6, 7, 8}):
             continue
         artifact_id = require_integer(artifact.get("id"), "Discovered checkpoint artifact", 1)
@@ -1973,7 +2030,19 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
                 or artifact["workflow_run"].get("id") != run):
             raise ValueError("Discovered checkpoint transport is malformed")
         candidates.append(((run, attempt, state, artifact_id), artifact, digest, size))
-    for _, artifact, digest, size in sorted(candidates, reverse=True):
+    same_attempt_jobs = None
+    for key, artifact, digest, size in sorted(candidates, reverse=True):
+        if key[:2] == (producer["runId"], producer["runAttempt"]):
+            if same_attempt_jobs is None:
+                with products._fresh_ci_observation(producer, token) as observation:
+                    same_attempt_jobs = products._fresh_ci_observation_values(observation, producer, token)["jobs"]
+            wave = int(artifact["name"].split("-")[3])
+            jobs = products._matching_ci_jobs(same_attempt_jobs,
+                f"product-validation / sdk-checkpoint-{wave} / completed-sdk-checkpoint")
+            if len(jobs) > 1:
+                raise ValueError("Current checkpoint discovery has ambiguous issuer jobs")
+            if not jobs or (jobs[0].get("status"), jobs[0].get("conclusion")) != ("completed", "success"):
+                continue  # No wait or authority from an unfinished/failed sibling issuer.
         with tempfile.TemporaryDirectory(prefix="sdk-checkpoint-discovery-") as temporary:
             archive_path = Path(temporary).resolve(strict=True) / "checkpoint.zip"
             products._download_contract_ci_upload_bytes(artifact, token, archive_path, 2 * LIMIT, digest, size)
@@ -2001,6 +2070,10 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
             raise ValueError("Discovered checkpoint name differs from its exact source")
         if envelope["recipe"]["source"] != source:
             raise ValueError("Discovered checkpoint recipe changes its original source")
+        if (source["producer"]["runId"], source["producer"]["runAttempt"]) == (producer["runId"], producer["runAttempt"]):
+            if (source["producer"] != producer or owner != history["currentOwner"]
+                    or (_COLLECTED_WAVES[source["jobName"]], issuer_wave) not in _NATIVE_CHECKPOINT_EDGES):
+                raise ValueError("Current checkpoint discovery changes its registered native issuer edge")
         # Git/source metadata is only an untrusted selection hint here. A stale
         # full proof must not hide an older proof with genuinely current keys.
         # The native factory still authenticates all selected bytes and performs
@@ -2045,9 +2118,39 @@ class _HistoricalCheckpointConsumer(_CheckpointConsumer):
             requalification_baseline=original_revision)
 
 
+# These are actual native collection dependencies, never numeric wave ordering.
+_NATIVE_CHECKPOINT_EDGES = {(4, 7), (4, 8), (7, 8)}
+
+
+class _HistoricalCheckpointIssuer(_HistoricalCheckpointConsumer):
+    """One approved historical predecessor, never a union or public capability."""
+    __slots__ = ()
+
+    def inherit(self, spec, prior):
+        _CheckpointConsumer.inherit(self, spec, prior)
+
+
 @contextmanager
 def historical_checkpoint_consumer(history, selection, work, *, root, current_policy, consumer, job, token,
                                    _archive_bytes=None):
+    with _historical_checkpoint_scope(history, selection, work, root=root, current_policy=current_policy,
+            consumer=consumer, job=job, token=token, _archive_bytes=_archive_bytes) as witness:
+        yield witness
+
+
+@contextmanager
+def _historical_checkpoint_issuer(history, selection, work, *, root, current_policy, source, token,
+                                  _archive_bytes=None):
+    with _historical_checkpoint_scope(history, selection, work, root=root, current_policy=current_policy,
+            consumer={"kind": "ci", "producer": source["producer"]},
+            job="sdk-checkpoint-" + str(_COLLECTED_WAVES[source["jobName"]]), token=token,
+            _archive_bytes=_archive_bytes, _next_source=source) as witness:
+        yield witness
+
+
+@contextmanager
+def _historical_checkpoint_scope(history, selection, work, *, root, current_policy, consumer, job, token,
+                                _archive_bytes=None, _next_source=None):
     """An approved old owner and current source remain independent authorities.
 
     This factory grants only a private native witness. fetch_completed_frozen still
@@ -2057,6 +2160,7 @@ def historical_checkpoint_consumer(history, selection, work, *, root, current_po
     import product_reuse as products
     import reuse_qualification as native
     from datetime import datetime
+    from contextlib import nullcontext
     from products.inventory import require_integer
     history = validate_checkpoint_history(history)
     selection, current_policy, consumer = (load_canonical_json_bytes(canonical_json_bytes(value))
@@ -2081,19 +2185,32 @@ def historical_checkpoint_consumer(history, selection, work, *, root, current_po
     require_exact_keys(consumer, {"kind", "producer"}, "Historical checkpoint current consumer")
     producer = validate_producer(consumer["producer"])
     source = output["source"]
-    if (consumer["kind"] != "ci" or job not in {"plan", "product-resume"}
+    current_name = "product-validation / " + job
+    if _next_source is not None:
+        _next_source = load_canonical_json_bytes(canonical_json_bytes(_next_source))
+        if (_next_source["producer"] != producer or _COLLECTED_WAVES.get(_next_source["jobName"]) not in {4, 6, 7, 8}
+                or job != "sdk-checkpoint-" + str(_COLLECTED_WAVES[_next_source["jobName"]])):
+            raise ValueError("Historical predecessor requires its registered current native/JavaScript issuer")
+        current_name = checkpoint_archive_identity(current_owner, _next_source,
+            signer_commit=current_owner["issuerCommit"], source_commit=producer["commit"],
+            run_id=producer["runId"], run_attempt=producer["runAttempt"])["jobName"]
+    native_edge = (_next_source is not None and source["producer"] == producer
+        and original_owner == current_owner
+        and (_COLLECTED_WAVES[source["jobName"]], _COLLECTED_WAVES[_next_source["jobName"]]) in _NATIVE_CHECKPOINT_EDGES)
+    if (consumer["kind"] != "ci" or _next_source is None and job not in {"plan", "product-resume"}
             or any(producer[field] != source["producer"][field] for field in
                    ("repository", "event", "pullRequest", "workflowPath"))
-            or (source["producer"]["runId"], source["producer"]["runAttempt"])
+            or not native_edge and (source["producer"]["runId"], source["producer"]["runAttempt"])
                >= (producer["runId"], producer["runAttempt"])):
         raise ValueError("Historical checkpoint requires its distinct later registered CI consumer")
     with products._fresh_ci_observation(source["producer"], token) as original_observation:
         custody = _fetch_checkpoint_envelope(original_owner, source, arguments, identity, work,
             token, original_observation,
-            **({"_archive_bytes": _archive_bytes} if _archive_bytes is not None else {}))
+            **({"_archive_bytes": _archive_bytes} if _archive_bytes is not None else {}), _history=history)
         if custody["subjectSha256"] != output["subjectSha256"]:
             raise ValueError("Historical checkpoint changes its exact native subject")
-        with products._fresh_ci_observation(producer, token) as current_observation:
+        with (nullcontext(original_observation) if native_edge else
+              products._fresh_ci_observation(producer, token)) as current_observation:
             current = products._fresh_ci_observation_values(current_observation, producer, token)
             run = current["run"]
             if (run.get("id") != producer["runId"] or run.get("run_attempt") != producer["runAttempt"]
@@ -2107,7 +2224,11 @@ def historical_checkpoint_consumer(history, selection, work, *, root, current_po
             products._require_ci_workflow_reference(current["run"],
                 f"{native.REPOSITORY}/.github/workflows/product-validation.yml@"
                 + current_owner["collectorWorkflowSha"], current_owner["collectorWorkflowSha"])
-            matches = products._matching_ci_jobs(current["jobs"], "product-validation / " + job)
+            if _next_source is not None:
+                products._require_ci_workflow_reference(current["run"],
+                    f"{native.REPOSITORY}/{native.ISSUER_WORKFLOW}@" + current_owner["issuerCommit"],
+                    current_owner["issuerCommit"])
+            matches = products._matching_ci_jobs(current["jobs"], current_name)
             if len(matches) != 1:
                 raise ValueError("Historical checkpoint current job is missing or ambiguous")
             current_job, issuer = matches[0], custody["transport"]["checkpointIssuerJob"]
@@ -2119,8 +2240,20 @@ def historical_checkpoint_consumer(history, selection, work, *, root, current_po
                     or datetime.fromisoformat(current_job["started_at"].replace("Z", "+00:00"))
                        < datetime.fromisoformat(issuer["completed_at"].replace("Z", "+00:00"))):
                 raise ValueError("Historical checkpoint is not bound to its actual later current job")
-            witness = _HistoricalCheckpointConsumer(consumer, custody, original_observation,
+            if _next_source is not None:
+                _, _, locator = observe_source(_next_source, token, _fresh_observation=current_observation)
+                collected = locator["job"]
+                if (collected["id"] in (current_job["id"], issuer["id"], source["jobId"])
+                        or native_edge and datetime.fromisoformat(custody["envelope"]["completion"]["source"]["job"]["completed_at"].replace("Z", "+00:00"))
+                           > datetime.fromisoformat(collected["started_at"].replace("Z", "+00:00"))
+                        or datetime.fromisoformat(collected["completed_at"].replace("Z", "+00:00"))
+                           > datetime.fromisoformat(current_job["started_at"].replace("Z", "+00:00"))):
+                    raise ValueError("Historical issuer requires its exact successful preceding collector")
+            cls = _HistoricalCheckpointIssuer if _next_source is not None else _HistoricalCheckpointConsumer
+            witness = cls(consumer, custody, original_observation,
                 current_observation, token, current_policy["sdkCompletion"], _CHECKPOINT_CONSUMER)
+            if _next_source is not None:
+                witness._next_source = canonical_json_bytes(_next_source)
             try:
                 yield witness
             finally:
@@ -2158,7 +2291,37 @@ def collector_control_artifact_name(source):
             f"-run-{producer['runId']}-attempt-{producer['runAttempt']}-state-{source['artifactId']}")
 
 
-def prepare_collector_controls(source, reference_bytes, controls):
+SUBSET_FAILURES = "runtime-state/wave-failures.json"
+
+
+def _successful_subset_controls(source, controls):
+    """Failure diagnostics restrict claims; they never establish worker success."""
+    wave = _COLLECTED_WAVES.get(source.get("jobName"))
+    families = {4: "native-package", 7: "native-validation", 8: "native-metadata"}
+    if wave not in families or SUBSET_FAILURES not in controls:
+        raise ValueError("Successful subset requires its exact native wave and failure partition")
+    failure = require_exact_keys(controls[SUBSET_FAILURES], {"schemaVersion", "producer", "failedPhases"},
+                                 "Original collector failure partition")
+    if (type(failure["schemaVersion"]) is not int or failure["schemaVersion"] != 1
+            or failure["producer"] != source["producer"]):
+        raise ValueError("Successful subset changes its original failure producer")
+    failed = _records(failure["failedPhases"], "Original failed SDK phases")
+    family = SDK_FAMILY_INSTANCES[families[wave]]
+    if not failed or not failed.keys() <= family:
+        raise ValueError("Successful subset changes its failed native family")
+    request = controls["runtime-state/reuse-wave-request.json"]
+    available = _records(request["availableObjects"], "Successful subset objects")
+    phases = _records(controls["runtime-state/reuse-wave-result.json"]["phases"], "Successful subset result")
+    for instance, row in failed.items():
+        require_exact_keys(row, set(IDENTITY) | {"buildKey"}, "Original failed SDK phase")
+        require_sha256(row["buildKey"], "Original failed build key")
+        if (instance in available or phases.get(instance, {}).get("state") != "build"
+                or phases[instance].get("buildKey") != row["buildKey"]):
+            raise ValueError("Successful subset includes or changes an originally failed phase")
+    return failure
+
+
+def prepare_collector_controls(source, reference_bytes, controls, *, successful_subset=False):
     """Project staged controls only. This is neither object nor native admission.
 
     The separate upload binds the actual state upload to its reference manifest;
@@ -2179,6 +2342,13 @@ def prepare_collector_controls(source, reference_bytes, controls):
         ("producer.json", "reuse-wave-request.json", "reuse-wave-result.json"))}
     if type(controls) is not dict or not required <= controls.keys() or not 4 <= len(controls) <= 128:
         raise ValueError("Collector controls lack their bounded source plan and state")
+    if type(successful_subset) is not bool:
+        raise ValueError("Collector subset choice must be explicit")
+    if successful_subset:
+        _successful_subset_controls(source, controls)
+        required.add(SUBSET_FAILURES)
+    elif SUBSET_FAILURES in controls or SUBSET_FAILURES in inventory:
+        raise ValueError("Full-wave controls cannot hide an original failed partition")
     producer = source["producer"]
     if type(controls[SOURCE_PLAN]) is not str:
         raise ValueError("Collector controls must preserve the exact source plan text")
@@ -2225,19 +2395,20 @@ def prepare_collector_controls(source, reference_bytes, controls):
         pins.append(pin)
     # Missing receipt scope and semantic admission remain the existing recipe
     # validators' responsibility; this projection grants only source custody.
-    envelope = canonical_json_bytes({"schemaVersion": 1, "kind": "sdk-collector-controls",
+    envelope = canonical_json_bytes({"schemaVersion": 1, "kind": ("sdk-collector-successful-subset-controls"
+        if successful_subset else "sdk-collector-controls"),
         "source": source, "controlPins": pins, "controls": controls})
     if len(envelope) > LIMIT or len(envelope) + len(reference_bytes) > 2 * LIMIT:
         raise ValueError("Collector controls exceed the existing compact archive bounds")
     return {COLLECTOR_CONTROL_NAME: envelope, REFERENCE_NAME: reference_bytes}
 
 
-def stage_collector_controls(source, reference_path, controls, destination):
+def stage_collector_controls(source, reference_path, controls, destination, *, successful_subset=False):
     """Publish two small files from staged bytes, without walking product roots."""
     import tempfile
     from products.inventory import publish_regular_tree, read_regular_file_bytes
     reference = read_regular_file_bytes(reference_path, max_bytes=LIMIT, reject_symlink_parents=True)
-    files = prepare_collector_controls(source, reference, controls)
+    files = prepare_collector_controls(source, reference, controls, successful_subset=successful_subset)
     with tempfile.TemporaryDirectory(prefix="sdk-collector-controls-") as temporary:
         prepared = Path(temporary).resolve() / "controls"
         prepared.mkdir()
@@ -2292,8 +2463,10 @@ def fetch_collector_controls(source, selector, work, *, producer, job_name, work
     envelope = require_exact_keys(load_canonical_json_bytes(retained[COLLECTOR_CONTROL_NAME]),
         {"schemaVersion", "kind", "source", "controlPins", "controls"}, "Collector control envelope")
     if (type(envelope["schemaVersion"]) is not int or envelope["schemaVersion"] != 1
-            or envelope["kind"] != "sdk-collector-controls" or envelope["source"] != source
-            or prepare_collector_controls(source, retained[REFERENCE_NAME], envelope["controls"]) != retained):
+            or envelope["kind"] not in {"sdk-collector-controls", "sdk-collector-successful-subset-controls"}
+            or envelope["source"] != source
+            or prepare_collector_controls(source, retained[REFERENCE_NAME], envelope["controls"],
+                successful_subset=envelope["kind"] == "sdk-collector-successful-subset-controls") != retained):
         raise ValueError("Collector control envelope changes its source or exact pins")
     return {"source": source, "references": load_canonical_json_bytes(retained[REFERENCE_NAME]),
         "controls": envelope["controls"], "controlPins": envelope["controlPins"],
@@ -2340,7 +2513,7 @@ def write_collector_receipts(carrier, result, destination):
         publish_regular_tree(prepared, destination)
 
 
-def collected_control_inputs(handoff, references):
+def collected_control_inputs(handoff, references, *, successful_subset=False):
     """Read fixed controls and receipt files from the existing reference inventory.
 
     The caller supplies the just-staged inventory, not authority. Publication
@@ -2352,6 +2525,10 @@ def collected_control_inputs(handoff, references):
         ("producer.json", "reuse-wave-request.json", "reuse-wave-result.json"))}
     inventory = {row["relativePath"]: row for row in references["inventory"]}
     receipts = {path for path in inventory if path.startswith(prefix + COLLECTOR_RECEIPTS + "/")}
+    if successful_subset:
+        required.add(SUBSET_FAILURES)
+    elif SUBSET_FAILURES in inventory:
+        raise ValueError("Full-wave controls cannot omit an inventoried failure partition")
     names = required | receipts
     if not required <= inventory.keys() or not 4 <= len(names) <= 128:
         raise ValueError("Collector input controls are missing or exceed their fixed bound")
@@ -2378,7 +2555,7 @@ def collected_control_inputs(handoff, references):
 
 
 def publish_current_collector_controls(handoff, reference_path, destination, *, wave,
-        artifact_id, artifact_sha256, workflow_sha, token, environ, github_output_path=None):
+        artifact_id, artifact_sha256, workflow_sha, token, environ, github_output_path=None, successful_subset=False):
     """Stage selectors after the actual upload; the next job authenticates custody.
 
     This job is still running. Its own output cannot establish successful CI or
@@ -2395,7 +2572,7 @@ def publish_current_collector_controls(handoff, reference_path, destination, *, 
     job_name = roles[0]
     reference = read_regular_file_bytes(reference_path, max_bytes=LIMIT, reject_symlink_parents=True)
     references = validate_references(load_canonical_json_bytes(reference), 0, sdk_state_wave=wave)
-    controls = collected_control_inputs(handoff, references)
+    controls = collected_control_inputs(handoff, references, successful_subset=successful_subset)
     plan = load_json_bytes(controls[SOURCE_PLAN].encode("utf-8"))
     # Upload identity belongs to this collector; retained replay context and
     # original receipt producers keep their exact earlier-attempt identities.
@@ -2422,7 +2599,7 @@ def publish_current_collector_controls(handoff, reference_path, destination, *, 
         "inventoryCommit": producer["commit"], "referenceControlSha256": sha256_bytes(reference)})
     # Re-read through the existing guarded publisher. A changed reference cannot
     # pass its original hash; only bounded JSON controls are touched here.
-    stage_collector_controls(source, reference_path, controls, destination)
+    stage_collector_controls(source, reference_path, controls, destination, successful_subset=successful_subset)
     github_output(github_output_path, {"artifact_name": collector_control_artifact_name(source),
         "source": canonical_json_bytes(source).decode("utf-8").rstrip("\n")})
     return source
@@ -2436,6 +2613,7 @@ def _publish_main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--github-output", dest="github_output_path", type=Path, required=True)
     parser.add_argument("--wave", type=int, required=True)
+    parser.add_argument("--successful-subset", action="store_true")
     parser.add_argument("--artifact-id", type=int, required=True)
     parser.add_argument("--artifact-sha256", required=True)
     parser.add_argument("--workflow-sha", required=True)

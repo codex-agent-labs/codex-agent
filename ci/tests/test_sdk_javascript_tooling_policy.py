@@ -81,12 +81,19 @@ class SdkJavascriptToolingPolicyTest(unittest.TestCase):
 
                     with patch.object(workflow, "verified_inputs", side_effect=fixture.verified) as verified, \
                             patch.object(workflow.product_reuse, "materialize_product_predecessors", side_effect=materialize) as restored, \
-                            patch.object(fixture_module.worker, "execute", side_effect=fixture.execute), \
+                            patch.object(fixture_module.worker, "execute", side_effect=fixture.execute) as execution, \
                             patch.object(workflow.product_reuse, "finalize_phase_object", side_effect=fixture.finalize):
                         workflow.execute_javascript(fixture.plan, fixture.discovery, fixture.state, fixture.destination,
                             phase=phase, **fixture.arguments, **optional)
                     verified.assert_called_once()
                     restored.assert_called_once()
+                    if phase == "package":
+                        self.assertIs(self.policy if supplied else None, execution.call_args.kwargs["sdk_validation_tooling"])
+                        self.assertEqual(fixture.java_home / "bin/java", execution.call_args.kwargs["java_executable"])
+                        self.assertNotEqual(self.policy["javaExecutable"], str(execution.call_args.kwargs["java_executable"]))
+                    else:
+                        self.assertNotIn("sdk_validation_tooling", execution.call_args.kwargs)
+                        self.assertNotIn("java_executable", execution.call_args.kwargs)
                     for call in (verified.call_args, restored.call_args):
                         if supplied:
                             self.assertIs(self.policy, call.kwargs["sdk_validation_tooling"])

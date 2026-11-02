@@ -66,11 +66,11 @@ class SdkIosPackageActionTest(unittest.TestCase):
                 exec(compile(source, "ios-package-identity", "exec"), {})
             self.assertEqual("key_hex=" + "a" * 64 + "\n", output.read_text())
 
-    def test_policy_state_and_exact_identity_precede_read_only_apple_setup(self):
+    def test_policy_state_and_exact_identity_precede_pinned_java_setup_without_gradle(self):
         policy = self.action.index("- id: policy")
         capture = self.action.index("- id: captured")
         identity = self.action.index("- id: identity")
-        setup = self.action.index("uses: ./.github/actions/setup-kmp")
+        setup = self.action.index("uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3")
         self.assertLess(policy, capture)
         self.assertLess(capture, identity)
         self.assertLess(identity, setup)
@@ -79,9 +79,11 @@ class SdkIosPackageActionTest(unittest.TestCase):
         self.assertLess(setup, rust)
         self.assertLess(rust, execute)
         self.assertIn("toolchain: '1.95.0'", self.action[rust:execute])
-        for value in ("product: sdk", "sdk-family: ios-package", "cache-read-only: 'true'",
-                      "product-worker: 'true'", "xcode-fingerprint: auto"):
+        for value in ("product: sdk", "sdk-family: ios-package", "distribution: temurin",
+                      "java-version: '17.0.21+9'"):
             self.assertIn(value, self.action)
+        self.assertNotIn("setup-kmp", self.action)
+        self.assertNotIn("setup-gradle", self.action)
         row = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios",
                "buildKey": KEY, "runnerOs": "macOS", "runnerArch": "ARM64"}
         self.identity(rows=[row])
@@ -114,6 +116,47 @@ class SdkIosPackageActionTest(unittest.TestCase):
             self.assertNotIn(forbidden, self.action)
         self.assertIn("DEVELOPER_DIR: ${{ inputs.developer-directory }}", self.action)
         self.assertIn("'--developer-directory': os.environ['DEVELOPER_DIR']", self.action)
+
+    def test_package_invocation_uses_current_pinned_java_and_preserves_tooling_authority(self):
+        from products.inventory import canonical_json_bytes, sha256_bytes
+
+        block = self.action.split("    - name: Execute exact iOS package", 1)[1].split("\n    - ", 1)[0]
+        source = self.python_script(block)
+        with tempfile.TemporaryDirectory(prefix="ios-package-java-") as temporary:
+            root = Path(temporary).resolve()
+            java_home = root / "jdk"
+            (java_home / "bin").mkdir(parents=True)
+            java = java_home / "bin/java"
+            java.write_bytes(b"not executed by this routing test")
+            alias = root / "java-alias"
+            alias.symlink_to(java_home, target_is_directory=True)
+            policy_path = root / "policy.json"
+            policy = {"evidence": str(root / "evidence"), "publicKey": str(root / "public-key"),
+                      "javaExecutable": str(root / "original-java"), "requiredTrustDomain": "development",
+                      "keyring": None, "keysDirectory": None}
+            raw = canonical_json_bytes(policy)
+            policy_path.write_bytes(raw)
+            environment = {"GITHUB_WORKSPACE": str(root), "SDK_VALIDATION_TOOLING": str(policy_path),
+                           "SDK_APPLE_VALIDATION_POLICY": "", "APPLE_POLICY_SHA256": "",
+                           "POLICY_SHA256": sha256_bytes(raw), "POLICY_REVISION": TREE,
+                           "PLAN": str(root / "plan"), "DISCOVERY": str(root / "discovery"),
+                           "STATE": str(root / "state"), "BUILD_KEY": KEY, "SDK_INPUTS_ID": "1",
+                           "SDK_INPUTS_SHA256": KEY, "TRUSTED_WORKFLOW_SHA": TREE,
+                           "DEVELOPER_DIR": str(root / "developer")}
+            for home in (str(java_home), "", str(alias)):
+                with self.subTest(home=home), patch.dict(os.environ, {**environment, "JAVA_HOME": home}, clear=True), \
+                        patch("subprocess.run") as invoked:
+                    if home != str(java_home):
+                        with self.assertRaisesRegex(ValueError, "current Java home"):
+                            exec(compile(source, "ios-package-current-java", "exec"), {})
+                        invoked.assert_not_called()
+                    else:
+                        exec(compile(source, "ios-package-current-java", "exec"), {})
+                        command = invoked.call_args.args[0]
+                        self.assertEqual(str(java), command[command.index("--java-executable") + 1])
+                        self.assertEqual(policy["evidence"], command[command.index("--tooling-evidence") + 1])
+                        self.assertEqual(policy["publicKey"], command[command.index("--tooling-public-key") + 1])
+                    self.assertEqual(raw, policy_path.read_bytes())
 
     def test_caller_policy_is_pinned_across_capture_and_before_execution(self):
         policy = self.block("policy")

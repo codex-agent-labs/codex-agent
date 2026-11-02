@@ -4,7 +4,7 @@ These fixtures do not establish source, compiler, installed-consumer or CI trust
 Final admission belongs to the caller after its verified-input contexts exit.
 """
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import subprocess
 import sys
@@ -68,6 +68,19 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
         self.output_version = "0.3.0"
         self.host = "linux-x64"
         self.after_process = lambda fields: None
+        self.java = self.root / "jdk/bin/java"
+        self.java.parent.mkdir(parents=True)
+        self.java.write_bytes(b"synthetic Java executable, never launched")
+        self.codec_policy = self.root / "gradle/release/toolchains/sdk/javascript.json"
+        self.codec_policy.parent.mkdir(parents=True)
+        self.codec_policy.write_bytes(b'{"fixture":"not runtime authority"}\n')
+        self.jar = self.root / "authenticated.jar"
+        self.jar.write_bytes(b"mock owning capture")
+        self.tooling = dict(evidence=str(self.root / "tooling"), publicKey=str(self.root / "key.pub"),
+                            javaExecutable="/original-input-verifier/java", requiredTrustDomain="development",
+                            keyring=None, keysDirectory=None)
+        self.owner_exits = 0
+        self.reject_owner_exit = False
 
     def predecessor(self, *identity):
         self.predecessor_calls.append(identity)
@@ -75,10 +88,29 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
 
     def process(self, command, **arguments):
         self.calls.append(command)
-        self.assertEqual(self.root, arguments["cwd"])
+        self.actual_working_directory = arguments["cwd"]
         self.assertEqual({"SAFE": "explicit child environment"}, arguments["env"])
         self.assertEqual(subprocess.STDOUT, arguments["stderr"])
         self.assertFalse(arguments["check"])
+        if "JavaScriptSdkPackageMain" in command:
+            self.assertEqual([str(self.java), "-cp", str(self.jar), "JavaScriptSdkPackageMain", "0.3.0"], command[:5])
+            self.assertEqual(str(self.records[("runtime", "node-js", "package", "node-js")]["stage"] / "outputs/adapter"), command[5])
+            self.assertEqual(str(self.records[("contract", "contract", "binary", "common")]["stage"] / "outputs/evidence/canonical-api.json"), command[7])
+            self.assertEqual(str(self.codec_policy), command[-1])
+            self.assertNotEqual(self.root, arguments["cwd"])
+            self.assertTrue(Path(command[6]).is_dir())
+            self.assertFalse(any("gradle" in word for word in command[:4]))
+            arguments["stdout"].write(b"raw Java\xff\x00\n")
+            if self.launch_error:
+                raise OSError("synthetic process launch failure")
+            if self.return_code == 0:
+                archive = Path(command[-2])
+                archive.parent.mkdir(parents=True)
+                archive.write_bytes(b"mocked archive; archive verifier remains a separate gate")
+            fields = {"codexAgent.sdkCompatibilityRequest": str(self.request)}
+            self.after_process(fields)
+            return subprocess.CompletedProcess(command, self.return_code)
+        self.assertEqual(self.root, arguments["cwd"])
         self.assertEqual(".", command[command.index("-p") + 1])
         self.assertIn("ciProductPhase", command)
         self.assertIn("--offline", command)
@@ -98,19 +130,46 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
         self.after_process(fields)
         return subprocess.CompletedProcess(command, self.return_code)
 
+    @contextmanager
+    def tooling_capture(self, evidence, root, key, **options):
+        self.assertEqual(self.root, root)
+        self.assertEqual(self.producer["commit"], options["policy_revision"])
+        self.assertEqual(self.tooling["requiredTrustDomain"], options["required_trust_domain"])
+        yield self.jar
+        self.owner_exits += 1
+        if self.reject_owner_exit:
+            raise ValueError("original tooling changed on owner exit")
+
+    def archive_verify(self, archive, compatibility, output, *, sdk_version):
+        self.assertTrue(archive.is_file())
+        self.assertEqual(b"caller-authenticated compatibility\n", compatibility.read_bytes())
+        if self.output_version != sdk_version:
+            raise ValueError("productVersion differs in mocked archive gate")
+        output.write_bytes(b"mocked successful archive gate\n")
+
     def invoke(self, **changes):
         arguments = dict(producer=self.producer, sdk_version="0.3.0", trust_domain="development",
             repository_root=self.root, destination=self.destination, predecessor=self.predecessor, environ={})
         if self.plan["phase"] == "package":
             arguments["compatibility_request"] = self.request
+            arguments.update(sdk_validation_tooling=self.tooling, java_executable=self.java)
         with ExitStack() as stack:
             stack.enter_context(patch("native_wrappers.host_classifier", return_value=self.host))
             stack.enter_context(patch.object(product_reuse, "_runtime_worker_environment", return_value=(
                 {"SAFE": "explicit child environment"}, self.root / "gradlew")))
+            stack.enter_context(patch.object(product_reuse, "_worker_process_environment",
+                return_value={"SAFE": "explicit child environment"}))
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
             stack.enter_context(patch.object(worker, "_request_inventory", side_effect=lambda _: {
                 self.request_input: sha256_bytes(self.request_input.read_bytes())}))
             stack.enter_context(patch.object(worker.subprocess, "run", side_effect=self.process))
+            stack.enter_context(patch("products.inventory.git_regular_blob_bytes", side_effect=lambda root, commit, path, **kw:
+                self.codec_policy.read_bytes() if path.endswith("toolchains/sdk/javascript.json") else ("original Git fixture " + path).encode()))
+            stack.enter_context(patch("products.tooling.verified_tooling_capture", side_effect=self.tooling_capture))
+            stack.enter_context(patch("products.sdk_compatibility.load_sdk_compatibility_request", return_value={"sdk_version": "0.3.0"}))
+            stack.enter_context(patch("products.sdk_compatibility.produce_sdk_compatibility", side_effect=lambda *, output, **kw:
+                output.write_bytes(b"caller-authenticated compatibility\n")))
+            stack.enter_context(patch("products.sdk_archive.verify_npm_sdk_compatibility", side_effect=self.archive_verify))
             stack.enter_context(patch("products.restore.finalize_phase_object",
                                       side_effect=AssertionError("premature final admission")))
             return worker.execute(self.plan, **{**arguments, **changes})
@@ -150,19 +209,22 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
                 self.assertEqual(self.destination, result["diagnostics"])
                 self.assertEqual(regular_file_inventory(self.stage), result["outputInventory"])
                 self.assertEqual(before, regular_file_inventory(self.root / "originals"))
-                self.assertEqual({"gradle.log", "execution.json"}, {path.name for path in self.destination.iterdir()})
+                log = "package.log" if phase == "package" else "gradle.log"
+                self.assertEqual({log, "execution.json"}, {path.name for path in self.destination.iterdir()})
                 trace = load_canonical_json_bytes((self.destination / "execution.json").read_bytes())
-                self.assertEqual(str(self.root), trace["workingDirectory"])
-                self.assertEqual(b"raw Gradle\xff\x00\n", (self.destination / "gradle.log").read_bytes())
+                self.assertEqual(str(self.actual_working_directory), trace["workingDirectory"])
+                self.assertEqual(b"raw Java\xff\x00\n" if phase == "package" else b"raw Gradle\xff\x00\n",
+                                 (self.destination / log).read_bytes())
                 self.assertGreaterEqual(self.checkout.call_count, 3)
                 fields = dict(value[2:].split("=", 1) for value in self.calls[0] if value.startswith("-P"))
-                self.assertEqual(str(self.records[("contract", "contract", "binary", "common")]["stage"]),
-                                 fields["codexAgent.contractBinaryStage"])
                 if phase == "package":
-                    self.assertEqual("0.2.1", fields["codexAgent.runtimePackageVersion"])
-                    self.assertEqual(str(self.request), fields["codexAgent.sdkCompatibilityRequest"])
+                    self.assertEqual({}, fields)
+                    self.assertEqual(1, self.owner_exits)
+                    self.assertEqual(str(self.java), trace["packageJava"])
                     self.assertEqual(2, len(self.predecessor_calls))
                 else:
+                    self.assertEqual(str(self.records[("contract", "contract", "binary", "common")]["stage"]),
+                                     fields["codexAgent.contractBinaryStage"])
                     self.assertEqual("0.2.3", fields["codexAgent.runtimeBindingValidationVersion"])
                     self.assertNotIn("codexAgent.sdkCompatibilityRequest", fields)
                     self.assertEqual(3, len(self.predecessor_calls))
@@ -174,12 +236,25 @@ class SdkJavaScriptPhaseTest(unittest.TestCase):
                 self.return_code, self.launch_error = 7, launch
                 with self.assertRaisesRegex(OSError if launch else ValueError, "launch failure" if launch else "exit code 7"):
                     self.invoke()
-                self.assertEqual(b"raw Gradle\xff\x00\n", (self.destination / "gradle.log").read_bytes())
+                self.assertEqual(b"raw Java\xff\x00\n", (self.destination / "package.log").read_bytes())
                 trace = load_canonical_json_bytes((self.destination / "execution.json").read_bytes())
-                self.assertEqual(str(self.root), trace["workingDirectory"])
+                self.assertEqual(str(self.actual_working_directory), trace["workingDirectory"])
                 self.assertEqual(None if launch else 7, trace["returnCode"])
                 self.assertFalse((self.destination / "shard").exists())
-                self.assertFalse(self.stage.exists())
+                self.assertFalse((self.stage / "output-manifest.json").exists())
+
+    def test_package_requires_caller_tooling_and_owner_exit_without_gradle_fallback(self):
+        for override in ({"sdk_validation_tooling": None}, {"java_executable": Path("java")}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                self.invoke(**override)
+            self.assertEqual([], self.calls)
+            self.assertFalse(self.destination.exists())
+        self.reject_owner_exit = True
+        with self.assertRaisesRegex(ValueError, "owner exit"):
+            self.invoke()
+        self.assertEqual(1, len(self.calls))
+        self.assertNotIn("ciProductPhase", self.calls[0])
+        self.assertFalse((self.destination / "shard").exists())
 
     def test_original_receipt_stage_request_and_bytecode_mutations_reject(self):
         for kind in ("receipt", "stage", "request", "request-input", "bytecode"):

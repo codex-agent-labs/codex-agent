@@ -102,7 +102,7 @@ class SdkCheckpointIssuerTest(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive:
             yield archive,SimpleNamespace(transferred=len(stream.getvalue()))
 
-    def issue(self):
+    def issue(self, **options):
         f=self.fixture;self.number+=1;work=self.root/str(self.number)
         with ExitStack() as stack:
             stack.enter_context(patch.object(products,'api_json',side_effect=self.api))
@@ -142,7 +142,7 @@ class SdkCheckpointIssuerTest(unittest.TestCase):
                     for row in f.policy['contractFiles']:out.writestr(row['relativePath'],b'{}')
             stack.enter_context(patch.object(products,'_download_contract_ci_upload',side_effect=download))
             report=completed.issue_checkpoint(self.policy,f.source,self.control_selector,work,
-                root=self.root,revision=self.policy['issuerCommit'],frozen=f.base,token='synthetic')
+                root=self.root,revision=self.policy['issuerCommit'],frozen=f.base,token='synthetic',**options)
         return report,work
 
     def test_one_new_object_is_verified_and_old_parent_is_not_refetched(self):
@@ -223,3 +223,104 @@ class SdkCheckpointIssuerTest(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class SuccessfulSubsetIssuerTest(unittest.TestCase):
+    def setUp(self):
+        self.f = SdkCheckpointIssuerTest(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
+        f = self.f.fixture
+        f.source['jobName'] = 'product-validation / sdk-collect-4'
+        self.f.policy['collectors'] = [f.source['jobName']]
+        failed = {'product':'sdk','component':'rust','phase':'package','target':'desktop',
+                  'buildKey':sha256_bytes(b'failed Rust package')}
+        f.result['phases'].append({**failed,'state':'build'})
+        f.controls['runtime-state/wave-failures.json'] = {
+            'schemaVersion':1,'producer':deepcopy(f.producer),'failedPhases':[failed]}
+        f.bind(); self.f.collected['references'] = f.references
+
+    def test_partial_wave_keeps_failed_partition_and_only_opens_successful_new_object(self):
+        before = canonical_json_bytes(self.f.fixture.controls['runtime-state/wave-failures.json'])
+        report, work = self.f.issue()
+        self.assertEqual([445], self.f.member_reads)
+        self.assertEqual(len(self.f.body), report['verifiedObjectBytes'])
+        value = json.loads((work/'completion.json').read_bytes())
+        controls = value['completion']['controls']
+        self.assertEqual(before, canonical_json_bytes(controls['runtime-state/wave-failures.json']))
+        self.assertEqual({'csharp','python'}, {row['component'] for row in value['recipe']['completedPhases']})
+        self.assertEqual(1, report['failedPhasesPreserved'])
+        self.assertTrue(report['originalWaveFailed'])
+        self.assertTrue(report['successfulSubset'])
+        self.assertFalse(report['nativeAttestationIssued'])
+
+    def test_failed_original_successful_sibling_does_not_gain_qualification(self):
+        self.f.job['conclusion'] = 'failure'
+        with self.assertRaises(ValueError): self.f.issue()
+        self.assertEqual([], self.f.member_reads)
+        self.assertFalse((self.f.root/'1'/'completion.json').exists())
+
+class CumulativeHistoricalIssuerTest(unittest.TestCase):
+    def test_later_source_reuses_two_qualified_siblings_and_reads_only_new_rust_object(self):
+        from ci.tests.test_sdk_checkpoint_consumer import HistoricalCheckpointIssuerTest
+        from products.receipt import compute_build_key
+        htest=HistoricalCheckpointIssuerTest();htest.setUp();self.addCleanup(htest.doCleanups)
+        h=htest.h;f=h.fixture.issued;current=f.fixture
+        with htest.open() as witness:
+            current.parent_sdk['proof']=deepcopy(h.f.envelope['completion']['parentProof'])
+            prior=h.validate(witness)
+            old_raw=canonical_json_bytes(prior)
+            current.previous=prior;current.parent_sdk={key:value for key,value in prior.items() if key!='extension'}
+            f.producer=deepcopy(h.producer);current.producer=f.producer
+            current.source=deepcopy(htest.source);current.request['repositoryRevision']=f.producer['commit']
+            current.controls['runtime-state/producer.json']=f.producer
+            plan=json.loads(current.controls[completed.SOURCE_PLAN]);plan.update(validationCommit=f.producer['commit'],validationTree=f.producer['tree'])
+            current.controls[completed.SOURCE_PLAN]=json.dumps(plan,indent=2)+'\n'
+            phase_plan={key:deepcopy(f.receipt[key]) for key in PHASE_PLAN_KEYS}
+            phase_plan['component']='rust';phase_plan['buildKey']=compute_build_key(**{key:phase_plan[key] for key in (*completed.IDENTITY,'inputs')})
+            stage=f.root/'rust-stage';(stage/'outputs').mkdir(parents=True);(stage/'outputs/value').write_bytes(b'new successful Rust sibling')
+            write_output_manifest(stage,'sdk','rust','package','desktop','0.2.0',{'evidence':'outputs'})
+            f.verified=finalize_phase_object(stage_root=stage,phase_plan=phase_plan,producer=f.producer,
+                product_version='0.2.0',trust_domain='development',destination=f.root/'rust-shard')
+            f.body=(f.root/'rust-shard'/f.verified['objectPath']).read_bytes();f.receipt=f.verified['receipt']
+            row={**{key:f.receipt[key] for key in completed.IDENTITY},**{key:f.verified[key] for key in completed.OBJECT}}
+            current.request['availableObjects'].append(row);current.result['phases'].append({**row,'state':'retained'})
+            current.request['phaseAuthorities'].append({**{key:row[key] for key in completed.IDENTITY},
+                **{key:f.receipt['inputs'][key] for key in ('toolchainProfileDigest','flagsDigest','outputSchemaVersion')}})
+            current.controls['runtime-state/new-rust/phase-receipt.json']=f.receipt
+            current.object={'relativePath':'runtime-state/original-objects/'+f.verified['objectPath'],
+                'bytes':len(f.body),'sha256':f.verified['objectSha256']}
+            current.bind();f.policy=deepcopy(h.owner)
+            current.policy['parentProofSha256']=f.policy['parentProofSha256']
+            f.collected={'source':current.source,'controls':current.controls,'references':current.references,
+                'stateLocator':{'source':current.source['artifactId']},'controlArchive':{'bytes':4096}}
+            f.run=deepcopy(h.current_run);f.commit=deepcopy(h.current_commit)
+            job,name=fresh_sdk_worker_route(completed._identity(f.receipt),f.receipt)
+            f.job.update(name=job,run_id=f.producer['runId'],head_sha=f.run['head_sha'])
+            f.artifact.update(name=name,digest=sha256_bytes(b'new Rust worker upload'),size_in_bytes=len(f.body)+1000,
+                              workflow_run={'id':f.producer['runId'],'head_sha':f.run['head_sha']})
+            f.member_reads.clear()
+            htest.source=deepcopy(current.source)
+            with htest.open() as successor:
+                prior=h.validate(successor)
+                @contextmanager
+                def borrow(*args,**kw):
+                    self.assertEqual(h.selection,args[1]);successor.check();yield successor;successor.check()
+                old_spec,old_proof=prior['extension']['spec'],prior['extension']['proof']
+                old_rows={completed._identity(row):(row,locator) for row,locator in
+                          zip(old_spec['completedPhases'],old_proof['originals'],strict=True)}
+                def retained_original(record,receipt,locator,token):
+                    row,expected=old_rows[completed._identity(receipt)]
+                    self.assertEqual(expected,locator)
+                    self.assertEqual(old_proof['controls'][row['receiptPath']],receipt)
+                    self.assertEqual(next(item for item in old_spec['originals'] if completed._identity(item)==completed._identity(row)),record)
+                    return {},[],locator
+                with patch.object(completed,'_historical_checkpoint_issuer',side_effect=borrow), \
+                        patch.object(completed._HistoricalCheckpointIssuer,'validate',return_value=prior), \
+                        patch.object(completed._HistoricalCheckpointIssuer,'original',side_effect=retained_original):
+                    report,work=f.issue(previous=h.selection,history=h.history,current_policy=h.policy)
+            value=json.loads((work/'completion.json').read_bytes())
+            self.assertEqual([445],f.member_reads)
+            self.assertEqual(len(f.body),report['verifiedObjectBytes'])
+            self.assertEqual({'csharp','python','rust'},{row['component'] for row in value['recipe']['completedPhases']})
+            self.assertEqual(h.selection['ownerPolicySha256'],value['precedingCheckpoint']['ownerPolicySha256'])
+            self.assertEqual(2,report['checkpointPreparation']['inheritedSdkObjects'])
+            self.assertEqual(1,report['checkpointPreparation']['newSdkObjectsRequiringQualification'])
+            self.assertEqual(old_raw,canonical_json_bytes(prior))

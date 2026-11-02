@@ -871,3 +871,173 @@ class HistoricalCheckpointConsumerTest(unittest.TestCase):
                 cap.completed_phases()
 
 if __name__=='__main__':unittest.main()
+
+class HistoricalCheckpointIssuerTest(unittest.TestCase):
+    def setUp(self):
+        self.h=HistoricalCheckpointConsumerTest(); self.h.setUp(); self.addCleanup(self.h.doCleanups)
+        h=self.h
+        h.owner['collectors']=sorted(set(h.owner['collectors'])|{'product-validation / sdk-collect-4'})
+        h.current_job['name']='product-validation / sdk-checkpoint-4 / completed-sdk-checkpoint'
+        h.current_run['referenced_workflows'].append({'path':native.REPOSITORY+'/'+native.ISSUER_WORKFLOW+'@'+h.owner['issuerCommit'],
+                                                     'sha':h.owner['issuerCommit']})
+        self.source={**deepcopy(h.f.source),'producer':h.producer,'inventoryCommit':h.producer['commit'],
+            'workflowSha':h.owner['collectorWorkflowSha'],'jobName':'product-validation / sdk-collect-4',
+            'jobId':1002,'artifactId':1003}
+        self.collector={**h.current_job,'id':1002,'name':self.source['jobName'],
+            'status':'completed','conclusion':'success','started_at':'2026-10-24T10:45:00Z','completed_at':'2026-10-24T10:55:00Z'}
+        artifact=h.f.artifact(1003,'codex-agent-sdk-wave-4-state-'+h.producer['tree']+'-attempt-'+str(h.producer['runAttempt']),
+                              self.source['artifactSha256'],self.source['artifactBytes'],'10:50:00')
+        artifact['workflow_run']={'id':h.producer['runId'],'head_sha':h.current_run['head_sha']}
+        h.f.artifacts[1003]=artifact
+
+    def api(self,url,token):
+        h=self.h
+        if f"/actions/runs/{h.producer['runId']}/attempts/{h.producer['runAttempt']}/jobs?" in url:
+            return json.dumps({'jobs':[h.current_job,self.collector]}).encode()
+        return h.api(url,token)
+
+    @contextmanager
+    def open(self):
+        h=self.h;h.f.number+=1
+        with h.fixture.boundaries(), patch.object(reuse,'api_request',side_effect=self.api), \
+                completed._historical_checkpoint_issuer(h.history,h.selection,h.f.root/str(h.f.number),
+                    root=h.f.root,current_policy=h.policy,source=self.source,token='synthetic') as witness:
+            yield witness
+
+    def test_historical_issuer_binds_both_real_jobs_and_exact_inner_subject_then_closes(self):
+        h=self.h
+        with self.open() as witness:
+            self.assertIs(type(witness),completed._HistoricalCheckpointIssuer)
+            prior=h.validate(witness)
+            new={**deepcopy(h.f.spec),'source':self.source}
+            new.pop('reuseCompletion',None);new.pop('reuseCompletionProofSha256',None)
+            witness.inherit(new,prior)
+            changed=deepcopy(prior);changed['extension']['proof']['members'][0]['bytes']+=1
+            with self.assertRaises(ValueError):witness.inherit(new,changed)
+            with self.assertRaises(ValueError):witness.inherit({**new,'source':h.f.source},prior)
+            self.assertEqual([990],h.f.downloads)
+        with self.assertRaisesRegex(ValueError,'closed'):witness.inherit(new,prior)
+
+    def test_wrong_current_issuer_collector_or_unapproved_predecessor_never_inherits(self):
+        h=self.h;baseline=deepcopy((h.history,h.current_job,self.collector,h.current_run))
+        for fault in ('history','issuer','collector-failed','collector-running','collector-late','workflow','duplicate'):
+            with self.subTest(fault=fault):
+                h.history,h.current_job,self.collector,h.current_run=deepcopy(baseline)
+                if fault=='history':h.history['historicalPolicies'].clear()
+                elif fault=='issuer':h.current_job['name']='product-validation / plan'
+                elif fault=='collector-failed':self.collector['conclusion']='failure'
+                elif fault=='collector-running':self.collector.update(status='in_progress',conclusion=None)
+                elif fault=='collector-late':self.collector['completed_at']='2026-10-24T11:01:00Z'
+                elif fault=='workflow':h.current_run['referenced_workflows'].pop()
+                else:self.collector['id']=h.current_job['id']
+                with self.assertRaises(ValueError):
+                    with self.open():self.fail('invalid historical issuer yielded authority')
+
+    def test_signed_historical_predecessor_shape_requires_independent_owner_history(self):
+        h=self.h;f=h.f
+        previous={'native':{**f.selector,'artifactId':777,'runId':f.producer['runId']-1},
+            'subjectSha256':sha256_bytes(b'original predecessor'),
+            'ownerPolicySha256':h.selection['ownerPolicySha256'],
+            'source':{**deepcopy(f.source),'jobId':7771,'producer':{**f.producer,'runId':f.producer['runId']-1}}}
+        f.envelope['precedingCheckpoint']=previous
+        f.spec.pop('reuseCompletion');f.spec.pop('reuseCompletionProofSha256')
+        f.envelope['completion']['specSha256']=sha256_bytes(canonical_json_bytes(f.spec))
+        f.upload();h.selection['checkpoint']['native']=deepcopy(f.selector)
+        h.selection['checkpoint']['subjectSha256']=sha256_bytes(f.subject)
+        with self.open() as witness:self.assertIs(type(witness),completed._HistoricalCheckpointIssuer)
+        for fault in ('owner','signer','future','same-upload'):
+            with self.subTest(fault=fault):
+                f.envelope['precedingCheckpoint']=deepcopy(previous)
+                p=f.envelope['precedingCheckpoint']
+                if fault=='owner':p['ownerPolicySha256']=sha256_bytes(b'unknown')
+                elif fault=='signer':p['native']['signerCommit']='a'*40
+                elif fault=='future':p['native']['runId']=f.producer['runId']
+                else:p['native']['artifactId']=f.selector['artifactId']
+                f.upload();h.selection['checkpoint']['native']=deepcopy(f.selector)
+                h.selection['checkpoint']['subjectSha256']=sha256_bytes(f.subject)
+                with self.assertRaises(ValueError):
+                    with self.open():self.fail('unapproved inherited owner yielded authority')
+
+class SameAttemptNativeIssuerTest(unittest.TestCase):
+    def fixture(self,old_wave,new_wave):
+        t=HistoricalCheckpointIssuerTest();t.setUp();self.addCleanup(t.doCleanups)
+        h=t.h;f=h.f
+        f.policy['collectors']=sorted(set(f.policy['collectors'])|{f'product-validation / sdk-collect-{wave}' for wave in (4,6,7,8)})
+        f.source['jobName']=f'product-validation / sdk-collect-{old_wave}'
+        f.collector['name']=f.source['jobName']
+        f.envelope['sourceCheckpoint']['source']=f.source
+        f.identity=completed.checkpoint_archive_identity(f.policy,f.source,**{key:value for key,value in native._native_pin_arguments(f.selector).items()
+            if key in ('signer_commit','source_commit','run_id','run_attempt')})
+        f.issuer['name']=f.identity['jobName'];f.envelope['ownerPolicySha256']=sha256_bytes(canonical_json_bytes(f.policy))
+        f.envelope['completion']['specSha256']=sha256_bytes(canonical_json_bytes(f.spec))
+        f.envelope['completion']['source']['job']['name']=f.source['jobName']
+        f.artifacts[f.source['artifactId']]['name']=f'codex-agent-sdk-wave-{old_wave}-state-'+f.producer['tree']+'-attempt-'+str(f.producer['runAttempt'])
+        f.artifacts[992]['name']=completed.collector_control_artifact_name(f.source)
+        f.envelope['completion']['source']=products._runtime_original_locator(f.artifacts[f.source['artifactId']],
+            f.source['workflowSha'],PhaseInstanceId('sdk','javascript','metadata','node'),f.collector)
+        f.upload()
+        h.owner=deepcopy(f.policy);h.history['currentOwner']=h.owner;h.history['historicalPolicies']=[]
+        h.policy['sdkCompletion']=deepcopy(h.owner['bootstrap']);h.producer=deepcopy(f.producer)
+        h.selection={'ownerPolicySha256':sha256_bytes(canonical_json_bytes(h.owner)),
+                     'checkpoint':{'kind':'sdk-checkpoint','source':f.source,'native':f.selector,'subjectSha256':sha256_bytes(f.subject)}}
+        h.bind_current();h.current_run=deepcopy(f.run);h.current_run['conclusion']=None
+        h.current_job['name']=f'product-validation / sdk-checkpoint-{new_wave} / completed-sdk-checkpoint'
+        t.source.update(producer=h.producer,inventoryCommit=h.producer['commit'],workflowSha=h.owner['collectorWorkflowSha'],
+                        jobName=f'product-validation / sdk-collect-{new_wave}')
+        t.collector.update(name=t.source['jobName'],run_id=h.producer['runId'])
+        f.artifacts[1003]['name']=f'codex-agent-sdk-wave-{new_wave}-state-'+h.producer['tree']+'-attempt-'+str(h.producer['runAttempt'])
+        f.artifacts[1003]['workflow_run']['id']=h.producer['runId']
+        original=t.api
+        def api(url,token):
+            if f"/actions/runs/{h.producer['runId']}/attempts/{h.producer['runAttempt']}/jobs?" in url:
+                return json.dumps({'jobs':[f.collector,f.issuer,h.current_job,t.collector]}).encode()
+            return original(url,token)
+        t.api=api
+        return t
+
+    def test_exact_native_edges_use_completed_predecessor_without_a_whole_campaign_wait(self):
+        for edge in ((4,7),(4,8),(7,8)):
+            with self.subTest(edge=edge):
+                t=self.fixture(*edge)
+                with t.open() as witness:
+                    self.assertIs(type(witness),completed._HistoricalCheckpointIssuer)
+                    self.assertIs(witness.observation,witness._current_observation)
+                    self.assertEqual([990],t.h.f.downloads)
+                with self.assertRaisesRegex(ValueError,'closed'):witness.check()
+
+    def test_wrong_edge_later_issuer_or_reordered_collectors_never_inherits(self):
+        for fault in ('reverse','same-wave','future-issuer','late-collector','rotated-owner'):
+            with self.subTest(fault=fault):
+                t=self.fixture(*( (7,4) if fault=='reverse' else (4,4) if fault=='same-wave' else (4,7)))
+                if fault=='future-issuer':t.h.f.issuer['completed_at']='2026-10-24T11:01:00Z'
+                elif fault=='late-collector':t.h.f.collector['completed_at']='2026-10-24T10:46:00Z'
+                elif fault=='rotated-owner':t.h.owner['issuerCommit']='e'*40
+                with self.assertRaises(ValueError):
+                    with t.open():self.fail('unregistered or future native predecessor yielded authority')
+
+class NativeIssuerDiscoveryTest(unittest.TestCase):
+    def test_only_finished_registered_same_attempt_predecessor_is_selected_without_waiting(self):
+        for status in ('success','running','failed','plan-consumer','wrong-edge'):
+            with self.subTest(status=status):
+                factory=SameAttemptNativeIssuerTest();t=factory.fixture(4,6 if status=='wrong-edge' else 7)
+                self.addCleanup(factory.doCleanups);h=t.h;f=h.f
+                if status=='running':f.issuer.update(status='in_progress',conclusion=None,completed_at=None)
+                elif status=='failed':f.issuer['conclusion']='failure'
+                phases=completed._records(f.spec['completedPhases'],'fixture phases')
+                current={key:{field:row[field] for field in completed.IDENTITY+completed.OBJECT} for key,row in phases.items()}
+                baseline=dict(list(current.items())[:1]);reads=[]
+                def download(artifact,token,path,*args):
+                    reads.append(artifact['id']);Path(path).write_bytes(f.raw);return artifact,path
+                with h.fixture.boundaries(), patch.object(reuse,'api_request',side_effect=t.api), \
+                        patch('products.inventory.git_regular_blob_bytes',return_value=canonical_json_bytes(f.spec)), \
+                        patch.object(completed,'_current_checkpoint_baseline',side_effect=[baseline,current]), \
+                        patch.object(products,'_catalog_artifacts',return_value=[f.artifacts[990]]), \
+                        patch.object(products,'_download_contract_ci_upload_bytes',side_effect=download):
+                    result,raw=completed.discover_historical_checkpoint(h.history,h.policy,root=f.root,
+                        consumer={'kind':'ci','producer':h.producer},token='synthetic',
+                        **({} if status=='plan-consumer' else {'_issuer_source':t.source}))
+                if status=='success':
+                    self.assertEqual(990,result['checkpoint']['native']['artifactId']);self.assertEqual(f.raw,raw)
+                    self.assertEqual([990],reads)
+                else:self.assertEqual((None,None,[]),(result,raw,reads))
+                self.assertEqual([],f.verified)

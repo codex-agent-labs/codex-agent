@@ -558,6 +558,21 @@ class UnverifiedIosProductionInputTest(unittest.TestCase):
         self.assertFalse((self.output / "shard").exists())
         self.assertFalse(any(path.suffix == ".zip" for path in self.output.rglob("*")))
 
+    def test_standalone_package_log_recovers_same_untrusted_original_bytes(self):
+        self.files["worker/package.log"] = self.files.pop("worker/gradle.log")
+        self.archive()
+        result = self.call()
+        self.assertEqual(self.receipt["outputs"], result["outputs"])
+        self.assertTrue((self.output / "production-origin/worker/package.log").is_file())
+        self.assertFalse((self.output / "shard").exists())
+
+    def test_ambiguous_production_logs_reject_before_body_download(self):
+        self.files["worker/package.log"] = b"ambiguous new log"
+        self.archive()
+        with self.assertRaisesRegex(ValueError, "log is missing or ambiguous"):
+            self.call()
+        self.assertFalse(self.output.exists())
+
     def test_wrong_current_inputs_reject_before_body_download(self):
         self.ready["inputs"] = {**self.ready["inputs"], "flagsDigest": "sha256:" + "9" * 64}
         with self.assertRaisesRegex(ValueError, "current inputs"):

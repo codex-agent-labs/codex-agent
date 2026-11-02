@@ -2013,10 +2013,28 @@ def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
                                 {"source", "controlArtifact"}, "Checkpoint workflow selectors")
     if type(preceding_selector) is not str or len(preceding_selector.encode("utf-8")) > 16 * 1024:
         raise ValueError("Preceding checkpoint selector exceeds its bound")
-    previous = load_json_bytes(preceding_selector.encode("utf-8")) if preceding_selector else None
-    if preceding_selector:
-        checkpoint_selection(policy, previous)  # Explicit invalid input never falls back.
     producer = _collector_control_source(inputs["source"])["producer"]
+    previous = (None if preceding_selector in ("", "auto") else load_json_bytes(preceding_selector.encode("utf-8")))
+    history = current_policy = archive_bytes = None
+    held = []
+    historical = preceding_selector == "auto" or type(previous) is dict and "ownerPolicySha256" in previous
+    if historical:
+        from completed_sdk_reuse import validate_checkpoint_history, discover_historical_checkpoint
+        current_path = Path(os.environ["CODEX_AGENT_COMPLETED_REUSE_POLICY"])
+        current_bytes = read_regular_file_bytes(current_path, max_bytes=LIMIT, reject_symlink_parents=True)
+        current_policy = load_canonical_json_bytes(current_bytes)
+        validate_completed_reuse_policy(current_policy)
+        reference = current_policy["sdkCheckpointHistory"]
+        history_path = Path(reference["path"])
+        history_bytes = read_regular_file_bytes(history_path, max_bytes=LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(history_bytes) != reference["sha256"]:
+            raise ValueError("Issuer checkpoint history differs from its protected policy pin")
+        history = validate_checkpoint_history(load_canonical_json_bytes(history_bytes))
+        if history["currentOwner"] != policy:
+            raise ValueError("Historical issuer history changes its current protected owner")
+        held = [(current_path, current_bytes), (history_path, history_bytes)]
+    elif preceding_selector:
+        checkpoint_selection(policy, previous)  # Explicit invalid input never falls back.
     if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
             or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
             or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
@@ -2025,19 +2043,28 @@ def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
             or os.environ.get("GITHUB_RUN_ATTEMPT") != str(producer.get("runAttempt"))
             or os.environ.get("GITHUB_JOB") != "completed-sdk-checkpoint"):
         raise ValueError("Checkpoint source differs from the actual executing CI attempt")
+    if preceding_selector == "auto":
+        from sdk_handoff import _ensure_observed_sdk_commit
+        _ensure_observed_sdk_commit(root, producer, token)
+        previous, archive_bytes = discover_historical_checkpoint(history, current_policy,
+            root=root, consumer={"kind": "ci", "producer": producer}, token=token, _issuer_source=inputs["source"])
     path = _frozen_spec_path(root, commit)
     frozen_bytes = git_regular_blob_bytes(root, commit, path, max_bytes=LIMIT)
     if read_regular_file_bytes(root / path, max_bytes=LIMIT, reject_symlink_parents=True) != frozen_bytes:
         raise ValueError("Checkpoint frozen policy differs from its native source")
     report = issue_checkpoint(policy, inputs["source"], inputs["controlArtifact"], work,
-        root=root, revision=commit, frozen=load_canonical_json_bytes(frozen_bytes), token=token, previous=previous)
+        root=root, revision=commit, frozen=load_canonical_json_bytes(frozen_bytes), token=token, previous=previous,
+        **({"history": history, "current_policy": current_policy, "_previous_archive_bytes": archive_bytes}
+           if previous is not None and "ownerPolicySha256" in previous else {}))
+    if any(read_regular_file_bytes(path, max_bytes=LIMIT, reject_symlink_parents=True) != raw for path, raw in held):
+        raise ValueError("Historical issuer current policy changed during issuance")
     if read_regular_file_bytes(policy_path, max_bytes=16 * 1024, reject_symlink_parents=True) != owner_bytes:
         raise ValueError("Checkpoint owner policy changed during issuance")
     work = Path(work)
     reused = "reusedCheckpoint" in report
     if reused:
-        expected = previous if previous is not None else {"kind": "existing-sdk-completion",
-            "native": policy["bootstrap"], "subjectSha256": policy["bootstrapProofSha256"]}
+        expected = (previous.get("checkpoint", previous) if previous is not None else {"kind": "existing-sdk-completion",
+            "native": policy["bootstrap"], "subjectSha256": policy["bootstrapProofSha256"]})
         if (report["reusedCheckpoint"] != expected["native"]
                 or report["reusedCheckpointSubjectSha256"] != expected["subjectSha256"]
                 or report.get("reusedCheckpointOutput", expected) != expected

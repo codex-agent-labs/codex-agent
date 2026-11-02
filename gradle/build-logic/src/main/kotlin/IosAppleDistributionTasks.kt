@@ -163,14 +163,14 @@ fun Project.registerIosAppleDistributionTasks(
             summaryFile.set(layout.buildDirectory.file("swift-authentication-tests-summary.json"))
         }
 
-    val packageCodexAgentAppleDistribution = tasks.register<Zip>("packageCodexAgentAppleDistribution") {
+    val packageCodexAgentAppleDistribution = tasks.register<CanonicalAppleZip>("packageCodexAgentAppleDistribution") {
         dependsOn(stageCodexAgentAppleDistribution)
         archiveFileName.set("CodexAgentPackage-${project.version}.zip")
         destinationDirectory.set(layout.buildDirectory.dir("distributions"))
         isPreserveFileTimestamps = false
         isReproducibleFileOrder = true
         from(appleDistributionDirectory.map { it.dir("CodexAgentPackage") })
-    }
+    }.let { tasks.named<Zip>(it.name) }
 
     val verifyIosLicensePackaging = tasks.register<VerifyIosLicensePackagingTask>("verifyIosLicensePackaging") {
         dependsOn(stageCodexAgentAppleDistribution)

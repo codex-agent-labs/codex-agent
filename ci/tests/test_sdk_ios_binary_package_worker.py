@@ -1,7 +1,8 @@
 """Binary-only iOS package worker controls; mocked process execution is not host proof."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import unittest
@@ -12,6 +13,7 @@ import product_reuse
 import sdk_ios_package
 from products.inventory import regular_file_inventory, sha256_bytes
 from products.receipt import write_output_manifest
+from ci.tests.product_chain_support import write_receipt
 
 
 class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
@@ -22,41 +24,66 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
         self.return_code = 0
         self.mutate = lambda: None
         self.process_calls = []
+        self.owner_closed = False
+        self.owner_exit_failure = False
+        self.java = self.root / "tooling/java"
+        self.java.parent.mkdir(); self.java.write_bytes(b"synthetic Java executable")
+        self.jar = self.java.parent / "tooling.jar"; self.jar.write_bytes(b"synthetic signed JAR")
+        self.developer = self.root / "Developer"; self.developer.mkdir()
+        self.policy = self.root / "gradle/release/toolchains/sdk/ios-package.json"
+        self.policy.parent.mkdir(parents=True); self.policy.write_bytes(b"{}\n")
+        for target in ("ios-arm64", "ios-simulator-arm64"):
+            file = self.binary["stage"] / f"outputs/apple-binary/{target}/CodexAgent.framework/CodexAgent"
+            file.parent.mkdir(parents=True); file.write_bytes(b"synthetic unchanged archive")
+        file = self.binary["stage"] / "outputs/maven/input.jar"
+        file.parent.mkdir(); file.write_bytes(b"synthetic Maven")
+        manifest = write_output_manifest(self.binary["stage"], "sdk", "sdk-ios", "binary", "ios", "0.8.0", {"fixture": "outputs"})
+        self.binary["receipt"] = write_receipt(self.binary["receiptPath"], product="sdk", component="sdk-ios",
+            phase="binary", target="ios", outputs=manifest["outputs"], upstream=[],
+            context={"producer": self.producer}, version="0.8.0", version_identity="0.8.0")
+
+    @contextmanager
+    def tooling(self, *args, **kwargs):
+        self.assertEqual("d" * 40, kwargs["policy_revision"])
+        yield self.jar
+        if self.owner_exit_failure:
+            raise ValueError("signed tooling owner changed")
+        self.owner_closed = True
+
+    def sources(self, repository, revision, output):
+        self.assertEqual(self.root, repository); self.assertEqual(self.producer["commit"], revision)
+        output.mkdir(); (output / "source.txt").write_bytes(b"exact source fixture")
+        return {"xcodeVersion": "26.6", "xcodeBuild": "17F1", "swiftVersion": "6.2"}
+
+    def compatibility_producer(self, *, sdk_version, output):
+        self.assertEqual("0.8.0", sdk_version)
+        output.write_bytes(b"synthetic authenticated compatibility")
+
+    def maven(self, source, output, compatibility, group, version, component):
+        self.assertTrue(self.owner_closed)
+        self.assertEqual(self.binary["stage"] / "outputs/maven", source)
+        self.assertEqual(("io.github.codex-agent-labs", "0.8.0", "sdk-ios"), (group, version, component))
+        output.mkdir(); (output / "artifact.bin").write_bytes(b"synthetic maven")
 
     def process(self, command, **arguments):
         self.process_calls.append(command)
-        self.assertEqual(self.root, arguments["cwd"])
-        self.assertEqual({"SAFE": "environment"}, arguments["env"])
+        self.assertNotEqual(self.root, arguments["cwd"])
+        self.assertEqual({"DEVELOPER_DIR": str(self.developer)}, arguments["env"])
         self.assertEqual(subprocess.STDOUT, arguments["stderr"])
         self.assertFalse(arguments["check"])
-        fields = dict(value[2:].split("=", 1) for value in command if value.startswith("-P"))
-        self.assertEqual("true", fields["codexAgent.iosPackageFromBinary"])
-        self.assertEqual(str(self.binary["stage"]), fields["codexAgent.sdkIosBinaryStageRoot"])
-        self.assertEqual(str(self.contract["stage"]), fields["codexAgent.contractBinaryStage"])
-        self.assertEqual("0.2.0", fields["codexAgent.contractVersion"])
-        self.assertEqual(str(self.request), fields["codexAgent.sdkCompatibilityRequest"])
-        self.assertEqual(self.producer["commit"], fields["codexAgent.candidateCommit"])
-        self.assertEqual(self.producer["tree"], fields["codexAgent.candidateTree"])
-        self.assertEqual(
-            ("sdk", "sdk-ios", "package", "ios"),
-            tuple(fields[f"codexAgent.{name}"] for name in ("product", "component", "phase", "target")),
-        )
-        self.assertTrue({
-            "codexAgent.iosVerifiedDistributionDirectory",
-            "codexAgent.iosNativeEvidenceDirectory",
-            "codexAgent.iosExpectedSdkCompatibility",
-            "codexAgent.iosExpectedDistributionProof",
-        }.isdisjoint(fields))
+        self.assertEqual([str(self.java), "-cp", str(self.jar), "AppleSdkPackageMain", "0.8.0"], command[:5])
+        self.assertEqual(str(self.stage / "outputs/apple"), command[9])
+        self.assertEqual(str(self.policy), command[-1])
+        self.assertNotIn("ciProductPhase", command)
+        self.assertFalse(any("gradlew" in value for value in command))
+        copied = Path(command[5]) / "ios-arm64/CodexAgent.framework/CodexAgent"
+        original = self.binary["stage"] / "outputs/apple-binary/ios-arm64/CodexAgent.framework/CodexAgent"
+        self.assertEqual(original.read_bytes(), copied.read_bytes())
+        self.assertNotEqual((original.stat().st_dev, original.stat().st_ino), (copied.stat().st_dev, copied.stat().st_ino))
         arguments["stdout"].write(b"raw binary package diagnostics\x00\xff\n")
         if self.return_code == 0:
-            for name in ("apple", "evidence", "maven"):
-                output = self.stage / f"outputs/{name}/artifact.bin"
-                output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_bytes(f"synthetic {name}\n".encode())
-            write_output_manifest(
-                self.stage, "sdk", "sdk-ios", "package", "ios", "0.8.0",
-                {name: f"outputs/{name}" for name in ("apple", "evidence", "maven")},
-            )
+            output = self.stage / "outputs/apple/artifact.bin"
+            output.parent.mkdir(); output.write_bytes(b"synthetic apple")
         self.mutate()
         return subprocess.CompletedProcess(command, self.return_code)
 
@@ -69,7 +96,10 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
             "compatibility_request": self.request,
             "repository_root": self.root,
             "destination": self.destination,
-            "environ": {},
+            "environ": {"DEVELOPER_DIR": str(self.developer)},
+            "tooling_evidence": self.java.parent, "tooling_public_key": self.java,
+            "java_executable": self.java, "policy_revision": "d" * 40,
+            "required_trust_domain": "development",
         }
         arguments.update(changes)
         request_inventory = {self.request_input: sha256_bytes(self.request_input.read_bytes())}
@@ -81,9 +111,16 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
             ))
             stack.enter_context(patch.object(
                 product_reuse,
-                "_runtime_worker_environment",
-                return_value=({"SAFE": "environment"}, self.root / "gradlew"),
+                "_worker_process_environment",
+                return_value={"DEVELOPER_DIR": str(self.developer)},
             ))
+            stack.enter_context(patch.object(product_reuse, "_runtime_worker_environment", side_effect=AssertionError("Gradle bootstrap forbidden")))
+            stack.enter_context(patch("products.inventory.git_regular_blob_bytes", return_value=self.policy.read_bytes()))
+            stack.enter_context(patch("products.sdk_apple_package_source.capture_apple_package_sources", side_effect=self.sources))
+            stack.enter_context(patch("products.sdk_compatibility.load_sdk_compatibility_request", return_value={"sdk_version": "0.8.0"}))
+            stack.enter_context(patch("products.sdk_compatibility.produce_sdk_compatibility", side_effect=self.compatibility_producer))
+            stack.enter_context(patch("products.sdk_maven.package_sdk_maven", side_effect=self.maven))
+            stack.enter_context(patch("products.tooling.verified_tooling_capture", side_effect=self.tooling))
             self.checkout = stack.enter_context(patch.object(product_reuse, "_runtime_worker_checkout"))
             stack.enter_context(patch.object(sdk_ios_package.subprocess, "run", side_effect=self.process))
             return sdk_ios_package.execute(self.plan, **arguments)
@@ -107,7 +144,7 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
         self.assertFalse(self.validation.exists())
         self.assertEqual(
             b"raw binary package diagnostics\x00\xff\n",
-            (self.destination / "gradle.log").read_bytes(),
+            (self.destination / "package.log").read_bytes(),
         )
         self.assertEqual(0, json.loads((self.destination / "execution.json").read_bytes())["returnCode"])
         for path, inventory in originals.items():
@@ -143,20 +180,8 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
             finally:
                 artifact.write_bytes(before)
 
-    def test_every_binary_gradle_owned_root_must_be_fresh_and_is_preserved(self):
-        sdk_build = self.root / "codex-agent-sdk/build"
-        ios_build = self.root / "codex-agent-runtime-ios/build"
-        roots = (
-            self.stage,
-            sdk_build / f"imported-sdk-binary-stages/{self.producer['tree']}/sdk-ios",
-            sdk_build / f"sdk-compatibility/{self.producer['tree']}",
-            sdk_build / f"apple-sdk-package-tasks/{self.producer['tree']}",
-            ios_build / "imported-frameworks",
-            ios_build / "XCFrameworks/release",
-            ios_build / "release-xcframework",
-            ios_build / "apple-distribution",
-            ios_build / "distributions",
-        )
+    def test_every_standalone_owned_root_must_be_fresh_and_is_preserved(self):
+        roots = (self.stage, self.destination)
         for root in roots:
             root.mkdir(parents=True)
             marker = root / "user-owned"
@@ -199,11 +224,24 @@ class SdkIosBinaryPackageWorkerTest(unittest.TestCase):
 
         self.assertEqual(
             b"raw binary package diagnostics\x00\xff\n",
-            (self.destination / "gradle.log").read_bytes(),
+            (self.destination / "package.log").read_bytes(),
         )
         self.assertEqual(7, json.loads((self.destination / "execution.json").read_bytes())["returnCode"])
         self.assertFalse(self.validation.exists())
         self.assertFalse((self.stage / "phase-receipt.json").exists())
+
+    def test_late_tooling_exit_failure_keeps_produced_bytes_without_manifest(self):
+        self.owner_exit_failure = True
+        with self.assertRaisesRegex(ValueError, "owner changed"):
+            self.execute()
+        self.assertTrue((self.stage / "outputs/apple/artifact.bin").is_file())
+        self.assertFalse((self.stage / "output-manifest.json").exists())
+        self.assertFalse((self.stage / "phase-receipt.json").exists())
+
+    def test_missing_or_invalid_tooling_policy_rejects_before_execution(self):
+        with self.assertRaisesRegex(ValueError, "exact tooling policy"):
+            self.execute(policy_revision="branch")
+        self.assertEqual([], self.process_calls)
 
 
 if __name__ == "__main__":

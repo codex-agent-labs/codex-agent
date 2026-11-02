@@ -71,10 +71,13 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         self.inputs = {"selection": self.selection, "sdk": {"directory": self.sdk}, "runtime": {
             "originalPhases": self.original_paths,
             "receiptBytes": {identity: raw for identity, raw in self.receipts.items() if identity.product == "runtime"}}}
+        self.java_home = self.root / "current-package-jdk"
+        self.java_home.mkdir()
         self.arguments = {"expected_build_key": "sha256:" + "a" * 64, "artifact_id": 71,
             "artifact_sha256": "sha256:" + "b" * 64, "trusted_workflow_sha": "c" * 40,
             "keyring": self.root / "caller-keyring.json", "keys_directory": self.root / "caller-keys",
-            "repository_root": self.repository, "environ": {"GITHUB_RUN_ID": "7"}, "token": "caller-token"}
+            "repository_root": self.repository,
+            "environ": {"GITHUB_RUN_ID": "7", "JAVA_HOME": str(self.java_home)}, "token": "caller-token"}
         self.events, self.live = [], False
         self.failure = None
         self.result = None
@@ -133,6 +136,12 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
                          arguments["trust_domain"])
         self.assertEqual(self.sdk / REQUEST_NAME if ready["phase"] == "package" else None,
                          arguments["compatibility_request"])
+        if ready["phase"] == "package":
+            self.assertEqual(self.java_home / "bin/java", arguments["java_executable"])
+            self.assertIn("sdk_validation_tooling", arguments)
+        else:
+            self.assertNotIn("java_executable", arguments)
+            self.assertNotIn("sdk_validation_tooling", arguments)
         # The real property mapper must work with only the declared stages.
         properties = worker.properties(ready, predecessor=arguments["predecessor"],
                                        compatibility_request=arguments["compatibility_request"])
@@ -194,6 +203,16 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         for mocked in self.mocks[1:]:
             mocked.assert_not_called()
         self.assertFalse(self.destination.exists())
+
+    def test_package_rejects_missing_or_relative_java_home_without_worker_or_finalization(self):
+        for home in ("", "relative/java"):
+            with self.subTest(home=home):
+                self.destination = self.repository / ("build/no-java" if not home else "build/relative-java")
+                self.arguments["environ"]["JAVA_HOME"] = home
+                with self.assertRaisesRegex(ValueError, "explicit current Java home"):
+                    self.invoke()
+                self.mocks[2].assert_not_called()
+                self.mocks[3].assert_not_called()
 
     def test_mismatched_runtime_original_receipt_never_finalizes(self):
         self.inputs["runtime"]["receiptBytes"][NODE_PACKAGE] = self.receipts[NODE_PACKAGE] + b"\n"

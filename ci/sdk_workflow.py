@@ -1678,9 +1678,17 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
             return {"stage": directory / "stage", "receiptPath": receipt_path, "receipt": receipt}
 
         trust = "development" if producer["event"] == "pull_request" else "release"
+        package_options = {}
+        if phase == "package":
+            java_home = Path(environ.get("JAVA_HOME", ""))
+            if not java_home.is_absolute() or java_home.resolve(strict=True) != java_home:
+                raise ValueError("JavaScript package requires the explicit current Java home")
+            package_options = {"sdk_validation_tooling": sdk_validation_tooling,
+                               "java_executable": java_home / "bin/java"}
         result = execute(ready, producer=producer, sdk_version=selection["sdkVersion"], trust_domain=trust,
             repository_root=root, destination=destination / "worker", predecessor=original, environ=environ,
-            compatibility_request=inputs["sdk"]["directory"] / REQUEST_NAME if phase == "package" else None)
+            compatibility_request=inputs["sdk"]["directory"] / REQUEST_NAME if phase == "package" else None,
+            **package_options)
         if regular_file_inventory(prepared, allow_empty=True) != before:
             raise ValueError("Elected SDK predecessor inputs changed during execution")
     if regular_file_inventory(prepared, allow_empty=True) != before:

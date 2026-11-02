@@ -229,7 +229,7 @@ class PackageCheckpointCollectorTest(unittest.TestCase):
 if __name__=='__main__':unittest.main()
 
 class HistoricalCheckpointWaveWiringTest(unittest.TestCase):
-    def test_javascript_three_phase_route_issues_collect6_for_later_plan_without_enabling_other_waves(self):
+    def test_javascript_three_phase_route_issues_collect6_and_keeps_unregistered_waves_closed(self):
         import re
         import tempfile
         import sdk_phase
@@ -261,7 +261,7 @@ class HistoricalCheckpointWaveWiringTest(unittest.TestCase):
         for name in ("plan", "product-resume"):
             self.assertIn("checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}", block(name))
             self.assertIn('--sdk-historical-checkpoint auto', block(name))
-        for name in ("sdk-checkpoint-4", "sdk-checkpoint-7"):
+        for name in ("sdk-checkpoint-5", "sdk-checkpoint-19"):
             self.assertNotIn(name, jobs)
         # Real collector entrypoint; product collection and advance remain explicit fixture seams.
         with tempfile.TemporaryDirectory() as temporary:
@@ -283,3 +283,33 @@ class HistoricalCheckpointWaveWiringTest(unittest.TestCase):
                 workflow.collect(original, root/"collected", root/"output", wave=6, family="javascript-metadata",
                     repository_root=root, trusted_workflow_sha="a"*40, token="synthetic", checkpoint_controls=True)
             self.assertEqual((1,1),(collected.call_count,advanced.call_count))
+
+class NativeSubsetCheckpointWiringTest(unittest.TestCase):
+    def test_only_exact_native_subsets_and_existing_javascript_route_choose_automatic_predecessor(self):
+        import re
+        root=Path(__file__).resolve().parents[2]
+        source=(root/'.github/workflows/product-validation.yml').read_text()
+        jobs=completed._checkpoint_workflow_jobs(source.encode())
+        def block(name):
+            return re.search(r'^  '+re.escape(name)+r':\n.*?(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)',source,re.M|re.S).group()
+        for wave in (4,6,7,8):
+            issuer=jobs[f'sdk-checkpoint-{wave}']
+            self.assertEqual(['plan',f'sdk-collect-{wave}'],completed._checkpoint_needs(jobs,f'sdk-checkpoint-{wave}'))
+            self.assertEqual('auto',issuer['with']['sdk-preceding-checkpoint'])
+            text=block(f'sdk-checkpoint-{wave}')
+            for guard in ('always()','!cancelled()','!inputs.fullReuseAcceptanceOnly','inputs.sdkCheckpoints',
+                          "needs.plan.outputs.event_authorized == 'true'","needs.plan.outputs.remote_build_authorized == 'true'",
+                          f"needs.sdk-collect-{wave}.result == 'success'"):
+                self.assertIn(guard,text)
+            self.assertIn("checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}",block(f'sdk-collect-{wave}'))
+        action=(root/'.github/actions/collect-runtime-wave/action.yml').read_text()
+        full=action.split('    - id: controls\n',1)[1].split('    - id: controls_subset\n',1)[0]
+        subset=action.split('    - id: controls_subset\n',1)[1].split('    - id: upload_controls\n',1)[0]
+        self.assertIn("steps.collect.outputs.wave_failed == 'false'",full)
+        self.assertNotIn('--successful-subset',full)
+        self.assertIn("contains(fromJSON('[4,7,8]'), fromJSON(inputs.wave))",subset)
+        self.assertIn("steps.collect.outputs.wave_failed == 'true'",subset)
+        self.assertIn('--successful-subset',subset)
+        self.assertIn("if: steps.collect.outputs.wave_failed == 'false'\n      shell: bash",action)
+        self.assertIn('steps.controls.outputs.source || steps.controls_subset.outputs.source',action)
+        self.assertNotIn('sdk-preceding-checkpoint: auto',block('sdk-checkpoint-9'))

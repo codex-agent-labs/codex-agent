@@ -19,6 +19,14 @@ class SdkJavascriptToolingForwardingTest(unittest.TestCase):
         self.harness = action_harness.SdkFamilyActionsTest(methodName='runTest')
         self.harness.setUp()
 
+    def test_package_uses_exact_java_without_gradle_bootstrap_and_retains_both_diagnostics(self):
+        self.assertIn("    - if: inputs.phase == 'package'\n      uses: actions/setup-java@cf277c60", self.action)
+        self.assertIn("java-version: '17.0.21+9'", self.action)
+        self.assertIn("    - if: inputs.phase == 'validation'\n      uses: ./.github/actions/setup-kmp", self.action)
+        self.assertEqual(1, self.action.count('uses: ./.github/actions/setup-kmp'))
+        self.assertIn('build/sdk-worker/worker/gradle.log', self.action)
+        self.assertIn('build/sdk-worker/worker/package.log', self.action)
+
     def test_optional_caller_policy_is_forwarded_to_original_capture_before_identity(self):
         inputs = self.action.split('inputs:\n', 1)[1].split('runs:\n', 1)[0]
         self.assertIn("  sdk-validation-tooling:\n    default: ''", inputs)

@@ -220,3 +220,68 @@ class CollectorControlsTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class SuccessfulSubsetControlsTest(unittest.TestCase):
+    def setUp(self):
+        self.f = CollectorControlsTest(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
+        self.f.role = self.f.source['jobName'] = self.f.job['name'] = 'product-validation / sdk-collect-4'
+        self.f.artifacts[700]['name'] = self.f.artifacts[700]['name'].replace('wave-9-', 'wave-4-')
+        self.failure = {'product': 'sdk', 'component': 'python', 'phase': 'package', 'target': 'desktop',
+                        'buildKey': sha256_bytes(b'failed elected sibling')}
+        self.f.controls['runtime-state/reuse-wave-result.json']['phases'].append(
+            {**self.failure, 'state': 'build'})
+        self.f.controls['runtime-state/wave-failures.json'] = {
+            'schemaVersion': 1, 'producer': deepcopy(self.f.producer), 'failedPhases': [self.failure]}
+        self.rebind()
+
+    def rebind(self):
+        self.f.references['inventory'] = [
+            {'relativePath': path, 'bytes': len(control_bytes(path, value)),
+             'sha256': sha256_bytes(control_bytes(path, value))}
+            for path, value in sorted(self.f.controls.items())]
+        self.f.references['references'] = [{**self.f.references['inventory'][0],
+            'sourcePath': self.f.references['inventory'][0]['relativePath']}]
+        self.f.reference_bytes = canonical_json_bytes(self.f.references)
+        self.f.source['referenceControlSha256'] = sha256_bytes(self.f.reference_bytes)
+
+    def files(self):
+        return completed.prepare_collector_controls(self.f.source, self.f.reference_bytes,
+                                                    self.f.controls, successful_subset=True)
+
+    def test_explicit_subset_keeps_original_failure_and_successful_collector_custody(self):
+        before = canonical_json_bytes(self.f.controls)
+        with self.assertRaises(ValueError): self.f.files()
+        files = self.files()
+        envelope = json.loads(files[completed.COLLECTOR_CONTROL_NAME])
+        self.assertEqual('sdk-collector-successful-subset-controls', envelope['kind'])
+        self.assertEqual(self.f.controls, envelope['controls'])
+        result = self.f.fetch(self.f.upload(files=files))
+        self.assertEqual(self.f.controls, result['controls'])
+        self.assertEqual(before, canonical_json_bytes(result['controls']))
+        self.assertEqual([701], self.f.downloads)
+        self.assertNotIn('extension', result)
+        self.f.job['conclusion'] = 'failure'
+        with self.assertRaises(ValueError): self.f.fetch(self.f.upload(files=files))
+        self.assertEqual([701], self.f.downloads)
+
+    def test_subset_cannot_hide_failure_select_failed_upload_or_change_scope(self):
+        original = deepcopy((self.f.source, self.f.controls))
+        for case in ('missing', 'empty', 'duplicate', 'wrong-producer', 'outside-family',
+                     'selected-failure', 'wrong-key', 'wrong-state', 'unknown-field', 'wrong-wave'):
+            with self.subTest(case=case):
+                self.f.source, self.f.controls = deepcopy(original)
+                failure = self.f.controls['runtime-state/wave-failures.json']
+                if case == 'missing': del self.f.controls['runtime-state/wave-failures.json']
+                elif case == 'empty': failure['failedPhases'].clear()
+                elif case == 'duplicate': failure['failedPhases'] *= 2
+                elif case == 'wrong-producer': failure['producer']['commit'] = 'a' * 40
+                elif case == 'outside-family': failure['failedPhases'][0]['component'] = 'sdk-ios'
+                elif case == 'selected-failure':
+                    failure['failedPhases'][0] = {key: self.f.controls['runtime-state/reuse-wave-request.json']
+                        ['availableObjects'][-1][key] for key in (*completed.IDENTITY, 'buildKey')}
+                elif case == 'wrong-key': failure['failedPhases'][0]['buildKey'] = sha256_bytes(b'wrong')
+                elif case == 'wrong-state': self.f.controls['runtime-state/reuse-wave-result.json']['phases'][-1]['state'] = 'retained'
+                elif case == 'unknown-field': failure['success'] = True
+                else: self.f.source['jobName'] = 'product-validation / sdk-collect-9'
+                self.rebind()
+                with self.assertRaises(ValueError): self.files()

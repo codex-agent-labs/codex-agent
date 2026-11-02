@@ -57,6 +57,7 @@ class SdkCheckpointEntryTest(unittest.TestCase):
             stack.enter_context(patch.object(native,'__file__',str(self.root/'ci/reuse_qualification.py')))
             stack.enter_context(patch.object(native.subprocess,'check_output',return_value=self.fixture.policy['issuerCommit']+'\n'))
             self.compatible=stack.enter_context(patch.object(native,'_compatible_verifier',return_value=True))
+            stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
             stack.enter_context(patch.object(native,'_frozen_spec_path',return_value='frozen.json'))
             stack.enter_context(patch('products.inventory.git_regular_blob_bytes',return_value=canonical_json_bytes(self.fixture.fixture.base)))
             self.core=stack.enter_context(patch.object(completed,'issue_checkpoint',side_effect=self.engine))
@@ -205,3 +206,56 @@ class HistoricalCheckpointCliTest(unittest.TestCase):
         for field,value in (("path","relative.json"),("sha256","untrusted")):
             changed=deepcopy(policy);changed["sdkCheckpointHistory"][field]=value
             with self.subTest(field=field),self.assertRaises(ValueError):native.validate_completed_reuse_policy(changed)
+
+class HistoricalIssuerEntryTest(unittest.TestCase):
+    def setUp(self):
+        self.e=SdkCheckpointEntryTest();self.e.setUp();self.addCleanup(self.e.doCleanups)
+        e=self.e;owner=e.fixture.policy
+        self.history={'schemaVersion':1,'kind':'sdk-checkpoint-history','consumerCommit':'9'*40,
+            'currentOwner':owner,'historicalPolicies':[]}
+        self.history_path=e.root/'history.json';self.history_path.write_bytes(canonical_json_bytes(self.history))
+        self.policy={'schemaVersion':1,'kind':'completed-frozen-reuse','consumerCommit':'9'*40,
+            'verifierPolicySha256':sha256_bytes(b'current policy'),**owner['bootstrap'],
+            'sdkCompletion':owner['bootstrap'],'sdkCheckpointHistory':{'path':str(self.history_path),
+                'sha256':sha256_bytes(self.history_path.read_bytes())}}
+        self.policy_path=e.root/'current-policy.json';self.policy_path.write_bytes(canonical_json_bytes(self.policy))
+        e.env['CODEX_AGENT_COMPLETED_REUSE_POLICY']=str(self.policy_path)
+        previous={'kind':'sdk-checkpoint','source':deepcopy(e.fixture.fixture.source),
+            'native':{**owner['bootstrap'],'artifactId':777},'subjectSha256':sha256_bytes(b'prior checkpoint')}
+        self.selection={'ownerPolicySha256':sha256_bytes(canonical_json_bytes(owner)),'checkpoint':previous}
+        self.raw=b'held bounded discovery archive'
+
+    def test_automatic_historical_predecessor_passes_exact_pinned_current_policy_and_held_bytes_once(self):
+        original=self.e.engine
+        def engine(*args,**kw):
+            self.assertEqual(self.selection,kw['previous']);self.assertEqual(self.history,kw['history'])
+            self.assertEqual(self.policy,kw['current_policy']);self.assertIs(self.raw,kw['_previous_archive_bytes'])
+            return original(*args,**kw)
+        self.e.engine=engine
+        with patch.object(completed,'discover_historical_checkpoint',return_value=(self.selection,self.raw)) as discover:
+            work=self.e.issue(preceding_selector='auto')
+        discover.assert_called_once()
+        self.assertEqual(self.e.fixture.producer,discover.call_args.kwargs['consumer']['producer'])
+        self.assertTrue((work/'checkpoint-issue.json').is_file())
+
+    def test_missing_or_changed_history_and_late_current_policy_fail_without_published_issue(self):
+        e=self.e
+        raw=self.history_path.read_bytes();self.history_path.write_bytes(raw+b' ')
+        with patch.object(completed,'discover_historical_checkpoint') as discover:
+            with self.assertRaises(ValueError):e.issue(preceding_selector='auto')
+        discover.assert_not_called();e.core.assert_not_called()
+        self.history_path.write_bytes(raw)
+        original=e.engine
+        def engine(*args,**kw):
+            result=original(*args,**kw);self.policy_path.write_bytes(self.policy_path.read_bytes()+b' ');return result
+        e.engine=engine
+        with patch.object(completed,'discover_historical_checkpoint',return_value=(self.selection,self.raw)):
+            with self.assertRaisesRegex(ValueError,'current policy changed'):e.issue(preceding_selector='auto')
+        self.assertFalse((e.root/'issued/checkpoint-issue.json').exists());self.assertFalse(e.output.exists())
+
+    def test_discovery_miss_keeps_exact_bootstrap_and_does_not_invent_historical_authority(self):
+        e=self.e;e.noop=True
+        with patch.object(completed,'discover_historical_checkpoint',return_value=(None,None)):
+            work=e.issue(preceding_selector='auto')
+        self.assertNotIn('history',e.core.call_args.kwargs)
+        self.assertEqual(e.fixture.policy['bootstrap'],native.sdk_checkpoint_job_output(work,'','',e.output)['native'])
