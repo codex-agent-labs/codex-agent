@@ -6228,13 +6228,13 @@ jobs:
   sdk-completion:
     needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result]
     if: >-
-      (!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success') &&
+      !inputs.fullReuseAcceptanceOnly &&
       !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success'
     runs-on: ubuntu-24.04
-    outputs:
+    outputs: &sdk_completion_outputs
       complete: ${{ steps.completion.outputs.complete }}
       phase_count: ${{ steps.completion.outputs.phaseCount }}
       full_reuse: ${{ steps.completion.outputs.fullReuse }}
@@ -6244,8 +6244,27 @@ jobs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
     env:
+      FULL_REUSE_COMPLETION: 'false'
+      PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
+      RUNTIME_CONTINUATION: ${{ toJSON(needs.runtime-continuation) }}
+      RUNTIME_AGGREGATE_CONTINUATION: ${{ toJSON(needs.runtime-aggregate-continuation) }}
+      SDK_IOS_BINARY_PLAN: ${{ toJSON(needs.sdk-ios-binary-plan) }}
+      SDK_IOS_BINARY: ${{ toJSON(needs.sdk-ios-binary) }}
+      SDK_COLLECT_3: ${{ toJSON(needs.sdk-collect-3) }}
+      SDK_PLAN: ${{ toJSON(needs.sdk-plan) }}
+      SDK_NATIVE_RESULT: ${{ toJSON(needs.sdk-native-result) }}
+      SDK_IOS_VALIDATION_RESULT: ${{ toJSON(needs.sdk-ios-validation-result) }}
+      SDK_IOS_METADATA_RESULT: ${{ toJSON(needs.sdk-ios-metadata-result) }}
+      SDK_CORE_BINARY_WAVE: ${{ toJSON(needs.sdk-core-binary-wave) }}
+      SDK_CORE_PACKAGE_WAVE: ${{ toJSON(needs.sdk-core-package-wave) }}
+      SDK_CORE_VALIDATION_WAVE: ${{ toJSON(needs.sdk-core-validation-wave) }}
+      SDK_CORE_METADATA_WAVE: ${{ toJSON(needs.sdk-core-metadata-wave) }}
+      SDK_ANDROID_BINARY_RESULT: ${{ toJSON(needs.sdk-android-binary-result) }}
+      SDK_ANDROID_PACKAGE_RESULT: ${{ toJSON(needs.sdk-android-package-result) }}
+      SDK_ANDROID_VALIDATION_RESULT: ${{ toJSON(needs.sdk-android-validation-result) }}
+      SDK_ANDROID_METADATA_RESULT: ${{ toJSON(needs.sdk-android-metadata-result) }}
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
-    steps:
+    steps: &sdk_completion_steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -6255,34 +6274,27 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: parent
-        env:
-          PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
-          RUNTIME_CONTINUATION: ${{ toJSON(needs.runtime-continuation) }}
-          RUNTIME_AGGREGATE_CONTINUATION: ${{ toJSON(needs.runtime-aggregate-continuation) }}
-          SDK_IOS_BINARY_PLAN: ${{ toJSON(needs.sdk-ios-binary-plan) }}
-          SDK_IOS_BINARY: ${{ toJSON(needs.sdk-ios-binary) }}
-          SDK_COLLECT_3: ${{ toJSON(needs.sdk-collect-3) }}
-          SDK_PLAN: ${{ toJSON(needs.sdk-plan) }}
-          SDK_NATIVE_RESULT: ${{ toJSON(needs.sdk-native-result) }}
-          SDK_IOS_VALIDATION_RESULT: ${{ toJSON(needs.sdk-ios-validation-result) }}
-          SDK_IOS_METADATA_RESULT: ${{ toJSON(needs.sdk-ios-metadata-result) }}
-          SDK_CORE_BINARY_WAVE: ${{ toJSON(needs.sdk-core-binary-wave) }}
-          SDK_CORE_PACKAGE_WAVE: ${{ toJSON(needs.sdk-core-package-wave) }}
-          SDK_CORE_VALIDATION_WAVE: ${{ toJSON(needs.sdk-core-validation-wave) }}
-          SDK_CORE_METADATA_WAVE: ${{ toJSON(needs.sdk-core-metadata-wave) }}
-          SDK_ANDROID_BINARY_RESULT: ${{ toJSON(needs.sdk-android-binary-result) }}
-          SDK_ANDROID_PACKAGE_RESULT: ${{ toJSON(needs.sdk-android-package-result) }}
-          SDK_ANDROID_VALIDATION_RESULT: ${{ toJSON(needs.sdk-android-validation-result) }}
-          SDK_ANDROID_METADATA_RESULT: ${{ toJSON(needs.sdk-android-metadata-result) }}
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          from ci.sdk_completion_state import _JOBS, select_sdk_completion_state
+          from ci.sdk_completion_state import _JOBS, _state, select_sdk_completion_state
+          from ci.sdk_native_continuation import _job
           from ci.reuse import github_output
-          # Separate job controls avoid Linux's per-environment-string size limit.
-          needs = {name: json.loads(os.environ[name.upper().replace('-', '_')]) for name in _JOBS}
-          state = select_sdk_completion_state(needs)
+          mode = os.environ['FULL_REUSE_COMPLETION']
+          if mode == 'true':
+              # Only this actual completed job selects the original transport.
+              resume = _job({'product-resume': json.loads(os.environ['PRODUCT_RESUME'])}, 'product-resume')
+              if (resume['result'] != 'success' or resume['outputs'].get('wave_failed') != 'false'
+                      or resume['outputs'].get('full_reuse') != 'true'):
+                  raise ValueError('Full-reuse completion requires successful unchanged product resume')
+              state = _state(resume['outputs'], runtime_wave='0', sdk_wave='')
+          elif mode == 'false':
+              # Ordinary selection still requires every actual terminal branch.
+              needs = {name: json.loads(os.environ[name.upper().replace('-', '_')]) for name in _JOBS}
+              state = select_sdk_completion_state(needs)
+          else:
+              raise ValueError('Unknown completion routing mode')
           github_output(Path(os.environ['GITHUB_OUTPUT']), state)
           PY
       - name: Select installed caller Java for SDK tooling
@@ -6358,6 +6370,21 @@ jobs:
               --state-wave "$STATE_WAVE" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
               --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
               ${tooling[@]+"${tooling[@]}"}
+
+  sdk-completion-full-reuse:
+    needs: [plan, contract-validation, product-resume]
+    if: >-
+      inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
+      always() && needs.plan.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.product-resume.result == 'success' && needs.product-resume.outputs.full_reuse == 'true'
+    runs-on: ubuntu-24.04
+    outputs: *sdk_completion_outputs
+    env:
+      FULL_REUSE_COMPLETION: 'true'
+      PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
+    steps: *sdk_completion_steps
 
   sdk-partial-catalog:
     name: sdk-partial-catalog
@@ -6676,22 +6703,22 @@ jobs:
     if: >-
       (!inputs.fullReuseAcceptanceOnly ||
        (needs.plan.result == 'success' && inputs.reuseCompletedParity &&
-        needs.sdk-completion.result == 'success' &&
-        needs.sdk-completion.outputs.complete == 'true' &&
-        needs.sdk-completion.outputs.phase_count == '62' &&
-        needs.sdk-completion.outputs.full_reuse == 'true')) &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result == 'success' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true')) &&
       !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       (!inputs.sdkRecoveryOnly ||
-       (needs.sdk-completion.outputs.complete == 'true' &&
-        needs.sdk-completion.outputs.phase_count == '62')) &&
+       (fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62')) &&
       (needs.plan.outputs.lane_ios_swift_tests_test == 'true' ||
        needs.plan.outputs.native_wrappers == 'true') &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion]
+    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse]
     uses: ./.github/workflows/sdk-binding-parity.yml
     with:
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
@@ -6699,10 +6726,10 @@ jobs:
       nodeJs: ${{ fromJSON(needs.plan.outputs.lane_node_js) }}
       nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
       importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
-      reuseCompletedParity: ${{ inputs.reuseCompletedParity && (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && needs.sdk-completion.outputs.complete == 'true' && needs.sdk-completion.outputs.phase_count == '62' && needs.sdk-completion.outputs.full_reuse == 'true' }}
+      reuseCompletedParity: ${{ inputs.reuseCompletedParity && (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true' }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
-      sdkOutputs: ${{ toJSON(needs.sdk-completion.outputs) }}
+      sdkOutputs: ${{ toJSON(fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
@@ -6711,7 +6738,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always() && !inputs.toolingOnly
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -6742,9 +6769,9 @@ jobs:
           CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID: ${{ needs.contract-phase10-output-record.outputs.phase10OutputArtifactId }}
           CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256: ${{ needs.contract-phase10-output-record.outputs.phase10OutputArtifactSha256 }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
-          SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
-          SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
-          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '62' && needs.plan.outputs.native_resume_full_reuse != 'true' }}
+          SDK_COMPLETION_RESULT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result }}
+          SDK_COMPLETE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete }}
+          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && needs.plan.outputs.native_resume_full_reuse != 'true' }}
           SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}
           SDK_CATALOG_NAME: ${{ needs.sdk-catalog.outputs.artifact_name }}
           SDK_CATALOG_ID: ${{ needs.sdk-catalog.outputs.artifact_id }}
@@ -6766,7 +6793,7 @@ jobs:
           SDK_INPUTS_ARTIFACT_ID: ${{ needs.sdk-inputs.outputs.artifact_id }}
           SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
-          PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
+          PRODUCT_FULL_REUSE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse }}
           NATIVE_WRAPPERS_REQUIRED: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
           NATIVE_WRAPPERS_RESULT: ${{ needs.sdk-native-wrappers.result }}
           SDK_PARITY_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true') }}
@@ -6993,11 +7020,11 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           WORKFLOW_LINT_RESULT: ${{ needs.workflow-lint.result }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
-          SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
+          SDK_COMPLETION_RESULT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result }}
           SDK_PARITY_RESULT: ${{ needs.sdk-parity.result }}
-          PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
-          SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
-          SDK_PHASE_COUNT: ${{ needs.sdk-completion.outputs.phase_count }}
+          PRODUCT_FULL_REUSE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse }}
+          SDK_COMPLETE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete }}
+          SDK_PHASE_COUNT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           TARGET_JOBS_REQUIRED: ${{ needs.product-resume.outputs.target_jobs_required }}
           REPORT_SHA256: ${{ needs.sdk-parity.outputs.report_sha256 }}

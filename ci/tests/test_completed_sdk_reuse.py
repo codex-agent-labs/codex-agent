@@ -824,9 +824,14 @@ class CompletedSdkControlsTest(unittest.TestCase):
             with zipfile.ZipFile(raw) as archive:
                 yield archive, None
         with tempfile.TemporaryDirectory() as temporary, \
+                patch.dict(os.environ), \
                 patch.object(native.CompletedFrozenReuse, 'check_consumer'), \
                 patch.object(native.CompletedFrozenReuse, 'observe_extended_sdk', return_value=({'id': 999}, original, [])) as provenance, \
                 patch('runtime_reference_archive.open_reference_archive', side_effect=opened) as fetch:
+            # The first read is uncached even inside a hosted job's shared cache.
+            for variable in ('CODEX_AGENT_HYDRATED_EVIDENCE', 'CODEX_AGENT_HOSTED_CACHE_BACKEND'):
+                os.environ.pop(variable, None)
+            os.environ['GITHUB_ACTIONS'] = 'false'
             target = Path(temporary).resolve() / 'object.zip'
             cap.capture_object(phase, target, plan={}, producer={}, trusted_workflow_sha='a' * 40, token='synthetic')
             self.assertEqual(body, target.read_bytes())

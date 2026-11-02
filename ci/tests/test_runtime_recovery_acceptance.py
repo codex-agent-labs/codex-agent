@@ -80,6 +80,9 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
                                       job, re.MULTILINE | re.DOTALL).group(1)
                 condition = ' '.join(condition.removeprefix('>-').split())
                 if name == 'sdk-parity':
+                    selected = 'fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))'
+                    self.assertIn(selected, condition)
+                    condition = condition.replace(selected, 'needs.sdk-completion')
                     prefix = ("(!inputs.fullReuseAcceptanceOnly || (needs.plan.result == 'success' && "
                               "inputs.reuseCompletedParity && needs.sdk-completion.result == 'success' && "
                               "needs.sdk-completion.outputs.complete == 'true' && "
@@ -133,7 +136,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         jobs = re.findall(r'^  (sdk-[a-z0-9-]+):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)',
                           source, re.MULTILINE | re.DOTALL)
         # Native validation election now runs in sdk-ios-packages.
-        self.assertEqual(64, len(jobs))
+        self.assertEqual(65, len(jobs))
         self.assertTrue({"sdk-checkpoint-9", "sdk-checkpoint-10"} <= {name for name, _ in jobs})
         for name, job in jobs:
             with self.subTest(job=name):

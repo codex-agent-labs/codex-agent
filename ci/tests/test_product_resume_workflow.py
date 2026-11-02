@@ -311,6 +311,9 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", legacy_workflow)
         self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", legacy_workflow)
         parity = workflow_job(self.workflow, "sdk-parity")
+        selected = 'fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))'
+        self.assertIn(selected, parity)
+        parity = parity.replace(selected, "needs.sdk-completion")
         self.assertIn("needs.sdk-completion.outputs.complete == 'true'", parity)
         self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parity)
         self.assertIn("importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}", parity)
@@ -381,7 +384,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         job = workflow_job(self.workflow, "sdk-completion")
         step = job.split("      - id: parent\n", 1)[1].split("      - name:", 1)[0]
         self.assertNotIn("toJSON(needs)", step)
-        bindings = re.findall(r"([A-Z_0-9]+): \$\{\{ toJSON\(needs\.([a-z0-9-]+)\) }}", step)
+        bindings = re.findall(r"([A-Z_0-9]+): \$\{\{ toJSON\(needs\.([a-z0-9-]+)\) }}", job)
         self.assertEqual(set(_JOBS), {name for _, name in bindings})
         self.assertEqual(len(_JOBS), len(bindings))
         values = direct_handoff()
@@ -393,7 +396,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         script = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0])
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "output"
-            with mock.patch.dict(os.environ, {**env, "GITHUB_OUTPUT": str(output)}):
+            with mock.patch.dict(os.environ, {**env, "GITHUB_OUTPUT": str(output), "FULL_REUSE_COMPLETION": "false"}):
                 exec(compile(script, "<sdk-completion-parent>", "exec"), {})
             self.assertEqual(locator("99", sdk="18"), dict(
                 line.split("=", 1) for line in output.read_text().splitlines()))

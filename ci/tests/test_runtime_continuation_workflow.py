@@ -92,7 +92,7 @@ class RuntimeContinuationWorkflowTest(unittest.TestCase):
         self.assertIn("runtime-aggregate, runtime-collect-5", self.gate)
         self.assertIn("needs.runtime-collect-5.outputs.wave_failed", self.gate)
         full_reuse = self.gate.split('PRODUCT_FULL_REUSE: ', 1)[1].split('\n', 1)[0]
-        self.assertEqual('${{ needs.sdk-completion.outputs.full_reuse }}', full_reuse)
+        self.assertEqual('${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse }}', full_reuse)
 
     @classmethod
     def setUpClass(cls):

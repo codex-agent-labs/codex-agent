@@ -242,6 +242,7 @@ class AndroidMavenWorkerActionTest(unittest.TestCase):
                 "BINARY_ORIGINAL_JOB_NAME": "", "SDK_VALIDATION_TOOLING": "",
                 "SDK_APPLE_VALIDATION_POLICY": "", "SDK_FACADE_METADATA_POLICY": "",
                 "SDK_ANDROID_METADATA_POLICY": "", "GITHUB_OUTPUT": str(output)}
+            environment.pop("PYTHONPATH", None)  # Exercise the actual cold action entrypoint.
             for name in ("core-receipt.json", "core-policy.json", "core-context.json"):
                 (root / name).write_bytes(canonical_json_bytes({}))
             script = self.script("id: policy")

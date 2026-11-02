@@ -941,7 +941,7 @@ class CurrentHeadAcceptanceTest(unittest.TestCase):
                 jobId=13, artifactId=14, artifactSha256="sha256:" + "1" * 64,
                 policySha256="sha256:" + "2" * 64, verifierInputsSha256="sha256:" + "3" * 64))
         names = ("product-validation / sdk-parity / sdk-parity", "product-validation / workflow-lint",
-                 "product-validation / product-resume", "product-validation / sdk-completion")
+                 "product-validation / product-resume", "product-validation / sdk-completion-full-reuse")
         self.jobs = [dict(id=100 + i, name=name, run_id=21, head_sha="9" * 40,
             status="completed", conclusion="success", started_at="2026-11-01T10:00:00Z",
             completed_at="2026-11-01T10:05:00Z") for i, name in enumerate(names)]

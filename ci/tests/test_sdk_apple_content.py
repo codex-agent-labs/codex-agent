@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import ctypes
 import errno
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -468,12 +469,23 @@ class SdkAppleContentTest(unittest.TestCase):
             raise subprocess.CalledProcessError(1, "fixed verifier", output=b"raw stdout", stderr=b"raw stderr")
         self.mutate = fail
         before = regular_file_inventory(self.root, allow_empty=True)
-        diagnostics = io.StringIO()
-        with redirect_stderr(diagnostics), self.assertRaises(subprocess.CalledProcessError) as caught:
-            self.verify()
-        self.assertEqual(b"raw stderr", caught.exception.stderr)
-        self.assertEqual("raw stderr", diagnostics.getvalue())
-        self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
+        for trace in ("0", "1"):
+            with self.subTest(trace=trace), \
+                    patch.dict(os.environ, {"CODEX_AGENT_THROUGHPUT_TRACE": trace}):
+                diagnostics = io.StringIO()
+                with redirect_stderr(diagnostics), self.assertRaises(subprocess.CalledProcessError) as caught:
+                    self.verify()
+                self.assertEqual(b"raw stderr", caught.exception.stderr)
+                if trace == "0":
+                    self.assertEqual("raw stderr", diagnostics.getvalue())
+                else:
+                    prefix = "raw stderrthroughput-volume "
+                    self.assertTrue(diagnostics.getvalue().startswith(prefix), diagnostics.getvalue())
+                    observation = json.loads(diagnostics.getvalue()[len(prefix):])
+                    self.assertEqual("sdk-apple-verification", observation["operation"])
+                    self.assertFalse(observation["success"])
+                    self.assertTrue(observation["samplerStopped"])
+                self.assertEqual(before, regular_file_inventory(self.root, allow_empty=True))
 
     def test_capture_mismatch_names_the_first_different_input_without_running_tooling(self):
         snapshot = content._snapshot_apple_tree

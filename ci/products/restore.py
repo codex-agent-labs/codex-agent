@@ -1415,6 +1415,11 @@ def _cache_relative(cache_root: Path, path: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if __package__ == "ci.products":
+        # CLI and qualification must share the canonical session/capability modules.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from products.restore import main as restore_main
+        return restore_main(argv)
     parser = argparse.ArgumentParser(prog="python3 -m ci.products restore")
     commands = parser.add_subparsers(dest="command", required=True)
 

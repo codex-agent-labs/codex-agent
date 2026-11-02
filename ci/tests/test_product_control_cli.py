@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ci.products.__main__ import COMMANDS
 from ci.products.inventory import (
@@ -49,6 +50,7 @@ class ProductControlCliTest(unittest.TestCase):
 
     def run_cli(self, *arguments: str) -> subprocess.CompletedProcess[bytes]:
         environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)  # The advertised module CLI bootstraps its own controls.
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return subprocess.run(
             [sys.executable, "-m", "ci.products", *arguments],
@@ -345,25 +347,74 @@ class ProductControlCliTest(unittest.TestCase):
         })
         local = {**self.producer(), "event": "local", "workflowPath": None,
                  "runId": None, "runAttempt": None, "pullRequest": None}
-        for label, context in (("ci", self.producer()), ("local", local)):
-            with self.subTest(producer=label):
-                producer = self.write_request(f"{label}-producer.json", context)
-                shard = self.root / f"{label}-phase-shard"
-                result = self.run_cli(
-                    "restore", "store-phase",
-                    "--stage-root", str(stage),
-                    "--phase-plan", str(plan),
-                    "--producer", str(producer),
-                    "--product-version", "0.2.0",
-                    "--trust-domain", "development",
-                    "--destination", str(shard),
-                )
-                self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(b"", result.stdout)
-                self.assertEqual(
-                    {**receipt, "producer": context},
-                    load_canonical_json_bytes((shard / "phase-receipt.json").read_bytes()),
-                )
+        for hosted in ("false", "true"):
+            for label, context in (("ci", self.producer()), ("local", local)):
+                with self.subTest(hosted=hosted, producer=label), \
+                        patch.dict(os.environ, {"GITHUB_ACTIONS": hosted}):
+                    producer = self.write_request(f"{hosted}-{label}-producer.json", context)
+                    shard = self.root / f"{hosted}-{label}-phase-shard"
+                    result = self.run_cli(
+                        "restore", "store-phase",
+                        "--stage-root", str(stage),
+                        "--phase-plan", str(plan),
+                        "--producer", str(producer),
+                        "--product-version", "0.2.0",
+                        "--trust-domain", "development",
+                        "--destination", str(shard),
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(b"", result.stdout)
+                    self.assertEqual(
+                        {**receipt, "producer": context},
+                        load_canonical_json_bytes((shard / "phase-receipt.json").read_bytes()),
+                    )
+        with patch.dict(os.environ):
+            for name in ("CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE", "CODEX_AGENT_REUSE_QUALIFICATION_ISSUER",
+                         "CODEX_AGENT_REUSE_QUALIFICATION_SOURCE"):
+                os.environ.pop(name, None)
+            os.environ["CODEX_AGENT_REUSE_QUALIFICATION"] = str(self.root / "untrusted.json")
+            rejected = self.run_cli("restore", "store-phase", "--stage-root", str(stage),
+                "--phase-plan", str(plan), "--producer", str(producer), "--product-version", "0.2.0",
+                "--trust-domain", "development", "--destination", str(self.root / "rejected-shard"))
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn(b"Portable qualification requires complete caller-owned artifact and authority pins",
+                      rejected.stderr)
+        self.assertEqual(b"", rejected.stdout)
+        self.assertFalse((self.root / "rejected-shard").exists())
+
+    def test_restore_cli_delegates_to_one_canonical_qualification_session(self) -> None:
+        environment = {**os.environ, "CODEX_AGENT_REUSE_QUALIFICATION": "original.json",
+            "CODEX_AGENT_REUSE_QUALIFICATION_BUNDLE": "original.sigstore.json",
+            "CODEX_AGENT_REUSE_QUALIFICATION_ISSUER": "a" * 40,
+            "CODEX_AGENT_REUSE_QUALIFICATION_SOURCE": "b" * 40}
+        environment.pop("PYTHONPATH", None)
+        result = subprocess.run([sys.executable, "-B", "-c", """
+import contextlib, io, sys
+from ci.products import restore as entrypoint
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        entrypoint.main(['--help'])
+    except SystemExit as stopped:
+        assert stopped.code == 0
+canonical = sys.modules['products.restore']
+def observe(arguments):
+    assert arguments == ['same-arguments']
+    with canonical.verification_session() as session, canonical.verification_session() as nested:
+        import reuse_qualification as qualification
+        assert nested is session is canonical._VERIFICATION_SESSION.get()
+        assert entrypoint._VERIFICATION_SESSION.get() is None
+        assert 'ci.reuse_qualification' not in sys.modules
+        assert qualification.CompletedFrozenReuse.__module__ == 'reuse_qualification'
+        assert session['portableQualificationInputs'] == {
+            'path': 'original.json', 'bundle': 'original.sigstore.json',
+            'signer_commit': 'a' * 40, 'source_commit': 'b' * 40}
+    assert canonical._VERIFICATION_SESSION.get() is None
+    return 17
+canonical.main = observe
+assert entrypoint.main(['same-arguments']) == 17
+"""], cwd=REPOSITORY, env=environment, capture_output=True, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(b"", result.stdout)
 
     def test_corrupt_local_object_is_reported_without_mutation(self) -> None:
         stage, receipt_path, receipt = self.stage_and_receipt()

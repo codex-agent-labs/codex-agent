@@ -269,7 +269,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             with self.subTest(case=number), tempfile.TemporaryDirectory(prefix="sdk-full-reuse-parent-") as temporary:
                 output = Path(temporary) / "output"
                 environment = {name.upper().replace('-', '_'): json.dumps(v) for name, v in value.items()}
-                with patch.dict(os.environ, {**environment, "GITHUB_OUTPUT": str(output)}, clear=True):
+                with patch.dict(os.environ, {**environment, "FULL_REUSE_COMPLETION": "false", "GITHUB_OUTPUT": str(output)}, clear=True):
                     if success:
                         exec(compile(script, "saved-full-reuse-completion-parent", "exec"), {})
                         self.assertEqual(locator, dict(line.split("=", 1) for line in output.read_text().splitlines()))
@@ -328,7 +328,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="sdk-completion-wiring-") as temporary:
                 output = Path(temporary) / "output"
                 environment = {name.upper().replace('-', '_'): json.dumps(value) for name, value in needs.items()}
-                with patch.dict(os.environ, {**environment, "GITHUB_OUTPUT": str(output)}, clear=True), \
+                with patch.dict(os.environ, {**environment, "FULL_REUSE_COMPLETION": "false", "GITHUB_OUTPUT": str(output)}, clear=True), \
                         patch.object(selector_module, "select_sdk_completion_state", return_value=locator,
                                      side_effect=ValueError("synthetic routing failure") if failure else None) as select:
                     if failure:
@@ -404,6 +404,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
 
     def test_merge_requires_actual_final_completion_and_uses_no_earlier_full_reuse_fallback(self):
         job = self.job("merge-gate")
+        selected = 'fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))'
+        self.assertIn(selected, job)
+        job = job.replace(selected, "needs.sdk-completion")
         needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", job)
         self.assertIn("sdk-completion", [name.strip() for name in needs[1].split(",")])
         self.assertIn("sdk-catalog", [name.strip() for name in needs[1].split(",")])
@@ -513,6 +516,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertNotIn("needs.sdk-completion.outputs.full_reuse", header)
         expression = re.search(r"(?m)^          SDK_CATALOG_REQUIRED: \$\{\{ (.+) \}\}$",
                                self.job("merge-gate"))[1]
+        selected = 'fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))'
+        self.assertIn(selected, expression)
+        expression = expression.replace(selected, "needs.sdk-completion")
         self.assertEqual("github.event_name == 'pull_request' && "
                          "needs.sdk-completion.outputs.phase_count == '62' && " + guard, expression)
         for event, count, reuse, required in (
@@ -557,6 +563,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             # GitHub string comparisons ignore case; this evaluates only the saved Boolean selector.
             self.assertEqual(value.casefold() == "true", eval(caller_selection.replace("vars.CODEX_AGENT_REUSE_COMPLETED_SDK_PARITY", repr(value.casefold())), {"__builtins__": {}}))
         parent = self.job("sdk-parity")
+        selected = 'fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))'
+        self.assertIn(selected, parent)
+        parent = parent.replace(selected, "needs.sdk-completion")
         selection = re.search(r"reuseCompletedParity: \$\{\{ (.*?) \}\}", parent)[1]
         for opt_in, recovery, acceptance, complete, count, full in product((False, True), (False, True), (False, True), ("", "false", "true"), ("", "61", "62"), ("", "false", "true")):
             condition = selection.replace("inputs.reuseCompletedParity", repr(opt_in)).replace("inputs.sdkRecoveryOnly", repr(recovery))
@@ -671,9 +680,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         "fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only')) }}"):
             self.assertIn(setting, caller)
         allowed = {'dispatch-authorization', 'workflow-lint', 'plan', 'contract-validation',
-                   'product-resume', 'sdk-completion', 'sdk-parity', 'merge-gate'}
+                   'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(101, len(jobs))
+        self.assertEqual(102, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
@@ -681,8 +690,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 self.assertRegex(self.job(name),
                     r'(?m)^    if: >-\n      !inputs.fullReuseAcceptanceOnly &&')
                 expression = re.search(r'(?ms)^    if: >-\n(.*?)(?=^    \S)', self.job(name))[1].strip()
-                self.assertTrue(expression.startswith('!inputs.fullReuseAcceptanceOnly && ('))
-                self.assertTrue(expression.endswith(')'))
+                if name != 'sdk-completion':
+                    self.assertTrue(expression.startswith('!inputs.fullReuseAcceptanceOnly && ('))
+                    self.assertTrue(expression.endswith(')'))
             else:
                 self.assertFalse(condition.strip().startswith('!inputs.fullReuseAcceptanceOnly'))
         lint = self.job('workflow-lint')
@@ -690,9 +700,13 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn('./gradlew -p gradle/build-logic test', lint)
         self.assertIn('"$HOME/go/bin/actionlint"', lint)
         self.assertNotIn('fullReuseAcceptanceOnly', lint)
-        for name in ('product-resume', 'sdk-completion'):
-            self.assertIn("(!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success')",
-                          self.job(name))
+        self.assertIn("(!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success')",
+                      self.job('product-resume'))
+        fast = self.job('sdk-completion-full-reuse')
+        for guard in ("inputs.fullReuseAcceptanceOnly", "!inputs.runtimeRecoveryOnly", "!inputs.sdkRecoveryOnly",
+                      "needs.plan.result == 'success'", "needs.product-resume.result == 'success'",
+                      "needs.product-resume.outputs.full_reuse == 'true'"):
+            self.assertIn(guard, fast)
 
     def test_saved_acceptance_plan_guard_rejects_misses_before_transport_upload(self):
         job = self.job('plan')
@@ -721,14 +735,14 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
 
     def test_acceptance_parity_cannot_fall_back_to_fresh_work(self):
         condition = re.search(r'(?ms)^    if: >-\n(.*?)(?=^    \S)', self.job('sdk-parity'))[1]
-        condition = ' '.join(condition.split())
+        condition = ' '.join(condition.split()).replace('fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))', 'selected_completion')
         valid = {'inputs.fullReuseAcceptanceOnly': True, 'inputs.runtimeRecoveryOnly': False,
             'inputs.sdkRecoveryOnly': False, 'inputs.reuseCompletedParity': True,
-            'needs.plan.result': 'success', 'needs.sdk-completion.result': 'success',
+            'needs.plan.result': 'success', 'selected_completion.result': 'success',
             'needs.plan.outputs.event_authorized': 'true', 'needs.plan.outputs.remote_build_authorized': 'true',
             'needs.plan.outputs.validation_reused': 'false', 'needs.plan.outputs.lane_ios_swift_tests_test': 'true',
-            'needs.plan.outputs.native_wrappers': 'true', 'needs.sdk-completion.outputs.complete': 'true',
-            'needs.sdk-completion.outputs.phase_count': '62', 'needs.sdk-completion.outputs.full_reuse': 'true'}
+            'needs.plan.outputs.native_wrappers': 'true', 'selected_completion.outputs.complete': 'true',
+            'selected_completion.outputs.phase_count': '62', 'selected_completion.outputs.full_reuse': 'true'}
         def evaluate(values):
             expression = condition.replace('always()', 'True').replace('needs.*.result', repr(['success', 'skipped']))
             for key in sorted(values, key=len, reverse=True):
@@ -736,8 +750,8 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             expression = re.sub(r'!(?!=)', ' not ', expression).replace('&&', ' and ').replace('||', ' or ')
             return eval(expression.strip(), {'__builtins__': {}}, {'contains': lambda rows, value: value in rows})
         self.assertTrue(evaluate(valid))
-        for key in ('needs.plan.result', 'needs.sdk-completion.result', 'needs.sdk-completion.outputs.complete',
-                    'needs.sdk-completion.outputs.phase_count', 'needs.sdk-completion.outputs.full_reuse'):
+        for key in ('needs.plan.result', 'selected_completion.result', 'selected_completion.outputs.complete',
+                    'selected_completion.outputs.phase_count', 'selected_completion.outputs.full_reuse'):
             for value in ('', 'false', 'failure', 'skipped'):
                 with self.subTest(key=key, value=value):
                     self.assertFalse(evaluate({**valid, key: value}))
@@ -797,6 +811,73 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn('name: codex-agent-current-head-acceptance-${{ needs.plan.outputs.validation_tree }}', distinct)
         self.assertIn('path: build/ci/current-head-acceptance\n', distinct)
         self.assertIn('overwrite: false', distinct)
+
+    def test_full_reuse_dependency_and_whole_job_mode_selection(self):
+        jobs = {name: self.job(name) for name in re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])}
+        def parents(name):
+            match = re.search(r'(?m)^    needs: (.+)$', jobs[name])
+            return [] if match is None else [value.strip() for value in match[1].strip('[]').split(',')]
+        pending, seen = parents('sdk-completion-full-reuse'), set()
+        while pending:
+            name = pending.pop()
+            if name not in seen:
+                seen.add(name)
+                pending.extend(parents(name))
+        self.assertNotIn('workflow-lint', seen)
+        self.assertEqual({'plan', 'contract-validation', 'product-resume'}, set(parents('sdk-completion-full-reuse')))
+        self.assertEqual(SELECTOR_JOBS | {'plan', 'contract-validation'}, set(parents('sdk-completion')))
+        for name in ('sdk-parity', 'merge-gate'):
+            self.assertIn('workflow-lint', parents(name))
+            self.assertIn('sdk-completion-full-reuse', parents(name))
+            self.assertIn('sdk-completion', parents(name))
+        self.assertIn('steps: &sdk_completion_steps', jobs['sdk-completion'])
+        self.assertIn('steps: *sdk_completion_steps', jobs['sdk-completion-full-reuse'])
+        self.assertIn('outputs: *sdk_completion_outputs', jobs['sdk-completion-full-reuse'])
+        expression = "fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))"
+        self.assertIn(expression + '.outputs.complete', jobs['sdk-parity'])
+        self.assertIn(expression + '.result', jobs['merge-gate'])
+        expression = expression.replace('inputs.fullReuseAcceptanceOnly', 'full').replace(
+            'needs.sdk-completion-full-reuse', 'fast').replace('needs.sdk-completion', 'ordinary')
+        expression = expression.replace('&&', ' and ').replace('||', ' or ')
+        # Empty/failed selected job cannot borrow the other route's successful outputs.
+        for full in (False, True):
+            for selected in ({}, {'result': 'failure', 'outputs': {}}, {'result': 'success', 'outputs': {'complete': 'true'}}):
+                other = {'result': 'success', 'outputs': {'complete': 'other-route'}}
+                fast, ordinary = (selected, other) if full else (other, selected)
+                actual = eval(expression, {'__builtins__': {}},
+                    dict(full=full, fast=fast, ordinary=ordinary, toJSON=json.dumps, fromJSON=json.loads))
+                self.assertEqual(selected, actual)
+
+    def test_fast_parent_has_only_actual_resume_and_rejects_bad_origin_hints(self):
+        job = self.job('sdk-completion')
+        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", job)
+        script = textwrap.dedent(match[1])
+        locator = {'artifact_id': '91', 'artifact_digest': 'sha256:' + 'a' * 64, 'state_wave': '0', 'sdk_state_wave': ''}
+        valid = {'result': 'success', 'outputs': dict(locator, wave_failed='false', full_reuse='true')}
+        cases = [('true', valid, True)]
+        for field, item in (('full_reuse', 'false'), ('wave_failed', 'true'), ('artifact_id', ''),
+                            ('artifact_digest', 'bad'), ('state_wave', '1'), ('sdk_state_wave', '8')):
+            changed = deepcopy(valid); changed['outputs'][field] = item
+            cases.append(('true', changed, False))
+        for field in ('full_reuse', 'wave_failed'):
+            changed = deepcopy(valid); changed['outputs'].pop(field)
+            cases.append(('true', changed, False))
+        for status in ('failure', 'cancelled', 'skipped', 'in_progress'):
+            changed = deepcopy(valid); changed['result'] = status
+            cases.append(('true', changed, False))
+        cases.extend([('true', {}, False), ('unknown', valid, False)])
+        for mode, resume, accepted in cases:
+            with self.subTest(mode=mode, resume=resume), tempfile.TemporaryDirectory(prefix='sdk-fast-parent-') as temporary:
+                output = Path(temporary) / 'output'
+                environment = {'FULL_REUSE_COMPLETION': mode, 'PRODUCT_RESUME': json.dumps(resume), 'GITHUB_OUTPUT': str(output)}
+                with patch.dict(os.environ, environment, clear=True):
+                    if accepted:
+                        exec(compile(script, 'saved-fast-completion-parent', 'exec'), {})
+                        self.assertEqual(locator, dict(line.split('=', 1) for line in output.read_text().splitlines()))
+                    else:
+                        with self.assertRaises(ValueError):
+                            exec(compile(script, 'saved-fast-completion-parent', 'exec'), {})
+                        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

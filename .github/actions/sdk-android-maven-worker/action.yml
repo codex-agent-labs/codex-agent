@@ -229,8 +229,9 @@ runs:
         SDK_ANDROID_METADATA_POLICY: ${{ inputs.sdk-android-metadata-policy }}
       run: |
         python3 -B - <<'PY'
-        import os, re
+        import os, re, sys
         from pathlib import Path
+        sys.path.insert(0, str(Path.cwd() / 'ci'))
         from ci.products.inventory import (canonical_json_bytes, load_canonical_json_bytes,
             read_regular_file_bytes, regular_file_inventory, require_exact_keys,
             require_sha256, sha256_bytes, sha256_file)
