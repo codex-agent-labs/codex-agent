@@ -407,9 +407,21 @@ def retained_sdk_binding_current(root, document):
     # product inventory is owned only by native SDK consumers.
     if "ci/products/sdk_inputs.py" in changed or any(path.startswith("gradle/release/keys/") for path in changed):
         return False
-    # Android and native SDK adapters do not produce the shared input bundle.
-    # This exports only a locator; consumers still authenticate exact inputs.
-    return not any(phase_inventory_paths(changed, phase) for phase in PHASE_INSTANCE_IDS
+    # These fixed JS/iOS producer recipes do not generate the shared Runtime
+    # compatibility bundle. Keep every other shared-input ownership check.
+    producer_only = {
+        'gradle/build-logic/src/main/kotlin/JavaScriptSdkPackage.kt',
+        'gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts',
+        'gradle/release/toolchains/sdk/javascript.json',
+        'gradle/build-logic/src/main/kotlin/AppleDistributionFileTasks.kt',
+        'gradle/build-logic/src/main/kotlin/IosAppleDistributionTasks.kt',
+        'gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt',
+        'gradle/release/toolchains/sdk/ios-package.json',
+    }
+    shared_changes = tuple(path for path in changed if path not in producer_only)
+    # This exports only a locator. Original upload, current Git policy, signed
+    # compatibility and exact completed Runtime joins remain mandatory below.
+    return not any(phase_inventory_paths(shared_changes, phase) for phase in PHASE_INSTANCE_IDS
                    if phase.component not in {"sdk-android", *NATIVE_BINDINGS})
 
 

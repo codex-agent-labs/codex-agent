@@ -288,9 +288,25 @@ class AcquisitionTests(unittest.TestCase):
                 ("gradle/release/versions/sdk.txt", False),
                 ("gradle/release/keys/sdk-runtime-root.pub", False),
                 ("ci/products/contract.py", False), ("ci/products/runtime_aggregate.py", False),
+                ('gradle/build-logic/src/main/kotlin/JavaScriptSdkPackage.kt', True),
+                ('gradle/build-logic/src/main/kotlin/codexagent.javascript-sdk.gradle.kts', True),
+                ('gradle/release/toolchains/sdk/javascript.json', True),
+                ('gradle/build-logic/src/main/kotlin/AppleDistributionFileTasks.kt', True),
+                ('gradle/build-logic/src/main/kotlin/IosAppleDistributionTasks.kt', True),
+                ('gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt', True),
+                ('gradle/release/toolchains/sdk/ios-package.json', True),
                 ("unknown/input", False)):
             with self.subTest(path=path), patch("products.inventory.tree_entries", side_effect=[[(path,"old")],[(path,"new")]]):
                 self.assertEqual(expected, consumer.retained_sdk_binding_current(Path("unused"), document))
+        # A producer-only change never masks changed shared input or trust policy.
+        producer = "gradle/build-logic/src/main/kotlin/JavaScriptSdkPackage.kt"
+        for shared in ("ci/products/sdk_inputs.py", "ci/products/sdk_compatibility.py",
+                       "gradle/release/versions/sdk.txt", "gradle/release/keys/sdk-runtime-root.pub",
+                       "ci/products/runtime_aggregate.py", "unknown/input"):
+            with self.subTest(producer=producer, shared=shared), patch(
+                    "products.inventory.tree_entries", side_effect=[[(producer,"old"),(shared,"old")],
+                                                                  [(producer,"new"),(shared,"new")]]):
+                self.assertFalse(consumer.retained_sdk_binding_current(Path("unused"), document))
 
     def test_batched_blobs_keep_exact_bytes_and_reject_protocol_corruption(self):
         oid = "b" * 40
