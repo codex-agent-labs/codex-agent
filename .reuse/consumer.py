@@ -416,6 +416,7 @@ def retained_sdk_binding_current(root, document):
         'gradle/build-logic/src/main/kotlin/AppleDistributionFileTasks.kt',
         'gradle/build-logic/src/main/kotlin/IosAppleDistributionTasks.kt',
         'gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt',
+        'gradle/build-logic/src/main/kotlin/AppleVerifiedDistributionModel.kt',
         'gradle/release/toolchains/sdk/ios-package.json',
     }
     shared_changes = tuple(path for path in changed if path not in producer_only)

@@ -3030,6 +3030,44 @@ def _catalog_artifacts(url: str, token: str) -> list[object]:
     return paginated_items(url, "artifacts", token)
 
 
+@contextmanager
+def _artifact_listing_scope():
+    """Share complete discovery hints only within this explicit invocation."""
+    guard, current, active = Lock(), None, True
+
+    def listing(url, token):
+        nonlocal current
+        key = (url, token)  # Private identity only; never logged or serialized.
+        with guard:
+            if not active:
+                raise ValueError("Artifact discovery scope is closed")
+            leader = current is None
+            if leader:
+                current = key, Future()
+            pending = current[1] if current[0] == key else None
+        if pending is None:
+            rows = _catalog_artifacts(url, token)  # Other repository/token stays fresh.
+        else:
+            if leader:
+                try:
+                    pending.set_result(tuple(_catalog_artifacts(url, token)))
+                except BaseException as error:
+                    pending.set_exception(error)
+                    raise
+            rows = pending.result()
+        with guard:
+            if not active:
+                raise ValueError("Artifact discovery scope is closed")
+        # Both consumers only read row fields; each owns its small outer list.
+        return list(rows)
+
+    try:
+        yield listing
+    finally:
+        with guard:
+            active = False
+
+
 @measured
 def _discover_catalogs(
     plan: Mapping[str, Any], destination: Path, release_trust: ReleaseTrust | None,
@@ -3037,6 +3075,7 @@ def _discover_catalogs(
     repository_root: Path | None = None,
     tooling_candidate_runs: list[int] | None = None,
     contract_candidate_runs: list[int] | None = None,
+    _artifact_listing=None,
 ) -> list[Catalog]:
     token = environ.get("GITHUB_TOKEN")
     api = environ.get("GITHUB_API_URL")
@@ -3055,7 +3094,8 @@ def _discover_catalogs(
         selected = read_sdk_release_selection(repository_root, plan["validationCommit"])
         read_sdk_runtime_compatibility_policy(repository_root, plan["validationCommit"])
         sdk_default = selected["defaultRuntimeVersion"]
-    artifacts = _catalog_artifacts(f"{api}/repos/{repository}/actions/artifacts", token)
+    listing = _catalog_artifacts if _artifact_listing is None else _artifact_listing
+    artifacts = listing(f"{api}/repos/{repository}/actions/artifacts", token)
     if tooling_candidate_runs is not None:
         from tooling_discovery import candidate_run_ids
         tooling_candidate_runs.extend(candidate_run_ids(artifacts))
@@ -10734,6 +10774,7 @@ def discover(
     tooling_workflow_sha: str | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
     native_resume_handoff: Path | None = None, completed_frozen_future: Future | None = None,
+    _artifact_listing=None,
 ) -> dict[str, Any]:
     if completed_frozen_future is not None and (
             type(completed_frozen_future) is not Future or completed_frozen is not None):
@@ -10805,7 +10846,8 @@ def discover(
     })
     catalogs = _discover_catalogs(plan, destination, trust, environment, versions, root,
         **({"tooling_candidate_runs": tooling_runs} if needs_tooling else {}),
-        **({"contract_candidate_runs": contract_runs} if contract_runs is not None else {}))
+        **({"contract_candidate_runs": contract_runs} if contract_runs is not None else {}),
+        **({"_artifact_listing": _artifact_listing} if _artifact_listing is not None else {}))
     native_records = _capture_native_handoffs(
         native_evidence_roots, destination / "native-runtime-evidence", destination, trust)
     adapter_records = _capture_native_handoffs(
@@ -11264,8 +11306,11 @@ def main(argv: list[str] | None = None) -> int:
                        for field, path in expected.items()):
                     raise ValueError("Native resume capture requires the exact standard input layout")
                 semantic_arguments = {**vars(arguments), "plan": arguments.native_contract_plan}
-        with metadata_admission_options(semantic_arguments) as admissions, completed_frozen_options(
-                semantic_arguments, **({"defer": True} if arguments.command == "discover" else {})) as semantic:
+        listing_scope = (_artifact_listing_scope() if arguments.command == "discover"
+                         and getattr(arguments, "sdk_historical_checkpoint", None) == "auto" else nullcontext(None))
+        with listing_scope as artifact_listing, metadata_admission_options(semantic_arguments) as admissions, completed_frozen_options(
+                semantic_arguments, **({"defer": True} if arguments.command == "discover" else {}),
+                **({"_artifact_listing": artifact_listing} if artifact_listing is not None else {})) as semantic:
             tooling = None
             if getattr(arguments, "sdk_validation_tooling", None) is not None:
                 tooling = _canonical_control(arguments.sdk_validation_tooling, "Caller SDK tooling policy")
@@ -11280,6 +11325,7 @@ def main(argv: list[str] | None = None) -> int:
                     keyring=arguments.keyring, keys_directory=arguments.keys_directory)
             elif arguments.command == "discover":
                 discover(arguments.plan, arguments.destination, arguments.github_output,
+                         **({"_artifact_listing": artifact_listing} if artifact_listing is not None else {}),
                          **({"native_resume_handoff": arguments.native_resume_handoff}
                             if arguments.native_resume_handoff is not None else {}),
                          native_evidence_roots=tuple(arguments.native_runtime_evidence),
