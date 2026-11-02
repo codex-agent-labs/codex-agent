@@ -72,7 +72,8 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
             "originalPhases": self.original_paths,
             "receiptBytes": {identity: raw for identity, raw in self.receipts.items() if identity.product == "runtime"}}}
         self.java_home = self.root / "current-package-jdk"
-        self.java_home.mkdir()
+        (self.java_home / "bin").mkdir(parents=True)
+        (self.java_home / "bin/java").write_bytes(b"synthetic Java executable, never launched")
         self.arguments = {"expected_build_key": "sha256:" + "a" * 64, "artifact_id": 71,
             "artifact_sha256": "sha256:" + "b" * 64, "trusted_workflow_sha": "c" * 40,
             "keyring": self.root / "caller-keyring.json", "keys_directory": self.root / "caller-keys",
@@ -205,14 +206,40 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_package_rejects_missing_or_relative_java_home_without_worker_or_finalization(self):
-        for home in ("", "relative/java"):
+        for index, home in enumerate((None, "", "relative/java")):
             with self.subTest(home=home):
-                self.destination = self.repository / ("build/no-java" if not home else "build/relative-java")
-                self.arguments["environ"]["JAVA_HOME"] = home
+                self.destination = self.repository / f"build/invalid-java-{index}"
+                if home is None:
+                    self.arguments["environ"].pop("JAVA_HOME", None)
+                else:
+                    self.arguments["environ"]["JAVA_HOME"] = home
                 with self.assertRaisesRegex(ValueError, "explicit current Java home"):
                     self.invoke()
                 self.mocks[2].assert_not_called()
                 self.mocks[3].assert_not_called()
+
+    def test_package_normalizes_explicit_java_home_and_executable_aliases(self):
+        home_alias = self.root / "toolcache-java"
+        home_alias.symlink_to(self.java_home, target_is_directory=True)
+        executable_alias_home = self.root / "executable-alias-jdk"
+        (executable_alias_home / "bin").mkdir(parents=True)
+        (executable_alias_home / "bin/java").symlink_to(self.java_home / "bin/java")
+        for index, home in enumerate((home_alias, executable_alias_home)):
+            with self.subTest(home=home):
+                self.destination = self.repository / f"build/aliased-java-{index}"
+                self.events.clear()
+                self.arguments["environ"]["JAVA_HOME"] = str(home)
+                self.assertEqual({"synthetic": "finalizer invoked after verified contexts"}, self.invoke())
+                self.assertEqual(self.java_home / "bin/java", self.mocks[2].call_args.kwargs["java_executable"])
+                self.assertEqual(["enter", "materialize", "worker", "exit-check", "exited", "finalize"], self.events)
+
+    def test_package_rejects_missing_explicit_java_without_path_fallback(self):
+        (self.java_home / "bin/java").unlink()
+        self.arguments["environ"]["PATH"] = os.environ.get("PATH", "")
+        with self.assertRaises(FileNotFoundError):
+            self.invoke()
+        self.mocks[2].assert_not_called()
+        self.mocks[3].assert_not_called()
 
     def test_mismatched_runtime_original_receipt_never_finalizes(self):
         self.inputs["runtime"]["receiptBytes"][NODE_PACKAGE] = self.receipts[NODE_PACKAGE] + b"\n"

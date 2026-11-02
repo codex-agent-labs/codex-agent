@@ -143,10 +143,10 @@ class SdkIosPackageActionTest(unittest.TestCase):
                            "STATE": str(root / "state"), "BUILD_KEY": KEY, "SDK_INPUTS_ID": "1",
                            "SDK_INPUTS_SHA256": KEY, "TRUSTED_WORKFLOW_SHA": TREE,
                            "DEVELOPER_DIR": str(root / "developer")}
-            for home in (str(java_home), "", str(alias)):
+            for home in (str(java_home), str(alias), "", "relative-java-home"):
                 with self.subTest(home=home), patch.dict(os.environ, {**environment, "JAVA_HOME": home}, clear=True), \
                         patch("subprocess.run") as invoked:
-                    if home != str(java_home):
+                    if home in ("", "relative-java-home"):
                         with self.assertRaisesRegex(ValueError, "current Java home"):
                             exec(compile(source, "ios-package-current-java", "exec"), {})
                         invoked.assert_not_called()

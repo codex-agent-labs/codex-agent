@@ -196,10 +196,10 @@ runs:
               {'evidence', 'publicKey', 'javaExecutable', 'requiredTrustDomain', 'keyring', 'keysDirectory'},
               'Caller SDK tooling policy')
           java_home = Path(os.environ.get('JAVA_HOME', ''))
-          if not java_home.is_absolute() or java_home.resolve(strict=True) != java_home:
+          if not java_home.is_absolute():
               raise ValueError('iOS package requires the explicit current Java home')
-          package_java = java_home / 'bin/java'
-          if not package_java.is_file() or package_java.resolve(strict=True) != package_java:
+          package_java = (java_home / 'bin/java').resolve(strict=True)
+          if not package_java.is_file():
               raise ValueError('iOS package requires the normalized current Java executable')
           trust = policy['requiredTrustDomain']
           fields = {
