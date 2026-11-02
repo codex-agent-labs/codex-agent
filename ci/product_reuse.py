@@ -7675,6 +7675,11 @@ def advance_products(
         if checkpoint_controls and not failed:
             from completed_sdk_reuse import COLLECTOR_RECEIPTS, write_collector_receipts
             write_collector_receipts(published_carrier, advanced, staged_destination / COLLECTOR_RECEIPTS)
+        elif checkpoint_controls and failed and sdk_family in {"native-package", "native-validation", "native-metadata"}:
+            # This distinct export preserves failures; only the successful
+            # carrier receipts are locators for independent subset admission.
+            from completed_sdk_reuse import COLLECTOR_RECEIPTS, write_collector_receipts
+            write_collector_receipts(published_carrier, advanced, staged_destination / COLLECTOR_RECEIPTS)
         if routing_output and not failed:
             from sdk_native_continuation import emit
             emit(plan, advanced, ready_plans.values(), sources, staged_request, root,

@@ -645,6 +645,7 @@ jobs:
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - id: product-reuse
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
@@ -652,12 +653,14 @@ jobs:
           # Composed native resume may recover an unqualified original package here.
           CODEX_AGENT_COLD_APPLE_WORKSPACE: 'true'
           SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
+          SDK_CHECKPOINTS: ${{ inputs.sdkCheckpoints }}
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           java_executable=$(readlink -f "$JAVA_HOME_17_X64/bin/java")
           test -f "$java_executable"
           completion=()
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then completion=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ "$SDK_CHECKPOINTS" = true ]; then completion+=(--sdk-historical-checkpoint auto); fi
           if [ "$SDK_RECOVERY_ONLY" = true ]; then
             completion+=(--native-resume-handoff build/native-product-resume-transport)
           fi
@@ -1032,6 +1035,7 @@ jobs:
         if: needs.plan.outputs.native_resume_ready != 'true'
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.plan.outputs.native_sdk_direct != 'true'
         with:
@@ -1101,6 +1105,7 @@ jobs:
           SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
           SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
           NATIVE_CONTRACT_COMPLETE: ${{ needs.plan.outputs.native_contract_complete }}
+          SDK_CHECKPOINTS: ${{ inputs.sdkCheckpoints }}
           PLAN_ARTIFACT_ID: ${{ needs.plan.outputs.plan_id }}
           PLAN_ARTIFACT_SHA256: ${{ needs.plan.outputs.plan_digest }}
         uses: ./.github/actions/hydrated-evidence-cache
@@ -1111,6 +1116,7 @@ jobs:
               if [ -n "$SDK_VALIDATION_TOOLING" ]; then tooling=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
               if [ -n "$SDK_APPLE_VALIDATION_POLICY" ]; then tooling+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi
               if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then tooling+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+              if [ "$SDK_CHECKPOINTS" = true ]; then tooling+=(--sdk-historical-checkpoint auto); fi
               if [ "$NATIVE_CONTRACT_COMPLETE" = true ]; then
                 tooling+=(--native-contract-plan build/product-resume-plan/impact-plan.json
                   --native-contract-plan-artifact-id "$PLAN_ARTIFACT_ID" --native-contract-plan-artifact-sha256 "$PLAN_ARTIFACT_SHA256")
@@ -4127,6 +4133,7 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
@@ -4138,6 +4145,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - name: Select installed caller Java for SDK tooling
         if: needs.plan.outputs.tooling_required == 'true'
         shell: bash
@@ -4161,6 +4169,7 @@ jobs:
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           sdk-family: native-package
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
@@ -4172,6 +4181,22 @@ jobs:
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '4'
           tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-checkpoint-4:
+    needs: [plan, sdk-collect-4]
+    if: >-
+      always() && !cancelled() && !inputs.fullReuseAcceptanceOnly && (inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-4.result == 'success')
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-preceding-checkpoint: auto
+      sdk-checkpoint: ${{ needs.sdk-collect-4.outputs.checkpoint_inputs || '{}' }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   sdk-native-packages:
     if: >-
@@ -4579,6 +4604,7 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
@@ -4590,6 +4616,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - name: Select installed caller Java for SDK tooling
         shell: bash
         run: |
@@ -4615,6 +4642,7 @@ jobs:
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           sdk-family: javascript-metadata
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-javascript.outputs.artifact_id }}
@@ -4626,6 +4654,22 @@ jobs:
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '6'
           tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-checkpoint-6:
+    needs: [plan, sdk-collect-6]
+    if: >-
+      always() && !cancelled() && !inputs.fullReuseAcceptanceOnly && (inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-6.result == 'success')
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-preceding-checkpoint: auto
+      sdk-checkpoint: ${{ needs.sdk-collect-6.outputs.checkpoint_inputs || '{}' }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   sdk-javascript-metadata-result:
     if: >-
@@ -4832,6 +4876,7 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
@@ -4843,6 +4888,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - name: Select installed caller Java for SDK tooling
         shell: bash
         run: |
@@ -4871,6 +4917,7 @@ jobs:
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           sdk-family: native-validation
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-ios-packages.outputs.artifact_id }}
@@ -4882,6 +4929,22 @@ jobs:
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '7'
           tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-checkpoint-7:
+    needs: [plan, sdk-collect-7]
+    if: >-
+      always() && !cancelled() && !inputs.fullReuseAcceptanceOnly && (inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-7.result == 'success')
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-preceding-checkpoint: auto
+      sdk-checkpoint: ${{ needs.sdk-collect-7.outputs.checkpoint_inputs || '{}' }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   sdk-native-validation-result:
     if: >-
@@ -5045,6 +5108,7 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
     env:
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
     steps:
@@ -5056,6 +5120,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
       - name: Select installed caller Java for SDK tooling
         shell: bash
         run: |
@@ -5081,6 +5146,7 @@ jobs:
         with:
           plan-directory: ${{ steps.tooling.outputs.plan-directory }}
           product: sdk
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           sdk-family: native-metadata
           plan-id: ${{ needs.plan.outputs.plan_id }}
           artifact-id: ${{ needs.sdk-native-validation-result.outputs.artifact_id }}
@@ -5092,6 +5158,22 @@ jobs:
           trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
           wave: '8'
           tree: ${{ needs.plan.outputs.validation_tree }}
+
+  sdk-checkpoint-8:
+    needs: [plan, sdk-collect-8]
+    if: >-
+      always() && !cancelled() && !inputs.fullReuseAcceptanceOnly && (inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-8.result == 'success')
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-preceding-checkpoint: auto
+      sdk-checkpoint: ${{ needs.sdk-collect-8.outputs.checkpoint_inputs || '{}' }}
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
   sdk-native-result:
     if: >-
@@ -6228,13 +6310,13 @@ jobs:
   sdk-completion:
     needs: [plan, contract-validation, product-resume, runtime-continuation, runtime-aggregate-continuation, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, sdk-plan, sdk-native-result, sdk-ios-validation-result, sdk-ios-metadata-result, sdk-core-binary-wave, sdk-core-package-wave, sdk-core-validation-wave, sdk-core-metadata-wave, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result]
     if: >-
-      (!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success') &&
+      !inputs.fullReuseAcceptanceOnly &&
       !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.product-resume.result == 'success'
     runs-on: ubuntu-24.04
-    outputs:
+    outputs: &sdk_completion_outputs
       complete: ${{ steps.completion.outputs.complete }}
       phase_count: ${{ steps.completion.outputs.phaseCount }}
       full_reuse: ${{ steps.completion.outputs.fullReuse }}
@@ -6244,8 +6326,27 @@ jobs:
       state_wave: ${{ steps.parent.outputs.state_wave }}
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
     env:
+      FULL_REUSE_COMPLETION: 'false'
+      PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
+      RUNTIME_CONTINUATION: ${{ toJSON(needs.runtime-continuation) }}
+      RUNTIME_AGGREGATE_CONTINUATION: ${{ toJSON(needs.runtime-aggregate-continuation) }}
+      SDK_IOS_BINARY_PLAN: ${{ toJSON(needs.sdk-ios-binary-plan) }}
+      SDK_IOS_BINARY: ${{ toJSON(needs.sdk-ios-binary) }}
+      SDK_COLLECT_3: ${{ toJSON(needs.sdk-collect-3) }}
+      SDK_PLAN: ${{ toJSON(needs.sdk-plan) }}
+      SDK_NATIVE_RESULT: ${{ toJSON(needs.sdk-native-result) }}
+      SDK_IOS_VALIDATION_RESULT: ${{ toJSON(needs.sdk-ios-validation-result) }}
+      SDK_IOS_METADATA_RESULT: ${{ toJSON(needs.sdk-ios-metadata-result) }}
+      SDK_CORE_BINARY_WAVE: ${{ toJSON(needs.sdk-core-binary-wave) }}
+      SDK_CORE_PACKAGE_WAVE: ${{ toJSON(needs.sdk-core-package-wave) }}
+      SDK_CORE_VALIDATION_WAVE: ${{ toJSON(needs.sdk-core-validation-wave) }}
+      SDK_CORE_METADATA_WAVE: ${{ toJSON(needs.sdk-core-metadata-wave) }}
+      SDK_ANDROID_BINARY_RESULT: ${{ toJSON(needs.sdk-android-binary-result) }}
+      SDK_ANDROID_PACKAGE_RESULT: ${{ toJSON(needs.sdk-android-package-result) }}
+      SDK_ANDROID_VALIDATION_RESULT: ${{ toJSON(needs.sdk-android-validation-result) }}
+      SDK_ANDROID_METADATA_RESULT: ${{ toJSON(needs.sdk-android-metadata-result) }}
       CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
-    steps:
+    steps: &sdk_completion_steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -6255,34 +6356,27 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: parent
-        env:
-          PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
-          RUNTIME_CONTINUATION: ${{ toJSON(needs.runtime-continuation) }}
-          RUNTIME_AGGREGATE_CONTINUATION: ${{ toJSON(needs.runtime-aggregate-continuation) }}
-          SDK_IOS_BINARY_PLAN: ${{ toJSON(needs.sdk-ios-binary-plan) }}
-          SDK_IOS_BINARY: ${{ toJSON(needs.sdk-ios-binary) }}
-          SDK_COLLECT_3: ${{ toJSON(needs.sdk-collect-3) }}
-          SDK_PLAN: ${{ toJSON(needs.sdk-plan) }}
-          SDK_NATIVE_RESULT: ${{ toJSON(needs.sdk-native-result) }}
-          SDK_IOS_VALIDATION_RESULT: ${{ toJSON(needs.sdk-ios-validation-result) }}
-          SDK_IOS_METADATA_RESULT: ${{ toJSON(needs.sdk-ios-metadata-result) }}
-          SDK_CORE_BINARY_WAVE: ${{ toJSON(needs.sdk-core-binary-wave) }}
-          SDK_CORE_PACKAGE_WAVE: ${{ toJSON(needs.sdk-core-package-wave) }}
-          SDK_CORE_VALIDATION_WAVE: ${{ toJSON(needs.sdk-core-validation-wave) }}
-          SDK_CORE_METADATA_WAVE: ${{ toJSON(needs.sdk-core-metadata-wave) }}
-          SDK_ANDROID_BINARY_RESULT: ${{ toJSON(needs.sdk-android-binary-result) }}
-          SDK_ANDROID_PACKAGE_RESULT: ${{ toJSON(needs.sdk-android-package-result) }}
-          SDK_ANDROID_VALIDATION_RESULT: ${{ toJSON(needs.sdk-android-validation-result) }}
-          SDK_ANDROID_METADATA_RESULT: ${{ toJSON(needs.sdk-android-metadata-result) }}
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          from ci.sdk_completion_state import _JOBS, select_sdk_completion_state
+          from ci.sdk_completion_state import _JOBS, _state, select_sdk_completion_state
+          from ci.sdk_native_continuation import _job
           from ci.reuse import github_output
-          # Separate job controls avoid Linux's per-environment-string size limit.
-          needs = {name: json.loads(os.environ[name.upper().replace('-', '_')]) for name in _JOBS}
-          state = select_sdk_completion_state(needs)
+          mode = os.environ['FULL_REUSE_COMPLETION']
+          if mode == 'true':
+              # Only this actual completed job selects the original transport.
+              resume = _job({'product-resume': json.loads(os.environ['PRODUCT_RESUME'])}, 'product-resume')
+              if (resume['result'] != 'success' or resume['outputs'].get('wave_failed') != 'false'
+                      or resume['outputs'].get('full_reuse') != 'true'):
+                  raise ValueError('Full-reuse completion requires successful unchanged product resume')
+              state = _state(resume['outputs'], runtime_wave='0', sdk_wave='')
+          elif mode == 'false':
+              # Ordinary selection still requires every actual terminal branch.
+              needs = {name: json.loads(os.environ[name.upper().replace('-', '_')]) for name in _JOBS}
+              state = select_sdk_completion_state(needs)
+          else:
+              raise ValueError('Unknown completion routing mode')
           github_output(Path(os.environ['GITHUB_OUTPUT']), state)
           PY
       - name: Select installed caller Java for SDK tooling
@@ -6358,6 +6452,21 @@ jobs:
               --state-wave "$STATE_WAVE" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
               --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
               ${tooling[@]+"${tooling[@]}"}
+
+  sdk-completion-full-reuse:
+    needs: [plan, contract-validation, product-resume]
+    if: >-
+      inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
+      always() && needs.plan.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.product-resume.result == 'success' && needs.product-resume.outputs.full_reuse == 'true'
+    runs-on: ubuntu-24.04
+    outputs: *sdk_completion_outputs
+    env:
+      FULL_REUSE_COMPLETION: 'true'
+      PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
+      CODEX_AGENT_PLAN_CONTROL_ID: ${{ needs.plan.outputs.plan_control_id }}
+    steps: *sdk_completion_steps
 
   sdk-partial-catalog:
     name: sdk-partial-catalog
@@ -6676,22 +6785,22 @@ jobs:
     if: >-
       (!inputs.fullReuseAcceptanceOnly ||
        (needs.plan.result == 'success' && inputs.reuseCompletedParity &&
-        needs.sdk-completion.result == 'success' &&
-        needs.sdk-completion.outputs.complete == 'true' &&
-        needs.sdk-completion.outputs.phase_count == '62' &&
-        needs.sdk-completion.outputs.full_reuse == 'true')) &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result == 'success' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true')) &&
       !inputs.runtimeRecoveryOnly &&
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
       (!inputs.sdkRecoveryOnly ||
-       (needs.sdk-completion.outputs.complete == 'true' &&
-        needs.sdk-completion.outputs.phase_count == '62')) &&
+       (fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' &&
+        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62')) &&
       (needs.plan.outputs.lane_ios_swift_tests_test == 'true' ||
        needs.plan.outputs.native_wrappers == 'true') &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion]
+    needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse]
     uses: ./.github/workflows/sdk-binding-parity.yml
     with:
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
@@ -6699,10 +6808,10 @@ jobs:
       nodeJs: ${{ fromJSON(needs.plan.outputs.lane_node_js) }}
       nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
       importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
-      reuseCompletedParity: ${{ inputs.reuseCompletedParity && (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && needs.sdk-completion.outputs.complete == 'true' && needs.sdk-completion.outputs.phase_count == '62' && needs.sdk-completion.outputs.full_reuse == 'true' }}
+      reuseCompletedParity: ${{ inputs.reuseCompletedParity && (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true' }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
-      sdkOutputs: ${{ toJSON(needs.sdk-completion.outputs) }}
+      sdkOutputs: ${{ toJSON(fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs) }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
@@ -6711,7 +6820,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always() && !inputs.toolingOnly
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -6742,9 +6851,9 @@ jobs:
           CONTRACT_PHASE10_REUPLOAD_ARTIFACT_ID: ${{ needs.contract-phase10-output-record.outputs.phase10OutputArtifactId }}
           CONTRACT_PHASE10_REUPLOAD_ARTIFACT_SHA256: ${{ needs.contract-phase10-output-record.outputs.phase10OutputArtifactSha256 }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
-          SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
-          SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
-          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && needs.sdk-completion.outputs.phase_count == '62' && needs.plan.outputs.native_resume_full_reuse != 'true' }}
+          SDK_COMPLETION_RESULT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result }}
+          SDK_COMPLETE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete }}
+          SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && needs.plan.outputs.native_resume_full_reuse != 'true' }}
           SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}
           SDK_CATALOG_NAME: ${{ needs.sdk-catalog.outputs.artifact_name }}
           SDK_CATALOG_ID: ${{ needs.sdk-catalog.outputs.artifact_id }}
@@ -6766,7 +6875,7 @@ jobs:
           SDK_INPUTS_ARTIFACT_ID: ${{ needs.sdk-inputs.outputs.artifact_id }}
           SDK_INPUTS_ARTIFACT_DIGEST: ${{ needs.sdk-inputs.outputs.artifact_digest }}
           RUNTIME_WAVE_FAILED: ${{ needs.runtime-collect-1.outputs.wave_failed }} ${{ needs.runtime-collect-2.outputs.wave_failed }} ${{ needs.runtime-collect-3.outputs.wave_failed }} ${{ needs.runtime-collect-4.outputs.wave_failed }} ${{ needs.runtime-collect-5.outputs.wave_failed }}
-          PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
+          PRODUCT_FULL_REUSE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse }}
           NATIVE_WRAPPERS_REQUIRED: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
           NATIVE_WRAPPERS_RESULT: ${{ needs.sdk-native-wrappers.result }}
           SDK_PARITY_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true') }}
@@ -6993,11 +7102,11 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           WORKFLOW_LINT_RESULT: ${{ needs.workflow-lint.result }}
           PRODUCT_RESUME_RESULT: ${{ needs.product-resume.result }}
-          SDK_COMPLETION_RESULT: ${{ needs.sdk-completion.result }}
+          SDK_COMPLETION_RESULT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result }}
           SDK_PARITY_RESULT: ${{ needs.sdk-parity.result }}
-          PRODUCT_FULL_REUSE: ${{ needs.sdk-completion.outputs.full_reuse }}
-          SDK_COMPLETE: ${{ needs.sdk-completion.outputs.complete }}
-          SDK_PHASE_COUNT: ${{ needs.sdk-completion.outputs.phase_count }}
+          PRODUCT_FULL_REUSE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse }}
+          SDK_COMPLETE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete }}
+          SDK_PHASE_COUNT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           TARGET_JOBS_REQUIRED: ${{ needs.product-resume.outputs.target_jobs_required }}
           REPORT_SHA256: ${{ needs.sdk-parity.outputs.report_sha256 }}

@@ -410,7 +410,7 @@ def fetch_qualification(destination, *, artifact_id, artifact_sha256, run_id, ru
 @measured
 def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, run_id, run_attempt,
                                  signer_commit, source_commit, token, _completed_sdk=False, _checkpoint=None,
-                                 _fresh_observation=None):
+                                 _fresh_observation=None, _archive_bytes=None):
     """Fresh native origin and whole ZIP authentication shared by distinct consumers."""
     import io
     import stat
@@ -490,8 +490,16 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     size, limit = artifact["size_in_bytes"], 32 * 1024 * 1024
     if size > limit:
         raise ValueError("Contract uploaded artifact exceeds the transport limit")
-    _, raw = products._reuse_contract_ci_upload(artifact, producer, run, token,
-        destination=None, limit=limit, artifact_sha256=artifact_sha256, size=size)
+    if _archive_bytes is None:
+        _, raw = products._reuse_contract_ci_upload(artifact, producer, run, token,
+            destination=None, limit=limit, artifact_sha256=artifact_sha256, size=size)
+    else:
+        # Discovery bytes are transport only. Every original job, upload and
+        # window above is still freshly authenticated before these bytes enter.
+        if (checkpoint is None or type(_archive_bytes) is not bytes
+                or len(_archive_bytes) != size or sha256_bytes(_archive_bytes) != artifact_sha256):
+            raise ValueError("Discovered checkpoint bytes differ from fresh original transport")
+        raw = _archive_bytes
     expected = ({"completion.json", "bundle.jsonl"} if _completed_sdk else
                 {"qualification.json", "bundle.jsonl", "qualification-issue.json", "proof.json",
                  "prepare.json", "cache-save.json"})
@@ -511,7 +519,9 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
             captured[row.filename] = archive.read(row)  # Native CRC checked before any consumer sees bytes.
             with (destination / row.filename).open("xb") as output:
                 output.write(captured[row.filename])
-    report = {"artifact": artifact, "downloadedQualificationBytes": len(raw)}
+    report = {"artifact": artifact, "downloadedQualificationBytes": len(raw) if _archive_bytes is None else 0}
+    if _archive_bytes is not None:
+        report["heldCheckpointArchiveBytes"] = len(raw)
     if checkpoint is not None:
         report["checkpointIssuerJob"] = original_job
     return report, captured
@@ -838,8 +848,8 @@ class CompletedFrozenReuse:
         if verified is not _COMPLETED_FROZEN:
             raise TypeError("Completed reuse requires native semantic authentication")
         if _checkpoint is not None:
-            from completed_sdk_reuse import _CheckpointConsumer
-            if type(_checkpoint) is not _CheckpointConsumer:
+            from completed_sdk_reuse import _CheckpointConsumer, _HistoricalCheckpointConsumer
+            if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer):
                 raise ValueError("Completed checkpoint reuse requires its private native witness")
             _checkpoint.check()
         self._checkpoint = _checkpoint
@@ -1478,8 +1488,8 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
         return report, qualified, phases, proof
 
     if _checkpoint is not None:
-        from completed_sdk_reuse import _CheckpointConsumer
-        if type(_checkpoint) is not _CheckpointConsumer or sdk_completion != _checkpoint.bootstrap():
+        from completed_sdk_reuse import _CheckpointConsumer, _HistoricalCheckpointConsumer
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer) or sdk_completion != _checkpoint.bootstrap():
             raise ValueError("Dynamic SDK completion requires its exact private native/bootstrap witness")
     sdk = None
     sdk_frozen = (spec if sdk_completion is None else
@@ -1535,12 +1545,17 @@ def fetch_completed_frozen(destination, *, consumer_commit, verifier_policy_sha2
     cap = CompletedFrozenReuse(spec, receipts, _COMPLETED_FROZEN, revision=revision,
         originals=qualified["originals"], sdk=sdk, body_cache=Path(destination).parent / "contract-bodies",
         _checkpoint=_checkpoint)
-    if requalification_baseline is not None:
+    historical_checkpoint = (_checkpoint is not None
+                            and type(_checkpoint) is _HistoricalCheckpointConsumer)
+    if requalification_baseline is not None or historical_checkpoint:
         invalidated = _restrict_completed_reuse(cap, root, current_revision)
-        report.update(requalificationBaseline=revision,
-            invalidatedPhases=[products._identity_record(instance) for instance in invalidated],
+        report.update(invalidatedPhases=[products._identity_record(instance) for instance in invalidated],
             completedFrozenPhases=sum(instance.product != "sdk" for instance in cap.completed_phases()),
             completedSdkPhases=sum(instance.product == "sdk" for instance in cap.completed_phases()))
+        if requalification_baseline is not None:
+            report["requalificationBaseline"] = revision
+        if historical_checkpoint:
+            report["historicalCheckpointCurrentRevision"] = current_revision
     return cap, report
 
 
@@ -1548,7 +1563,7 @@ def _restrict_completed_reuse(cap, root, revision):
     """Remove changed phases and descendants from an already authenticated capability."""
     import product_reuse as products
     from products.inventory import tree_entries
-    from products.registry import phase_instance_dependencies
+    from products.registry import PHASE_INSTANCE_IDS, phase_instance_dependencies
     from products.selection import phase_inventory_paths
     _commit(revision)
     spec, phases = cap._values()
@@ -1573,6 +1588,18 @@ def _restrict_completed_reuse(cap, root, revision):
                         and not phase_inventory_paths(sdk_changed, instance))
         context_dependencies = frozenset(_phase_records(load_canonical_json_bytes(raw_context),
                                                        "SDK source predecessors"))
+        # An observed predecessor is not a current native claim. Its changed
+        # inputs also invalidate descendants when it is absent from this subset.
+        invalid_context = {instance for instance in PHASE_INSTANCE_IDS
+                           if phase_inventory_paths(sdk_changed, instance)}
+        while True:
+            descendants = {instance for instance in PHASE_INSTANCE_IDS
+                           if any(parent in invalid_context for parent in phase_instance_dependencies(instance))}
+            if descendants <= invalid_context:
+                break
+            invalid_context.update(descendants)
+        eligible.difference_update(contextual & invalid_context)
+        context_dependencies = context_dependencies.difference(invalid_context)
     while True:
         retained = {instance for instance in eligible if set(phase_instance_dependencies(instance)) <=
                     (eligible | context_dependencies if instance in contextual else eligible)}
@@ -1718,11 +1745,13 @@ def add_completed_frozen_argument(parser):
         help="Separate independently provisioned checkpoint owner policy")
     parser.add_argument("--sdk-checkpoint",
         help="Untrusted exact checkpoint output selector; native and current-job validation remain required")
+    parser.add_argument("--sdk-historical-checkpoint",
+        help="Untrusted old-owner/checkpoint selector; requires independently provisioned current history")
 
 
 def validate_completed_reuse_policy(policy):
     """One exact caller policy schema for hosted and local read-only consumers."""
-    extra = {name for name in ("sdkCompletion", "requalificationBaseline")
+    extra = {name for name in ("sdkCompletion", "requalificationBaseline", "sdkCheckpointHistory")
              if type(policy) is dict and name in policy}
     require_exact_keys(policy, {
         "schemaVersion", "kind", "consumerCommit", "verifierPolicySha256", "artifactId", "artifactSha256",
@@ -1730,6 +1759,14 @@ def validate_completed_reuse_policy(policy):
     if (type(policy["schemaVersion"]) is not int or policy["schemaVersion"] != 1
             or policy["kind"] != "completed-frozen-reuse"):
         raise ValueError("Unsupported completed reuse policy")
+    if "sdkCheckpointHistory" in extra:
+        reference = require_exact_keys(policy["sdkCheckpointHistory"], {"path", "sha256"},
+                                       "Approved checkpoint history reference")
+        if type(reference["path"]) is not str or not Path(reference["path"]).is_absolute():
+            raise ValueError("Approved checkpoint history requires an absolute path")
+        require_sha256(reference["sha256"], "Approved checkpoint history digest")
+        if "sdkCompletion" not in extra:
+            raise ValueError("Checkpoint history requires the exact current native SDK baseline")
     return extra
 
 
@@ -1740,10 +1777,13 @@ def completed_frozen_options(arguments, *, defer=False):
     values = vars(arguments) if not isinstance(arguments, dict) else arguments
     path = values.get("completed_frozen_policy")
     owner_path, checkpoint_raw = values.get("sdk_checkpoint_owner"), values.get("sdk_checkpoint")
+    historical_raw = values.get("sdk_historical_checkpoint")
+    if historical_raw is not None and (checkpoint_raw is not None or owner_path is not None or path is None):
+        raise ValueError("Historical checkpoint requires its own explicit current-policy path")
     if (owner_path is None) != (checkpoint_raw is None) or owner_path is not None and path is None:
         raise ValueError("Explicit checkpoint requires paired owner/selector and completed-reuse policy")
     if isinstance(arguments, dict):
-        for name in ("completed_frozen_policy", "sdk_checkpoint_owner", "sdk_checkpoint"):
+        for name in ("completed_frozen_policy", "sdk_checkpoint_owner", "sdk_checkpoint", "sdk_historical_checkpoint"):
             arguments.pop(name, None)
     if path is None:
         yield {}
@@ -1765,6 +1805,28 @@ def completed_frozen_options(arguments, *, defer=False):
     extra = validate_completed_reuse_policy(policy)
     plan = products._validate_plan(plan_path, root)
     checkpoint_owner = checkpoint_output = original_owner = None
+    history_path = history_bytes = history = historical_output = None
+    if historical_raw is not None:
+        from completed_sdk_reuse import validate_checkpoint_history
+        from products.inventory import load_json_bytes
+        if "sdkCheckpointHistory" not in extra:
+            raise ValueError("Historical checkpoint lacks independently approved current history")
+        reference = policy["sdkCheckpointHistory"]
+        history_path = Path(reference["path"])
+        if history_path.resolve(strict=True) != history_path:
+            raise ValueError("Checkpoint history path must be normalized and non-symbolic")
+        history_bytes = read_regular_file_bytes(history_path, max_bytes=LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(history_bytes) != reference["sha256"]:
+            raise ValueError("Approved checkpoint history digest changed")
+        history = validate_checkpoint_history(load_canonical_json_bytes(history_bytes))
+        if (history["consumerCommit"] != policy["consumerCommit"]
+                or history["currentOwner"]["bootstrap"] != policy["sdkCompletion"]):
+            raise ValueError("Checkpoint history changes its current consumer or native baseline")
+        if type(historical_raw) is not str or len(historical_raw.encode("utf-8")) > 16 * 1024:
+            raise ValueError("Historical checkpoint selector exceeds its bound")
+        historical_output = ("auto" if historical_raw == "auto" else
+                             load_json_bytes(historical_raw.encode("utf-8")))
+
     if owner_path is not None:
         from completed_sdk_reuse import validate_checkpoint_owner, checkpoint_selection
         from products.inventory import load_json_bytes
@@ -1786,6 +1848,9 @@ def completed_frozen_options(arguments, *, defer=False):
         if owner_path is not None and read_regular_file_bytes(owner_path,
                 max_bytes=16 * 1024, reject_symlink_parents=True) != original_owner:
             raise ValueError("Checkpoint owner policy changed during consumption")
+        if history_path is not None and read_regular_file_bytes(history_path,
+                max_bytes=LIMIT, reject_symlink_parents=True) != history_bytes:
+            raise ValueError("Approved historical owner policy changed during consumption")
     from contextlib import ExitStack
     with tempfile.TemporaryDirectory(prefix="completed-reuse-authority-") as temporary, ExitStack() as checkpoint_scope:
         def authenticate():
@@ -1801,6 +1866,24 @@ def completed_frozen_options(arguments, *, defer=False):
                     Path(temporary).resolve() / "checkpoint", root=root,
                     consumer=products._consumer(plan, os.environ), job=os.environ.get("GITHUB_JOB"),
                     token=os.environ.get("GITHUB_TOKEN", "")))
+            if historical_output is not None:
+                from completed_sdk_reuse import historical_checkpoint_consumer, discover_historical_checkpoint
+                if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
+                        or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
+                        or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
+                        or os.environ.get("GITHUB_SHA") != plan["validationCommit"]
+                        or os.environ.get("GITHUB_JOB") not in {"plan", "product-resume"}):
+                    raise ValueError("Historical caller differs from the actual current CI source")
+                selection, archive_bytes = historical_output, None
+                if selection == "auto":
+                    selection, archive_bytes = discover_historical_checkpoint(history, policy, root=root,
+                        consumer=products._consumer(plan, os.environ), token=os.environ.get("GITHUB_TOKEN", ""))
+                if selection is not None:
+                    witness = checkpoint_scope.enter_context(historical_checkpoint_consumer(
+                        history, selection, Path(temporary).resolve() / "checkpoint", root=root,
+                        current_policy=policy, consumer=products._consumer(plan, os.environ),
+                        job=os.environ.get("GITHUB_JOB"), token=os.environ.get("GITHUB_TOKEN", ""),
+                        **({"_archive_bytes": archive_bytes} if archive_bytes is not None else {})))
             cap, _ = fetch_completed_frozen(Path(temporary).resolve() / "native", repository_root=root,
                 revision=plan["validationCommit"], token=os.environ.get("GITHUB_TOKEN", ""),
                 **({"_checkpoint": witness} if witness is not None else {}),
@@ -1930,10 +2013,28 @@ def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
                                 {"source", "controlArtifact"}, "Checkpoint workflow selectors")
     if type(preceding_selector) is not str or len(preceding_selector.encode("utf-8")) > 16 * 1024:
         raise ValueError("Preceding checkpoint selector exceeds its bound")
-    previous = load_json_bytes(preceding_selector.encode("utf-8")) if preceding_selector else None
-    if preceding_selector:
-        checkpoint_selection(policy, previous)  # Explicit invalid input never falls back.
     producer = _collector_control_source(inputs["source"])["producer"]
+    previous = (None if preceding_selector in ("", "auto") else load_json_bytes(preceding_selector.encode("utf-8")))
+    history = current_policy = archive_bytes = None
+    held = []
+    historical = preceding_selector == "auto" or type(previous) is dict and "ownerPolicySha256" in previous
+    if historical:
+        from completed_sdk_reuse import validate_checkpoint_history, discover_historical_checkpoint
+        current_path = Path(os.environ["CODEX_AGENT_COMPLETED_REUSE_POLICY"])
+        current_bytes = read_regular_file_bytes(current_path, max_bytes=LIMIT, reject_symlink_parents=True)
+        current_policy = load_canonical_json_bytes(current_bytes)
+        validate_completed_reuse_policy(current_policy)
+        reference = current_policy["sdkCheckpointHistory"]
+        history_path = Path(reference["path"])
+        history_bytes = read_regular_file_bytes(history_path, max_bytes=LIMIT, reject_symlink_parents=True)
+        if sha256_bytes(history_bytes) != reference["sha256"]:
+            raise ValueError("Issuer checkpoint history differs from its protected policy pin")
+        history = validate_checkpoint_history(load_canonical_json_bytes(history_bytes))
+        if history["currentOwner"] != policy:
+            raise ValueError("Historical issuer history changes its current protected owner")
+        held = [(current_path, current_bytes), (history_path, history_bytes)]
+    elif preceding_selector:
+        checkpoint_selection(policy, previous)  # Explicit invalid input never falls back.
     if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
             or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
             or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
@@ -1942,19 +2043,28 @@ def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
             or os.environ.get("GITHUB_RUN_ATTEMPT") != str(producer.get("runAttempt"))
             or os.environ.get("GITHUB_JOB") != "completed-sdk-checkpoint"):
         raise ValueError("Checkpoint source differs from the actual executing CI attempt")
+    if preceding_selector == "auto":
+        from sdk_handoff import _ensure_observed_sdk_commit
+        _ensure_observed_sdk_commit(root, producer, token)
+        previous, archive_bytes = discover_historical_checkpoint(history, current_policy,
+            root=root, consumer={"kind": "ci", "producer": producer}, token=token, _issuer_source=inputs["source"])
     path = _frozen_spec_path(root, commit)
     frozen_bytes = git_regular_blob_bytes(root, commit, path, max_bytes=LIMIT)
     if read_regular_file_bytes(root / path, max_bytes=LIMIT, reject_symlink_parents=True) != frozen_bytes:
         raise ValueError("Checkpoint frozen policy differs from its native source")
     report = issue_checkpoint(policy, inputs["source"], inputs["controlArtifact"], work,
-        root=root, revision=commit, frozen=load_canonical_json_bytes(frozen_bytes), token=token, previous=previous)
+        root=root, revision=commit, frozen=load_canonical_json_bytes(frozen_bytes), token=token, previous=previous,
+        **({"history": history, "current_policy": current_policy, "_previous_archive_bytes": archive_bytes}
+           if previous is not None and "ownerPolicySha256" in previous else {}))
+    if any(read_regular_file_bytes(path, max_bytes=LIMIT, reject_symlink_parents=True) != raw for path, raw in held):
+        raise ValueError("Historical issuer current policy changed during issuance")
     if read_regular_file_bytes(policy_path, max_bytes=16 * 1024, reject_symlink_parents=True) != owner_bytes:
         raise ValueError("Checkpoint owner policy changed during issuance")
     work = Path(work)
     reused = "reusedCheckpoint" in report
     if reused:
-        expected = previous if previous is not None else {"kind": "existing-sdk-completion",
-            "native": policy["bootstrap"], "subjectSha256": policy["bootstrapProofSha256"]}
+        expected = (previous.get("checkpoint", previous) if previous is not None else {"kind": "existing-sdk-completion",
+            "native": policy["bootstrap"], "subjectSha256": policy["bootstrapProofSha256"]})
         if (report["reusedCheckpoint"] != expected["native"]
                 or report["reusedCheckpointSubjectSha256"] != expected["subjectSha256"]
                 or report.get("reusedCheckpointOutput", expected) != expected

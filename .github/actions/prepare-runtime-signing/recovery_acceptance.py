@@ -136,9 +136,15 @@ CONTROL_FILES |= CACHE_FIXED_FILES
 # Original receipt/signature gates retain c8400811; no full-head acceptance.
 SDK_FROZEN_REVISION = "ca7dd6d02193df66c1bcba9867255321e74a1fe6"
 SDK_REGISTRY = "ci/products/registry.py"
-# Reviewed caller/publication classifications preserve all 112 product inventories.
-SDK_SELECTION_REVISION = "ace0becb637d7fbd6e63df621814dff72ab2a6cf"
+# Reviewed SDK package selector; non-SDK inventories remain frozen.
+SDK_SELECTION_REVISION = "8324aba46be110b6753c3a9c6bc745c821dbb772"
 SDK_SELECTOR = "ci/products/selection.py"
+# Exact reviewed caller syntax only; actual PR authorization remains below.
+SDK_RECOVERY_CALLER = (
+    b"      sdkRecoveryOnly: ${{ github.event_name == 'pull_request' && "
+    b"contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && "
+    b"!contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}"
+)
 # Reviewed canonical LF writer correction. Historical acceptance never admits
 # the resulting new aggregate key; ordinary production/signature gates do that.
 SDK_AGGREGATE_CORRECTION = "1b33491ad273aa42ba0d6b4cd7d7b98562141ad8"
@@ -186,6 +192,11 @@ def _activated_ci(original, sha):
 
 def _reviewed_scope(trusted, candidate, sha):
     caller = _blob(trusted, sha, CI)
+    if ([line for line in caller.splitlines() if line.startswith(b"      sdkRecoveryOnly:")]
+            == [SDK_RECOVERY_CALLER]
+            and [line for line in caller.splitlines() if line.startswith(b"      runtimeRecoveryOnly:")]
+            == [b"      runtimeRecoveryOnly: false"]):
+        return _sdk_reviewed_scope(trusted, candidate, sha)
     if (caller.splitlines().count(b"      sdkRecoveryOnly: true") == 1
             and caller.splitlines().count(b"      runtimeRecoveryOnly: false") == 1):
         return _sdk_reviewed_scope(trusted, candidate, sha)

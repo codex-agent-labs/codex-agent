@@ -79,9 +79,12 @@ def recover_unverified_package(plan, ready, producer, version, destination, *, t
                     or "worker/execution.json" not in names):
                 continue  # Older failure did not preserve produced package bytes.
             controls = {}
+            production_logs = names & {"worker/gradle.log", "worker/package.log"}
+            if len(production_logs) != 1:
+                raise ValueError("Unverified Apple package production log is missing or ambiguous")
             control_names = ["unverified-package/phase-object.json",
                              "unverified-package/phase-receipt.json", "worker/execution.json",
-                             "worker/gradle.log"]
+                             next(iter(production_logs))]
             control_names.extend(name for name in sorted(names) if name.startswith((
                 "package-execution/events/00-toolchain-before-xcode/",
                 "package-execution/events/01-toolchain-before-swift/")) and not name.endswith("/"))
@@ -288,6 +291,10 @@ def execute(
                 compatibility_request=sdk_inputs["sdk"]["directory"] / REQUEST_NAME,
                 repository_root=root, destination=destination / "worker",
                 environ={**environ, "DEVELOPER_DIR": str(developer_directory)},
+                tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+                java_executable=java_executable, policy_revision=policy_revision,
+                required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+                tooling_keys_directory=tooling_keys_directory,
             )
             if regular_file_inventory(prepared, allow_empty=True) != prepared_inventory:
                 raise ValueError("SDK iOS package authenticated inputs changed during execution")

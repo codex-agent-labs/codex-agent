@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 import subprocess
+import tempfile
 import time
 from typing import Any
 
@@ -24,6 +25,97 @@ from sdk_ios_phase import binary_package_properties, package_properties
 
 _IDENTITY = ("sdk", "sdk-ios", "package", "ios")
 _LIMIT = 16 * 1024 * 1024
+
+
+def _execute_binary_package(*, root, destination, stage, binary, request, producer, version,
+                            environ, tooling_evidence, tooling_public_key, java_executable,
+                            policy_revision, required_trust_domain, tooling_keyring,
+                            tooling_keys_directory, build_key, unchanged):
+    """Fixed standalone producer; the caller still performs the complete Apple admission."""
+    from product_reuse import _worker_process_environment
+    from products.inventory import git_regular_blob_bytes
+    from products.receipt import write_output_manifest
+    from products.sdk_apple_content import _snapshot_apple_tree
+    from products.sdk_apple_package_source import capture_apple_package_sources
+    from products.sdk_compatibility import load_sdk_compatibility_request, produce_sdk_compatibility
+    from products.sdk_maven import package_sdk_maven
+    from products.sdk_native_metadata import _inventory
+    from products.tooling import verified_tooling_capture
+
+    if not all(value is not None for value in (
+            tooling_evidence, tooling_public_key, java_executable, policy_revision, required_trust_domain)):
+        raise ValueError("Standalone Apple package requires exact signed tooling authority")
+    import re
+    if type(policy_revision) is not str or re.fullmatch(r"[0-9a-f]{40}", policy_revision) is None:
+        raise ValueError("Standalone Apple package requires an exact tooling policy revision")
+    java = Path(java_executable)
+    if not java.is_absolute() or java.name != "java":
+        raise ValueError("Standalone Apple package Java must be an absolute executable")
+    java_bytes = read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+    archive_policy = root / "gradle/release/toolchains/sdk/ios-package.json"
+    archive_policy_bytes = read_regular_file_bytes(archive_policy, max_bytes=_LIMIT, reject_symlink_parents=True)
+    if archive_policy_bytes != git_regular_blob_bytes(
+            root, producer["commit"], archive_policy.relative_to(root).as_posix(), max_bytes=_LIMIT):
+        raise ValueError("Apple archive policy differs from the elected producer source")
+    environment = _worker_process_environment(root, producer, destination, environ)
+    developer = Path(environment.get("DEVELOPER_DIR", ""))
+    if (not developer.is_absolute() or developer.resolve(strict=True) != developer or not developer.is_dir()):
+        raise ValueError("Standalone Apple package requires a normalized Apple Developer directory")
+    command, return_code, launch_error = [], None, None
+    started = time.monotonic_ns()
+    try:
+        with tempfile.TemporaryDirectory(prefix="sdk-ios-package-") as temporary:
+            private = Path(temporary).resolve()
+            sources = private / "sources"
+            expected = capture_apple_package_sources(root, producer["commit"], sources)
+            source_inventory = _inventory(sources)
+            frameworks = private / "frameworks"
+            _snapshot_apple_tree(binary / "outputs/apple-binary", frameworks)
+            framework_inventory = _inventory(frameworks)
+            compatibility = stage / "outputs/evidence/sdk-compatibility.json"
+            compatibility.parent.mkdir(parents=True)
+            arguments = load_sdk_compatibility_request(request)
+            if arguments["sdk_version"] != version:
+                raise ValueError("Apple compatibility request has a different SDK version")
+            produce_sdk_compatibility(**arguments, output=compatibility)
+            compatibility_bytes = read_regular_file_bytes(compatibility, max_bytes=_LIMIT, reject_symlink_parents=True)
+            with verified_tooling_capture(
+                    tooling_evidence, root, tooling_public_key, required_trust_domain=required_trust_domain,
+                    keyring=tooling_keyring, keys_directory=tooling_keys_directory,
+                    policy_revision=policy_revision) as jar:
+                command = [str(java), "-cp", str(jar), "AppleSdkPackageMain", version,
+                           str(frameworks), str(sources), str(compatibility), str(private / "work"),
+                           str(stage / "outputs/apple"), str(developer), expected["xcodeVersion"],
+                           expected["xcodeBuild"], expected["swiftVersion"], str(archive_policy)]
+                unchanged()
+                with (destination / "package.log").open("xb") as log:
+                    process = subprocess.run(command, cwd=private, env=environment, stdout=log,
+                                             stderr=subprocess.STDOUT, check=False)
+                return_code = process.returncode
+                if return_code != 0:
+                    raise ValueError(f"Standalone Apple package failed with exit code {return_code}; see {destination / 'package.log'}")
+                if (_inventory(sources) != source_inventory or _inventory(frameworks) != framework_inventory
+                        or read_regular_file_bytes(compatibility, reject_symlink_parents=True) != compatibility_bytes):
+                    raise ValueError("Standalone Apple package private inputs changed")
+                unchanged()
+            # Exact existing Maven producer; no SDK source compilation or Gradle bootstrap.
+            package_sdk_maven(binary / "outputs/maven", stage / "outputs/maven", compatibility,
+                              "io.github.codex-agent-labs", version, "sdk-ios")
+            write_output_manifest(stage, *_IDENTITY, version,
+                                  {"apple": "outputs/apple", "evidence": "outputs/evidence", "maven": "outputs/maven"})
+    except OSError as error:
+        launch_error = str(error)
+        raise
+    finally:
+        write_canonical_json(destination / "execution.json", {
+            "schemaVersion": 1, "producer": producer, "buildKey": build_key,
+            "command": command, "returnCode": return_code, "launchError": launch_error,
+            "elapsedNs": time.monotonic_ns() - started,
+        })
+        if (read_regular_file_bytes(java, reject_symlink_parents=True) != java_bytes
+                or read_regular_file_bytes(archive_policy, reject_symlink_parents=True) != archive_policy_bytes):
+            raise ValueError("Standalone Apple package executable or archive policy changed")
+        unchanged()
 
 
 def _record(value: Mapping[str, Any], identity: tuple[str, str, str, str], label: str):
@@ -60,8 +152,12 @@ def execute(
     repository_root: Path, destination: Path, environ: Mapping[str, str],
     verified_distribution: Path | None = None, native_evidence: Path | None = None,
     expected_sdk_compatibility: Path | None = None, expected_distribution_proof: Path | None = None,
+    tooling_evidence: Path | None = None, tooling_public_key: Path | None = None,
+    java_executable: Path | None = None, policy_revision: str | None = None,
+    required_trust_domain: str | None = None, tooling_keyring: Path | None = None,
+    tooling_keys_directory: Path | None = None,
 ) -> dict[str, Any]:
-    """Run canonical ``ciProductPhase`` over caller-authenticated originals.
+    """Package authenticated raw binaries directly; preserve the legacy imported route.
 
     Omitting all legacy distribution inputs packages raw binary predecessors.
     That path produces no validation evidence and grants no compiler/host trust;
@@ -139,23 +235,16 @@ def execute(
     tree = current_producer["tree"]
     stage = sdk_build / "product-stage/sdk/sdk-ios/package"
     validation = sdk_build / f"apple-sdk-package-tasks/{tree}/validation-evidence"
-    owned_directories = (
+    owned_directories = (stage,) if binary_only else (
         stage,
         sdk_build / f"imported-sdk-binary-stages/{tree}/sdk-ios",
         sdk_build / f"sdk-compatibility/{tree}",
         sdk_build / f"apple-sdk-package-tasks/{tree}",
-    ) + ((
-        ios_build / "imported-frameworks",
-        ios_build / "XCFrameworks/release",
-        ios_build / "release-xcframework",
-        ios_build / "apple-distribution",
-        ios_build / "distributions",
-    ) if binary_only else (
         ios_build / "imported-rust",
         ios_build / "imported-verified-apple",
         ios_build / "distributions",
         ios_build / "reports",
-    ))
+    )
     owned_files = () if binary_only else (ios_build / "swift-authentication-tests-summary.json",)
     original_paths = (
         contract[1], contract[2], binary[1], binary[2],
@@ -174,7 +263,7 @@ def execute(
             if current.is_symlink() or (current.exists() and not current.is_dir()):
                 raise ValueError("iOS SDK package output has an unsafe parent")
     if any(path.exists() or path.is_symlink() for path in all_outputs):
-        raise ValueError("iOS SDK package worker requires fresh diagnostic and Gradle-owned outputs")
+        raise ValueError("iOS SDK package worker requires fresh diagnostic and producer-owned outputs")
 
     def originals_unchanged() -> None:
         if (canonical_json_bytes(selected) != selected_bytes
@@ -224,7 +313,6 @@ def execute(
     for output in owned_directories:
         _prepare_destination(output, root).rmdir()
     destination = _prepare_destination(destination, root)
-    environment, wrapper = _runtime_worker_environment(root, current_producer, destination, environ, build_directory=".")
 
     def unchanged() -> None:
         _runtime_worker_checkout(root, current_producer)
@@ -233,6 +321,20 @@ def execute(
         originals_unchanged()
 
     unchanged()
+    if binary_only:
+        _execute_binary_package(root=root, destination=destination, stage=stage, binary=binary[1],
+            request=files["request"], producer=original_producer, version=version, environ=environ,
+            tooling_evidence=tooling_evidence, tooling_public_key=tooling_public_key,
+            java_executable=java_executable, policy_revision=policy_revision,
+            required_trust_domain=required_trust_domain, tooling_keyring=tooling_keyring,
+            tooling_keys_directory=tooling_keys_directory, build_key=original_build_key, unchanged=unchanged)
+        manifest = verify_output_manifest_identity(stage, *_IDENTITY, version)
+        if {output["kind"] for output in manifest["outputs"]} != {"apple", "evidence", "maven"}:
+            raise ValueError("Standalone Apple package is missing a canonical output family")
+        output_inventory = _inventory(stage, allow_empty=True)
+        unchanged()
+        return {"stage": stage, "diagnostics": destination, "outputInventory": output_inventory}
+    environment, wrapper = _runtime_worker_environment(root, current_producer, destination, environ, build_directory=".")
     command = _runtime_worker_command(wrapper, fields, environment, build_directory=".")
     started = time.monotonic_ns()
     return_code, launch_error = None, None

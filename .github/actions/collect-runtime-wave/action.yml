@@ -61,7 +61,7 @@ inputs:
 outputs:
   checkpoint-inputs:
     description: Untrusted exact source/control upload selectors for the downstream native issuer.
-    value: ${{ steps.upload_controls.outputs.artifact-id && format('{{"source":{0},"controlArtifact":{{"artifactId":{1},"artifactSha256":"sha256:{2}"}}}}', steps.controls.outputs.source, steps.upload_controls.outputs.artifact-id, steps.upload_controls.outputs.artifact-digest) || '' }}
+    value: ${{ steps.upload_controls.outputs.artifact-id && format('{{"source":{0},"controlArtifact":{{"artifactId":{1},"artifactSha256":"sha256:{2}"}}}}', steps.controls.outputs.source || steps.controls_subset.outputs.source, steps.upload_controls.outputs.artifact-id, steps.upload_controls.outputs.artifact-digest) || '' }}
   control-artifact-id:
     value: ${{ steps.upload_controls.outputs.artifact-id }}
   control-artifact-sha256:
@@ -247,11 +247,27 @@ runs:
           --destination build/runtime-collector-controls \
           --wave "$WAVE" --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
           --workflow-sha "$WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
+    - id: controls_subset
+      if: inputs.checkpoint-controls == 'true' && inputs.product == 'sdk' && contains(fromJSON('[4,7,8]'), fromJSON(inputs.wave)) && steps.collect.outputs.wave_failed == 'true'
+      shell: bash
+      env:
+        WAVE: ${{ inputs.wave }}
+        ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        ARTIFACT_SHA256: sha256:${{ steps.upload.outputs.artifact-digest }}
+        WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 -B ci/completed_sdk_reuse.py stage-collector-controls --successful-subset \
+          --handoff build/runtime-next/handoff \
+          --reference-path build/runtime-reference-handoff/runtime-references.json \
+          --destination build/runtime-collector-controls \
+          --wave "$WAVE" --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+          --workflow-sha "$WORKFLOW_SHA" --github-output "$GITHUB_OUTPUT"
     - id: upload_controls
-      if: steps.controls.outcome == 'success'
+      if: steps.controls.outcome == 'success' || steps.controls_subset.outcome == 'success'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: ${{ steps.controls.outputs.artifact_name }}
+        name: ${{ steps.controls.outputs.artifact_name || steps.controls_subset.outputs.artifact_name }}
         path: build/runtime-collector-controls
         if-no-files-found: error
         overwrite: false

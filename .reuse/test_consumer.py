@@ -18,14 +18,88 @@ RECORD = APPROVAL["qualifications"][0]
 
 
 class AcquisitionTests(unittest.TestCase):
+
+    def test_historical_checkpoint_owners_require_current_protected_exact_policy(self):
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        from completed_sdk_reuse import validate_checkpoint_history
+        descriptor = json.loads(Path(__file__).with_name("checkpoint-owner.json").read_bytes())
+        self.assertIn("product-validation / sdk-collect-6", descriptor["collectors"])
+        self.assertIn("product-validation / sdk-collect-8", descriptor["collectors"])
+        document = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        current = consumer.checkpoint_owner_policy(canonical_json_bytes(descriptor), APPROVAL, document)
+        self.assertEqual(APPROVAL["authorityCommit"], current["issuerCommit"])
+        original = descriptor["historicalPolicies"][0]
+        self.assertNotEqual(current["issuerCommit"], original["policy"]["issuerCommit"])
+        self.assertEqual(original["sha256"], sha256_bytes(canonical_json_bytes(original["policy"])))
+        for fault in ("digest", "duplicate", "nested", "parent", "revoked"):
+            changed=copy.deepcopy(descriptor); value=copy.deepcopy(APPROVAL)
+            if fault=="digest":changed["historicalPolicies"][0]["sha256"]="sha256:"+"0"*64
+            elif fault=="duplicate":changed["historicalPolicies"].append(copy.deepcopy(original))
+            elif fault=="nested":
+                changed["historicalPolicies"][0]["policy"]["historicalPolicies"]=[]
+            elif fault=="parent":
+                record=changed["historicalPolicies"][0]
+                record["policy"]["parentProofSha256"]="sha256:"+"0"*64
+                record["sha256"]=sha256_bytes(canonical_json_bytes(record["policy"]))
+            else:value["approvedVerifiers"].remove(original["policy"]["bootstrap"]["signerCommit"])
+            with self.subTest(fault=fault),self.assertRaises(ValueError):
+                consumer.checkpoint_owner_policy(canonical_json_bytes(changed),value,document)
+        legacy={key:value for key,value in descriptor.items() if key!="historicalPolicies"}
+        self.assertEqual(current,consumer.checkpoint_owner_policy(canonical_json_bytes(legacy),APPROVAL,document))
+        history={"schemaVersion":1,"kind":"sdk-checkpoint-history","consumerCommit":APPROVAL["activeVerifier"],
+                 "currentOwner":current,"historicalPolicies":descriptor["historicalPolicies"]}
+        self.assertEqual(history,validate_checkpoint_history(history))
+
+    def test_historical_policy_provision_pins_small_current_owned_file_and_rejects_late_change(self):
+        from products.inventory import canonical_json_bytes, sha256_bytes
+        document=json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        descriptor=Path(__file__).with_name("checkpoint-owner.json").read_bytes()
+        for late in (False,True):
+            with self.subTest(late=late),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary).resolve();work=root/"proof";work.mkdir()
+                counts={}
+                def contents(path,revision,**kwargs):
+                    self.assertEqual(APPROVAL["authorityCommit"],revision)
+                    counts[path]=counts.get(path,0)+1
+                    if path==".reuse/completed-reuse.json":return canonical_json_bytes(document)
+                    self.assertEqual(".reuse/checkpoint-owner.json",path)
+                    if late and counts[path]==2:
+                        (work/"checkpoint-owner-history.json").write_bytes(b"changed")
+                    return descriptor
+                with patch.object(consumer.authority,"contents",side_effect=contents),                        patch.object(consumer,"history",return_value={}),                        patch.object(consumer,"retained_sdk_binding_current",return_value=True),                        patch.object(consumer,"completed_sdk_spec",return_value=({"sdkInputs":{"source":document["retainedSdkInputsSource"]}},62)):
+                    if late:
+                        with self.assertRaisesRegex(ValueError,"history changed"):
+                            consumer.completed_environment(root,work,APPROVAL,checkpoint=True)
+                        continue
+                    result,environment=consumer.completed_environment(root,work,APPROVAL,checkpoint=True)
+                runtime=json.loads(Path(environment["CODEX_AGENT_COMPLETED_REUSE_POLICY"]).read_bytes())
+                reference=runtime.pop("sdkCheckpointHistory")
+                self.assertEqual(document["policy"],runtime)
+                self.assertEqual(sha256_bytes(Path(reference["path"]).read_bytes()),reference["sha256"])
+                history=json.loads(Path(reference["path"]).read_bytes())
+                self.assertEqual(APPROVAL["activeVerifier"],history["consumerCommit"])
+                self.assertEqual(json.loads(descriptor)["historicalPolicies"],history["historicalPolicies"])
+                self.assertEqual("required by each explicit consumer",result["nativeAuthentication"])
+
     def test_completed_history_bound_preserves_exact_identities(self):
         with patch.dict(consumer.sys.modules):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            self.assertEqual(len(original["gitHistory"]), 153)
+            self.assertIn(len(original["gitHistory"]), (153, 154))
+            baseline = {"repository": consumer.authority.REPOSITORY,
+                "commit": "cb516309ef7a8b003966a9b8133be44bf5e2fc16",
+                "tree": "cebf146a27c3fa3d64ab0bf38fd177cd4f7ea293"}
+            retained = canonical_json_bytes(original["gitHistory"][:153])
+            expanded = copy.deepcopy(original)
+            if len(expanded["gitHistory"]) == 153:
+                expanded["gitHistory"].append(baseline)
+            self.assertEqual(expanded["gitHistory"][-1], baseline)
+            expanded["policy"]["requalificationBaseline"] = baseline["commit"]
+            self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(expanded), APPROVAL), expanded)
+            self.assertEqual(canonical_json_bytes(expanded["gitHistory"][:153]), retained)
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL), original)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -36,7 +110,7 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(154)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(155)]
                     elif fault == "duplicate": rows[-1] = dict(rows[0])
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"

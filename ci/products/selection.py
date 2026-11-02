@@ -1201,6 +1201,10 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     if path in _RUNTIME_TOOLCHAIN_PROFILE_PATHS:
         target = path.removeprefix(_RUNTIME_TOOLCHAIN_PROFILE_PREFIX).removesuffix(".json")
         return _runtime((target,))
+    if path == "gradle/release/toolchains/sdk/javascript.json":
+        return _from_phase("sdk", "javascript", "package")
+    if path == "gradle/release/toolchains/sdk/ios-package.json":
+        return _from_phase("sdk", "sdk-ios", "package")
     if path in {_SDK_CSHARP_TOOLCHAIN_PROFILE_PATH, "ci/products/sdk_dotnet_toolchain.py"}:
         return (_from_phase("sdk", "csharp", "binary") |
                 _from_phase("sdk", "csharp", "package"))
@@ -1413,6 +1417,8 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
     }
     if _is_prefix(path, "gradle/build-logic/src/main/kotlin/"):
         name = path.rsplit("/", 1)[-1]
+        if name in {"JavaScriptSdkPackage.kt", "CrossLanguageJavaScriptEnumDeclarations.kt"}:
+            return _from_phase("sdk", "javascript", "package")
         if name == "IosSdkMetadataContentTask.kt":
             return _from_phase("sdk", "sdk-ios", "metadata")
         if name == "NativeWrapperMetadataContentTask.kt":
@@ -1510,6 +1516,9 @@ def _classify(path: str) -> set[PhaseInstanceId] | None:
 
 
 def _direct_owners(path: str, selected: set[PhaseInstanceId]) -> set[PhaseInstanceId]:
+    if path == "gradle/build-logic/src/main/kotlin/CrossLanguageJavaScriptEnumDeclarations.kt":
+        # Packaging renders canonical enums; imported validation still reads this source independently.
+        return {instance for instance in selected if instance.phase in {"package", "validation"}}
     if path in {"ci/products/sdk_android_metadata.py",
                 "gradle/build-logic/src/main/kotlin/SdkAndroidMetadataTasks.kt",
                 "gradle/build-logic/src/main/kotlin/SdkFacadeMetadataTasks.kt"}:

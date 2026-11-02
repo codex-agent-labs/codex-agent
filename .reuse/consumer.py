@@ -350,7 +350,7 @@ def completed_descriptor(raw, value):
         raise ValueError("Completed frozen proof differs from preserved qualification identity")
     validate_sdk_input_source(document["retainedSdkInputsSource"])
     records = document["gitHistory"]
-    if not isinstance(records, list) or not 1 <= len(records) <= 153:
+    if not isinstance(records, list) or not 1 <= len(records) <= 154:
         raise ValueError("Completed reuse Git history is missing or excessive")
     seen = set()
     for record in records:
@@ -416,22 +416,33 @@ def retained_sdk_binding_current(root, document):
 def checkpoint_owner_policy(raw, value, document):
     """Materialize the exact independently resolved publisher, never a caller SHA."""
     from products.inventory import load_canonical_json_bytes, require_exact_keys
-    from completed_sdk_reuse import validate_checkpoint_owner
-    if type(raw) is not bytes or len(raw) > 16 * 1024:
+    from completed_sdk_reuse import validate_checkpoint_owner, validate_checkpoint_history
+    if type(raw) is not bytes or len(raw) > 16 * 1024 * 1024:
         raise ValueError("Protected checkpoint descriptor exceeds its bound")
-    descriptor = require_exact_keys(load_canonical_json_bytes(raw),
-        {"schemaVersion", "kind", "parent", "parentProofSha256", "bootstrap", "bootstrapProofSha256", "collectors"},
+    decoded = load_canonical_json_bytes(raw)
+    extra = {"historicalPolicies"} if type(decoded) is dict and "historicalPolicies" in decoded else set()
+    descriptor = require_exact_keys(decoded,
+        {"schemaVersion", "kind", "parent", "parentProofSha256", "bootstrap", "bootstrapProofSha256", "collectors"} | extra,
         "Protected checkpoint owner descriptor")
     if descriptor["kind"] != "sdk-checkpoint-owner-authorization":
         raise ValueError("Unsupported protected checkpoint owner descriptor")
     publisher = authority.commit(value["authorityCommit"])
-    policy = validate_checkpoint_owner({**descriptor, "kind": "sdk-checkpoint-owner",
-        "issuerCommit": publisher, "collectorWorkflowSha": publisher})
+    policy = validate_checkpoint_owner({**{key: item for key, item in descriptor.items() if key not in extra},
+        "kind": "sdk-checkpoint-owner", "issuerCommit": publisher, "collectorWorkflowSha": publisher})
     if (policy["bootstrap"] != document["policy"]["sdkCompletion"]
             or any(pins[field] not in value["approvedVerifiers"]
                    for pins in (policy["parent"], policy["bootstrap"])
                    for field in ("signerCommit", "sourceCommit"))):
         raise ValueError("Checkpoint owner differs from independently approved native pins")
+    if extra:
+        validate_checkpoint_history({"schemaVersion": 1, "kind": "sdk-checkpoint-history",
+            "consumerCommit": value["activeVerifier"], "currentOwner": policy,
+            "historicalPolicies": descriptor["historicalPolicies"]})
+        for row in descriptor["historicalPolicies"]:
+            if any(pins[field] not in value["approvedVerifiers"]
+                   for pins in (row["policy"]["parent"], row["policy"]["bootstrap"])
+                   for field in ("signerCommit", "sourceCommit")):
+                raise ValueError("Historical checkpoint bootstrap lacks retained independent approval")
     return policy
 
 
@@ -465,10 +476,17 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
     document = completed_descriptor(raw, value)
     if type(checkpoint) is not bool:
         raise ValueError("Checkpoint provisioning requires an explicit boolean")
-    checkpoint_raw = None
+    checkpoint_raw = checkpoint_history = None
+    runtime_policy = dict(document["policy"])
     if checkpoint:
-        checkpoint_raw = authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"])
+        checkpoint_raw = authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"],
+                                           maximum=16 * 1024 * 1024)
         owner_policy = checkpoint_owner_policy(checkpoint_raw, value, document)
+        descriptor = load_canonical_json_bytes(checkpoint_raw)
+        if "historicalPolicies" in descriptor:
+            checkpoint_history = {"schemaVersion": 1, "kind": "sdk-checkpoint-history",
+                "consumerCommit": value["activeVerifier"], "currentOwner": owner_policy,
+                "historicalPolicies": descriptor["historicalPolicies"]}
     if type(sdk_parity) is not bool:
         raise ValueError("SDK parity provisioning requires an explicit boolean")
     parity_raw = None
@@ -484,6 +502,13 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
         owner_path = work / "checkpoint-owner-policy.json"
         with owner_path.open("xb") as output:
             output.write(canonical_json_bytes(owner_policy))
+        if checkpoint_history is not None:
+            history_path = work / "checkpoint-owner-history.json"
+            history_bytes = canonical_json_bytes(checkpoint_history)
+            with history_path.open("xb") as output:
+                output.write(history_bytes)
+            runtime_policy["sdkCheckpointHistory"] = {"path": str(history_path),
+                "sha256": "sha256:" + hashlib.sha256(history_bytes).hexdigest()}
     if sdk_parity:
         parity_path = work / "completed-sdk-parity-policy.json"
         with parity_path.open("xb") as output:
@@ -495,12 +520,14 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
                         ("retained-sdk-inputs-source.json", "retainedSdkInputsSource")):
         path = work / name
         with path.open("xb") as output:
-            output.write(canonical_json_bytes(document[field]))
+            output.write(canonical_json_bytes(runtime_policy if field == "policy" else document[field]))
         paths[field] = str(path)
     if authority.contents(".reuse/completed-reuse.json", value["authorityCommit"]) != raw:
         raise ValueError("Approved completed reuse descriptor changed during provisioning")
-    if checkpoint and authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"]) != checkpoint_raw:
+    if checkpoint and authority.contents(".reuse/checkpoint-owner.json", value["authorityCommit"], maximum=16 * 1024 * 1024) != checkpoint_raw:
         raise ValueError("Protected checkpoint descriptor changed during provisioning")
+    if checkpoint_history is not None and regular(history_path, 16 * 1024 * 1024) != history_bytes:
+        raise ValueError("Protected checkpoint history changed during provisioning")
     if sdk_parity and (
             authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"]) != parity_raw
             or regular(parity_path, 4096) != parity_raw):

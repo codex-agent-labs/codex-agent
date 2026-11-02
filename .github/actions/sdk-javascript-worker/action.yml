@@ -73,7 +73,13 @@ runs:
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write('key_hex=' + key.removeprefix('sha256:') + '\n')
         PY
-    - uses: ./.github/actions/setup-kmp
+    - if: inputs.phase == 'package'
+      uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+      with:
+        distribution: temurin
+        java-version: '17.0.21+9'
+    - if: inputs.phase == 'validation'
+      uses: ./.github/actions/setup-kmp
       with:
         cache-read-only: 'false'
         node-version: '24.18.0'
@@ -133,6 +139,7 @@ runs:
           build/sdk-worker/shard
           build/sdk-worker/worker/execution.json
           build/sdk-worker/worker/gradle.log
+          build/sdk-worker/worker/package.log
           ${{ job.status != 'success' && 'build/sdk-worker' || '' }}
         if-no-files-found: warn
         overwrite: false
