@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from argparse import Namespace
 import importlib.util
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 
@@ -366,6 +367,22 @@ def verified_sdk_apple_native_inputs(
         binary_producer = validate_producer(
             original_receipt["producer"], "Original iOS SDK binary producer",
         )
+        if (not isinstance(trusted_workflow_sha, str)
+                or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None):
+            raise ValueError("Historical Apple native inputs require a pinned caller workflow")
+
+    def original_workflow(producer):
+        if (producer["repository"] != "codex-agent-labs/codex-agent"
+                or producer["workflowPath"] != ".github/workflows/ci.yml"
+                or producer["event"] not in {"pull_request", "merge_group"}):
+            raise ValueError("Historical Apple native inputs require an eligible original CI producer")
+        selected = product_reuse._runtime_prior_workflow_sha(
+            product_reuse._original_ci_run(producer, token), trusted_workflow_sha)
+        if selected is None:
+            raise ValueError("Historical Apple native inputs lack a reviewed original workflow")
+        return selected
+
+    current = tuple(str(environ.get(name)) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
     inventory_sources = {
         (lane, name): plan_path.parent / "inventories" / lane / name
         for lane in LANES for name in INPUT_NAMES.values()
@@ -439,9 +456,12 @@ def verified_sdk_apple_native_inputs(
             receipt_path = captured / "lane-receipt.json"
             custodian = _native_custodian(load_json_bytes(read_regular_file_bytes(
                 receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)), producer)
-            observation = product_reuse._observe_ci_producer_jobs(
-                {lane: custodian}, jobs_by_phase={lane: JOBS[lane]},
-                trusted_workflow_sha=trusted_workflow_sha, token=token)[0]
+            with product_reuse._ci_observation_batch(current, share_nested=True):
+                custodian_workflow = (trusted_workflow_sha if binary_producer is None
+                                      else original_workflow(custodian))
+                observation = product_reuse._observe_ci_producer_jobs(
+                    {lane: custodian}, jobs_by_phase={lane: JOBS[lane]},
+                    trusted_workflow_sha=custodian_workflow, token=token)[0]
             authenticated = product_reuse._contract_ci_upload_metadata(
                 selected["artifactId"], selected["artifactSha256"], expected_name,
                 custodian, observation["run"], token)
@@ -451,9 +471,12 @@ def verified_sdk_apple_native_inputs(
             observed.append(observation)
             receipt, original_producer = _native_lane_content(private_plan, custodian, lane, captured, evidence, root)
             if original_producer != custodian:
-                _authenticate_native_transport_original(private_plan, receipt, original_producer,
-                    lane, captured, root=root, token=token,
-                    trusted_workflow_sha=trusted_workflow_sha)
+                with product_reuse._ci_observation_batch(current, share_nested=True):
+                    source_workflow = (trusted_workflow_sha if binary_producer is None
+                                       else original_workflow(original_producer))
+                    _authenticate_native_transport_original(private_plan, receipt, original_producer,
+                        lane, captured, root=root, token=token,
+                        trusted_workflow_sha=source_workflow)
             artifacts[lane] = artifact
             receipt_bytes[lane] = read_regular_file_bytes(
                 receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True,

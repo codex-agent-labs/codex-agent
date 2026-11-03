@@ -3,6 +3,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -166,6 +167,7 @@ def _locate(producer, *, phase, job, name, token, trusted_workflow_sha=None,
     return {"artifact_id": artifact_id, "artifact_sha256": digest}
 
 
+@products._fresh_ci_observations(share_nested=True)
 def locate_original_apple_upload(receipt_path, *, trusted_workflow_sha, token, environ=None):
     """Locate the selected original iOS binary/package upload, not current work.
 
@@ -185,11 +187,22 @@ def locate_original_apple_upload(receipt_path, *, trusted_workflow_sha, token, e
             or receipt["phase"] not in ("binary", "package")):
         raise ValueError("Original Apple upload locator requires an exact iOS binary or package receipt")
     producer, phase = receipt["producer"], receipt["phase"]
+    if (not isinstance(trusted_workflow_sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None):
+        raise ValueError("Original Apple upload requires a pinned caller workflow")
+    if (producer["repository"] != "codex-agent-labs/codex-agent"
+            or producer["workflowPath"] != ".github/workflows/ci.yml"
+            or producer["event"] not in {"pull_request", "merge_group"}):
+        raise ValueError("Original Apple upload requires an eligible original CI producer")
+    original_workflow = products._runtime_prior_workflow_sha(
+        products._original_ci_run(producer, token), trusted_workflow_sha)
+    if original_workflow is None:
+        raise ValueError("Original Apple upload lacks a reviewed workflow")
     job = f"product-validation / sdk-sdk-ios-{phase}-ios"
     name = (f"codex-agent-sdk-worker-sdk-ios-{phase}-ios-{receipt['buildKey'].removeprefix('sha256:')}-"
             f"{producer['tree']}-attempt-{producer['runAttempt']}")
     result = _locate(producer, phase=phase, job=job, name=name,
-                     trusted_workflow_sha=trusted_workflow_sha, token=token,
+                     trusted_workflow_sha=original_workflow, token=token,
                      expected_build_key=receipt["buildKey"])
     require_no_signing_secret(environment)
     if (read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
