@@ -11,7 +11,7 @@ class CentralBundleTasksTest {
     fun `bundles keep complete iOS modules in deterministic portal-sized shards`() = withFixture { fixture ->
         val group = CodexAgentBuild.MAVEN_GROUP.replace('.', '/')
         val paths = listOf(
-            "$group/codex-agent-client/0.2.0/client.pom",
+            "$group/codex-agent/0.2.0/client.pom",
             "$group/codex-agent-runtime-ios-iosarm64/0.2.0/device.klib",
             "$group/codex-agent-runtime-ios-iosarm64/0.2.0/device.pom",
             "$group/codex-agent-runtime-ios-iossimulatorarm64/0.2.0/simulator.klib",

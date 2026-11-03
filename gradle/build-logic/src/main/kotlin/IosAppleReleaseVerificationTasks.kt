@@ -4,6 +4,7 @@ import org.gradle.api.Task
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.api.tasks.bundling.Zip
 import org.gradle.kotlin.dsl.register
+import org.gradle.kotlin.dsl.named
 
 data class IosAppleReleaseVerificationTasks(
     val packageCodexAgentSwiftPackageBinary: TaskProvider<Zip>,
@@ -40,7 +41,7 @@ fun Project.registerIosAppleReleaseVerificationTasks(
     val swiftPackageArchiveName = "CodexAgent-${project.version}.xcframework.zip"
     val swiftPackageUrl =
         "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/v${project.version}/$swiftPackageArchiveName"
-    val packageCodexAgentSwiftPackageBinary = tasks.register<Zip>("packageCodexAgentSwiftPackageBinary") {
+    val packageCodexAgentSwiftPackageBinary = tasks.register<CanonicalAppleZip>("packageCodexAgentSwiftPackageBinary") {
         dependsOn(distribution.prepareCodexAgentReleaseXCFramework)
         archiveFileName.set(swiftPackageArchiveName)
         destinationDirectory.set(layout.buildDirectory.dir("distributions"))
@@ -48,7 +49,15 @@ fun Project.registerIosAppleReleaseVerificationTasks(
         isReproducibleFileOrder = true
         outputs.cacheIf("Reproducible XCFramework binary ZIP") { true }
         from(distribution.releaseXCFrameworkDirectory) { into("CodexAgent.xcframework") }
-    }
+        distribution.sdkCompatibilityFile?.let { compatibility ->
+            dependsOn(":codex-agent-sdk:generateNativeWrapperSdkCompatibility")
+            listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
+                from(compatibility) {
+                    into("CodexAgent.xcframework/$slice/CodexAgent.framework/META-INF/codex-agent")
+                }
+            }
+        }
+    }.let { tasks.named<Zip>(it.name) }
 
     val verifyIosDeploymentTargets = tasks.register<VerifyIosDeploymentTargetsTask>("verifyIosDeploymentTargets") {
         dependsOn(distribution.prepareCodexAgentReleaseXCFramework)

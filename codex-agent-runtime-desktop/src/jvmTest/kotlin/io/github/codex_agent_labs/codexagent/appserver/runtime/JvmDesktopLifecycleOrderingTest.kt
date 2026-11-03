@@ -6,11 +6,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -20,6 +20,25 @@ class JvmDesktopLifecycleOrderingTest {
     @Test
     fun `blocking process IO uses the elastic dispatcher`() {
         assertSame(Dispatchers.IO, desktopProcessDispatcher)
+    }
+
+    @Test
+    fun `blocking writes leave the caller thread`(): Unit = runBlocking {
+        val process = RecordingWriteProcess()
+        val runtime = DesktopCodexRuntimeFactory(
+            DesktopCodexRuntimeConfiguration(
+                "unused".toPath(), "unused".toPath(), "0".repeat(64), "unused".toPath(),
+            ),
+            startProcess = { process },
+        ).create()
+        try {
+            runtime.start()
+            val caller = Thread.currentThread()
+            runtime.send(CodexJsonLine("{}"))
+            assertNotSame(caller, process.writeThread)
+        } finally {
+            runtime.close()
+        }
     }
 
     @Test
@@ -35,7 +54,7 @@ class JvmDesktopLifecycleOrderingTest {
         try {
             runtime.start()
             assertTrue(process.stdoutStarted.await(5, TimeUnit.SECONDS))
-            delay(100)
+            assertTrue(process.exitObserved.await(5, TimeUnit.SECONDS))
             assertFalse(firstEvent.isCompleted, "Process exit overtook unread stdout")
             process.releaseStdout.countDown()
             assertIs<CodexRuntimeEvent.Received>(withTimeout(5_000) { firstEvent.await() })
@@ -45,8 +64,23 @@ class JvmDesktopLifecycleOrderingTest {
     }
 }
 
+private class RecordingWriteProcess : DesktopProcess {
+    private val exit = CountDownLatch(1)
+    var writeThread: Thread? = null
+
+    override fun readStdout(buffer: ByteArray) = 0
+    override fun readStderr(buffer: ByteArray) = 0
+    override fun write(bytes: ByteArray) { writeThread = Thread.currentThread() }
+    override fun waitForExit(): Int {
+        exit.await()
+        return 0
+    }
+    override fun close() { exit.countDown() }
+}
+
 private class BlockingStdoutProcess : DesktopProcess {
     val stdoutStarted = CountDownLatch(1)
+    val exitObserved = CountDownLatch(1)
     val releaseStdout = CountDownLatch(1)
     private val firstRead = AtomicBoolean(true)
 
@@ -61,6 +95,9 @@ private class BlockingStdoutProcess : DesktopProcess {
 
     override fun readStderr(buffer: ByteArray) = 0
     override fun write(bytes: ByteArray) = Unit
-    override fun waitForExit(): Int = 0
+    override fun waitForExit(): Int {
+        exitObserved.countDown()
+        return 0
+    }
     override fun close() { releaseStdout.countDown() }
 }

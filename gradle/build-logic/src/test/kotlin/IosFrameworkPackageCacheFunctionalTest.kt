@@ -193,7 +193,7 @@ class IosFrameworkPackageCacheFunctionalTest {
                 importedFrameworkDirectory.set(layout.buildDirectory.dir("imported/simulator/CodexAgent.framework"))
             }
             val distribution = registerIosAppleDistributionTasks(
-                1,
+                listOf("FixtureTests/testFixture()"),
                 "fixture",
                 providers.provider { "$appleToolchainIdentity" },
                 device,

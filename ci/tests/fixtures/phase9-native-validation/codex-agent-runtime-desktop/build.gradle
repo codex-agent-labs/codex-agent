@@ -1,0 +1,72 @@
+import groovy.json.JsonSlurper
+
+buildscript {
+    def input = new JsonSlurper().parse(file(providers.gradleProperty('phase9.context').get()))
+    dependencies { classpath files(input.classpath) }
+}
+
+def input = new JsonSlurper().parse(file(providers.gradleProperty('phase9.context').get()))
+def packageRoot = file(input.packageStage)
+def repositoryRoot = file(input.repositoryRoot)
+def reports = file(input.evidenceRoot)
+def stage = file(input.stageRoot)
+def consumers = fileTree(new File(repositoryRoot, 'codex-agent-runtime-desktop/native/c-api/consumer')) {
+    include '*.c', '*.cpp'
+}
+
+def nativeEvidence = tasks.register('executeImportedMacosX64NativeRuntimeEvidence', ExecuteImportedNativeRuntimeEvidenceTask) {
+    target.set('macosX64')
+    expectedCompatibilityVersion.set('0.8.0')
+    candidateCommit.set(input.producerCommit)
+    classifierArchive.set(new File(packageRoot, 'outputs/app-server/codex-agent-runtime-desktop-0.8.0-app-server-macos-x64.zip'))
+    nativeTestExecutable.set(new File(packageRoot, 'outputs/validation-runner/test.kexe'))
+    distributionManifest.set(new File(repositoryRoot, 'codex-agent-runtime-desktop/codex-app-server-distributions.json'))
+    evidenceFile.set(new File(reports, 'desktop-runtime-macosX64.json'))
+    executionFile.set(new File(reports, 'desktop-runtime-macosX64-execution.json'))
+    testReport.set(new File(reports, 'TEST-macosX64Test.io.github.codex_agent_labs.codexagent.appserver.runtime.DesktopCodexRuntimeTest.xml'))
+}
+def cAbiEvidence = tasks.register('generateMacosX64CAbiPackageEvidence', GenerateCrossLanguageCAbiPackageEvidenceTask) {
+    target.set('macosX64')
+    classifier.set('c-abi-macos-x64')
+    libraryVersion.set('0.8.0')
+    producerCommit.set(input.producerCommit)
+    producerTree.set(input.producerTree)
+    runnerOs.set('macOS')
+    runnerArch.set('X64')
+    tools.putAll([file: 'file', architecture: 'lipo', symbols: 'nm', loader: 'otool', versions: 'otool', c: 'clang', cpp: 'clang++'])
+    compileOnlyConsumers.set(RuntimeCAbiClientKt.getCrossLanguageCAbiCompileOnlyConsumers().sort())
+    packageFile.set(new File(packageRoot, 'outputs/c-abi/codex-agent-runtime-desktop-0.8.0-c-abi-macos-x64.zip'))
+    reviewedHeader.set(new File(packageRoot, 'outputs/c-abi-reference/include/codex_agent.h'))
+    license.set(new File(packageRoot, 'outputs/c-abi-reference/legal/LICENSE'))
+    notice.set(new File(packageRoot, 'outputs/c-abi-reference/legal/THIRD_PARTY_NOTICES.md'))
+    exportPolicy.set(new File(packageRoot, 'outputs/c-abi-reference/export-policy/macos.exports'))
+    consumerSources.from(consumers)
+    evidenceFile.set(new File(reports, 'c-abi-package-macos-x64.json'))
+}
+def staging = tasks.register('stageMacosX64RuntimeValidation', Sync) {
+    dependsOn(nativeEvidence, cAbiEvidence)
+    into(new File(stage, 'outputs'))
+    from(cAbiEvidence.flatMap { it.evidenceFile }) { into 'c-abi' }
+    from(new File(packageRoot, 'outputs/c-abi-reference')) { into 'c-abi-reference' }
+    from(consumers) { into 'c-abi-reference/consumer' }
+    from(nativeEvidence.flatMap { it.evidenceFile }) { into 'native' }
+    from(nativeEvidence.flatMap { it.testReport }) { into 'native' }
+    from(nativeEvidence.flatMap { it.executionFile }) { into 'execution' }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+RuntimeProductStageRegistrationKt.registerRuntimeOutputManifest(project,
+    'writeMacosX64RuntimeValidationOutputManifest', staging,
+    providers.provider { 'macos-x64' }, 'validation', providers.provider { 'macos-x64' },
+    providers.provider { '0.8.0' },
+    ['c-abi': 'outputs/c-abi', 'c-abi-reference': 'outputs/c-abi-reference', native: 'outputs/native', execution: 'outputs/execution'],
+    layout.dir(providers.provider { new File(stage, 'outputs') }),
+    layout.dir(providers.provider { stage }), files(input.classpath), repositoryRoot)
+
+gradle.taskGraph.whenReady { graph ->
+    def expected = [nativeEvidence.get().path, cAbiEvidence.get().path, staging.get().path,
+        ':codex-agent-runtime-desktop:writeMacosX64RuntimeValidationOutputManifest'] as Set
+    if (graph.allTasks.collect { it.path }.toSet() != expected) {
+        throw new GradleException('Artifact validation must execute only its four reviewed tasks')
+    }
+}

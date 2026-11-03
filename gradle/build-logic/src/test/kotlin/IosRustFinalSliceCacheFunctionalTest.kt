@@ -108,7 +108,7 @@ class IosRustFinalSliceCacheFunctionalTest {
                     layout.projectDirectory.file("native/patch.txt"),
                 )
                 cargoTargetDirectory.set(layout.buildDirectory.dir("rust"))
-                cargoArguments.set(listOf("build", "--target", "$DEVICE_TARGET"))
+                cargoArguments.set(listOf("build", "--locked", "--target", "$DEVICE_TARGET"))
                 retainedEnvironment.putAll($retainedEnvironment)
                 extraEnvironment.put("CARGO_INVOCATIONS", ${quoted(cargoInvocations.absolutePath)})
                 rustcArguments.set(listOf("$rustFlag"))
@@ -125,7 +125,7 @@ class IosRustFinalSliceCacheFunctionalTest {
                     layout.projectDirectory.file("native/patch.txt"),
                 )
                 cargoTargetDirectory.set(layout.buildDirectory.dir("rust"))
-                cargoArguments.set(listOf("build", "--target", "$SIMULATOR_TARGET"))
+                cargoArguments.set(listOf("build", "--locked", "--target", "$SIMULATOR_TARGET"))
                 retainedEnvironment.putAll($retainedEnvironment)
                 extraEnvironment.put("CARGO_INVOCATIONS", ${quoted(cargoInvocations.absolutePath)})
                 rustcArguments.set(listOf("$rustFlag"))
@@ -150,6 +150,7 @@ class IosRustFinalSliceCacheFunctionalTest {
         .withEnvironment(System.getenv() + ("PATH" to "${fakeBin.absolutePath}${File.pathSeparator}${System.getenv("PATH")}"))
         .withArguments(
             if (buildCache) "--build-cache" else "--no-build-cache",
+            "--offline",
             "--console=plain",
             "--stacktrace",
             *tasks,
@@ -173,12 +174,18 @@ class IosRustFinalSliceCacheFunctionalTest {
                 "#!/bin/sh",
                 "set -eu",
                 "target=",
+                "offline=",
+                "locked=",
                 "take_target=0",
                 "for value in \"\$@\"; do",
                 "  if [ \"\$take_target\" = 1 ]; then target=\"\$value\"; take_target=0; fi",
                 "  if [ \"\$value\" = --target ]; then take_target=1; fi",
+                "  if [ \"\$value\" = --offline ]; then offline=\"\${offline}x\"; fi",
+                "  if [ \"\$value\" = --locked ]; then locked=\"\${locked}x\"; fi",
                 "done",
                 "test -n \"\$target\"",
+                "test \"\$offline\" = x",
+                "test \"\$locked\" = x",
                 "printf '%s\\n' \"\$target\" >> \"\$CARGO_INVOCATIONS\"",
                 "mkdir -p \"\$CARGO_TARGET_DIR/\$target/release\"",
                 "printf 'archive:%s\\n' \"\$target\" > \"\$CARGO_TARGET_DIR/\$target/release/$LIBRARY\"",

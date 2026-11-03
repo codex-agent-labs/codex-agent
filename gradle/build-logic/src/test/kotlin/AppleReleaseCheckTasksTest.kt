@@ -30,6 +30,36 @@ class AppleReleaseCheckTasksTest {
         assertFailsWith<IllegalStateException> {
             verifyAppleToolchainOutput("Xcode 16.3", "Apple Swift version 6.1.2", "16.4", "16F6", "6.1.2")
         }
+        listOf(
+            "Apple Swift version 6.1.20 effective-5.10",
+            "Apple Swift version 6.1.2beta effective-5.10",
+            "Swift version 6.1.2",
+            "Apple Swift version 6.1.2\nApple Swift version 6.1.3",
+        ).forEach { swift ->
+            assertFailsWith<IllegalStateException> {
+                verifyAppleToolchainOutput(
+                    "Xcode 16.4\nBuild version 16F6", swift, "16.4", "16F6", "6.1.2",
+                )
+            }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            verifyAppleToolchainOutput(
+                "Xcode 16.4\nBuild version 16F6", "Apple Swift version 6.1.2", "16.4", "16F6", "6.1.2beta",
+            )
+        }
+    }
+
+    @Test
+    fun `pinned hosted Swift banner accepts numeric driver prefix only`() {
+        val observed = "swift-driver version: 1.148.6 Apple Swift version 6.3.3 " +
+            "(swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0\n"
+        verifyAppleToolchainOutput("Xcode 26.6\nBuild version 17F113\n", observed, "26.6", "17F113", "6.3.3")
+        listOf(observed.replace("6.3.3 ", "6.3.30 "), observed + "Apple Swift version 6.3.3\n",
+            observed.replace("1.148.6", "untrusted"), "arbitrary prefix Apple Swift version 6.3.3\n").forEach {
+            assertFailsWith<IllegalStateException> {
+                verifyAppleToolchainOutput("Xcode 26.6\nBuild version 17F113\n", it, "26.6", "17F113", "6.3.3")
+            }
+        }
     }
 
     @Test
@@ -81,16 +111,91 @@ class AppleReleaseCheckTasksTest {
     fun `live release tasks contain no compound shell implementation`() {
         val repository = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { it.resolve("gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt").isFile }
-        val source = Files.walk(repository.resolve("gradle/build-logic/src/main/kotlin").toPath()).use { paths ->
-            paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".kt") }
-                .sorted().map(Files::readString).toList().joinToString("\n")
+        val sources = linkedMapOf<String, String>()
+        listOf(repository.resolve("gradle/build-logic/src/main/kotlin").toPath()).forEach { sourceRoot ->
+            Files.walk(sourceRoot).use { paths ->
+                paths.filter {
+                    Files.isRegularFile(it) &&
+                        (it.fileName.toString().endsWith(".kt") || it.fileName.toString().endsWith(".kts"))
+                }
+                    .sorted().forEach {
+                        sources[sourceRoot.relativize(it).toString().replace(File.separatorChar, '/')] =
+                            Files.readString(it)
+                    }
+                }
         }
+        val source = sources.values.joinToString("\n")
         listOf(
-            "/bin/bash", "\"bash\", \"-c\"", "\"sh\", \"-c\"", "python3", "\"python\",",
+            "/bin/bash", "\"bash\", \"-c\"", "\"sh\", \"-c\"",
             "\"jq\"", "\"find\"", "\"awk\"", "\"stat\"",
         ).forEach { forbidden ->
             assertFalse(forbidden in source, forbidden)
         }
+        val productPythonOwners = mapOf(
+            "RepositoryVerificationTasks.kt" to listOf(
+                "\"python3\", \"-m\", \"ci.products.aggregate\"",
+            ),
+            "codexagent.contract-product.gradle.kts" to listOf(
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "\"python3\", \"-m\", \"ci.products.contract\"",
+                "executable(\"python3\")\n    args(\"-m\", \"ci.products.contract\", \"validate-package\"",
+            ),
+            "ProductOutputManifestGradleTask.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+            ),
+            "PackagedProductPython.kt" to listOf(
+                "ProcessBuilder(listOf(\"python3\", \"-I\", \"-S\", \"-B\", \"-c\", bootstrap, root.absolutePath) + scriptPath + arguments)",
+            ),
+            "CrossLanguageNativeWrapperGradleTasks.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+                "\"python3\", binaryScript.get().asFile.absolutePath, \"csharp-binary\"",
+                "\"python3\", packageScript.get().asFile.absolutePath, \"package\"",
+            ),
+            "MavenRepositoryTasks.kt" to listOf(
+                "\"python3\", \"-m\", \"ci.products.sdk_maven\", \"--verify-only\"",
+            ),
+            "NativeWrapperCapabilityEvidenceTask.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+            ),
+            "NativeWrapperInstalledConsumerTask.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+            ),
+            "SdkMavenPackageTask.kt" to listOf(
+                "\"python3\", \"-m\", \"ci.products.sdk_maven\"",
+                "\"python3\", \"-m\", \"ci.products.sdk_archive\"",
+            ),
+            "AppleValidationContentTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "IosSdkMetadataContentTask.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "SdkAndroidMetadataTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "SdkFacadeMetadataTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
+            "SdkFacadeValidationTasks.kt" to listOf(
+                "pythonExecutable.convention(\"python3\")",
+                "pythonExecutable.convention(\"python3\")",
+            ),
+        )
+        val nonProductPythonSource = sources
+            .filterKeys { it !in productPythonOwners }
+            .values.joinToString("\n")
+        assertFalse("python3" in nonProductPythonSource)
+        productPythonOwners.forEach { (owner, invocations) ->
+            val productSource = requireNotNull(sources[owner])
+            var remaining = productSource
+            invocations.forEach { invocation ->
+                assertTrue(invocation in remaining, owner)
+                remaining = remaining.replaceFirst(invocation, "")
+            }
+            assertFalse("python3" in remaining, owner)
+        }
+        assertFalse("commandLine(\"python\"" in source)
+        assertFalse("executable(\"python\"" in source)
         assertTrue("VerifyIosReleaseBudgetsTask" in source)
         assertTrue("xcodebuild" in source && "/usr/bin/xcrun" in source)
     }

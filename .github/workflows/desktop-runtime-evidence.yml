@@ -213,7 +213,7 @@ jobs:
         with:
           name: codex-agent-arm64-production-transport-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-production
-      - name: Restore only the verified production classifier
+      - name: Restore the verified production classifiers and binary stage
         if: needs.linux-arm64-reuse.outputs.production_reused == 'true'
         shell: bash
         run: |
@@ -222,9 +222,16 @@ jobs:
             --actual build/ci/linux-arm64-production/payload/build/ci/linux-arm64-producer-identities
           shopt -s nullglob
           archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
+          c_abi_archives=(build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
+          binary_stage=build/ci/linux-arm64-production/payload/codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary
           test "${#archives[@]}" -eq 1
-          mkdir -p codex-agent-runtime-desktop/build/distributions
+          test "${#c_abi_archives[@]}" -eq 1
+          test -d "$binary_stage"
+          test -f "$binary_stage/output-manifest.json"
+          mkdir -p codex-agent-runtime-desktop/build/distributions build/linux-arm64-inputs
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp -R "$binary_stage" build/linux-arm64-inputs/runtime-binary-stage
       - if: inputs.linuxArm64Test
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -237,12 +244,15 @@ jobs:
         with:
           name: codex-agent-ci-linux-arm64-supervisor-${{ inputs.validationTree }}
           path: build/desktop-supervisors
-      - name: Cross-build one classifier
+      - name: Cross-build the two Linux Arm64 classifiers
         if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
         run: >-
           ./gradlew
           :codex-agent-runtime-desktop:packageLinuxArm64AppServer
+          :codex-agent-runtime-desktop:packageLinuxArm64CAbiSdk
           -PcodexAgent.desktopSupervisorDirectory="$PWD/build/desktop-supervisors"
+          -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
           --parallel --stacktrace
       - name: Cross-build the native test executable
         if: inputs.linuxArm64Test
@@ -252,22 +262,42 @@ jobs:
         run: >-
           ./gradlew -p gradle/build-logic stageLinuxArm64RuntimeEvidenceBundle
           -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
           -PcodexAgent.linuxArm64TestExecutable="$PWD/codex-agent-runtime-desktop/build/bin/linuxArm64/debugTest/test.kexe"
           -PcodexAgent.linuxArm64DistributionsDirectory="$PWD/codex-agent-runtime-desktop/build/distributions"
           -PcodexAgent.jvmRuntimeEvidenceRunner="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-jvm-runtime-evidence-runner.zip"
-          -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-runtime-evidence-runner.zip"
-          -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-node/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip"
+          -PcodexAgent.nodeRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-runtime-evidence-runner.zip"
+          -PcodexAgent.nodeWasmRuntimeEvidenceRunnerArchive="$PWD/codex-agent-runtime-desktop/build/distributions/codex-agent-node-wasm-runtime-evidence-runner.zip"
           -PcodexAgent.desktopDistributionManifest="$PWD/codex-agent-runtime-desktop/codex-app-server-distributions.json"
           -PcodexAgent.linuxArm64RuntimeEvidenceBundle="$PWD/build/linux-arm64-inputs/runtime.zip"
           --parallel --stacktrace
-      - name: Preserve the exact classifier with the execution bundle
+      - name: Preserve the exact classifiers with the execution bundle
         shell: bash
         run: |
           shopt -s nullglob
           archives=(codex-agent-runtime-desktop/build/distributions/*-app-server-linux-arm64.zip)
+          c_abi_archives=(codex-agent-runtime-desktop/build/distributions/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p build/linux-arm64-inputs
           cp "${archives[0]}" build/linux-arm64-inputs/
+          cp "${c_abi_archives[0]}" build/linux-arm64-inputs/
+      - name: Stage the authoritative Linux Arm64 Runtime binary handoff
+        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
+        run: >-
+          ./gradlew ciProductPhase
+          -PcodexAgent.product=runtime
+          -PcodexAgent.component=linux-arm64
+          -PcodexAgent.phase=binary
+          -PcodexAgent.candidateCommit="${{ inputs.validationCommit }}"
+          -PcodexAgent.candidateTree="${{ inputs.validationTree }}"
+          -PcodexAgent.desktopSupervisorDirectory="$PWD/build/desktop-supervisors"
+          --stacktrace
+      - name: Preserve the authoritative Linux Arm64 Runtime binary stage
+        if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
+        run: >-
+          cp -R codex-agent-runtime-desktop/build/product-stage/runtime/linux-arm64/binary
+          build/linux-arm64-inputs/runtime-binary-stage
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -294,6 +324,14 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
+      - if: inputs.linuxArm64Test
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-ci-portable-${{ inputs.validationTree }}
+          path: build/ci/portable
+      - if: inputs.linuxArm64Test
+        shell: bash
+        run: cp -R build/ci/portable/payload/. .
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-linux-arm64-producer-identities-${{ inputs.validationTree }}
@@ -306,9 +344,12 @@ jobs:
         run: |
           shopt -s nullglob
           archives=(build/ci/linux-arm64-input/*-app-server-linux-arm64.zip)
+          c_abi_archives=(build/ci/linux-arm64-input/*-c-abi-linux-arm64.zip)
           test "${#archives[@]}" -eq 1
+          test "${#c_abi_archives[@]}" -eq 1
           mkdir -p codex-agent-runtime-desktop/build/distributions
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
+          cp "${c_abi_archives[0]}" codex-agent-runtime-desktop/build/distributions/
           if [ -f build/ci/linux-arm64-input/runtime.zip ]; then
             printf 'LINUX_ARM64_RUNTIME_BUNDLE=%s/build/ci/linux-arm64-input/runtime.zip\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           fi
@@ -325,3 +366,4 @@ jobs:
           producer-identities: build/ci/linux-arm64-producer-identities
           production-prepared: "true"
           reuse-disabled: "true"
+          runtime-binary-stage: ${{ github.workspace }}/build/ci/linux-arm64-input/runtime-binary-stage

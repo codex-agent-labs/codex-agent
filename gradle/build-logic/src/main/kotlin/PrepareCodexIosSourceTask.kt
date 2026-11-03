@@ -1,4 +1,7 @@
+import java.io.File
+import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.StandardCopyOption
 import javax.inject.Inject
 import org.gradle.api.DefaultTask
@@ -168,6 +171,11 @@ abstract class PrepareCodexIosSourceTask @Inject constructor(
             }
 
             val output = outputDirectory.get().asFile
+            if (Files.exists(output.toPath(), NOFOLLOW_LINKS) &&
+                verifiedPreparedTreesEqual(output, staged)
+            ) {
+                return
+            }
             files.delete { delete(output) }
             output.parentFile.mkdirs()
             try {
@@ -184,4 +192,39 @@ abstract class PrepareCodexIosSourceTask @Inject constructor(
         check(value.matches(Regex("[0-9a-f]{64}"))) { "invalid Codex iOS source archive SHA-256" }
     }
 
+}
+
+private fun verifiedPreparedTreesEqual(existing: File, staged: File): Boolean {
+    val existingFiles = verifiedRegularFiles(existing)
+    val stagedFiles = verifiedRegularFiles(staged)
+    if (existingFiles.keys != stagedFiles.keys) return false
+    val existingModes = preparedTreeModes(existing) ?: return false
+    val stagedModes = preparedTreeModes(staged) ?: return false
+    if (existingModes != stagedModes) return false
+    return existingFiles.all { (relative, file) ->
+        Files.mismatch(file.toPath(), stagedFiles.getValue(relative).toPath()) == -1L
+    }
+}
+
+private fun preparedTreeModes(root: File): Map<String, Int>? {
+    return try {
+        val rootPath = root.toPath()
+        val modes = linkedMapOf<String, Int>()
+        Files.walk(rootPath).use { paths ->
+            val iterator = paths.iterator()
+            while (iterator.hasNext()) {
+                val path = iterator.next()
+                val mode = (Files.getAttribute(path, "unix:mode", NOFOLLOW_LINKS) as? Number)
+                    ?.toInt()?.and(0xfff) ?: return null
+                modes[rootPath.relativize(path).joinToString("/")] = mode
+            }
+        }
+        modes
+    } catch (_: UnsupportedOperationException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    } catch (_: IOException) {
+        null
+    }
 }

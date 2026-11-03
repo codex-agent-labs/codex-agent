@@ -125,6 +125,10 @@ internal class AndroidCodexRuntime(
     }
 
     private fun prepareAndVerifyRuntime() {
+        val executable = File(configuration.executable.toString())
+        check(configuration.executable.isRegularFile() && executable.canExecute()) {
+            "Bundled Codex runtime is missing or not executable"
+        }
         configuration.packagedRuntimeEnvironment?.let { environment ->
             val distribution = CodexAgentAppServerRuntime.DISTRIBUTION
             distribution.requireCompatible(
@@ -136,10 +140,6 @@ internal class AndroidCodexRuntime(
             check(configuration.executable.sha256() == distribution.binarySha256) {
                 "Bundled Codex runtime checksum is invalid"
             }
-        }
-        val executable = File(configuration.executable.toString())
-        check(configuration.executable.isRegularFile() && executable.canExecute()) {
-            "Bundled Codex runtime is missing or not executable"
         }
     }
 

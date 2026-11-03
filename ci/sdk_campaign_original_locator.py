@@ -1,0 +1,877 @@
+"""Locate one fresh SDK original upload; content and release admission stay separate."""
+
+from collections.abc import Mapping
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from sdk_apple_upload_locator import _locate
+from sdk_facade_capture import _capture_route
+import product_reuse as products
+from products.inventory import (
+    canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    require_array, require_exact_keys, require_integer, require_relative_path, require_semver,
+    require_sha256, regular_file_inventory, sha256_bytes,
+    sha256_file, verified_zip_contents,
+)
+from products.index import SignedProductIndex, _verify_index_receipt, verify_signed_product_index
+from products.receipt import validate_phase_receipt, validate_producer
+from products.registry import NATIVE_BINDINGS, NATIVE_TARGETS, PhaseInstanceId
+from products.restore import verify_object, verify_phase_shard
+from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
+from products.signing_isolation import require_no_signing_secret
+
+
+RETAINED_CORE_BINARY_KEY = "sha256:296617d18df79576fe74240e0668ba2541f297aa84fb37c3c1f6fde0c0cfbb97"
+RETAINED_CORE_PACKAGE_KEY = "sha256:6179fe876ee780222026ed9aaea33369fae8a65b927555c854c11e4151df5670"
+RETAINED_CORE_METADATA_KEY = "sha256:7b8511fe614ab935af4333da9210808083d5f134a89ac013085dff52c0aefc5a"
+RETAINED_CORE_ANDROID_VALIDATION_KEY = "sha256:671c8786babf765a4260487e0e7c0f189e32baad1f58f12be68baaf14aaddda0"
+RETAINED_ANDROID_BINARY_KEY = "sha256:9205c174e60f6bc6ef02676aa030aeaebe24b33c6171a888ea618201b6d6e06c"
+REQUALIFIED_CORE_BINARY_KEY = "sha256:5df96b66dc741a5cb29a8e9dc9ee3315f5fe83f761f7a5a733e57ecec39ac39c"
+REQUALIFIED_ANDROID_BINARY_KEY = "sha256:9995b997f0e946e4d84f927e01adbb5bc5facbbab24159c7bfcb5b68a9ddd84c"
+RETAINED_ANDROID_METADATA_KEY = "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"
+
+
+_RETAINED_NATIVE_VALIDATION_COHORTS = (
+    "retained-native-sdk-validations.json",
+    "retained-native-sdk-validations-39943202903.json",
+    "retained-native-sdk-validations-39995416657.json",
+)
+
+
+def _retained_native_validation_cohort(filename):
+    path = Path(__file__).parent / "tests/data" / filename
+    value = require_exact_keys(load_canonical_json_bytes(read_regular_file_bytes(path,
+        max_bytes=128 * 1024, reject_symlink_parents=True)), {"schemaVersion", "producer", "originals"},
+        "Retained native SDK originals")
+    producer = validate_producer(value["producer"])
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or (producer["repository"], producer["workflowPath"], producer["event"], producer["pullRequest"]) !=
+            ("codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request", 31)):
+        raise ValueError("Retained native SDK originals change their reviewed PR scope")
+    rows = require_array(value["originals"], "Retained native SDK workers")
+    identities = []
+    if not 1 <= len(rows) <= len(NATIVE_BINDINGS) * len(NATIVE_TARGETS):
+        raise ValueError("Retained native SDK worker inventory exceeds its phase scope")
+    for row in rows:
+        require_exact_keys(row, {"component", "target", "buildKey", "receiptSha256", "objectSha256",
+            "artifactId", "artifactSha256", "jobId", "workflowSha"}, "Retained native SDK worker")
+        if row["component"] not in NATIVE_BINDINGS or row["target"] not in NATIVE_TARGETS:
+            raise ValueError("Retained native SDK worker has an unknown language or host")
+        for field in ("buildKey", "receiptSha256", "objectSha256", "artifactSha256"):
+            require_sha256(row[field], "Retained native SDK " + field)
+        for field in ("artifactId", "jobId"):
+            require_integer(row[field], "Retained native SDK " + field, 1)
+        if type(row["workflowSha"]) is not str or re.fullmatch(r"[0-9a-f]{40}", row["workflowSha"]) is None:
+            raise ValueError("Retained native SDK workflow is not an exact revision")
+        identities.append((row["component"], row["target"]))
+    if identities != sorted(set(identities)):
+        raise ValueError("Retained native SDK workers must have unique sorted phase identities")
+    return value
+
+
+def retained_native_validation_records():
+    """Reviewed locators only; successful original jobs and bodies are rechecked."""
+    rows = []
+    identities = set()
+    for filename in _RETAINED_NATIVE_VALIDATION_COHORTS:
+        cohort = _retained_native_validation_cohort(filename)
+        for row in cohort["originals"]:
+            identity = row["component"], row["target"], row["buildKey"]
+            if identity in identities:
+                raise ValueError("Retained native SDK original key is ambiguous across cohorts")
+            identities.add(identity)
+            rows.append({**row, "producer": dict(cohort["producer"])})
+    return {"originals": rows}
+
+
+def retained_core_binary_origin(build_key, consumer):
+    """Select one successful original; collection still authenticates/adopts it."""
+    producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+        "commit": "91993201e0421db2ae419f183fc84a99318fbd3b", "tree": "b5c395d2de21c9c21ca800470635579266bcb4c9",
+        "event": "pull_request", "runId": 38687858579, "runAttempt": 1, "pullRequest": 31}
+    current = build_key == REQUALIFIED_CORE_BINARY_KEY
+    if current:
+        producer.update(commit="10ff035ee3c7d122067c2a6f65ce7bc86a2c82cb",
+            tree="eb290ed3d74147ac28447bd6ff3fed03e5727c72", runId=38898687246)
+    if (build_key not in (RETAINED_CORE_BINARY_KEY, REQUALIFIED_CORE_BINARY_KEY)
+            or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+            or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+            or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+        return None
+    origin = {"producer": producer, "artifact_id": 11951616809,
+        "artifact_sha256": "sha256:86563e64953aafc96835c1ce849b8aee7ce55520d1f53466a70f08c43517ab74",
+        "job_id": 116269992538, "workflow_sha": "128c9dda322497674ba9d2cbef9963010f26e2dc",
+        "workflow_path": ".github/workflows/sdk-core-binary-validation.yml",
+        "job_name": "product-validation / sdk-core-binary-wave / sdk-core-binary-common",
+        "context": {"repositoryRoot": "/Users/runner/work/codex-agent/codex-agent",
+            "workerRoot": "/Users/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker"}}
+    if current:
+        origin.update(artifact_id=12047025486,
+            artifact_sha256="sha256:8c504b3b5fba0a4eb955cdde4f9f3a53fb485713688da803a7a6cbdf2d9a50d9",
+            receipt_sha256="sha256:87651283dfe5b0f03f862ce7acacf384243484cc70cba8ed67248f93aafc4322",
+            object_sha256="sha256:e84f6739b6db11649f0686c04797264a6f2bc8edd5bea0eb572c4daf205c9cce",
+            job_id=116969956407, workflow_sha="1dfb48e6ce8e5c042ebc13ad1c1969f326354371")
+    return origin
+
+
+def retained_core_origin(phase, build_key, consumer, *, target="common", component="sdk-core"):
+    """Keep reviewed SDK originals separate from current admission (legacy API name)."""
+    if component in NATIVE_BINDINGS and phase == "validation":
+        value = retained_native_validation_records()
+        selected = next((row for row in value["originals"]
+                         if (row["component"], row["target"], row["buildKey"]) == (component, target, build_key)), None)
+        if selected is None:
+            return None
+        producer = selected["producer"]
+        if (any(consumer.get(name) != producer[name]
+                for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": selected["artifactId"],
+            "artifact_sha256": selected["artifactSha256"], "receipt_sha256": selected["receiptSha256"],
+            "object_sha256": selected["objectSha256"], "job_id": selected["jobId"],
+            "workflow_sha": selected["workflowSha"], "workflow_path": ".github/workflows/product-validation.yml",
+            "job_name": f"product-validation / sdk-{component}-validation-{target}"}
+    if ((component, phase, target) == ("sdk-android", "metadata", "android")
+            and build_key == "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"):
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "db89763a59757d36b72da56117f5498efe02acd6", "tree": "678cbafb596df74e698560c4ff6e8319883fb8a6",
+            "event": "pull_request", "runId": 40140521274, "runAttempt": 2, "pullRequest": 31}
+        if (any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12580069782,
+            "artifact_sha256": "sha256:5187bcb5f5373a4a819c7b74d60a60e20b7902b03bc6df2b13a1426c0aa72354",
+            "receipt_sha256": "sha256:8ea0db08c028da06ac21411edfa413ccd4420a4c9ebcb4d13add447ea379f580",
+            "object_sha256": "sha256:2abc1e8e0aa5307aa305adbe0f04ffd2c666a27abf9bef152a8e79317cdf9a84",
+            "job_id": 121022346984, "workflow_sha": "50b21ae250d6a515f29a2d067628ad4e0bf6f213",
+            "workflow_path": ".github/workflows/sdk-android-metadata-validation.yml",
+            "job_name": "product-validation / sdk-android-metadata-result / sdk-android-metadata-android",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json"}}
+    if (component, phase, target) == ("sdk-android", "metadata", "android"):
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "22a3757ec0156876701fc8aaab5692efdb917f01", "tree": "7af47631319572430e83f7e1765797f8956a2773",
+            "event": "pull_request", "runId": 39024902373, "runAttempt": 1, "pullRequest": 31}
+        if (build_key != RETAINED_ANDROID_METADATA_KEY
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12098433883,
+            "artifact_sha256": "sha256:8c8ef55c460caa91a50ba6cec1a0c59dde9cf6f6dd1832bcb6a78092777400f9",
+            "receipt_sha256": "sha256:882f4cbd2fa6b3ff34a9494c0d913b5f37b0908e1f5461d9b1cb7a83e11d0453",
+            "job_id": 117374782553, "workflow_sha": "d5315cb1d80b966f871052d9ff6f991d2c7eb72e",
+            "workflow_path": ".github/workflows/sdk-android-metadata-validation.yml",
+            "job_name": "product-validation / sdk-android-metadata-result / sdk-android-metadata-android",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json"}}
+    if (component, phase, target) == ("sdk-android", "validation", "android"):
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "1aee0e6db7a6ad288141a2a6bd31f156fff4a529", "tree": "c9ba57df3d1ce11ea53003a9529990d38a483426",
+            "event": "pull_request", "runId": 39019855381, "runAttempt": 1, "pullRequest": 31}
+        if (build_key != "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637"
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12096069461,
+            "artifact_sha256": "sha256:4a435bab0ed8b08e7d302bcfe68c4d18693a075841e011d6358c5f89c6f1f8fb",
+            "receipt_sha256": "sha256:caa9b127bf6ea1606e560cfc1804f2aa801a02c261e62e491da9702d9307a349",
+            "job_id": 117360148445, "workflow_sha": "5dc62a5b0ac0e8af4e647e6311f0dd480c89fbe2",
+            "workflow_path": ".github/workflows/sdk-android-validation.yml",
+            "job_name": "product-validation / sdk-android-validation-result / sdk-android-validation-android"}
+    if component != "sdk-core":
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "47dd53e4ad943208484290515ba399423d78f53d", "tree": "bb8855454b8aba1b6ae12b60e4286c08bf3ebf49",
+            "event": "pull_request", "runId": 38977473655, "runAttempt": 1, "pullRequest": 31}
+        current = build_key == REQUALIFIED_ANDROID_BINARY_KEY
+        if current:
+            producer.update(commit="986d173ae4c05cf3ec456bef463641376a65e6d3",
+                tree="554dee42106c5c00e0114d166fb2c52b2a5aa1e0", runId=39012954522)
+        if (component != "sdk-android" or (phase, target) != ("binary", "android")
+                or build_key not in (RETAINED_ANDROID_BINARY_KEY, REQUALIFIED_ANDROID_BINARY_KEY)
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        origin = {"producer": producer, "artifact_id": 12079777755,
+            "artifact_sha256": "sha256:57ab3563ec043027be009616c60285d1dcaa84c3fc18cde71919113151bdbb40",
+            "receipt_sha256": "sha256:8b88dffbf56855d08960e08e60adb8522d97f60d89601f6e1d8b8de238e8d355",
+            "job_id": 117231503731, "workflow_sha": "8b1fa9a28d9a5f951e287d07985e532a485be36e",
+            "workflow_path": ".github/workflows/sdk-android-binary-validation.yml",
+            "job_name": "product-validation / sdk-android-binary-result / sdk-android-binary-android",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "workerRoot": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-maven-worker"}}
+        if current:
+            origin.update(artifact_id=12093573697,
+                artifact_sha256="sha256:2ebd26e9acb523c6674aae94ca80e899ee41bfc82e2613596ea493ac235e1aeb",
+                receipt_sha256="sha256:f1b7c4c2e1cb91b07fbdb30fab6e4bc60d567642dd14770a1050419b6c8f0572",
+                object_sha256="sha256:fd5e4ea879cba15f6c229e9ae58faf0e8b0af074038a05c2eb66b5771fbd8f9e",
+                job_id=117339946431, workflow_sha="26622ad8247c4c411890d22bc3519332ad11fb25")
+        return origin
+    if phase == "validation":
+        # Exact successful originals; metadata lookup never grants admission.
+        selected = {
+            "android": (RETAINED_CORE_ANDROID_VALIDATION_KEY, 11990927907,
+                "sha256:95e575a4d4e57a376dfc199105f434090986dffe8965cf2febf4fbccaad12341", 116538699791),
+            "ios-arm64": ("sha256:cd75408f1678521c7c8a3ec4a2d9d3077b244468b06e1d0277d2b2e280bc4526", 11994444162,
+                "sha256:2ee4aacb2ec3e6460504608ab5c7ef3a287940774de662d120f38c99c7f33a93", 116566324230),
+            "ios-simulator-arm64": ("sha256:04c1c231cf4442734cfa544321cd41f3a46951ce66dff3634c6ee3576cbfaf06", 11995665186,
+                "sha256:fd47b4a4dd636e150f5d4a8533c8f7226654afafb7555b995570d32f7f0d0ae5", 116566324093),
+            "jvm": ("sha256:cf5ea06b6743251e3b4b495e961e9c3185829ccafe023c2ac361d0725479d2f6", 11994318412,
+                "sha256:4e0ebada8c75598c29a72b6ef2839be9b6524585f95dca3b9739cd5fb876a03f", 116566323763),
+            "linux-arm64": ("sha256:1193bd6254ebcfa6f1a5ad1e44128cde4210d094790b69e1c10653fbc0871852", 12000985511,
+                "sha256:506c21f0d254a56c8f586a1a41e7b229f05e782d0eb18dac15cc9f8622ba80b4", 116614307314),
+            "linux-x64": ("sha256:5cc349c57628460f4988674a798c397324a7002c65f84e4035d523aa3779bfd2", 11997978627,
+                "sha256:e31eb13719f66817d70310f5632d8b6ac4770b7726302b7d3ab4f9d6a8fea264", 116595906434),
+            "macos-arm64": ("sha256:fe2acd38a99d7960b4b584ea1fbe0d94bc72264ae2ce46f6280fa62614c3c98f", 11994962517,
+                "sha256:1a3ff44490e9beb3fc145fc6d52e449b8572f4967b1924485740ca0e83a2cc7f", 116566323856),
+            "macos-x64": ("sha256:5c9b2857e70101c4245577540bcc8e75222d336c321a4fecbd745272d0180524", 11996805810,
+                "sha256:d81a3721326732251e5f1270c69878ee783b675d07a94abcbfc3e57b7250a9bb", 116566323760),
+            "node-js": ("sha256:05bdd186e96b395ed4cc99d5b6167ab1b3f0e0494e7257f47da528b4644cc2fb", 11995046121,
+                "sha256:5db2f9b7c2aac7c9a32cbbdf0eadf3f7aaf024205e249a178e249b81ba995046", 116566323778),
+            "node-wasm": ("sha256:a9366d071b40d9ee2f328943189765cf0ece959453f877b577deaa03391f3b6a", 11993489491,
+                "sha256:e84454a23da3e8b0a7fc502fbf90dc3b0d444ad0ab02175b2a549dc350c534f4", 116566323791),
+        }.get(target)
+        if selected is None:
+            return None
+        expected_key, artifact, digest, job = selected
+        commit, tree, run, workflow = (
+            ("1bbcf292d420ec54d93a96d620623f4576a6e5fa", "9ffc5fabfc5dea967e272e721e96ab18153add47",
+             38768220181, "729a9283d164366fc133821145743ee937494cfe") if target == "android" else
+            ("44c296812f9a69ff8b43c8c3c534493d1daf401d", "6dbccef6c93a752f230e4f75836177b65cfa855b",
+             38784033203, "b4fbebd49866c0607bceee8fa9882f041ef0f2b0") if target == "linux-x64" else
+            ("fea5b081bb54c1092be5b546c6d0d8c5b42c45b3", "3d2532126543f0a5006d3cc0a1bfe5d722279bcd",
+             38790148727, "844ec467af054a7d785c5023faf54e547d8a7761") if target == "linux-arm64" else
+            ("d767e75d7a77e5f907e21ed6132ae72ab7bd8bd6", "8addaed53fbe2179052abc6b20c3cb1da55db0ed",
+             38776265359, "d1946db206f57cb392d344b1a2110d4438802782"))
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": commit, "tree": tree, "event": "pull_request", "runId": run,
+            "runAttempt": 1, "pullRequest": 31}
+        if (build_key != expected_key
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": artifact, "artifact_sha256": digest,
+            "job_id": job, "workflow_sha": workflow,
+            "workflow_path": ".github/workflows/sdk-core-validation.yml",
+            "job_name": "product-validation / sdk-core-validation-wave / sdk-core-validation-" + target}
+    if target != "common":
+        return None
+    if phase == "binary":
+        return retained_core_binary_origin(build_key, consumer)
+    if phase == "metadata" and build_key == "sha256:d52f1b139e6b747db4f434d6d748e40bfa7e10e84646e3d8ee684193f44bb578":
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "c598bef357caa4b791fc6a1554949863de52f485", "tree": "cfc8544671145796e98d3eca790780b3a452add9",
+            "event": "pull_request", "runId": 40112811801, "runAttempt": 1, "pullRequest": 31}
+        if (any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12571769774,
+            "artifact_sha256": "sha256:ceec6d56c3089e0628825bfc07667a2720368a51eb3f29960297357ed897be08",
+            "receipt_sha256": "sha256:3b805434ff4418e120a806995f64016234ddcc8bb5ea461ea22bdc2e412fca07",
+            "object_sha256": "sha256:dd91e64a8238cc46718f1afd2e18125d3db922a07f5cae7afc6cdf00c1e31b48",
+            "job_id": 120942684205, "workflow_sha": "e386a1f155e940af261ea4fcc72fd7c2d64525d4",
+            "workflow_path": ".github/workflows/sdk-core-metadata-validation.yml",
+            "job_name": "product-validation / sdk-core-metadata-wave / sdk-core-metadata-common",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/tmp/core-metadata-inputs-2mdhgbdu/metadata-request.json"}}
+    if phase == "metadata":
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "a1a45d67d3240624f8ef09042240daf56b27e310", "tree": "6f565a8b713db8615f973a05bffcbc0b079614a5",
+            "event": "pull_request", "runId": 38937733736, "runAttempt": 1, "pullRequest": 31}
+        if (build_key != RETAINED_CORE_METADATA_KEY
+                or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 12068740640,
+            "artifact_sha256": "sha256:db7e6d5e9866fd85349e8363172dd0965329913c3414e2c4e5de3cbeab32fd79",
+            "receipt_sha256": "sha256:575d0fcd155861ad1127b7c7deb01ba0298aaf74f729c4301eb1ac4c90f477e7",
+            "job_id": 117099192243, "workflow_sha": "70f228c99ed763ab90638475a9fd100187bb5f0f",
+            "workflow_path": ".github/workflows/sdk-core-metadata-validation.yml",
+            "job_name": "product-validation / sdk-core-metadata-wave / sdk-core-metadata-common",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/tmp/core-metadata-inputs-yxs0r4ag/metadata-request.json"}}
+    producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+        "commit": "42cee47db4198cc8de71ccef1c0c01758e325482", "tree": "ce3b15db4547f0261d16db9b7efc324a436fc51e",
+        "event": "pull_request", "runId": 38715748096, "runAttempt": 1, "pullRequest": 31}
+    if (phase != "package" or build_key != RETAINED_CORE_PACKAGE_KEY
+            or any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+            or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+            or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+        return None
+    return {"producer": producer, "artifact_id": 11964185144,
+        "artifact_sha256": "sha256:e458b4b10b0de81ebb80cb95387b9d9a46a1749e26429402026cfa3a051ffded",
+        "job_id": 116359065578, "workflow_sha": "f09abcc6e6783bec2bea31d8c3db93c861d3a9cb",
+        "workflow_path": ".github/workflows/sdk-core-package-validation.yml",
+        "job_name": "product-validation / sdk-core-package-wave / sdk-core-package-common",
+        "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+            "workerRoot": "/home/runner/work/codex-agent/codex-agent/build/sdk-core-maven-worker",
+            "compatibilityRequest": "/tmp/sdk-consumer-inputs-vz5aacgm/capture/original/sdk-inputs/sdk-compatibility-request.json"}}
+
+
+def locate_retained_core_binary_upload(plan_path, candidate_root, *, expected_build_key, token, environ=None,
+                                      phase="binary", target="common", component="sdk-core"):
+    """Avoid production for an exact retained success; this grants no admission."""
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_sha256(expected_build_key, "Elected Core binary build key")
+    raw = read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    plan = products._validate_plan(Path(plan_path), Path(candidate_root).resolve(strict=True))
+    if plan["remoteBuildAuthorized"] is not True or plan["event"] not in ("pull_request", "merge_group"):
+        raise ValueError("Retained Core lookup requires an authorized PR or merge-group plan")
+    before = canonical_json_bytes(plan)
+    consumer = products.validate_producer(products._consumer(plan, environment)["producer"])
+    component_options = {"component": component} if component != "sdk-core" else {}
+    origin = retained_core_origin(phase, expected_build_key, consumer, target=target, **component_options)
+    if origin is not None:
+        producer = origin["producer"]
+        name = (f"codex-agent-sdk-worker-{component}-{phase}-{target}-{expected_build_key[7:]}-"
+                f"{producer['tree']}-attempt-{producer['runAttempt']}")
+        located = _locate(producer, phase=phase, job=origin["job_name"], name=name, token=token,
+            trusted_workflows_by_phase={phase: {"path": origin["workflow_path"], "sha": origin["workflow_sha"]}},
+            expected_build_key=expected_build_key, expected_job_id=origin["job_id"])
+        if located != {key: origin[key] for key in ("artifact_id", "artifact_sha256")}:
+            raise ValueError("Retained Core upload differs from its reviewed successful original")
+    require_no_signing_secret(environment)
+    if (read_regular_file_bytes(plan_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw
+            or canonical_json_bytes(plan) != before
+            or products.validate_producer(products._consumer(plan, environment)["producer"]) != consumer
+            or origin != retained_core_origin(phase, expected_build_key, consumer, target=target, **component_options)):
+        raise ValueError("Retained Core election or original changed during lookup")
+    return origin
+
+
+def fresh_sdk_worker_route(instance, receipt):
+    """Return the fixed original workflow job and upload name for one phase."""
+    if instance.component == "sdk-android":
+        if instance.phase not in ("binary", "package", "validation", "metadata") or instance.target != "android":
+            raise ValueError("SDK Android original route requires one exact worker phase")
+        job = (f"product-validation / sdk-android-{instance.phase}-result / "
+               f"sdk-android-{instance.phase}-android")
+        producer = receipt["producer"]
+        name = (f"codex-agent-sdk-worker-sdk-android-{instance.phase}-android-"
+                f"{receipt['buildKey'].removeprefix('sha256:')}-{producer['tree']}-attempt-{producer['runAttempt']}")
+        return job, name
+    if instance.component == "sdk-core":
+        routed, _, _, job, name, _ = _capture_route(receipt)
+        if routed != instance:
+            raise ValueError("SDK Core original route differs from selected phase")
+        if instance.phase in ("binary", "package"):
+            job = f"product-validation / sdk-core-{instance.phase}-wave / sdk-core-{instance.phase}-common"
+        return job, name
+    stem = f"{instance.component}-{instance.phase}-{instance.target}"
+    producer = receipt["producer"]
+    return (f"product-validation / sdk-{stem}",
+            products._worker_artifact_prefix("sdk", instance) + f"{receipt['buildKey'].removeprefix('sha256:')}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+
+
+def original_workflow_route(phase, default_job, sha, path=None, job=None):
+    """Keep a caller-pinned child path and job paired at the original-run gate."""
+    if (path is None) != (job is None):
+        raise ValueError("SDK original workflow path and job must be pinned together")
+    if path is None:
+        return default_job, {"trusted_workflow_sha": sha}
+    if type(job) is not str or not job:
+        raise ValueError("SDK original workflow job must be caller-pinned text")
+    return job, {"trusted_workflows_by_phase": {phase: {"path": path, "sha": sha}}}
+
+
+def failed_sdk_partial_catalog_name(producer):
+    """Keep failed-run cache artifacts outside the completed-catalog namespace."""
+    producer = validate_producer(producer)
+    if producer["event"] != "pull_request":
+        raise ValueError("Partial SDK catalog requires a pull-request producer")
+    return (f"codex-agent-sdk-partial-catalog-v1-pull-request-{producer['pullRequest']}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+
+
+_EARLY_JS_CATALOG_PATH = ".github/workflows/sdk-javascript-validation.yml"
+_EARLY_JS_CATALOG_JOB = "product-validation / sdk-javascript-wave / sdk-partial-catalog"
+
+
+def failed_sdk_early_js_partial_catalog_name(producer):
+    """Reserve a distinct failed-attempt name for the future early JS child."""
+    producer = validate_producer(producer)
+    if producer["event"] != "pull_request":
+        raise ValueError("Early JS partial SDK catalog requires a pull-request producer")
+    return (f"codex-agent-sdk-early-js-partial-catalog-v1-pull-request-{producer['pullRequest']}-"
+            f"{producer['tree']}-attempt-{producer['runAttempt']}")
+
+
+def require_failed_sdk_partial_catalog_route(producer, artifact_name, workflow_path, job_name):
+    """Bind the caller's name and workflow pair before retrieving catalog bytes."""
+    if artifact_name == failed_sdk_partial_catalog_name(producer):
+        return artifact_name
+    if artifact_name == failed_sdk_early_js_partial_catalog_name(producer):
+        if workflow_path != _EARLY_JS_CATALOG_PATH or job_name != _EARLY_JS_CATALOG_JOB:
+            raise ValueError("Early JS partial SDK catalog requires its exact child workflow and job")
+        return artifact_name
+    raise ValueError("Partial SDK catalog differs from its caller-pinned namespace")
+
+
+def materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
+        repository, pull_request, public_key, public_key_sha256,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name, token):
+    """Admit only a signed partial cache from a failed run's successful catalog job."""
+    key = read_regular_file_bytes(public_key, max_bytes=64 * 1024, reject_symlink_parents=True)
+    if sha256_bytes(key) != require_sha256(public_key_sha256, "Partial SDK catalog key digest"):
+        raise ValueError("Partial SDK catalog key differs from independent digest")
+    return _materialize_failed_sdk_partial_catalog(artifact, destination,
+        producer=producer, repository=repository, pull_request=pull_request,
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name,
+        token=token, pinned_key=key, public_key=Path(public_key))
+
+
+def inspect_failed_sdk_partial_catalog_for_custody(artifact, destination, *, producer,
+        repository, pull_request, expected_artifact_sha256,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name, token):
+    """Inspect official failed catalog bytes before a protected signer pins its key.
+
+    This is *not* a reusable-catalog trust path. It requires a caller-pinned
+    official upload digest; only an external protected signature can turn the
+    observed key into future-run policy.
+    """
+    require_no_signing_secret(os.environ)
+    if require_sha256(expected_artifact_sha256, "Protected catalog upload digest") != \
+            require_sha256(artifact.get("digest"), "Official catalog upload digest"):
+        raise ValueError("Protected catalog differs from independently selected upload")
+    return _materialize_failed_sdk_partial_catalog(artifact, destination,
+        producer=producer, repository=repository, pull_request=pull_request,
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_workflow_path=trusted_workflow_path, trusted_job_name=trusted_job_name,
+        token=token, pinned_key=None, public_key=None)
+
+
+def _materialize_failed_sdk_partial_catalog(artifact, destination, *, producer,
+        repository, pull_request, trusted_workflow_sha, trusted_workflow_path,
+        trusted_job_name, token, pinned_key, public_key):
+    producer = validate_producer(producer)
+    name = require_failed_sdk_partial_catalog_route(producer, artifact.get("name"),
+        trusted_workflow_path, trusted_job_name)
+    if (producer["repository"] != repository or producer["pullRequest"] != pull_request
+            or not trusted_workflow_path or not trusted_job_name):
+        raise ValueError("Partial SDK catalog differs from independent producer or route")
+    artifact_id = require_integer(artifact.get("id"), "Partial SDK catalog artifact ID", 1)
+    url = f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}"
+    if (artifact.get("name") != name or artifact.get("expired") is not False
+            or artifact.get("archive_download_url") != url + "/zip"
+            or not isinstance(artifact.get("workflow_run"), dict)
+            or artifact["workflow_run"].get("id") != producer["runId"]):
+        raise ValueError("Partial SDK catalog differs from its exact failed attempt")
+    digest = require_sha256(artifact.get("digest"), "Partial SDK catalog artifact digest")
+    size = require_integer(artifact.get("size_in_bytes"), "Partial SDK catalog size", 1)
+    if size > products._CATALOG_LIMIT:
+        raise ValueError("Partial SDK catalog exceeds transport limit")
+    catalog_root = destination / "catalogs/same-pr" / str(artifact_id)
+    catalog_root.mkdir(parents=True)
+    archive = catalog_root / "transport.zip"
+    products.download_artifact_to_file(artifact, token, archive, max_bytes=products._CATALOG_LIMIT)
+    if archive.stat().st_size != size or sha256_file(archive) != digest:
+        raise ValueError("Partial SDK catalog differs from official artifact bytes")
+    zipped, _, _ = verified_zip_contents(archive, retained_paths=(),
+        allow_empty_members=True, **products._CATALOG_ZIP_LIMITS)
+    extracted = catalog_root / "contents"
+    products.safe_extract(archive, extracted)
+    if regular_file_inventory(extracted) != zipped:
+        raise ValueError("Partial SDK catalog extraction differs from official upload")
+    observed_key = read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
+        reject_symlink_parents=True)
+    if pinned_key is not None and observed_key != pinned_key:
+        raise ValueError("Partial SDK catalog embedded key differs from independent policy")
+    if public_key is None:
+        public_key = extracted / "public-key.pub"
+    index, _ = verify_signed_product_index(SignedProductIndex(
+        extracted / "product-index.json", extracted / "product-index.sig"), Path(public_key))
+    instances = [PhaseInstanceId(*(entry[field] for field in
+        ("product", "component", "phase", "target"))) for entry in index["entries"]]
+    if (index["producer"] != producer or index["repository"] != repository
+            or index["trustDomain"] != "development"
+            or not instances or len(instances) >= len(SDK_CAMPAIGN_INSTANCES)
+            or len(set(instances)) != len(instances)
+            or not set(instances) <= SDK_CAMPAIGN_INSTANCES):
+        raise ValueError("Partial SDK catalog is not an exact incomplete SDK selection")
+    job, policy = original_workflow_route("catalog", trusted_job_name,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name)
+    observed = products._observe_ci_producer_jobs({"catalog": producer},
+        jobs_by_phase={"catalog": job}, token=token, **policy)
+    if (len(observed) != 1 or observed[0]["run"].get("status") != "completed"
+            or observed[0]["run"].get("conclusion") not in {"failure", "cancelled"}
+            or artifact["workflow_run"].get("head_sha") != observed[0]["run"].get("head_sha")):
+        raise ValueError("Partial SDK catalog lacks its failed run and successful original job")
+    products._require_artifact_job_window(observed[0], job, artifact)
+    catalog = products._read_catalog_directory("same-pr", extracted, destination, None,
+        repository=repository, pull_request=pull_request, provenance_root=catalog_root,
+        artifact=artifact, token=token, workflow_run={
+            "run": observed[0]["run"], "testedCommit": observed[0]["testedCommit"]},
+        api="https://api.github.com")
+    if catalog.index != index:
+        raise ValueError("Partial SDK catalog changed during verification")
+    return catalog, observed[0]
+
+
+def discover_fresh_sdk_original_pin(instance, *, producer, expected_build_key,
+        expected_product_version, trusted_workflow_sha, trusted_workflow_path,
+        trusted_job_name, token, environ=None):
+    """Derive a fresh receipt pin from its official upload, never campaign state.
+
+    The caller supplies the exact phase, build key, version, current producer and
+    reviewed workflow route independently. This is a non-secret locator only;
+    the 62-original holder downloads and verifies the complete original upload.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("Fresh SDK pin discovery requires one registered SDK phase")
+    producer = validate_producer(producer)
+    require_sha256(expected_build_key, "Independent SDK build key")
+    if (type(expected_product_version) is not str or not expected_product_version
+            or type(token) is not str or not token
+            or type(trusted_workflow_path) is not str or not trusted_workflow_path
+            or type(trusted_job_name) is not str or not trusted_job_name):
+        raise ValueError("Fresh SDK pin discovery requires independent version, token and workflow route")
+    _, name = fresh_sdk_worker_route(instance, {
+        **{field: getattr(instance, field) for field in ("product", "component", "phase", "target")},
+        "buildKey": expected_build_key, "producer": producer,
+    })
+    job, policy = original_workflow_route("worker", trusted_job_name,
+        trusted_workflow_sha, trusted_workflow_path, trusted_job_name)
+    pin = _locate(producer, phase="worker", job=job, name=name, token=token,
+                  trusted_workflows_by_phase=policy["trusted_workflows_by_phase"])
+    observed = products._observe_ci_producer_jobs(
+        {"worker": producer}, jobs_by_phase={"worker": job}, token=token, **policy)[0]
+    artifact = products._contract_ci_upload_metadata(
+        pin["artifact_id"], pin["artifact_sha256"], name, producer, observed["run"], token)
+    products._require_artifact_job_window(observed, job, artifact)
+    # This is a locator hint, not content admission. The original holder below
+    # independently verifies the FULL upload SHA and this selected receipt pin.
+    from runtime_reference_archive import open_reference_archive
+    with open_reference_archive(artifact, token) as (archive, _):
+        try:
+            entry = archive.getinfo("shard/phase-receipt.json")
+        except KeyError as error:
+            raise ValueError("Fresh SDK original upload lacks its phase receipt") from error
+        if entry.file_size > 16 * 1024 * 1024:
+            raise ValueError("Fresh SDK receipt exceeds its fixed control bound")
+        receipt_bytes = archive.read(entry)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if (tuple(receipt[field] for field in ("product", "component", "phase", "target"))
+            != tuple(getattr(instance, field) for field in ("product", "component", "phase", "target"))
+            or receipt["buildKey"] != expected_build_key
+            or receipt["productVersion"] != expected_product_version
+            or receipt["producer"] != producer
+            or receipt["trustDomain"] != "development"):
+        raise ValueError("Fresh SDK original upload differs from independent phase identity")
+    require_no_signing_secret(environment)
+    return {"receipt_sha256": sha256_bytes(receipt_bytes),
+            "artifact_id": pin["artifact_id"], "artifact_sha256": pin["artifact_sha256"],
+            "workflow_path": trusted_workflow_path, "job_name": trusted_job_name}
+
+
+def discover_reused_sdk_original_pins(selections, *, pull_request, repository,
+        catalog_artifact_name, catalog_public_key,
+        expected_public_key_sha256, trusted_workflow_sha,
+        trusted_catalog_workflow_path, trusted_catalog_job_name,
+        token, environ=None, failed_catalog_producer=None,
+        expected_catalog_artifact_id=None, expected_catalog_artifact_sha256=None,
+        expected_catalog_index_sha256=None, catalog_workflow_sha=None):
+    """Select same-PR originals from one held authenticated catalog snapshot.
+
+    Every phase key/version/worker route and the shared catalog/key/PR policy
+    come from the caller, never from the current campaign's replay state.
+    Failed-run partial catalogs require a separate caller-pinned producer.
+    """
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    if not isinstance(selections, Mapping) or not selections:
+        raise ValueError("Reused SDK pin discovery requires selected phases")
+    for instance, selection in selections.items():
+        if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
+            raise ValueError("Reused SDK pin discovery requires registered phases")
+        selection = require_exact_keys(selection, {
+            "expected_build_key", "expected_product_version",
+            "trusted_worker_workflow_path", "trusted_worker_job_name",
+        }, "Reused SDK phase selection")
+        require_sha256(selection["expected_build_key"], "Independent SDK build key")
+        require_semver(selection["expected_product_version"], "Independent SDK version")
+        if not selection["trusted_worker_workflow_path"] or not selection["trusted_worker_job_name"]:
+            raise ValueError("Reused SDK pin discovery requires reviewed worker route")
+    require_sha256(expected_public_key_sha256, "Independent catalog public key")
+    require_integer(pull_request, "Independent pull request", 1)
+    if type(token) is not str or not token:
+        raise ValueError("Reused SDK pin discovery requires an observation token")
+    require_relative_path(repository, "Independent repository")
+    if repository.count("/") != 1:
+        raise ValueError("Independent repository must be an owner/repository pair")
+    prefix = f"{products._CATALOG_PREFIX}pull-request-{pull_request}-"
+    failed = (None if failed_catalog_producer is None else
+              validate_producer(failed_catalog_producer))
+    custody_pins = (expected_catalog_artifact_id, expected_catalog_artifact_sha256,
+        expected_catalog_index_sha256)
+    if any(pin is not None for pin in custody_pins):
+        if failed is None or any(pin is None for pin in custody_pins):
+            raise ValueError("Exact catalog custody pins require one failed-run producer")
+        require_integer(expected_catalog_artifact_id, "Custody catalog artifact ID", 1)
+        require_sha256(expected_catalog_artifact_sha256, "Custody catalog artifact digest")
+        require_sha256(expected_catalog_index_sha256, "Custody catalog index digest")
+    if type(catalog_artifact_name) is not str:
+        raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
+    if failed is not None:
+        require_failed_sdk_partial_catalog_route(failed, catalog_artifact_name,
+            trusted_catalog_workflow_path, trusted_catalog_job_name)
+    elif not catalog_artifact_name.startswith(prefix) or not catalog_artifact_name[len(prefix):]:
+        raise ValueError("Reused SDK catalog requires a caller-pinned same-PR artifact name")
+    catalog_job, catalog_policy = original_workflow_route("catalog", trusted_catalog_job_name,
+        catalog_workflow_sha or trusted_workflow_sha,
+        trusted_catalog_workflow_path, trusted_catalog_job_name)
+    if not all((trusted_catalog_workflow_path, trusted_catalog_job_name)):
+        raise ValueError("Reused SDK pin discovery requires reviewed catalog route")
+    pinned_key = read_regular_file_bytes(Path(catalog_public_key), max_bytes=64 * 1024,
+        reject_symlink_parents=True)
+    if sha256_bytes(pinned_key) != expected_public_key_sha256:
+        raise ValueError("Reused SDK catalog key differs from independent digest")
+    api = "https://api.github.com"
+    listed = products.paginated_items(f"{api}/repos/{repository}/actions/artifacts", "artifacts", token)
+    candidates = [row for row in listed if isinstance(row, dict)
+                  and row.get("name") == catalog_artifact_name
+                  and row.get("expired") is False]
+    if not candidates:
+        raise ValueError("Reused SDK has no exact same-PR catalog")
+    if failed is not None and len(candidates) != 1:
+        raise ValueError("Partial SDK catalog official listing is ambiguous")
+    candidates.sort(key=lambda row: require_integer(row.get("id"), "Catalog artifact ID", 1),
+                    reverse=True)
+    if len(candidates) > 1 and candidates[0]["id"] == candidates[1]["id"]:
+        raise ValueError("Reused SDK catalog listing has duplicate latest ID")
+    listed_artifact = candidates[0]
+    artifact_id = listed_artifact["id"]
+    if expected_catalog_artifact_id is not None and artifact_id != expected_catalog_artifact_id:
+        raise ValueError("Reused SDK catalog ID differs from signed custody")
+    detail_url = f"{api}/repos/{repository}/actions/artifacts/{artifact_id}"
+    detail = products.api_json(detail_url, token)
+    if (not isinstance(detail, dict) or detail.get("id") != artifact_id
+            or detail.get("name") != catalog_artifact_name or detail.get("expired") is not False
+            or detail.get("digest") != listed_artifact.get("digest")
+            or detail.get("archive_download_url") != f"{detail_url}/zip"):
+        raise ValueError("Reused SDK catalog detail differs from official listing")
+    catalog_sha = require_sha256(detail["digest"], "Official SDK catalog digest")
+    if expected_catalog_artifact_sha256 is not None and catalog_sha != expected_catalog_artifact_sha256:
+        raise ValueError("Reused SDK catalog bytes differ from signed custody")
+    with tempfile.TemporaryDirectory(prefix="sdk-reused-pin-") as temporary:
+        root = Path(temporary).resolve()
+        if failed is None:
+            catalog = products._materialize_catalog("same-pr", detail, token, root,
+                repository, pull_request, None, api=api)
+        else:
+            catalog, _ = materialize_failed_sdk_partial_catalog(detail, root,
+                producer=failed, repository=repository, pull_request=pull_request,
+                public_key=catalog_public_key, public_key_sha256=expected_public_key_sha256,
+                trusted_workflow_sha=catalog_workflow_sha or trusted_workflow_sha,
+                trusted_workflow_path=trusted_catalog_workflow_path,
+                trusted_job_name=trusted_catalog_job_name, token=token)
+        extracted = root / "catalogs" / "same-pr" / str(artifact_id) / "contents"
+        if read_regular_file_bytes(extracted / "public-key.pub", max_bytes=64 * 1024,
+                reject_symlink_parents=True) != pinned_key:
+            raise ValueError("Reused SDK catalog key differs from independent policy")
+        index, index_bytes = verify_signed_product_index(SignedProductIndex(
+            extracted / "product-index.json", extracted / "product-index.sig"), Path(catalog_public_key))
+        if index != catalog.index:
+            raise ValueError("Reused SDK catalog changed during signed verification")
+        if expected_catalog_index_sha256 is not None and \
+                sha256_bytes(index_bytes) != expected_catalog_index_sha256:
+            raise ValueError("Reused SDK catalog index differs from signed custody")
+        if failed is None:
+            observed_catalog = products._observe_ci_producer_jobs(
+                {"catalog": index["producer"]}, jobs_by_phase={"catalog": catalog_job},
+                token=token, **catalog_policy)
+            products._require_artifact_job_window(observed_catalog[0], catalog_job, detail)
+        pins = {}
+        for position, instance in enumerate(sorted(selections)):
+            selection = selections[instance]
+            expected_build_key = selection["expected_build_key"]
+            expected_product_version = selection["expected_product_version"]
+            worker_job, worker_policy = original_workflow_route("worker",
+                selection["trusted_worker_job_name"], trusted_workflow_sha,
+                selection["trusted_worker_workflow_path"], selection["trusted_worker_job_name"])
+            entries = [entry for entry in index["entries"]
+                       if (entry["product"], entry["component"], entry["phase"], entry["target"])
+                       == (instance.product, instance.component, instance.phase, instance.target)
+                       and entry["buildKey"] == expected_build_key
+                       and entry["productVersion"] == expected_product_version]
+            if len(entries) != 1:
+                raise ValueError("Reused SDK catalog lacks one exact phase entry")
+            entry = entries[0]
+            original_object = catalog.objects.get(expected_build_key)
+            if original_object is None:
+                raise ValueError("Reused SDK catalog lacks original object")
+            selected = verify_object(original_object, build_key=expected_build_key,
+                receipt_sha256=entry["receiptSha256"])
+            _verify_index_receipt(entry, {**selected, "receiptSha256": entry["receiptSha256"]})
+            receipt = validate_phase_receipt(load_canonical_json_bytes(selected["receiptBytes"]))
+            producer = receipt["producer"]
+            if producer["repository"] != repository or producer["pullRequest"] != pull_request:
+                raise ValueError("Reused SDK receipt differs from independent PR/repository")
+            _, worker_name = fresh_sdk_worker_route(instance, receipt)
+            worker_pin = _locate(producer, phase="worker", job=worker_job, name=worker_name,
+                token=token, **worker_policy)
+            observed_worker = products._observe_ci_producer_jobs(
+                {"worker": producer}, jobs_by_phase={"worker": worker_job},
+                token=token, **worker_policy)
+            with tempfile.TemporaryDirectory(prefix=f"original-worker-{position}-", dir=root) as worker_temp:
+                worker_temp = Path(worker_temp)
+                worker_archive = worker_temp / "transport.zip"
+                worker_artifact, _ = products._download_contract_ci_upload(
+                    worker_pin["artifact_id"], worker_pin["artifact_sha256"], worker_name,
+                    producer, observed_worker[0]["run"], token, destination=worker_archive)
+                products._require_artifact_job_window(observed_worker[0], worker_job, worker_artifact)
+                verified_zip_contents(worker_archive, retained_paths=(), allow_empty_members=True,
+                    **products._CATALOG_ZIP_LIMITS)
+                worker_root = worker_temp / "original"
+                products.safe_extract(worker_archive, worker_root)
+                shard = verify_phase_shard(worker_root / "shard", instance)
+                if (shard["receiptBytes"] != selected["receiptBytes"]
+                        or sha256_file(worker_root / "shard" / shard["objectPath"])
+                        != sha256_file(original_object)):
+                    raise ValueError("Reused SDK worker upload differs from signed catalog original")
+            pins[instance] = {"receipt_sha256": entry["receiptSha256"],
+                "original_artifact_id": worker_pin["artifact_id"],
+                "original_artifact_sha256": worker_pin["artifact_sha256"],
+                "catalog_artifact_id": artifact_id, "catalog_artifact_sha256": catalog_sha,
+                "catalog_public_key": Path(catalog_public_key),
+                "catalog_public_key_sha256": expected_public_key_sha256,
+                "pull_request": pull_request,
+                "worker_workflow_path": selection["trusted_worker_workflow_path"],
+                "worker_job_name": worker_job,
+                "catalog_workflow_path": trusted_catalog_workflow_path,
+                "catalog_job_name": catalog_job}
+    require_no_signing_secret(environment)
+    return pins
+
+
+CUSTODY_SELECTION_KEYS = {
+        "catalog_producer", "catalog_artifact_id", "catalog_artifact_sha256",
+        "catalog_workflow_sha", "catalog_workflow_path", "catalog_job_name",
+        "custody_producer", "custody_artifact_id", "custody_artifact_sha256",
+        "custody_workflow_sha", "custody_job_name", "trusted_source_commit",
+        "keyring_path", "keys_directory", "expected_keyring_sha256",
+        "expected_keys_inventory_sha256",
+}
+
+
+def discover_reused_sdk_original_pins_from_custody(selections, *, repository,
+        pull_request, trusted_workflow_sha, custody_selection,
+        custody_destination, token, environ=None):
+    """Select failed-run originals using a distinct protected dispatch's signed key."""
+    from ci.sdk_catalog_custody_locator import locate_failed_sdk_catalog_custody
+
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    require_no_signing_secret(os.environ)
+    custody_selection = require_exact_keys(custody_selection, CUSTODY_SELECTION_KEYS,
+        "SDK custody selection")
+    failed = validate_producer(custody_selection["catalog_producer"])
+    if failed["repository"] != repository or failed["pullRequest"] != pull_request:
+        raise ValueError("SDK custody producer differs from independently selected PR")
+    custody = locate_failed_sdk_catalog_custody(custody_destination,
+        **custody_selection, token=token, environ=environment)
+    return discover_reused_sdk_original_pins(selections, repository=repository,
+        pull_request=pull_request, catalog_artifact_name=custody["catalogArtifactName"],
+        catalog_public_key=custody["publicKey"],
+        expected_public_key_sha256=custody["publicKeySha256"],
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_catalog_workflow_path=custody_selection["catalog_workflow_path"],
+        trusted_catalog_job_name=custody_selection["catalog_job_name"],
+        catalog_workflow_sha=custody_selection["catalog_workflow_sha"],
+        failed_catalog_producer=failed,
+        expected_catalog_artifact_id=custody["catalogArtifactId"],
+        expected_catalog_artifact_sha256=custody["catalogArtifactSha256"],
+        expected_catalog_index_sha256=custody["catalogIndexSha256"],
+        token=token, environ=environment)
+
+
+def discover_reused_sdk_original_pin(instance, *, expected_build_key,
+        expected_product_version, pull_request, repository, catalog_artifact_name,
+        catalog_public_key, expected_public_key_sha256, trusted_workflow_sha,
+        trusted_worker_workflow_path, trusted_worker_job_name,
+        trusted_catalog_workflow_path, trusted_catalog_job_name,
+        token, environ=None):
+    """Single-phase convenience route; campaign callers use the batched route."""
+    return discover_reused_sdk_original_pins({instance: {
+        "expected_build_key": expected_build_key,
+        "expected_product_version": expected_product_version,
+        "trusted_worker_workflow_path": trusted_worker_workflow_path,
+        "trusted_worker_job_name": trusted_worker_job_name,
+    }}, pull_request=pull_request, repository=repository,
+        catalog_artifact_name=catalog_artifact_name,
+        catalog_public_key=catalog_public_key,
+        expected_public_key_sha256=expected_public_key_sha256,
+        trusted_workflow_sha=trusted_workflow_sha,
+        trusted_catalog_workflow_path=trusted_catalog_workflow_path,
+        trusted_catalog_job_name=trusted_catalog_job_name,
+        token=token, environ=environ)[instance]
+
+
+def locate_fresh_sdk_original_upload(instance, original, *, expected_receipt_sha256,
+        trusted_workflow_sha, token, environ=None,
+        trusted_workflow_path=None, trusted_job_name=None):
+    """Return an official ID/digest for an independently selected retained receipt.
+
+    The caller supplies the original receipt digest independently of the held
+    state. This locator never accepts a claimed artifact ID, name, or path from
+    that state. The consumer must still download and verify the exact upload.
+    """
+    from ci.sdk_campaign_observation import ObservedSdkOriginal
+    environment = os.environ if environ is None else environ
+    require_no_signing_secret(environment)
+    if environment is not os.environ:
+        require_no_signing_secret(os.environ)
+    if type(token) is not str or not token:
+        raise ValueError("SDK original locator requires an observation token")
+    require_sha256(expected_receipt_sha256, "Caller-selected SDK receipt")
+    if not isinstance(instance, PhaseInstanceId) or instance not in SDK_CAMPAIGN_INSTANCES:
+        raise ValueError("SDK original locator requires one registered phase")
+    if not isinstance(original, ObservedSdkOriginal):
+        raise ValueError("SDK original locator requires one held original")
+    receipt_bytes = original.receipt_bytes
+    replay_bytes = original.replay_record_canonical
+    if sha256_bytes(receipt_bytes) != expected_receipt_sha256:
+        raise ValueError("SDK original receipt differs from independent caller selection")
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    replay = require_exact_keys(load_canonical_json_bytes(replay_bytes),
+        products._REUSE_PHASE_KEYS, "SDK original replay phase")
+    identity = tuple(getattr(instance, field) for field in ("product", "component", "phase", "target"))
+    if (canonical_json_bytes(receipt) != receipt_bytes
+            or canonical_json_bytes(replay) != replay_bytes
+            or tuple(receipt[field] for field in ("product", "component", "phase", "target")) != identity
+            or tuple(replay[field] for field in ("product", "component", "phase", "target")) != identity
+            or replay["state"] != "retained" or replay["source"] is not None
+            or replay["transportSource"] is not None or replay["misses"]
+            or replay["buildKey"] != receipt["buildKey"]
+            or replay["receiptSha256"] != expected_receipt_sha256):
+        raise ValueError("SDK original locator requires the exact retained phase")
+    producer = receipt["producer"]
+    default_job, name = fresh_sdk_worker_route(instance, receipt)
+    job, policy = original_workflow_route("worker", default_job, trusted_workflow_sha,
+        trusted_workflow_path, trusted_job_name)
+    result = _locate(producer, phase="worker", job=job, name=name,
+        token=token, **policy)
+    require_no_signing_secret(environment)
+    if (original.receipt_bytes != receipt_bytes or original.replay_record_canonical != replay_bytes
+            or sha256_bytes(receipt_bytes) != expected_receipt_sha256):
+        raise ValueError("SDK original receipt changed during lookup")
+    return result

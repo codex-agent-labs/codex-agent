@@ -27,6 +27,16 @@ import platform.Foundation.NSURL
 
 class IosCodexRuntimeTest {
     @Test
+    fun runtimeFactoryAlwaysCreatesThePackagedInProcessIosRuntime() {
+        TestWorkspace().use { test ->
+            val runtime = assertIs<IosCodexRuntime>(
+                IosCodexRuntimeFactory(test.configuration).create(),
+            )
+            runtime.close()
+        }
+    }
+
+    @Test
     fun localWorkspaceToolsReadSearchListAndModifyFiles() = runBlocking {
         TestWorkspace().use { test ->
             val tools = IosCodexRuntimeFactory(test.configuration).workspaceTools

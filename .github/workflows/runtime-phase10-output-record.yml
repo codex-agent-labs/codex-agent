@@ -1,0 +1,260 @@
+name: Runtime Phase-10 Output Record
+
+on:
+  workflow_call:
+    inputs:
+      attestationJson:
+        required: true
+        type: string
+    outputs:
+      recordArtifactId:
+        value: ${{ jobs.record.outputs.record_id }}
+      recordArtifactSha256:
+        value: ${{ jobs.record.outputs.record_sha256 }}
+      transportArtifactId:
+        value: ${{ jobs.record.outputs.transport_id }}
+      transportArtifactSha256:
+        value: ${{ jobs.record.outputs.transport_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  record:
+    name: runtime-phase10-output-record
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'runtime-phase10-record'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      record_id: ${{ steps.upload_record.outputs.artifact-id }}
+      record_sha256: sha256:${{ steps.upload_record.outputs.artifact-digest }}
+      transport_id: ${{ steps.upload_transport.outputs.artifact-id }}
+      transport_sha256: sha256:${{ steps.upload_transport.outputs.artifact-digest }}
+    steps:
+      - name: Require independently approved completed-run control before checkout
+        id: authority
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PHASE10_CONTROL_APPROVED_SHA256 }}
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PINS_JSON: ${{ vars.CODEX_AGENT_RUNTIME_PHASE11_PINS_JSON }}
+          PINS_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PHASE11_PINS_SHA256 }}
+          PGP_PUBLIC_KEY: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY }}
+          PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test -n "$CONTROL_JSON"
+          test -n "$PINS_JSON"
+          test -n "$PGP_PUBLIC_KEY"
+          printf '%s\n' "$CONTROL_JSON" > "$RUNNER_TEMP/runtime-control.json"
+          printf '%s\n' "$PINS_JSON" > "$RUNNER_TEMP/runtime-phase11-pins.json"
+          printf '%s' "$PGP_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-pgp-public.asc"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-control.json" | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-phase11-pins.json" | cut -d ' ' -f 1)" = "$PINS_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/runtime-pgp-public.asc" | cut -d ' ' -f 1)" = "$PGP_KEY_SHA256"
+          python3 - "$RUNNER_TEMP/runtime-control.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          def no_duplicates(pairs):
+              value = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise ValueError("duplicate Runtime control key")
+                  value[key] = item
+              return value
+          def no_float(_):
+              raise ValueError("Runtime control cannot contain a float")
+          raw = Path(sys.argv[1]).read_bytes()
+          value = json.loads(raw, object_pairs_hook=no_duplicates,
+                             parse_float=no_float, parse_constant=no_float)
+          canonical = (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                  ensure_ascii=False, allow_nan=False) + "\n").encode()
+          if raw != canonical:
+              raise ValueError("Runtime control is not canonical JSON")
+          PY
+          jq -e 'type == "object" and .schemaVersion == 1 and
+            (keys == (["schemaVersion", "originalRunId", "originalRunAttempt", "validationCommit",
+              "validationTree", "planArtifactId", "planArtifactSha256", "aggregateArtifactId",
+              "aggregateArtifactSha256", "aggregateBuildKey", "metadataReceiptSha256",
+              "aggregateWorkflowSha", "sidecarArtifactId", "sidecarArtifactSha256",
+              "sidecarWorkflowSha", "trustedSourceCommit", "pgpKeySha256"] | sort))' \
+            "$RUNNER_TEMP/runtime-control.json" > /dev/null
+          test "$(jq -er '.trustedSourceCommit' "$RUNNER_TEMP/runtime-control.json")" = "$SOURCE_SHA"
+          test "$(jq -er '.pgpKeySha256' "$RUNNER_TEMP/runtime-control.json")" = "$PGP_KEY_SHA256"
+          {
+            for field in originalRunId originalRunAttempt planArtifactId aggregateArtifactId sidecarArtifactId; do
+              value=$(jq -er ".${field}" "$RUNNER_TEMP/runtime-control.json")
+              [[ "$value" =~ ^[1-9][0-9]*$ ]] || exit 1
+              printf '%s=%s\n' "$field" "$value"
+            done
+            for field in planArtifactSha256 aggregateArtifactSha256 aggregateBuildKey metadataReceiptSha256 sidecarArtifactSha256; do
+              value=$(jq -er ".${field}" "$RUNNER_TEMP/runtime-control.json")
+              [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+              printf '%s=%s\n' "$field" "$value"
+            done
+            for field in validationCommit validationTree aggregateWorkflowSha sidecarWorkflowSha; do
+              value=$(jq -er ".${field}" "$RUNNER_TEMP/runtime-control.json")
+              [[ "$value" =~ ^[0-9a-f]{40}$ ]] || exit 1
+              printf '%s=%s\n' "$field" "$value"
+            done
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'pins_sha256=%s\n' "$PINS_SHA256"
+            printf 'pgp_sha256=%s\n' "$PGP_KEY_SHA256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out protected reviewed verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact original validation tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.validationCommit }}
+          path: validation-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download independently pinned original plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.authority.outputs.planArtifactId }}
+          run-id: ${{ steps.authority.outputs.originalRunId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: plan
+      - name: Capture official original aggregate without signing keys
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.authority.outputs.originalRunAttempt }}
+          AGGREGATE_WORKFLOW_SHA: ${{ steps.authority.outputs.aggregateWorkflowSha }}
+          AGGREGATE_ID: ${{ steps.authority.outputs.aggregateArtifactId }}
+          AGGREGATE_SHA256: ${{ steps.authority.outputs.aggregateArtifactSha256 }}
+          BUILD_KEY: ${{ steps.authority.outputs.aggregateBuildKey }}
+          RECEIPT_SHA256: ${{ steps.authority.outputs.metadataReceiptSha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_upload_locator.py \
+            --plan plan/impact-plan.json --candidate-root validation-source \
+            --trusted-workflow-sha "$AGGREGATE_WORKFLOW_SHA" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --destination "$RUNNER_TEMP/runtime-aggregate-capture" \
+            --expected-build-key "$BUILD_KEY" \
+            --expected-metadata-receipt-sha256 "$RECEIPT_SHA256" \
+            --github-output "$RUNNER_TEMP/runtime-aggregate-observed"
+          test "$(sed -n 's/^artifact_id=//p' "$RUNNER_TEMP/runtime-aggregate-observed")" = "$AGGREGATE_ID"
+          test "$(sed -n 's/^artifact_sha256=//p' "$RUNNER_TEMP/runtime-aggregate-observed")" = "$AGGREGATE_SHA256"
+      - name: Capture official original sidecars without signing keys
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.authority.outputs.originalRunAttempt }}
+          PLAN_ID: ${{ steps.authority.outputs.planArtifactId }}
+          PLAN_SHA256: ${{ steps.authority.outputs.planArtifactSha256 }}
+          SIDECAR_WORKFLOW_SHA: ${{ steps.authority.outputs.sidecarWorkflowSha }}
+          SIDECAR_ID: ${{ steps.authority.outputs.sidecarArtifactId }}
+          SIDECAR_SHA256: ${{ steps.authority.outputs.sidecarArtifactSha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_sidecar_upload.py \
+            --plan plan/impact-plan.json --repository-root validation-source \
+            --destination "$RUNNER_TEMP/runtime-sidecar-capture" \
+            --plan-artifact-id "$PLAN_ID" --plan-artifact-sha256 "$PLAN_SHA256" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --trusted-workflow-sha "$SIDECAR_WORKFLOW_SHA" \
+            --artifact-id "$SIDECAR_ID" --artifact-sha256 "$SIDECAR_SHA256"
+      - name: Prepare unsigned record from approved exact bytes
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          PINS_SHA256: ${{ steps.authority.outputs.pins_sha256 }}
+          PGP_SHA256: ${{ steps.authority.outputs.pgp_sha256 }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.authority.outputs.originalRunAttempt }}
+          AGGREGATE_WORKFLOW_SHA: ${{ steps.authority.outputs.aggregateWorkflowSha }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_output_record.py prepare \
+            --plan plan/impact-plan.json --repository-root trusted-source \
+            --validation-repository validation-source \
+            --protected-output "$RUNNER_TEMP/runtime-aggregate-capture/original" \
+            --maven-sidecars "$RUNNER_TEMP/runtime-sidecar-capture/original" \
+            --pgp-public-key "$RUNNER_TEMP/runtime-pgp-public.asc" \
+            --destination "$RUNNER_TEMP/runtime-prepared-record" \
+            --phase11-pins "$RUNNER_TEMP/runtime-phase11-pins.json" \
+            --expected-phase11-pins-sha256 "$PINS_SHA256" \
+            --trusted-source-commit "$SOURCE_SHA" --trusted-workflow-sha "$AGGREGATE_WORKFLOW_SHA" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --expected-pgp-key-sha256 "$PGP_SHA256" > "$RUNNER_TEMP/runtime-prepare-result.json"
+          printf 'record_sha256=%s\n' "$(jq -er '.recordSha256' "$RUNNER_TEMP/runtime-prepare-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Sign only the prepared record without observation token
+        id: sign
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_record_signer.py \
+            --prepared-record "$RUNNER_TEMP/runtime-prepared-record/record.json" \
+            --repository-root trusted-source --trusted-source-commit "$SOURCE_SHA" \
+            --expected-record-sha256 "$RECORD_SHA256" > "$RUNNER_TEMP/runtime-sign-result.json"
+          printf 'signature_sha256=%s\n' "$(jq -er '.signatureSha256' "$RUNNER_TEMP/runtime-sign-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Reobserve original and publish only the verified signed pair
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          PGP_SHA256: ${{ steps.authority.outputs.pgp_sha256 }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.authority.outputs.originalRunAttempt }}
+          AGGREGATE_WORKFLOW_SHA: ${{ steps.authority.outputs.aggregateWorkflowSha }}
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          SIGNATURE_SHA256: ${{ steps.sign.outputs.signature_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_phase10_output_record.py verify-publish \
+            --plan plan/impact-plan.json --repository-root trusted-source \
+            --validation-repository validation-source \
+            --protected-output "$RUNNER_TEMP/runtime-aggregate-capture/original" \
+            --maven-sidecars "$RUNNER_TEMP/runtime-sidecar-capture/original" \
+            --pgp-public-key "$RUNNER_TEMP/runtime-pgp-public.asc" \
+            --destination "$RUNNER_TEMP/runtime-verified-record" \
+            --record "$RUNNER_TEMP/runtime-prepared-record/record.json" \
+            --signature "$RUNNER_TEMP/runtime-prepared-record/record.sig" \
+            --expected-record-sha256 "$RECORD_SHA256" \
+            --expected-signature-sha256 "$SIGNATURE_SHA256" \
+            --trusted-source-commit "$SOURCE_SHA" --trusted-workflow-sha "$AGGREGATE_WORKFLOW_SHA" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --expected-pgp-key-sha256 "$PGP_SHA256"
+      - name: Preserve exact original sidecar transport externally
+        id: upload_transport
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-phase10-sidecar-transport-${{ steps.authority.outputs.validationTree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-sidecar-capture
+          compression-level: 0
+          retention-days: 90
+      - name: Preserve exact signed Runtime record
+        id: upload_record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-phase10-output-record-${{ steps.authority.outputs.validationTree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-verified-record
+          compression-level: 0
+          retention-days: 90

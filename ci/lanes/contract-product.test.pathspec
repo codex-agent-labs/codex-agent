@@ -1,0 +1,4 @@
+ci/lanes/contract-product.test.pathspec
+codex-agent-core/src/commonTest/**
+codex-agent-core/src/jvmTest/java/**
+codex-agent-core/src/jvmTest/kotlin/**
