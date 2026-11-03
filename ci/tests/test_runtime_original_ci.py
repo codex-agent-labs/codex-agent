@@ -22,7 +22,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
 
     def test_current_runtime_publisher_remains_exactly_admitted_after_rotation(self):
         for publisher in ("d2243aac89368df2776b6617fd5a623bd6754cb2",
-                          "a1cbc80b15a96cb2915d06afe1e29e319dda52fc"):
+                          "a1cbc80b15a96cb2915d06afe1e29e319dda52fc",
+                          "de7be70f78755f05e91661c0c8405604cf4f63a2"):
             reference = {"path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@reuse-authority",
                          "ref": "refs/heads/reuse-authority", "sha": publisher}
             run = {"referenced_workflows": [reference]}
@@ -1496,7 +1497,8 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                          "6b982f894a12503f772c361781c89f52e01f15d9",
                          "ab1efe4f956d4e403e431544be0caf01eb7a39a0",
                          "a3620d11911883e6541ee2ac93f08b9811dfde20",
-                         "a1cbc80b15a96cb2915d06afe1e29e319dda52fc"):
+                         "a1cbc80b15a96cb2915d06afe1e29e319dda52fc",
+                          "de7be70f78755f05e91661c0c8405604cf4f63a2"):
             with self.subTest(original=original):
                 run = {"referenced_workflows": [{
                     "path": f"{fixture.REPOSITORY}/.github/workflows/product-validation.yml@{original}",
