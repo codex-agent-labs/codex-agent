@@ -8216,6 +8216,70 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
                 "memberETag": stream.etag}
 
 
+@contextmanager
+def _deferred_prior_runtime_checkpoint(plan, producer, work, artifacts, *, trusted_workflow_sha,
+                                       token, completed_frozen):
+    """Prepare original routing custody only when this private operation needs it."""
+    from products.restore import _VERIFICATION_SESSION
+    from products.verified_evidence import _source_identity
+    session = _VERIFICATION_SESSION.get()
+    if session is None:
+        raise ValueError("Prior checkpoint requires private verification custody")
+    policy = _source_identity()
+    guard, pending, active = Lock(), None, True
+    keys = ("prepareReferenceCheckpoint", "referenceCheckpoint", "restoreCheckpointProjection")
+    previous = {key: session[key] for key in keys if key in session}
+
+    def ensure():
+        nonlocal pending
+        if _VERIFICATION_SESSION.get() is not session or _source_identity() != policy:
+            raise ValueError("Deferred prior checkpoint differs from its private source/session")
+        with guard:
+            if not active:
+                raise ValueError("Deferred prior checkpoint scope is closed")
+            leader = pending is None
+            if leader:
+                pending = Future()
+            future = pending
+        if leader:
+            try:
+                _prepare_prior_runtime_checkpoint(plan, producer, work, artifacts,
+                    trusted_workflow_sha=trusted_workflow_sha, token=token, completed_frozen=completed_frozen)
+                future.set_result(None)
+            except BaseException as error:
+                future.set_exception(error)
+                raise
+        future.result()  # A failed initialization never becomes an ordinary miss.
+        with guard:
+            if not active or _VERIFICATION_SESSION.get() is not session or _source_identity() != policy:
+                raise ValueError("Deferred prior checkpoint source/session custody ended")
+
+    session["prepareReferenceCheckpoint"] = ensure
+    try:
+        yield
+    finally:
+        with guard:
+            active = False
+            future = pending
+        try:
+            if future is not None:
+                future.result()  # Finish private initialization before its paths can be released.
+        finally:
+            for key in keys:
+                if key in previous:
+                    session[key] = previous[key]
+                else:
+                    session.pop(key, None)
+
+
+def _reference_checkpoint(session):
+    if session is None:
+        return None
+    if session.get("prepareReferenceCheckpoint") is not None:
+        session["prepareReferenceCheckpoint"]()
+    return session.get("referenceCheckpoint")
+
+
 def _qualified_original_projection(locator):
     from products.restore import _VERIFICATION_SESSION, _stage_fingerprint
     from products.verified_evidence import _source_identity
@@ -8234,8 +8298,9 @@ def _qualified_original_projection(locator):
             # Verified but incompatible claims cannot create a witness. The
             # unchanged original authentication path still owns this evidence.
             qualified = None
+    checkpoint = _reference_checkpoint(session) if qualified is None else None
     if (qualified is None and session is not None and session.get("restoreCheckpointProjection")
-            and session["referenceCheckpoint"][2] == _source_identity()):
+            and checkpoint[2] == _source_identity()):
         session["restoreCheckpointProjection"](locator)
         qualified = session.get("qualifiedOriginalProjections", {}).get(key)
     if qualified is not None:
@@ -10229,7 +10294,7 @@ def _qualified_aggregate_capture(plan, current, original, phase, artifact, desti
     from products.verified_evidence import _source_identity
     from products.sdk_protected_runtime import _original_carrier
     session = _VERIFICATION_SESSION.get()
-    checkpoint = session.get("referenceCheckpoint") if session else None
+    checkpoint = _reference_checkpoint(session)
     if checkpoint is None or checkpoint[2] != _source_identity():
         return None
     _root, refs, _policy = checkpoint
@@ -10283,7 +10348,8 @@ def resume_products(
         source, output = Path(original).resolve(strict=True), destination.resolve(strict=False)
         if source == output or source in output.parents or output in source.parents:
             raise ValueError("Product resume destination overlaps original input")
-    with tempfile.TemporaryDirectory(prefix="codex-agent-product-resume-", dir=root) as temporary:
+    with tempfile.TemporaryDirectory(prefix="codex-agent-product-resume-", dir=root) as temporary, \
+            ExitStack() as checkpoint_lifetime:
         private = Path(temporary).resolve()
         prepared = private / "result"
         prepared.mkdir()
@@ -10406,9 +10472,10 @@ def resume_products(
                     "artifact_inventory": paginated_items(
                         f"https://api.github.com/repos/{plan['repository']}/actions/artifacts",
                         "artifacts", environment["GITHUB_TOKEN"])}
-                _prepare_prior_runtime_checkpoint(plan, current_producer, private / "prior-reference-checkpoint",
+                checkpoint_lifetime.enter_context(_deferred_prior_runtime_checkpoint(
+                    plan, current_producer, private / "prior-reference-checkpoint",
                     recovery_hints["artifact_inventory"], trusted_workflow_sha=sdk_original_workflow_sha,
-                    token=environment["GITHUB_TOKEN"], completed_frozen=completed_frozen)
+                    token=environment["GITHUB_TOKEN"], completed_frozen=completed_frozen))
             attempts = (_prior_failed_pr_attempts(
                 plan, _consumer(plan, environment)["producer"], environment["GITHUB_TOKEN"], **recovery_hints)
                 if recoverable else [])
@@ -10455,7 +10522,7 @@ def resume_products(
                     build_plan_consumer=retain,
                     **_metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
             # Signed aggregate evidence unlocks SDK keys. Recover it before
-            # scanning SDK originals, using the already prepared checkpoint.
+            # scanning SDK originals, preparing a checkpoint only on demand.
             aggregate = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
             aggregate_phase = next((row for row in reuse["phases"]
                                     if _identity(row) == aggregate and row["state"] == "retained"), None)
@@ -10606,6 +10673,7 @@ def resume_products(
                          reason="verified-full-reuse" if reuse["fullReuse"] else "product-build-required", reuse=reuse)
         write_canonical_json(prepared / "request.json", _discovery_request(plan, requested))
         write_canonical_json(prepared / "result.json", result)
+        checkpoint_lifetime.close()  # Surface any failed initialization before publishing controls.
         if routing_output:
             from sdk_native_continuation import emit
             emit(plan, reuse, ready_plans.values(), sources, wave, root, environment,

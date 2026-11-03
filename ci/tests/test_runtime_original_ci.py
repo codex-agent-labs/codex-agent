@@ -1,5 +1,6 @@
 """Original upload authentication with synthetic products; HTTP is the only mock."""
 import copy
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -1362,10 +1363,12 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                 mock.patch('products.verified_evidence.runtime_original_cache', return_value=None), \
                 mock.patch.object(adapter, 'download_artifact_to_file', side_effect=download) as whole, \
                 mock.patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
-                mock.patch('reuse.api_request', side_effect=api), verification_session() as session:
+                mock.patch('reuse.api_request', side_effect=api), verification_session() as session, ExitStack() as lifetime:
             work = self.root / 'new-planner'
-            adapter._prepare_prior_runtime_checkpoint(plan, current, work, [artifact],
-                trusted_workflow_sha=self.pin, token='not-a-real-token', completed_frozen=None)
+            lifetime.enter_context(adapter._deferred_prior_runtime_checkpoint(plan, current, work, [artifact],
+                trusted_workflow_sha=self.pin, token='not-a-real-token', completed_frozen=None))
+            self.assertEqual(0, whole.call_count, 'prior checkpoint controls must remain unopened until demand')
+            self.assertFalse(work.exists())
             self.assertFalse(session.get('qualifiedOriginalProjections'))
             self.assertEqual([], ranges.requests)  # Only controls until an exact original is requested.
             recovered = self.root / 'new-capture'
@@ -1938,3 +1941,127 @@ class RuntimeRetainedOriginalTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.capture()
             self.assertFalse(self.output.exists())
+
+class LazyRuntimeCheckpointTest(unittest.TestCase):
+    """Private initialization only; original authentication stays in the fixture above."""
+
+    def setUp(self):
+        from products.restore import verification_session
+        self.lifetime = ExitStack()
+        self.addCleanup(self.lifetime.close)
+        self.root = Path(self.lifetime.enter_context(tempfile.TemporaryDirectory())).resolve()
+        self.session = self.lifetime.enter_context(verification_session())
+        self.policy = self.lifetime.enter_context(
+            mock.patch('products.verified_evidence._source_identity', return_value='current-source'))
+        self.prepare = self.lifetime.enter_context(mock.patch.object(adapter, '_prepare_prior_runtime_checkpoint'))
+        self.work = self.root / 'prior'
+        self.options = dict(trusted_workflow_sha='a' * 40, token='synthetic', completed_frozen=None)
+
+    def deferred(self):
+        return adapter._deferred_prior_runtime_checkpoint({}, {}, self.work, [], **self.options)
+
+    def aggregate(self):
+        return adapter._qualified_aggregate_capture({}, {}, {}, {}, {}, self.root / 'aggregate',
+            trusted_workflow_sha='a' * 40, token='synthetic')
+
+    def test_unused_scope_preserves_existing_custody_without_preparation(self):
+        prior = {'referenceCheckpoint': (self.root, {'sources': []}, 'current-source'),
+                 'restoreCheckpointProjection': mock.Mock(), 'prepareReferenceCheckpoint': mock.Mock()}
+        self.session.update(prior)
+        with self.deferred():
+            callback = self.session['prepareReferenceCheckpoint']
+            self.assertFalse(self.work.exists())
+            self.prepare.assert_not_called()
+        for key, value in prior.items():
+            self.assertIs(value, self.session[key])
+        with self.assertRaisesRegex(ValueError, 'scope is closed'):
+            callback()
+        self.prepare.assert_not_called()
+
+    def test_both_consumers_share_one_initialization_and_keep_exact_locator(self):
+        from products.restore import bounded_verify
+        restore = mock.Mock()
+        def prepare(*args, **kwargs):
+            self.assertEqual(({}, {}, self.work, []), args)
+            self.assertEqual(self.options, kwargs)
+            self.session['referenceCheckpoint'] = (self.root, {'sources': []}, 'current-source')
+            self.session['restoreCheckpointProjection'] = restore
+        self.prepare.side_effect = prepare
+        locators = [{'syntheticLocator': number} for number in range(8)]
+        with self.deferred():
+            self.assertEqual([None] * 8, bounded_verify(adapter._qualified_original_projection, locators))
+            self.assertIsNone(self.aggregate())
+            self.assertIsNone(adapter._qualified_original_projection(locators[0]))
+            self.assertEqual(1, self.prepare.call_count)
+            self.assertCountEqual(locators + [locators[0]], [call.args[0] for call in restore.call_args_list])
+        for key in ('referenceCheckpoint', 'restoreCheckpointProjection', 'prepareReferenceCheckpoint'):
+            self.assertNotIn(key, self.session)
+
+    def test_no_candidate_is_memoized_but_never_creates_custody(self):
+        with self.deferred():
+            for _ in range(2):
+                self.assertIsNone(adapter._qualified_original_projection({'syntheticLocator': 1}))
+                self.assertIsNone(self.aggregate())
+            self.assertEqual(1, self.prepare.call_count)
+            self.assertNotIn('referenceCheckpoint', self.session)
+
+    def test_initialization_failure_is_repeated_and_does_not_fall_back(self):
+        failure = ValueError('original checkpoint authentication failed')
+        self.prepare.side_effect = failure
+        prior = (self.root, {'sources': []}, 'current-source')
+        self.session['referenceCheckpoint'] = prior
+        with self.assertRaisesRegex(ValueError, 'original checkpoint authentication failed'):
+            with self.deferred():
+                for consume in (lambda: adapter._qualified_original_projection({}), self.aggregate):
+                    with self.assertRaises(ValueError) as error:
+                        consume()
+                    self.assertIs(failure, error.exception)
+                self.assertEqual(1, self.prepare.call_count)
+        self.assertIs(prior, self.session['referenceCheckpoint'])
+        self.assertNotIn('prepareReferenceCheckpoint', self.session)
+
+    def test_source_session_and_closed_scope_cannot_borrow_pending_custody(self):
+        from products.restore import _VERIFICATION_SESSION
+        with self.deferred():
+            callback = self.session['prepareReferenceCheckpoint']
+            token = _VERIFICATION_SESSION.set({})
+            try:
+                with self.assertRaisesRegex(ValueError, 'private source/session'):
+                    callback()
+            finally:
+                _VERIFICATION_SESSION.reset(token)
+            self.policy.return_value = 'changed-source'
+            with self.assertRaisesRegex(ValueError, 'private source/session'):
+                callback()
+            self.policy.return_value = 'current-source'
+            self.prepare.assert_not_called()
+            callback()
+            self.assertEqual(1, self.prepare.call_count)
+        with self.assertRaisesRegex(ValueError, 'scope is closed'):
+            callback()
+
+    def test_source_change_during_preparation_rejects_before_consumption(self):
+        def prepare(*_args, **_kwargs):
+            self.session['referenceCheckpoint'] = (self.root, {'sources': []}, 'current-source')
+            self.policy.return_value = 'changed-source'
+        self.prepare.side_effect = prepare
+        with self.deferred(), self.assertRaisesRegex(ValueError, 'source/session custody ended'):
+            self.aggregate()
+        self.assertNotIn('referenceCheckpoint', self.session)
+
+    def test_existing_authenticated_projection_does_not_initialize_checkpoint(self):
+        from products.restore import _stage_fingerprint
+        source = self.root / 'original'; source.mkdir()
+        (source / 'control').write_bytes(b'synthetic already-held custody')
+        locator = {'syntheticLocator': 1}
+        qualified = (source, _stage_fingerprint(source.parent), [], 'current-source')
+        self.session['qualifiedOriginalProjections'] = {adapter.canonical_json_bytes(locator): qualified}
+        with self.deferred():
+            self.assertIs(qualified, adapter._qualified_original_projection(locator))
+            self.prepare.assert_not_called()
+        # An independent existing producer (hosted_reuse_proof) needs no deferred callback.
+        checkpoint = (self.root, {'sources': []}, 'current-source')
+        self.session['referenceCheckpoint'] = checkpoint
+        self.assertIs(checkpoint, adapter._reference_checkpoint(self.session))
+        self.assertIsNone(self.aggregate())
+        self.prepare.assert_not_called()
