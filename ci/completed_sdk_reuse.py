@@ -578,10 +578,6 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None, _checkpoint=
             # Its old proof/receipt remains immutable in reuseCompletion. Changed
             # inputs invalidate this key; no replacement receives body authority.
             continue
-        if source_predecessor_context(spec) and not collected_validation(spec) and instance not in (
-                PhaseInstanceId("sdk", "sdk-core", "binary", "common"),
-                PhaseInstanceId("sdk", "sdk-android", "binary", "android")):
-            continue  # Only these unchanged SDK bodies are inherited by this source checkpoint.
         if phase['buildKey'] != selected[instance]['buildKey']:
             # A changed key inherits no qualification: the issuer below verifies
             # its new successful original and complete object independently.

@@ -19,10 +19,14 @@ from products.registry import PhaseInstanceId
 
 class SdkCheckpointIntakeTest(unittest.TestCase):
     def setUp(self):
-        # Historical recipe shape only. No archived subject is changed or issued;
-        # the source inventory is normalized solely for this synthetic new route.
-        self.spec = json.loads((Path(products.__file__).resolve().parent /
-            'tests/data/requalified-sdk-completed-resume.json').read_bytes())
+        # Keep this collector fixture independent of the current planned recipe.
+        # Existing synthetic preparation supplies the schema4 source-context shape.
+        from ci.tests.test_prepare_sdk_completion import PrepareSdkCompletionTest
+        fixture = PrepareSdkCompletionTest()
+        fixture.setUp()
+        fixture.producer['workflowPath'] = '.github/workflows/ci.yml'
+        fixture.bind()
+        self.spec, _, _ = fixture.run_prepare()
         self.source = self.spec['source']
         self.producer = self.source['producer']
         self.source['inventoryCommit'] = self.producer['commit']

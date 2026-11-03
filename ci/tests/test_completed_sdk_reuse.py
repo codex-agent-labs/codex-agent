@@ -950,6 +950,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             'completedPhases': [deepcopy(phase)]}, 'proof': {'members': [member],
             'originals': [{'original': 71}], 'controls': deepcopy(self.controls)}}}
         spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(prior['extension']['proof']))
+        if schema == 4:
+            spec.update(schemaVersion=4, source={'jobName': 'product-validation / plan'})
         self.assertEqual({completed._identity(phase): (member, {'original': 71})},
             completed._qualified_members(spec, prior, [phase], [self.receipt]))
         # A replacement key gets no inherited body admission. The ordinary
@@ -976,6 +978,52 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 pins['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(candidate['extension']['proof']))
             with self.subTest(case=case), self.assertRaises(ValueError):
                 completed._qualified_members(pins, candidate, selected, [self.receipt])
+
+    def test_planned_members_inherit_57_exact_sdk_objects_but_not_new_ios_package(self):
+        from products.selection import ALL_INSTANCES
+        identities = sorted(i for i in ALL_INSTANCES if i.product == 'sdk' and i.component != 'sdk-ios')
+        self.assertEqual(57, len(identities))
+        receipts, phases, members, locators, controls = [], [], [], [], {}
+        for i in identities:
+            receipt = {**deepcopy(self.receipt), **{k: getattr(i, k) for k in completed.IDENTITY}}
+            receipt['buildKey'] = compute_build_key(**{k: receipt[k] for k in (*completed.IDENTITY, 'inputs')})
+            path = 'product-resume-state/original/' + '/'.join(getattr(i, k) for k in completed.IDENTITY) + '/phase-receipt.json'
+            phase = {**{k: receipt[k] for k in (*completed.IDENTITY, 'buildKey')},
+                'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
+                'objectSha256': sha256_bytes(str(i).encode()), 'receiptPath': path}
+            receipts.append(receipt); phases.append(phase); controls[path] = receipt
+            members.append({'relativePath': path, 'bytes': 8, 'sha256': phase['objectSha256']})
+            locators.append({'original': len(locators) + 71})
+        parent = {'schemaVersion': 1}
+        spec = {'schemaVersion': 4, 'source': {'jobName': 'product-validation / plan'},
+                'parent': {'artifactId': 7}, 'parentProofSha256': sha256_bytes(canonical_json_bytes(parent))}
+        prior = {'proof': parent, 'extension': {'spec': {'schemaVersion': 4, 'parent': spec['parent'],
+            'completedPhases': deepcopy(phases)}, 'proof': {'members': members, 'originals': locators, 'controls': controls}}}
+        spec['reuseCompletionProofSha256'] = sha256_bytes(canonical_json_bytes(prior['extension']['proof']))
+        new_receipt = {**deepcopy(self.receipt), 'component': 'sdk-ios', 'phase': 'package', 'target': 'ios'}
+        new_receipt['buildKey'] = compute_build_key(**{k: new_receipt[k] for k in (*completed.IDENTITY, 'inputs')})
+        new_phase = {**{k: new_receipt[k] for k in (*completed.IDENTITY, 'buildKey')},
+            'receiptSha256': sha256_bytes(canonical_json_bytes(new_receipt)),
+            'objectSha256': sha256_bytes(b'new ios object'), 'receiptPath': 'product-resume-state/new-ios/phase-receipt.json'}
+        selected, current_receipts = phases + [new_phase], receipts + [new_receipt]
+        prior_bytes = canonical_json_bytes(prior)
+        qualified = completed._qualified_members(spec, prior, selected, current_receipts)
+        self.assertEqual(set(identities), set(qualified))
+        self.assertNotIn(completed.IOS_PACKAGE, qualified)
+        self.assertEqual([(m, l) for m, l in zip(members, locators)], [qualified[i] for i in identities])
+        changed = deepcopy(selected)
+        changed[0]['buildKey'] = sha256_bytes(b'changed current key')
+        self.assertEqual(56, len(completed._qualified_members(spec, prior, changed, current_receipts)))
+        for case in ('receipt', 'object', 'subject', 'parent', 'dropped'):
+            pins, rows, values = deepcopy(spec), deepcopy(selected), deepcopy(current_receipts)
+            if case == 'receipt': values[0]['productVersion'] = 'changed'
+            elif case == 'object': rows[0]['objectSha256'] = sha256_bytes(b'wrong object')
+            elif case == 'subject': pins['reuseCompletionProofSha256'] = sha256_bytes(b'wrong proof')
+            elif case == 'parent': pins['parent'] = {'artifactId': 8}
+            else: rows.pop(0)
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                completed._qualified_members(pins, prior, rows, values)
+        self.assertEqual(prior_bytes, canonical_json_bytes(prior))
 
     def test_collected_receipt_hint_avoids_carrier_body_but_still_verifies_original(self):
         self.check_v3_issuer_original_member('python', 'package', 'desktop', collected=True,
@@ -1021,7 +1069,7 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     patch('products.inventory.run_git', side_effect=lambda root, command, ref: trees[ref]), \
                     patch('products.inventory.tree_entries', side_effect=[list(before.items()), list(after.items())]):
                 if case in ('owning', 'planned-upstream'):
-                    expected = {} if case == 'planned-upstream' else {completed._identity(phase): (members[0], locators[0])}
+                    expected = {completed._identity(phase): (members[0], locators[0])}
                     self.assertEqual(expected,
                         completed._qualified_members(pins, prior, [phase], [self.receipt], root=Path('/fixture')))
                 else:
@@ -1040,6 +1088,9 @@ class CompletedSdkControlsTest(unittest.TestCase):
     def test_schema4_issuer_inherits_matching_core_body_without_reading_it(self):
         self.check_v3_issuer_original_member('sdk-core', 'binary', 'common', planned_context=True,
                                              reused=True, issuer_revision='d' * 40)
+        self.setUp()
+        self.check_v3_issuer_original_member('cpp', 'package', 'desktop', planned_context=True,
+                                             reused=True, previous_schema=4, issuer_revision='d' * 40)
 
     def test_schema4_collector_validation_inherits_exact_prior_schema4_object(self):
         self.check_v3_issuer_original_member('python', 'validation', 'linux-x64', collected=True,

@@ -194,6 +194,45 @@ class SdkInputsUploadTest(unittest.TestCase):
         )
         return path
 
+    def test_reviewed_original_package_workflow_rotates_without_relabeling_inputs(self):
+        original_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": original_pin, "ref": "refs/heads/reuse-authority"}]
+        receipt = self.original_package_receipt()
+        raw = receipt.read_bytes()
+        with patch.object(self, "api", wraps=self.api) as http:
+            result = self.call(original_package_receipt_path=receipt, trusted_workflow_sha=current_pin,
+                               environ={"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "1"})
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.run, result["observed"][0]["run"])
+        self.assertEqual(raw, (self.output / "original-package-receipt.json").read_bytes())
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+        self.assertEqual(1, sum(call.args[0].endswith("/runs/71/attempts/2") for call in http.call_args_list))
+        self.assertIsNone(capture._CI_OBSERVATIONS.get())
+
+    def test_only_original_package_inputs_accept_reviewed_rotation(self):
+        original_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": original_pin, "ref": "refs/heads/reuse-authority"}]
+        receipt = self.original_package_receipt()
+        baseline = deepcopy((self.run, self.jobs))
+        for change in ("current-inputs", "unknown-pin", "wrong-path", "failed-job", "wrong-attempt", "invalid-caller"):
+            self.run, self.jobs = deepcopy(baseline)
+            if change == "unknown-pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
+            elif change == "wrong-path": self.run["referenced_workflows"][0]["path"] = "other/workflow"
+            elif change == "failed-job": self.jobs[0]["conclusion"] = "failure"
+            elif change == "wrong-attempt": self.run["run_attempt"] += 1
+            arguments = {} if change == "current-inputs" else {"original_package_receipt_path": receipt}
+            with self.subTest(change=change), patch.object(capture, "_download_contract_ci_upload") as download, \
+                    self.assertRaises(ValueError):
+                self.call(trusted_workflow_sha=None if change == "invalid-caller" else current_pin, **arguments)
+            download.assert_not_called()
+            self.assertFalse(self.output.exists())
+
     def test_historical_package_producer_ignores_current_environment_for_both_layouts(self):
         receipt = self.original_package_receipt()
         original_receipt = receipt.read_bytes()

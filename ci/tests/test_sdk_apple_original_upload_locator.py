@@ -101,6 +101,61 @@ class OriginalAppleUploadLocatorTest(unittest.TestCase):
             self.assertEqual(1, sum("/runs/71/artifacts?" in url for url in self.requests))
             self.assertEqual(raw, self.receipt_path.read_bytes())
 
+    def test_reviewed_original_workflow_rotation_keeps_binary_package_and_one_run_read(self):
+        original_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.f.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": original_pin, "ref": "refs/heads/reuse-authority"}]
+        for phase in self.receipts:
+            self.configure(phase)
+            raw = self.receipt_path.read_bytes()
+            self.requests.clear()
+            with self.subTest(phase=phase):
+                self.assertEqual({"artifact_id": 701, "artifact_sha256": self.f.artifact["digest"]},
+                                 self.call(trusted_workflow_sha=current_pin))
+                self.assertEqual(raw, self.receipt_path.read_bytes())
+                self.assertEqual(1, sum(url.endswith("/runs/71/attempts/2") for url in self.requests))
+                self.assertIsNone(locator.products._CI_OBSERVATIONS.get())
+
+    def test_rotated_original_retains_exact_workflow_job_and_attempt_checks(self):
+        original_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.f.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": original_pin, "ref": "refs/heads/reuse-authority"}]
+        baseline = deepcopy((self.f.run, self.f.jobs, self.f.commit))
+        for mutation in ("unknown-pin", "wrong-path", "wrong-ref", "duplicate", "failed-job", "attempt", "tree"):
+            self.f.run, self.f.jobs, self.f.commit = deepcopy(baseline)
+            reference = self.f.run["referenced_workflows"][0]
+            if mutation == "unknown-pin": reference["sha"] = "d" * 40
+            elif mutation == "wrong-path": reference["path"] = reference["path"].replace("product-validation", "other")
+            elif mutation == "wrong-ref": reference["ref"] = "refs/heads/other"
+            elif mutation == "duplicate": self.f.run["referenced_workflows"].append(deepcopy(reference))
+            elif mutation == "failed-job": self.f.jobs[0]["conclusion"] = "failure"
+            elif mutation == "attempt": self.f.run["run_attempt"] = 1
+            else: self.f.commit["tree"]["sha"] = "d" * 40
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.call(trusted_workflow_sha=current_pin)
+            self.assertIsNone(locator.products._CI_OBSERVATIONS.get())
+
+    def test_invalid_caller_pin_and_ineligible_original_fail_before_http(self):
+        for pin in (None, "", "a" * 39, "A" * 40, 1):
+            self.requests.clear()
+            with self.subTest(pin=pin), self.assertRaises(ValueError):
+                self.call(trusted_workflow_sha=pin)
+            self.assertEqual([], self.requests)
+        raw = self.receipt_path.read_bytes()
+        for field, value in (("repository", "other/repository"), ("workflowPath", ".github/workflows/other.yml"),
+                             ("event", "workflow_dispatch")):
+            changed = {**self.receipt, "producer": {**self.receipt["producer"], field: value}}
+            self.receipt_path.write_bytes(canonical_json_bytes(changed))
+            self.requests.clear()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.call()
+            self.assertEqual([], self.requests)
+        self.receipt_path.write_bytes(raw)
+
     def test_missing_duplicate_expired_or_wrong_key_attempt_tree_never_falls_back(self):
         baseline = deepcopy(self.f.artifact)
         for mutation in ("missing", "duplicate", "expired", "key", "attempt", "tree", "id", "digest"):

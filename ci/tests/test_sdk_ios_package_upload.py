@@ -129,6 +129,40 @@ class SdkIosPackageUploadTest(unittest.TestCase):
                 self.plan_path, self.output, **arguments,
             )
 
+    def test_reviewed_original_workflow_rotation_keeps_exact_upload(self):
+        original_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": original_pin, "ref": "refs/heads/reuse-authority"}]
+        with patch.object(self, "api", wraps=self.api) as http:
+            result = self.call(trusted_workflow_sha=current_pin)
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.run, result["observed"][0]["run"])
+        self.assertEqual(self.receipt_bytes, (self.output / "original/shard/phase-receipt.json").read_bytes())
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+        self.assertEqual(1, sum(call.args[0].endswith("/runs/71/attempts/2") for call in http.call_args_list))
+        self.assertIsNone(capture._CI_OBSERVATIONS.get())
+
+    def test_rotated_original_still_rejects_unreviewed_or_failed_source_before_download(self):
+        original_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": original_pin, "ref": "refs/heads/reuse-authority"}]
+        baseline = deepcopy((self.run, self.jobs))
+        for change in ("unknown-pin", "wrong-path", "failed-job", "wrong-attempt", "invalid-caller"):
+            self.run, self.jobs = deepcopy(baseline)
+            if change == "unknown-pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
+            elif change == "wrong-path": self.run["referenced_workflows"][0]["path"] = "other/workflow"
+            elif change == "failed-job": self.jobs[0]["conclusion"] = "failure"
+            elif change == "wrong-attempt": self.run["run_attempt"] += 1
+            with self.subTest(change=change), patch.object(capture, "_reuse_contract_ci_upload") as download, \
+                    self.assertRaises(ValueError):
+                self.call(trusted_workflow_sha=None if change == "invalid-caller" else current_pin)
+            download.assert_not_called()
+            self.assertFalse(self.output.exists())
+
     def test_native_original_uses_one_fresh_job_listing_and_keeps_exact_job_identity(self):
         import completed_sdk_reuse as completed
         receipt = json.loads(self.receipt_bytes)

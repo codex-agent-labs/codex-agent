@@ -9222,8 +9222,23 @@ def capture_sdk_inputs_upload(plan_path, destination, *, artifact_id, artifact_s
         if original_producer is None:
             producer = _retry_upload_producer(producer, artifact_id, artifact_sha256,
                 f"codex-agent-sdk-inputs-{producer['tree']}", job, token)
-        observed = _observe_ci_producer_jobs({"sdk-inputs": producer}, jobs_by_phase={"sdk-inputs": job},
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        environment = os.environ if environ is None else environ
+        current = tuple(str(environment.get(name)) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
+        with _ci_observation_batch(current, share_nested=True):
+            if original_producer is not None:
+                if (not isinstance(trusted_workflow_sha, str)
+                        or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None):
+                    raise ValueError("Historical SDK inputs require a pinned caller workflow")
+                if (producer["repository"] != "codex-agent-labs/codex-agent"
+                        or producer["workflowPath"] != ".github/workflows/ci.yml"
+                        or producer["event"] not in {"pull_request", "merge_group"}):
+                    raise ValueError("Historical SDK inputs require an eligible original CI producer")
+                original_workflow = _runtime_prior_workflow_sha(_original_ci_run(producer, token), trusted_workflow_sha)
+                if original_workflow is None:
+                    raise ValueError("Historical SDK inputs lack a reviewed original workflow")
+                trusted_workflow_sha = original_workflow
+            observed = _observe_ci_producer_jobs({"sdk-inputs": producer}, jobs_by_phase={"sdk-inputs": job},
+                trusted_workflow_sha=trusted_workflow_sha, token=token)
         name = f"codex-agent-sdk-inputs-{producer['tree']}-attempt-{producer['runAttempt']}"
         archive = prepared / "transport.zip"
         artifact, _ = _download_contract_ci_upload(artifact_id, artifact_sha256, name, producer,
@@ -9655,9 +9670,23 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
                 retained_validation = origin
                 producer, trusted_workflow_sha = origin["producer"], origin["workflow_sha"]
         job = f"product-validation / sdk-sdk-ios-{phase}-{target}"
-        observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
-            jobs_by_phase={f"ios-{phase}": job}, build_keys_by_phase={f"ios-{phase}": build_key},
-            trusted_workflow_sha=trusted_workflow_sha, token=token)
+        current = tuple(str(environment.get(name)) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
+        with _ci_observation_batch(current, share_nested=True):
+            if not bootstrap and retained_validation is None:
+                if (not isinstance(trusted_workflow_sha, str)
+                        or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None):
+                    raise ValueError("Original Apple capture requires a pinned caller workflow")
+                if (producer["repository"] != "codex-agent-labs/codex-agent"
+                        or producer["workflowPath"] != ".github/workflows/ci.yml"
+                        or producer["event"] not in {"pull_request", "merge_group"}):
+                    raise ValueError("Original Apple capture requires an eligible original CI producer")
+                original_workflow = _runtime_prior_workflow_sha(_original_ci_run(producer, token), trusted_workflow_sha)
+                if original_workflow is None:
+                    raise ValueError("Original Apple capture lacks a reviewed workflow")
+                trusted_workflow_sha = original_workflow
+            observed = _observe_ci_producer_jobs({f"ios-{phase}": producer},
+                jobs_by_phase={f"ios-{phase}": job}, build_keys_by_phase={f"ios-{phase}": build_key},
+                trusted_workflow_sha=trusted_workflow_sha, token=token)
         matching = _matching_ci_jobs(observed[0]["jobs"], job, expected_build_key=build_key)
         if retained_validation is not None and matching[0].get("id") != retained_validation["job_id"]:
             raise ValueError("Apple retained validation differs from its reviewed successful job")

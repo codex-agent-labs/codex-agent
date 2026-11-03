@@ -328,6 +328,71 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
         self.assertEqual(receipt_bytes, receipt.read_bytes())
         self.assertEqual(self.plan_before, self.plan_path.read_bytes())
 
+    def test_historical_native_resolves_each_custodian_but_current_mode_stays_exact(self):
+        old_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        other_pin = "8f8b138c41312885be34e397e1ce088d80ec17c8"
+        self.pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": old_pin, "ref": "refs/heads/reuse-authority"}]
+        lane = "ios-native-tests"
+        receipt_path = self.lanes[lane] / "lane-receipt.json"
+        receipt = json.loads(receipt_path.read_bytes());receipt["runAttempt"] = 1
+        receipt_path.write_text(json.dumps(receipt, sort_keys=True) + "\n");self._repack(lane)
+        selected = self.original_binary_receipt()
+        context, calls, patches = self.invoke(original_binary_receipt_path=selected,
+            environ={"GITHUB_RUN_ID": "999", "GITHUB_RUN_ATTEMPT": "1"})
+        original_query = calls[0].side_effect
+        def query(url, token):
+            result = original_query(url, token)
+            if url.endswith("/attempts/1"):
+                result = {**result, "referenced_workflows": [{
+                    **result["referenced_workflows"][0], "sha": other_pin}]}
+            return result
+        calls[0].side_effect = query
+        try:
+            with mock.patch.object(sdk_apple_native.product_reuse, "_observe_ci_producer_jobs",
+                    wraps=sdk_apple_native.product_reuse._observe_ci_producer_jobs) as observe:
+                with context as result:
+                    self.assertEqual(self.producer, result["producer"])
+                    self.assertEqual(selected.read_bytes(), (result["captureRoot"] / "original-binary-receipt.json").read_bytes())
+                    for name in sdk_apple_native.LANES:
+                        self.assertEqual(self.raw[name], (result["captureRoot"] / "archives" / f"{name}.zip").read_bytes())
+                self.assertEqual([other_pin, old_pin, old_pin],
+                    [call.kwargs["trusted_workflow_sha"] for call in observe.call_args_list])
+        finally:
+            self.close(patches)
+        context, _, patches = self.invoke()
+        try:
+            with self.assertRaisesRegex(ValueError, "caller-pinned workflow"), context:
+                self.fail("current native capture accepted a different publisher")
+        finally:
+            self.close(patches)
+
+    def test_historical_native_rejects_invalid_caller_and_unknown_or_failed_original(self):
+        old_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        current_pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        reference = {"path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+                     "sha": old_pin, "ref": "refs/heads/reuse-authority"}
+        selected = self.original_binary_receipt()
+        jobs = self.jobs
+        for change in ("invalid-caller", "unknown-pin", "wrong-path", "duplicate", "failed-job"):
+            self.pin = None if change == "invalid-caller" else current_pin
+            self.run["referenced_workflows"] = [dict(reference)]
+            self.jobs = jobs
+            if change == "unknown-pin": self.run["referenced_workflows"][0]["sha"] = "d" * 40
+            elif change == "wrong-path": self.run["referenced_workflows"][0]["path"] = "other/workflow"
+            elif change == "duplicate": self.run["referenced_workflows"].append(dict(reference))
+            elif change == "failed-job": self.jobs = [{**job, "conclusion": "failure"} for job in jobs]
+            context, calls, patches = self.invoke(original_binary_receipt_path=selected)
+            try:
+                with self.subTest(change=change), self.assertRaises(ValueError), context:
+                    self.fail("invalid historical native capture yielded inputs")
+                if change == "invalid-caller":
+                    self.assertEqual((0, 0, 0), tuple(call.call_count for call in calls))
+            finally:
+                self.close(patches)
+
     def test_historical_receipt_requires_exact_binary_identity_before_observation(self) -> None:
         identities = (
             {"phase": "package"}, {"component": "javascript", "target": "node"},
@@ -576,11 +641,12 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                     "runId": 41, "runAttempt": 1}
         original_artifact = {"id": 99, "name": f"codex-agent-ci-{lane}-{original_tree}",
                              "expired": False, "digest": "sha256:" + "e" * 64}
+        expected_qualification_pin = self.pin
         def qualify(arguments, artifact, **kwargs):
             self.assertEqual(lane, arguments.lane)
             self.assertEqual(self.token, arguments.token)
             self.assertEqual(original_artifact, artifact)
-            self.assertEqual(self.pin, kwargs["trusted_workflow_sha"])
+            self.assertEqual(expected_qualification_pin, kwargs["trusted_workflow_sha"])
             self.assertEqual(self.root, kwargs["repository_root"])
             for source in (*sdk_apple_native.NATIVE_FILES[lane], sdk_apple_native.NATIVE_TOOLCHAINS[lane]):
                 destination = kwargs["output"] / "lane" / source
@@ -608,6 +674,30 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 with context:
                     self.fail("native inputs yielded before original source authentication")
             rejected.assert_called_once()
+        finally:
+            self.close(patches)
+
+        # A selected old binary may contain a reissued lane whose original
+        # publisher differs from both the binary custodian and today's caller.
+        custodian_pin = "de7be70f78755f05e91661c0c8405604cf4f63a2"
+        expected_qualification_pin = "8f8b138c41312885be34e397e1ce088d80ec17c8"
+        self.pin = "65434c16fd01b00cf51cf41def0e4d7e7ab70821"
+        self.run["referenced_workflows"] = [{
+            "path": "codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+            "sha": custodian_pin, "ref": "refs/heads/reuse-authority"}]
+        context, calls, patches = self.invoke(original_uploads=[original_artifact],
+            original_binary_receipt_path=self.original_binary_receipt())
+        current_query = calls[0].side_effect
+        def source_query(url, token):
+            if url.endswith("/runs/41/attempts/1"):
+                return {**self.run, "id": 41, "run_attempt": 1, "referenced_workflows": [{
+                    **self.run["referenced_workflows"][0], "sha": expected_qualification_pin}]}
+            return current_query(url, token)
+        calls[0].side_effect = source_query
+        try:
+            with original_qualification_callable(mock.Mock(side_effect=qualify)), context as result:
+                self.assertEqual(original, result["originalProducers"][lane])
+                self.assertEqual(raw_receipt, result["receiptBytes"][lane])
         finally:
             self.close(patches)
 
