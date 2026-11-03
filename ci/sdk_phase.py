@@ -92,7 +92,8 @@ LEGACY_REPLAY_INSTANCES = tuple(PhaseInstanceId("sdk", "javascript", phase, "nod
     for phase in ("package", "validation", "metadata")) + (PhaseInstanceId("sdk", "csharp", "binary", "desktop"),)
 FULL_ORIGINAL_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(sorted(SDK_FAMILY_INSTANCES["native-package"]))
 COMPACT_REPLAY_INSTANCES = LEGACY_REPLAY_INSTANCES + tuple(
-    instance for row in SDK_FAMILY_ROUTES if row.checkpoint for instance in sorted(SDK_FAMILY_INSTANCES[row.family]))
+    instance for row in SDK_FAMILY_ROUTES if row.checkpoint for instance in sorted(SDK_FAMILY_INSTANCES[row.family])
+    if instance not in LEGACY_REPLAY_INSTANCES)
 
 # Preparation and outer native controllers consume these stages, not the full
 # transitive closure. Dependency identity/admission still precedes materialization.

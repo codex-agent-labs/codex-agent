@@ -43,6 +43,7 @@ def ordinary_spec():
 class CompletedSdkControlsTest(unittest.TestCase):
     def test_native_phases_use_shared_checkpoint_routes(self):
         from sdk_phase import CHECKPOINT_ROUTES, COMPACT_REPLAY_INSTANCES, SDK_FAMILY_INSTANCES
+        self.assertEqual(len(COMPACT_REPLAY_INSTANCES), len(set(COMPACT_REPLAY_INSTANCES)))
         for family, wave in (('native-package', 4), ('native-validation', 7), ('native-metadata', 8)):
             job = f'product-validation / sdk-collect-{wave}'
             self.assertIn(job, CHECKPOINT_ROUTES)
