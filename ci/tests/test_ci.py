@@ -248,10 +248,13 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertGreaterEqual(child.count("fromJSON(inputs.planOutputs).remote_build_authorized == 'true'"), 2)
 
         # YAML single-quoted conditions escape embedded quotes by doubling them.
-        lint = job("workflow-lint").replace("''", "'")
-        self.assertEqual(3, lint.count(event_guard))
-        self.assertEqual(3, lint.count(planner_guard))
-        self.assertLess(lint.index(event_guard), lint.index("uses: ./.github/actions/setup-kmp"))
+        build_logic = job("workflow-build-logic").replace("''", "'")
+        job_guard = build_logic.split("    steps:", 1)[0]
+        self.assertIn(event_guard, job_guard)
+        self.assertIn(planner_guard, job_guard)
+        self.assertIn("needs.plan.result == 'success'", job_guard)
+        self.assertIn("!cancelled()", job_guard)
+        self.assertLess(build_logic.index(event_guard), build_logic.index("uses: ./.github/actions/setup-kmp"))
 
         self.assertLess(
             workflow.index("- id: validation-reuse"),
