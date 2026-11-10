@@ -66,7 +66,7 @@ class AcquisitionTests(unittest.TestCase):
                     if late and counts[path]==2:
                         (work/"checkpoint-owner-history.json").write_bytes(b"changed")
                     return descriptor
-                with patch.object(consumer.authority,"contents",side_effect=contents),                        patch.object(consumer,"history",return_value={}),                        patch.object(consumer,"retained_sdk_binding_current",return_value=True),                        patch.object(consumer,"completed_sdk_spec",return_value=({"sdkInputs":{"source":document["retainedSdkInputsSource"]}},62)):
+                with patch.object(consumer.authority,"contents",side_effect=contents),                        patch.object(consumer,"histories",return_value=[{} for _ in document["gitHistory"]]),                        patch.object(consumer,"retained_sdk_binding_current",return_value=True),                        patch.object(consumer,"completed_sdk_spec",return_value=({"sdkInputs":{"source":document["retainedSdkInputsSource"]}},62)):
                     if late:
                         with self.assertRaisesRegex(ValueError,"history changed"):
                             consumer.completed_environment(root,work,APPROVAL,checkpoint=True)
@@ -252,7 +252,7 @@ class AcquisitionTests(unittest.TestCase):
             with self.subTest(requalifying=requalifying), tempfile.TemporaryDirectory() as temporary, \
                     patch.object(consumer.authority, "contents", return_value=canonical_json_bytes(document)), \
                     patch.object(consumer, "completed_descriptor", return_value=document), \
-                    patch.object(consumer, "history", return_value={}), \
+                    patch.object(consumer, "histories", return_value=[{} for _ in document["gitHistory"]]), \
                     patch.object(consumer, "retained_sdk_binding_current", return_value=not requalifying), \
                     patch.object(consumer, "completed_sdk_spec", return_value=(
                         {"sdkInputs": {"source": document["retainedSdkInputsSource"]}}, 11)):
@@ -398,7 +398,7 @@ class AcquisitionTests(unittest.TestCase):
                             patch.object(consumer, "snapshot", return_value={}) as snapshot, \
                             patch.object(consumer.authority, "contents", side_effect=fetch), \
                             patch.object(consumer.authority, "api", side_effect=observe), \
-                            patch.object(consumer, "history", return_value={}) as history, \
+                            patch.object(consumer, "histories", return_value=[{} for _ in document["gitHistory"]]) as history, \
                             patch.object(consumer, "retained_sdk_binding_current", return_value=True), \
                             patch.object(consumer, "completed_sdk_spec", return_value=({"sdkInputs": {
                                 "source": document["retainedSdkInputsSource"]}}, 62)), contextlib.redirect_stdout(io.StringIO()):
@@ -410,7 +410,7 @@ class AcquisitionTests(unittest.TestCase):
                             consumer.main()
                             approved.assert_called_once_with(None)
                             snapshot.assert_called_once_with(root, value, work)
-                            self.assertEqual(history.call_count, len(document["gitHistory"]))
+                            history.assert_called_once_with(root, document["gitHistory"])
                             self.assertEqual(reads.count(".reuse/completed-sdk-parity.json"), 0 if fault == "off" else 2)
                             result = json.loads((work / "provision.json").read_bytes())
                             self.assertEqual(result["productArtifactDownloads"], 0)
@@ -674,6 +674,68 @@ class AcquisitionTests(unittest.TestCase):
         with patch.object(consumer, "git", side_effect=[missing, b"", ("c" * 40 + "\n").encode()]) as operation:
             consumer.history(Path("unused"), producer)
             self.assertEqual(operation.call_args_list[1].args[-2:], (consumer.REPOSITORY_URL + ".git", "b" * 40))
+
+    def test_histories_batches_exact_trees_in_descriptor_order(self):
+        records = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())["gitHistory"]
+        expected = [{"commit": row["commit"], "tree": row["tree"]} for row in records]
+        headers = "".join(row["tree"] + " tree\n" for row in records).encode()
+        request = "".join(row["commit"] + "^{tree}\n" for row in records).encode()
+        with patch.object(consumer, "git", return_value=headers) as operation, \
+                patch.object(consumer, "history") as fallback:
+            self.assertEqual(expected, consumer.histories(Path("unused"), records))
+        operation.assert_called_once_with(Path("unused"), "--no-lazy-fetch", "cat-file",
+            "--batch-check=%(objectname) %(objecttype)", data=request)
+        fallback.assert_not_called()
+        with patch.object(consumer, "git") as operation:
+            self.assertEqual([], consumer.histories(Path("unused"), []))
+        operation.assert_not_called()
+        for field, value in (("repository", "other"), ("commit", "branch"), ("tree", "wrong")):
+            with self.subTest(field=field), patch.object(consumer, "git") as operation, \
+                    self.assertRaises(ValueError):
+                consumer.histories(Path("unused"), [records[0], {**records[1], field: value}])
+            operation.assert_not_called()
+
+    def test_histories_fetches_only_exact_missing_commit_through_existing_history(self):
+        records = [{"repository": consumer.authority.REPOSITORY, "commit": c * 40, "tree": t * 40}
+                   for c, t in (("a", "d"), ("b", "e"), ("c", "f"))]
+        headers = (("d" * 40 + " tree\n") + ("b" * 40 + "^{tree} missing\n") +
+                   ("f" * 40 + " tree\n")).encode()
+        missing = subprocess.CalledProcessError(1, ["git"])
+        with patch.object(consumer, "git", side_effect=[headers, missing, b"", ("e" * 40 + "\n").encode()]) as operation:
+            self.assertEqual([{"commit": row["commit"], "tree": row["tree"]} for row in records],
+                             consumer.histories(Path("unused"), records))
+        self.assertEqual(4, operation.call_count)
+        self.assertEqual((Path("unused"), "rev-parse", "b" * 40 + "^{tree}"), operation.call_args_list[1].args)
+        self.assertEqual((Path("unused"), "fetch", "--no-tags", consumer.REPOSITORY_URL + ".git", "b" * 40),
+                         operation.call_args_list[2].args)
+        self.assertEqual(operation.call_args_list[1], operation.call_args_list[3])
+        with patch.object(consumer, "git", return_value=headers), \
+                patch.object(consumer, "history", side_effect=missing) as fallback, \
+                self.assertRaises(subprocess.CalledProcessError) as failure:
+            consumer.histories(Path("unused"), records)
+        self.assertIs(missing, failure.exception)
+        fallback.assert_called_once_with(Path("unused"), records[1])
+
+    def test_histories_rejects_corrupt_batch_and_propagates_local_failures(self):
+        records = [{"repository": consumer.authority.REPOSITORY, "commit": c * 40, "tree": t * 40}
+                   for c, t in (("a", "d"), ("b", "e"))]
+        first, second = ("d" * 40 + " tree\n").encode(), ("e" * 40 + " tree\n").encode()
+        responses = (first, first + second + first, second + first,
+                     first.replace(b"tree", b"blob") + second,
+                     first.replace(b"d", b"f") + second,
+                     ("b" * 40 + "^{tree} missing\n").encode() + second,
+                     first + second + b"\n", first + b"malformed\n")
+        for response in responses:
+            with self.subTest(response=response), patch.object(consumer, "git", return_value=response), \
+                    patch.object(consumer, "history") as fallback, self.assertRaises(ValueError):
+                consumer.histories(Path("unused"), records)
+            fallback.assert_not_called()
+        for failure in (subprocess.CalledProcessError(128, ["git"]), subprocess.TimeoutExpired(["git"], 120)):
+            with self.subTest(error=type(failure)), patch.object(consumer, "git", side_effect=failure), \
+                    patch.object(consumer, "history") as fallback, self.assertRaises(type(failure)) as result:
+                consumer.histories(Path("unused"), records)
+            self.assertIs(failure, result.exception)
+            fallback.assert_not_called()
 
     def test_fetch_retries_recognized_transport_once_without_exposing_stderr(self):
         command = ("fetch", "--no-tags", consumer.REPOSITORY_URL + ".git", "b" * 40)

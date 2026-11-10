@@ -213,7 +213,7 @@ jobs:
 
   workflow-lint:
     if: always() && !inputs.toolingOnly
-    needs: [plan, recovery-controls]
+    needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]
     runs-on: ubuntu-24.04
     outputs:
       full_acceptance_current: ${{ steps.acceptance-kind.outputs.full_acceptance_current }}
@@ -235,6 +235,35 @@ jobs:
           [[ "$PLAN_PUBLISHER" =~ ^[0-9a-f]{40}$ ]] || exit 1
           test "$PLAN_SOURCE" = "$CHECKS_SOURCE"
           test "$PLAN_PUBLISHER" = "$CHECKS_PUBLISHER"
+      - name: Require complete current-source checks
+        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
+        env:
+          SOURCE_RESULT: ${{ needs.workflow-source-checks.result }}
+          BUILD_LOGIC_RESULT: ${{ needs.workflow-build-logic.result }}
+          BUILD_LOGIC_REQUIRED: ${{ needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_RESULT" = success
+          if [ "$BUILD_LOGIC_REQUIRED" = true ]; then
+            test "$BUILD_LOGIC_RESULT" = success
+          else
+            test "$BUILD_LOGIC_RESULT" = skipped
+          fi
+      - id: acceptance-kind
+        env:
+          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}
+        run: |
+          if [ "$RECOVERY_ONLY" = true ]; then
+            echo 'full_acceptance_current=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'full_acceptance_current=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  workflow-source-checks:
+    if: always() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly
+    needs: [plan]
+    runs-on: ubuntu-24.04
+    steps:
       - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -254,33 +283,65 @@ jobs:
         run: sudo install -d -m 1777 /private/tmp
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
         run: python3 -m unittest discover -s ci/tests -v
-      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
-        uses: ./.github/actions/setup-kmp
-        with:
-          cache-read-only: "true"
-      - name: Provision declared plugins for offline build-logic fixtures
-        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
-        run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g --no-configuration-cache --stacktrace
-      - name: Verify standalone build logic and isolated offline fixtures
-        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
-        run: >-
-          ./gradlew -p gradle/build-logic test
-          -Pkotlin.daemon.jvmargs=-Xmx2g
-          --configuration-cache --configuration-cache-problems=fail --no-build-cache
-      - id: acceptance-kind
-        env:
-          RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}
-        run: |
-          if [ "$RECOVERY_ONLY" = true ]; then
-            echo 'full_acceptance_current=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'full_acceptance_current=true' >> "$GITHUB_OUTPUT"
-          fi
       - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && github.event_name == ''pull_request'' && steps.actionlint-cache.outputs.cache-hit != ''true'''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/actionlint
           key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
+
+  workflow-build-logic:
+    if: >-
+      always() && !cancelled() && !inputs.toolingOnly &&
+      !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly &&
+      needs.plan.result == 'success' && needs.plan.outputs.event_authorized == 'true' &&
+      needs.plan.outputs.remote_build_authorized == 'true'
+    needs: [plan, contract-validation]
+    runs-on: ubuntu-24.04
+    steps:
+      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: sudo install -d -m 1777 /private/tmp
+      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+        uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: "true"
+      - id: test-tooling
+        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+        uses: ./.github/actions/capture-sdk-tooling
+        with:
+          artifact-id: ${{ needs.contract-validation.result == 'success' && needs.contract-validation.outputs.tooling_artifact_id || needs.plan.outputs.tooling_artifact_id }}
+          artifact-sha256: ${{ needs.contract-validation.result == 'success' && needs.contract-validation.outputs.tooling_artifact_sha256 || needs.plan.outputs.tooling_artifact_sha256 }}
+          transport-producer: ${{ needs.contract-validation.result == 'success' && needs.contract-validation.outputs.tooling_transport_producer || needs.plan.outputs.tooling_transport_producer }}
+          trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}
+          trusted-workflow-path: .github/workflows/contract-validation.yml
+          trusted-job-name: product-validation / contract-validation / tooling-attestation
+          policy-revision: ${{ needs.plan.outputs.validation_commit }}
+      - name: Provision declared plugins for offline build-logic fixtures
+        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+        run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g --no-configuration-cache --stacktrace
+      - name: Verify standalone build logic and isolated offline fixtures
+        id: build-logic
+        if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == ''true'' && needs.plan.outputs.remote_build_authorized == ''true'''
+        env:
+          TEST_TOOLING_POLICY: ${{ steps.test-tooling.outputs.tooling-policy }}
+          TEST_POLICY_REVISION: ${{ needs.plan.outputs.validation_commit }}
+        run: >-
+          python3 -B .github/actions/run-ci-lane/build-logic-tests.py
+          --repository-root "$GITHUB_WORKSPACE"
+          --tooling-policy "$TEST_TOOLING_POLICY"
+          --policy-revision "$TEST_POLICY_REVISION"
+      - name: Preserve build-logic test diagnostics
+        if: always() && steps.build-logic.outcome == 'failure' && hashFiles('gradle/build-logic/build/test-results/test/TEST-*.xml') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-build-logic-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gradle/build-logic/build/test-results/test/TEST-*.xml
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
 
   tooling-plan:
     if: >-

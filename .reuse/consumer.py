@@ -132,6 +132,28 @@ def history(root, producer):
     return {"commit": revision, "tree": tree}
 
 
+def histories(root, producers):
+    requests, acquired = [], []
+    for producer in producers:
+        if producer.get("repository") != authority.REPOSITORY:
+            raise ValueError("Historical source repository differs")
+        revision, tree = authority.commit(producer["commit"]), authority.commit(producer["tree"])
+        requests.append((revision + "^{tree}").encode())
+        acquired.append({"commit": revision, "tree": tree})
+    if not requests:
+        return acquired
+    headers = git(root, "--no-lazy-fetch", "cat-file", "--batch-check=%(objectname) %(objecttype)",
+                  data=b"\n".join(requests) + b"\n").splitlines()
+    if len(headers) != len(requests):
+        raise ValueError("Historical Git tree metadata is incomplete")
+    for index, (producer, request, header) in enumerate(zip(producers, requests, headers)):
+        if header == request + b" missing":
+            acquired[index] = history(root, producer)
+        elif header != (acquired[index]["tree"] + " tree").encode():
+            raise ValueError("Historical Git tree differs from authenticated provenance")
+    return acquired
+
+
 def approved(expected):
     # Composite actions have no job.workflow_sha for their own repository.
     # Their three executing files must match the independently protected ref;
@@ -506,7 +528,7 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
     if sdk_parity:
         parity_raw = authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"])
         sdk_parity_policy(parity_raw)
-    acquired = [history(root, record) for record in document["gitHistory"]]
+    acquired = histories(root, document["gitHistory"])
     spec, _ = completed_sdk_spec(root, document, value, os.environ.get("GITHUB_TOKEN", ""))
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
         raise ValueError("Approved SDK source pin differs from the native issuer's fixed source")
