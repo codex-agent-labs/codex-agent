@@ -12,7 +12,8 @@ jobs:
   storage-diagnostics:
     if: >-
       (github.event.label.name == 'ci:storage-diagnostics' ||
-       github.event.label.name == 'ci:storage-consumer-diagnostics') &&
+       github.event.label.name == 'ci:storage-consumer-diagnostics' ||
+       github.event.label.name == 'ci:storage-consumer-macos-x64') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -20,17 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - profile: macos-arm64
-            runner: macos-26
-          - profile: macos-x64
-            runner: macos-26-intel
-          - profile: linux-arm64
-            runner: ubuntu-24.04-arm
-          - profile: linux-x64
-            runner: ubuntu-24.04
-          - profile: windows-x64
-            runner: windows-2025
+        include: ${{ fromJSON(github.event.label.name == 'ci:storage-consumer-macos-x64' && '[{"profile":"macos-x64","runner":"macos-26-intel"}]' || '[{"profile":"macos-arm64","runner":"macos-26"},{"profile":"macos-x64","runner":"macos-26-intel"},{"profile":"linux-arm64","runner":"ubuntu-24.04-arm"},{"profile":"linux-x64","runner":"ubuntu-24.04"},{"profile":"windows-x64","runner":"windows-2025"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     env:
@@ -43,7 +34,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: ${{ github.event.label.name == 'ci:storage-diagnostics' && 1 || 0 }}
       - id: storage
         if: github.event.label.name == 'ci:storage-diagnostics'
         name: Observe actual staging filesystems and isolated copy behavior
@@ -136,16 +127,16 @@ jobs:
                   stream.write('\n')
           assert successful, 'Storage diagnostics failed; inspect preserved raw observations and test outcomes'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        if: github.event.label.name == 'ci:storage-consumer-diagnostics'
+        if: github.event.label.name == 'ci:storage-consumer-diagnostics' || github.event.label.name == 'ci:storage-consumer-macos-x64'
         with:
           python-version: '3.11'
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
-        if: github.event.label.name == 'ci:storage-consumer-diagnostics'
+        if: github.event.label.name == 'ci:storage-consumer-diagnostics' || github.event.label.name == 'ci:storage-consumer-macos-x64'
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - id: consumer
         name: Measure one qualified original through first and repeat private consumers
-        if: github.event.label.name == 'ci:storage-consumer-diagnostics'
+        if: github.event.label.name == 'ci:storage-consumer-diagnostics' || github.event.label.name == 'ci:storage-consumer-macos-x64'
         continue-on-error: true
         shell: bash
         env:
@@ -174,7 +165,7 @@ jobs:
         if: always()
         shell: python
         env:
-          STORAGE_OUTCOME: ${{ github.event.label.name == 'ci:storage-consumer-diagnostics' && steps.consumer.outcome || steps.storage.outcome }}
+          STORAGE_OUTCOME: ${{ (github.event.label.name == 'ci:storage-consumer-diagnostics' || github.event.label.name == 'ci:storage-consumer-macos-x64') && steps.consumer.outcome || steps.storage.outcome }}
         run: |
           import os
           assert os.environ['STORAGE_OUTCOME'] == 'success'
