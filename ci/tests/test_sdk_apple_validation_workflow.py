@@ -71,6 +71,45 @@ class SdkAppleValidationWorkflowTest(unittest.TestCase):
         self.assertIn("sdk-apple-signing-prepare", self.needs(self.job("sdk-apple-validation-attestation")))
         self.assertTrue(set(MATRICES) <= self.needs(self.job("sdk-collect-9")))
 
+    def test_checkpoint9_ignores_skipped_ancestors_but_requires_authorized_collection(self):
+        # Check the saved conjunction, not GitHub's scheduler. An explicit status
+        # function prevents optional skipped ancestors from adding success().
+        job = self.job('sdk-checkpoint-9')
+        self.assertEqual({'plan', 'sdk-collect-9'}, self.needs(job))
+        wrapper = re.fullmatch(r"\s*!inputs.fullReuseAcceptanceOnly && \((.*)\)\s*",
+                               self.condition(job), re.S)
+        self.assertIsNotNone(wrapper)
+        clauses = [value.strip() for value in wrapper[1].split('&&')]
+        self.assertEqual(['always()', '!cancelled()', 'inputs.sdkCheckpoints'], clauses[:3])
+        comparisons = []
+        for clause in clauses[3:]:
+            comparison = re.fullmatch(r"([\w.-]+) == '([^']*)'", clause)
+            self.assertIsNotNone(comparison, clause)
+            comparisons.append(comparison.groups())
+        expected = {
+            'needs.plan.outputs.event_authorized': 'true',
+            'needs.plan.outputs.remote_build_authorized': 'true',
+            'needs.sdk-collect-9.result': 'success',
+        }
+        self.assertEqual(expected, dict(comparisons))
+        values = {**expected, 'needs.sdk-ios-validation.result': 'skipped',
+                  'needs.sdk-native-validation-result.result': 'skipped'}
+
+        def eligible(*, full_reuse=False, checkpoints=True, cancelled=False):
+            return (not full_reuse and checkpoints and not cancelled and
+                    all(values[key] == value for key, value in comparisons))
+
+        self.assertTrue(eligible())
+        self.assertFalse(eligible(full_reuse=True))
+        self.assertFalse(eligible(checkpoints=False))
+        self.assertFalse(eligible(cancelled=True))
+        for key in expected:
+            for rejected in ('', 'false', 'failure', 'cancelled', 'skipped'):
+                with self.subTest(key=key, rejected=rejected):
+                    values[key] = rejected
+                    self.assertFalse(eligible())
+            values[key] = expected[key]
+
     def test_prefix_gate_and_election_share_one_job_without_product_authentication(self):
         job = self.job("sdk-native-result")
         self.assertNotIn("  sdk-ios-validation-plan:", self.source)

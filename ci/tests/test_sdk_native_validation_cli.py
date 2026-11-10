@@ -113,11 +113,15 @@ class SdkNativeValidationCliTest(unittest.TestCase):
                 patch.object(workflow, 'execute', autospec=True) as execute:
             self.assertEqual(0, workflow.main(self.argv, _completed_frozen=capability))
             self.assertIs(capability, execute.call_args.kwargs['completed_frozen'])
-            for name in ('completed_frozen_policy', 'sdk_checkpoint_owner', 'sdk_checkpoint'):
+            for name in ('completed_frozen_policy', 'sdk_checkpoint_owner', 'sdk_checkpoint',
+                         'sdk_historical_checkpoint'):
                 self.assertNotIn(name, execute.call_args.kwargs)
             authenticate.assert_not_called()
             replacements = (
                 ['--completed-frozen-policy', '/replacement'],
+                ['--sdk-historical-checkpoint', 'auto'],
+                ['--sdk-historical-checkpoint', '{}'],
+                ['--completed-frozen-policy', '/replacement', '--sdk-historical-checkpoint', 'auto'],
                 ['--sdk-checkpoint-owner', '/replacement-owner'],
                 ['--sdk-checkpoint', '{}'],
                 ['--sdk-checkpoint-owner', '/replacement-owner', '--sdk-checkpoint', '{}'],

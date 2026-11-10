@@ -227,9 +227,15 @@ class AppleSigningPrepareActionTest(unittest.TestCase):
         self.assertEqual({"plan-path", "target", "build-key", "tree", "trusted-workflow-sha", "policy-revision", "tooling-policy"},
                          set(re.findall(r"^  ([a-z0-9-]+):$", inputs, re.MULTILINE)))
         self.assertIn("name: codex-agent-sdk-apple-signing-preparation-${{ inputs.target }}-${{ inputs.tree }}-attempt-${{ github.run_attempt }}", self.action)
-        for value in ("path: ${{ steps.prepare.outputs.preparation_path }}", "if-no-files-found: error",
+        for value in ("path: |", "if-no-files-found: error",
                       "include-hidden-files: true", "overwrite: false", "compression-level: 0"):
             self.assertIn(value, self.action)
+        paths = self.action.split("        path: |\n", 1)[1].split("        if-no-files-found:", 1)[0]
+        self.assertEqual([
+            "${{ steps.prepare.outputs.preparation_path }}/preparation.json",
+            "${{ steps.prepare.outputs.preparation_path }}/capture/plan/impact-plan.json",
+            "${{ steps.prepare.outputs.preparation_path }}/capture/capture-transport.json",
+        ], [line.strip() for line in paths.splitlines()])
         for forbidden in ("secrets.", "PRIVATE_KEY", "'sign'", "ssh-keygen", "setup-kmp", "setup-java", "--token"):
             self.assertNotIn(forbidden, self.action)
 

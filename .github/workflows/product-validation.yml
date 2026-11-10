@@ -5654,7 +5654,7 @@ jobs:
   sdk-checkpoint-9:
     needs: [plan, sdk-collect-9]
     if: >-
-      !inputs.fullReuseAcceptanceOnly && (inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-9.result == 'success')
+      !inputs.fullReuseAcceptanceOnly && (always() && !cancelled() && inputs.sdkCheckpoints && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.sdk-collect-9.result == 'success')
     permissions:
       contents: read
       actions: read

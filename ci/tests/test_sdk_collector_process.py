@@ -35,6 +35,7 @@ class CollectorProcessTest(unittest.TestCase):
             self.assertEqual(self.plan,arguments['plan'])
             for name in ('completed_frozen_policy','sdk_checkpoint_owner','sdk_checkpoint'):
                 self.assertIsNotNone(arguments.pop(name))
+            self.assertIsNone(arguments.pop('sdk_historical_checkpoint'))
             # The outer CLI policy/plan entrance is a fixture. Actual protected
             # checkpoint/native-wrapper/private-witness validation still runs.
             with self.fixture.open() as witness:
@@ -161,6 +162,7 @@ class CollectorProcessExecutionTest(export_fixture.CheckpointCollectorExportTest
             def native(values):
                 events.append('authenticate');self.assertEqual(plan,values['plan'])
                 for name in ('completed_frozen_policy','sdk_checkpoint_owner','sdk_checkpoint'):values.pop(name,None)
+                self.assertIsNone(values.pop('sdk_historical_checkpoint'))
                 yield {'completed_frozen':cap}
                 events.append('native-exit')
             def capture(**values):

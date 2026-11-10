@@ -39,6 +39,7 @@ class SdkFamilyActionsTest(unittest.TestCase):
                 self.assertEqual([
                     f"build/{directory}/shard", f"build/{directory}/worker/execution.json",
                     f"build/{directory}/worker/gradle.log",
+                    *([f"build/{directory}/worker/package.log"] if action == "sdk-javascript-worker" else []),
                     "${{ job.status != 'success' && 'build/" + directory + "' || '' }}",
                 ], [line.strip() for line in block.splitlines()])
 

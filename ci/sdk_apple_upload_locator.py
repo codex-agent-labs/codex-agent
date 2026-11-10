@@ -67,6 +67,24 @@ CURRENT_PARITY_REPORTS = (
 )
 
 
+# Device reports authenticated from the signed capture inventory and complete
+# nested ZIP b61a5bb0; exact transport pins, never native phase admission.
+UPDATED_PARITY_SOURCE = {
+    "buildKey": "sha256:7988022dc469f232898a83643bcb5124b8991d6bff4fad4c4dbb2e2efebc0050",
+    "receiptSha256": "sha256:df681cfa14cd2e4fbbe04e077a2d4696c0bbcad0cde0e0b6732076d206020034",
+    "artifactId": 13212931745,
+    "artifactSha256": "sha256:65863c8d287fd82e089255c2d3db87ec321aa1d54bb052fa136b2f7ed7502d52",
+    "jobId": 125767279918
+}
+UPDATED_PARITY_ARCHIVE_BYTES = 1610551005
+UPDATED_PARITY_REPORTS = (
+    {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+     "sha256": "sha256:f40ea2f214282a46e28f5a8ac4e13e38ec9116fae405de66f95c3b7bfa8ef6f5"},
+    {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+     "sha256": "sha256:bff8c754755c5f76000fcdd7fcad64aa7f9ba06999c2b6689e16d414f25c1f49"},
+)
+
+
 def retained_validation_origin(target, build_key, consumer):
     """Select two reviewed successful uploads; selection grants no admission.
 

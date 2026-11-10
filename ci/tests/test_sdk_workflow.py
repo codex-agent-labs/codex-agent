@@ -32,9 +32,9 @@ class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        # The planned109 recipe inherits the exact native108 completion. Historical raw
+        # The collected112 recipe inherits the exact native109 completion. Historical raw
         # report pins below remain separately immutable; current pins are tested next.
-        self.assertEqual((13186894068, "cc7c34ed69d4acc84be563340649c2d42ee402e4"),
+        self.assertEqual((13209611229, "79a57b87dbdec7ea0393b1f8e1eddb6bab75cdad"),
             (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
         self.assertEqual(
             {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
@@ -43,6 +43,16 @@ class SdkWorkflowTest(unittest.TestCase):
              "artifactSha256": "sha256:835b2c7641fb225ff2a35f8f8f326746b6bf456cdffc45a2ff07c12ede280202",
              "jobId": 116893614838},
             locator.RETAINED_PARITY_SOURCE)
+
+    def test_updated_raw_report_pins_preserve_authenticated_content(self):
+        import sdk_apple_upload_locator as locator
+        self.assertEqual(1610551005, locator.UPDATED_PARITY_ARCHIVE_BYTES)
+        self.assertEqual((
+            {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+             "sha256": "sha256:f40ea2f214282a46e28f5a8ac4e13e38ec9116fae405de66f95c3b7bfa8ef6f5"},
+            {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+             "sha256": "sha256:bff8c754755c5f76000fcdd7fcad64aa7f9ba06999c2b6689e16d414f25c1f49"},
+        ), locator.UPDATED_PARITY_REPORTS)
 
     def test_compact_apple_parity_requires_qualified_original_and_exact_raw_reports(self):
         from reuse_qualification import CompletedFrozenReuse
@@ -65,6 +75,14 @@ class SdkWorkflowTest(unittest.TestCase):
         }
         if hasattr(locator, "CURRENT_PARITY_SOURCE"):
             self.assertEqual(current_origin, locator.CURRENT_PARITY_SOURCE)
+        updated_origin = {
+            "buildKey": "sha256:7988022dc469f232898a83643bcb5124b8991d6bff4fad4c4dbb2e2efebc0050",
+            "receiptSha256": "sha256:df681cfa14cd2e4fbbe04e077a2d4696c0bbcad0cde0e0b6732076d206020034",
+            "artifactId": 13212931745,
+            "artifactSha256": "sha256:65863c8d287fd82e089255c2d3db87ec321aa1d54bb052fa136b2f7ed7502d52",
+            "jobId": 125767279918
+        }
+        self.assertEqual(updated_origin, locator.UPDATED_PARITY_SOURCE)
         row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
         envelope = dict(receipt={"producer": consumer})
         verified = SimpleNamespace(completed_frozen=cap, consumer={"kind": "ci", "producer": consumer},
@@ -81,8 +99,10 @@ class SdkWorkflowTest(unittest.TestCase):
             archive.writestr("execution/apple-validation-evidence.zip", inner.getvalue())
         cases = [(origin, defect) for defect in (None, "authority", "receipt", "upload", "job", "report")]
         cases += [(current_origin, defect) for defect in (None, "key", "authority")]
+        cases += [(updated_origin, defect) for defect in (None, "key", "authority", "receipt", "upload", "job", "report", "authority-exit")]
         for origin, defect in cases:
-            prefix = "CURRENT" if origin is current_origin else "RETAINED"
+            prefix = ("UPDATED" if origin is updated_origin else
+                      "CURRENT" if origin is current_origin else "RETAINED")
             row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
             artifact = dict(id=origin["artifactId"], digest=origin["artifactSha256"])
             observed = [{"jobs": [{"id": origin["jobId"]}]}]
@@ -95,7 +115,9 @@ class SdkWorkflowTest(unittest.TestCase):
                 stack.enter_context(patch.object(locator, "CURRENT_PARITY_SOURCE", current_origin, create=True))
                 for name in ("check_request", "check_consumer"):
                     stack.enter_context(patch.object(CompletedFrozenReuse, name))
-                stack.enter_context(patch.object(CompletedFrozenReuse, "envelope", return_value=selected))
+                stack.enter_context(patch.object(CompletedFrozenReuse, "envelope",
+                    **({"side_effect": [envelope, {"changed": True}]} if defect == "authority-exit" else
+                       {"return_value": selected})))
                 stack.enter_context(patch.object(CompletedFrozenReuse, "observe_extended_sdk", return_value=(None,
                     {**artifact, "id": 1} if defect == "upload" else artifact,
                     [{"jobs": [{"id": 1}]}] if defect == "job" else observed)))
@@ -108,7 +130,7 @@ class SdkWorkflowTest(unittest.TestCase):
                 if defect:
                     with self.assertRaises(ValueError):
                         workflow._completed_apple_parity_files(verified, destination, token="fixture")
-                    if defect != "report":
+                    if defect not in ("report", "authority-exit"):
                         opened.assert_not_called()
                 else:
                     files = workflow._completed_apple_parity_files(verified, destination, token="fixture")

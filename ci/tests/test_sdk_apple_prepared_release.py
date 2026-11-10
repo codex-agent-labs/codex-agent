@@ -48,6 +48,7 @@ class ApplePreparedReleaseTest(unittest.TestCase):
             preparation_artifact_id=101, preparation_artifact_sha256="sha256:" + "1" * 64,
             trusted_source_sha="e" * 40, trusted_workflow_sha="f" * 40, transport_producer=self.producer,
             event_payload={"number": 31}, environment=self.environment, token="fixture-token")
+        self.compact_preparation = False
         self.captures = {}
         self.capture_records = {}
         self.context = self.mock("verify_product_release_context", return_value=(
@@ -94,7 +95,13 @@ class ApplePreparedReleaseTest(unittest.TestCase):
         self.assertEqual(dict(target="ios-arm64", artifact_id=101, artifact_sha256="sha256:" + "1" * 64,
             trusted_workflow_sha="f" * 40, repository_root=self.candidate, environ=self.invocation_environment,
             token="fixture-token"), kwargs)
-        snapshot_regular_tree(self.fixture.prepared, destination / "original", allow_empty=True)
+        if self.compact_preparation:
+            for name in ("preparation.json", "capture/plan/impact-plan.json", "capture/capture-transport.json"):
+                target = destination / "original" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((self.fixture.prepared / name).read_bytes())
+        else:
+            snapshot_regular_tree(self.fixture.prepared, destination / "original", allow_empty=True)
         (destination / "original-upload.zip").write_bytes(b"opaque preparation upload transport seam\n")
         transport = {"artifact": {"id": 101, "digest": "sha256:" + "1" * 64}, "captureProducer": self.producer,
                      "target": "ios-arm64", "observed": []}
@@ -290,3 +297,81 @@ class ApplePreparedReleaseTest(unittest.TestCase):
                 self.invoke()
         self.assertEqual([True], mutated)
         self.assertFalse(self.destination.exists())
+
+    def test_compact_preparation_preserves_real_signed_capture_with_independent_private_files(self):
+        self.compact_preparation = True
+        copied = []
+        def observe(copy):
+            def call(source, destination, **kwargs):
+                copy(source, destination, **kwargs)
+                source, destination = Path(source), Path(destination)
+                pairs = [(source, destination)] if source.is_file() else [
+                    (source / row["relativePath"], destination / row["relativePath"])
+                    for row in regular_file_inventory(source, allow_empty=True)]
+                for before, after in pairs:
+                    self.assertEqual(before.read_bytes(), after.read_bytes())
+                    self.assertNotEqual((before.stat().st_dev, before.stat().st_ino),
+                                        (after.stat().st_dev, after.stat().st_ino))
+                    self.assertEqual(1, after.stat().st_nlink)
+                copied.append(destination)
+            return call
+        # Existing full output/signature/receipt/transport assertions apply unchanged.
+        with patch.object(release, "copy_apple_file", side_effect=observe(release.copy_apple_file)), \
+                patch.object(release, "_snapshot_apple_tree", side_effect=observe(release._snapshot_apple_tree)):
+            self.test_real_release_signature_preserves_prepared_capture_receipt_and_both_transports()
+        self.assertEqual(2, len(copied))
+        self.assertTrue(all(not path.exists() for path in copied))
+        self.prepare.assert_called_once()
+        self.original.assert_called_once()
+
+    def test_compact_missing_mixed_extra_and_wrong_bindings_reject_before_body_copy_or_signing(self):
+        self.compact_preparation = True
+        for failure in ("missing", "mixed", "extra", "empty-root", "empty-capture", "artifact", "target", "digest", "original"):
+            def capture(*args, **kwargs):
+                result = self.capture_preparation(*args, **kwargs)
+                prepared = self.captures["preparation"] / "original"
+                if failure == "missing": (prepared / "capture/capture-transport.json").unlink()
+                elif failure == "mixed": (prepared / "capture/transport.zip").write_bytes(b"partial body")
+                elif failure == "extra": (prepared / "unexpected").write_bytes(b"extra")
+                elif failure == "empty-root": (prepared / "unexpected").mkdir()
+                elif failure == "empty-capture": (prepared / "capture/unexpected").mkdir()
+                elif failure in ("artifact", "target", "digest"):
+                    record = deepcopy(self.fixture.record)
+                    if failure == "artifact": record["originalArtifact"]["artifactId"] = 999
+                    elif failure == "target": record["target"] = "ios-simulator-arm64"
+                    else: record["captureDigest"] = "sha256:" + "0" * 64
+                    write_canonical_json(prepared / "preparation.json", record)
+                return result
+            def original(*args, **kwargs):
+                result = self.capture_original(*args, **kwargs)
+                if failure == "original":
+                    (self.captures["validation"] / "original/empty.log").write_bytes(b"changed")
+                return result
+            self.prepare.side_effect, self.original.side_effect = capture, original
+            with self.subTest(failure=failure), patch.object(release, "copy_apple_file") as copy, \
+                    patch.object(release, "_snapshot_apple_tree") as tree, \
+                    patch.object(release, "sign_manifest") as sign:
+                with self.assertRaises(ValueError): self.invoke()
+                copy.assert_not_called()
+                tree.assert_not_called()
+                sign.assert_not_called()
+                self.assertFalse(self.destination.exists())
+
+    def test_compact_reconstruction_or_late_owner_mutation_never_publishes(self):
+        self.compact_preparation = True
+        original_copy, original_sign = release.copy_apple_file, release.sign_manifest
+        for failure in ("copy", "prepared", "original"):
+            def copy(source, destination):
+                original_copy(source, destination)
+                if failure == "copy": Path(destination).write_bytes(b"changed private raw ZIP")
+            def sign(*args, **kwargs):
+                result = original_sign(*args, **kwargs)
+                target = (self.captures["preparation"] / "original/preparation.json" if failure == "prepared"
+                          else self.captures["validation"] / "original/empty.log")
+                target.write_bytes(b"changed after successful signing")
+                return result
+            with self.subTest(failure=failure), patch.object(release, "copy_apple_file", side_effect=copy), \
+                    patch.object(release, "sign_manifest", side_effect=sign) as signed:
+                with self.assertRaises(ValueError): self.invoke()
+                if failure == "copy": signed.assert_not_called()
+                self.assertFalse(self.destination.exists())
