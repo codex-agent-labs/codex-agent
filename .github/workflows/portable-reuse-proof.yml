@@ -11,7 +11,8 @@ permissions:
 jobs:
   storage-diagnostics:
     if: >-
-      github.event.label.name == 'ci:storage-diagnostics' &&
+      (github.event.label.name == 'ci:storage-diagnostics' ||
+       github.event.label.name == 'ci:storage-consumer-diagnostics') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event.pull_request.number == 31 &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -44,6 +45,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
       - id: storage
+        if: github.event.label.name == 'ci:storage-diagnostics'
         name: Observe actual staging filesystems and isolated copy behavior
         continue-on-error: true
         shell: python
@@ -133,6 +135,32 @@ jobs:
                   json.dump(report, stream, sort_keys=True, indent=2)
                   stream.write('\n')
           assert successful, 'Storage diagnostics failed; inspect preserved raw observations and test outcomes'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: github.event.label.name == 'ci:storage-consumer-diagnostics'
+        with:
+          python-version: '3.11'
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        if: github.event.label.name == 'ci:storage-consumer-diagnostics'
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      - id: consumer
+        name: Measure one qualified original through first and repeat private consumers
+        if: github.event.label.name == 'ci:storage-consumer-diagnostics'
+        continue-on-error: true
+        shell: bash
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CODEX_AGENT_THROUGHPUT_TRACE: '1'
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          test -n "$CODEX_AGENT_COMPLETED_REUSE_POLICY"
+          python3 -B .github/actions/run-ci-lane/storage-diagnostic.py \
+            --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY" \
+            --output "$RUNNER_TEMP/storage-diagnostics"
       - name: Preserve filesystem observations and all test outcomes
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -146,7 +174,7 @@ jobs:
         if: always()
         shell: python
         env:
-          STORAGE_OUTCOME: ${{ steps.storage.outcome }}
+          STORAGE_OUTCOME: ${{ github.event.label.name == 'ci:storage-consumer-diagnostics' && steps.consumer.outcome || steps.storage.outcome }}
         run: |
           import os
           assert os.environ['STORAGE_OUTCOME'] == 'success'
