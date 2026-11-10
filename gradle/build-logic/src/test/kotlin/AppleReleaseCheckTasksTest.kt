@@ -177,6 +177,7 @@ class AppleReleaseCheckTasksTest {
             "SdkAndroidMetadataTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
             "SdkFacadeMetadataTasks.kt" to listOf("pythonExecutable.convention(\"python3\")"),
             "SdkFacadeValidationTasks.kt" to listOf(
+                "listOf(\"python3\", \"-B\", \"-c\", \"import os,sys; [os.rmdir(p) for p in sys.argv[1:]]\")",
                 "pythonExecutable.convention(\"python3\")",
                 "pythonExecutable.convention(\"python3\")",
             ),

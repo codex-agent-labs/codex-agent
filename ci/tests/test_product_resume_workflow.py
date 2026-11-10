@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ProductResumeWorkflowTest(unittest.TestCase):
     def test_lint_cache_hits_do_not_require_a_go_setup_action(self):
-        for name in ('recovery-controls', 'workflow-lint'):
+        for name in ('recovery-controls', 'workflow-source-checks'):
             job = workflow_job(self.workflow, name)
             self.assertNotIn('actions/setup-go@', job)
             installer = next(step for step in job.split('      - ') if 'go install ' in step)
@@ -68,7 +68,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn('native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}', checks)
         self.assertIn('ref: ${{ steps.publication.outputs.source-sha }}', checks)
         lint = workflow_job(self.workflow, 'workflow-lint')
-        self.assertIn('needs: [plan, recovery-controls]', lint)
+        self.assertIn('needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]', lint)
         gate = lint.split('      - name: Require the same protected publication', 1)[1].split('\n      - ', 1)[0]
         script = textwrap.dedent(gate.split('        run: |\n', 1)[1])
         good = dict(PLAN_RESULT='success', CHECKS_RESULT='success', PLAN_SOURCE='a' * 40,
@@ -408,16 +408,26 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         cls.gate = workflow_job(cls.workflow, "merge-gate")
 
     def test_lint_compiler_heap_is_scoped_to_fixture_provisioning_and_build_logic(self):
-        lint = workflow_job(self.workflow, "workflow-lint")
-        standalone = lint.split("      - name: Verify standalone build logic", 1)[1].split("\n      - ", 1)[0]
-        self.assertIn("./gradlew -p gradle/build-logic test", standalone)
-        self.assertIn("-Pkotlin.daemon.jvmargs=-Xmx2g", standalone)
-        self.assertEqual(2, self.workflow.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
-        self.assertEqual(2, lint.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
-        self.assertIn("./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", lint)
-        self.assertIn("--configuration-cache --configuration-cache-problems=fail --no-build-cache", standalone)
-        self.assertIn("python3 -m unittest discover -s ci/tests -v", lint)
+        build = workflow_job(self.workflow, "workflow-build-logic")
+        standalone = build.split("      - name: Verify standalone build logic", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("python3 -B .github/actions/run-ci-lane/build-logic-tests.py", standalone)
+        self.assertIn('--tooling-policy "$TEST_TOOLING_POLICY"', standalone)
+        self.assertIn('--policy-revision "$TEST_POLICY_REVISION"', standalone)
+        self.assertIn("steps.test-tooling.outputs.tooling-policy", standalone)
+        self.assertIn("needs.plan.outputs.validation_commit", standalone)
+        self.assertIn("uses: ./.github/actions/capture-sdk-tooling", build)
+        self.assertNotIn("release_tooling.init.gradle", build)
+        self.assertEqual(1, self.workflow.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
+        self.assertIn("./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", build)
+        self.assertIn("python3 -m unittest discover -s ci/tests -v",
+                      workflow_job(self.workflow, "workflow-source-checks"))
         self.assertNotRegex(standalone, r"ciProductPhase|verifyRepository|verifyRuntime|verifySdk")
+        diagnostics = build.split("      - name: Preserve build-logic test diagnostics\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("always() && steps.build-logic.outcome == 'failure'", diagnostics)
+        self.assertIn("hashFiles('gradle/build-logic/build/test-results/test/TEST-*.xml') != ''", diagnostics)
+        self.assertIn("path: gradle/build-logic/build/test-results/test/TEST-*.xml", diagnostics)
+        self.assertIn("if-no-files-found: error", diagnostics)
+        self.assertIn("overwrite: false", diagnostics)
 
     def test_authorization_and_complete_upstreams_are_required_before_runner(self):
         condition = re.search(r"^    if: (?P<body>.*?)(?=^    [a-z][a-z-]*:)",

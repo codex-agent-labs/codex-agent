@@ -103,7 +103,12 @@ class ReleaseWorkflowContractTest {
             .filterNot { "/.github/workflows/" in it }
             .toList()
         assertTrue(uses.isNotEmpty())
-        uses.forEach { use ->
+        val protectedActions = setOf(
+            "uses: codex-agent-labs/codex-agent/.github/actions/resolve-product-publication@reuse-authority",
+            "uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority",
+        )
+        assertEquals(protectedActions, uses.filter { it in protectedActions }.toSet())
+        uses.filterNot { it in protectedActions }.forEach { use ->
             assertTrue(Regex("[0-9a-f]{40}").matches(use.substringAfter('@').substringBefore(' ')), use)
             assertTrue(" # " in use, use)
         }
@@ -116,14 +121,20 @@ class ReleaseWorkflowContractTest {
             uploads,
             Regex("(?m)^\\s+if-no-files-found: error$").findAll(combined).count() + optionalDiagnostics + warningDiagnostics,
         )
-        assertEquals(2, optionalDiagnostics)
+        assertEquals(4, optionalDiagnostics)
         assertEquals(11, warningDiagnostics)
+        assertTrue("name: codex-agent-sdk-wave-9-outcomes-" in combined)
+        assertTrue("name: sdk-android-apk-diagnostics-" in combined)
         val lane = actions.getValue("run-ci-lane")
         assertTrue("name: codex-agent-diagnostics-" in lane)
         assertTrue(lane.indexOf("PYTHONDONTWRITEBYTECODE=1") in 0 until lane.indexOf("python3 "))
         assertFalse(" && test -n " in combined)
         assertTrue("name: codex-agent-protected-candidate-diagnostics-" in workflows.getValue("release-candidate.yml"))
-        assertEquals(uploads, Regex("(?m)^\\s+overwrite: (?:true|false)$").findAll(combined).count())
+        val apkOverwrite = "overwrite: ${'$'}{{ !inputs.apkConsumer }}"
+        val conditionalOverwrites = combined.lineSequence().count { it.trim() == apkOverwrite }
+        assertEquals(1, conditionalOverwrites)
+        assertTrue(apkOverwrite in workflows.getValue("android-runtime-evidence.yml"))
+        assertEquals(uploads, Regex("(?m)^\\s+overwrite: (?:true|false)$").findAll(combined).count() + conditionalOverwrites)
     }
 
     @Test
@@ -175,7 +186,9 @@ class ReleaseWorkflowContractTest {
         assertTrue("needs.plan.outputs.validation_reused != 'true'" in job)
         assertTrue("needs.plan.outputs.android_evidence_required == 'true'" in job)
         assertFalse("needs.android.outputs.reused" in job)
-        assertTrue("needs: [plan, android]" in job)
+        assertTrue("needs: [plan, android, android-sdk-apk]" in job)
+        assertTrue("!inputs.sdkRecoveryOnly && needs.android.result == 'success'" in job)
+        assertTrue("inputs.sdkRecoveryOnly && needs.android-sdk-apk.result == 'success'" in job)
     }
 
     @Test

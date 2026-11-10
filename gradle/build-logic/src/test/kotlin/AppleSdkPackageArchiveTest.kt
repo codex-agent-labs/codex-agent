@@ -60,7 +60,7 @@ class AppleSdkPackageArchiveTest {
         }
     }
 
-    private fun writePolicy(root: File, value: JsonObject = fixturePolicy): File {
+    internal fun writePolicy(root: File, value: JsonObject = fixturePolicy): File {
         fun canonical(element: JsonElement): JsonElement = when (element) {
             is JsonObject -> JsonObject(element.toSortedMap().mapValues { canonical(it.value) })
             is JsonArray -> JsonArray(element.map(::canonical))

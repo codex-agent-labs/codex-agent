@@ -730,6 +730,91 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'changed original'): run(cap)
             after.assert_not_called()
 
+    def test_extension_observations_join_only_matching_current_consumer_scope(self):
+        from contextlib import nullcontext
+        import product_reuse as products
+        import reuse_qualification as native
+        from ci.tests.test_contract_ci_originals import ContractOriginalCiCaptureTest
+        from products.restore import object_relative_path
+        fixture = ContractOriginalCiCaptureTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        receipt = {**deepcopy(self.receipt), 'component': 'javascript', 'phase': 'package',
+                   'target': 'node', 'producer': fixture.producer}
+        receipt['buildKey'] = compute_build_key(**{key: receipt[key] for key in (*completed.IDENTITY, 'inputs')})
+        phase = {**{key: receipt[key] for key in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
+                 'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
+                 'objectSha256': sha256_bytes(b'synthetic object'), 'receiptPath': 'product-resume-state/receipt.json'}
+        instance = completed._identity(receipt)
+        job = {**fixture.jobs[0], 'id': 101, 'run_attempt': 2,
+               'name': 'product-validation / sdk-javascript-package-node'}
+        artifact = {**fixture.artifacts['binary'], 'name': products._worker_artifact_prefix('sdk', instance) +
+                    f"{receipt['buildKey'][7:]}-{fixture.producer['tree']}-attempt-2"}
+        original = {**{key: receipt[key] for key in completed.IDENTITY}, 'artifactId': artifact['id'],
+                    'artifactSha256': artifact['digest'], 'jobId': job['id'], 'workflowSha': fixture.pin}
+        locator = products._runtime_original_locator(artifact, fixture.pin, instance, job)
+        spec = ordinary_spec()
+        spec.update(completedPhases=[phase], originals=[original], parentProofSha256=sha256_bytes(b'{"schemaVersion":1}\n'))
+        proof = {'schemaVersion': spec['schemaVersion'], 'kind': 'completed-sdk-reuse', 'issuerCommit': 'a' * 40,
+            'specSha256': sha256_bytes(canonical_json_bytes(spec)), 'parentProof': {'schemaVersion': 1},
+            'controls': {}, 'source': {'source': 1}, 'originals': [locator],
+            'members': [{'relativePath': 'shard/' + object_relative_path(phase['buildKey'], phase['receiptSha256']),
+                         'bytes': 16, 'sha256': phase['objectSha256']}],
+            'contractSource': {'source': 1}, 'contractFiles': {}}
+        for mode in ('matching', 'unshared', 'mismatch', 'invalid', 'absent', 'standalone', 'current'):
+            current = ('71', '2') if mode == 'current' else ('999', '1')
+            environment = {'GITHUB_RUN_ID': current[0], 'GITHUB_RUN_ATTEMPT': current[1]}
+            if mode == 'mismatch': environment['GITHUB_RUN_ID'] = '998'
+            if mode == 'invalid': environment['GITHUB_RUN_ID'] = 'invalid'
+            if mode == 'absent': environment = {}
+            http = fixture.api(details={'binary': artifact})
+            def read(url, token):
+                if url.endswith('/actions/jobs/101'):
+                    import json
+                    return json.dumps(job).encode()
+                return http(url, token)
+            with self.subTest(mode=mode), ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, environment, clear=True))
+                api = stack.enter_context(patch('reuse.api_request', side_effect=read))
+                stack.enter_context(patch.object(native, '_validate_completed_sdk', return_value={}))
+                stack.enter_context(patch.object(completed, '_base', return_value={}))
+                stack.enter_context(patch.object(completed, 'validate_controls', return_value=(
+                    {'availableObjects': [{**phase, 'objectPath': 'object.zip'}]},
+                    [{key: value for key, value in phase.items() if key != 'receiptPath'}], [receipt])))
+                current_gate = stack.enter_context(patch.object(completed, 'validate_current'))
+                stack.enter_context(patch.object(completed, '_inventory_revision', return_value='a' * 40))
+                stack.enter_context(patch.object(completed, 'observe_source', return_value=({}, [], {'source': 1})))
+                stack.enter_context(patch.object(completed, '_contract_files'))
+                stack.enter_context(patch.object(products, '_download_contract_ci_upload', side_effect=AssertionError('body forbidden')))
+                with (nullcontext() if mode == 'standalone' else
+                      products._ci_observation_batch(current, share_nested=mode != 'unshared')):
+                    parent = products._CI_OBSERVATIONS.get()
+                    result = completed.validate_extension(spec, proof, {'signer_commit': 'a' * 40},
+                        root=Path.cwd(), revision='a' * 40, frozen={}, token='not-a-real-token')
+                    self.assertEqual(spec, result['extension']['spec'])
+                    current_gate.assert_called_once()
+                    self.assertIs(parent, products._CI_OBSERVATIONS.get())
+                    observed = completed.observe_original(original, receipt, 'not-a-real-token', native_locator=locator)
+                    self.assertEqual(locator, observed[2])
+                    self.assertEqual(1 if mode == 'matching' else 2,
+                        sum(call.args[0].endswith('/actions/jobs/101') for call in api.call_args_list))
+                    self.assertEqual(1 if mode == 'matching' else 2,
+                        sum(call.args[0].endswith('/actions/artifacts/101') for call in api.call_args_list))
+                    if mode == 'matching':
+                        with self.assertRaises(ValueError):
+                            completed.observe_original({**original, 'workflowSha': '0' * 40}, receipt,
+                                'not-a-real-token', native_locator=locator)
+                        with self.assertRaises(ValueError):
+                            completed.observe_original({**original, 'artifactSha256': 'sha256:' + '0' * 64}, receipt,
+                                'not-a-real-token', native_locator=locator)
+                        observed[0]['expired'] = True
+                        self.assertFalse(completed.observe_original(original, receipt,
+                            'not-a-real-token', native_locator=locator)[0]['expired'])
+                self.assertIsNone(products._CI_OBSERVATIONS.get())
+                if mode == 'matching':
+                    completed.observe_original(original, receipt, 'not-a-real-token', native_locator=locator)
+                    self.assertEqual(2, sum(call.args[0].endswith('/actions/jobs/101') for call in api.call_args_list))
+
     def test_large_native_package_member_is_bound_to_its_original_only_in_v3(self):
         import json
         import product_reuse as products

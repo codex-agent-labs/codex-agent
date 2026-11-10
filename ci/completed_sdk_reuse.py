@@ -6,6 +6,7 @@ authenticates its attestation before creating the sealed completed-reuse capabil
 """
 
 from contextlib import contextmanager
+import os
 from pathlib import Path
 
 from products.inventory import (
@@ -487,7 +488,8 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token,
     _contract_files(spec, proof["contractFiles"], sdk)
     if type(proof["originals"]) is not list or len(proof["originals"]) != len(receipts):
         raise ValueError("Incremental SDK native original scope changed")
-    with products._ci_observation_batch():
+    with products._ci_observation_batch(
+            tuple(str(os.environ.get(name)) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))):
         products._prime_runtime_artifact_metadata([
             {"receipt": receipt, "artifactId": originals[_identity(receipt)]["artifactId"]}
             for receipt in receipts if _checkpoint is None or receipt["producer"] != spec["source"]["producer"]], token)

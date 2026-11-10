@@ -46,14 +46,16 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow = (ROOT / ".github/workflows/product-validation.yml").read_text(encoding="utf-8")
-        match = re.search(
-            r"^  workflow-lint:\n(?P<body>.*?)(?=^  [a-z0-9-]+:\n|\Z)",
-            cls.workflow,
-            re.MULTILINE | re.DOTALL,
-        )
-        if match is None:
-            raise AssertionError("workflow-lint job is missing")
-        cls.job = match.group("body")
+        cls.jobs = {}
+        for name in ("workflow-lint", "workflow-source-checks", "workflow-build-logic"):
+            match = re.search(
+                rf"^  {name}:\n(?P<body>.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+                cls.workflow, re.MULTILINE | re.DOTALL,
+            )
+            if match is None:
+                raise AssertionError(name + " job is missing")
+            cls.jobs[name] = match.group("body")
+        cls.job = cls.jobs["workflow-build-logic"]
 
     def test_settings_boundaries_explain_the_standalone_build(self):
         root = (ROOT / "settings.gradle.kts").read_text(encoding="utf-8")
@@ -64,43 +66,61 @@ class WorkflowStaticBuildBoundaryTest(unittest.TestCase):
         self.assertNotIn('include(":codex-agent-runtime-desktop")', build_logic)
         self.assertIn('rootProject.name = "build-logic"', build_logic)
 
-    def test_workflow_lint_runs_only_the_guarded_standalone_build_logic_tests(self):
-        command = (
-            "./gradlew -p gradle/build-logic test -Pkotlin.daemon.jvmargs=-Xmx2g --configuration-cache "
-            "--configuration-cache-problems=fail --no-build-cache"
-        )
+    def test_workflow_build_logic_runs_only_the_guarded_standalone_build_logic_tests(self):
         normalized = " ".join(self.job.split())
-        self.assertEqual(2, self.job.count("./gradlew"))
+        self.assertEqual(1, self.job.count("./gradlew"))
         self.assertIn("run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", self.job)
+        helper = ".github/actions/run-ci-lane/build-logic-tests.py"
+        command = (f'python3 -B {helper} --repository-root "$GITHUB_WORKSPACE" '
+                   '--tooling-policy "$TEST_TOOLING_POLICY" --policy-revision "$TEST_POLICY_REVISION"')
         self.assertEqual(1, normalized.count(command))
+        self.assertIn('TEST_TOOLING_POLICY: ${{ steps.test-tooling.outputs.tooling-policy }}', self.job)
+        self.assertIn('TEST_POLICY_REVISION: ${{ needs.plan.outputs.validation_commit }}', self.job)
         self.assertNotIn("--dry-run", self.job)
         for forbidden in (
-            ":build-logic:test",
-            ":codex-agent-sdk:",
-            ":codex-agent-runtime-desktop:",
+            ":build-logic:test", ":codex-agent-sdk:", ":codex-agent-runtime-desktop:",
+            "ciProductPhase", "releaseToolingJar", "--tests", "python3 -m unittest",
         ):
             self.assertNotIn(forbidden, self.job)
+        helper_source = (ROOT / helper).read_text()
+        self.assertIn('"-p", "gradle/build-logic", "test"', helper_source)
+        self.assertIn('"-x", "releaseToolingJar", "--init-script"', helper_source)
+        self.assertIn('with verified_tooling_capture(', helper_source)
+        self.assertIn('required_trust_domain="release"', helper_source)
 
         event = "needs.plan.outputs.event_authorized == 'true'"
         remote = "needs.plan.outputs.remote_build_authorized == 'true'"
         # YAML single-quoted conditions escape a literal quote by doubling it.
         guarded = self.job.replace("''", "'")
-        setup = guarded.index("uses: ./.github/actions/setup-kmp")
-        provisioning = guarded.index("run: ./gradlew help")
-        execution = guarded.index("./gradlew -p gradle/build-logic test")
-        event_guards = [match.start() for match in re.finditer(re.escape(event), guarded)]
-        remote_guards = [match.start() for match in re.finditer(re.escape(remote), guarded)]
-        self.assertEqual(3, len(event_guards))
-        self.assertEqual(3, len(remote_guards))
-        self.assertLess(event_guards[0], setup)
-        self.assertLess(remote_guards[0], setup)
-        self.assertLess(setup, event_guards[1])
-        self.assertLess(setup, remote_guards[1])
-        self.assertLess(event_guards[1], provisioning)
-        self.assertLess(remote_guards[1], provisioning)
-        self.assertLess(provisioning, event_guards[2])
-        self.assertLess(event_guards[2], execution)
-        self.assertLess(remote_guards[2], execution)
+        condition = guarded.split("    needs:", 1)[0]
+        for guard in ("always()", "!cancelled()", "!inputs.toolingOnly", "!inputs.runtimeRecoveryOnly",
+                      "!inputs.sdkRecoveryOnly", "needs.plan.result == 'success'", event, remote):
+            self.assertIn(guard, condition)
+        self.assertIn("needs: [plan, contract-validation]", self.job)
+        steps = guarded.split("      - ")[1:]
+        for marker in ("uses: ./.github/actions/setup-kmp", "id: test-tooling",
+                       "run: ./gradlew help", "id: build-logic"):
+            step, = [step for step in steps if marker in step]
+            for guard in ("!inputs.runtimeRecoveryOnly", "!inputs.sdkRecoveryOnly", event, remote):
+                self.assertIn(guard, step.split("\n        run:", 1)[0])
+        self.assertNotIn("restore-reuse-qualification@", self.job)
+        self.assertLess(guarded.index("id: test-tooling"), guarded.index("run: ./gradlew help"))
+        self.assertLess(guarded.index("run: ./gradlew help"), guarded.index("id: build-logic"))
+        capture, = [step for step in steps if "id: test-tooling" in step]
+        for field, output in (("artifact-id", "tooling_artifact_id"),
+                              ("artifact-sha256", "tooling_artifact_sha256"),
+                              ("transport-producer", "tooling_transport_producer")):
+            self.assertIn(field + ": ${{ needs.contract-validation.result == 'success' && "
+                          f"needs.contract-validation.outputs.{output} || needs.plan.outputs.{output}" + " }}", capture)
+        for binding in ("trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}",
+                        "policy-revision: ${{ needs.plan.outputs.validation_commit }}",
+                        "trusted-workflow-path: .github/workflows/contract-validation.yml",
+                        "trusted-job-name: product-validation / contract-validation / tooling-attestation"):
+            self.assertIn(binding, capture)
+        self.assertIn("if: always() && steps.build-logic.outcome == 'failure'", self.job)
+        self.assertIn("path: gradle/build-logic/build/test-results/test/TEST-*.xml", self.job)
+        self.assertIn("if-no-files-found: error", self.job)
+        self.assertIn("overwrite: false", self.job)
 
     def test_android_firebase_and_apple_are_guarded_before_job_creation(self):
         for name, selector in (("android", "lane_android"),

@@ -680,10 +680,11 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         "sdkRecoveryOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}",
                         "fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') || contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery'))) }}"):
             self.assertIn(setting, caller)
-        allowed = {'dispatch-authorization', 'workflow-lint', 'plan', 'contract-validation',
+        allowed = {'dispatch-authorization', 'workflow-lint', 'workflow-source-checks', 'workflow-build-logic',
+                   'plan', 'contract-validation',
                    'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(106, len(jobs))
+        self.assertEqual(108, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
@@ -701,10 +702,20 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             else:
                 self.assertFalse(condition.strip().startswith('!inputs.fullReuseAcceptanceOnly'))
         lint = self.job('workflow-lint')
-        self.assertIn('python3 -m unittest discover -s ci/tests -v', lint)
-        self.assertIn('./gradlew -p gradle/build-logic test', lint)
-        self.assertIn('"$HOME/go/bin/actionlint"', lint)
-        self.assertNotIn('fullReuseAcceptanceOnly', lint)
+        source_checks = self.job('workflow-source-checks')
+        build_checks = self.job('workflow-build-logic')
+        self.assertIn('python3 -m unittest discover -s ci/tests -v', source_checks)
+        self.assertIn('"$HOME/go/bin/actionlint"', source_checks)
+        self.assertIn('python3 -B .github/actions/run-ci-lane/build-logic-tests.py', build_checks)
+        self.assertNotIn('gradlew', source_checks)
+        self.assertNotIn('unittest discover', build_checks)
+        for name in ('workflow-lint', 'workflow-source-checks', 'workflow-build-logic'):
+            job = self.job(name)
+            self.assertNotIn('fullReuseAcceptanceOnly', job)
+            for forbidden in ('ciProductPhase', 'releaseToolingJar', 'sdk-native-worker', 'tooling-attestation@'):
+                self.assertNotIn(forbidden, job)
+        for command in ('gradlew', 'unittest discover', 'go/bin/actionlint'):
+            self.assertNotIn(command, lint)
         self.assertIn("(!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success')",
                       self.job('product-resume'))
         fast = self.job('sdk-completion-full-reuse')
@@ -712,6 +723,35 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                       "needs.plan.result == 'success'", "needs.product-resume.result == 'success'",
                       "needs.product-resume.outputs.full_reuse == 'true'"):
             self.assertIn(guard, fast)
+
+    def test_full_source_check_join_requires_both_selected_checks_before_acceptance(self):
+        lint = self.job('workflow-lint')
+        self.assertIn('needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]', lint)
+        block = lint.split('      - name: Require complete current-source checks\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn("if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'", block)
+        for field, value in (('SOURCE_RESULT', 'needs.workflow-source-checks.result'),
+                             ('BUILD_LOGIC_RESULT', 'needs.workflow-build-logic.result'),
+                             ('BUILD_LOGIC_REQUIRED', "needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'")):
+            self.assertIn(field + ': ${{ ' + value + ' }}', block)
+        check = textwrap.dedent(block.split('        run: |\n', 1)[1])
+        publication = lint.split('      - id: acceptance-kind\n', 1)[1]
+        self.assertIn('RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}', publication)
+        publish = textwrap.dedent(publication.split('        run: |\n', 1)[1])
+        for required in (True, False):
+            for source, build in product(('success', 'failure', 'cancelled', 'skipped', ''), repeat=2):
+                with self.subTest(required=required, source=source, build=build), tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary) / 'outputs'
+                    environment = {**os.environ, 'SOURCE_RESULT': source, 'BUILD_LOGIC_RESULT': build,
+                                   'BUILD_LOGIC_REQUIRED': str(required).lower(), 'RECOVERY_ONLY': 'false',
+                                   'GITHUB_OUTPUT': str(output)}
+                    result = subprocess.run(['bash', '-c', check + '\n' + publish], env=environment,
+                                            capture_output=True, text=True)
+                    accepted = source == 'success' and build == ('success' if required else 'skipped')
+                    self.assertEqual(accepted, result.returncode == 0, result.stderr)
+                    if accepted:
+                        self.assertEqual('full_acceptance_current=true\n', output.read_text())
+                    else:
+                        self.assertFalse(output.exists())
 
     def test_saved_acceptance_plan_guard_rejects_misses_before_transport_upload(self):
         job = self.job('plan')
@@ -831,6 +871,10 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertNotIn('workflow-lint', seen)
         self.assertEqual({'plan', 'contract-validation', 'product-resume'}, set(parents('sdk-completion-full-reuse')))
         self.assertEqual(SELECTOR_JOBS | {'plan', 'contract-validation'}, set(parents('sdk-completion')))
+        self.assertEqual(['plan'], parents('workflow-source-checks'))
+        self.assertEqual({'plan', 'contract-validation'}, set(parents('workflow-build-logic')))
+        self.assertEqual({'plan', 'recovery-controls', 'workflow-source-checks', 'workflow-build-logic'},
+                         set(parents('workflow-lint')))
         for name in ('sdk-parity', 'merge-gate'):
             self.assertIn('workflow-lint', parents(name))
             self.assertIn('sdk-completion-full-reuse', parents(name))

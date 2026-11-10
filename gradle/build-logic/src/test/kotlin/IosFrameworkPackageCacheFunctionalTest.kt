@@ -25,9 +25,11 @@ class IosFrameworkPackageCacheFunctionalTest {
             }
             project.resolve("settings.gradle.kts").writeText("rootProject.name = \"ios-framework-cache-test\"\n")
             project.resolve("gradle.properties").writeText("org.gradle.caching=true\n")
+            AppleSdkPackageArchiveTest().writePolicy(project)
             writeBuild(project, "device-sdk-1|simulator-sdk-1")
 
             val first = run(project, testKitDirectory, true)
+            println(first.output.lineSequence().single { it.startsWith("FIXTURE_APPLE_CODEC ") })
             assertTaskOutcomes(first, TaskOutcome.SUCCESS)
             assertImportedGraph(first)
             val archive = project.resolve("build/distributions/CodexAgent-fixture.xcframework.zip")
@@ -175,7 +177,41 @@ class IosFrameworkPackageCacheFunctionalTest {
         val PACKAGE_GRAPH = listOf(ASSEMBLE_TASK, PREPARE_TASK, PACKAGE_TASK)
         val CACHED_GRAPH = IMPORT_TASKS + PACKAGE_GRAPH
         fun fixtureBuild(appleToolchainIdentity: String) = """
+            import java.security.MessageDigest
+            import java.util.HexFormat
+            import java.util.Properties
+            import kotlinx.serialization.json.*
+
             plugins { id("codexagent.codex-runtime") }
+
+            // Keep the outer fixture's exact Java identity; observe this nested Gradle codec.
+            val policyFile = layout.projectDirectory.file("codec-policy.json").asFile
+            val policy = Json.parseToJsonElement(policyFile.readText()).jsonObject
+            val codecClass = CanonicalAppleZip::class.java.classLoader
+                .loadClass("org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream")
+            val codecLoader = codecClass.classLoader
+            val codecBytes = policy.getValue("commonsCompress").jsonObject.getValue("resources").jsonArray
+                .associate { entry ->
+                    val name = entry.jsonObject.getValue("relativePath").jsonPrimitive.content
+                    name to requireNotNull(codecLoader.getResourceAsStream(name)).use { it.readBytes() }
+                }
+            val codecProperties = Properties().apply {
+                codecBytes.getValue("META-INF/maven/org.apache.commons/commons-compress/pom.properties")
+                    .inputStream().use { load(it) }
+            }
+            val codec = JsonObject(sortedMapOf(
+                "resources" to JsonArray(codecBytes.map { (name, bytes) -> JsonObject(sortedMapOf(
+                    "bytes" to JsonPrimitive(bytes.size), "relativePath" to JsonPrimitive(name),
+                    "sha256" to JsonPrimitive("sha256:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))),
+                )) }),
+                "version" to JsonPrimitive(codecProperties.getProperty("version")),
+            ))
+            policyFile.writeText(Json.encodeToString(JsonElement.serializer(),
+                JsonObject((policy + ("commonsCompress" to codec)).toSortedMap())) + "\n")
+            println("FIXTURE_APPLE_CODEC " + JsonObject(sortedMapOf(
+                "origin" to JsonPrimitive(codecClass.protectionDomain.codeSource.location.toExternalForm()),
+                "commonsCompress" to codec,
+            )))
 
             version = "fixture"
             tasks.register("verifyAppleToolchain")
@@ -203,6 +239,9 @@ class IosFrameworkPackageCacheFunctionalTest {
                 forbiddenAbsolutePathPrefixes.set(listOf("/not-present-in-fixture"))
             }
             registerIosAppleReleaseVerificationTasks(distribution, "15.0", "fixture")
+            tasks.named<CanonicalAppleZip>("packageCodexAgentSwiftPackageBinary") {
+                archivePolicy.set(layout.projectDirectory.file("codec-policy.json"))
+            }
         """.trimIndent() + "\n"
         val PRIVACY_MANIFEST = """
             <?xml version="1.0" encoding="UTF-8"?>

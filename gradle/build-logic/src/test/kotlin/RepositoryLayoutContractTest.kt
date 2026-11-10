@@ -240,6 +240,9 @@ class RepositoryLayoutContractTest {
                             line.replaceFirst("work.resolve(\"release/", "work.resolve(\"private-output/")
                         "gradle/build-logic/src/main/kotlin/SdkFacadeCompilerCapture.kt" ->
                             line.replaceFirst("javaHome.resolve(\"release\")", "javaHome.resolve(\"jdk-metadata\")")
+                        ".github/workflows/portable-reuse-proof.yml" ->
+                            // Historical captured carrier category, not a repository-root directory.
+                            line.replaceFirst("str(inputs / 'release/contract-input')", "str(inputs / 'historical-contract-input')")
                         else -> line
                     }
                     val stale = oldBuildLogic in line || rootJsStorePath.containsMatchIn(line) ||

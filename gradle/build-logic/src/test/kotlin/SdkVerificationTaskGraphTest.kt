@@ -28,6 +28,8 @@ class SdkVerificationTaskGraphTest {
                 config = {name: str(root / name) for name in ('api', 'coverage', 'cabiOutput', 'finalEvidence', 'finalOutput')}
                 config['native'] = {language: {name: str(root / language / name) for name in fields}
                                     for language in ('python', 'csharp', 'rust', 'cpp', 'dart')}
+                config['nonNative'] = {language: str(root / (language + '-parity.json'))
+                                       for language in ('kotlin', 'java', 'javascript-typescript', 'swift', 'objective-c')}
                 (root / 'native.json').write_text(json.dumps(config))
             """.trimIndent(), work.path).directory(repository).redirectError(ProcessBuilder.Redirect.INHERIT).start()
             assertEquals(0, process.waitFor())
