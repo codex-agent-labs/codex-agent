@@ -633,7 +633,8 @@ def main(argv=None, *, _completed_frozen=None) -> int:
                  if name not in {"sdk_facade_metadata_policy", "sdk_android_metadata_policy"}}
     try:
         if _completed_frozen is not None:
-            for name in ("completed_frozen_policy", "sdk_checkpoint_owner", "sdk_checkpoint"):
+            for name in ("completed_frozen_policy", "sdk_checkpoint_owner", "sdk_checkpoint",
+                         "sdk_historical_checkpoint"):
                 if arguments.pop(name) is not None:
                     raise ValueError("In-process native continuation cannot replace its authenticated policy")
         if "retained_sdk_inputs_source" in arguments:

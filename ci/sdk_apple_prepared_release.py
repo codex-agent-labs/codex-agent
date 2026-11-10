@@ -25,6 +25,7 @@ from products.sdk_apple_validation_attestation import (
     ATTESTATION_NAME, derive_apple_validation_attestation, verified_prepared_apple_validation,
 )
 from products.sdk_apple_validation_inputs import capture_sdk_apple_validation_evidence
+from products.sdk_apple_content import copy_apple_file, _snapshot_apple_tree
 from products.signatures import load_keyring, private_key_bytes, require_active_release_key, sign_manifest, verify_manifest_signature
 
 
@@ -90,7 +91,47 @@ def attest_prepared_apple_validation_ci(repository_root, candidate_root, plan_pa
         unchanged()
         result = root / "result"
         entry = root / "entry"
-        with verified_prepared_apple_validation(prepared / "original", original,
+        binding = prepared / "original"
+        if {path.name for path in (binding / "capture").iterdir()} != {
+                "plan", "original", "transport.zip", "capture-transport.json"}:
+            controls = {"preparation.json", "capture/plan/impact-plan.json", "capture/capture-transport.json"}
+            projected = [dict(row, relativePath=row["relativePath"].removeprefix("original/"))
+                         for row in baselines[prepared] if row["relativePath"].startswith("original/")]
+            if ({row["relativePath"] for row in projected} != controls
+                    or {path.name for path in binding.iterdir()} != {"capture", "preparation.json"}
+                    or {path.name for path in (binding / "capture").iterdir()} != {"plan", "capture-transport.json"}
+                    or {path.name for path in (binding / "capture/plan").iterdir()} != {"impact-plan.json"}):
+                raise ValueError("Apple preparation reference must contain exactly three controls")
+            # The authenticated preparation binds the full inventory before any
+            # body copy. Only its original payload comes from the independent capture.
+            inventory = sorted([
+                *[row for row in baselines[original]
+                  if row["relativePath"] == "transport.zip" or row["relativePath"].startswith("original/")],
+                *[dict(row, relativePath=row["relativePath"].removeprefix("capture/"))
+                  for row in projected if row["relativePath"].startswith("capture/")],
+            ], key=lambda row: row["relativePath"])
+            expected = {"schemaVersion": 1, "target": target, "receiptSha256": expected_receipt_sha256,
+                "captureDigest": sha256_bytes(canonical_json_bytes(inventory)),
+                "planSha256": sha256_bytes(originals["plan"]),
+                "producer": load_canonical_json_bytes(originals["receipt"])["producer"],
+                "originalArtifact": {"artifactId": artifact_id, "artifactSha256": artifact_sha256}}
+            if (read_regular_file_bytes(binding / "preparation.json", max_bytes=16 * 1024 * 1024,
+                    reject_symlink_parents=True) != canonical_json_bytes(expected)
+                    or read_regular_file_bytes(binding / "capture/plan/impact-plan.json",
+                        max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != originals["plan"]):
+                raise ValueError("Apple preparation reference differs from independently captured originals")
+            binding = root / "expanded-preparation"
+            for name in sorted(controls):
+                destination = binding / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(read_regular_file_bytes(prepared / "original" / name,
+                    max_bytes=16 * 1024 * 1024, reject_symlink_parents=True))
+            copy_apple_file(original / "transport.zip", binding / "capture/transport.zip")
+            _snapshot_apple_tree(original / "original", binding / "capture/original", allow_empty=True)
+            if regular_file_inventory(binding / "capture", allow_empty=True) != inventory:
+                raise ValueError("Apple preparation reference changed during private reconstruction")
+            unchanged()
+        with verified_prepared_apple_validation(binding, original,
                 plan=plan_path, receipt_path=receipt_path, target=target,
                 expected_receipt_sha256=expected_receipt_sha256,
                 artifact_id=artifact_id, artifact_sha256=artifact_sha256) as verified:
