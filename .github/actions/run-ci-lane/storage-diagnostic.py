@@ -70,7 +70,8 @@ def current_consumer(root, environ):
     if (environ.get("GITHUB_ACTIONS") != "true" or environ.get("GITHUB_EVENT_NAME") != "pull_request"
             or environ.get("GITHUB_REPOSITORY") != "codex-agent-labs/codex-agent"
             or event.get("action") != "labeled" or event.get("number") != 31
-            or event.get("label", {}).get("name") != "ci:storage-consumer-diagnostics"
+            or event.get("label", {}).get("name") not in ("ci:storage-consumer-diagnostics",
+                                                        "ci:storage-consumer-macos-x64")
             or event["pull_request"]["head"]["repo"]["full_name"] != environ["GITHUB_REPOSITORY"]
             or event["pull_request"]["head"]["repo"]["fork"]
             or event["pull_request"]["head"]["sha"] != revision
