@@ -112,9 +112,7 @@ class RuntimeRecoveryAcceptanceTest(unittest.TestCase):
         root = HELPER.parents[3]
         caller = (root / recovery.CI).read_text()
         self.assertIn('runtimeRecoveryOnly: false\n' + recovery.SDK_RECOVERY_CALLER.decode(), caller)
-        self.assertIn("fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && "
-                      "(contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') || "
-                      "contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery'))) }}", caller)
+        self.assertIn('      fullReuseAcceptanceOnly: false\n', caller)
         self.assertIn('runtimeAggregateRequalification: false', caller)
         self.assertNotIn('runtimeNativeHandoffRecovery:', caller)
         locator, = re.findall(r"^      runtimeAggregateHandoffRecovery: '(.*)'$", caller, re.MULTILINE)
