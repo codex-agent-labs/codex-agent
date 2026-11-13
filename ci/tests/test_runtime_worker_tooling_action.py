@@ -52,6 +52,7 @@ class RuntimeWorkerToolingActionTest(unittest.TestCase):
                 "PLAN": "/original plan/impact.json", "DISCOVERY": "/original discovery",
                 "STATE": "/original state", "COMPONENT": "jvm", "PHASE": "binary",
                 "TARGET": "jvm", "BUILD_KEY": "sha256:" + "a" * 64, "ARCHIVE": "",
+                "RUNTIME_PACKAGE_TOOLING": "",
                 "SUPERVISOR_ID": "", "SUPERVISOR_SHA256": "",
                 "TRUSTED_WORKFLOW_SHA": "b" * 40,
             }
