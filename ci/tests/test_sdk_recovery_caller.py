@@ -36,7 +36,7 @@ class SdkRecoveryCallerTest(unittest.TestCase):
         expression = re.sub(r"!(?!=)", " not ", expression).strip()
         return eval(expression, {"__builtins__": {}}, {"contains": lambda rows, value: value in rows})
 
-    def test_exactly_one_mode_and_sdk_checkpoints_follow_only_explicit_sdk_request(self):
+    def test_special_modes_and_sdk_checkpoints_follow_only_explicit_requests(self):
         for event, sdk, tooling in product(("pull_request", "merge_group", "workflow_dispatch"),
                                           (False, True), (False, True)):
             labels = ["merge-ready", "ci:remote-final"]
@@ -53,11 +53,11 @@ class SdkRecoveryCallerTest(unittest.TestCase):
                 self.assertEqual(expected_tooling, actual["toolingOnly"])
                 self.assertEqual(expected_sdk, actual["sdkRecoveryOnly"])
                 self.assertEqual(expected_sdk, actual["sdkCheckpoints"])
-                self.assertEqual(not (expected_tooling or expected_sdk), actual["fullReuseAcceptanceOnly"])
+                self.assertFalse(actual["fullReuseAcceptanceOnly"])
                 self.assertFalse(actual["runtimeRecoveryOnly"])
                 self.assertFalse(actual["runtimeAggregateRequalification"])
-                self.assertEqual(1, sum(actual[name] for name in
-                                       ("toolingOnly", "sdkRecoveryOnly", "fullReuseAcceptanceOnly")))
+                self.assertEqual(int(expected_tooling or expected_sdk), sum(actual[name] for name in
+                                 ("toolingOnly", "sdkRecoveryOnly", "fullReuseAcceptanceOnly")))
 
     def test_actual_expression_delegates_to_unchanged_sdk_authority_checks(self):
         source = self.caller.encode()
