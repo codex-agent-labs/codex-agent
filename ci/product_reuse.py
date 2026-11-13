@@ -2086,12 +2086,18 @@ def _runtime_capture_identity(observation: Mapping[str, Any], instance: PhaseIns
         if len(jobs) != 1:
             raise ValueError("Prior Runtime observation lacks its exact original job")
         run = attempt["run"]
+        commit = attempt["testedCommit"]
+        if isinstance(commit, dict) and isinstance(commit.get("verification"), dict):
+            # GitHub may retry signature verification; its status is not commit content.
+            # Keep the original signature/payload and every other field binding.
+            commit = {**commit, "verification": {key: value for key, value in commit["verification"].items()
+                      if key not in ("verified", "reason", "verified_at")}}
         observed.append({
             "run": {field: run.get(field) for field in
                     ("id", "run_attempt", "head_sha", "path", "event", "referenced_workflows")},
             "repositories": {field: {key: run[field].get(key) for key in ("full_name", "fork")}
                              for field in ("repository", "head_repository")},
-            "testedCommit": attempt["testedCommit"],
+            "testedCommit": commit,
             "job": {field: jobs[0].get(field) for field in
                     ("id", "name", "run_id", "head_sha", "status", "conclusion", "started_at", "completed_at")},
         })

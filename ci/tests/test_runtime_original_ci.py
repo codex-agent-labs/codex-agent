@@ -1102,6 +1102,57 @@ class RuntimeOriginalCiTest(unittest.TestCase):
                     token='not-a-real-token', recovery_projection=True)
             self.assertFalse((self.root / 'memo-corrupt').exists())
 
+    def test_original_replay_preserves_capture_when_github_verification_status_changes(self):
+        self.commit["verification"] = {"verified": False, "reason": "gpgverify_unavailable",
+            "verified_at": None, "signature": "original signature", "payload": "original payload"}
+        instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)
+        key = fixture.load_canonical_json_bytes(self.receipts["binary"].read_bytes())["buildKey"]
+        plan = {"event": "pull_request", "pullRequest": 31, "repository": fixture.REPOSITORY}
+        destination = self.root / "verification-status-recovery"
+        run = self.failed_run()
+        with mock.patch.object(adapter, "download_artifact_to_file", side_effect=self.download_fixture), \
+                mock.patch("reuse.api_request", side_effect=self.api(run=run)):
+            adapter.capture_prior_failed_runtime_phases(plan, {"runId": 100, "runAttempt": 1},
+                {instance: key}, destination, trusted_workflow_sha=self.pin,
+                token="not-a-real-token", attempts=(run,))
+        observation_path = destination / TARGET / "binary" / TARGET / "transport/original-ci-phases.json"
+        original_observation = observation_path.read_bytes()
+        changed_commit = copy.deepcopy(self.commit)
+        changed_commit["verification"].update(verified=True, reason="valid")
+        for verified_at in (None, "2026-09-30T13:00:00Z"):
+            changed_commit["verification"]["verified_at"] = verified_at
+            with self.subTest(verified_at=verified_at), \
+                    mock.patch("reuse.api_request", side_effect=self.api(run=run, commit=changed_commit)), \
+                    mock.patch.object(adapter, "download_artifact_to_file", side_effect=AssertionError("duplicate upload")):
+                records = adapter._prior_failed_runtime_objects(destination, self.root,
+                    trusted_workflow_sha=self.pin, token="not-a-real-token", plan=plan,
+                    consumer_producer={"runId": 100, "runAttempt": 1})
+                self.assertEqual(key, records[0]["buildKey"])
+                self.assertEqual(original_observation, observation_path.read_bytes())
+                self.assertEqual(self.receipts["binary"].read_bytes(),
+                    (observation_path.parents[1] / "phases/binary/original/shard/phase-receipt.json").read_bytes())
+
+    def test_runtime_identity_keeps_commit_content_and_unknown_verification_fields(self):
+        self.commit["verification"] = {"verified": False, "reason": "gpgverify_unavailable",
+            "verified_at": None, "signature": "original signature", "payload": "original payload"}
+        original = {"observed": [{"run": self.run, "testedCommit": self.commit, "jobs": self.jobs}],
+                    "artifacts": {"binary": self.artifacts["binary"]}}
+        original_bytes = fixture.canonical_json_bytes(original)
+        instance = PhaseInstanceId("runtime", TARGET, "binary", TARGET)
+        identity = adapter._runtime_capture_identity(original, instance)
+        for field, value in (("sha", "0" * 40), ("tree", {"sha": "0" * 40}),
+                             ("parents", list(reversed(self.commit["parents"]))), ("message", "changed")):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(original)
+                changed["observed"][0]["testedCommit"][field] = value
+                self.assertNotEqual(identity, adapter._runtime_capture_identity(changed, instance))
+        for field in ("signature", "payload", "unknown"):
+            with self.subTest(verification=field):
+                changed = copy.deepcopy(original)
+                changed["observed"][0]["testedCommit"]["verification"][field] = "changed"
+                self.assertNotEqual(identity, adapter._runtime_capture_identity(changed, instance))
+        self.assertEqual(original_bytes, fixture.canonical_json_bytes(original))
+
     def test_recovery_projection_omits_only_duplicates_and_reauthenticates_original(self):
         upload = self.root / "runtime-uploads/binary"
         (upload / "inputs").mkdir()
