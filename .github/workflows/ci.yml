@@ -13,6 +13,12 @@ on:
         type: choice
         default: validation
         options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]
+      diagnosticFixture:
+        description: Exact unprivileged fixture for build-logic-diagnostics
+        required: false
+        type: choice
+        default: build-logic
+        options: [build-logic, csharp-package-determinism]
       baseCommit:
         description: Exact base commit SHA
         required: false
@@ -78,13 +84,17 @@ jobs:
           test "$VALIDATION_COMMIT" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$VALIDATION_COMMIT"
           test "$(git rev-parse 'HEAD^{tree}')" = "$VALIDATION_TREE"
-      - run: sudo install -d -m 1777 /private/tmp
-      - uses: ./.github/actions/setup-kmp
+      - if: inputs.diagnosticFixture != 'csharp-package-determinism'
+        run: sudo install -d -m 1777 /private/tmp
+      - if: inputs.diagnosticFixture != 'csharp-package-determinism'
+        uses: ./.github/actions/setup-kmp
         with:
           cache-read-only: "true"
-      - name: Resolve declared plugin inputs before offline fixture checks
+      - if: inputs.diagnosticFixture != 'csharp-package-determinism'
+        name: Resolve declared plugin inputs before offline fixture checks
         run: ./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g --no-configuration-cache --stacktrace
-      - name: Capture nested offline fixture failures without product orchestration
+      - if: inputs.diagnosticFixture != 'csharp-package-determinism'
+        name: Capture nested offline fixture failures without product orchestration
         run: >-
           ./gradlew -p gradle/build-logic test
           --tests '*AppleBinaryPackageGraphTest'
@@ -96,13 +106,76 @@ jobs:
           -Pkotlin.daemon.jvmargs=-Xmx2g
           --configuration-cache --configuration-cache-problems=fail --no-build-cache --info --stacktrace
       - name: Preserve original nested exceptions even on failure
-        if: always()
+        if: always() && inputs.diagnosticFixture != 'csharp-package-determinism'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-logic-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: gradle/build-logic/build/test-results/test/*.xml
           if-no-files-found: error
           retention-days: 14
+          overwrite: false
+
+      - if: inputs.diagnosticFixture == 'csharp-package-determinism'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12.10'
+      - if: inputs.diagnosticFixture == 'csharp-package-determinism'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
+        with:
+          dotnet-version: '8.0.419'
+      - name: Verify only the current C# two-context package fixture
+        if: inputs.diagnosticFixture == 'csharp-package-determinism'
+        env:
+          CODEX_AGENT_TEST_NATIVE_PACKAGES: '1'
+          CODEX_AGENT_TEST_NATIVE_PACKAGE_LANGUAGES: csharp
+          PYTHONDONTWRITEBYTECODE: '1'
+          FIXTURE_OUTPUT: ${{ runner.temp }}/csharp-package-determinism
+        run: |
+          mkdir "$FIXTURE_OUTPUT"
+          python3 -B - > "$FIXTURE_OUTPUT/fixture.log" 2>&1 <<'PYCODE'
+          import json, os, pathlib, platform, shutil, subprocess, sys, time, unittest
+          root = pathlib.Path.cwd()
+          sys.path.insert(0, str(root / 'ci'))
+          output = pathlib.Path(os.environ['FIXTURE_OUTPUT'])
+          report = {'schemaVersion': 1, 'fixtureOnly': True, 'productPhases': 0,
+              'source': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'runId': os.environ['GITHUB_RUN_ID'], 'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'workflowSha': os.environ['GITHUB_WORKFLOW_SHA'], 'job': os.environ['GITHUB_JOB'],
+              'host': platform.platform(), 'machine': platform.machine(), 'passed': False}
+          started = time.perf_counter_ns()
+          try:
+              from ci.tests.product_chain_sdk import _tool_selection
+              from ci.products.sdk_dotnet_toolchain import verify_sdk_dotnet_toolchain
+              profile = verify_sdk_dotnet_toolchain(root / 'gradle/release/toolchains/sdk/csharp.json')
+              if not shutil.which('ssh-keygen') or _tool_selection()[0] != ('csharp',):
+                  raise ValueError('The exact C# fixture prerequisites are unavailable')
+              report['verifiedDotnetSdk'] = profile.dotnet_sdk
+              report['dotnetProfileSha256'] = profile.digest
+              method = 'ci.tests.test_product_native_chain.ProductNativeChainTest.test_actual_available_sdk_packages_equal_across_producers'
+              report['method'] = method
+              result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(
+                  unittest.defaultTestLoader.loadTestsFromName(method))
+              report.update(testsRun=result.testsRun, skips=len(result.skipped),
+                  failures=len(result.failures), errors=len(result.errors))
+              report['passed'] = result.wasSuccessful() and result.testsRun == 1 and not result.skipped
+          finally:
+              report['elapsedNs'] = time.perf_counter_ns() - started
+              (output / 'result.json').write_text(json.dumps(report, sort_keys=True, separators=(',', ':')) + '\n')
+          if not report['passed']:
+              raise SystemExit(1)
+          PYCODE
+      - if: always() && inputs.diagnosticFixture == 'csharp-package-determinism'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: csharp-package-determinism-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/csharp-package-determinism/result.json
+            ${{ runner.temp }}/csharp-package-determinism/fixture.log
+          if-no-files-found: error
+          retention-days: 90
           overwrite: false
 
   product-validation:
@@ -120,7 +193,7 @@ jobs:
       runtimeRecoveryOnly: false
       sdkRecoveryOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}
       sdkCheckpoints: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}
-      fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') || contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery'))) }}
+      fullReuseAcceptanceOnly: false
       reuseCompletedParity: ${{ vars.CODEX_AGENT_REUSE_COMPLETED_SDK_PARITY == 'true' }}
       runtimeAggregateRequalification: false
       runtimeAggregateHandoffRecovery: '{"artifactId":12433452038,"artifactSha256":"sha256:a51cad9fe390a6579b6ce40f1245f5020730db5b44c44ff2a2453472982ab225","originalProducer":{"commit":"c8400811dca2e4f8c23f7c459b1abe6ad78d5348","event":"pull_request","pullRequest":31,"repository":"codex-agent-labs/codex-agent","runAttempt":1,"runId":39745656910,"tree":"e2c1b2686acbd4471f9f5d3ef7a78df3e9a505c7","workflowPath":".github/workflows/ci.yml"},"trustedWorkflowSha":"d2243aac89368df2776b6617fd5a623bd6754cb2"}'
@@ -221,7 +294,7 @@ jobs:
     secrets: inherit
 
   merge-gate:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-runtime-library-validation' && 'SDK Runtime trust / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-library-authorizations' && 'Runtime library authorizations / complete' || 'CI / merge-gate' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics' && inputs.diagnosticFixture == 'csharp-package-determinism' && 'C# package determinism / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'build-logic-diagnostics' && 'Build logic diagnostics / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-catalog-custody' && 'SDK custody / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-toolchain-capture' && 'Runtime toolchain / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-phase10-record' && 'Runtime record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'contract-phase10-record' && 'Contract record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-authority' && 'SDK authority / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-record' && 'SDK record / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-phase10-maven-sidecars' && 'SDK Maven sidecars / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'sdk-runtime-library-validation' && 'SDK Runtime trust / complete' || github.event_name == 'workflow_dispatch' && inputs.purpose == 'runtime-library-authorizations' && 'Runtime library authorizations / complete' || 'CI / merge-gate' }}
     if: always()
     needs: [product-validation, build-logic-diagnostics, sdk-failed-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]
     runs-on: ubuntu-24.04

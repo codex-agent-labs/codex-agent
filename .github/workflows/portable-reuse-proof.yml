@@ -1255,6 +1255,7 @@ jobs:
     with:
       completed-sdk: true
     secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
   warm:

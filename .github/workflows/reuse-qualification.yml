@@ -150,7 +150,8 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
-      - name: Bind the native completion issuer
+      - id: completion-source
+        name: Bind the native completion issuer
         env:
           ISSUER_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
           ISSUER_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
@@ -166,6 +167,23 @@ jobs:
             echo "QUALIFICATION_ISSUER_SHA=$ISSUER_SHA"
             echo "PROOF_WORK=$RUNNER_TEMP/completed-sdk-proof"
           } >> "$GITHUB_ENV"
+          python3 -B - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'ci')
+          from products.inventory import git_regular_blob_bytes, load_canonical_json_bytes
+          from reuse import github_output
+          from reuse_qualification import LIMIT, _sdk_completed_spec_path
+          root, commit = Path.cwd(), os.environ['ISSUER_SHA']
+          spec = load_canonical_json_bytes(git_regular_blob_bytes(root, commit,
+              _sdk_completed_spec_path(root, commit), max_bytes=LIMIT))
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'checkpoint': str('reuseCheckpoint' in spec).lower()})
+          PY
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        if: steps.completion-source.outputs.checkpoint == 'true'
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: 'true'
       - name: Authenticate the successful resume and exact admitted SDK object
         env:
           GITHUB_TOKEN: ${{ github.token }}
