@@ -123,7 +123,7 @@ class SdkNativeWorkerActionsTest(unittest.TestCase):
                     phase9_callers += 1
                 self.assertIn("DOTNET_INSTALL_DIR: ${{ runner.temp }}/" + directory, step, str(path))
                 self.assertRegex(step, r"dotnet-version: ['\"]8\.0\.419['\"]")
-        self.assertEqual(9, callers)
+        self.assertEqual(7, callers)
         self.assertEqual(1, phase9_callers)
         action = (ROOT / ".github/actions/sdk-csharp-binary-worker/action.yml").read_text()
         command = action.split("name: Compile the exact elected C# binary", 1)[1].split("run: |\n", 1)[1]

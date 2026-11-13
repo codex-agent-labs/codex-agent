@@ -3145,44 +3145,19 @@ jobs:
   sdk-native-wrappers:
     if: >-
       !inputs.fullReuseAcceptanceOnly && (
-      !inputs.runtimeRecoveryOnly && always() && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' &&
+      !inputs.runtimeRecoveryOnly && always() && !inputs.sdkRecoveryOnly &&
+      needs.workflow-lint.result == 'success' && needs.plan.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
-      needs.plan.outputs.native_wrappers == 'true' &&
-      needs.sdk-csharp-binary-result.result == 'success' &&
-      needs.sdk-csharp-binary-result.outputs.artifact_id != '' &&
-      needs.sdk-native-prepare.result == 'success'
+      needs.plan.outputs.native_wrappers == 'true'
       )
-    needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]
+    needs: [workflow-lint, plan]
     uses: ./.github/workflows/sdk-validation.yml
     with:
       planArtifact: ${{ needs.plan.outputs.plan_artifact }}
-      planId: ${{ needs.plan.outputs.plan_id }}
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
-      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
-      stateArtifactId: ${{ needs.sdk-csharp-binary-result.outputs.artifact_id }}
-      stateArtifactSha256: ${{ needs.sdk-csharp-binary-result.outputs.artifact_digest }}
-      stateWave: ${{ needs.sdk-csharp-binary-result.outputs.state_wave }}
-      sdkStateWave: ${{ needs.sdk-csharp-binary-result.outputs.sdk_state_wave }}
-      preparationStateArtifactId: ${{ needs.sdk-native-prepare.outputs.preparation_state_id }}
-      preparationStateArtifactSha256: ${{ needs.sdk-native-prepare.outputs.preparation_state_digest }}
-      preparationStateWave: ${{ needs.sdk-native-prepare.outputs.preparation_state_wave }}
-      preparationSdkStateWave: ${{ needs.sdk-native-prepare.outputs.preparation_sdk_state_wave }}
-      preparationComponent: ${{ needs.sdk-native-prepare.outputs.preparation_component }}
-      preparationPhase: ${{ needs.sdk-native-prepare.outputs.preparation_phase }}
-      preparationTarget: ${{ needs.sdk-native-prepare.outputs.preparation_target }}
-      preparationBuildKey: ${{ needs.sdk-native-prepare.outputs.preparation_build_key }}
-      sdkPreparedArtifactId: ${{ needs.sdk-native-prepare.outputs.artifact_id }}
-      sdkPreparedArtifactSha256: ${{ needs.sdk-native-prepare.outputs.artifact_digest }}
-      sdkInputsArtifactId: ${{ needs.sdk-inputs.outputs.artifact_id }}
-      sdkInputsArtifactSha256: ${{ needs.sdk-inputs.outputs.artifact_digest }}
-      toolingRequired: ${{ needs.plan.outputs.tooling_required }}
-      toolingArtifactId: ${{ needs.sdk-plan.outputs.tooling_artifact_id }}
-      toolingArtifactSha256: ${{ needs.sdk-plan.outputs.tooling_artifact_sha256 }}
-      toolingTransportProducer: ${{ needs.sdk-plan.outputs.tooling_transport_producer }}
-    secrets:
-      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
 
   apple:
@@ -6875,9 +6850,11 @@ jobs:
       always() && needs.plan.outputs.event_authorized == 'true' &&
       needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.validation_reused != 'true' &&
-      (!inputs.sdkRecoveryOnly ||
-       (fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' &&
-        fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62')) &&
+      fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result == 'success' &&
+      fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' &&
+      fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.artifact_id != '' &&
+      fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.artifact_digest != '' &&
+      (!inputs.sdkRecoveryOnly || fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62') &&
       (needs.plan.outputs.lane_ios_swift_tests_test == 'true' ||
        needs.plan.outputs.native_wrappers == 'true') &&
       !contains(needs.*.result, 'failure') &&
@@ -6889,8 +6866,8 @@ jobs:
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       nodeJs: ${{ fromJSON(needs.plan.outputs.lane_node_js) }}
       nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
-      importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
-      reuseCompletedParity: ${{ inputs.reuseCompletedParity && (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true' }}
+      importedOnly: true
+      reuseCompletedParity: ${{ inputs.reuseCompletedParity && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true' }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
       sdkOutputs: ${{ toJSON(fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs) }}

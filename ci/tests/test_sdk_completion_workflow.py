@@ -572,7 +572,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             condition = condition.replace("inputs.fullReuseAcceptanceOnly", repr(acceptance))
             for field, value in (("complete", complete), ("phase_count", count), ("full_reuse", full)):
                 condition = condition.replace("needs.sdk-completion.outputs." + field, repr(value))
-            self.assertEqual(opt_in and (recovery or acceptance) and complete == full == "true" and count == "62",
+            self.assertEqual(opt_in and complete == full == "true" and count == "62",
                              eval(condition.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}}))
         guard = textwrap.dedent(self.parity_step("name: Require imported complete state for original parity reuse").split("        run: |\n", 1)[1])
         correct = {"IMPORTED_ONLY": "true", "SDK_COMPLETE": "true", "SDK_PHASE_COUNT": "62", "SDK_FULL_REUSE": "true"}
@@ -678,7 +678,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         caller = (ROOT / '.github/workflows/ci.yml').read_text()
         for setting in ('runtimeRecoveryOnly: false',
                         "sdkRecoveryOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}",
-                        "fullReuseAcceptanceOnly: ${{ !(github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') || contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery'))) }}"):
+                        "fullReuseAcceptanceOnly: false"):
             self.assertIn(setting, caller)
         allowed = {'dispatch-authorization', 'workflow-lint', 'workflow-source-checks', 'workflow-build-logic',
                    'plan', 'contract-validation',
@@ -787,7 +787,8 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             'needs.plan.outputs.event_authorized': 'true', 'needs.plan.outputs.remote_build_authorized': 'true',
             'needs.plan.outputs.validation_reused': 'false', 'needs.plan.outputs.lane_ios_swift_tests_test': 'true',
             'needs.plan.outputs.native_wrappers': 'true', 'selected_completion.outputs.complete': 'true',
-            'selected_completion.outputs.phase_count': '62', 'selected_completion.outputs.full_reuse': 'true'}
+            'selected_completion.outputs.phase_count': '62', 'selected_completion.outputs.full_reuse': 'true',
+            'selected_completion.outputs.artifact_id': '123', 'selected_completion.outputs.artifact_digest': 'sha256:' + 'a' * 64}
         def evaluate(values):
             expression = condition.replace('always()', 'True').replace('needs.*.result', repr(['success', 'skipped']))
             for key in sorted(values, key=len, reverse=True):
@@ -801,6 +802,26 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                 with self.subTest(key=key, value=value):
                     self.assertFalse(evaluate({**valid, key: value}))
         self.assertFalse(evaluate({**valid, 'inputs.reuseCompletedParity': False}))
+        for field in ('artifact_id', 'artifact_digest'):
+            self.assertFalse(evaluate({**valid, 'selected_completion.outputs.' + field: ''}))
+        # Ordinary partial completion consumes full authenticated parity context;
+        # it cannot reuse the old all-62 parity or bypass a failed source check.
+        ordinary = {**valid, 'inputs.fullReuseAcceptanceOnly': False, 'inputs.reuseCompletedParity': False,
+                    'selected_completion.outputs.phase_count': '4', 'selected_completion.outputs.full_reuse': 'false'}
+        self.assertTrue(evaluate(ordinary))
+        for field, value in (('result', 'failure'), ('outputs.complete', 'false'),
+                             ('outputs.artifact_id', ''), ('outputs.artifact_digest', '')):
+            self.assertFalse(evaluate({**ordinary, 'selected_completion.' + field: value}))
+        for outcome in ('failure', 'cancelled'):
+            failed = condition.replace('needs.*.result', repr(['success', outcome]))
+            previous = condition
+            condition = failed
+            self.assertFalse(evaluate(ordinary))
+            condition = previous
+        self.assertIn('sdk-native-wrappers', self.job('sdk-parity').split('    needs:', 1)[1].split('    uses:', 1)[0])
+        quality = self.job('sdk-native-wrappers')
+        self.assertIn("needs.workflow-lint.result == 'success'", quality)
+        self.assertIn("needs.plan.result == 'success'", quality)
 
     def test_current_report_and_distinct_acceptance_cli_preserve_legacy_branch(self):
         parity = (ROOT / '.github/workflows/sdk-binding-parity.yml').read_text()

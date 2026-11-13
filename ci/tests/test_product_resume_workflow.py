@@ -308,7 +308,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn("needs.plan.outputs.remote_build_authorized == 'true'", legacy)
         self.assertNotIn("!inputs.sdkRecoveryOnly", workflow_job(self.workflow, "sdk-native-metadata"))
         legacy_workflow = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
-        self.assertIn("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", legacy_workflow)
+        self.assertIn("native-wrapper-source-checks:", legacy_workflow)
         self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", legacy_workflow)
         parity = workflow_job(self.workflow, "sdk-parity")
         selected = 'fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion))'
@@ -316,7 +316,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         parity = parity.replace(selected, "needs.sdk-completion")
         self.assertIn("needs.sdk-completion.outputs.complete == 'true'", parity)
         self.assertIn("needs.sdk-completion.outputs.phase_count == '62'", parity)
-        self.assertIn("importedOnly: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}", parity)
+        self.assertIn("importedOnly: true", parity)
         imported = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
         self.assertIn("CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION: ${{ vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION }}", imported)
         self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", imported)

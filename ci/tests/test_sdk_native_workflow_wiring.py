@@ -1,5 +1,6 @@
 """Native workflow wiring and executed selectors, not hosted/package evidence."""
 
+import ast
 from copy import deepcopy
 import json
 import os
@@ -22,36 +23,43 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class SdkNativeWorkflowWiringTest(unittest.TestCase):
     def test_host_fixture_crt_compatibility_is_windows_only(self):
-        workflow = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
-        block = workflow.split("      - name: Execute all installed consumers under one host authorization\n", 1)[1]
-        setup = textwrap.dedent(block.split("        run: |\n", 1)[1].split("          python3 -B - <<'PY'\n", 1)[0])
-        for target in ("windows-x64", "macos-arm64", "linux-x64"):
-            result = subprocess.check_output(["bash", "-c", setup + '\nprintf "%s" "$CC"'],
-                env={**os.environ, "TARGET": target, "CC": "existing-compiler"}, text=True)
-            self.assertEqual("clang -D_CRT_NONSTDC_NO_WARNINGS" if target == "windows-x64"
-                             else "existing-compiler", result)
-        consumer = (ROOT / "ci/native_wrappers.py").read_text()
+        source = (ROOT / 'ci/sdk_native_validation_workflow.py').read_text()
+        function = next(node for node in ast.parse(source).body
+                        if isinstance(node, ast.FunctionDef) and node.name == '_execute_validation')
+        guards = [node for node in ast.walk(function) if isinstance(node, ast.If)
+                  and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                          and call.func.id == '_windows_rust_fixture_compiler' for call in ast.walk(node))]
+        self.assertEqual(1, len(guards))
+        expression = compile(ast.Expression(guards[0].test), 'canonical-crt-guard', 'eval')
+        for component, target in (('rust', 'windows-x64'), ('rust', 'macos-arm64'),
+                                  ('rust', 'linux-x64'), ('cpp', 'windows-x64'), ('python', 'windows-x64')):
+            with self.subTest(component=component, target=target):
+                identity = product_reuse._identity({'product': 'sdk', 'component': component,
+                                                   'phase': 'validation', 'target': target})
+                self.assertEqual(component == 'rust' and target == 'windows-x64',
+                                 eval(expression, {'__builtins__': {}}, {'component': component, 'identity': identity}))
+        helper = next(node for node in ast.parse(source).body
+                      if isinstance(node, ast.FunctionDef) and node.name == '_windows_rust_fixture_compiler')
+        compiler = ast.get_source_segment(source, helper)
+        self.assertIn('-D_CRT_NONSTDC_NO_WARNINGS %*', compiler)
+        self.assertNotIn('-Wno-', compiler)
+        consumer = (ROOT / 'ci/native_wrappers.py').read_text()
         self.assertIn('flags = ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]', consumer)
-        self.assertNotIn("-Wno-", setup)
 
-    def test_preparation_identity_allows_base_state_without_an_sdk_wave(self):
-        child = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
-        block = child.split("      - name: Require one exact original preparation state\n", 1)[1]
-        script = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
-        for wave in ("", "19"):
-            fields = dict(STATE_ID="71", STATE_SHA="sha256:" + "a" * 64,
-                          STATE_WAVE="0", SDK_STATE_WAVE=wave)
-            environment = {**os.environ, **fields,
-                **{"PREPARATION_" + key: value for key, value in fields.items()},
-                "TOOLING_REQUIRED": "false", "TOOLING_ARTIFACT_ID": "",
-                "TOOLING_ARTIFACT_SHA256": "", "TOOLING_TRANSPORT_PRODUCER": ""}
-            passed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True)
-            self.assertEqual(0, passed.returncode, (wave, passed.stderr))
-            for key in fields:
-                with self.subTest(wave=wave, mismatched=key):
-                    failed = subprocess.run(["bash", "-c", script],
-                        env={**environment, "PREPARATION_" + key: "different"}, capture_output=True)
-                    self.assertNotEqual(0, failed.returncode)
+    def test_source_checks_need_no_preparation_but_canonical_worker_keeps_optional_sdk_wave(self):
+        child = (ROOT / '.github/workflows/sdk-validation.yml').read_text()
+        inputs = child.split('    inputs:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertEqual(['planArtifact', 'validationCommit', 'validationTree'],
+                         re.findall(r'^      ([a-zA-Z]+):', inputs, re.M))
+        self.assertNotIn('preparation', child)
+        self.assertNotIn('sdk-state-wave', child)
+        worker = (ROOT / '.github/actions/sdk-native-package-worker/action.yml').read_text()
+        for name in ('sdk-state-wave', 'preparation-sdk-state-wave'):
+            block = worker.split('  ' + name + ':\n', 1)[1].split('\n  ', 1)[0]
+            self.assertIn("default: ''", block)
+        preparation = worker.split('    - id: preparation\n', 1)[1].split('    - id: identity\n', 1)[0]
+        self.assertIn('[ "$SDK_STATE_WAVE" = "$CURRENT_SDK_STATE_WAVE" ]', preparation)
+        self.assertIn('if [ -n "$SDK_STATE_WAVE" ]; then selected=(--sdk-state-wave "$SDK_STATE_WAVE"); fi', preparation)
 
     def test_same_preparation_transport_reuses_capture_but_every_difference_recaptures(self):
         source = (ROOT / ".github/actions/sdk-native-package-worker/action.yml").read_text()
@@ -153,15 +161,13 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("family: native-package", planned)
         self.assertNotIn("setup-kmp", planned)
 
-        legacy = self.job("sdk-native-wrappers")
-        self.assertIn("needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]", legacy)
-        self.assertIn("needs.sdk-csharp-binary-result.result == 'success'", legacy)
-        for field, output in (("stateArtifactId", "artifact_id"),
-                              ("stateArtifactSha256", "artifact_digest"),
-                              ("stateWave", "state_wave"),
-                              ("sdkStateWave", "sdk_state_wave")):
-            self.assertIn(f"{field}: ${{{{ needs.sdk-csharp-binary-result.outputs.{output} }}}}", legacy)
-            self.assertNotIn(f"{field}: ${{{{ needs.sdk-javascript.outputs.{output} }}}}", legacy)
+        quality = self.job("sdk-native-wrappers")
+        self.assertIn("needs: [workflow-lint, plan]", quality)
+        self.assertIn("needs.workflow-lint.result == 'success'", quality)
+        self.assertIn("needs.plan.result == 'success'", quality)
+        self.assertNotIn('sdk-csharp-binary-result', quality)
+        self.assertNotIn('sdk-native-prepare', quality)
+        self.assertNotIn('stateArtifact', quality)
         prepare = self.job("sdk-native-prepare")
         self.assertIn("name: sdk-native-prepare", prepare)
         self.assertNotIn("strategy:", prepare)
@@ -219,40 +225,47 @@ class SdkNativeWorkflowWiringTest(unittest.TestCase):
         self.assertIn("--expected-build-key", action)
         self.assertIn("codex-agent-sdk-worker-sdk-csharp-binary-desktop-", action)
 
-    def test_legacy_package_job_restores_authenticated_csharp_without_compiling_it(self):
-        child = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
-        job = re.search(r"(?ms)^  native-wrapper-package-validation:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", child)[0]
-        self.assertIn("fetch-depth: 0", job)
-        self.assertLess(job.index("uses: ./.github/actions/capture-sdk-tooling"),
-                        job.index("uses: ./.github/actions/capture-runtime-state"))
-        self.assertLess(job.index("uses: ./.github/actions/capture-runtime-state"),
-                        job.index("ci.sdk_csharp_binary_workflow stage-original"))
-        self.assertLess(job.index("ci.sdk_csharp_binary_workflow stage-original"),
-                        job.index("python \"$tool/ci/native_wrappers.py\" package"))
-        self.assertIn("--sdk-inputs-artifact-id \"$SDK_INPUTS_ARTIFACT_ID\"", job)
-        self.assertIn("--csharp-binary \"$PWD/build/sdk-native-csharp-original/csharp-binary\"", job)
-        self.assertIn("--dotnet-profile \"$PWD/build/sdk-native-csharp-original/sdk-csharp-toolchain.json\"", job)
-        self.assertNotIn("sdk_csharp_binary_workflow --expected-build-key", job)
+    def test_canonical_package_consumes_authenticated_csharp_binary_without_compiling_it(self):
+        worker = (ROOT / '.github/actions/sdk-native-package-worker/action.yml').read_text()
+        self.assertIn('sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}', worker)
+        self.assertIn('--expected-build-key "$BUILD_KEY"', worker)
+        source = (ROOT / 'ci/sdk_native_package_workflow.py').read_text()
+        binary = source.split('            csharp_binary = None\n', 1)[1].split('            def original(', 1)[0]
+        self.assertIn('if component == "csharp":', binary)
+        self.assertIn('binary_root = prepared / "sdk-csharp-binary-desktop"', binary)
+        self.assertIn('"sdk", "csharp", "binary", "desktop"', binary)
+        self.assertIn('product_reuse.validate_phase_receipt', binary)
+        self.assertIn('product_reuse.verify_output_manifest_identity', binary)
+        self.assertIn('binary_manifest["outputs"] != binary_receipt["outputs"]', binary)
+        self.assertLess(source.index('materialize_product_predecessors('), source.index('csharp_binary = None'))
+        self.assertLess(source.index('csharp_binary = None'), source.index('result = execute_package('))
+        self.assertIn('"csharp_binary_stage": csharp_binary', source)
+        self.assertIn('"binary_receipt_path": binary_root / PHASE_RECEIPT_NAME', source)
+        self.assertNotIn('sdk_csharp_binary_workflow stage-original', worker)
+        self.assertNotIn('dotnet build', worker)
+        self.assertNotIn('native-wrapper-package-tool', worker)
 
-    def test_isolated_package_tool_stages_exact_csharp_inspector_sources(self):
-        workflow = (ROOT / ".github/workflows/sdk-validation.yml").read_text()
-        staging = workflow.split("          tool=build/native-wrapper-package-tool\n", 1)[1].split(
-            '          python "$tool/ci/native_wrappers.py" package', 1)[0]
-        script = 'tool=build/native-wrapper-package-tool\n' + textwrap.dedent(staging)
-        inspector = Path("codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot")
-        inputs = [Path("ci/native_wrappers.py"), Path("ci/products/__init__.py"),
-                  inspector / "Program.cs", inspector / "VerifySdkRuntimeRoot.csproj"]
-        with tempfile.TemporaryDirectory(prefix="native-package-tool-") as temporary:
-            root = Path(temporary)
-            for path in inputs:
-                (root / path).parent.mkdir(parents=True, exist_ok=True)
-                (root / path).write_bytes((ROOT / path).read_bytes())
-            subprocess.run(["bash", "-euc", script], cwd=root, check=True, capture_output=True)
-            tool = root / "build/native-wrapper-package-tool"
-            self.assertEqual(set(inputs), {path.relative_to(tool) for path in tool.rglob("*") if path.is_file()})
-            for path in inputs:
-                self.assertEqual((ROOT / path).read_bytes(), (tool / path).read_bytes())
-            self.assertFalse((tool / "codex-agent-runtime-desktop").exists())
+    def test_canonical_package_holds_signed_inspector_through_final_gate(self):
+        source = (ROOT / 'ci/sdk_native_package_workflow.py').read_text()
+        start = source.index('ExitStack() as inspector_lifetime:')
+        admission = source.index('authenticated_inspector(sdk_validation_tooling, root, producer["commit"])')
+        execute = source.index('result = execute_package(')
+        verify = source.index('verified, raw = verify_sdk_package_inputs(')
+        self.assertLess(start, admission)
+        self.assertLess(admission, execute)
+        self.assertLess(execute, verify)
+        self.assertIn('inspector_lifetime.enter_context(', source)
+        self.assertIn('"csharp_inspector": binary_argument["csharp_inspector"]', source)
+        inspector = (ROOT / 'ci/tooling_inspector.py').read_text()
+        node = next(node for node in ast.parse(inspector).body
+                    if isinstance(node, ast.FunctionDef) and node.name == 'authenticated_inspector')
+        capture = ast.get_source_segment(inspector, node)
+        self.assertIn('with verified_tooling_capture(', capture)
+        self.assertIn('policy_revision=revision', capture)
+        self.assertIn('archive.getinfo(_INSPECTOR_PREFIX + name)', capture)
+        self.assertIn('with borrowed_inspector(directory, manifest_sha) as inspector:', capture)
+        self.assertNotIn('subprocess', capture)
+        self.assertNotIn('build(', capture)
 
     def test_collection_waits_for_failed_workers_and_final_gate_is_required(self):
         collector = self.job("sdk-collect-4")

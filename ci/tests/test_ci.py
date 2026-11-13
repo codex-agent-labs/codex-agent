@@ -473,325 +473,158 @@ class RunLaneContractTest(unittest.TestCase):
         self.assertEqual(expected, resolved)
 
     def test_native_wrapper_package_installs_rust_quality_components(self) -> None:
-        workflow = (
-            CI_ROOT.parent / ".github/workflows/sdk-validation.yml"
-        ).read_text(encoding="utf-8")
-        package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
-            "\n  native-wrapper-package-validation:", 1
-        )[0]
-        action = package.split(
-            "uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b",
-            1,
-        )[1].split("- uses: dart-lang/setup-dart@", 1)[0]
-
-        self.assertEqual(
-            ["components: rustfmt,clippy"],
-            [
-                line.strip()
-                for line in action.splitlines()
-                if line.strip().startswith("components:")
-            ],
-        )
-        self.assertNotIn("toolchain:", action)
-        for command in ("cargo fmt ", "cargo clippy "):
-            self.assertLess(
-                package.index("components: rustfmt,clippy"), package.index(command)
-            )
-        self.assertIn("python3 -B -m ci.products.sdk_package '${{ matrix.language }}-capabilities'", package)
-        self.assertNotIn('cargo test --manifest-path "$binding/rust/Cargo.toml"', package)
-        producer = (CI_ROOT / "products/sdk_package.py").read_text()
+        workflow = (CI_ROOT.parent / '.github/workflows/sdk-validation.yml').read_text()
+        action = workflow.split('uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("steps.selection.outputs.rust == 'true'", action)
+        self.assertEqual(['components: rustfmt,clippy'],
+                         [line.strip() for line in action.splitlines() if line.strip().startswith('components:')])
+        self.assertNotIn('toolchain:', action)
+        for command in ('cargo fetch --manifest-path codex-agent-bindings/rust/Cargo.toml --locked',
+                        'cargo fmt --manifest-path codex-agent-bindings/rust/Cargo.toml -- --check',
+                        'cargo clippy --manifest-path codex-agent-bindings/rust/Cargo.toml --all-targets --locked --offline -- -D warnings'):
+            self.assertIn(command, workflow)
+            self.assertLess(workflow.index('components: rustfmt,clippy'), workflow.index(command))
+        self.assertNotIn('cargo test ', workflow)
+        producer = (CI_ROOT / 'products/sdk_package.py').read_text()
         self.assertIn('"--include-ignored"', producer)
         self.assertIn('["--doc"]', producer)
         self.assertIn('["--lib", "--test", "enum_parity"]', producer)
 
     def test_native_wrapper_dart_behavior_runs_declared_sdk_floor(self) -> None:
         root = CI_ROOT.parent
-        workflow = (root / ".github/workflows/sdk-validation.yml").read_text(
-            encoding="utf-8"
-        )
-        language = workflow.split("\n  native-wrapper-language:", 1)[1].split(
-            "\n  native-wrapper-package-validation:", 1
-        )[0]
-        pubspec = (
-            root / "codex-agent-bindings/dart/pubspec.yaml"
-        ).read_text(encoding="utf-8")
-        floor = re.search(r'^  sdk: ">=([0-9.]+) <4\.0\.0"$', pubspec, re.MULTILINE)
-        action = language.split("uses: dart-lang/setup-dart@", 1)[1].split(
-            "- name: Execute the wrapper behavior and parity suite", 1
-        )[0]
-
+        workflow = (root / '.github/workflows/sdk-validation.yml').read_text()
+        floor = re.search(r'^  sdk: ">=([0-9.]+) <4\.0\.0"$',
+                          (root / 'codex-agent-bindings/dart/pubspec.yaml').read_text(), re.MULTILINE)
         self.assertIsNotNone(floor)
-        self.assertIn("if: matrix.language == 'dart'", action)
-        self.assertEqual(
-            [f'sdk: "{floor.group(1)}"'],
-            [line.strip() for line in action.splitlines() if line.strip().startswith("sdk:")],
-        )
-        self.assertLess(
-            language.index(f'sdk: "{floor.group(1)}"'),
-            language.index("dart pub get --enforce-lockfile"),
-        )
+        action = workflow.split('uses: dart-lang/setup-dart@', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("steps.selection.outputs.dart == 'true'", action)
+        self.assertEqual([f'sdk: "{floor.group(1)}"'],
+                         [line.strip() for line in action.splitlines() if line.strip().startswith('sdk:')])
+        self.assertLess(workflow.index(f'sdk: "{floor.group(1)}"'), workflow.index('dart pub get --enforce-lockfile'))
+        for command in ('dart format --output=none --set-exit-if-changed .', 'dart analyze'):
+            self.assertIn(command, workflow)
 
     def test_native_wrapper_package_emits_csharp_aggregate_evidence(self) -> None:
-        workflow = (
-            CI_ROOT.parent / ".github/workflows/sdk-validation.yml"
-        ).read_text(encoding="utf-8")
-        package = workflow.split("\n  native-wrapper-language:", 1)[1].split(
-            "\n  native-wrapper-package-validation:", 1
-        )[0]
-        self.assertIn('options+=(--dotnet "$(command -v dotnet)")', package)
-        self.assertLess(package.index("-m ci.products.sdk_package"),
-                        package.index('ln "$raw/"{compiler-evidence.tsv,executed-tests.tsv,test-program}'))
-        producer = (CI_ROOT.parent / "codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py").read_text()
-        for proof in ("--real-mcp-values", "native-values-execution.json", "complete-suite-execution.json",
-                      "loader-security-execution.json"):
+        workflow = (CI_ROOT.parent / '.github/workflows/sdk-validation.yml').read_text()
+        self.assertNotIn('setup-dotnet', workflow)
+        self.assertNotIn('csharp', workflow)
+        # The canonical C# producer keeps the original behavior/evidence checks.
+        producer = (CI_ROOT.parent / 'codex-agent-bindings/csharp/tools/produce_sdk_validation_evidence.py').read_text()
+        for proof in ('--real-mcp-values', 'native-values-execution.json', 'complete-suite-execution.json',
+                      'loader-security-execution.json'):
             self.assertIn(proof, producer)
 
-    def test_native_wrapper_validation_stages_once_fans_out_and_collects(self) -> None:
-        workflow = (
-            CI_ROOT.parent / ".github/workflows/sdk-validation.yml"
-        ).read_text(encoding="utf-8")
-        stage = workflow.split("\n  native-wrapper-sdk-stage:", 1)[1].split(
-            "\n  native-wrapper-language:", 1
-        )[0]
-        language = workflow.split("\n  native-wrapper-language:", 1)[1].split(
-            "\n  native-wrapper-package-validation:", 1
-        )[0]
-        package = workflow.split("\n  native-wrapper-package-validation:", 1)[1].split(
-            "\n  native-wrapper-release-assembly:", 1
-        )[0]
-        assembly = workflow.split("\n  native-wrapper-release-assembly:", 1)[1].split(
-            "\n  native-wrapper-host-consumers:", 1
-        )[0]
-        consumers = workflow.split("\n  native-wrapper-host-consumers:", 1)[1]
-
-        self.assertEqual(1, stage.count("python3 -B -m ci.sdk_native_prepared_receiver"))
-        self.assertIn("uses: ./.github/actions/capture-sdk-tooling", stage)
-        self.assertIn("uses: ./.github/actions/capture-runtime-state", stage)
-        self.assertIn("product: sdk", stage)
-        self.assertIn("sdk-family: ${{ format('native-{0}', inputs.preparationPhase) }}", stage)
-        self.assertIn('test "$STATE_ID" = "$PREPARATION_STATE_ID"', stage)
-        self.assertIn('test "$STATE_SHA" = "$PREPARATION_STATE_SHA"', stage)
-        self.assertIn('test "$STATE_WAVE" = "$PREPARATION_STATE_WAVE"', stage)
-        self.assertIn('test "$SDK_STATE_WAVE" = "$PREPARATION_SDK_STATE_WAVE"', stage)
-        self.assertIn('--preparation-state-root "$STATE"', stage)
-        self.assertIn('--prepared-artifact-id "$PREPARED_ARTIFACT_ID"', stage)
-        self.assertIn('--prepared-artifact-sha256 "$PREPARED_ARTIFACT_SHA256"', stage)
-        self.assertIn('--sdk-inputs-artifact-id "$SDK_INPUTS_ARTIFACT_ID"', stage)
-        self.assertIn('--sdk-inputs-artifact-sha256 "$SDK_INPUTS_ARTIFACT_SHA256"', stage)
-        self.assertIn('--trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA"', stage)
-        self.assertLess(stage.index("name: Require one exact original preparation state"),
-                        stage.index("uses: ./.github/actions/capture-runtime-state"))
-        self.assertLess(stage.index("python3 -B -m ci.sdk_native_prepared_receiver"),
-                        stage.index("uses: actions/upload-artifact@"))
-        for forbidden in ("setup-kmp", "./gradlew", "prepareNativeWrapperPackageSources",
-                          "codex-agent-ci-desktop-", "codex-agent-ci-contracts-"):
-            self.assertNotIn(forbidden, stage)
-        self.assertIn("name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}", stage)
-        self.assertIn("path: build/sdk-native-prepared-receiver/upload", stage)
-        self.assertIn("retention-days: 1", stage)
-        versioned_sdk_root = "native-wrapper-c-abi-sdks/${{ inputs.validationTree }}"
-        self.assertEqual(6, workflow.count(versioned_sdk_root))
-        self.assertNotIn("native-wrapper-c-abi-sdks/linux-x64", workflow)
-
-        self.assertIn("needs: native-wrapper-sdk-stage", language)
-        self.assertIn("fail-fast: false", language)
-        self.assertIn(
-            "name: codex-agent-native-wrapper-language-inputs-${{ inputs.validationTree }}",
-            language,
-        )
-        self.assertNotIn("name: codex-agent-native-wrapper-sdk-stage-", language)
-        self.assertIn("Forward only inputs consumed by Linux language checks", stage)
-        self.assertIn("capture_runtime_authorization", language)
-        self.assertIn("vars.CODEX_AGENT_SDK_RUNTIME_VALIDATION_AUTHORIZATION", language)
-        self.assertIn('--runtime-authorization "$PWD/build/native-wrapper-authorization"', language)
-        self.assertLess(language.index("capture_runtime_authorization"), language.index("-m ci.products.sdk_package"))
-        self.assertIn("build/native-wrapper-raw", language)
-        self.assertIn("name: codex-agent-native-wrapper-raw-${{ matrix.language }}-${{ inputs.validationTree }}", language)
-        self.assertEqual(
-            ["python", "csharp", "rust", "cpp", "dart"],
-            [
-                line.strip().removeprefix("- language: ")
-                for line in language.splitlines()
-                if line.strip().startswith("- language: ")
-            ],
-        )
-        self.assertIn(
-            "name: codex-agent-native-wrapper-evidence-${{ matrix.language }}-${{ inputs.validationTree }}",
-            language,
-        )
-        self.assertIn("path: build/native-wrapper-evidence", language)
-        self.assertIn("include-hidden-files: true", language)
-        self.assertIn("retention-days: 1", language)
-        for check in (
-            'test "${actual_files[*]}" = "${expected_files[*]}"',
-            'test -f "$evidence/$file"',
-            'test -s "$evidence/$file"',
-            'test ! -L "$evidence/$file"',
-        ):
-            self.assertIn(check, language)
-
-        self.assertIn("needs: native-wrapper-sdk-stage", package)
-        self.assertIn(
-            "name: codex-agent-native-wrapper-sdk-stage-${{ inputs.validationTree }}",
-            package,
-        )
-        self.assertIn('python "$tool/ci/native_wrappers.py" package', package)
-        self.assertLess(package.index("python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1"),
-                        package.index("test_package_only_process.py"))
-        self.assertLess(package.index("test_package_only_process.py"),
-                        package.index('python "$tool/ci/native_wrappers.py" package'))
-        self.assertEqual(2, package.count("-p test_package_only_process.py -v"))
-        self.assertLess(package.index("codex-agent-bindings/cpp/tools/tests"),
-                        package.index('python "$tool/ci/native_wrappers.py" package'))
-        self.assertNotIn("test_package_root_requirement.py", package)
-        self.assertNotIn('--repository "$PWD"', package)
-        self.assertIn('cp -R ci/products "$tool/ci/"', package)
-        self.assertIn('test ! -e "$tool/codex-agent-runtime-desktop"', package)
-        self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', package)
-        self.assertIn("codex-agent-sdk/build/native-wrapper-package-sources", package)
-        self.assertIn("codex-agent-sdk/build/native-wrapper-c-abi-sdks", package)
-        self.assertIn(
-            "name: codex-agent-native-wrapper-package-validation-${{ inputs.validationTree }}",
-            package,
-        )
-        self.assertIn("retention-days: 1", package)
-        self.assertIn('--sdk-version-file "$PWD/gradle/release/versions/sdk.txt"', consumers)
-        checkout_environment = consumers.split("    steps:\n", 1)[0]
-        for setting in ("GIT_CONFIG_COUNT: '1'", "GIT_CONFIG_KEY_0: core.autocrlf", "GIT_CONFIG_VALUE_0: 'false'"):
-            self.assertIn(setting, checkout_environment)
-        self.assertIn("capture_runtime_authorization", consumers)
-        self.assertIn("-m ci.products.sdk_package consume-native", consumers)
-        self.assertNotIn("python ci/native_wrappers.py consume", consumers)
-        self.assertIn('--plan "$PWD/build/ci/plan/impact-plan.json"', consumers)
-        self.assertIn('--package-negative-evidence "$PWD/build/native-wrapper-negative/$TARGET"', consumers)
-        self.assertIn("build/native-wrapper-negative", consumers)
-        self.assertIn("build/native-wrapper-authorization", consumers)
-
-        self.assertIn("if: always()", assembly)
-        self.assertIn(
-            "needs: [native-wrapper-sdk-stage, native-wrapper-language, native-wrapper-package-validation]",
-            assembly,
-        )
-        self.assertLess(
-            assembly.index("name: Require every parallel native-wrapper validation"),
-            assembly.index("uses: actions/download-artifact@"),
-        )
-        for result in (
-            "needs.native-wrapper-sdk-stage.result",
-            "needs.native-wrapper-language.result",
-            "needs.native-wrapper-package-validation.result",
-        ):
-            self.assertIn(result, assembly)
-        for result in ("SDK_STAGE_RESULT", "LANGUAGE_RESULT", "PACKAGE_RESULT"):
-            self.assertIn(f'test "${result}" = success', assembly)
-        self.assertIn(
-            "pattern: codex-agent-native-wrapper-evidence-*-${{ inputs.validationTree }}",
-            assembly,
-        )
-        self.assertIn("merge-multiple: true", assembly)
-        self.assertIn("expected_languages=(cpp csharp dart python rust)", assembly)
-        self.assertIn(
-            "expected_files=(compiler-evidence.tsv executed-tests.tsv test-program)",
-            assembly,
-        )
-        for check in (
-            'test "${actual_languages[*]}" = "${expected_languages[*]}"',
-            'test "${actual_files[*]}" = "${expected_files[*]}"',
-            'test -d "$directory"',
-            'test ! -L "$directory"',
-            'test -f "$directory/$file"',
-            'test -s "$directory/$file"',
-            'test ! -L "$directory/$file"',
-        ):
-            self.assertIn(check, assembly)
-        self.assertIn(
-            "name: codex-agent-native-wrapper-packages-${{ inputs.validationTree }}",
-            assembly,
-        )
-        self.assertIn("retention-days: 90", assembly)
-        self.assertIn("needs: native-wrapper-release-assembly", consumers)
+    def test_native_wrapper_source_checks_do_not_duplicate_canonical_products(self) -> None:
+        workflow = (CI_ROOT.parent / '.github/workflows/sdk-validation.yml').read_text()
+        self.assertEqual(['native-wrapper-source-checks'],
+                         re.findall(r'^  ([a-z][a-z-]+):$', workflow.split('jobs:\n', 1)[1], re.M))
+        self.assertEqual(1, workflow.count('actions/download-artifact@'))
+        self.assertIn('name: ${{ inputs.planArtifact }}', workflow)
+        self.assertIn('ref: ${{ inputs.validationCommit }}', workflow)
+        self.assertIn('persist-credentials: false', workflow)
+        self.assertIn('fetch-depth: 0', workflow)
+        self.assertIn('python-version: "3.11"', workflow)
+        self.assertLess(workflow.index('pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1'),
+                        workflow.index('discover -s codex-agent-bindings/python/tests'))
+        self.assertLess(workflow.index('command -v cmake'), workflow.index('discover -s codex-agent-bindings/cpp/tools/tests'))
+        self.assertEqual(2, workflow.count('-p test_package_only_process.py -v'))
+        # An explicit status function keeps selected siblings running after a
+        # prior language failure; no continued error can turn the job green.
+        conditions = re.findall(r"^        if: \$\{\{ (.*?) \}\}$", workflow, re.M)
+        self.assertEqual(8, len(conditions))
+        self.assertNotIn('continue-on-error:', workflow)
+        for condition in conditions:
+            self.assertTrue(condition.startswith("!cancelled() && steps.selection.outcome == 'success' && ("))
+            for cancelled, selection, selected, expected in (
+                    (False, 'success', 'true', True), (True, 'success', 'true', False),
+                    (False, 'failure', 'true', False), (False, 'skipped', 'true', False),
+                    (False, 'success', 'false', False)):
+                expression = condition.replace('!cancelled()', repr(not cancelled))
+                expression = expression.replace('steps.selection.outcome', repr(selection))
+                expression = re.sub(r'steps\.selection\.outputs\.(?:python|cpp|rust|dart)', repr(selected), expression)
+                self.assertEqual(expected, eval(expression.replace('&&', ' and ').replace('||', ' or '),
+                                               {'__builtins__': {}}))
+        for forbidden in ('capture-sdk-tooling', 'capture-runtime-state', 'sdk_native_prepared_receiver',
+                          'setup-dotnet', 'actions/upload-artifact@', 'native_wrappers.py package',
+                          'ci.products.sdk_package', 'restore-reuse-qualification', 'authority_read_token',
+                          'gradlew', 'matrix:', 'native-wrapper-release-assembly'):
+            self.assertNotIn(forbidden, workflow)
 
     def test_native_wrapper_workflow_is_sdk_owned_and_authorized_before_invocation(self) -> None:
-        workflows = CI_ROOT.parent / ".github/workflows"
-        desktop = (workflows / "desktop-runtime-evidence.yml").read_text(encoding="utf-8")
-        parent = (workflows / "product-validation.yml").read_text(encoding="utf-8")
-        sdk = (workflows / "sdk-validation.yml").read_text(encoding="utf-8")
-        caller = parent.split("\n  sdk-native-wrappers:", 1)[1].split("\n  apple:", 1)[0]
-        gate = parent.split("\n  merge-gate:", 1)[1]
-
-        self.assertNotIn("native-wrapper-", desktop)
-        self.assertNotIn("nativeWrappers", desktop)
-        self.assertIn("needs: [workflow-lint, plan, sdk-plan, sdk-csharp-binary-result, sdk-native-prepare, sdk-inputs]", caller)
-        for condition in (
-            "needs.plan.outputs.event_authorized == 'true'",
-            "needs.plan.outputs.remote_build_authorized == 'true'",
-            "needs.plan.outputs.validation_reused != 'true'",
-            "needs.plan.outputs.native_wrappers == 'true'",
-            "needs.sdk-csharp-binary-result.result == 'success'",
-            "needs.sdk-native-prepare.result == 'success'",
-        ):
+        workflows = CI_ROOT.parent / '.github/workflows'
+        desktop = (workflows / 'desktop-runtime-evidence.yml').read_text()
+        parent = (workflows / 'product-validation.yml').read_text()
+        caller = parent.split('\n  sdk-native-wrappers:', 1)[1].split('\n  apple:', 1)[0]
+        gate = parent.split('\n  merge-gate:', 1)[1]
+        self.assertNotIn('native-wrapper-', desktop)
+        self.assertNotIn('nativeWrappers', desktop)
+        self.assertIn('needs: [workflow-lint, plan]', caller)
+        for condition in ("needs.workflow-lint.result == 'success'", "needs.plan.result == 'success'",
+                          "needs.plan.outputs.event_authorized == 'true'", "needs.plan.outputs.remote_build_authorized == 'true'",
+                          "needs.plan.outputs.validation_reused != 'true'", "needs.plan.outputs.native_wrappers == 'true'"):
             self.assertIn(condition, caller)
-        for field, source in (
-            ("planId", "needs.plan.outputs.plan_id"),
-            ("trustedWorkflowSha", "needs.plan.outputs.publisher_sha"),
-            ("stateArtifactId", "needs.sdk-csharp-binary-result.outputs.artifact_id"),
-            ("stateArtifactSha256", "needs.sdk-csharp-binary-result.outputs.artifact_digest"),
-            ("stateWave", "needs.sdk-csharp-binary-result.outputs.state_wave"),
-            ("sdkStateWave", "needs.sdk-csharp-binary-result.outputs.sdk_state_wave"),
-            ("preparationStateArtifactId", "needs.sdk-native-prepare.outputs.preparation_state_id"),
-            ("preparationStateArtifactSha256", "needs.sdk-native-prepare.outputs.preparation_state_digest"),
-            ("preparationStateWave", "needs.sdk-native-prepare.outputs.preparation_state_wave"),
-            ("preparationSdkStateWave", "needs.sdk-native-prepare.outputs.preparation_sdk_state_wave"),
-            ("preparationComponent", "needs.sdk-native-prepare.outputs.preparation_component"),
-            ("preparationPhase", "needs.sdk-native-prepare.outputs.preparation_phase"),
-            ("preparationTarget", "needs.sdk-native-prepare.outputs.preparation_target"),
-            ("preparationBuildKey", "needs.sdk-native-prepare.outputs.preparation_build_key"),
-            ("sdkPreparedArtifactId", "needs.sdk-native-prepare.outputs.artifact_id"),
-            ("sdkPreparedArtifactSha256", "needs.sdk-native-prepare.outputs.artifact_digest"),
-            ("sdkInputsArtifactId", "needs.sdk-inputs.outputs.artifact_id"),
-            ("sdkInputsArtifactSha256", "needs.sdk-inputs.outputs.artifact_digest"),
-            ("toolingRequired", "needs.plan.outputs.tooling_required"),
-            ("toolingArtifactId", "needs.sdk-plan.outputs.tooling_artifact_id"),
-            ("toolingArtifactSha256", "needs.sdk-plan.outputs.tooling_artifact_sha256"),
-            ("toolingTransportProducer", "needs.sdk-plan.outputs.tooling_transport_producer"),
-        ):
-            self.assertIn(f"{field}: ${{{{ {source} }}}}", caller)
-        self.assertIn("uses: ./.github/workflows/sdk-validation.yml", caller)
-        self.assertIn("sdk-native-wrappers", gate.split("\n    needs:", 1)[1].split("\n    runs-on:", 1)[0])
+        self.assertEqual(['planArtifact', 'validationCommit', 'validationTree'],
+                         re.findall(r'^      ([a-zA-Z]+):', caller, re.M))
+        for field, source in (('planArtifact', 'plan_artifact'), ('validationCommit', 'validation_commit'),
+                              ('validationTree', 'validation_tree')):
+            self.assertIn(f'{field}: ${{{{ needs.plan.outputs.{source} }}}}', caller)
+        for forbidden in ('sdk-csharp-binary-result', 'sdk-native-prepare', 'sdk-inputs', 'sdk-plan', 'secrets:'):
+            self.assertNotIn(forbidden, caller)
+        self.assertIn('uses: ./.github/workflows/sdk-validation.yml', caller)
+        self.assertIn('sdk-native-wrappers', gate.split('\n    needs:', 1)[1].split('\n    runs-on:', 1)[0])
         self.assertIn('test "$NATIVE_WRAPPERS_RESULT" = success || exit 1', gate)
-        self.assertIn("native-wrapper-release-assembly:", sdk)
 
-    def test_native_wrapper_preparation_state_guard_fails_closed(self) -> None:
-        workflow = (CI_ROOT.parent / ".github/workflows/sdk-validation.yml").read_text(encoding="utf-8")
-        guard = workflow.split("      - name: Require one exact original preparation state\n", 1)[1].split(
-            "      - name: Select installed caller Java for SDK tooling\n", 1
-        )[0]
-        script = textwrap.dedent(guard.split("        run: |\n", 1)[1])
-        values = {
-            "STATE_ID": "11", "STATE_SHA": "sha256:" + "a" * 64,
-            "STATE_WAVE": "0", "SDK_STATE_WAVE": "2",
-            "PREPARATION_STATE_ID": "11", "PREPARATION_STATE_SHA": "sha256:" + "a" * 64,
-            "PREPARATION_STATE_WAVE": "0", "PREPARATION_SDK_STATE_WAVE": "2",
-            "TOOLING_REQUIRED": "false", "TOOLING_ARTIFACT_ID": "",
-            "TOOLING_ARTIFACT_SHA256": "", "TOOLING_TRANSPORT_PRODUCER": "",
-        }
-
-        def accepted(changes: dict[str, str]) -> bool:
-            result = subprocess.run(["bash", "-c", script], env={**os.environ, **values, **changes},
-                                    capture_output=True, text=True)
-            return result.returncode == 0
-
-        self.assertTrue(accepted({}))
-        for field, wrong in (
-            ("PREPARATION_STATE_ID", "12"), ("PREPARATION_STATE_SHA", "sha256:" + "b" * 64),
-            ("PREPARATION_STATE_WAVE", "1"), ("PREPARATION_SDK_STATE_WAVE", "3"),
-            ("TOOLING_REQUIRED", "unknown"), ("TOOLING_ARTIFACT_ID", "12"),
-        ):
-            with self.subTest(field=field):
-                self.assertFalse(accepted({field: wrong}))
-        self.assertTrue(accepted({"TOOLING_REQUIRED": "true", "TOOLING_ARTIFACT_ID": "12",
-                                  "TOOLING_ARTIFACT_SHA256": "sha256:" + "b" * 64,
-                                  "TOOLING_TRANSPORT_PRODUCER": "{}"}))
+    def test_native_wrapper_source_selection_uses_exact_validated_plan(self) -> None:
+        import product_reuse
+        from ci.tests.test_product_reuse_adapter import impact_plan
+        workflow = (CI_ROOT.parent / '.github/workflows/sdk-validation.yml').read_text()
+        script = textwrap.dedent(re.search(r"(?ms)^          python3 -B - <<'PYCODE'\n(.*?)^          PYCODE$", workflow)[1])
+        self.assertIn('from product_reuse import _requested, _validate_plan', script)
+        self.assertNotIn('matrices', script)
+        commit, tree = 'a' * 40, 'b' * 40
+        cases = ((['codex-agent-bindings/python/src/codex_agent/api.py'], False, {'python'}),
+                 (['codex-agent-bindings/python/src/codex_agent/api.py'], True, {'python', 'cpp', 'rust', 'dart'}),
+                 (['unrecognized-new-input'], False, {'python', 'cpp', 'rust', 'dart'}),
+                 (['ci/tests/test_ci.py'], False, set()))
+        for changed, full_requested, selected in cases:
+            document = impact_plan(changed=changed, full_requested=full_requested)
+            lanes, full, unknown = _legacy_lane_states(CI_ROOT.parent, changed, force_full=full_requested,
+                remote_authorized=True, remote_reason='pull-request-final')
+            document.update(validationCommit=commit, validationTree=tree, lanes=lanes, full=full, unknownPaths=unknown)
+            with self.subTest(changed=changed, full=full_requested), tempfile.TemporaryDirectory() as temporary:
+                path, output = Path(temporary) / 'plan.json', Path(temporary) / 'outputs'
+                path.write_text(json.dumps(document))
+                environment = {'PLAN_PATH': str(path), 'GITHUB_OUTPUT': str(output),
+                               'VALIDATION_COMMIT': commit, 'VALIDATION_TREE': tree}
+                def git_value(root, *args):
+                    self.assertEqual(CI_ROOT.parent, root)
+                    return commit if args == ('rev-parse', 'HEAD^{commit}') else tree
+                with patch.object(product_reuse, '_git_value', side_effect=git_value), \
+                        patch.dict(os.environ, environment), patch.object(Path, 'cwd', return_value=CI_ROOT.parent):
+                    exec(compile(script, 'sdk-source-selection', 'exec'), {})
+                    self.assertEqual({name: str(name in selected).lower() for name in ('python', 'cpp', 'rust', 'dart')},
+                                     dict(line.split('=') for line in output.read_text().splitlines()))
+                    failures = [('missing', None), ('malformed', b'{}'), ('bad-json', b'{'),
+                                ('wrong-checkout', {**document, 'validationCommit': 'c' * 40}),
+                                ('wrong-tree', {**document, 'validationTree': 'c' * 40}),
+                                ('wrong-projection', {**document, 'lanes': {}}),
+                                ('bad-full', {**document, 'fullRequested': 'true'})]
+                    for label, bad in failures:
+                        with self.subTest(failure=label):
+                            output.unlink()
+                            if bad is None: path.unlink()
+                            else: path.write_bytes(bad if isinstance(bad, bytes) else json.dumps(bad).encode())
+                            with self.assertRaises((ValueError, FileNotFoundError)):
+                                exec(compile(script, 'sdk-source-selection', 'exec'), {})
+                            self.assertFalse(output.exists())
+                            output.touch()
+                    path.write_text(json.dumps(document))
+                    for name in ('VALIDATION_COMMIT', 'VALIDATION_TREE'):
+                        output.unlink()
+                        with patch.dict(os.environ, {name: 'c' * 40}), self.assertRaises(ValueError):
+                            exec(compile(script, 'sdk-source-selection', 'exec'), {})
+                        self.assertFalse(output.exists())
+                        output.touch()
 
     def test_action_and_lane_driver_bind_every_execution_to_the_candidate_tree(self) -> None:
         action = (CI_ROOT.parent / ".github/actions/run-ci-lane/action.yml").read_text(encoding="utf-8")
