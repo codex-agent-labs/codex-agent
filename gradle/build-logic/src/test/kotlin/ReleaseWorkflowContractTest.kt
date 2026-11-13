@@ -134,7 +134,13 @@ class ReleaseWorkflowContractTest {
         val conditionalOverwrites = combined.lineSequence().count { it.trim() == apkOverwrite }
         assertEquals(1, conditionalOverwrites)
         assertTrue(apkOverwrite in workflows.getValue("android-runtime-evidence.yml"))
-        assertEquals(uploads, Regex("(?m)^\\s+overwrite: (?:true|false)$").findAll(combined).count() + conditionalOverwrites)
+        val runtimeToolingOverwrite = "overwrite: ${'$'}{{ inputs.tooling-purpose != 'runtime-package' }}"
+        val runtimeToolingOverwrites = combined.lineSequence().count { it.trim() == runtimeToolingOverwrite }
+        assertEquals(1, runtimeToolingOverwrites)
+        assertTrue(runtimeToolingOverwrite in lane.substringAfter("\n    - id: upload_lane\n")
+            .substringBefore("\n    - name:"))
+        assertEquals(uploads, Regex("(?m)^\\s+overwrite: (?:true|false)$").findAll(combined).count() +
+            conditionalOverwrites + runtimeToolingOverwrites)
     }
 
     @Test
