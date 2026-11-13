@@ -57,6 +57,9 @@ internal fun Project.registerAppleRustSliceReuse(inputs: AppleRustSliceRegistrat
         nativeInputs.from(inputs.nativeInputs); repositoryDirectory.set(repository)
         exportedArchive.set(exportDirectory.map { it.file(spec.archiveName) })
         sliceProof.set(exportDirectory.map { it.file(spec.proofName) })
+        toolchainEvidence.set(layout.buildDirectory.dir("apple-toolchain-exports").map {
+            it.file(spec.proofName.removeSuffix("-proof.json") + "-toolchain.json")
+        })
     }
     registerExport(
         "exportCodexAgentIosArm64RustSlice", appleRustSliceSpecs[0], inputs.deviceArchive,

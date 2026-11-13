@@ -1,0 +1,355 @@
+"""Protected job entry/output boundaries; core/native issuance is an explicit seam."""
+from contextlib import ExitStack
+from copy import deepcopy
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import completed_sdk_reuse as completed
+import reuse_qualification as native
+from products.inventory import canonical_json_bytes, sha256_bytes
+from ci.tests.test_sdk_checkpoint_issuer import SdkCheckpointIssuerTest
+
+
+class SdkCheckpointEntryTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture = SdkCheckpointIssuerTest()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        f = self.fixture
+        self.root = f.root
+        self.owner = self.root / 'owner.json'
+        self.owner.write_bytes(canonical_json_bytes(f.policy))
+        self.frozen = self.root / 'frozen.json'
+        self.frozen.write_bytes(canonical_json_bytes(f.fixture.base))
+        self.output = self.root / 'github-output'
+        self.selectors = json.dumps({'source':f.fixture.source,'controlArtifact':f.control_selector})
+        self.env = {'QUALIFICATION_ISSUER_SHA':f.policy['issuerCommit'],
+            'QUALIFICATION_ISSUER_REPOSITORY':native.REPOSITORY,'QUALIFICATION_ISSUER_PATH':native.ISSUER_WORKFLOW,
+            'CODEX_AGENT_CHECKPOINT_OWNER_POLICY':str(self.owner),'GITHUB_REPOSITORY':native.REPOSITORY,
+            'GITHUB_EVENT_NAME':'pull_request','GITHUB_REF':'refs/pull/31/merge','GITHUB_SHA':f.producer['commit'],
+            'GITHUB_RUN_ID':str(f.producer['runId']),'GITHUB_RUN_ATTEMPT':str(f.producer['runAttempt']),
+            'GITHUB_JOB':'completed-sdk-checkpoint','GITHUB_OUTPUT':str(self.output)}
+        self.noop=False;self.change_owner=False
+
+    def engine(self,policy,source,control,work,**kw):
+        self.assertEqual(self.fixture.policy,policy)
+        self.assertEqual(self.fixture.fixture.source,source)
+        self.assertEqual(self.fixture.control_selector,control)
+        self.assertEqual(self.fixture.fixture.base,kw['frozen'])
+        self.assertEqual(policy['issuerCommit'],kw['revision'])
+        self.assertEqual(self.root,kw['root'])
+        work=Path(work);work.mkdir()
+        if self.change_owner:self.owner.write_bytes(canonical_json_bytes({**policy,'issuerCommit':'e'*40}))
+        if self.noop:
+            return {'reusedCheckpoint':policy['bootstrap'],'reusedCheckpointSubjectSha256':policy['bootstrapProofSha256']}
+        # Not a valid native proof: this fixture tests protected entry/output only.
+        (work/'completion.json').write_bytes(canonical_json_bytes({'native':'issuer core seam'}))
+        return {'checkpointArtifactName':'sdk-completed-checkpoint-fixture'}
+
+    def issue(self,*,environment=None,selectors=None,preceding_selector=""):
+        work=self.root/'issued'
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,environment or self.env,clear=True))
+            stack.enter_context(patch.object(native,'__file__',str(self.root/'ci/reuse_qualification.py')))
+            stack.enter_context(patch.object(native.subprocess,'check_output',return_value=self.fixture.policy['issuerCommit']+'\n'))
+            self.compatible=stack.enter_context(patch.object(native,'_compatible_verifier',return_value=True))
+            stack.enter_context(patch('sdk_handoff._ensure_observed_sdk_commit'))
+            stack.enter_context(patch.object(native,'_frozen_spec_path',return_value='frozen.json'))
+            stack.enter_context(patch('products.inventory.git_regular_blob_bytes',return_value=canonical_json_bytes(self.fixture.fixture.base)))
+            self.core=stack.enter_context(patch.object(completed,'issue_checkpoint',side_effect=self.engine))
+            native.issue_sdk_checkpoint(work,self.selectors if selectors is None else selectors,'fixture-token',
+                preceding_selector=preceding_selector)
+        return work
+
+    def test_approved_entry_and_uploaded_selector_preserve_exact_source(self):
+        work=self.issue()
+        self.core.assert_called_once();self.compatible.assert_called_once()
+        self.assertIn('issue=true\n',self.output.read_text())
+        result=native.sdk_checkpoint_job_output(work,'321','a'*64,str(self.output))
+        self.assertEqual('sdk-checkpoint',result['kind'])
+        self.assertEqual(self.fixture.fixture.source,result['source'])
+        self.assertEqual(321,result['native']['artifactId'])
+        self.assertEqual(self.fixture.producer['commit'],result['native']['sourceCommit'])
+        self.assertEqual(sha256_bytes((work/'completion.json').read_bytes()),result['subjectSha256'])
+        (work/'completion.json').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError,'subject changed'):
+            native.sdk_checkpoint_job_output(work,'321','a'*64,self.output)
+
+    def test_unchanged_entry_exports_exact_prior_and_rejects_new_upload(self):
+        self.noop=True;work=self.issue()
+        self.assertFalse((work/'completion.json').exists())
+        self.assertIn('issue=false\n',self.output.read_text())
+        result=native.sdk_checkpoint_job_output(work,'','',self.output)
+        self.assertEqual({'kind':'existing-sdk-completion','native':self.fixture.policy['bootstrap'],
+            'subjectSha256':self.fixture.policy['bootstrapProofSha256']},result)
+        with self.assertRaisesRegex(ValueError,'another upload'):
+            native.sdk_checkpoint_job_output(work,'321','a'*64,self.output)
+
+    def test_wrong_issuer_or_attempt_never_reaches_core(self):
+        faults={'QUALIFICATION_ISSUER_REPOSITORY':'fork/repo','QUALIFICATION_ISSUER_PATH':'.github/workflows/other.yml',
+            'QUALIFICATION_ISSUER_SHA':'e'*40,'GITHUB_REPOSITORY':'fork/repo','GITHUB_EVENT_NAME':'workflow_dispatch',
+            'GITHUB_REF':'refs/pull/32/merge','GITHUB_SHA':'e'*40,'GITHUB_RUN_ID':'2','GITHUB_RUN_ATTEMPT':'99',
+            'GITHUB_JOB':'other-job'}
+        for field,value in faults.items():
+            with self.subTest(field=field),self.assertRaises(ValueError):self.issue(environment={**self.env,field:value})
+            self.core.assert_not_called()
+        bad=deepcopy(self.fixture.policy);bad['issuerCommit']='e'*40
+        self.owner.write_bytes(canonical_json_bytes(bad))
+        with self.assertRaisesRegex(ValueError,'not approved'):self.issue()
+        self.core.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_mutated_policy_or_untrusted_selector_policy_cannot_publish(self):
+        raw=json.loads(self.selectors);raw['ownerPolicy']=self.fixture.policy
+        with self.assertRaises(ValueError):self.issue(selectors=json.dumps(raw))
+        self.core.assert_not_called()
+        self.change_owner=True
+        with self.assertRaisesRegex(ValueError,'policy changed'):self.issue()
+        self.assertFalse(self.output.exists())
+        self.assertFalse((self.root/'issued/checkpoint-issue.json').exists())
+
+    def test_dynamic_noop_preserves_exact_previous_selector_without_upload(self):
+        f=self.fixture
+        previous={'kind':'sdk-checkpoint','source':f.fixture.source,
+            'subjectSha256':sha256_bytes(b'previous outer subject'),
+            'native':{'artifactId':77,'artifactSha256':sha256_bytes(b'previous upload'),
+                'runId':f.producer['runId'],'runAttempt':f.producer['runAttempt'],
+                'signerCommit':f.policy['issuerCommit'],'sourceCommit':f.producer['commit']}}
+        def engine(policy,source,control,work,**kw):
+            self.assertEqual(previous,kw['previous']);Path(work).mkdir()
+            return {'reusedCheckpoint':previous['native'],'reusedCheckpointSubjectSha256':previous['subjectSha256'],
+                'reusedCheckpointOutput':previous}
+        self.engine=engine
+        work=self.issue(preceding_selector=json.dumps(previous))
+        self.assertIn('issue=false\n',self.output.read_text())
+        self.assertEqual(previous,native.sdk_checkpoint_job_output(work,'','',self.output))
+        with self.assertRaisesRegex(ValueError,'another upload'):
+            native.sdk_checkpoint_job_output(work,'88','b'*64,self.output)
+
+    def test_explicit_invalid_previous_selector_never_falls_back(self):
+        for text in ('null','{}','x'*16385):
+            with self.subTest(text=text[:20]),self.assertRaises(ValueError):self.issue(preceding_selector=text)
+            self.core.assert_not_called()
+
+
+
+class CheckpointWorkflowPermissionsTest(unittest.TestCase):
+    def test_native_issuer_permissions_cross_every_existing_caller_edge(self):
+        import re
+        workflows = Path(__file__).resolve().parents[2] / '.github/workflows'
+        sources = {name: (workflows / (name + '.yml')).read_text() for name in (
+            'ci', 'product-validation', 'sdk-core-binary-validation',
+            'sdk-core-package-validation', 'reuse-qualification', 'portable-reuse-proof')}
+        def job(workflow, name):
+            match = re.search(r'^  ' + re.escape(name) + r':\n(.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)',
+                              sources[workflow], re.M | re.S)
+            self.assertIsNotNone(match, (workflow, name))
+            return match.group(1)
+        signing = {'contents': 'read', 'actions': 'read', 'id-token': 'write', 'attestations': 'write'}
+        for workflow, names in (
+            ('ci', ('product-validation',)),
+            ('product-validation', ('sdk-checkpoint-9', 'sdk-checkpoint-10', 'sdk-core-binary-wave')),
+            ('sdk-core-binary-validation', ('sdk-checkpoint-11',)),
+            ('reuse-qualification', ('qualify', 'completed-sdk', 'completed-sdk-checkpoint')),
+            ('portable-reuse-proof', ('cold', 'completion')),
+        ):
+            for name in names:
+                with self.subTest(workflow=workflow, job=name):
+                    block = re.search(r'^    permissions:\n((?:^      [a-z-]+: (?:read|write|none)\n)+)',
+                                      job(workflow, name), re.M)
+                    self.assertIsNotNone(block)
+                    actual = dict(re.findall(r'^      ([a-z-]+): (read|write|none)$', block.group(1), re.M))
+                    expected = dict(signing, deployments='read') if workflow == 'ci' else signing
+                    self.assertEqual(expected, actual)
+        # Core package consumes the forwarded checkpoint; it has no native issuer yet.
+        package = sources['sdk-core-package-validation']
+        self.assertNotIn('uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml', package)
+        self.assertIn('CODEX_AGENT_SDK_CHECKPOINT: ${{ fromJSON(inputs.binaryWave).outputs.checkpoint }}', package)
+        self.assertNotIn('attestations:', job('product-validation', 'sdk-core-package-wave'))
+        top = sources['ci'].split('\npermissions:\n', 1)[1].split('\nconcurrency:', 1)[0]
+        self.assertEqual({'actions': 'read', 'contents': 'read'},
+                         dict(re.findall(r'^  ([a-z-]+): (read|write|none)$', top, re.M)))
+
+
+if __name__=='__main__':unittest.main()
+
+
+class HistoricalCheckpointCliTest(unittest.TestCase):
+    def test_historical_selector_is_explicit_and_cannot_replace_current_policy_or_same_run_selector(self):
+        import argparse
+        parser=argparse.ArgumentParser()
+        native.add_completed_frozen_argument(parser)
+        parsed=parser.parse_args(["--sdk-historical-checkpoint","{}"])
+        self.assertEqual("{}",parsed.sdk_historical_checkpoint)
+        for args in (
+                {"sdk_historical_checkpoint":"{}"},
+                {"completed_frozen_policy":Path("unused"),"sdk_historical_checkpoint":"{}","sdk_checkpoint":"{}"},
+                {"completed_frozen_policy":Path("unused"),"sdk_historical_checkpoint":"{}","sdk_checkpoint_owner":Path("unused")}):
+            with self.subTest(args=args),patch.object(native,"fetch_completed_frozen") as admit,                    self.assertRaisesRegex(ValueError,"own explicit current-policy"):
+                with native.completed_frozen_options(args):
+                    self.fail("ambiguous or unowned selector must not yield")
+            admit.assert_not_called()
+
+    def test_history_reference_requires_current_baseline_and_exact_bounded_fields(self):
+        policy={"schemaVersion":1,"kind":"completed-frozen-reuse","consumerCommit":"c"*40,
+            "verifierPolicySha256":"sha256:"+"a"*64,"artifactId":1,"artifactSha256":"sha256:"+"a"*64,
+            "runId":1,"runAttempt":1,"signerCommit":"a"*40,"sourceCommit":"a"*40,
+            "sdkCheckpointHistory":{"path":"/private/current-history.json","sha256":"sha256:"+"b"*64}}
+        with self.assertRaisesRegex(ValueError,"current native SDK baseline"):native.validate_completed_reuse_policy(policy)
+        policy["sdkCompletion"]={key:policy[key] for key in
+            ("artifactId","artifactSha256","runId","runAttempt","signerCommit","sourceCommit")}
+        self.assertIn("sdkCheckpointHistory",native.validate_completed_reuse_policy(policy))
+        for field,value in (("path","relative.json"),("sha256","untrusted")):
+            changed=deepcopy(policy);changed["sdkCheckpointHistory"][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):native.validate_completed_reuse_policy(changed)
+
+class HistoricalIssuerEntryTest(unittest.TestCase):
+    def setUp(self):
+        self.e=SdkCheckpointEntryTest();self.e.setUp();self.addCleanup(self.e.doCleanups)
+        e=self.e;owner=e.fixture.policy
+        self.history={'schemaVersion':1,'kind':'sdk-checkpoint-history','consumerCommit':'9'*40,
+            'currentOwner':owner,'historicalPolicies':[]}
+        self.history_path=e.root/'history.json';self.history_path.write_bytes(canonical_json_bytes(self.history))
+        self.policy={'schemaVersion':1,'kind':'completed-frozen-reuse','consumerCommit':'9'*40,
+            'verifierPolicySha256':sha256_bytes(b'current policy'),**owner['bootstrap'],
+            'sdkCompletion':owner['bootstrap'],'sdkCheckpointHistory':{'path':str(self.history_path),
+                'sha256':sha256_bytes(self.history_path.read_bytes())}}
+        self.policy_path=e.root/'current-policy.json';self.policy_path.write_bytes(canonical_json_bytes(self.policy))
+        e.env['CODEX_AGENT_COMPLETED_REUSE_POLICY']=str(self.policy_path)
+        previous={'kind':'sdk-checkpoint','source':deepcopy(e.fixture.fixture.source),
+            'native':{**owner['bootstrap'],'artifactId':777},'subjectSha256':sha256_bytes(b'prior checkpoint')}
+        self.selection={'ownerPolicySha256':sha256_bytes(canonical_json_bytes(owner)),'checkpoint':previous}
+        self.raw=b'held bounded discovery archive'
+
+    def test_automatic_historical_predecessor_passes_exact_pinned_current_policy_and_held_bytes_once(self):
+        original=self.e.engine
+        def engine(*args,**kw):
+            self.assertEqual(self.selection,kw['previous']);self.assertEqual(self.history,kw['history'])
+            self.assertEqual(self.policy,kw['current_policy']);self.assertIs(self.raw,kw['_previous_archive_bytes'])
+            return original(*args,**kw)
+        self.e.engine=engine
+        with patch.object(completed,'discover_historical_checkpoint',return_value=(self.selection,self.raw)) as discover:
+            work=self.e.issue(preceding_selector='auto')
+        discover.assert_called_once()
+        self.assertEqual(self.e.fixture.producer,discover.call_args.kwargs['consumer']['producer'])
+        self.assertTrue((work/'checkpoint-issue.json').is_file())
+
+    def test_missing_or_changed_history_and_late_current_policy_fail_without_published_issue(self):
+        e=self.e
+        raw=self.history_path.read_bytes();self.history_path.write_bytes(raw+b' ')
+        with patch.object(completed,'discover_historical_checkpoint') as discover:
+            with self.assertRaises(ValueError):e.issue(preceding_selector='auto')
+        discover.assert_not_called();e.core.assert_not_called()
+        self.history_path.write_bytes(raw)
+        original=e.engine
+        def engine(*args,**kw):
+            result=original(*args,**kw);self.policy_path.write_bytes(self.policy_path.read_bytes()+b' ');return result
+        e.engine=engine
+        with patch.object(completed,'discover_historical_checkpoint',return_value=(self.selection,self.raw)):
+            with self.assertRaisesRegex(ValueError,'current policy changed'):e.issue(preceding_selector='auto')
+        self.assertFalse((e.root/'issued/checkpoint-issue.json').exists());self.assertFalse(e.output.exists())
+
+    def test_discovery_miss_keeps_exact_bootstrap_and_does_not_invent_historical_authority(self):
+        e=self.e;e.noop=True
+        with patch.object(completed,'discover_historical_checkpoint',return_value=(None,None)):
+            work=e.issue(preceding_selector='auto')
+        self.assertNotIn('history',e.core.call_args.kwargs)
+        self.assertEqual(e.fixture.policy['bootstrap'],native.sdk_checkpoint_job_output(work,'','',e.output)['native'])
+
+class CompletedCheckpointIssuerEntryTest(unittest.TestCase):
+    def setUp(self):
+        self.h = HistoricalIssuerEntryTest(); self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        self.e = self.h.e
+        self.number = 0
+        self.fixed = {
+            'spec.json': {'schemaVersion': 4, 'reuseCheckpoint': self.h.selection},
+            'original.json': {}, 'frozen.json': {}}
+        for name, value in self.fixed.items():
+            (self.e.root / name).write_bytes(canonical_json_bytes(value))
+
+    def issue(self, engine):
+        self.number += 1
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, self.e.env, clear=True))
+            stack.enter_context(patch.object(native, '__file__', str(self.e.root / 'ci/reuse_qualification.py')))
+            stack.enter_context(patch.object(native.subprocess, 'check_output',
+                return_value=self.e.fixture.policy['issuerCommit'] + '\n'))
+            stack.enter_context(patch.object(native, '_compatible_verifier', return_value=True))
+            for method, name in (('_sdk_completed_spec_path', 'spec.json'),
+                                 ('_sdk_original_spec_path', 'original.json'), ('_frozen_spec_path', 'frozen.json')):
+                stack.enter_context(patch.object(native, method, return_value=name))
+            stack.enter_context(patch('products.inventory.git_regular_blob_bytes',
+                side_effect=lambda root, revision, path, **kw: canonical_json_bytes(self.fixed[path])))
+            core = stack.enter_context(patch.object(completed, 'issue_completed_checkpoint', side_effect=engine))
+            stack.enter_context(patch.object(completed, 'issue_extension',
+                side_effect=AssertionError('checkpoint must not fall back to old body admission')))
+            return native.issue_completed_sdk(self.e.root / ('ordinary-' + str(self.number)), 'synthetic'), core
+
+    def test_fixed_source_and_pinned_current_history_enter_core_once(self):
+        def engine(spec, work, **kw):
+            self.assertEqual(self.fixed['spec.json'], spec)
+            self.assertEqual(self.h.history, kw['history'])
+            self.assertEqual(self.h.policy, kw['current_policy'])
+            self.assertEqual(self.e.fixture.policy['issuerCommit'], kw['revision'])
+            return {'fixture': 'bounded semantic seam'}
+        result, core = self.issue(engine)
+        self.assertEqual({'fixture': 'bounded semantic seam'}, result)
+        core.assert_called_once()
+
+    def test_changed_history_or_source_and_late_policy_never_return_success(self):
+        original_history = self.h.history_path.read_bytes()
+        self.h.history_path.write_bytes(original_history + b' ')
+        with self.assertRaisesRegex(ValueError, 'history differs'):
+            self.issue(lambda *a, **kw: self.fail('changed history reached core'))
+        self.h.history_path.write_bytes(original_history)
+        original_spec = (self.e.root / 'spec.json').read_bytes()
+        (self.e.root / 'spec.json').write_bytes(original_spec + b' ')
+        with self.assertRaisesRegex(ValueError, 'fixed policy differs'):
+            self.issue(lambda *a, **kw: self.fail('changed committed source reached core'))
+        (self.e.root / 'spec.json').write_bytes(original_spec)
+        def engine(*args, **kwargs):
+            self.h.policy_path.write_bytes(self.h.policy_path.read_bytes() + b' ')
+            return {'fixture': 'must not publish after late policy change'}
+        with self.assertRaisesRegex(ValueError, 'policy changed during issuance'):
+            self.issue(engine)
+
+    def test_existing_named_authority_forwarding_follows_native_source_guard(self):
+        import re
+        workflows = Path(__file__).resolve().parents[2] / '.github/workflows'
+        raw = (workflows / 'reuse-qualification.yml').read_text()
+        block = re.search(r'^  completed-sdk:\n(.*?)(?=^  [a-zA-Z0-9_-]+:|\Z)', raw, re.M | re.S).group(1)
+        bind = block.index('Bind the native completion issuer')
+        restore = block.index('codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority')
+        authenticate = block.index('Authenticate the successful resume')
+        self.assertLess(bind, restore); self.assertLess(restore, authenticate)
+        self.assertIn("if: steps.completion-source.outputs.checkpoint == 'true'", block[restore:authenticate])
+        source = block[bind:restore]
+        self.assertLess(source.index('test "$(git rev-parse HEAD)" = "$ISSUER_SHA"'),
+                        source.index("python3 -B - <<'PY'"))
+        # Exercise the exact workflow snippet: use the existing committed-recipe
+        # selector, and do not provision checkpoint policy for ordinary recipes.
+        import textwrap
+        script = textwrap.dedent(source.split("python3 -B - <<'PY'\n", 1)[1].split('          PY\n', 1)[0])
+        commit = self.e.fixture.policy['issuerCommit']
+        for checkpoint in (False, True):
+            spec = {'schemaVersion': 4}
+            if checkpoint: spec['reuseCheckpoint'] = self.h.selection
+            output = self.e.root / ('selector-' + str(checkpoint))
+            with self.subTest(checkpoint=checkpoint), \
+                    patch.dict(os.environ, {'ISSUER_SHA': commit, 'GITHUB_OUTPUT': str(output)}, clear=True), \
+                    patch.object(native, '_sdk_completed_spec_path', return_value='fixed-spec.json') as select, \
+                    patch('products.inventory.git_regular_blob_bytes', return_value=canonical_json_bytes(spec)) as read:
+                exec(compile(script, '<source-pinned-checkpoint-selection>', 'exec'), {})
+            select.assert_called_once_with(Path.cwd(), commit)
+            read.assert_called_once_with(Path.cwd(), commit, 'fixed-spec.json', max_bytes=native.LIMIT)
+            self.assertEqual('checkpoint=' + str(checkpoint).lower() + '\n', output.read_text())
+        self.assertIn("checkpoint-owner: 'true'", block[restore:authenticate])
+        self.assertIn('authority-read-token: ${{ secrets.authority_read_token }}', block[restore:authenticate])
+        caller = (workflows / 'portable-reuse-proof.yml').read_text().split('\n  completion:', 1)[1]
+        self.assertIn('authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}', caller)
+        self.assertNotIn('secrets: inherit', caller)

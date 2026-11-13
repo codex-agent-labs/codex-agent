@@ -1,0 +1,237 @@
+"""iOS package composite routing checks; no Apple or product execution."""
+
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci"))
+KEY = "sha256:" + "a" * 64
+TREE = "b" * 40
+
+
+class SdkIosPackageActionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.action = (ROOT / ".github/actions/sdk-ios-package-worker/action.yml").read_text()
+
+    def block(self, step):
+        match = re.search(rf"(?ms)^    - id: {re.escape(step)}\n.*?(?=^    - |\Z)", self.action)
+        self.assertIsNotNone(match, step)
+        return match[0]
+
+    def python_script(self, block):
+        start = re.search(r"(?m)^( +)python3 -B - <<'PY'\n", block)
+        self.assertIsNotNone(start)
+        return textwrap.dedent(block[start.end():].split("\n" + start[1] + "PY", 1)[0])
+
+    def identity(self, *, rows, required="true", component="sdk-ios", host="macos-arm64",
+                 apple_digest_valid=True, apple_supplied=True):
+        block = self.block("identity")
+        source = self.python_script(block)
+        with tempfile.TemporaryDirectory(prefix="sdk-ios-package-action-") as temporary:
+            root = Path(temporary).resolve()
+            plan, policy, apple, output = (root / name for name in ("plan", "policy", "apple", "output"))
+            plan.write_text(json.dumps({"validationTree": TREE}))
+            policy.write_bytes(b"policy\n")
+            apple.write_bytes(b"apple policy\n")
+            environment = {"MATRIX": json.dumps({"include": rows}), "REQUIRED": required,
+                "PLAN": str(plan), "COMPONENT": component, "BUILD_KEY": KEY, "TREE": TREE,
+                "SDK_VALIDATION_TOOLING": str(policy),
+                "SDK_APPLE_VALIDATION_POLICY": str(apple) if apple_supplied else "",
+                "POLICY_SHA256": "sha256:" + __import__("hashlib").sha256(policy.read_bytes()).hexdigest(),
+                "APPLE_POLICY_SHA256": (("sha256:" + __import__("hashlib").sha256(apple.read_bytes()).hexdigest())
+                                          if apple_supplied and apple_digest_valid else
+                                          ("sha256:" + "0" * 64) if apple_supplied else ""),
+                "GITHUB_OUTPUT": str(output)}
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch("native_wrappers.host_classifier", return_value=host):
+                valid = (required, component, host, apple_digest_valid) == (
+                    "true", "sdk-ios", "macos-arm64", True) and len(rows) == 1 and rows[0] == {
+                    "product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios",
+                    "buildKey": KEY, "runnerOs": "macOS", "runnerArch": "ARM64",
+                }
+                if not valid:
+                    with self.assertRaises(ValueError):
+                        exec(compile(source, "ios-package-identity", "exec"), {})
+                    self.assertFalse(output.exists())
+                    return
+                exec(compile(source, "ios-package-identity", "exec"), {})
+            self.assertEqual("key_hex=" + "a" * 64 + "\n", output.read_text())
+
+    def test_policy_state_and_exact_identity_precede_pinned_java_setup_without_gradle(self):
+        policy = self.action.index("- id: policy")
+        capture = self.action.index("- id: captured")
+        identity = self.action.index("- id: identity")
+        setup = self.action.index("uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3")
+        self.assertLess(policy, capture)
+        self.assertLess(capture, identity)
+        self.assertLess(identity, setup)
+        rust = self.action.index("uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b")
+        execute = self.action.index("name: Execute exact iOS package inside all authenticated input lifetimes")
+        self.assertLess(setup, rust)
+        self.assertLess(rust, execute)
+        self.assertIn("toolchain: '1.95.0'", self.action[rust:execute])
+        for value in ("product: sdk", "sdk-family: ios-package", "distribution: temurin",
+                      "java-version: '17.0.21+9'"):
+            self.assertIn(value, self.action)
+        self.assertNotIn("setup-kmp", self.action)
+        self.assertNotIn("setup-gradle", self.action)
+        row = {"product": "sdk", "component": "sdk-ios", "phase": "package", "target": "ios",
+               "buildKey": KEY, "runnerOs": "macOS", "runnerArch": "ARM64"}
+        self.identity(rows=[row])
+        self.identity(rows=[row], apple_supplied=False)
+        for changes in ({"required": "false"}, {"component": "other"}, {"host": "macos-x64"},
+                        {"rows": []}, {"rows": [{**row, "runnerArch": "X64"}]},
+                        {"apple_digest_valid": False}):
+            with self.subTest(changes=changes):
+                self.identity(rows=changes.get("rows", [row]), required=changes.get("required", "true"),
+                              component=changes.get("component", "sdk-ios"), host=changes.get("host", "macos-arm64"),
+                              apple_digest_valid=changes.get("apple_digest_valid", True))
+
+    def test_fixed_cli_forwards_every_authenticated_locator_and_policy_input(self):
+        self.assertIn("'-m', 'ci.sdk_workflow', 'ios-package'", self.action)
+        for flag in (
+            "--plan", "--discovery-root", "--state-root", "--destination", "--repository-root",
+            "--expected-build-key", "--sdk-inputs-artifact-id", "--sdk-inputs-artifact-sha256",
+            "--trusted-workflow-sha",
+            "--keyring", "--keys-directory", "--developer-directory", "--tooling-evidence",
+            "--tooling-public-key", "--java-executable", "--policy-revision", "--required-trust-domain",
+        ):
+            self.assertIn(f"'{flag}'", self.action)
+        self.assertIn("fields['--tooling-keyring']", self.action)
+        self.assertIn("fields['--tooling-keys-directory']", self.action)
+        self.assertIn("fields['--sdk-apple-validation-policy']", self.action)
+        for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "xcodebuild", "gradlew "):
+            self.assertNotIn(forbidden, self.action)
+        for forbidden in ("apple-artifact", "native-tests-artifact", "rust-device-artifact",
+                          "rust-simulator-artifact", "expected-distribution-proof", "PROOF_SHA256"):
+            self.assertNotIn(forbidden, self.action)
+        self.assertIn("DEVELOPER_DIR: ${{ inputs.developer-directory }}", self.action)
+        self.assertIn("'--developer-directory': os.environ['DEVELOPER_DIR']", self.action)
+
+    def test_package_invocation_uses_current_pinned_java_and_preserves_tooling_authority(self):
+        from products.inventory import canonical_json_bytes, sha256_bytes
+
+        block = self.action.split("    - name: Execute exact iOS package", 1)[1].split("\n    - ", 1)[0]
+        source = self.python_script(block)
+        with tempfile.TemporaryDirectory(prefix="ios-package-java-") as temporary:
+            root = Path(temporary).resolve()
+            java_home = root / "jdk"
+            (java_home / "bin").mkdir(parents=True)
+            java = java_home / "bin/java"
+            java.write_bytes(b"not executed by this routing test")
+            alias = root / "java-alias"
+            alias.symlink_to(java_home, target_is_directory=True)
+            policy_path = root / "policy.json"
+            policy = {"evidence": str(root / "evidence"), "publicKey": str(root / "public-key"),
+                      "javaExecutable": str(root / "original-java"), "requiredTrustDomain": "development",
+                      "keyring": None, "keysDirectory": None}
+            raw = canonical_json_bytes(policy)
+            policy_path.write_bytes(raw)
+            environment = {"GITHUB_WORKSPACE": str(root), "SDK_VALIDATION_TOOLING": str(policy_path),
+                           "SDK_APPLE_VALIDATION_POLICY": "", "APPLE_POLICY_SHA256": "",
+                           "POLICY_SHA256": sha256_bytes(raw), "POLICY_REVISION": TREE,
+                           "PLAN": str(root / "plan"), "DISCOVERY": str(root / "discovery"),
+                           "STATE": str(root / "state"), "BUILD_KEY": KEY, "SDK_INPUTS_ID": "1",
+                           "SDK_INPUTS_SHA256": KEY, "TRUSTED_WORKFLOW_SHA": TREE,
+                           "DEVELOPER_DIR": str(root / "developer")}
+            for home in (str(java_home), str(alias), "", "relative-java-home"):
+                with self.subTest(home=home), patch.dict(os.environ, {**environment, "JAVA_HOME": home}, clear=True), \
+                        patch("subprocess.run") as invoked:
+                    if home in ("", "relative-java-home"):
+                        with self.assertRaisesRegex(ValueError, "current Java home"):
+                            exec(compile(source, "ios-package-current-java", "exec"), {})
+                        invoked.assert_not_called()
+                    else:
+                        exec(compile(source, "ios-package-current-java", "exec"), {})
+                        command = invoked.call_args.args[0]
+                        self.assertEqual(str(java), command[command.index("--java-executable") + 1])
+                        self.assertEqual(policy["evidence"], command[command.index("--tooling-evidence") + 1])
+                        self.assertEqual(policy["publicKey"], command[command.index("--tooling-public-key") + 1])
+                    self.assertEqual(raw, policy_path.read_bytes())
+
+    def test_caller_policy_is_pinned_across_capture_and_before_execution(self):
+        policy = self.block("policy")
+        identity = self.block("identity")
+        execute = self.action.split("    - name: Execute exact iOS package", 1)[1].split("\n    - ", 1)[0]
+        self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", execute)
+        self.assertIn("mode: execute", execute)
+        self.assertIn("script: |", execute)
+        self.assertNotIn("shell:", execute)
+        self.assertIn("reject_symlink_parents=True", policy)
+        self.assertIn("require_exact_keys", policy)
+        self.assertIn("POLICY_SHA256", identity)
+        self.assertIn("POLICY_SHA256", execute)
+        self.assertIn("policy_revision", execute.replace("-", "_"))
+        self.assertIn("apple_validation_policy_arguments", policy)
+        self.assertIn("apple_policy_sha256=", policy)
+        self.assertIn("sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}",
+                      self.block("captured"))
+        for block in (identity, execute):
+            self.assertIn("APPLE_POLICY_SHA256", block)
+            self.assertIn("Caller Apple policy changed after pinning", block)
+        for block in (policy, identity, execute):
+            source = self.python_script(block)
+            compile(source, "ios-package-action", "exec")
+
+    def test_upload_keeps_complete_success_and_scopes_failed_attempt_evidence(self):
+        upload = self.action.split("uses: actions/upload-artifact@", 1)[1]
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
+        self.assertIn(
+            "name: codex-agent-sdk-worker-sdk-ios-package-ios-${{ steps.identity.outputs.key_hex }}-"
+            "${{ inputs.tree }}-attempt-${{ github.run_attempt }}", upload,
+        )
+        for value in ("if-no-files-found: warn", "overwrite: false",
+                      "include-hidden-files: true", "compression-level: 0"):
+            self.assertIn(value, upload)
+
+        match = re.search(r"(?m)^        path: (.*)$", upload)
+        self.assertIsNotNone(match)
+        paths = (re.findall(r"(?m)^          (.+)$", upload[match.end():])
+                 if match[1] == "|" else [match[1]])
+        conditional = "${{ job.status == 'success' && 'build/sdk-ios-worker' || '' }}"
+        base = "build/sdk-ios-worker"
+        retained = {
+            "shard/phase-object.json", "shard/phase-receipt.json", "shard/v1/object.zip",
+            "worker/execution.json", "worker/package.log", "worker/gradle.log",
+            "package-execution/input-binding.json",
+            "package-execution/events/00-toolchain-before-xcode/stdout",
+            "package-execution/events/06-assemble-xcframework/execution.json",
+            "apple-package-execution.json", "original-plan/impact-plan.json",
+            "recovered-production/production-origin/transport.json",
+            "recovered-production/production-origin/worker/package.log",
+            "unverified-package/phase-object.json", "unverified-package/phase-receipt.json",
+            "unverified-package/v1/object.zip",
+        }
+        files = retained | {
+            "inputs/producer.json", "inputs/phase-plan.json",
+            "inputs/sdk-sdk-ios-binary-ios/stage/outputs/apple-binary/original.a",
+            "inputs/contract-contract-metadata-common/phase-receipt.json",
+            "worker/not-a-declared-diagnostic.tmp", "future-success-control.json",
+        }
+        for status in ("success", "failure", "cancelled"):
+            with self.subTest(status=status):
+                selected_paths = [base if rule == conditional else rule for rule in paths
+                                  if rule != conditional or status == "success"]
+                selected = {name for name in files if any(
+                    base + "/" + name == rule or (base + "/" + name).startswith(rule + "/")
+                    for rule in selected_paths)}
+                self.assertEqual(files if status == "success" else retained, selected)
+                # Multiple literal paths keep the same artifact root/prefix in both branches.
+                self.assertEqual(base, os.path.commonpath(selected_paths))
+                self.assertIn("unverified-package/v1/object.zip", selected)
+                self.assertIn("package-execution/events/00-toolchain-before-xcode/stdout", selected)
+        self.assertEqual(1, paths.count(conditional))
+        self.assertNotIn("build/sdk-ios-worker/inputs", paths)
+
+
+if __name__ == "__main__":
+    unittest.main()

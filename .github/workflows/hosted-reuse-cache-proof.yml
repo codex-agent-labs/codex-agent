@@ -1,0 +1,21 @@
+name: Frozen hosted reuse cache proof
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  frozen-reuse:
+    if: >-
+      github.event.label.name == 'ci:reuse-cache-proof' &&
+      github.repository == 'codex-agent-labs/codex-agent' &&
+      github.event.pull_request.number == 31 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false
+    uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}

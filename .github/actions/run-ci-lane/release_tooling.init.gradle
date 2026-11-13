@@ -1,0 +1,69 @@
+// Tooling-only assembly: do not change shared product compiler inputs.
+abstract class InspectorFileOperations {
+    @javax.inject.Inject
+    abstract org.gradle.api.file.FileSystemOperations getFiles()
+}
+
+allprojects {
+    if (project.name == 'build-logic') {
+        def repository = project.layout.projectDirectory.dir('../..').asFile
+        def inspectorOutput = project.layout.buildDirectory.dir('csharp-runtime-inspector')
+        def inspectorFiles = project.objects.newInstance(InspectorFileOperations).files
+        def inspector = tasks.register('buildCSharpRuntimeInspector', Exec) {
+            inputs.files([
+                'ci/tooling_inspector.py', 'ci/products/sdk_dotnet_toolchain.py',
+                'ci/products/inventory.py', 'gradle/release/toolchains/sdk/csharp.json',
+                'codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs',
+                'codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/VerifySdkRuntimeRoot.csproj',
+            ].collect { new File(repository, it) }).withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
+            outputs.dir(inspectorOutput)
+            workingDir(repository)
+            environment('PYTHONDONTWRITEBYTECODE', '1')
+            commandLine('python3', '-B', '-m', 'ci.tooling_inspector', 'build',
+                '--repository', repository.absolutePath, '--destination', inspectorOutput.get().asFile.absolutePath)
+            doFirst { inspectorFiles.delete { delete(inspectorOutput) } }
+        }
+        def consumerSources = ['runtime_evidence.py', 'inventory.py', 'sdk_inputs.py'].collectEntries { name ->
+            [("python/ci/products/${name}"): new File(repository,
+                ".github/actions/run-ci-lane/verified-consumers/${name}").canonicalFile]
+        }
+        tasks.withType(org.gradle.jvm.tasks.Jar).configureEach {
+            if (name == 'releaseToolingJar') {
+                // Explicit current consumers; ordinary producer resources stay unchanged.
+                inputs.files(consumerSources.values()).withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
+                from(consumerSources.values()) { into('python/ci/products') }
+                eachFile { entry ->
+                    def source = consumerSources[entry.path]
+                    if (source != null && entry.file.canonicalFile != source) entry.exclude()
+                }
+                dependsOn(inspector)
+                from(inspectorOutput) { into('tools/csharp-runtime-inspector') }
+            }
+        }
+    }
+    tasks.withType(org.gradle.language.jvm.tasks.ProcessResources).configureEach {
+        if (name == 'processResources' && project.name == 'build-logic') {
+            from(project.layout.projectDirectory.dir('../../ci/products')) {
+                include('runtime_validation_projection.py', 'sdk_csharp_binary.py', 'sdk_dotnet_toolchain.py', 'sdk_runtime_root.py')
+                into('python/ci/products')
+            }
+            from(project.layout.projectDirectory.dir('../../codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot')) {
+                include('Program.cs', 'VerifySdkRuntimeRoot.csproj')
+                into('python/codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot')
+            }
+        }
+    }
+    tasks.withType(org.gradle.jvm.tasks.Jar).configureEach {
+        if (name == 'releaseToolingJar') {
+            def policy = project.layout.projectDirectory.file('../../.github/actions/run-ci-lane/release_tooling_classes.json').asFile
+            def captureClasses = new groovy.json.JsonSlurper().parse(policy)
+            assert captureClasses instanceof List && !captureClasses.empty
+            assert captureClasses == captureClasses.unique(false).sort(false)
+            assert captureClasses.every { it instanceof String && it ==~ /[A-Za-z][A-Za-z0-9]*/ }
+            inputs.file(policy).withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
+            from(layout.buildDirectory.dir('classes/kotlin/main')) {
+                include(captureClasses.collectMany { ["${it}.class", "${it}\$*.class"] })
+            }
+        }
+    }
+}
