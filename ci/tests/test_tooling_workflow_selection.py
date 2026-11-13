@@ -151,6 +151,7 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         production = action.split("    - id: production-execution\n", 1)[1].split("    - id: portable-runtime-products\n", 1)[0]
         script = production.split("      run: |\n", 1)[1]
         script = textwrap.dedent(script).replace("${{ inputs.contract-tooling-only }}", "true")
+        script = script.replace("${{ inputs.tooling-purpose }}", "full")
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "calls"
             gradle = Path(temporary) / "gradlew"

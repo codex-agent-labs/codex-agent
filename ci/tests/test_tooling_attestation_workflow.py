@@ -105,7 +105,9 @@ class ToolingAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("overwrite: false", upload)
         self.assertIn("include-hidden-files: true", upload)
         self.assertIn(
-            "name: codex-agent-release-tooling-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}",
+            "name: ${{ inputs.toolingPurpose == 'runtime-package' && 'codex-agent-runtime-package-tooling' "
+            "|| 'codex-agent-release-tooling' }}-${{ fromJSON(inputs.planOutputs).validation_tree }}"
+            "-attempt-${{ github.run_attempt }}",
             upload,
         )
         self.assertIn("path: ${{ runner.temp }}/tooling-release-evidence", upload)
