@@ -592,7 +592,6 @@ def attach(plan, lane, source, destination):
 
 
 _CONTRIBUTION_KIND = "sdk-android-current-contribution"
-_CONTRIBUTION_FILE = "android-contribution.json"
 _CONTRIBUTION_LIMIT = 1024 * 1024
 _ANDROID_V = products.PhaseInstanceId("sdk", "sdk-android", "validation", "android")
 _ANDROID_P = products.PhaseInstanceId("sdk", "sdk-android", "package", "android")
@@ -684,8 +683,214 @@ def retained_android_contribution(state, plan_path, *, environ):
     return value
 
 
-def observed_android_contribution(plan, *, repository_root, trusted_workflow_sha,
-        artifact_id, artifact_sha256, contribution_sha256, environ):
+_VALIDATION_KIND = "current-sdk-validation-contributions"
+_VALIDATION_FILE = "canonical-contributions.json"
+_NODE_RUNTIME = tuple(products.PhaseInstanceId(*row) for row in (
+    ("contract", "contract", "binary", "common"),
+    ("runtime", "node-js", "binary", "node-js"),
+    ("runtime", "node-js", "package", "node-js"),
+    ("runtime", "node-js", "validation", "node-js-binding")))
+_NODE_SDK = tuple(products.PhaseInstanceId("sdk", "javascript", phase, "node")
+                  for phase in ("package", "validation", "metadata"))
+
+
+def _contribution_selection(plan, android, node_js):
+    if type(android) is not bool or type(node_js) is not bool or not (android or node_js):
+        raise ValueError("Current contributions require fixed boolean selections")
+    lanes = plan["lanes"]
+    if android and not any(lanes["android"][action] for action in ("test", "metadata")):
+        raise ValueError("Android contribution requires its selected source checks")
+    if node_js and not any(lanes["node-js"][action] for action in ("build", "test")):
+        raise ValueError("Node-JS contribution requires its selected legacy tasks")
+
+
+def _node_input_inventories(plan_path, root, plan, *, verify_transport=False):
+    from impact import inventory, effective_pathspecs
+    result = {}
+    for category, name in INPUT_NAMES.items():
+        raw = inventory(root, plan["validationCommit"], effective_pathspecs(root, "node-js", category)).encode()
+        # Scoped native capture carries the exact plan, not legacy inventory aliases.
+        # Merge already owns the full plan transport and independently compares it.
+        if verify_transport:
+            path = plan_path.parent / "inventories/node-js" / name
+            if read_regular_file_bytes(path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw:
+                raise ValueError("Node-JS source inventory differs from the original current plan")
+        result[name] = sha256_bytes(raw)
+    return result
+
+
+def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, android, node_js):
+    from products.inventory import require_exact_keys
+    from products.receipt import validate_phase_receipt
+    from sdk_completion import _repository_report
+    _contribution_selection(plan, android, node_js)
+    keys = {"schemaVersion", "kind", "consumer", "planSha256"}
+    if android: keys.add("android")
+    if node_js: keys.add("nodeJs")
+    value = require_exact_keys(value, keys, "Current canonical contributions")
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or value["kind"] != _VALIDATION_KIND or value["consumer"] != consumer
+            or value["planSha256"] != plan_sha256):
+        raise ValueError("Current contributions differ from the original consumer/plan")
+    if android:
+        _validate_android_contribution(value["android"], consumer, plan_sha256)
+    if node_js:
+        node = require_exact_keys(value["nodeJs"], {"originals", "sdkJavaScript", "parityExpectedPhases",
+            "actions", "inputInventories"}, "Node-JS contribution")
+        if node["actions"] != {key: plan["lanes"]["node-js"][key] for key in ("build", "test", "metadata")}:
+            raise ValueError("Node-JS contribution changes the original selection")
+        require_exact_keys(node["inputInventories"], set(INPUT_NAMES.values()), "Node-JS input inventories")
+        for digest in node["inputInventories"].values(): require_sha256(digest, "Node-JS inventory SHA")
+        report = _repository_report({"schemaVersion": 1, "result": "complete", "fullReuse": True,
+            "phases": node["parityExpectedPhases"], "matrices": {"contract": [], "runtime": [], "sdk": []},
+            "continuationRequirements": []})
+        phases = {products._identity(row): row for row in report["originalPhases"]}
+        for field, identities in (("originals", _NODE_RUNTIME), ("sdkJavaScript", _NODE_SDK)):
+            rows = node[field]
+            if type(rows) is not list or len(rows) != len(identities):
+                raise ValueError("Node-JS contribution has a different fixed identity set")
+            for row, identity in zip(rows, identities):
+                row = require_exact_keys(row, {"buildKey", "receiptSha256", "objectSha256", "receipt"},
+                                         "Node-JS original envelope")
+                receipt = validate_phase_receipt(row["receipt"])
+                if (products._identity(receipt) != identity or receipt["buildKey"] != row["buildKey"]
+                        or sha256_bytes(canonical_json_bytes(receipt)) != row["receiptSha256"]
+                        or any(row[key] != phases[identity][key]
+                               for key in ("buildKey", "receiptSha256", "objectSha256"))):
+                    raise ValueError("Node-JS contribution substitutes an original tuple")
+    return value
+
+
+def retained_validation_contributions(state, plan_path, *, repository_root, environ,
+                                      android=False, node_js=False):
+    """Consume two fixed contributions in the caller's existing verified-state lifetime."""
+    from contextlib import nullcontext
+    from reuse_qualification import CompletedFrozenReuse
+    from products.plan import _upstream_record
+    from products.registry import phase_instance_dependencies
+    if type(state) is not products._VerifiedProductState or type(state.completed_frozen) is not CompletedFrozenReuse:
+        raise ValueError("Current contributions require the concrete live native state")
+    plan_path, root = Path(plan_path).absolute(), Path(repository_root).resolve(strict=True)
+    raw = read_regular_file_bytes(plan_path, reject_symlink_parents=True)
+    if products._validate_plan(plan_path, root) != state.plan or load_json_bytes(raw) != state.plan:
+        raise ValueError("Current contribution differs from the original verified plan")
+    _contribution_selection(state.plan, android, node_js)
+    native, consumer = state.completed_frozen, state.consumer
+    native.check_consumer(consumer)
+    if consumer != products._consumer(state.plan, environ):
+        raise ValueError("Current contribution consumer differs from its verified state")
+    before = canonical_json_bytes(state.prior)
+    result = {"schemaVersion": 1, "kind": _VALIDATION_KIND, "consumer": consumer["producer"],
+              "planSha256": sha256_bytes(raw)}
+    if android:
+        result["android"] = retained_android_contribution(state, plan_path, environ=environ)
+    if node_js:
+        if any(item not in state.closure for item in _NODE_RUNTIME):
+            raise ValueError("Node-JS tasks are outside the original selected closure")
+        # Full current state is already verified. Only missing parity context
+        # needs the existing private current-key join; election stays unchanged.
+        missing = set(products.PHASE_INSTANCE_IDS) - set(state.prior_by_instance)
+        scope = products._full_sdk_parity_context(state, root) if missing else nullcontext(state)
+        with scope as context:
+            originals = {}
+            for identity in (*_NODE_RUNTIME, *_NODE_SDK):
+                record = context.prior_by_instance.get(identity)
+                envelope = None if record is None else native.envelope(record)
+                if envelope is None or record["state"] not in {"retained", "reused"}:
+                    raise ValueError("Node-JS contribution lacks its current native original")
+                upstream = []
+                for parent in phase_instance_dependencies(identity):
+                    parent_record = context.prior_by_instance.get(parent)
+                    parent_envelope = None if parent_record is None else native.envelope(parent_record)
+                    if parent_envelope is None:
+                        raise ValueError("Node-JS contribution lacks an original dependency")
+                    upstream.append(_upstream_record(parent_envelope["receipt"]))
+                if envelope["receipt"]["inputs"]["upstreamArtifacts"] != sorted(upstream, key=products._identity):
+                    raise ValueError("Node-JS contribution changes original dependency edges")
+                originals[identity] = {**{key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
+                                       "receipt": envelope["receipt"]}
+            node = {"originals": [originals[item] for item in _NODE_RUNTIME],
+                "sdkJavaScript": [originals[item] for item in _NODE_SDK],
+                "parityExpectedPhases": context.prior["phases"],
+                "actions": {key: state.plan["lanes"]["node-js"][key] for key in ("build", "test", "metadata")},
+                "inputInventories": _node_input_inventories(plan_path, root, state.plan)}
+            # Detach controls, not a capability; original receipt/provenance bytes stay exact.
+            result["nodeJs"] = load_canonical_json_bytes(canonical_json_bytes(node))
+            for identity, original in originals.items():
+                if native.envelope(context.prior_by_instance[identity])["receipt"] != original["receipt"]:
+                    raise ValueError("Node-JS original changed during consumption")
+    _validate_validation_contributions(result, consumer["producer"], sha256_bytes(raw), state.plan,
+                                       android=android, node_js=node_js)
+    native.check_consumer(consumer)
+    if (canonical_json_bytes(state.prior) != before or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != raw
+            or state.plan != load_json_bytes(raw)
+            or products._consumer(state.plan, environ) != consumer
+            or products._git_value(root, "rev-parse", "HEAD^{commit}") != consumer["producer"]["commit"]
+            or node_js and _node_input_inventories(plan_path, root, state.plan) != result["nodeJs"]["inputInventories"]):
+        raise ValueError("Current contribution changed or outlived its original inputs")
+    return result
+
+
+def _observed_node_parity(producer, observation, expected, locator, token):
+    """Consume the fixed current M11 output, separately from Runtime binding V."""
+    from products.inventory import require_exact_keys
+    from sdk_completion import verify_completed_parity_archive, validate_current_head_report
+    locator = require_exact_keys(locator, {"artifact_id", "artifact_digest", "artifact_run_id",
+        "report_artifact_id", "report_artifact_sha256", "report_sha256"}, "Current parity locator")
+    for key in ("artifact_id", "artifact_run_id"):
+        require_integer(locator[key], "Parity " + key, 1)
+    require_sha256(locator["artifact_digest"], "Parity original upload SHA")
+    report_fields = ("report_artifact_id", "report_artifact_sha256", "report_sha256")
+    present = [locator[key] is not None for key in report_fields]
+    if any(present) and not all(present):
+        raise ValueError("Current parity report locator is incomplete")
+    reuse = all(present)
+    job = "product-validation / sdk-parity / sdk-parity"
+    if reuse:
+        artifact_id = require_integer(locator["report_artifact_id"], "Current parity report ID", 1)
+        digest = require_sha256(locator["report_artifact_sha256"], "Current parity report upload SHA")
+        require_sha256(locator["report_sha256"], "Current parity report SHA")
+        name, limit = "codex-agent-hosted-parity-report-" + producer["tree"], _CONTRIBUTION_LIMIT
+    else:
+        if locator["artifact_run_id"] != producer["runId"]:
+            raise ValueError("Fresh M11 must come from the current successful job")
+        artifact_id, digest = locator["artifact_id"], locator["artifact_digest"]
+        name, limit = "codex-agent-sdk-binding-parity-" + producer["tree"], 32 * 1024 * 1024
+    artifact = products._contract_ci_upload_metadata(artifact_id, digest, name, producer, observation["run"], token)
+    products._require_artifact_job_window(observation, job, artifact)
+    size = require_integer(artifact["size_in_bytes"], "Current parity upload bytes", 1)
+    if size > limit: raise ValueError("Current parity upload exceeds its bound")
+    with tempfile.TemporaryDirectory(prefix="current-contribution-parity-") as temporary:
+        archive = Path(temporary) / "parity.zip"
+        products._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+            destination=archive, limit=limit, artifact_sha256=digest, size=size)
+        if not reuse:
+            verified = verify_completed_parity_archive(archive, expected_phases=expected,
+                expected_bytes=size, expected_sha256=digest)
+        else:
+            name = "hosted-parity-report.json"
+            inventory, retained, transport = verified_zip_contents(archive, max_archive_bytes=limit,
+                max_members=1, max_entry_bytes=limit, max_total_bytes=limit, retained_paths=(name,),
+                max_retained_bytes=limit, require_sorted=False)
+            raw = retained.get(name, b"")
+            if (transport != {"bytes": size, "sha256": digest} or retained != {name: raw}
+                    or inventory != [{"relativePath": name, "bytes": len(raw), "sha256": locator["report_sha256"]}]):
+                raise ValueError("Current M11 report differs from its exact upload")
+            report = validate_current_head_report(load_canonical_json_bytes(raw), producer)
+            fields = (*products._IDENTITY_KEYS, "buildKey", "receiptSha256", "objectSha256")
+            tuples = lambda rows: sorted(tuple(row[key] for key in fields) for row in rows)
+            parity = report["sdkParity"]
+            if (tuples(report["originalPhases"]) != tuples(expected)
+                    or (parity["artifactId"], parity["artifactSha256"], parity["producer"]["runId"]) !=
+                    (locator["artifact_id"], locator["artifact_digest"], locator["artifact_run_id"])):
+                raise ValueError("Current M11 report changes the original phases or parity locator")
+            verified = {"result": "passed", "currentReportSha256": locator["report_sha256"],
+                        "originalParity": parity}
+    return {"currentUploadId": artifact_id, "currentUploadSha256": digest, "verification": verified}
+
+
+def observed_validation_contributions(plan, *, repository_root, trusted_workflow_sha,
+        artifact_id, artifact_sha256, contribution_sha256, environ, android=False, node_js=False, parity=None):
     """Authenticate a bounded original SDK completion output, never a caller verdict."""
     from products.restore import verification_session
     require_no_signing_secret(environ)
@@ -706,13 +911,19 @@ def observed_android_contribution(plan, *, repository_root, trusted_workflow_sha
     require_integer(artifact_id, "Android contribution upload ID", 1)
     token = environ["GITHUB_TOKEN"]
     job = "product-validation / sdk-completion"
+    jobs = {"completion": job}
+    if node_js:
+        jobs["parity"] = "product-validation / sdk-parity / sdk-parity"
+    elif parity is not None:
+        raise ValueError("Unselected Node-JS contribution cannot supply parity")
     with verification_session(), products._ci_observation_batch(
             (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True):
-        observed, = products._observe_ci_producer_jobs({"completion": producer}, jobs_by_phase={"completion": job},
-            token=token, trusted_workflows_by_phase={"completion": {
-                "path": ".github/workflows/product-validation.yml", "sha": trusted_workflow_sha}})
+        observed, = products._observe_ci_producer_jobs({key: producer for key in jobs}, jobs_by_phase=jobs,
+            token=token, trusted_workflows_by_phase={key: {
+                "path": ".github/workflows/" + ("sdk-binding-parity.yml" if key == "parity" else "product-validation.yml"),
+                "sha": trusted_workflow_sha} for key in jobs})
         artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256,
-            f"codex-agent-sdk-android-contribution-{producer['tree']}-attempt-{producer['runAttempt']}",
+            f"codex-agent-sdk-validation-contributions-{producer['tree']}-attempt-{producer['runAttempt']}",
             producer, observed["run"], token)
         products._require_artifact_job_window(observed, job, artifact)
         size = require_integer(artifact["size_in_bytes"], "Android contribution upload bytes", 1)
@@ -724,26 +935,34 @@ def observed_android_contribution(plan, *, repository_root, trusted_workflow_sha
                 destination=archive, limit=_CONTRIBUTION_LIMIT, artifact_sha256=artifact_sha256, size=size)
             inventory, retained, transport = verified_zip_contents(archive,
                 max_archive_bytes=_CONTRIBUTION_LIMIT, max_members=1, max_entry_bytes=_CONTRIBUTION_LIMIT,
-                max_total_bytes=_CONTRIBUTION_LIMIT, retained_paths=(_CONTRIBUTION_FILE,),
+                max_total_bytes=_CONTRIBUTION_LIMIT, retained_paths=(_VALIDATION_FILE,),
                 max_retained_bytes=_CONTRIBUTION_LIMIT, require_sorted=False)
-            raw = retained.get(_CONTRIBUTION_FILE, b"")
+            raw = retained.get(_VALIDATION_FILE, b"")
             if (transport != {"bytes": size, "sha256": artifact_sha256}
-                    or inventory != [{"relativePath": _CONTRIBUTION_FILE, "bytes": len(raw),
+                    or inventory != [{"relativePath": _VALIDATION_FILE, "bytes": len(raw),
                                       "sha256": contribution_sha256}]
-                    or retained != {_CONTRIBUTION_FILE: raw}):
+                    or retained != {_VALIDATION_FILE: raw}):
                 raise ValueError("Android contribution differs from its exact original upload")
-            contribution = _validate_android_contribution(load_canonical_json_bytes(raw), producer, sha256_bytes(plan_raw))
+            contribution = _validate_validation_contributions(load_canonical_json_bytes(raw), producer,
+                sha256_bytes(plan_raw), value, android=android, node_js=node_js)
+        parity_result = None
+        if node_js:
+            if contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True):
+                raise ValueError("Node-JS contribution changes current source inventories")
+            parity_result = _observed_node_parity(producer, observed,
+                contribution["nodeJs"]["parityExpectedPhases"], parity, token)
         if (read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw
                 or products._consumer(value, environ)["producer"] != producer
                 or products._git_value(root, "rev-parse", "HEAD^{commit}") != producer["commit"]
-                or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]):
-            raise ValueError("Android contribution consumer or plan changed during observation")
-    return contribution
+                or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
+                or node_js and contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True)):
+            raise ValueError("Current contribution consumer or inputs changed during observation")
+    return contribution, parity_result
 
 
-def aggregate_retained_android(plan, receipts, destination, *, repository_root,
+def aggregate_retained_validation(plan, receipts, destination, *, repository_root,
         trusted_workflow_sha, artifact_id, artifact_sha256, contribution_sha256,
-        environ, auxiliary_contracts=False):
+        environ, auxiliary_contracts=False, android=False, node_js=False, parity=None):
     """Combine current checks with an observed native contribution; never schema1 reuse."""
     from receipt import required_lanes, parse_validation_actions
     plan, receipts, destination = map(Path, (plan, receipts, destination))
@@ -753,20 +972,20 @@ def aggregate_retained_android(plan, receipts, destination, *, repository_root,
     plan_raw = read_regular_file_bytes(plan, reject_symlink_parents=True)
     selected = _authorized_plan(plan)
     required = required_lanes(selected)
-    if "android" not in required:
-        raise ValueError("Android contribution cannot add an unselected legacy lane")
-    contribution = observed_android_contribution(plan, repository_root=repository_root,
+    _contribution_selection(selected, android, node_js)
+    contribution, parity_result = observed_validation_contributions(plan, repository_root=repository_root,
         trusted_workflow_sha=trusted_workflow_sha, artifact_id=artifact_id,
-        artifact_sha256=artifact_sha256, contribution_sha256=contribution_sha256, environ=environ)
+        artifact_sha256=artifact_sha256, contribution_sha256=contribution_sha256, environ=environ,
+        android=android, node_js=node_js, parity=parity)
     originals, controls = {}, {}
     for path in receipts.rglob("lane-receipt.json"):
         raw = read_regular_file_bytes(path, reject_symlink_parents=True)
         lane = load_json_bytes(raw).get("lane")
-        value = validate_receipt(path, plan, path.parent, allow_compatible=lane != "android",
-            **({"categories": ("test", "metadata")} if lane == "android" else {}))
+        value = validate_receipt(path, plan, path.parent, allow_compatible=not (android and lane == "android"),
+            **({"categories": ("test", "metadata")} if android and lane == "android" else {}))
         if lane in originals:
             raise ValueError("Duplicate current Android gate lane receipt")
-        if lane == "android":
+        if android and lane == "android":
             producer = products.validate_producer({
                 **{key: value[key] for key in ("repository", "workflowPath", "event", "runId", "runAttempt", "pullRequest")},
                 "commit": value["validationCommit"], "tree": value["validationTree"]})
@@ -779,7 +998,7 @@ def aggregate_retained_android(plan, receipts, destination, *, repository_root,
             _check_source_checks(plan, path.parent, producer)
         originals[lane] = value
         controls[path] = raw
-    expected = set(required)
+    expected = set(required) - ({"node-js"} if node_js else set())
     if auxiliary_contracts:
         auxiliary = originals.get("contracts")
         if ("contracts" in expected or auxiliary is None
@@ -789,10 +1008,14 @@ def aggregate_retained_android(plan, receipts, destination, *, repository_root,
         expected.add("contracts")
     if set(originals) != expected:
         raise ValueError("Current Android gate has missing or unexpected selected lane receipts")
+    if (not android and selected.get("androidEvidenceRequired") and "android" in required
+            and not any(row["kind"] == "firebase-runtime-evidence" for row in originals["android"]["evidence"])):
+        raise ValueError("Legacy Android still requires its original Firebase evidence")
     result = {"schemaVersion": 1, "kind": "current-validation-contributions", "result": "passed",
         "consumer": contribution["consumer"], "planSha256": sha256_bytes(plan_raw),
-        "android": {"artifactId": artifact_id, "artifactSha256": artifact_sha256,
-                    "contributionSha256": contribution_sha256, "original": contribution},
+        "canonical": {"artifactId": artifact_id, "artifactSha256": artifact_sha256,
+                      "contributionSha256": contribution_sha256, "original": contribution},
+        **({"sdkParity": parity_result} if node_js else {}),
         "laneReceipts": {lane: sha256_bytes(canonical_json_bytes(value)) for lane, value in sorted(originals.items())}}
     if read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw or any(
             read_regular_file_bytes(path, reject_symlink_parents=True) != raw for path, raw in controls.items()):

@@ -918,6 +918,24 @@ class SdkCompletionTest(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+    def test_fixed_node_and_android_share_one_callback_and_replay(self):
+        import sdk_android_evidence_capture as contributions
+        for android,node in ((False,True),(True,True)):
+            state=object()
+            def inspect(*args,**kwargs):
+                kwargs['_verified_state_consumer'](state)
+                return inspected([phase(identity) for identity in self.sdk])
+            with self.subTest(android=android,node=node), \
+                    patch.object(completion.products,'inspect_products',side_effect=inspect) as replay, \
+                    patch.object(contributions,'retained_validation_contributions',return_value={'fixture':'controls'}) as consume:
+                result=completion.require_sdk_completion(*self.paths,repository_root=self.root,environ=self.environment,
+                    include_android_contribution=android,include_node_js_contribution=node)
+            replay.assert_called_once()
+            consume.assert_called_once_with(state,self.paths[0],repository_root=self.root,
+                environ=self.environment,android=android,node_js=node)
+            self.assertEqual({'fixture':'controls'},result.pop('validationContributions'))
+            self.assertEqual({'complete':True,'phaseCount':62,'fullReuse':True},result)
+
     def test_fixed_android_contribution_reuses_exact_single_state_inspection(self):
         import sdk_android_evidence_capture as android
         state = object()
@@ -928,12 +946,13 @@ class SdkCompletionTest(unittest.TestCase):
             kwargs['_verified_state_consumer'](state)
             return value
         with patch.object(completion.products,'inspect_products',side_effect=inspect) as replay, \
-                patch.object(android,'retained_android_contribution',return_value=contribution) as consume:
+                patch.object(android,'retained_validation_contributions',return_value=contribution) as consume:
             result=completion.require_sdk_completion(*self.paths,repository_root=self.root,environ=self.environment,
                 include_android_contribution=True)
         replay.assert_called_once()
-        consume.assert_called_once_with(state,self.paths[0],environ=self.environment)
-        self.assertEqual(contribution,result.pop('androidContribution'))
+        consume.assert_called_once_with(state,self.paths[0],repository_root=self.root,
+            environ=self.environment,android=True,node_js=False)
+        self.assertEqual(contribution,result.pop('validationContributions'))
         self.assertEqual({'complete':True,'phaseCount':62,'fullReuse':True},result)
         with patch.object(completion.products,'inspect_products',return_value=value),self.assertRaisesRegex(ValueError,'single verified state'):
             completion.require_sdk_completion(*self.paths,include_android_contribution=True)
@@ -972,17 +991,17 @@ class SdkCompletionTest(unittest.TestCase):
                     '--repository-root',str(root),'--github-output',str(output),
                     '--artifact-id','91','--artifact-sha256','sha256:'+'a'*64,
                     '--trusted-workflow-sha','d'*40,'--completed-frozen-policy','/policy/native.json',
-                    '--android-contribution-directory',str(contribution)]
+                    '--validation-contribution-directory',str(contribution),'--include-android-contribution']
                 with patch.object(completion,'completed_frozen_options',authority), \
                         patch.object(completion,'verification_session',session), \
                         patch.object(completion.products,'capture_runtime_resume_upload') as capture, \
                         patch.object(completion.products,'inspect_products',side_effect=inspect) as replay, \
-                        patch.object(android,'retained_android_contribution',side_effect=consume), \
+                        patch.object(android,'retained_validation_contributions',side_effect=consume), \
                         patch.object(completion,'publish_regular_tree',side_effect=publish),redirect_stderr(io.StringIO()):
                     if failure=='none':
                         self.assertEqual(0,completion._capture_main(argv))
-                        raw=(contribution/'android-contribution.json').read_bytes()
-                        self.assertIn('androidContributionSha256='+completion.sha256_bytes(raw),output.read_text())
+                        raw=(contribution/'canonical-contributions.json').read_bytes()
+                        self.assertIn('validationContributionsSha256='+completion.sha256_bytes(raw),output.read_text())
                     else:
                         with self.assertRaises(SystemExit):completion._capture_main(argv)
                         self.assertFalse(contribution.exists());self.assertFalse(output.exists())
@@ -1004,7 +1023,7 @@ class SdkCompletionTest(unittest.TestCase):
                     return inspected([phase(identity) for identity in self.sdk])
                 with patch.object(completion.products, 'inspect_products', side_effect=inspect) as replay, \
                         patch.object(android_consumer, 'run_retained_android_consumer', return_value=None, create=True) as consume, \
-                        patch.object(android, 'retained_android_contribution', return_value={'kind': 'fixture'}) as contribution:
+                        patch.object(android, 'retained_validation_contributions', return_value={'kind': 'fixture'}) as contribution:
                     result = completion.require_sdk_completion(*self.paths, repository_root=self.root,
                         environ=self.environment, android_installed_consumer=True,
                         include_android_contribution=include_contribution)
@@ -1013,7 +1032,7 @@ class SdkCompletionTest(unittest.TestCase):
                     repository_root=self.root, environ=self.environment)
                 self.assertEqual(int(include_contribution), contribution.call_count)
                 if include_contribution:
-                    self.assertEqual({'kind': 'fixture'}, result.pop('androidContribution'))
+                    self.assertEqual({'kind': 'fixture'}, result.pop('validationContributions'))
                 self.assertEqual({'complete': True, 'phaseCount': 62, 'fullReuse': True}, result)
 
     def test_installed_android_capture_outputs_follow_all_owners_and_fail_closed(self):

@@ -601,6 +601,7 @@ jobs:
       any_apple: ${{ steps.impact.outputs.any_apple }}
       lane_android: ${{ steps.impact.outputs.lane_android }}
       retained_android: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused == 'false' && steps.impact.outputs.lane_android == 'true' && (steps.impact.outputs.lane_android_test == 'true' || steps.impact.outputs.lane_android_metadata == 'true') && steps.product-reuse.outputs.native_resume_ready == 'true' && steps.product-reuse.outputs.native_resume_full_reuse == 'true' }}
+      retained_node_js: ${{ steps.product-selection.outputs.retained_node_js }}
       lane_android_build: ${{ steps.impact.outputs.lane_android_build }}
       lane_android_test: ${{ steps.impact.outputs.lane_android_test }}
       lane_android_metadata: ${{ steps.impact.outputs.lane_android_metadata }}
@@ -762,6 +763,9 @@ jobs:
           PY
       - id: product-selection
         env:
+          ORDINARY_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && !inputs.toolingOnly }}
+          NATIVE_READY: ${{ steps.product-reuse.outputs.native_resume_ready }}
+          NATIVE_FULL_REUSE: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
           ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}
           TOOLING_MISS: ${{ steps.product-reuse.outputs.tooling_miss }}
           NATIVE_CONTRACT_COMPLETE: ${{ steps.product-reuse.outputs.native_contract_complete }}
@@ -792,6 +796,17 @@ jobs:
                   matrix = json.loads(os.environ['ORIGINAL_PRODUCT_MATRIX'])
                   if miss == 'true' and not any(row['lane'] == 'contracts' for row in matrix):
                       matrix.insert(0, dict(lane='contracts', build=False, test=False, metadata=False))
+          native_flags = [os.environ[key] for key in ('NATIVE_READY', 'NATIVE_FULL_REUSE')]
+          if any(value not in ('', 'true', 'false') for value in native_flags):
+              raise ValueError('Invalid native Node-JS selection state')
+          node = [row for row in matrix if row['lane'] == 'node-js']
+          if len(node) > 1:
+              raise ValueError('Node-JS product lane is duplicated')
+          retained_node = (os.environ['ORDINARY_MODE'] == 'true' and os.environ['AUTHORIZED'] == 'true'
+              and os.environ['VALIDATION_REUSED'] == 'false' and native_flags == ['true', 'true']
+              and len(node) == 1 and (node[0]['build'] is True or node[0]['test'] is True))
+          if retained_node:
+              matrix = [row for row in matrix if row['lane'] != 'node-js']
           contracts = [row for row in matrix if row['lane'] == 'contracts']
           if native_contract == 'true' and miss != 'true':
               contracts = []
@@ -799,6 +814,7 @@ jobs:
               raise ValueError('Contract product lane is duplicated')
           matrix = [row for row in matrix if row['lane'] != 'contracts']
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('retained_node_js=' + str(retained_node).lower() + '\n')
               output.write('product_matrix=' + json.dumps(matrix, separators=(',', ':')) + '\n')
               output.write('contract_matrix=' + json.dumps({'include': contracts}, separators=(',', ':')) + '\n')
           PY
@@ -6417,9 +6433,9 @@ jobs:
       artifact_digest: ${{ steps.parent.outputs.artifact_digest }}
       state_wave: ${{ steps.parent.outputs.state_wave }}
       sdk_state_wave: ${{ steps.parent.outputs.sdk_state_wave }}
-      android_contribution_sha256: ${{ steps.android-contribution.outputs.sha256 }}
-      android_contribution_artifact_id: ${{ steps.android-contribution-upload.outputs.artifact-id }}
-      android_contribution_artifact_sha256: ${{ steps.android-contribution-upload.outputs.artifact-digest && format('sha256:{0}', steps.android-contribution-upload.outputs.artifact-digest) || '' }}
+      validation_contribution_sha256: ${{ steps.validation-contributions.outputs.sha256 }}
+      validation_contribution_artifact_id: ${{ steps.validation-contributions-upload.outputs.artifact-id }}
+      validation_contribution_artifact_sha256: ${{ steps.validation-contributions-upload.outputs.artifact-digest && format('sha256:{0}', steps.validation-contributions-upload.outputs.artifact-digest) || '' }}
     env:
       FULL_REUSE_COMPLETION: 'false'
       PRODUCT_RESUME: ${{ toJSON(needs.product-resume) }}
@@ -6517,6 +6533,7 @@ jobs:
         env:
           PLAN_DIRECTORY: ${{ steps.tooling.outputs.plan-directory || 'build/runtime-plan' }}
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
+          RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
           ARTIFACT_ID: ${{ steps.parent.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ steps.parent.outputs.artifact_digest }}
           STATE_WAVE: ${{ steps.parent.outputs.state_wave }}
@@ -6530,9 +6547,11 @@ jobs:
           script: |
             set -euo pipefail
             tooling=()
-            if [ "$RETAINED_ANDROID" = true ]; then
-              tooling+=(--android-contribution-directory "$RUNNER_TEMP/android-contribution")
+            if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ]; then
+              tooling+=(--validation-contribution-directory "$RUNNER_TEMP/validation-contributions")
             fi
+            if [ "$RETAINED_ANDROID" = true ]; then tooling+=(--include-android-contribution); fi
+            if [ "$RETAINED_NODE_JS" = true ]; then tooling+=(--include-node-js-contribution); fi
             if [ -n "$SDK_VALIDATION_TOOLING" ]; then
               tooling+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
             fi
@@ -6552,24 +6571,24 @@ jobs:
               --repository-root "$GITHUB_WORKSPACE" --github-output "$GITHUB_OUTPUT" \
               ${tooling[@]+"${tooling[@]}"}
 
-      - id: android-contribution
-        if: needs.plan.outputs.retained_android == 'true'
+      - id: validation-contributions
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true'
         run: |
           python3 -B - <<'PYCODE'
           import os
           from pathlib import Path
           from ci.products.inventory import read_regular_file_bytes, sha256_bytes
           from ci.reuse import github_output
-          path = Path(os.environ['RUNNER_TEMP']) / 'android-contribution/android-contribution.json'
+          path = Path(os.environ['RUNNER_TEMP']) / 'validation-contributions/canonical-contributions.json'
           raw = read_regular_file_bytes(path, max_bytes=1024 * 1024, reject_symlink_parents=True)
           github_output(Path(os.environ['GITHUB_OUTPUT']), {'sha256': sha256_bytes(raw)})
           PYCODE
-      - id: android-contribution-upload
-        if: needs.plan.outputs.retained_android == 'true' && steps.android-contribution.outputs.sha256 != ''
+      - id: validation-contributions-upload
+        if: (needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true') && steps.validation-contributions.outputs.sha256 != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: codex-agent-sdk-android-contribution-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/android-contribution/android-contribution.json
+          name: codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/validation-contributions/canonical-contributions.json
           if-no-files-found: error
           overwrite: false
           compression-level: 0
@@ -6921,7 +6940,7 @@ jobs:
       fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.artifact_digest != '' &&
       (!inputs.sdkRecoveryOnly || fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62') &&
       (needs.plan.outputs.lane_ios_swift_tests_test == 'true' ||
-       needs.plan.outputs.native_wrappers == 'true') &&
+       needs.plan.outputs.native_wrappers == 'true' || needs.plan.outputs.retained_node_js == 'true') &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     needs: [workflow-lint, plan, product, contract-validation, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse]
@@ -6978,10 +6997,11 @@ jobs:
           SDK_COMPLETION_RESULT: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).result }}
           SDK_COMPLETE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete }}
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
+          RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
           ANDROID_SOURCE_RESULT: ${{ needs.android.result }}
-          ANDROID_CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.android_contribution_sha256 }}
-          ANDROID_CONTRIBUTION_ARTIFACT_ID: ${{ needs.sdk-completion.outputs.android_contribution_artifact_id }}
-          ANDROID_CONTRIBUTION_ARTIFACT_SHA256: ${{ needs.sdk-completion.outputs.android_contribution_artifact_sha256 }}
+          VALIDATION_CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
+          VALIDATION_CONTRIBUTION_ARTIFACT_ID: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_id }}
+          VALIDATION_CONTRIBUTION_ARTIFACT_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_sha256 }}
           SDK_CATALOG_REQUIRED: ${{ github.event_name == 'pull_request' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && needs.plan.outputs.native_resume_full_reuse != 'true' }}
           SDK_CATALOG_RESULT: ${{ needs.sdk-catalog.result }}
           SDK_CATALOG_NAME: ${{ needs.sdk-catalog.outputs.artifact_name }}
@@ -7007,7 +7027,7 @@ jobs:
           PRODUCT_FULL_REUSE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse }}
           NATIVE_WRAPPERS_REQUIRED: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.native_wrappers == 'true' }}
           NATIVE_WRAPPERS_RESULT: ${{ needs.sdk-native-wrappers.result }}
-          SDK_PARITY_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true') }}
+          SDK_PARITY_REQUIRED: ${{ needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true' || needs.plan.outputs.retained_node_js == 'true') }}
           SDK_PARITY_RESULT: ${{ needs.sdk-parity.result }}
           SDK_PARITY_ARTIFACT_ID: ${{ needs.sdk-parity.outputs.artifact_id }}
           SDK_PARITY_ARTIFACT_DIGEST: ${{ needs.sdk-parity.outputs.artifact_digest }}
@@ -7034,11 +7054,13 @@ jobs:
           fi
           if [ "$RETAINED_ANDROID" = true ]; then
             test "$ANDROID_SOURCE_RESULT" = success || exit 1
+          fi
+          if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ]; then
             test "$SDK_COMPLETION_RESULT" = success || exit 1
             test "$SDK_COMPLETE" = true || exit 1
-            [[ "$ANDROID_CONTRIBUTION_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-            [[ "$ANDROID_CONTRIBUTION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-            [[ "$ANDROID_CONTRIBUTION_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            [[ "$VALIDATION_CONTRIBUTION_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            [[ "$VALIDATION_CONTRIBUTION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "$VALIDATION_CONTRIBUTION_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ "$NATIVE_WRAPPERS_REQUIRED" = true ]; then
             test "$NATIVE_WRAPPERS_RESULT" = success || exit 1
@@ -7121,7 +7143,7 @@ jobs:
         with:
           pattern: codex-agent-ci-*
           path: build/ci/receipts
-      - if: ${{ !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_node_js == 'true') }}
+      - if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_node_js != 'true' && (needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_node_js == 'true') }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
@@ -7140,30 +7162,43 @@ jobs:
           test -d "$source/sdks"
           cp -R "$source" build/ci/native-wrapper-release
           echo 'restored=true' >> "$GITHUB_OUTPUT"
-      - name: Require current Android source checks and exact original native contribution
-        if: needs.plan.outputs.retained_android == 'true'
+      - name: Require exact current source receipts and canonical contributions
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true'
         env:
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
-          ARTIFACT_ID: ${{ needs.sdk-completion.outputs.android_contribution_artifact_id }}
-          ARTIFACT_SHA256: ${{ needs.sdk-completion.outputs.android_contribution_artifact_sha256 }}
-          CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.android_contribution_sha256 }}
+          ARTIFACT_ID: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_id }}
+          ARTIFACT_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_sha256 }}
+          CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
+          RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
+          RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
+          PARITY_OUTPUTS: ${{ toJSON(needs.sdk-parity.outputs) }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 -B - <<'PYCODE'
           import json, os
           from pathlib import Path
-          from ci.sdk_android_evidence_capture import aggregate_retained_android
+          from ci.sdk_android_evidence_capture import aggregate_retained_validation
           plan = Path('build/ci/plan/impact-plan.json')
           contract = json.loads(plan.read_text())['lanes']['contracts']
-          aggregate_retained_android(plan, Path('build/ci/receipts'), Path('build/ci/current-validation-contributions'),
+          node = os.environ['RETAINED_NODE_JS'] == 'true'
+          parity = None
+          if node:
+              outputs = json.loads(os.environ['PARITY_OUTPUTS'])
+              parity = {key: (int(outputs[key]) if key.endswith('_id') else outputs[key])
+                        for key in ('artifact_id', 'artifact_digest', 'artifact_run_id')}
+              for key in ('report_artifact_id', 'report_artifact_sha256', 'report_sha256'):
+                  value = outputs.get(key, '')
+                  parity[key] = (int(value) if key.endswith('_id') else value) if value else None
+          aggregate_retained_validation(plan, Path('build/ci/receipts'), Path('build/ci/current-validation-contributions'),
               repository_root=Path(os.environ['GITHUB_WORKSPACE']), trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
               artifact_id=int(os.environ['ARTIFACT_ID']), artifact_sha256=os.environ['ARTIFACT_SHA256'],
               contribution_sha256=os.environ['CONTRIBUTION_SHA256'], environ=os.environ,
+              android=os.environ['RETAINED_ANDROID'] == 'true', node_js=node, parity=parity,
               auxiliary_contracts=os.environ['TOOLING_MISS'] == 'true' and not any(contract[k] for k in ('build', 'test', 'metadata')))
           PYCODE
       - name: Preserve distinct current validation contributions
-        if: needs.plan.outputs.retained_android == 'true'
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-agent-current-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
@@ -7173,7 +7208,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - name: Require an exact receipt set
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}
         env:
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
@@ -7190,7 +7225,7 @@ jobs:
             python3 ci/receipt.py aggregate --plan build/ci/plan/impact-plan.json \
               --receipts build/ci/receipts --output build/ci/validation-receipt.json "${auxiliary[@]}"
           fi
-      - if: ${{ !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')) }}
+      - if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_node_js != 'true' && (needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')) }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}
@@ -7198,7 +7233,7 @@ jobs:
           run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}
           path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
           M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
@@ -7236,7 +7271,7 @@ jobs:
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}
         with:
           if-no-files-found: error
           overwrite: true
