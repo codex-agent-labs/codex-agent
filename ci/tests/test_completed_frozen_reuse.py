@@ -495,6 +495,122 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 history.assert_any_call(root, commit, "fixture")
             return result
 
+    def test_partial_parity_joins_only_current_native_context_without_election_or_body_reads(self):
+        from products.registry import PHASE_INSTANCE_IDS
+        from dataclasses import replace
+        # Extend this suite's synthetic native controls; no product body exists.
+        spec, receipts = copy.deepcopy(self.spec), copy.deepcopy(self.receipts)
+        for instance in PHASE_INSTANCE_IDS:
+            if instance in receipts:
+                continue
+            receipt = phase_receipt()
+            receipt.update(product=instance.product, component=instance.component,
+                           phase=instance.phase, target=instance.target, productVersion="0.8.0")
+            receipt["inputs"]["versionIdentity"] = _phase_version_identity(instance, spec["request"]["versions"])
+            receipt["buildKey"] = compute_build_key(**{field: receipt[field] for field in FIELDS}, inputs=receipt["inputs"])
+            receipts[instance] = validate_phase_receipt(receipt)
+            row = {**{field: receipt[field] for field in FIELDS}, "buildKey": receipt["buildKey"],
+                "receiptSha256": sha256_bytes(canonical_json_bytes(receipt)),
+                "objectSha256": sha256_bytes(str(instance).encode()), "state": "retained",
+                "source": None, "transportSource": None, "misses": []}
+            spec["expectedResult"]["phases"].append(row)
+            spec["request"]["availableObjects"].append({**{field: row[field] for field in (*FIELDS,
+                "buildKey", "receiptSha256", "objectSha256")}, "objectPath": "unused/" + str(len(receipts))})
+            spec["request"]["phaseAuthorities"].append({**{field: receipt[field] for field in FIELDS},
+                **{field: receipt["inputs"][field] for field in ("flagsDigest", "toolchainProfileDigest", "outputSchemaVersion")}})
+        for field in ("availableObjects", "phaseAuthorities"):
+            spec["request"][field].sort(key=product_reuse._identity)
+        spec["expectedResult"]["phases"].sort(key=product_reuse._identity)
+        selected = PhaseInstanceId("sdk", "python", "metadata", "desktop")
+        closure = product_reuse._dependency_closure((selected,))
+        base = {product_reuse._identity(row): row for row in spec["expectedResult"]["phases"]}
+        next_receipt = copy.deepcopy(receipts[selected])
+        next_receipt["producer"]["commit"] = "e" * 40
+        next_receipt["producer"]["tree"] = "f" * 40
+        new = {**base[selected], "receiptSha256": sha256_bytes(canonical_json_bytes(next_receipt)),
+               "objectSha256": sha256_bytes(b"authenticated selected replacement, not a body")}
+        request = copy.deepcopy(spec["request"])
+        request["requested"] = [product_reuse._identity_record(selected)]
+        producer = {**next_receipt["producer"], "commit": "d" * 40}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            def fixture():
+                cap = qualification.CompletedFrozenReuse(spec, receipts.values(),
+                    qualification._COMPLETED_FROZEN, revision="d" * 40)
+                cap._eligible = frozenset(set(base) - {selected})
+                rows = {item: copy.deepcopy(new if item == selected else base[item]) for item in closure}
+                state = product_reuse._VerifiedProductState(
+                    plan={"validationCommit": "d" * 40}, producer=producer,
+                    consumer={"kind": "ci", "producer": producer}, requested=(selected,), closure=closure,
+                    expected_fixed={}, rebased_request=copy.deepcopy(request),
+                    prior={"phases": list(rows.values()), "fullReuse": True, "matrices": {"sdk": []}},
+                    prior_by_instance=rows, sources={item: root / str(index) for index, item in enumerate(rows)},
+                    prior_carrier_phases=dict(rows), prior_ready_plans={}, completed_frozen=cap)
+                return cap, state
+            def authorities(root, revision, instances):
+                return [row for row in spec["request"]["phaseAuthorities"] if product_reuse._identity(row) in instances], None
+            def inventories(root, revision, instances):
+                return {item: copy.deepcopy(receipts[item]["inputs"]["inventory"]) for item in instances}
+            with patch.object(product_reuse, "_git_value", return_value="d" * 40) as git, \
+                    patch.object(product_reuse, "_authorities", side_effect=authorities), \
+                    patch.object(product_reuse, "_versions", return_value=spec["request"]["versions"]), \
+                    patch.object(reuse, "_phase_git_inventories", side_effect=inventories) as current, \
+                    patch.object(product_reuse, "verify_object", side_effect=AssertionError("no old-body verification")), \
+                    patch.object(qualification.CompletedFrozenReuse, "capture_object", side_effect=AssertionError("no object read")), \
+                    patch.object(product_reuse, "_plan_with_sdk_tooling", side_effect=AssertionError("no new election")):
+                cap, state = fixture()
+                with self.assertRaisesRegex(ValueError, "completed and authenticated"):
+                    with product_reuse._full_sdk_parity_context(state, root):
+                        self.fail("A new session cannot be invented by the join")
+                for defect in (None, "missing", "inventory", "authority", "source", "dependency", "unresolved",
+                               "type", "late-context", "late-authority", "late-session"):
+                    cap, state = fixture()
+                    missing = next(item for item in base if item not in closure)
+                    if defect == "missing":
+                        cap._eligible -= {missing}
+                    elif defect == "dependency":
+                        identity = PhaseInstanceId("contract", "contract", "metadata", "common")
+                        state.prior_by_instance[identity]["receiptSha256"] = POLICY
+                    elif defect == "unresolved":
+                        state.prior_by_instance[selected]["state"] = "build"
+                    elif defect == "type":
+                        state = replace(state, completed_frozen=object())
+                    git.return_value = "e" * 40 if defect == "source" else "d" * 40
+                    def selected_inventories(root, revision, instances):
+                        values = inventories(root, revision, instances)
+                        if defect == "inventory":
+                            values[next(iter(values))] = []
+                        return values
+                    current.side_effect = selected_inventories
+                    before = canonical_json_bytes(state.prior)
+                    with self.subTest(defect=defect), restore.verification_session(), ExitStack() as stack:
+                        if defect == "authority":
+                            stack.enter_context(patch.object(product_reuse, "_authorities", return_value=(None, "missing")))
+                        def consume():
+                            with product_reuse._full_sdk_parity_context(state, root) as context:
+                                self.assertEqual(112, len(context.prior["phases"]))
+                                self.assertEqual(new, context.prior_by_instance[selected])
+                                self.assertIs(state.requested, context.requested)
+                                self.assertIs(state.closure, context.closure)
+                                self.assertIs(state.plan, context.plan)
+                                self.assertIs(state.rebased_request, context.rebased_request)
+                                self.assertEqual(state.prior["matrices"], context.prior["matrices"])
+                                if defect == "late-context":
+                                    context.prior_by_instance[missing]["objectSha256"] = POLICY
+                                elif defect == "late-authority":
+                                    cap._eligible -= {missing}
+                                elif defect == "late-session":
+                                    token = restore._VERIFICATION_SESSION.set(None)
+                                    stack.callback(restore._VERIFICATION_SESSION.reset, token)
+                            with self.assertRaisesRegex(ValueError, "outlived"):
+                                context.capture_deferred_object(new, root / "escaped.zip")
+                        if defect:
+                            with self.assertRaises(ValueError):
+                                consume()
+                        else:
+                            consume()
+                        self.assertEqual(before, canonical_json_bytes(state.prior))
+
     def test_requalification_retains_only_unchanged_dependency_closures(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

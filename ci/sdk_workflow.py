@@ -548,6 +548,16 @@ def _verified_parity_inputs(plan, discovery, state, *, repository_root, environ,
             sdk_facade_metadata_admission=sdk_facade_metadata_admission,
             sdk_android_metadata_admission=sdk_android_metadata_admission),
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
+    with product_reuse._full_sdk_parity_context(verified, root) as context:
+        with _parity_context_inputs(context, plan, plan_bytes, state, root=root, environ=environ,
+                sdk_validation_tooling=sdk_validation_tooling,
+                sdk_original_workflow_sha=sdk_original_workflow_sha) as inputs:
+            yield inputs
+
+
+@contextmanager
+def _parity_context_inputs(verified, plan, plan_bytes, state, *, root, environ,
+                           sdk_validation_tooling, sdk_original_workflow_sha):
     phases = {product_reuse._identity(row): row for row in verified.prior["phases"]}
     required = {identity for identity in PHASE_INSTANCE_IDS if identity.product == "sdk"}
     if any(identity not in verified.sources or phases.get(identity, {}).get("state") not in {"retained", "reused"}
@@ -1645,9 +1655,11 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
     tooling = _caller_policies(sdk_validation_tooling, sdk_apple_validation_policy,
         sdk_facade_metadata_admission=sdk_facade_metadata_admission,
         sdk_android_metadata_admission=sdk_android_metadata_admission)
+    current_replays = []
     with verified_inputs(plan, discovery, state, artifact_id=artifact_id, artifact_sha256=artifact_sha256,
             **({"retained_sdk_inputs_source": retained_sdk_inputs_source} if retained_sdk_inputs_source is not None else {}),
             requested_scope=(instance,),
+            _product_state_consumer=current_replays.append,
             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
             repository_root=root, environ=environ, token=token, **tooling,
             **({"completed_frozen": completed_frozen} if completed_frozen is not None else {})) as inputs:
@@ -1655,10 +1667,19 @@ def execute_javascript(plan, discovery, state, destination, *, phase, expected_b
         if fields not in selection["consumers"]:
             raise ValueError("SDK JavaScript worker is not selected")
         prepared = destination / "inputs"
-        ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
-            expected_build_key=expected_build_key, repository_root=root, environ=environ,
-            materialized_scope=tuple(consumed),
-            sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
+        if current_replays and selection["source"] == "current-runtime":
+            replay, = current_replays
+            if (type(replay) is not product_reuse._VerifiedProductState or replay.requested != (instance,)
+                    or replay.rebased_request.get("sdkRuntimeSource") == "released-default"):
+                raise ValueError("JavaScript worker retained replay differs from its current selection")
+            ready = product_reuse._materialize_product_predecessors(replay, instance, prepared,
+                expected_build_key, root, materialized_scope=tuple(consumed))
+        else:
+            # Released defaults also capture their external Runtime predecessors.
+            ready = product_reuse.materialize_product_predecessors(plan, discovery, state, instance, prepared,
+                expected_build_key=expected_build_key, repository_root=root, environ=environ,
+                materialized_scope=tuple(consumed),
+                sdk_original_workflow_sha=trusted_workflow_sha, **tooling,
                 **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
         producer = product_reuse.validate_producer(product_reuse._canonical_control(
             prepared / "producer.json", "Elected SDK producer"))

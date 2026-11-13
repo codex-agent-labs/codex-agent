@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from ci import sdk_workflow as workflow
 from ci.tests.product_chain_support import write_receipt
@@ -95,6 +95,8 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
         self.events.append("enter")
         self.live = True
         try:
+            if getattr(self, "current_replay", None) is not None:
+                kwargs["_product_state_consumer"](self.current_replay)
             yield self.inputs
             self.events.append("exit-check")
             if self.failure == "late-context":
@@ -194,8 +196,51 @@ class SdkJavascriptWorkflowTest(unittest.TestCase):
                 self.assertEqual(["enter", "materialize", "worker", "exit-check", "exited", "finalize"], self.events)
                 self.mocks[0].assert_called_once_with(self.plan, self.discovery, self.state,
                     requested_scope=(PhaseInstanceId("sdk", "javascript", phase, "node"),),
+                    _product_state_consumer=ANY,
                     **{name: value for name, value in self.arguments.items() if name != "expected_build_key"})
                 self.mocks[3].assert_called_once()
+
+    def test_current_runtime_borrows_exact_replay_and_keeps_exit_gate(self):
+        from dataclasses import replace
+        for phase, defect in (("package", None), ("validation", None), ("package", "identity"),
+                              ("package", "source"), ("package", "type"), ("package", "late-context")):
+            self.destination = self.repository / f"build/current-{phase}-{defect}"
+            self.events.clear()
+            self.selection["source"] = "current-runtime"
+            instance = PhaseInstanceId("sdk", "javascript", phase, "node")
+            self.current_replay = workflow.product_reuse._VerifiedProductState(
+                plan={}, producer={}, consumer={}, requested=(instance,), closure=(), expected_fixed={},
+                rebased_request={}, prior={}, prior_by_instance={}, sources={},
+                prior_carrier_phases={}, prior_ready_plans={})
+            if defect == "identity":
+                self.current_replay = replace(self.current_replay, requested=(SDK_PACKAGE, NODE_PACKAGE))
+            elif defect == "source":
+                self.current_replay.rebased_request["sdkRuntimeSource"] = "released-default"
+            elif defect == "type":
+                self.current_replay = object()
+            self.failure = "late-context" if defect == "late-context" else None
+            def materialize(state, selected, destination, build_key, root, *, materialized_scope):
+                self.assertIs(state, self.current_replay)
+                self.assertTrue(self.live)
+                self.assertEqual(instance, selected)
+                self.assertEqual(self.repository, root)
+                return self.materialize(self.plan, self.discovery, self.state, selected, destination,
+                    expected_build_key=build_key, repository_root=root, environ=self.arguments["environ"],
+                    materialized_scope=materialized_scope, sdk_original_workflow_sha=self.arguments["trusted_workflow_sha"])
+            with self.subTest(phase=phase, defect=defect), \
+                    patch.object(workflow.product_reuse, "_materialize_product_predecessors", side_effect=materialize) as borrowed:
+                if defect:
+                    with self.assertRaisesRegex(ValueError, "retained replay|late original"):
+                        self.invoke(phase)
+                    self.mocks[3].assert_not_called()
+                    if defect != "late-context":
+                        borrowed.assert_not_called()
+                else:
+                    self.invoke(phase)
+                    borrowed.assert_called_once()
+                    self.assertEqual(["enter", "materialize", "worker", "exit-check", "exited", "finalize"], self.events)
+                self.mocks[1].assert_not_called()  # No second public replay in current-runtime mode.
+                self.assertFalse(self.live)
 
     def test_wrong_selected_identity_never_materializes_or_executes(self):
         self.selection["consumers"] = [{"product": "sdk", "component": "python", "phase": "package", "target": "desktop"}]

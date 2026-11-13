@@ -5275,6 +5275,103 @@ def _verified_product_state(
     )
 
 
+
+@contextmanager
+def _full_sdk_parity_context(state, root):
+    """Borrow only missing current native context; never widen the elected result.
+
+    The selected state has already passed ordinary replay. Added controls come
+    only from the same live semantic capability and its exact current-key gate.
+    This private view cannot be published as a reuse result or used for election.
+    """
+    from dataclasses import replace
+    from products.reuse import _phase_git_inventories
+    from products.restore import _VERIFICATION_SESSION
+    from reuse_qualification import CompletedFrozenReuse
+
+    required = _dependency_closure(tuple(item for item in PHASE_INSTANCE_IDS if item.product == "sdk"))
+    selected = {_identity(row): row for row in state.prior["phases"]}
+    missing = tuple(item for item in required if item not in selected)
+    if not missing:
+        yield state
+        return
+    session = _VERIFICATION_SESSION.get()
+    completed = getattr(state, "completed_frozen", None)
+    if (type(state) is not _VerifiedProductState or type(completed) is not CompletedFrozenReuse
+            or session is None or state.rebased_request.get("sdkRuntimeSource") is not None
+            or any(row["state"] not in {"retained", "reused"} for row in selected.values())):
+        raise ValueError("Full parity requires every selected SDK phase completed and authenticated")
+    root = Path(root).resolve(strict=True)
+    revision = state.plan["validationCommit"]
+    completed.check_request(state.rebased_request)
+    completed.check_consumer(state.consumer)
+    _, eligible = completed._values()
+    if any(item not in eligible for item in missing):
+        raise ValueError("Full parity lacks unchanged authenticated native context")
+
+    def identity(value=state):
+        if _VERIFICATION_SESSION.get() is not session:
+            raise ValueError("Full parity context outlived its verification session")
+        completed.check_request(state.rebased_request)
+        completed.check_consumer(state.consumer)
+        if _git_value(root, "rev-parse", "HEAD^{commit}") != revision:
+            raise ValueError("Full parity context differs from current source")
+        return canonical_json_bytes({"plan": state.plan, "producer": state.producer,
+            "consumer": state.consumer, "request": state.rebased_request,
+            "result": value.prior, "native": list(completed._values()[1].values()),
+            "records": [value.prior_by_instance[item] for item in sorted(value.prior_by_instance)],
+            "carrier": [value.prior_carrier_phases[item] for item in sorted(value.prior_carrier_phases)],
+            "sources": [[*_identity_record(item).values(), str(path)]
+                        for item, path in sorted(value.sources.items())]})
+
+    before = identity()
+    authorities, unavailable = _authorities(root, revision, missing)
+    if unavailable or authorities is None:
+        raise ValueError("Full parity context lacks current phase authorities")
+    current = {_identity(row): row for row in authorities}
+    inventories = _phase_git_inventories(root, revision, missing)
+    versions = _versions(root, revision)
+    combined = {**eligible, **selected}
+    for item in missing:
+        row, authority = eligible[item], current[item]
+        upstream = tuple(completed.envelope(combined[parent]) for parent in phase_instance_dependencies(item))
+        if any(envelope is None for envelope in upstream) or completed.phase_plan(item, {
+                "inventory": inventories[item], "versions": versions,
+                "flags_digest": authority["flagsDigest"],
+                "toolchain_profile_digest": authority["toolchainProfileDigest"],
+                "output_schema_version": authority["outputSchemaVersion"],
+                }, completed.envelope(row), upstream) is None:
+            raise ValueError("Full parity context changes original dependencies")
+    # The paths are private deferred references, not invented object bytes.
+    with tempfile.TemporaryDirectory(prefix="sdk-parity-context-", dir=session["root"]) as temporary:
+        added = {item: dict(eligible[item]) for item in missing}
+        references = {item: Path(temporary) / object_relative_path(row["buildKey"], row["receiptSha256"])
+                      for item, row in added.items()}
+        live = True
+        def capture(record, destination):
+            if not live or identity() != before or identity(borrowed) != borrowed_before:
+                raise ValueError("Full parity context changed or outlived its consumer")
+            if state.capture_deferred_object is None:
+                raise ValueError("Full parity context lacks its original materializer")
+            result = state.capture_deferred_object(record, destination)
+            if identity() != before or identity(borrowed) != borrowed_before:
+                raise ValueError("Full parity context changed during original capture")
+            return result
+        borrowed = replace(state,
+            capture_deferred_object=capture,
+            prior={**state.prior, "phases": [dict(combined[item]) for item in sorted(set(selected) | set(missing))]},
+            prior_by_instance={**state.prior_by_instance, **added},
+            prior_carrier_phases={**state.prior_carrier_phases, **added},
+            sources={**state.sources, **references})
+        borrowed_before = identity(borrowed)
+        try:
+            yield borrowed
+        finally:
+            live = False
+            if identity() != before or identity(borrowed) != borrowed_before:
+                raise ValueError("Full parity context changed during consumption")
+
+
 def _sdk_input_selection(state, root, *, include_completed=False):
     """Route selected SDK content needs; this hint never grants execution trust."""
     return _sdk_input_selection_from_transition(state.plan, state.prior, state.sources,
