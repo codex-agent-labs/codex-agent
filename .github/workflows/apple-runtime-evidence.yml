@@ -12,6 +12,10 @@ on:
       validationTree:
         required: true
         type: string
+      retainedInstalledConsumers:
+        required: false
+        default: false
+        type: boolean
       sdkBinaryOnly:
         description: Select only the three native prerequisites of an elected SDK iOS binary
         required: false
@@ -90,13 +94,16 @@ jobs:
       - id: lanes
         env:
           SDK_BINARY_ONLY: ${{ inputs.sdkBinaryOnly }}
+          RETAINED_CONSUMERS: ${{ inputs.retainedInstalledConsumers }}
         run: |
           lanes=(--lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator)
           if [ "$SDK_BINARY_ONLY" != true ]; then
             lanes+=(--lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
               --lane ios-swift-build --lane ios-swift-tests --lane ios-package
-              --lane ios-privacy-metrics --lane consumer-common
-              --lane consumer-ios-device --lane consumer-ios-simulator)
+              --lane ios-privacy-metrics)
+            if [ "$RETAINED_CONSUMERS" != true ]; then
+              lanes+=(--lane consumer-common --lane consumer-ios-device --lane consumer-ios-simulator)
+            fi
           fi
           python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT" "${lanes[@]}"
 

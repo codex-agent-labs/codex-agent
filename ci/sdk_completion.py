@@ -228,7 +228,8 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                            sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
                            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
                            completed_frozen=None, include_android_contribution=False, include_node_js_contribution=False,
-                           android_installed_consumer=False):
+                           android_installed_consumer=False, installed_consumer=None,
+                           include_installed_consumers=False):
     """Check the full replayed SDK closure, not a family matrix or new election.
 
     Existing inspection authenticates the exact result schema, requested closure,
@@ -237,10 +238,15 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
     the same authenticated replay's global result for the final merge gate.
     No SDK selection is a successful no-op, not evidence of a produced SDK.
     """
-    if any(type(flag) is not bool for flag in (include_android_contribution, include_node_js_contribution, android_installed_consumer)):
+    if any(type(flag) is not bool for flag in (include_android_contribution, include_node_js_contribution,
+                                               android_installed_consumer, include_installed_consumers)):
         raise ValueError("Fixed Android consumer selections must be boolean")
-    include_contribution = include_android_contribution or include_node_js_contribution
-    contribution, consumed = [], []
+    if installed_consumer is not None:
+        from sdk_android_validation_workflow import _INSTALLED_CONSUMERS
+        if type(installed_consumer) is not str or installed_consumer not in _INSTALLED_CONSUMERS or android_installed_consumer:
+            raise ValueError("Installed consumer requires one fixed lane and no legacy Android selector")
+    include_contribution = include_android_contribution or include_node_js_contribution or include_installed_consumers
+    contribution, consumed, installed_controls = [], [], []
     def consume_current(state):
         if consumed:
             raise ValueError("Android completion state was consumed more than once")
@@ -250,11 +256,16 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
             from sdk_android_evidence_capture import retained_validation_contributions
             contribution.append(retained_validation_contributions(state, plan_path,
                 repository_root=repository_root, environ=environment,
-                android=include_android_contribution, node_js=include_node_js_contribution))
+                android=include_android_contribution, node_js=include_node_js_contribution,
+                **({"installed_consumers": True} if include_installed_consumers else {})))
         if android_installed_consumer:
             from sdk_android_validation_workflow import run_retained_android_consumer
             run_retained_android_consumer(state, plan_path=plan_path,
                 repository_root=repository_root, environ=environment)
+        if installed_consumer is not None:
+            from sdk_android_validation_workflow import run_retained_installed_consumer
+            installed_controls.append(run_retained_installed_consumer(state, lane=installed_consumer,
+                plan_path=plan_path, repository_root=repository_root, environ=environment))
 
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
@@ -264,7 +275,7 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
         **({"sdk_original_workflow_sha": sdk_original_workflow_sha}
            if sdk_original_workflow_sha is not None else {}),
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
-        **({"_verified_state_consumer": consume_current} if include_contribution or android_installed_consumer else {}),
+        **({"_verified_state_consumer": consume_current} if include_contribution or android_installed_consumer or installed_consumer is not None else {}),
         **products._metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     result = require_exact_keys(require_object(inspected, "SDK completion inspection").get("result"),
                                 products._REUSE_RESULT_KEYS, "SDK completion replay result")
@@ -291,10 +302,11 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                 require_sha256(phase[field], "Completed SDK phase " + field)
     if unresolved:
         raise ValueError("Selected SDK phases remain unresolved: " + ", ".join(unresolved))
-    if (include_contribution or android_installed_consumer) and len(consumed) != 1:
+    if (include_contribution or android_installed_consumer or installed_consumer is not None) and len(consumed) != 1:
         raise ValueError("Android consumer lacks its single verified state")
     return {"complete": True, "phaseCount": count, "fullReuse": result["fullReuse"],
-            **({"validationContributions": contribution[0]} if include_contribution else {})}
+            **({"validationContributions": contribution[0]} if include_contribution else {}),
+            **({"installedConsumer": installed_controls[0]} if installed_consumer is not None else {})}
 
 
 def require_repository_completion(plan_path, discovery_root, state_root=None, **options):
@@ -807,16 +819,24 @@ def _capture_main(argv):
     parser.add_argument("--include-android-contribution", action="store_true")
     parser.add_argument("--include-node-js-contribution", action="store_true")
     parser.add_argument("--android-installed-consumer", action="store_true")
+    parser.add_argument("--include-installed-consumers", action="store_true")
+    from sdk_android_validation_workflow import _INSTALLED_CONSUMERS
+    parser.add_argument("--installed-consumer", choices=tuple(_INSTALLED_CONSUMERS))
+    parser.add_argument("--installed-consumer-output", type=Path)
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     try:
-        include_contribution = args.include_android_contribution or args.include_node_js_contribution
+        include_contribution = args.include_android_contribution or args.include_node_js_contribution or args.include_installed_consumers
         if (args.validation_contribution_directory is not None) != include_contribution:
             raise ValueError("Fixed contribution selections require exactly one output directory")
-        if (args.validation_contribution_directory is not None or args.android_installed_consumer) and args.completed_frozen_policy is None:
+        if (args.installed_consumer is None) != (args.installed_consumer_output is None):
+            raise ValueError("Installed consumer requires its fixed lane and output together")
+        if args.installed_consumer is not None and args.android_installed_consumer:
+            raise ValueError("Installed consumer cannot combine generic and legacy Android modes")
+        if (include_contribution or args.android_installed_consumer or args.installed_consumer is not None) and args.completed_frozen_policy is None:
             raise ValueError("Android consumption requires explicit native authority")
         if args.validation_contribution_directory is not None:
             from products.sdk_package import _require_capability_output_separate
@@ -825,6 +845,14 @@ def _capture_main(argv):
                 (args.plan, args.destination, args.completed_frozen_policy))
             if contribution_destination.exists() or contribution_destination.is_symlink():
                 raise ValueError("Android contribution destination must be fresh")
+        if args.installed_consumer_output is not None:
+            from products.sdk_package import _require_capability_output_separate
+            installed_destination = args.installed_consumer_output.absolute()
+            _require_capability_output_separate(installed_destination,
+                (args.plan, args.destination, args.completed_frozen_policy,
+                 *([args.validation_contribution_directory] if args.validation_contribution_directory is not None else [])))
+            if installed_destination.exists() or installed_destination.is_symlink():
+                raise ValueError("Installed consumer output must be fresh")
         # This process owns one capability and one verification lifetime. No
         # captured matrix or serialized success substitutes for the full gate.
         with verification_session(), products._ci_observation_batch(
@@ -848,6 +876,8 @@ def _capture_main(argv):
                 **({"include_android_contribution": True} if args.include_android_contribution else {}),
                 **({"include_node_js_contribution": True} if args.include_node_js_contribution else {}),
                 **({"android_installed_consumer": True} if args.android_installed_consumer else {}),
+                **({"installed_consumer": args.installed_consumer} if args.installed_consumer is not None else {}),
+                **({"include_installed_consumers": True} if args.include_installed_consumers else {}),
                 **policies, **admissions, **completed)
         # All original, policy and native-custody exits precede output publication.
         if args.validation_contribution_directory is not None:
@@ -859,6 +889,21 @@ def _capture_main(argv):
                 (staged / "canonical-contributions.json").write_bytes(raw)
                 publish_regular_tree(staged, contribution_destination)
             result["validationContributionsSha256"] = sha256_bytes(raw)
+        if args.installed_consumer_output is not None:
+            controls = result.pop("installedConsumer")
+            target = _INSTALLED_CONSUMERS[args.installed_consumer][0]
+            raw = canonical_json_bytes(controls["record"])
+            from sdk_android_evidence_capture import _CONTRIBUTION_LIMIT
+            # The observer bounds the whole three-member ZIP, including headers.
+            if len(raw) + len(controls["consumerReport"]) + len(controls["mavenInventory"]) > _CONTRIBUTION_LIMIT - 4096:
+                raise ValueError("Installed consumer controls exceed the upload bound including ZIP headers")
+            with tempfile.TemporaryDirectory(prefix="installed-consumer-controls-") as temporary:
+                staged = Path(temporary).resolve()
+                (staged / "installed-consumer.json").write_bytes(raw)
+                (staged / f"kmp-consumer-{target}.json").write_bytes(controls["consumerReport"])
+                (staged / f"maven-inventory-{target}.json").write_bytes(controls["mavenInventory"])
+                publish_regular_tree(staged, installed_destination)
+            result["installedConsumerSha256"] = sha256_bytes(raw)
         github_output(args.github_output, result)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))

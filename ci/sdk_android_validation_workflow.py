@@ -6,6 +6,8 @@ remain external authority that the existing full gates must authenticate.
 """
 
 import argparse
+from contextlib import ExitStack
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -30,7 +32,7 @@ from products.sdk_package import _require_capability_output_separate
 from products.sdk_validation_inputs import _request_inventory
 from products.signatures import load_keyring, public_key_path
 from products.signing_isolation import require_no_signing_secret
-from sdk_android_evidence_capture import capture_android_evidence
+from sdk_android_evidence_capture import capture_android_evidence, _INSTALLED, _validate_installed_controls, _CONTRIBUTION_LIMIT
 from sdk_android_firebase_capture import capture_android_firebase_evidence, _producer_from_receipt
 from sdk_android_upload_locator import (retained_android_evidence_origin, capture_retained_android_plan,
     require_retained_android_authority, require_retained_android_capture)
@@ -48,21 +50,146 @@ _CONSUMER_INPUTS = (
 )
 
 
-@product_reuse.measured
-def run_retained_android_consumer(state, *, plan_path, repository_root, environ):
-    """Consume the existing private replay state; never authenticate a caller dict.
+_RUNTIME_MAVEN = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+_IOS_PACKAGE = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+_INSTALLED_CONSUMERS = {lane: values[:3] for lane, values in _INSTALLED.items()}
 
-    The fixed SDK capture callback owns native authority through this call and
-    publishes its result only after every surrounding context exits.
-    """
+_RUNTIME_COMPONENTS = {
+    "desktop": ("jvm", "macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64"),
+    "node-js": ("node-js",), "node-wasm": ("node-wasm",),
+}
+_CONSUMER_TEMPLATE = ".github/actions/run-ci-lane/installed-consumer"
+_TEMPLATE_FILES = (
+    "settings.gradle.kts", "src/commonMain/kotlin/Consumer.kt",
+    "src/androidMain/kotlin/AndroidConsumer.kt",
+    "src/androidMain/java/io/github/codex_agent_labs/codexagent/stagedconsumer/AndroidJavaConsumer.java",
+    "src/desktopMain/kotlin/DesktopConsumer.kt",
+    "src/desktopMain/java/io/github/codex_agent_labs/codexagent/stagedconsumer/DesktopJavaConsumer.java",
+    "src/iosMain/kotlin/IosConsumer.kt", "src/jsMain/kotlin/NodeConsumer.kt",
+)
+
+
+def _copy_retained_ios_maven(state, record, destination, target, stack, *, token):
+    """Stream only native-bound Maven leaves; unread object bytes grant no proof."""
+    from completed_sdk_reuse import original_worker_member
+    from runtime_reference_archive import open_reference_archive, open_stored_reference_archive, copy_reference_member
+    native = state.completed_frozen
+    envelope = native.envelope(record)
+    if envelope is None or not token:
+        raise ValueError("Installed iOS consumer requires its live original and observation token")
+    receipt = envelope["receipt"]
+    if receipt["productVersion"] != state.expected_fixed["versions"]["sdk"]:
+        raise ValueError("Installed iOS input differs from its native original receipt")
+    child = {"ios-device": "iosarm64", "ios-simulator": "iossimulatorarm64"}.get(target)
+    if child is None:
+        raise ValueError("Unsupported installed iOS consumer target")
+    prefix = "outputs/maven/io/github/codex-agent-labs/"
+    gavs = ("codex-agent-runtime-ios", "codex-agent-runtime-ios-" + child)
+    outputs = [row for row in receipt["outputs"] if row["kind"] == "maven"
+               and any(row["relativePath"].startswith(prefix + gav + "/") for gav in gavs)]
+    if any(not any(row["relativePath"].startswith(prefix + gav + "/") for row in outputs) for gav in gavs):
+        raise ValueError("Installed iOS Maven input lacks its root or selected target")
+    extension = native.sdk_extension()
+    if extension is None or not original_worker_member(extension["spec"]):
+        raise ValueError("Installed iOS Maven input requires the qualified original worker member")
+    members = [row for row in extension["proof"]["members"] if row["sha256"] == record["objectSha256"]]
+    if len(members) != 1:
+        raise ValueError("Installed iOS original object member is missing or ambiguous")
+    member = members[0]
+    _, artifact, _ = native.observe_extended_sdk(record, producer=state.producer, token=token)
+    archive, stream = stack.enter_context(open_reference_archive(
+        artifact, token, **product_reuse._worker_upload_reference_limits(_IOS_PACKAGE)))
+    nested = stack.enter_context(open_stored_reference_archive(
+        archive, member["relativePath"], expected_bytes=member["bytes"]))
+    for row in outputs:
+        relative = row["relativePath"].removeprefix("outputs/maven/")
+        file = destination / relative
+        if file.exists() or file.is_symlink():
+            raise ValueError("Installed consumer Maven inputs overlap")
+        copy_reference_member(nested, "stage/" + row["relativePath"], file, row)
+    product_reuse.count("installedIosMavenLogicalBytes", sum(row["bytes"] for row in outputs))
+    if stream is not None:
+        product_reuse.count("installedIosMavenOriginalRangeBytes", stream.transferred)
+
+    def unchanged():
+        if native.envelope(record) != envelope:
+            raise ValueError("Installed iOS Maven native authority changed during use")
+    stack.callback(unchanged)
+
+
+def _installed_template(root, private, task, versions):
+    """Select one fixed consumer-only declaration through the existing task property."""
+    control = root / _CONSUMER_TEMPLATE
+    source = root / "gradle/release/kmp-consumer-template"
+    before = {name: _read(source / name) for name in _TEMPLATE_FILES}
+    build_path = control / "build.gradle.kts" if task in {
+        _INSTALLED_CONSUMERS["consumer-" + target][1] for target in _RUNTIME_COMPONENTS
+    } else source / "build.gradle.kts"
+    build = _read(build_path)
+    init = _read(control / "target-template.init.gradle")
+    template = private / "template"
+    template.mkdir()
+    for name, contents in before.items():
+        output = template / name
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("xb") as stream:
+            stream.write(contents)
+    (template / "build.gradle.kts").write_bytes(build)
+    script = private / "target-template.init.gradle"
+    text = init.decode("utf-8")
+    for marker, value in (("__CODEX_TASK__", task), ("__CODEX_TEMPLATE__", str(template)),
+                          ("__CODEX_INVENTORY__", "inventory" + task.removeprefix("verifyStagedKmpConsumer") + "ConsumerMavenRepository"),
+                          ("__CODEX_SDK_VERSION__", versions["sdk"]),
+                          ("__CODEX_RUNTIME_VERSION__", versions["runtime-release"]),
+                          ("__CODEX_CONTRACT_VERSION__", versions["contract"])):
+        if text.count(marker) != 1:
+            raise ValueError("Fixed installed consumer template selector is malformed")
+        text = text.replace(marker, json.dumps(value).replace("$", "\\$"))
+    script.write_text(text, encoding="utf-8")
+    prepared = regular_file_inventory(template)
+    script_bytes = _read(script)
+
+    def unchanged():
+        if ({name: _read(source / name) for name in _TEMPLATE_FILES} != before
+                or _read(build_path) != build
+                or _read(control / "target-template.init.gradle") != init
+                or regular_file_inventory(template) != prepared or _read(script) != script_bytes):
+            raise ValueError("Installed consumer template inputs changed during use")
+    return script, unchanged
+
+
+def run_retained_android_consumer(state, *, plan_path, repository_root, environ):
+    """Preserve the existing fixed Android entry point and its full consumer semantics."""
+    return _run_retained_installed_consumer(state, lane="consumer-android", plan_path=plan_path,
+        repository_root=repository_root, environ=environ, legacy_android_projection=True)
+
+
+def run_retained_installed_consumer(state, *, lane, plan_path, repository_root, environ):
+    """Return detached current controls; never project or forward the Maven inputs."""
+    return _run_retained_installed_consumer(state, lane=lane, plan_path=plan_path,
+        repository_root=repository_root, environ=environ, legacy_android_projection=False)
+
+
+@product_reuse.measured
+def _run_retained_installed_consumer(state, *, lane, plan_path, repository_root, environ,
+                                   legacy_android_projection):
+    """Consume one fixed lane inside the existing live replay owner, never caller evidence."""
     from reuse_qualification import CompletedFrozenReuse
     from products.contract_model import contract_maven_identity
     from runtime_reference_transport import ENVIRONMENT as authority_environment
+    from runtime_reference_transport import _copy_exact
+    from products.restore import memoized_file_inventory
 
+    if lane not in _INSTALLED_CONSUMERS:
+        raise ValueError("Unsupported installed consumer lane")
+    target, task, extras = _INSTALLED_CONSUMERS[lane]
+    if legacy_android_projection and lane != "consumer-android":
+        raise ValueError("Legacy Maven projection is Android-only")
+    instances = (*_CONSUMER_INPUTS[:2], *extras)
     require_no_signing_secret(environ)
     if (type(state) is not product_reuse._VerifiedProductState
             or type(state.completed_frozen) is not CompletedFrozenReuse):
-        raise ValueError("Installed Android consumer requires live native replay authority")
+        raise ValueError("Installed consumer requires live native replay authority")
     root = Path(repository_root).resolve(strict=True)
     plan_path = Path(plan_path).absolute()
     plan_bytes = _read(plan_path)
@@ -70,35 +197,37 @@ def run_retained_android_consumer(state, *, plan_path, repository_root, environ)
             or state.consumer != product_reuse._consumer(state.plan, environ)
             or environ.get("CI_VALIDATION_COMMIT") != state.plan["validationCommit"]
             or environ.get("CI_VALIDATION_TREE") != state.plan["validationTree"]
-            or not any(state.plan["lanes"].get("consumer-android", {}).get(key) is True
+            or not any(state.plan["lanes"].get(lane, {}).get(key) is True
                        for key in ("build", "test", "metadata"))):
-        raise ValueError("Installed Android consumer differs from its authorized lane")
+        raise ValueError("Installed consumer differs from its authorized lane")
     native = state.completed_frozen
     native.check_consumer(state.consumer)
     records = {}
-    for instance in _CONSUMER_INPUTS:
+    for instance in instances:
         record = state.prior_by_instance.get(instance)
         carrier = state.prior_carrier_phases.get(instance)
         if (record is None or carrier is None or record["state"] not in {"retained", "reused"}
                 or any(record[key] != carrier[key] for key in (
                     "product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256"))):
-            raise ValueError("Installed Android consumer lacks an exact completed predecessor")
+            raise ValueError("Installed consumer lacks an exact completed predecessor")
         records[instance] = record
-    originals = canonical_json_bytes([records[instance] for instance in _CONSUMER_INPUTS])
+    originals = canonical_json_bytes([records[instance] for instance in instances])
     product_reuse._runtime_worker_checkout(root, state.producer)
-    with tempfile.TemporaryDirectory(prefix="sdk-android-installed-consumer-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="sdk-installed-consumer-") as temporary:
         private = Path(temporary).resolve()
         predecessors = private / "predecessors"
         predecessors.mkdir()
-        restored = product_reuse._restore_product_objects(state, _CONSUMER_INPUTS, predecessors)
+        restored_instances = tuple(instance for instance in instances if instance != _IOS_PACKAGE)
+        restored = product_reuse._restore_product_objects(state, restored_instances, predecessors)
         stages = {}
-        for instance in _CONSUMER_INPUTS:
+        for instance in restored_instances:
             original = restored[instance]
             envelope = native.envelope(records[instance], original["receiptBytes"])
-            version = state.expected_fixed["versions"]["contract" if instance.product == "contract" else "sdk"]
+            version = state.expected_fixed["versions"][
+                "runtime-release" if instance.product == "runtime" else instance.product]
             if (envelope is None or envelope["receipt"] != original["receipt"]
                     or original["receipt"]["productVersion"] != version):
-                raise ValueError("Installed Android input differs from its native original receipt")
+                raise ValueError("Installed consumer input differs from its native original receipt")
             stages[instance] = predecessors / "-".join((
                 instance.product, instance.component, instance.phase, instance.target)) / "stage"
         before = regular_file_inventory(predecessors)
@@ -106,69 +235,114 @@ def run_retained_android_consumer(state, *, plan_path, repository_root, environ)
         maven.mkdir()
 
         def add(relative, contents):
-            # Same disjoint Maven union as sdk_facade_inputs; never overwrite.
-            target = maven / relative
-            if target.exists() or target.is_symlink():
-                raise ValueError("Installed Android Maven inputs overlap")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("xb") as output:
+            file = maven / relative
+            if file.exists() or file.is_symlink():
+                raise ValueError("Installed consumer Maven inputs overlap")
+            file.parent.mkdir(parents=True, exist_ok=True)
+            with file.open("xb") as output:
                 output.write(contents)
 
-        for instance in _CONSUMER_INPUTS[1:]:
+        for instance in restored_instances[1:]:
             source = stages[instance] / "outputs/maven"
-            for row in regular_file_inventory(source):
-                add(row["relativePath"], _read(source / row["relativePath"]))
+            roots = ([source / component for component in _RUNTIME_COMPONENTS[target]]
+                     if instance == _RUNTIME_MAVEN else [source])
+            for selected in roots:
+                for row in regular_file_inventory(selected):
+                    destination = maven / row["relativePath"]
+                    if destination.exists() or destination.is_symlink():
+                        raise ValueError("Installed consumer Maven inputs overlap")
+                    _copy_exact(selected / row["relativePath"], destination, row)
         contract = restored[_CONSUMER_INPUTS[0]]["receipt"]
         outputs = contract["outputs"]
         if len(outputs) != 1 or outputs[0]["kind"] != "contract-bundle":
-            raise ValueError("Installed Android consumer requires the original Contract bundle")
+            raise ValueError("Installed consumer requires the original Contract bundle")
         output = outputs[0]
         _, members, transport = verified_zip_contents(
             stages[_CONSUMER_INPUTS[0]] / output["relativePath"], canonical_stored=True,
             max_archive_bytes=_LIMIT, max_total_bytes=1024 * 1024 * 1024, max_members=4096)
         if transport != {key: output[key] for key in ("bytes", "sha256")}:
-            raise ValueError("Installed Android Contract bundle changed")
+            raise ValueError("Installed consumer Contract bundle changed")
         names = sorted(name for name in members if name.startswith("maven/"))
         if not names:
-            raise ValueError("Installed Android Contract Maven closure is empty")
+            raise ValueError("Installed consumer Contract Maven closure is empty")
         for name in names:
             contract_maven_identity(name, contract["productVersion"])
             add(name.removeprefix("maven/"), members[name])
         del members
-        maven_before = regular_file_inventory(maven)
-
-        def unchanged():
-            require_no_signing_secret(environ)
-            native.check_consumer(state.consumer)
-            product_reuse._runtime_worker_checkout(root, state.producer)
-            if (_read(plan_path) != plan_bytes or regular_file_inventory(predecessors) != before
-                    or regular_file_inventory(maven) != maven_before
-                    or canonical_json_bytes([state.prior_by_instance[instance]
-                                             for instance in _CONSUMER_INPUTS]) != originals):
-                raise ValueError("Installed Android consumer inputs changed during use")
-
-        command = [str(root / "gradlew"), "verifyStagedKmpConsumerAndroid",
-                   "--build-cache", "--parallel", "--stacktrace",
+        template_unchanged = lambda: None
+        command = [str(root / "gradlew"), task, "--build-cache", "--parallel", "--stacktrace",
                    "-PcodexAgent.candidateCommit=" + state.plan["validationCommit"],
-                   "-PcodexAgent.candidateTree=" + state.plan["validationTree"],
-                   "-PcodexAgent.mavenRepositoryDirectory=" + str(maven)]
+                   "-PcodexAgent.candidateTree=" + state.plan["validationTree"]]
+        if not legacy_android_projection:
+            script, template_unchanged = _installed_template(root, private, task, state.expected_fixed["versions"])
+            command.extend(["--init-script", str(script)])
+        command.append("-PcodexAgent.mavenRepositoryDirectory=" + str(maven))
         environment = {key: value for key, value in environ.items()
                        if key not in {"GITHUB_TOKEN", "GH_TOKEN", "REUSE_AUTHORITY_READ_TOKEN",
                                       *authority_environment}}
-        unchanged()
-        try:
-            subprocess.run(command, cwd=root, env=environment, stdin=subprocess.DEVNULL, check=True)
-        finally:
+        report_root = root / "build/protected-candidate" / state.plan["validationCommit"] / "reports"
+        report_path = report_root / f"kmp-consumer-{target}.json"
+        inventory_path = report_root / f"maven-inventory-{target}.json"
+        if not legacy_android_projection:
+            for path in (report_path, inventory_path):
+                if path.exists() or path.is_symlink():
+                    raise ValueError("Installed consumer controls must be fresh")
+        with ExitStack() as stack:
+            if _IOS_PACKAGE in instances:
+                _copy_retained_ios_maven(state, records[_IOS_PACKAGE], maven, target, stack,
+                    token=environ.get("GITHUB_TOKEN", ""))
+            maven_before = memoized_file_inventory(maven)
+
+            def unchanged():
+                require_no_signing_secret(environ)
+                native.check_consumer(state.consumer)
+                product_reuse._runtime_worker_checkout(root, state.producer)
+                template_unchanged()
+                if (_read(plan_path) != plan_bytes or regular_file_inventory(predecessors) != before
+                        or memoized_file_inventory(maven) != maven_before
+                        or canonical_json_bytes([state.prior_by_instance[instance]
+                                                 for instance in instances]) != originals):
+                    raise ValueError("Installed consumer inputs changed during use")
+
             unchanged()
-        # Existing lane staging requires this exact Maven transport location.
-        # It is output data, not authority: outer capture exits must still pass
-        # before the action may stage a successful receipt or publish outputs.
-        projection = (root / "build/protected-candidate" / state.plan["validationCommit"] /
-                      "consumer-maven/android")
-        publish_regular_tree(maven, projection, expected_inventory=maven_before)
-        product_reuse.count("androidInstalledMavenProjectionTrees")
-        product_reuse.count("androidInstalledMavenProjectionBytes", sum(row["bytes"] for row in maven_before))
+            try:
+                subprocess.run(command, cwd=root, env=environment, stdin=subprocess.DEVNULL, check=True)
+            finally:
+                unchanged()
+        if legacy_android_projection:
+            projection = root / "build/protected-candidate" / state.plan["validationCommit"] / "consumer-maven/android"
+            publish_regular_tree(maven, projection, expected_inventory=maven_before)
+            product_reuse.count("androidInstalledMavenProjectionTrees")
+            product_reuse.count("androidInstalledMavenProjectionBytes", sum(row["bytes"] for row in maven_before))
+            unchanged()
+            return None
+        controls = _installed_consumer_controls(state, lane, target, task, instances,
+            plan_bytes, maven_before, report_path, inventory_path)
         unchanged()
+        return controls
+
+
+
+def _installed_consumer_controls(state, lane, target, task, instances, plan_bytes,
+                                 maven_files, report_path, inventory_path):
+    """Check the unchanged task's two small formats; this value grants no authority."""
+    from products.inventory import sha256_bytes
+    raw_report, raw_inventory = (read_regular_file_bytes(path, max_bytes=_CONTRIBUTION_LIMIT,
+        reject_symlink_parents=True) for path in (report_path, inventory_path))
+    fields = ("product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256")
+    record = {"schemaVersion": 1, "kind": "installed-consumer-validation",
+        "producer": state.consumer["producer"], "planSha256": sha256_bytes(plan_bytes),
+        "lane": lane, "target": target, "task": task,
+        "originalInputs": [{key: state.prior_by_instance[instance][key] for key in fields} for instance in instances],
+        "mavenFiles": maven_files, "mavenInventorySha256": sha256_bytes(raw_inventory),
+        "consumerReportSha256": sha256_bytes(raw_report)}
+    # One fixed validator serves both the producer and its independent observer.
+    # It receives the live caller's expected tuples/files, never serialized authority.
+    detached = _validate_installed_controls({"installed-consumer.json": canonical_json_bytes(record),
+        f"kmp-consumer-{target}.json": raw_report, f"maven-inventory-{target}.json": raw_inventory},
+        state.consumer["producer"], sha256_bytes(plan_bytes), lane, state.prior_by_instance,
+        state.expected_fixed["versions"])
+    return {"record": detached, "consumerReport": raw_report, "mavenInventory": raw_inventory}
 
 
 def _read(path):

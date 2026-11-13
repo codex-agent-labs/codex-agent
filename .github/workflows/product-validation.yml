@@ -602,6 +602,8 @@ jobs:
       lane_android: ${{ steps.impact.outputs.lane_android }}
       retained_android: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused == 'false' && steps.impact.outputs.lane_android == 'true' && (steps.impact.outputs.lane_android_test == 'true' || steps.impact.outputs.lane_android_metadata == 'true') && steps.product-reuse.outputs.native_resume_ready == 'true' && steps.product-reuse.outputs.native_resume_full_reuse == 'true' }}
       retained_node_js: ${{ steps.product-selection.outputs.retained_node_js }}
+      retained_consumers: ${{ steps.retained-consumer-selection.outputs.enabled }}
+      retained_consumer_matrix: ${{ steps.retained-consumer-selection.outputs.matrix }}
       lane_android_build: ${{ steps.impact.outputs.lane_android_build }}
       lane_android_test: ${{ steps.impact.outputs.lane_android_test }}
       lane_android_metadata: ${{ steps.impact.outputs.lane_android_metadata }}
@@ -818,6 +820,34 @@ jobs:
               output.write('product_matrix=' + json.dumps(matrix, separators=(',', ':')) + '\n')
               output.write('contract_matrix=' + json.dumps({'include': contracts}, separators=(',', ':')) + '\n')
           PY
+      - id: retained-consumer-selection
+        env:
+          CONSUMER_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.toolingOnly }}
+          AUTHORIZED: ${{ steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' }}
+          VALIDATION_REUSED: ${{ steps.validation-reuse.outputs.reused }}
+          NATIVE_READY: ${{ steps.product-reuse.outputs.native_resume_ready }}
+          NATIVE_FULL_REUSE: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from ci.impact import CONSUMER_RUNNERS
+          from ci.reuse import github_output
+          flags = [os.environ[key] for key in ('CONSUMER_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE')]
+          if any(value not in ('', 'true', 'false') for value in flags):
+              raise ValueError('Invalid retained installed-consumer selection')
+          matrix = []
+          if flags == ['true', 'true', 'false', 'true', 'true']:
+              plan = json.loads(Path('build/ci/impact-plan.json').read_text())
+              runners = {**CONSUMER_RUNNERS, **{lane: 'macos-26' for lane in (
+                  'consumer-common', 'consumer-ios-device', 'consumer-ios-simulator')}}
+              matrix = [dict(lane=lane, runner=runner,
+                  **{action: plan['lanes'][lane][action] for action in ('build', 'test', 'metadata')})
+                  for lane, runner in sorted(runners.items())
+                  if any(plan['lanes'][lane][action] for action in ('build', 'test', 'metadata'))]
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(bool(matrix)).lower(),
+              'matrix': json.dumps(matrix, separators=(',', ':'))})
+          PYCODE
       - name: Require unchanged Contract ownership before SDK continuation
         if: (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && steps.product-reuse.outcome == 'success'
         env:
@@ -3223,11 +3253,12 @@ jobs:
       validationCommit: ${{ needs.plan.outputs.validation_commit }}
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       sdkBinaryOnly: ${{ inputs.sdkRecoveryOnly }}
+      retainedInstalledConsumers: ${{ needs.plan.outputs.retained_consumers == 'true' }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
 
   consumers:
     if: >-
-      !inputs.fullReuseAcceptanceOnly && (always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && (needs.plan.outputs.retained_android != 'true' || needs.product-resume.result == 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled'))
+      !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.retained_consumers != 'true' && always() && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.consumer_matrix != '[]' && (needs.plan.outputs.retained_android != 'true' || needs.product-resume.result == 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled'))
     needs: [workflow-lint, plan, product, android, android-runtime-evidence, desktop, apple, product-resume]
     uses: ./.github/workflows/sdk-consumer-validation.yml
     with:
@@ -3240,6 +3271,26 @@ jobs:
       retainedAndroidConsumer: ${{ needs.plan.outputs.retained_android == 'true' }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
+  retained-consumers:
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (
+      always() && needs.workflow-lint.result == 'success' && needs.plan.result == 'success' &&
+      needs.plan.outputs.retained_consumers == 'true' && needs.product-resume.result == 'success'
+      )
+    needs: [workflow-lint, plan, product-resume]
+    uses: ./.github/workflows/sdk-consumer-validation.yml
+    with:
+      planArtifact: ${{ needs.plan.outputs.plan_artifact }}
+      validationCommit: ${{ needs.plan.outputs.validation_commit }}
+      validationTree: ${{ needs.plan.outputs.validation_tree }}
+      matrix: ${{ needs.plan.outputs.retained_consumer_matrix }}
+      sdkOutputs: ${{ toJSON(needs.product-resume.outputs) }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      retainedInstalledConsumers: true
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
 
   sdk-ios-binary-plan:
     needs: [plan, product-resume, contract-validation]
@@ -6534,6 +6585,7 @@ jobs:
           PLAN_DIRECTORY: ${{ steps.tooling.outputs.plan-directory || 'build/runtime-plan' }}
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
           RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
+          RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
           ARTIFACT_ID: ${{ steps.parent.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ steps.parent.outputs.artifact_digest }}
           STATE_WAVE: ${{ steps.parent.outputs.state_wave }}
@@ -6547,11 +6599,12 @@ jobs:
           script: |
             set -euo pipefail
             tooling=()
-            if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ]; then
+            if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ] || [ "$RETAINED_CONSUMERS" = true ]; then
               tooling+=(--validation-contribution-directory "$RUNNER_TEMP/validation-contributions")
             fi
             if [ "$RETAINED_ANDROID" = true ]; then tooling+=(--include-android-contribution); fi
             if [ "$RETAINED_NODE_JS" = true ]; then tooling+=(--include-node-js-contribution); fi
+            if [ "$RETAINED_CONSUMERS" = true ]; then tooling+=(--include-installed-consumers); fi
             if [ -n "$SDK_VALIDATION_TOOLING" ]; then
               tooling+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING")
             fi
@@ -6572,7 +6625,7 @@ jobs:
               ${tooling[@]+"${tooling[@]}"}
 
       - id: validation-contributions
-        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true'
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true'
         run: |
           python3 -B - <<'PYCODE'
           import os
@@ -6584,7 +6637,7 @@ jobs:
           github_output(Path(os.environ['GITHUB_OUTPUT']), {'sha256': sha256_bytes(raw)})
           PYCODE
       - id: validation-contributions-upload
-        if: (needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true') && steps.validation-contributions.outputs.sha256 != ''
+        if: (needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true') && steps.validation-contributions.outputs.sha256 != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
@@ -6963,7 +7016,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always() && !inputs.toolingOnly
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -6998,7 +7051,9 @@ jobs:
           SDK_COMPLETE: ${{ fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete }}
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
           RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
+          RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
           ANDROID_SOURCE_RESULT: ${{ needs.android.result }}
+          RETAINED_CONSUMERS_RESULT: ${{ needs.retained-consumers.result }}
           VALIDATION_CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
           VALIDATION_CONTRIBUTION_ARTIFACT_ID: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_id }}
           VALIDATION_CONTRIBUTION_ARTIFACT_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_sha256 }}
@@ -7055,7 +7110,8 @@ jobs:
           if [ "$RETAINED_ANDROID" = true ]; then
             test "$ANDROID_SOURCE_RESULT" = success || exit 1
           fi
-          if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ]; then
+          if [ "$RETAINED_CONSUMERS" = true ]; then test "$RETAINED_CONSUMERS_RESULT" = success || exit 1; fi
+          if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ] || [ "$RETAINED_CONSUMERS" = true ]; then
             test "$SDK_COMPLETION_RESULT" = success || exit 1
             test "$SDK_COMPLETE" = true || exit 1
             [[ "$VALIDATION_CONTRIBUTION_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
@@ -7163,7 +7219,7 @@ jobs:
           cp -R "$source" build/ci/native-wrapper-release
           echo 'restored=true' >> "$GITHUB_OUTPUT"
       - name: Require exact current source receipts and canonical contributions
-        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true'
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true'
         env:
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
@@ -7172,6 +7228,7 @@ jobs:
           CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
           RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
+          RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
           PARITY_OUTPUTS: ${{ toJSON(needs.sdk-parity.outputs) }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -7195,10 +7252,11 @@ jobs:
               artifact_id=int(os.environ['ARTIFACT_ID']), artifact_sha256=os.environ['ARTIFACT_SHA256'],
               contribution_sha256=os.environ['CONTRIBUTION_SHA256'], environ=os.environ,
               android=os.environ['RETAINED_ANDROID'] == 'true', node_js=node, parity=parity,
+              installed_consumers=os.environ['RETAINED_CONSUMERS'] == 'true',
               auxiliary_contracts=os.environ['TOOLING_MISS'] == 'true' and not any(contract[k] for k in ('build', 'test', 'metadata')))
           PYCODE
       - name: Preserve distinct current validation contributions
-        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true'
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-agent-current-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
@@ -7208,7 +7266,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - name: Require an exact receipt set
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}
         env:
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
@@ -7233,7 +7291,7 @@ jobs:
           run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}
           path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
           M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
@@ -7271,7 +7329,7 @@ jobs:
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}
         with:
           if-no-files-found: error
           overwrite: true

@@ -379,7 +379,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
                             "PLAN_DIRECTORY": "/held plan", "ARTIFACT_ID": "91",
                             "ARTIFACT_SHA256": "sha256:" + "a" * 64, "STATE_WAVE": "0",
-                            "SDK_STATE_WAVE": "8", "SDK_VALIDATION_TOOLING": policy, "RETAINED_ANDROID": "false", "RETAINED_NODE_JS": "false",
+                            "SDK_STATE_WAVE": "8", "SDK_VALIDATION_TOOLING": policy, "RETAINED_ANDROID": "false", "RETAINED_NODE_JS": "false", "RETAINED_CONSUMERS": "false",
                             "TRUSTED_WORKFLOW_SHA": "c" * 40,
                             "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_OUTPUT": str(output),
                             "GITHUB_TOKEN": "not-a-command-argument", "ARGV_CAPTURE": str(arguments), "MOCK_EXIT": str(status)}
@@ -684,7 +684,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                    'plan', 'contract-validation',
                    'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(108, len(jobs))
+        self.assertEqual(109, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
@@ -838,7 +838,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         gate = self.job('merge-gate')
         for marker in ('name: Require an exact receipt set', 'name: Stage the exact reusable validation artifact'):
             block = gate.split('      - ' + marker + '\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}", block)
+            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}", block)
         block = gate.split('      - name: Authenticate current-head acceptance without restoring product bodies\n', 1)[1].split('\n      - ', 1)[0]
         self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', block)
         for name in ('FULL_REUSE_ACCEPTANCE_ONLY', 'RUNTIME_RECOVERY_ONLY', 'SDK_RECOVERY_ONLY',
@@ -1010,11 +1010,11 @@ class RetainedAndroidParentWorkflowTest(unittest.TestCase):
         self.assertIn('--validation-contribution-directory "$RUNNER_TEMP/validation-contributions"', self.parent)
         upload = self.parent.split('      - id: validation-contributions-upload\n',1)[1].split('\n  sdk-completion-full-reuse:',1)[0]
         self.assertIn('overwrite: false', upload)
-        self.assertIn("if: (needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true') && steps.validation-contributions.outputs.sha256 != ''", upload)
+        self.assertIn("if: (needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true') && steps.validation-contributions.outputs.sha256 != ''", upload)
         self.assertIn('codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}', upload)
         gate = self.parent.split('  merge-gate:\n',1)[1]
         for name in ('Require an exact receipt set', 'Stage the exact reusable validation artifact'):
-            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' }}", gate)
+            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}", gate)
         self.assertIn("aggregate_retained_validation(plan, Path('build/ci/receipts')", gate)
         self.assertIn("artifact_id=int(os.environ['ARTIFACT_ID']), artifact_sha256=os.environ['ARTIFACT_SHA256']", gate)
         self.assertIn("contribution_sha256=os.environ['CONTRIBUTION_SHA256'], environ=os.environ", gate)
@@ -1051,7 +1051,7 @@ class RetainedAndroidParentWorkflowTest(unittest.TestCase):
         job = self.parent.split('  sdk-completion:\n',1)[1].split('\n  sdk-completion-full-reuse:',1)[0]
         setup = job.split('            tooling=()\n',1)[1].split('            python3 -B -m ci.sdk_completion capture',1)[0]
         script = 'set -euo pipefail\ntooling=()\n'+textwrap.dedent(setup)+'\nprintf "%s\\0" "${tooling[@]}"\n'
-        environment = {'RETAINED_ANDROID':'true','RETAINED_NODE_JS':'false','RUNNER_TEMP':'/private/runner',
+        environment = {'RETAINED_ANDROID':'true','RETAINED_NODE_JS':'false','RETAINED_CONSUMERS':'false','RUNNER_TEMP':'/private/runner',
             'SDK_VALIDATION_TOOLING':'/approved/sdk-tooling','SDK_APPLE_VALIDATION_POLICY':'/approved/apple',
             'CODEX_AGENT_COMPLETED_REUSE_POLICY':'/approved/native','SDK_STATE_WAVE':''}
         result = subprocess.run(['/bin/bash','-c',script],env=environment,check=True,capture_output=True)

@@ -1087,6 +1087,160 @@ class SdkCompletionTest(unittest.TestCase):
                     capture.assert_called_once(); replay.assert_called_once()
 
 
+    def test_seven_fixed_installed_consumers_and_contribution_share_one_live_callback(self):
+        import sdk_android_validation_workflow as helper
+        import sdk_android_evidence_capture as contribution
+        state = object()
+        for lane in helper._INSTALLED_CONSUMERS:
+            with self.subTest(lane=lane):
+                controls = {"record": {"lane": lane}, "consumerReport": b"raw report\n", "mavenInventory": b"raw inventory\n"}
+                def inspect(*args, **kwargs):
+                    callback = kwargs['_verified_state_consumer']
+                    callback(state)
+                    with self.assertRaisesRegex(ValueError, 'more than once'): callback(state)
+                    return inspected([phase(identity) for identity in self.sdk])
+                with patch.object(completion.products, 'inspect_products', side_effect=inspect) as replay, \
+                        patch.object(helper, 'run_retained_installed_consumer', return_value=controls) as consume, \
+                        patch.object(contribution, 'retained_validation_contributions', return_value={'installedConsumers': []}) as contribute:
+                    result = completion.require_sdk_completion(*self.paths, repository_root=self.root,
+                        environ=self.environment, installed_consumer=lane, include_installed_consumers=True)
+                replay.assert_called_once()
+                consume.assert_called_once_with(state, lane=lane, plan_path=self.paths[0],
+                    repository_root=self.root, environ=self.environment)
+                contribute.assert_called_once_with(state, self.paths[0], repository_root=self.root,
+                    environ=self.environment, android=False, node_js=False, installed_consumers=True)
+                self.assertIs(controls, result.pop('installedConsumer'))
+                self.assertEqual({'installedConsumers': []}, result.pop('validationContributions'))
+                self.assertEqual({'complete': True, 'phaseCount': 62, 'fullReuse': True}, result)
+        for bad in ('unrelated', 'consumer-ios-device;build', True, []):
+            with patch.object(completion.products, 'inspect_products') as replay, self.assertRaises(ValueError):
+                completion.require_sdk_completion(*self.paths, installed_consumer=bad)
+            replay.assert_not_called()
+
+    def test_installed_control_only_capture_publishes_three_raw_files_after_all_exits(self):
+        import sdk_android_validation_workflow as helper
+        from products.restore import _VERIFICATION_SESSION, verification_session
+        for failure in ('none', 'consumer', 'gate', 'authority-exit', 'session-exit'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); output = root / 'github-output'; destination = root / 'controls'
+                state = object(); events = []; live = {'value': False}
+                controls = {'record': {'schemaVersion': 1, 'lane': 'consumer-node-js'},
+                            'consumerReport': b'{"preserved": "report bytes"}\n',
+                            'mavenInventory': b'{ "preserved": "inventory bytes" }\n'}
+                @contextmanager
+                def authority(args):
+                    live['value'] = True
+                    try: yield {'completed_frozen': object()}
+                    finally:
+                        live['value'] = False; events.append('authority-exit')
+                    if failure == 'authority-exit': raise ValueError('late authority failure')
+                @contextmanager
+                def session():
+                    with verification_session(): yield
+                    events.append('session-exit')
+                    if failure == 'session-exit': raise ValueError('late session failure')
+                def consume(actual, **kwargs):
+                    self.assertIs(state, actual); self.assertTrue(live['value'])
+                    self.assertIsNotNone(_VERIFICATION_SESSION.get()); events.append('consume')
+                    self.assertFalse(destination.exists())
+                    if failure == 'consumer': raise ValueError('consumer failed')
+                    return controls
+                def inspect(*args, **kwargs):
+                    kwargs['_verified_state_consumer'](state)
+                    return inspected([phase(identity, 'waiting' if failure == 'gate' else 'retained') for identity in self.sdk])
+                real_publish = completion.publish_regular_tree
+                def publish(source, target):
+                    self.assertFalse(live['value']); self.assertIsNone(_VERIFICATION_SESSION.get())
+                    self.assertEqual(['consume', 'authority-exit', 'session-exit'], events)
+                    self.assertEqual({'installed-consumer.json', 'kmp-consumer-node-js.json', 'maven-inventory-node-js.json'},
+                                     {file.name for file in source.iterdir()})
+                    real_publish(source, target)
+                argv = ['--plan', str(self.paths[0]), '--destination', str(root / 'capture'),
+                    '--repository-root', str(root), '--github-output', str(output),
+                    '--artifact-id', '91', '--artifact-sha256', 'sha256:' + 'a'*64,
+                    '--trusted-workflow-sha', 'd'*40, '--completed-frozen-policy', '/policy/native.json',
+                    '--installed-consumer', 'consumer-node-js', '--installed-consumer-output', str(destination)]
+                with patch.object(completion, 'completed_frozen_options', authority), \
+                        patch.object(completion, 'verification_session', session), \
+                        patch.object(completion.products, 'capture_runtime_resume_upload') as capture, \
+                        patch.object(completion.products, 'inspect_products', side_effect=inspect) as replay, \
+                        patch.object(helper, 'run_retained_installed_consumer', side_effect=consume), \
+                        patch.object(completion, 'publish_regular_tree', side_effect=publish), redirect_stderr(io.StringIO()):
+                    if failure == 'none':
+                        self.assertEqual(0, completion._capture_main(argv))
+                        self.assertEqual(controls['consumerReport'], (destination/'kmp-consumer-node-js.json').read_bytes())
+                        self.assertEqual(controls['mavenInventory'], (destination/'maven-inventory-node-js.json').read_bytes())
+                        self.assertIn('installedConsumerSha256=sha256:', output.read_text())
+                    else:
+                        with self.assertRaises(SystemExit): completion._capture_main(argv)
+                        self.assertFalse(output.exists()); self.assertFalse(destination.exists())
+                    capture.assert_called_once(); replay.assert_called_once()
+
+    def test_installed_capture_requires_fixed_selector_native_policy_fresh_separate_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            base = ['--plan', str(root/'plan'), '--destination', str(root/'capture'),
+                '--repository-root', str(root), '--github-output', str(root/'github-output'),
+                '--artifact-id', '91', '--artifact-sha256', 'sha256:'+'a'*64, '--trusted-workflow-sha', 'd'*40]
+            cases = [
+                ['--installed-consumer', 'consumer-node-js'],
+                ['--installed-consumer-output', str(root/'controls')],
+                ['--installed-consumer', 'consumer-node-js', '--installed-consumer-output', str(root/'controls')],
+                ['--installed-consumer', 'arbitrary-command', '--installed-consumer-output', str(root/'controls')],
+                ['--installed-consumer', 'consumer-node-js', '--installed-consumer-output', str(root/'capture/sub'),
+                 '--completed-frozen-policy', '/policy/native.json'],
+                ['--installed-consumer', 'consumer-android', '--installed-consumer-output', str(root/'controls'),
+                 '--completed-frozen-policy', '/policy/native.json', '--android-installed-consumer'],
+                ['--include-installed-consumers', '--completed-frozen-policy', '/policy/native.json'],
+            ]
+            for flags in cases:
+                with self.subTest(flags=flags), patch.object(completion.products, 'capture_runtime_resume_upload') as capture, \
+                        patch.object(completion, 'completed_frozen_options') as authority, redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    completion._capture_main(base + flags)
+                capture.assert_not_called(); authority.assert_not_called()
+            destination = root/'controls';destination.mkdir()
+            (destination/'existing').write_bytes(b'preserve')
+            with patch.object(completion.products, 'capture_runtime_resume_upload') as capture, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                completion._capture_main(base + ['--installed-consumer', 'consumer-common', '--installed-consumer-output',
+                    str(destination), '--completed-frozen-policy', '/policy/native.json'])
+            capture.assert_not_called();self.assertEqual(b'preserve', (destination/'existing').read_bytes())
+
+
+    def test_installed_capture_enforces_combined_upload_bound_with_zip_allowance(self):
+        import sdk_android_evidence_capture as shared
+        from products.inventory import canonical_json_bytes
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for extra in (0, 1):
+                with self.subTest(bytesBeyondLimit=extra):
+                    output = root / f"output-{extra}"
+                    destination = root / f"controls-{extra}"
+                    record = {"schemaVersion": 1, "lane": "consumer-common"}
+                    record_raw = canonical_json_bytes(record)
+                    report = b"report-bytes"
+                    inventory = b"i" * (shared._CONTRIBUTION_LIMIT - 4096 - len(record_raw) - len(report) + extra)
+                    result = {"complete": True, "phaseCount": 62, "fullReuse": True,
+                        "installedConsumer": {"record": record, "consumerReport": report, "mavenInventory": inventory}}
+                    argv = ['--plan', str(root/'plan'), '--destination', str(root/'capture'),
+                        '--repository-root', str(root), '--github-output', str(output), '--artifact-id', '91',
+                        '--artifact-sha256', 'sha256:'+'a'*64, '--trusted-workflow-sha', 'd'*40,
+                        '--completed-frozen-policy', '/policy/native.json', '--installed-consumer', 'consumer-common',
+                        '--installed-consumer-output', str(destination)]
+                    with patch.object(completion, 'completed_frozen_options', return_value=nullcontext({'completed_frozen': object()})), \
+                            patch.object(completion.products, 'capture_runtime_resume_upload'), \
+                            patch.object(completion, 'require_sdk_completion', return_value=result), redirect_stderr(io.StringIO()):
+                        if extra:
+                            with self.assertRaises(SystemExit): completion._capture_main(argv)
+                            self.assertFalse(destination.exists()); self.assertFalse(output.exists())
+                        else:
+                            self.assertEqual(0, completion._capture_main(argv))
+                            self.assertEqual(shared._CONTRIBUTION_LIMIT - 4096,
+                                sum(path.stat().st_size for path in destination.iterdir()))
+                            self.assertTrue(output.exists())
+
+
 class CurrentHeadAcceptanceTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="current-head-fixture-")

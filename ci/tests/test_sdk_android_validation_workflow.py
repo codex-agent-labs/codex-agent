@@ -4,6 +4,7 @@ from copy import deepcopy
 from contextlib import contextmanager, redirect_stderr
 import base64
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -700,6 +701,258 @@ class RetainedAndroidConsumerTest(unittest.TestCase):
         self.assertEqual(b"preserve this original", sentinel.read_bytes())
         self.assertTrue(all(not path.exists() for path in self.private_roots))
 
+
+class RetainedInstalledConsumerTest(unittest.TestCase):
+    """Fixed lane mapping with tiny synthetic state; no Gradle or admission calls."""
+    check_live = RetainedAndroidConsumerTest.check_live
+    original = RetainedAndroidConsumerTest.original
+
+    def setUp(self):
+        RetainedAndroidConsumerTest.setUp(self)
+        self.expected_inputs = workflow._CONSUMER_INPUTS
+        self.bad_runtime_version = False
+        self.run.side_effect = self.emit_controls
+        self.state.expected_fixed["versions"].update({"runtime-release": "0.8.2", "runtime-compatibility": "0.8.0"})
+        repository = Path(__file__).resolve().parents[2]
+        # Candidate test files run under their source overlay; use the exact new
+        # declarations and unchanged repository template as small fixture data.
+        candidate = repository
+        main = Path.cwd()
+        template = self.root / "gradle/release/kmp-consumer-template"
+        shutil.copytree(main / "gradle/release/kmp-consumer-template", template,
+                        ignore=shutil.ignore_patterns(".gradle", "build"))
+        control = self.root / workflow._CONSUMER_TEMPLATE
+        control.parent.mkdir(parents=True)
+        shutil.copytree(candidate / workflow._CONSUMER_TEMPLATE, control)
+
+    def select(self, lane):
+        from dataclasses import replace
+        target, _, extras = workflow._INSTALLED_CONSUMERS[lane]
+        self.lane = lane
+        self.expected_inputs = (*workflow._CONSUMER_INPUTS[:2], *extras)
+        self.plan["lanes"] = {lane: {"build": True, "test": False, "metadata": False}}
+        write_canonical_json(self.plan_path, self.plan)
+        self.records = {instance: {
+            **{key: getattr(instance, key) for key in ("product", "component", "phase", "target")},
+            "state": "retained", "buildKey": "sha256:" + str(i) * 64,
+            "receiptSha256": "sha256:" + str(i + 3) * 64, "objectSha256": "sha256:" + "9" * 64,
+        } for i, instance in enumerate(self.expected_inputs, 1)}
+        self.state = replace(self.state, requested=self.expected_inputs, closure=self.expected_inputs,
+                             prior_by_instance=self.records, prior_carrier_phases=deepcopy(self.records))
+        self.projection = self.root / "build/protected-candidate" / ("a" * 40) / (
+            "payload/maven" if target == "common" else "consumer-maven/" + target)
+
+    def restore_inputs(self, state, instances, destination):
+        self.assertEqual(tuple(i for i in self.expected_inputs if i != workflow._IOS_PACKAGE), instances)
+        base = workflow._CONSUMER_INPUTS if workflow._CONSUMER_INPUTS[2] in instances else workflow._CONSUMER_INPUTS[:2]
+        with patch.object(workflow, "_CONSUMER_INPUTS", base):
+            RetainedAndroidConsumerTest.restore_inputs(self, state, base, destination)
+        if workflow._RUNTIME_MAVEN in instances:
+            instance = workflow._RUNTIME_MAVEN
+            stage = destination / "runtime-runtime-aggregate-metadata-aggregate/stage"
+            for component in ("jvm", "macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64", "node-js", "node-wasm"):
+                artifact = "runtime-" + component
+                path = stage / f"outputs/maven/{component}/io/github/codex-agent-labs/{artifact}/0.8.2/{artifact}-0.8.2.pom"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(component.encode())
+            receipt = {"productVersion": "0.8.7" if self.bad_runtime_version else "0.8.2",
+                       "producer": {"commit": "d" * 40}}
+            self.restored[instance] = {"receipt": receipt, "receiptBytes": canonical_json_bytes(receipt)}
+        return self.restored
+
+    def emit_controls(self, command, **kwargs):
+        target = workflow._INSTALLED_CONSUMERS[self.lane][0]
+        maven = Path(command[-1].split("=", 1)[1])
+        self.consumed_maven = maven
+        versions = self.state.expected_fixed["versions"]
+        report = {"schemaVersion": 6, "result": "passed", "sdkVersion": versions["sdk"],
+            "runtimeVersion": versions["runtime-release"], "repository": "CENTRAL_STAGING-only",
+            "mavenGroup": "io.github.codex-agent-labs", "target": target, "tasks": list(workflow._INSTALLED[self.lane][3])}
+        inventory = {"schemaVersion": 1, "groupId": "io.github.codex-agent-labs",
+            "contractVersion": versions["contract"], "runtimeVersion": versions["runtime-release"],
+            "sdkVersion": versions["sdk"], "target": target,
+            "files": [{"fileName": row["relativePath"], "bytes": row["bytes"],
+                       "sha256": row["sha256"].removeprefix("sha256:")} for row in regular_file_inventory(maven)]}
+        self.report_root = self.root / "build/protected-candidate" / ("a" * 40) / "reports"
+        self.report_root.mkdir(parents=True, exist_ok=True)
+        # Preserve deliberately noncanonical raw formatting, as the real Kotlin task does.
+        (self.report_root / f"kmp-consumer-{target}.json").write_text(json.dumps(report, indent=2) + "\n")
+        (self.report_root / f"maven-inventory-{target}.json").write_text(json.dumps(inventory, indent=2) + "\n")
+
+    def consume(self):
+        return workflow.run_retained_installed_consumer(self.state, lane=self.lane,
+            plan_path=self.plan_path, repository_root=self.root, environ=self.environment)
+
+    def test_common_returns_only_exact_detached_controls_and_no_maven_projection(self):
+        self.select("consumer-common")
+        result = self.consume()
+        self.assertEqual("verifyStagedKmpConsumerCommon", self.run.call_args.args[0][1])
+        self.assertEqual(2, len(result["record"]["mavenFiles"]))
+        self.assertIn("--init-script", self.run.call_args.args[0])
+        self.assertFalse(self.projection.exists())
+        self.assertFalse(self.consumed_maven.exists())
+        self.assertEqual((self.report_root / "kmp-consumer-common.json").read_bytes(), result["consumerReport"])
+        self.assertEqual((self.report_root / "maven-inventory-common.json").read_bytes(), result["mavenInventory"])
+        self.assertEqual(self.state.consumer["producer"], result["record"]["producer"])
+        self.assertEqual(sha256_file(self.plan_path), result["record"]["planSha256"])
+        result["record"]["originalInputs"][0]["buildKey"] = "changed detached control"
+        self.assertNotEqual(result["record"]["originalInputs"][0]["buildKey"], self.state.prior_by_instance[self.expected_inputs[0]]["buildKey"])
+
+    def test_runtime_lanes_select_exact_components_and_distinct_version_guards(self):
+        for lane in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
+            with self.subTest(lane=lane):
+                self.select(lane)
+                target, task, _ = workflow._INSTALLED_CONSUMERS[lane]
+                def execute(command, **kwargs):
+                    self.assertEqual(task, command[1])
+                    script = Path(command[command.index("--init-script") + 1]).read_text()
+                    for version in ("0.8.0", "0.8.2", "0.8.7"):
+                        self.assertIn('"' + version + '"', script)
+                    self.assertIn("inventory.inputs.properties.runtimeVersion != expectedRuntime", script)
+                    self.assertIn("consumer.runtimeVersion.get() != expectedRuntime", script)
+                    self.assertIn('new File("', script)
+                    maven = Path(command[-1].split("=", 1)[1])
+                    rows = regular_file_inventory(maven)
+                    self.assertEqual(2 + len(workflow._RUNTIME_COMPONENTS[target]), len(rows))
+                    actual = {Path(row["relativePath"]).name for row in rows if "/runtime-" in row["relativePath"]}
+                    self.assertEqual({"runtime-" + c + "-0.8.2.pom" for c in workflow._RUNTIME_COMPONENTS[target]}, actual)
+                    self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
+                    self.emit_controls(command, **kwargs)
+                self.run.side_effect = execute
+                self.consume()
+                self.assertFalse(self.projection.exists())
+
+    def test_runtime_version_mismatch_and_template_mutation_fail_without_projection(self):
+        self.select("consumer-node-js")
+        self.bad_runtime_version = True
+        with self.assertRaisesRegex(ValueError, "native original receipt"):
+            self.consume()
+        self.run.assert_not_called()
+        self.bad_runtime_version = False
+        def mutate(command, **_):
+            source = self.root / workflow._CONSUMER_TEMPLATE / "build.gradle.kts"
+            source.write_text(source.read_text() + "// late replacement\n")
+        self.run.side_effect = mutate
+        with self.assertRaisesRegex(ValueError, "template inputs changed"):
+            self.consume()
+        self.assertFalse(self.projection.exists())
+
+    def test_ios_borrows_scoped_reader_without_full_object_restore_and_detaches_after_exits(self):
+        self.select("consumer-ios-device")
+        events = []
+        def scoped(state, record, destination, target, stack, *, token):
+            self.assertIs(state, self.state)
+            self.assertIs(record, self.records[workflow._IOS_PACKAGE])
+            self.assertEqual("ios-device", target)
+            self.assertEqual("synthetic-read-token", token)
+            file = destination / "ios-input.klib"
+            file.write_bytes(b"tiny selected scoped input")
+            stack.callback(lambda: events.append("archives-closed"))
+        def execute(*args, **kwargs):
+            self.assertEqual([], events)
+            self.emit_controls(*args, **kwargs)
+        self.run.side_effect = execute
+        with patch.object(workflow, "_copy_retained_ios_maven", side_effect=scoped), \
+                patch.object(workflow, "publish_regular_tree", side_effect=AssertionError("No generic Maven publication")):
+            result = self.consume()
+        self.assertEqual(["archives-closed"], events)
+        self.assertEqual("consumer-ios-device", result["record"]["lane"])
+        self.assertFalse(self.projection.exists())
+        shutil.rmtree(self.report_root)
+        def fail_late(*args, **kwargs):
+            scoped(*args, **kwargs)
+            def fail():
+                raise ValueError("synthetic late archive owner failure")
+            args[4].callback(fail)
+        events.clear()
+        with patch.object(workflow, "_copy_retained_ios_maven", side_effect=fail_late), \
+                self.assertRaisesRegex(ValueError, "late archive owner"):
+            self.consume()
+        self.assertFalse(self.projection.exists())
+
+    def test_unknown_lane_cannot_supply_a_command_or_template(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported installed consumer lane"):
+            workflow.run_retained_installed_consumer(self.state, lane="consumer-desktop;compile-product",
+                plan_path=self.plan_path, repository_root=self.root, environ=self.environment)
+        self.run.assert_not_called()
+        self.restore.assert_not_called()
+
+    def test_dedicated_template_changes_only_exact_target_declarations(self):
+        original = (Path.cwd() / "gradle/release/kmp-consumer-template/build.gradle.kts").read_text()
+        new = (self.root / workflow._CONSUMER_TEMPLATE / "build.gradle.kts").read_text()
+        self.assertEqual(original[original.index('if (consumerTarget == "desktop") {'):],
+                         new[new.index('if (consumerTarget == "desktop") {'):])
+        self.assertEqual(original[:original.index('                listOf(macosMain')],
+                         new[:new.index('                mapOf(')])
+        for suffix in ("jvm", "js", "wasm-js"):
+            self.assertIn('codex-agent-runtime-desktop-' + suffix + ':$codexAgentRuntimeVersion', new)
+        for suffix in ("macosarm64", "macosx64", "linuxarm64", "linuxx64", "mingwx64"):
+            self.assertIn('to "' + suffix + '"', new)
+        self.assertIn('codex-agent:$codexAgentSdkVersion', new)
+        self.assertNotIn('codex-agent-runtime-desktop:$codexAgentRuntimeVersion', new)
+
+
+    def test_fresh_control_guard_rejects_existing_report_before_consumer(self):
+        self.select("consumer-common")
+        report = self.root / "build/protected-candidate" / ("a" * 40) / "reports/kmp-consumer-common.json"
+        report.parent.mkdir(parents=True)
+        report.write_bytes(b"stale success")
+        with self.assertRaisesRegex(ValueError, "controls must be fresh"):
+            self.consume()
+        self.run.assert_not_called()
+        self.assertEqual(b"stale success", report.read_bytes())
+
+    def test_task_version_and_maven_row_substitution_never_returns_controls(self):
+        self.select("consumer-common")
+        for kind in ("task", "runtime-version", "contract-version", "maven-sha", "maven-size-bool", "extra-field"):
+            with self.subTest(kind=kind):
+                def bad(command, **kwargs):
+                    self.emit_controls(command, **kwargs)
+                    filename = "kmp-consumer-common.json" if kind in ("task", "runtime-version", "extra-field") else "maven-inventory-common.json"
+                    path = self.report_root / filename
+                    value = json.loads(path.read_bytes())
+                    if kind == "task": value["tasks"] = ["unrelatedTask"]
+                    elif kind == "runtime-version": value["runtimeVersion"] = "0.8.7"
+                    elif kind == "contract-version": value["contractVersion"] = "0.8.2"
+                    elif kind == "maven-sha": value["files"][0]["sha256"] = "f" * 64
+                    elif kind == "maven-size-bool": value["files"][0]["bytes"] = True
+                    else: value["unapproved"] = True
+                    path.write_text(json.dumps(value))
+                self.run.side_effect = bad
+                with self.assertRaises(ValueError): self.consume()
+                self.assertFalse(self.projection.exists())
+                shutil.rmtree(self.report_root)
+
+    def test_generic_android_keeps_control_only_mode_distinct_from_legacy_wrapper(self):
+        self.select("consumer-android")
+        with patch.object(workflow, "publish_regular_tree", side_effect=AssertionError("Generic lane must not project Maven")):
+            result = self.consume()
+        self.assertEqual(3, len(result["record"]["originalInputs"]))
+        self.assertEqual("verifyStagedKmpConsumerAndroid", result["record"]["task"])
+        self.assertFalse(self.projection.exists())
+
+    def test_live_session_reuses_maven_scan_but_rejects_late_equal_size_mutation(self):
+        from products import restore
+        self.select("consumer-common")
+        real_scan = restore._uncached_file_inventory
+        scanned = []
+        def scan(path, **kwargs):
+            if Path(path).name == "maven": scanned.append(Path(path))
+            return real_scan(path, **kwargs)
+        with restore.verification_session(), patch.object(restore, "_uncached_file_inventory", side_effect=scan):
+            self.consume()
+        self.assertEqual(1, len(scanned))
+        shutil.rmtree(self.report_root)
+        def mutate(command, **kwargs):
+            self.emit_controls(command, **kwargs)
+            file = next(path for path in self.consumed_maven.rglob("*") if path.is_file())
+            before = file.stat()
+            file.write_bytes(b"x" * before.st_size)
+            os.utime(file, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.run.side_effect = mutate
+        with restore.verification_session(), self.assertRaisesRegex(ValueError, "inputs changed"):
+            self.consume()
+        self.assertFalse(self.projection.exists())
 
 class RetainedAndroidConsumerRoutingTest(unittest.TestCase):
     def test_only_same_job_canonical_full_consumer_skips_second_execution(self):

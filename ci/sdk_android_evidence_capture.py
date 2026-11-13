@@ -694,8 +694,41 @@ _NODE_SDK = tuple(products.PhaseInstanceId("sdk", "javascript", phase, "node")
                   for phase in ("package", "validation", "metadata"))
 
 
-def _contribution_selection(plan, android, node_js):
-    if type(android) is not bool or type(node_js) is not bool or not (android or node_js):
+_INSTALLED_BASE = tuple(products.PhaseInstanceId(*row) for row in (
+    ("contract", "contract", "binary", "common"), ("sdk", "sdk-core", "package", "common")))
+_INSTALLED_RUNTIME = products.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+_INSTALLED_IOS = products.PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+_INSTALLED = {
+    "consumer-common": ("common", "verifyStagedKmpConsumerCommon", (), ("compileKotlinJvm",)),
+    "consumer-android": ("android", "verifyStagedKmpConsumerAndroid", (_ANDROID_P,),
+                         ("compileAndroidMain", "compileAndroidMainJavaWithJavac")),
+    "consumer-desktop": ("desktop", "verifyStagedKmpConsumerDesktop", (_INSTALLED_RUNTIME,),
+        ("compileKotlinJvm", "compileJvmMainJava", "runDesktopJavaConsumer", "compileKotlinMacosArm64",
+         "compileKotlinMacosX64", "compileKotlinLinuxArm64", "compileKotlinLinuxX64", "compileKotlinMingwX64")),
+    "consumer-node-js": ("node-js", "verifyStagedKmpConsumerNodeJs", (_INSTALLED_RUNTIME,), ("compileKotlinJs",)),
+    "consumer-node-wasm": ("node-wasm", "verifyStagedKmpConsumerNodeWasm", (_INSTALLED_RUNTIME,), ("compileKotlinWasmJs",)),
+    "consumer-ios-device": ("ios-device", "verifyStagedKmpConsumerIosDevice", (_INSTALLED_IOS,), ("linkDebugFrameworkIosArm64",)),
+    "consumer-ios-simulator": ("ios-simulator", "verifyStagedKmpConsumerIosSimulator", (_INSTALLED_IOS,), ("linkDebugFrameworkIosSimulatorArm64",)),
+}
+
+
+def _installed_lanes(plan, enabled):
+    from receipt import required_lanes
+    if type(enabled) is not bool:
+        raise ValueError("Installed consumers require a fixed boolean selection")
+    lanes = tuple(sorted(set(required_lanes(plan)) & set(_INSTALLED))) if enabled else ()
+    if enabled and not lanes:
+        raise ValueError("Installed consumer contribution has no selected fixed lane")
+    return lanes
+
+
+def _installed_identities(lanes):
+    return tuple(sorted(set(_INSTALLED_BASE) | {i for lane in lanes for i in _INSTALLED[lane][2]}))
+
+
+def _contribution_selection(plan, android, node_js, installed_consumers=False):
+    _installed_lanes(plan, installed_consumers)
+    if type(android) is not bool or type(node_js) is not bool or not (android or node_js or installed_consumers):
         raise ValueError("Current contributions require fixed boolean selections")
     lanes = plan["lanes"]
     if android and not any(lanes["android"][action] for action in ("test", "metadata")):
@@ -719,14 +752,15 @@ def _node_input_inventories(plan_path, root, plan, *, verify_transport=False):
     return result
 
 
-def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, android, node_js):
+def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, android, node_js, installed_consumers=False):
     from products.inventory import require_exact_keys
     from products.receipt import validate_phase_receipt
     from sdk_completion import _repository_report
-    _contribution_selection(plan, android, node_js)
+    _contribution_selection(plan, android, node_js, installed_consumers)
     keys = {"schemaVersion", "kind", "consumer", "planSha256"}
     if android: keys.add("android")
     if node_js: keys.add("nodeJs")
+    if installed_consumers: keys.add("installedConsumers")
     value = require_exact_keys(value, keys, "Current canonical contributions")
     if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
             or value["kind"] != _VALIDATION_KIND or value["consumer"] != consumer
@@ -758,11 +792,29 @@ def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, an
                         or any(row[key] != phases[identity][key]
                                for key in ("buildKey", "receiptSha256", "objectSha256"))):
                     raise ValueError("Node-JS contribution substitutes an original tuple")
+    if installed_consumers:
+        installed = require_exact_keys(value["installedConsumers"], {"lanes", "originals"}, "Installed consumer inputs")
+        lanes = _installed_lanes(plan, True)
+        expected_lanes = {lane: [dict(zip(products._IDENTITY_KEYS, (i.product, i.component, i.phase, i.target)))
+                                for i in (*_INSTALLED_BASE, *_INSTALLED[lane][2])] for lane in lanes}
+        if installed["lanes"] != expected_lanes or type(installed["originals"]) is not list:
+            raise ValueError("Installed consumer inputs change the selected lane projection")
+        identities = _installed_identities(lanes)
+        if len(installed["originals"]) != len(identities):
+            raise ValueError("Installed consumer inputs change the fixed original set")
+        for identity, row in zip(identities, installed["originals"]):
+            row = require_exact_keys(row, {"buildKey", "receiptSha256", "objectSha256", "receipt"}, "Installed original")
+            receipt = validate_phase_receipt(row["receipt"])
+            if (products._identity(receipt) != identity or row["buildKey"] != receipt["buildKey"]
+                    or row["receiptSha256"] != sha256_bytes(canonical_json_bytes(receipt))):
+                raise ValueError("Installed consumer substitutes an original receipt")
+            for key in ("buildKey", "receiptSha256", "objectSha256"):
+                require_sha256(row[key], "Installed original " + key)
     return value
 
 
 def retained_validation_contributions(state, plan_path, *, repository_root, environ,
-                                      android=False, node_js=False):
+                                      android=False, node_js=False, installed_consumers=False):
     """Consume two fixed contributions in the caller's existing verified-state lifetime."""
     from contextlib import nullcontext
     from reuse_qualification import CompletedFrozenReuse
@@ -774,7 +826,7 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
     raw = read_regular_file_bytes(plan_path, reject_symlink_parents=True)
     if products._validate_plan(plan_path, root) != state.plan or load_json_bytes(raw) != state.plan:
         raise ValueError("Current contribution differs from the original verified plan")
-    _contribution_selection(state.plan, android, node_js)
+    _contribution_selection(state.plan, android, node_js, installed_consumers)
     native, consumer = state.completed_frozen, state.consumer
     native.check_consumer(consumer)
     if consumer != products._consumer(state.plan, environ):
@@ -819,8 +871,37 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
             for identity, original in originals.items():
                 if native.envelope(context.prior_by_instance[identity])["receipt"] != original["receipt"]:
                     raise ValueError("Node-JS original changed during consumption")
+    if installed_consumers:
+        lanes = _installed_lanes(state.plan, True)
+        identities = _installed_identities(lanes)
+        originals = []
+        # This retained-only route consumes the existing verified current state.
+        # A missing/changed input is an error, never a new election or replay.
+        for identity in identities:
+            record = state.prior_by_instance.get(identity)
+            envelope = None if record is None else native.envelope(record)
+            if envelope is None or record["state"] not in {"retained", "reused"}:
+                raise ValueError("Installed consumer lacks its exact native original")
+            upstream = []
+            for parent in phase_instance_dependencies(identity):
+                parent_record = state.prior_by_instance.get(parent)
+                parent_envelope = None if parent_record is None else native.envelope(parent_record)
+                if parent_envelope is None:
+                    raise ValueError("Installed consumer lacks an exact original dependency")
+                upstream.append(_upstream_record(parent_envelope["receipt"]))
+            if envelope["receipt"]["inputs"]["upstreamArtifacts"] != sorted(upstream, key=products._identity):
+                raise ValueError("Installed consumer changes original dependency edges")
+            originals.append({**{key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
+                              "receipt": envelope["receipt"]})
+        result["installedConsumers"] = load_canonical_json_bytes(canonical_json_bytes({
+            "lanes": {lane: [dict(zip(products._IDENTITY_KEYS, (i.product, i.component, i.phase, i.target)))
+                              for i in (*_INSTALLED_BASE, *_INSTALLED[lane][2])] for lane in lanes},
+            "originals": originals}))
+        for identity, original in zip(identities, originals):
+            if native.envelope(state.prior_by_instance[identity])["receipt"] != original["receipt"]:
+                raise ValueError("Installed consumer original changed during consumption")
     _validate_validation_contributions(result, consumer["producer"], sha256_bytes(raw), state.plan,
-                                       android=android, node_js=node_js)
+                                       android=android, node_js=node_js, installed_consumers=installed_consumers)
     native.check_consumer(consumer)
     if (canonical_json_bytes(state.prior) != before or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != raw
             or state.plan != load_json_bytes(raw)
@@ -889,8 +970,97 @@ def _observed_node_parity(producer, observation, expected, locator, token):
     return {"currentUploadId": artifact_id, "currentUploadSha256": digest, "verification": verified}
 
 
+def _validate_installed_controls(members, producer, plan_sha256, lane, originals, versions):
+    """Validate detached current-job evidence; it is never a reusable lane receipt."""
+    from products.inventory import require_exact_keys, require_sorted_unique_records, validate_file_record
+    target, task, extras, tasks = _INSTALLED[lane]
+    filenames = {"installed-consumer.json", f"kmp-consumer-{target}.json", f"maven-inventory-{target}.json"}
+    if set(members) != filenames:
+        raise ValueError("Installed consumer upload has an unexpected control or payload")
+    record = require_exact_keys(load_canonical_json_bytes(members["installed-consumer.json"]), {
+        "schemaVersion", "kind", "producer", "planSha256", "lane", "target", "task", "originalInputs",
+        "mavenFiles", "mavenInventorySha256", "consumerReportSha256"}, "Installed consumer control")
+    tuples = [{**{key: getattr(identity, key) for key in products._IDENTITY_KEYS},
+               **{key: originals[identity][key] for key in ("buildKey", "receiptSha256", "objectSha256")}}
+              for identity in (*_INSTALLED_BASE, *extras)]
+    if (type(record["schemaVersion"]) is not int or record["schemaVersion"] != 1
+            or record["kind"] != "installed-consumer-validation" or record["producer"] != producer
+            or record["planSha256"] != plan_sha256 or record["lane"] != lane
+            or record["target"] != target or record["task"] != task or record["originalInputs"] != tuples):
+        raise ValueError("Installed consumer changes current source, selection or native input tuples")
+    files = require_sorted_unique_records(record["mavenFiles"], "Installed Maven files")
+    if not files:
+        raise ValueError("Installed consumer Maven inventory is empty")
+    for row in files:
+        validate_file_record(row, "Installed Maven file", with_kind=False)
+    report_raw, inventory_raw = members[f"kmp-consumer-{target}.json"], members[f"maven-inventory-{target}.json"]
+    expected_versions = {"sdkVersion": versions["sdk"], "runtimeVersion": versions["runtime-release"]}
+    report = {"schemaVersion": 6, "result": "passed", **expected_versions,
+              "repository": "CENTRAL_STAGING-only", "mavenGroup": MAVEN_GROUPS["sdk-core"],
+              "target": target, "tasks": list(tasks)}
+    inventory = {"schemaVersion": 1, "groupId": MAVEN_GROUPS["sdk-core"], **expected_versions,
+        "contractVersion": versions["contract"], "target": target,
+        "files": [{"fileName": row["relativePath"], "bytes": row["bytes"],
+                   "sha256": row["sha256"].removeprefix("sha256:")} for row in files]}
+    if (record["consumerReportSha256"] != sha256_bytes(report_raw)
+            or record["mavenInventorySha256"] != sha256_bytes(inventory_raw)
+            or canonical_json_bytes(load_json_bytes(report_raw)) != canonical_json_bytes(report)
+            or canonical_json_bytes(load_json_bytes(inventory_raw)) != canonical_json_bytes(inventory)):
+        raise ValueError("Installed consumer reports differ from fixed tasks, versions or consumed file inventory")
+    return record
+
+
+def _observed_installed_consumers(producer, observation, contribution, plan, root, token):
+    """One current-run discovery, using the already observed exact consumer jobs."""
+    lanes = _installed_lanes(plan, True)
+    originals = {products._identity(row["receipt"]): row
+                 for row in contribution["installedConsumers"]["originals"]}
+    versions = products._versions(root, producer["commit"])
+    for identity, row in originals.items():
+        version = versions["runtime-release" if identity.product == "runtime" else identity.product]
+        if row["receipt"]["productVersion"] != version:
+            raise ValueError("Installed consumer native input differs from current source versions")
+    # Existing caches deliberately do not reuse live/current-run observations.
+    # Discover all fixed names once; each exact current upload is freshly checked.
+    listing = products.paginated_items(
+        f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
+        "artifacts", token)
+    results = {}
+    for lane in lanes:
+        name = f"codex-agent-installed-consumer-{lane}-{producer['tree']}-attempt-{producer['runAttempt']}"
+        matches = [row for row in listing if type(row) is dict and row.get("name") == name]
+        if len(matches) != 1:
+            raise ValueError("Installed consumer upload is missing or ambiguous")
+        selected = matches[0]
+        artifact_id = require_integer(selected.get("id"), "Installed consumer artifact ID", 1)
+        digest = require_sha256(selected.get("digest"), "Installed consumer upload SHA")
+        artifact = products._contract_ci_upload_metadata(artifact_id, digest, name, producer, observation["run"], token)
+        products._require_artifact_job_window(observation, "product-validation / retained-consumers / " + lane, artifact)
+        size = require_integer(artifact["size_in_bytes"], "Installed consumer upload bytes", 1)
+        if size > _CONTRIBUTION_LIMIT:
+            raise ValueError("Installed consumer upload exceeds its control-only bound")
+        target = _INSTALLED[lane][0]
+        names = ("installed-consumer.json", f"kmp-consumer-{target}.json", f"maven-inventory-{target}.json")
+        with tempfile.TemporaryDirectory(prefix="installed-consumer-controls-") as temporary:
+            archive = Path(temporary).resolve() / "controls.zip"
+            products._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+                destination=archive, limit=_CONTRIBUTION_LIMIT, artifact_sha256=digest, size=size)
+            inventory, members, transport = verified_zip_contents(archive,
+                max_archive_bytes=_CONTRIBUTION_LIMIT, max_members=3, max_entry_bytes=_CONTRIBUTION_LIMIT,
+                max_total_bytes=_CONTRIBUTION_LIMIT, retained_paths=names,
+                max_retained_bytes=_CONTRIBUTION_LIMIT, require_sorted=False)
+            if (transport != {"bytes": size, "sha256": digest}
+                    or {row["relativePath"] for row in inventory} != set(names)):
+                raise ValueError("Installed consumer upload differs from its fixed control closure")
+            record = _validate_installed_controls(members, producer, contribution["planSha256"], lane, originals, versions)
+        results[lane] = {"artifactId": artifact_id, "artifactSha256": digest,
+                         "recordSha256": sha256_bytes(members["installed-consumer.json"]), "original": record}
+    return results
+
+
 def observed_validation_contributions(plan, *, repository_root, trusted_workflow_sha,
-        artifact_id, artifact_sha256, contribution_sha256, environ, android=False, node_js=False, parity=None):
+        artifact_id, artifact_sha256, contribution_sha256, environ, android=False, node_js=False, parity=None,
+        installed_consumers=False):
     """Authenticate a bounded original SDK completion output, never a caller verdict."""
     from products.restore import verification_session
     require_no_signing_secret(environ)
@@ -910,17 +1080,20 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     require_sha256(artifact_sha256, "Android contribution upload digest")
     require_integer(artifact_id, "Android contribution upload ID", 1)
     token = environ["GITHUB_TOKEN"]
+    lanes = _installed_lanes(value, installed_consumers)
     job = "product-validation / sdk-completion"
     jobs = {"completion": job}
     if node_js:
         jobs["parity"] = "product-validation / sdk-parity / sdk-parity"
     elif parity is not None:
         raise ValueError("Unselected Node-JS contribution cannot supply parity")
+    jobs.update({lane: "product-validation / retained-consumers / " + lane for lane in lanes})
     with verification_session(), products._ci_observation_batch(
             (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True):
         observed, = products._observe_ci_producer_jobs({key: producer for key in jobs}, jobs_by_phase=jobs,
             token=token, trusted_workflows_by_phase={key: {
-                "path": ".github/workflows/" + ("sdk-binding-parity.yml" if key == "parity" else "product-validation.yml"),
+                "path": ".github/workflows/" + ("sdk-consumer-validation.yml" if key in lanes else
+                    "sdk-binding-parity.yml" if key == "parity" else "product-validation.yml"),
                 "sha": trusted_workflow_sha} for key in jobs})
         artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256,
             f"codex-agent-sdk-validation-contributions-{producer['tree']}-attempt-{producer['runAttempt']}",
@@ -944,7 +1117,9 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                     or retained != {_VALIDATION_FILE: raw}):
                 raise ValueError("Android contribution differs from its exact original upload")
             contribution = _validate_validation_contributions(load_canonical_json_bytes(raw), producer,
-                sha256_bytes(plan_raw), value, android=android, node_js=node_js)
+                sha256_bytes(plan_raw), value, android=android, node_js=node_js, installed_consumers=installed_consumers)
+        installed_results = (_observed_installed_consumers(producer, observed, contribution, value, root, token)
+                             if installed_consumers else None)
         parity_result = None
         if node_js:
             if contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True):
@@ -957,12 +1132,12 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                 or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
                 or node_js and contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True)):
             raise ValueError("Current contribution consumer or inputs changed during observation")
-    return contribution, parity_result
+    return (contribution, parity_result, installed_results) if installed_consumers else (contribution, parity_result)
 
 
 def aggregate_retained_validation(plan, receipts, destination, *, repository_root,
         trusted_workflow_sha, artifact_id, artifact_sha256, contribution_sha256,
-        environ, auxiliary_contracts=False, android=False, node_js=False, parity=None):
+        environ, auxiliary_contracts=False, android=False, node_js=False, parity=None, installed_consumers=False):
     """Combine current checks with an observed native contribution; never schema1 reuse."""
     from receipt import required_lanes, parse_validation_actions
     plan, receipts, destination = map(Path, (plan, receipts, destination))
@@ -972,11 +1147,13 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
     plan_raw = read_regular_file_bytes(plan, reject_symlink_parents=True)
     selected = _authorized_plan(plan)
     required = required_lanes(selected)
-    _contribution_selection(selected, android, node_js)
-    contribution, parity_result = observed_validation_contributions(plan, repository_root=repository_root,
+    _contribution_selection(selected, android, node_js, installed_consumers)
+    observed = observed_validation_contributions(plan, repository_root=repository_root,
         trusted_workflow_sha=trusted_workflow_sha, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, contribution_sha256=contribution_sha256, environ=environ,
-        android=android, node_js=node_js, parity=parity)
+        android=android, node_js=node_js, parity=parity, installed_consumers=installed_consumers)
+    contribution, parity_result = observed[:2]
+    installed_results = observed[2] if installed_consumers else None
     originals, controls = {}, {}
     for path in receipts.rglob("lane-receipt.json"):
         raw = read_regular_file_bytes(path, reject_symlink_parents=True)
@@ -998,7 +1175,7 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
             _check_source_checks(plan, path.parent, producer)
         originals[lane] = value
         controls[path] = raw
-    expected = set(required) - ({"node-js"} if node_js else set())
+    expected = set(required) - ({"node-js"} if node_js else set()) - set(_installed_lanes(selected, installed_consumers))
     if auxiliary_contracts:
         auxiliary = originals.get("contracts")
         if ("contracts" in expected or auxiliary is None
@@ -1016,6 +1193,7 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         "canonical": {"artifactId": artifact_id, "artifactSha256": artifact_sha256,
                       "contributionSha256": contribution_sha256, "original": contribution},
         **({"sdkParity": parity_result} if node_js else {}),
+        **({"installedConsumers": installed_results} if installed_consumers else {}),
         "laneReceipts": {lane: sha256_bytes(canonical_json_bytes(value)) for lane, value in sorted(originals.items())}}
     if read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw or any(
             read_regular_file_bytes(path, reject_symlink_parents=True) != raw for path, raw in controls.items()):

@@ -701,5 +701,184 @@ class SharedCanonicalContributionTest(unittest.TestCase):
             'parity':{'path':'.github/workflows/sdk-binding-parity.yml','sha':'4'*40}},observe.call_args.kwargs['trusted_workflows_by_phase'])
 
 
+class InstalledConsumerContributionTest(unittest.TestCase):
+    """The current job proves fresh consumption; native originals stay unchanged."""
+    envelope = SharedCanonicalContributionTest.envelope
+    materialize = SharedCanonicalContributionTest.materialize
+    consumer = SharedCanonicalContributionTest.consumer
+    scopes = SharedCanonicalContributionTest.scopes
+    node_scopes = SharedCanonicalContributionTest.node_scopes
+
+    def setUp(self):
+        SharedCanonicalContributionTest.setUp(self)
+        from receipt import LANES
+        from products.plan import _upstream_record
+        from products.registry import phase_instance_dependencies
+        from products.receipt import compute_build_key
+        self.plan_value['lanes'] = {lane: dict(build=False,test=False,metadata=False) for lane in LANES}
+        for lane in apk._INSTALLED:self.plan_value['lanes'][lane].update(build=True,test=True,metadata=True)
+        self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value))
+        identity=apk._ANDROID_P;receipt=self.receipts[identity]
+        receipt['inputs']['upstreamArtifacts']=sorted([_upstream_record(self.receipts[i])
+            for i in phase_instance_dependencies(identity)],key=apk.products._identity)
+        receipt['buildKey']=compute_build_key(**{key:getattr(identity,key) for key in apk.products._IDENTITY_KEYS},inputs=receipt['inputs'])
+        self.records[identity].update(buildKey=receipt['buildKey'],receiptSha256=apk.sha256_bytes(apk.canonical_json_bytes(receipt)))
+        self.versions={key:self.receipts[identity]['productVersion'] for key,identity in (
+            ('contract',apk._INSTALLED_BASE[0]),('sdk',apk._INSTALLED_BASE[1]),('runtime-release',apk._INSTALLED_RUNTIME))}
+
+    def installed(self):
+        return apk.retained_validation_contributions(self.state,self.plan,repository_root=self.root,
+            environ=self.env,installed_consumers=True)
+
+    def controls(self,value,lane):
+        target,task,extras,tasks=apk._INSTALLED[lane]
+        originals={apk.products._identity(row['receipt']):row for row in value['installedConsumers']['originals']}
+        files=[dict(relativePath='io/example/module/1/module-1.pom',bytes=4,sha256=apk.sha256_bytes(b'body'))]
+        versions=dict(sdkVersion=self.versions['sdk'],runtimeVersion=self.versions['runtime-release'])
+        report=apk.canonical_json_bytes(dict(schemaVersion=6,result='passed',**versions,repository='CENTRAL_STAGING-only',
+            mavenGroup=apk.MAVEN_GROUPS['sdk-core'],target=target,tasks=list(tasks)))
+        inventory=apk.canonical_json_bytes(dict(schemaVersion=1,groupId=apk.MAVEN_GROUPS['sdk-core'],**versions,
+            contractVersion=self.versions['contract'],target=target,
+            files=[dict(fileName=row['relativePath'],bytes=row['bytes'],sha256=row['sha256'][7:]) for row in files]))
+        record=dict(schemaVersion=1,kind='installed-consumer-validation',producer=self.current,
+            planSha256=value['planSha256'],lane=lane,target=target,task=task,
+            originalInputs=[{**{k:getattr(i,k) for k in apk.products._IDENTITY_KEYS},
+                **{k:originals[i][k] for k in ('buildKey','receiptSha256','objectSha256')}}
+                for i in (*apk._INSTALLED_BASE,*extras)],mavenFiles=files,
+            mavenInventorySha256=apk.sha256_bytes(inventory),consumerReportSha256=apk.sha256_bytes(report))
+        return {'installed-consumer.json':apk.canonical_json_bytes(record),f'kmp-consumer-{target}.json':report,
+                f'maven-inventory-{target}.json':inventory},originals
+
+    def test_installed_fixed_union_has_five_originals_and_no_body_or_context_replay(self):
+        from copy import deepcopy
+        before=deepcopy(self.receipts)
+        with self.node_scopes(),patch.object(apk.products,'_restore_product_objects',side_effect=AssertionError('body read')), \
+                patch.object(apk.products,'_full_sdk_parity_context',side_effect=AssertionError('extra replay')):
+            value=self.installed()
+        installed=value['installedConsumers']
+        self.assertEqual(set(apk._INSTALLED),set(installed['lanes']))
+        self.assertEqual(5,len(installed['originals']));self.assertEqual(before,self.receipts)
+        self.assertNotEqual(value['consumer'],installed['originals'][0]['receipt']['producer'])
+        for lane in apk._INSTALLED:
+            members,originals=self.controls(value,lane)
+            actual=apk._validate_installed_controls(members,self.current,value['planSha256'],lane,originals,self.versions)
+            self.assertEqual(lane,actual['lane'])
+
+    def test_installed_missing_changed_dependency_selection_and_lifetime_reject(self):
+        from copy import deepcopy
+        for change in ('missing','dependency','tuple','lifetime','unselected','boolean'):
+            with self.subTest(change=change):
+                before=deepcopy(self.records);receipts=deepcopy(self.receipts);plan=deepcopy(self.plan_value)
+                try:
+                    if change=='missing':self.records.pop(apk._INSTALLED_RUNTIME)
+                    if change=='dependency':self.receipts[apk._INSTALLED_IOS]['inputs']['upstreamArtifacts']=[]
+                    if change=='tuple':self.records[apk._INSTALLED_IOS]['receiptSha256']='sha256:'+'f'*64
+                    if change=='lifetime':self.alive=False
+                    if change=='unselected':
+                        for lane in apk._INSTALLED:self.plan_value['lanes'][lane].update(build=False,test=False,metadata=False)
+                        self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value))
+                    with self.node_scopes(),self.assertRaises(ValueError):
+                        if change=='boolean':apk.retained_validation_contributions(self.state,self.plan,
+                            repository_root=self.root,environ=self.env,installed_consumers='true')
+                        else:self.installed()
+                finally:
+                    self.records.clear();self.records.update(before);self.receipts=receipts
+                    self.plan_value.clear();self.plan_value.update(plan);self.plan.write_bytes(apk.canonical_json_bytes(plan));self.alive=True
+
+    def test_installed_control_substitution_reports_and_file_set_fail_closed(self):
+        from copy import deepcopy
+        with self.node_scopes():value=self.installed()
+        lane='consumer-ios-device'
+        for change in ('producer','plan','tuple','lane','task','report-tasks','report-version','inventory','duplicate-file','payload'):
+            members,originals=self.controls(value,lane);record=apk.load_json_bytes(members['installed-consumer.json'])
+            with self.subTest(change=change):
+                if change=='producer':record['producer']['commit']='f'*40
+                if change=='plan':record['planSha256']='sha256:'+'f'*64
+                if change=='tuple':record['originalInputs'][0]['objectSha256']='sha256:'+'f'*64
+                if change=='lane':record['lane']='consumer-ios-simulator'
+                if change=='task':record['task']='arbitraryTask'
+                if change.startswith('report-'):
+                    report=apk.load_json_bytes(members['kmp-consumer-ios-device.json'])
+                    if change=='report-tasks':report['tasks']=['linkDebugFrameworkIosSimulatorArm64']
+                    else:report['runtimeVersion']='999.0.0'
+                    members['kmp-consumer-ios-device.json']=apk.canonical_json_bytes(report)
+                    record['consumerReportSha256']=apk.sha256_bytes(members['kmp-consumer-ios-device.json'])
+                if change=='inventory':
+                    inv=apk.load_json_bytes(members['maven-inventory-ios-device.json']);inv['files'][0]['sha256']='f'*64
+                    members['maven-inventory-ios-device.json']=apk.canonical_json_bytes(inv)
+                    record['mavenInventorySha256']=apk.sha256_bytes(members['maven-inventory-ios-device.json'])
+                if change=='duplicate-file':record['mavenFiles']*=2
+                if change=='payload':members['payload/maven.jar']=b'body'
+                members['installed-consumer.json']=apk.canonical_json_bytes(record)
+                with self.assertRaises(ValueError):apk._validate_installed_controls(
+                    members,self.current,value['planSha256'],lane,originals,self.versions)
+
+    def test_installed_jobs_share_observation_and_current_list_and_exact_uploads(self):
+        import io,zipfile
+        with self.node_scopes():value=self.installed()
+        raw=apk.canonical_json_bytes(value)
+        def archive(members):
+            stream=io.BytesIO()
+            with zipfile.ZipFile(stream,'w') as z:
+                for name,data in members.items():z.writestr(name,data)
+            return stream.getvalue()
+        payloads={22:archive({apk._VALIDATION_FILE:raw})};artifacts={};jobs=[]
+        def add(identity,name,job,payload):
+            payloads[identity]=payload
+            artifacts[identity]=dict(id=identity,name=name,digest=apk.sha256_bytes(payload),size_in_bytes=len(payload),
+                expired=False,workflow_run=dict(id=21,head_sha='9'*40),created_at='2026-11-01T10:03:00Z',
+                archive_download_url=f'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/{identity}/zip')
+            jobs.append(dict(id=identity,name=job,status='completed',conclusion='success',
+                started_at='2026-11-01T10:00:00Z',completed_at='2026-11-01T10:05:00Z'))
+        add(22,f"codex-agent-sdk-validation-contributions-{self.current['tree']}-attempt-2",'product-validation / sdk-completion',payloads[22])
+        for identity,lane in enumerate(sorted(apk._INSTALLED),23):
+            add(identity,f"codex-agent-installed-consumer-{lane}-{self.current['tree']}-attempt-2",
+                'product-validation / retained-consumers / '+lane,archive(self.controls(value,lane)[0]))
+        observation=dict(run=dict(id=21,head_sha='9'*40,status='in_progress'),jobs=jobs)
+        with self.node_scopes(),patch.object(apk.products,'_git_value',side_effect=lambda r,c,v:self.current['tree' if 'tree' in v else 'commit']), \
+                patch.object(apk.products,'_observe_ci_producer_jobs',return_value=[observation]) as observe, \
+                patch.object(apk.products,'_versions',return_value=self.versions), \
+                patch.object(apk.products,'paginated_items',return_value=list(artifacts.values())) as listing, \
+                patch.object(apk.products,'api_json',side_effect=lambda url,t:artifacts[int(url.rsplit('/',1)[1])]), \
+                patch.object(apk.products,'_reuse_contract_ci_upload',side_effect=lambda a,*args,**kw:kw['destination'].write_bytes(payloads[a['id']])) as fetch:
+            options=dict(repository_root=self.root,trusted_workflow_sha='4'*40,artifact_id=22,
+                artifact_sha256=artifacts[22]['digest'],contribution_sha256=apk.sha256_bytes(raw),environ=self.env,installed_consumers=True)
+            actual=apk.observed_validation_contributions(self.plan,**options)
+            self.assertEqual(set(apk._INSTALLED),set(actual[2]));observe.assert_called_once();listing.assert_called_once()
+            self.assertEqual(8,fetch.call_count)
+            self.assertEqual({'completion',*apk._INSTALLED},set(observe.call_args.kwargs['jobs_by_phase']))
+            for lane in apk._INSTALLED:self.assertEqual({'path':'.github/workflows/sdk-consumer-validation.yml','sha':'4'*40},observe.call_args.kwargs['trusted_workflows_by_phase'][lane])
+            for change in ('missing','duplicate','window','wrong-name','wrong-run'):
+                original=dict(artifacts[23]);rows=list(artifacts.values())
+                with self.subTest(change=change):
+                    if change=='missing':rows.remove(artifacts[23])
+                    if change=='duplicate':rows.append(artifacts[23])
+                    if change=='window':artifacts[23]['created_at']='2026-11-01T09:59:00Z'
+                    if change=='wrong-name':artifacts[23]['name']='codex-agent-ci-consumer-android-'+self.current['tree']
+                    if change=='wrong-run':artifacts[23]['workflow_run']=dict(id=20,head_sha='9'*40)
+                    listing.return_value=rows
+                    with self.assertRaises(ValueError):apk.observed_validation_contributions(self.plan,**options)
+                    artifacts[23].clear();artifacts[23].update(original)
+
+    def test_installed_union_removes_only_selected_consumers_and_keeps_false_route(self):
+        with self.node_scopes():value=self.installed()
+        receipts=self.root/'receipts';receipts.mkdir()
+        def write(lane):
+            d=receipts/lane;d.mkdir(exist_ok=True);(d/'lane-receipt.json').write_bytes(apk.canonical_json_bytes(dict(lane=lane)))
+        self.plan_value['lanes']['portable'].update(test=True);self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value));write('portable')
+        options=dict(repository_root=self.root,trusted_workflow_sha='4'*40,artifact_id=22,
+            artifact_sha256='sha256:'+'a'*64,contribution_sha256='sha256:'+'b'*64,environ=self.env,installed_consumers=True)
+        with patch.object(apk,'_authorized_plan',return_value=self.plan_value), \
+                patch.object(apk,'observed_validation_contributions',return_value=(value,None,{lane:{} for lane in apk._INSTALLED})), \
+                patch.object(apk,'validate_receipt',side_effect=lambda p,*a,**k:apk.load_json_bytes(p.read_bytes())):
+            result=apk.aggregate_retained_validation(self.plan,receipts,self.root/'accepted',**options)
+            self.assertEqual({'portable'},set(result['laneReceipts']))
+            write('consumer-android')
+            with self.assertRaises(ValueError):apk.aggregate_retained_validation(self.plan,receipts,self.root/'duplicate',**options)
+            (receipts/'consumer-android/lane-receipt.json').unlink();(receipts/'portable/lane-receipt.json').unlink()
+            with self.assertRaises(ValueError):apk.aggregate_retained_validation(self.plan,receipts,self.root/'missing',**options)
+            self.assertFalse((self.root/'duplicate').exists());self.assertFalse((self.root/'missing').exists())
+
+
 if __name__ == "__main__":
     unittest.main()
