@@ -1,9 +1,21 @@
 """Synthetic installed cache; never invokes Gradle or downloads a distribution."""
 
 from pathlib import Path
+import hashlib
+import json
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
+CI_ROOT = Path(__file__).resolve().parents[1]
+if str(CI_ROOT) not in sys.path:
+    sys.path.insert(0, str(CI_ROOT))
+
+from ci.products import gradle_bootstrap as bootstrap
+from ci.products.inventory import canonical_json_bytes
+from ci.products.restore import verification_session
 from ci.products.gradle_bootstrap import require_preprovisioned_gradle
 
 
@@ -68,3 +80,90 @@ class GradleBootstrapTest(unittest.TestCase):
                 require_preprovisioned_gradle(PROPERTIES.replace(original, replacement), self.environment)
         with self.assertRaises(ValueError):
             require_preprovisioned_gradle(PROPERTIES, {"GRADLE_USER_HOME": "relative"})
+
+    def test_git_bound_runtime_libraries_reuse_and_reject_mutation_or_untrusted_paths(self):
+        second = self.installation / "lib/plugins/runtime-helper.jar"
+        second.parent.mkdir()
+        second.write_bytes(b"synthetic second library")
+        libraries = (self.launcher, second)
+        bundled = {f"dependencies/kotlinx-serialization-{name}-jvm-1.9.0.jar": name.encode() for name in ("core", "json")}
+        tooling = self.home / "synthetic-runtime-tooling.jar"
+        with zipfile.ZipFile(tooling, "w") as output:
+            for path, data in bundled.items():
+                output.writestr(path, data)
+        profile = {"schemaVersion": 1, "gradleVersion": "9.4.1",
+            "distribution": {"url": "https://services.gradle.org/distributions/gradle-9.4.1-bin.zip",
+                             "bytes": 100, "sha256": "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb"},
+            "libraries": [{"relativePath": p.relative_to(self.installation).as_posix(),
+                           "bytes": p.stat().st_size, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in libraries],
+            "excludedCompilerJars": ["lib/kotlin-compiler-embeddable-2.4.0.jar",
+                "lib/kotlin-scripting-compiler-embeddable-2.4.0.jar",
+                "lib/kotlin-scripting-compiler-impl-embeddable-2.4.0.jar"],
+            "excludedLibraries": ["lib/kotlinx-serialization-core-jvm-1.11.0.jar", "lib/kotlinx-serialization-json-jvm-1.11.0.jar"],
+            "bundledLibraries": [{"moduleId": "org.jetbrains.kotlinx:" + Path(path).name.removesuffix("-1.9.0.jar") + ":1.9.0",
+                "resourcePath": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for path, data in bundled.items()]}
+        authority = {".github/actions/run-ci-lane/runtime-package-tooling-libraries.json": canonical_json_bytes(profile),
+                     "gradle/wrapper/gradle-wrapper.properties": PROPERTIES}
+
+        def git_blob(repository, revision, relative, *, max_bytes):
+            self.assertEqual(self.home, repository)
+            self.assertEqual("1" * 40, revision)
+            self.assertLessEqual(len(authority[relative]), max_bytes)
+            return authority[relative]
+
+        original = second.read_bytes()
+        with patch.object(bootstrap, "git_regular_blob_bytes", side_effect=git_blob), \
+                patch.object(bootstrap.hashlib, "file_digest", wraps=hashlib.file_digest) as hashes:
+            def consume():
+                return bootstrap.verified_runtime_package_libraries(self.home, "1" * 40, self.installation, tooling)
+
+            def check_selected(selected):
+                self.assertEqual(libraries, selected[2:])
+                self.assertEqual(list(bundled.values()), [p.read_bytes() for p in selected[:2]])
+                self.assertNotEqual(selected[0].parent, self.installation)
+
+            with verification_session():
+                with consume() as selected:
+                    check_selected(selected)
+                self.assertTrue(all(not p.exists() for p in selected[:2]))
+                self.assertEqual(2, hashes.call_count)
+                with consume() as selected:
+                    check_selected(selected)
+                self.assertEqual(2, hashes.call_count, "Private scope must reuse completed bytes, not rehash")
+                with self.assertRaisesRegex(ValueError, "owner changed during use"):
+                    with consume() as selected:
+                        selected[0].write_bytes(b"changed")
+                self.assertTrue(all(not p.exists() for p in selected[:2]))
+                second.write_bytes(b"X" * len(original))
+                with self.assertRaisesRegex(ValueError, "bytes differ"), consume():
+                    self.fail("Changed cached library was yielded")
+                second.write_bytes(original)
+                with self.assertRaisesRegex(ValueError, "changed during use"):
+                    with consume():
+                        second.write_bytes(b"Y" * len(original))
+                second.write_bytes(original)
+                second.unlink()
+                second.symlink_to(self.launcher)
+                with self.assertRaises(ValueError), consume():
+                    self.fail("Symbolic library was yielded")
+                second.unlink()
+                second.write_bytes(original)
+            before = hashes.call_count
+            with consume() as selected:
+                check_selected(selected)
+            self.assertEqual(before + 2, hashes.call_count, "Closed scope must not serialize or retain a verdict")
+            key = ".github/actions/run-ci-lane/runtime-package-tooling-libraries.json"
+            for path in ("../outside.jar", "/absolute.jar", "lib/kotlin-compiler-embeddable-2.4.0.jar"):
+                bad = json.loads(authority[key])
+                bad["libraries"][0]["relativePath"] = path
+                authority[key] = canonical_json_bytes(bad)
+                with self.subTest(path=path), self.assertRaises(ValueError), consume():
+                    self.fail("Untrusted profile path was yielded")
+                authority[key] = canonical_json_bytes(profile)
+            bad = json.loads(authority[key])
+            bad["bundledLibraries"][0]["sha256"] = "0" * 64
+            authority[key] = canonical_json_bytes(bad)
+            with self.assertRaisesRegex(ValueError, "bundled library differs"), consume():
+                self.fail("Unverified nested library was yielded")
+            self.assertEqual(original, second.read_bytes())

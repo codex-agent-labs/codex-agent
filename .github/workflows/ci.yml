@@ -116,6 +116,7 @@ jobs:
     uses: codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority
     with:
       toolingOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}
+      toolingPurpose: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') && contains(github.event.pull_request.labels.*.name, 'ci:runtime-package-tooling') && 'runtime-package' || 'full' }}
       runtimeRecoveryOnly: false
       sdkRecoveryOnly: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}
       sdkCheckpoints: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:sdk-recovery') && !contains(github.event.pull_request.labels.*.name, 'ci:tooling-only') }}

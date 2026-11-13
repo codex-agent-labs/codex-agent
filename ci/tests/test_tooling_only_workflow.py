@@ -75,12 +75,14 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         job=self.jobs['tooling-plan']
         self.assertIn('candidate_run_ids=run_ids',job)
         self.assertIn("'merge-base', '--is-ancestor', introduction, revision",job)
-        self.assertIn('git_inventory(repository, introduction, _COMPILER_INPUTS) != git_inventory(repository, revision, _COMPILER_INPUTS)',job)
+        self.assertIn("compiler_inputs = _RUNTIME_PACKAGE_COMPILER_INPUTS if purpose == 'runtime-package' else _COMPILER_INPUTS",job)
+        self.assertIn('git_inventory(repository, introduction, compiler_inputs) != git_inventory(repository, revision, compiler_inputs)',job)
         self.assertIn("created='>=' + since",job)
         self.assertIn('40171845008',job)
         self.assertIn('40333301688',job)
         self.assertIn("introduction = os.environ['REVIEWED_SOURCE_SHA']",job)
-        self.assertIn("search_floor = '405608e77a44650bb7e724e0d1bff78b122429b1'",job)
+        self.assertIn("search_floor = ('97b25e71fc1f17666f823b2b1fbd59d27c414c71' if purpose == 'runtime-package'",job)
+        self.assertIn("else '405608e77a44650bb7e724e0d1bff78b122429b1')",job)
         self.assertNotIn('/actions/artifacts',job)
         self.assertIn('result = discover_tooling_ci(',job)
         self.assertNotIn('product_reuse.py discover',job)
@@ -112,7 +114,7 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
                 def inventory(repository,revision,paths):
                     calls.append((revision,paths))
                     return tuple((p,'changed' if revision=='current' and p==changed else 'original') for p in paths)
-                values={'selected':None,'repository':object(),'revision':'current',
+                values={'selected':None,'purpose':'full','repository':object(),'revision':'current',
                         '_COMPILER_INPUTS':('compiler',),'_INSPECTOR_INPUTS':('inspector',),
                         'RETAINED_UNSIGNED_TOOLING':locator,'git_inventory':inventory,
                         '_ensure_original_source':lambda repository,producer:calls.append(('ensure',producer))}
@@ -126,6 +128,9 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         values['selected']={'artifactId':1};calls.clear();exec(code,{},values)
         self.assertEqual(calls,[])
         self.assertIsNone(values['recovery']);self.assertFalse(values['missing_build'])
+        values.update(selected=None,purpose='runtime-package');calls.clear();exec(code,{},values)
+        self.assertEqual(calls,[])
+        self.assertIsNone(values['recovery']);self.assertTrue(values['missing_build'])
 
     def test_missing_unsigned_source_is_imported_before_inventory_comparison(self):
         import subprocess
@@ -136,14 +141,14 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         from tooling_release import RETAINED_UNSIGNED_TOOLING
         body=re.search(r"(?ms)          python3 -B - <<'PYTHON'\n(.*?)^          PYTHON",self.jobs['tooling-plan'])[1]
         block=next(n.body for n in ast.parse(textwrap.dedent(body)).body if isinstance(n,ast.With))
-        node=next(n for n in block if isinstance(n,ast.If) and ast.unparse(n.test)=='selected is None')
+        node=next(n for n in block if isinstance(n,ast.If) and ast.unparse(n.test)=="selected is None and purpose == 'full'")
         producer=RETAINED_UNSIGNED_TOOLING['producer'];head='c'*40;calls=[]
         def inventory(repository, revision, paths):
             # The full existing commit/tree/unchanged-HEAD join must finish first.
             self.assertEqual(6,git.call_count)
             calls.append(revision)
             return 'old' if revision==producer['commit'] else 'new'
-        values={'selected':None,'recovery':None,'repository':Path('/fixture'),
+        values={'selected':None,'recovery':None,'purpose':'full','repository':Path('/fixture'),
                 'revision':'current','recovery_inputs':('compiler',),
                 'RETAINED_UNSIGNED_TOOLING':RETAINED_UNSIGNED_TOOLING,
                 '_ensure_original_source':tooling_capture._ensure_original_source,

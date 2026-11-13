@@ -68,6 +68,27 @@ runs:
         cache-read-only: 'true'
         node-version: ${{ (inputs.component == 'node-js' || inputs.component == 'node-wasm') && (inputs.phase == 'binary' || inputs.phase == 'validation') && '24.18.0' || '' }}
         xcode-fingerprint: ${{ runner.os == 'macOS' && 'auto' || 'none' }}
+    - id: package-tooling
+      if: inputs.phase == 'package' && contains(fromJSON('["macos-arm64","macos-x64","linux-arm64","linux-x64","windows-x64"]'), inputs.component)
+      shell: bash
+      env:
+        REVISION: ${{ inputs.revision }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+        TOOLING_RUN_ID: ${{ vars.CODEX_AGENT_RUNTIME_PACKAGE_TOOLING_RUN_ID }}
+      run: |
+        set -euo pipefail
+        test -n "$TOOLING_RUN_ID"
+        java_binary=java
+        if [ "$RUNNER_OS" = Windows ]; then java_binary=java.exe; fi
+        java_executable="$(python3 -B -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); p.is_absolute() or sys.exit("Caller Java home must be absolute"); print((p/"bin"/sys.argv[2]).resolve(strict=True))' "$JAVA_HOME" "$java_binary")"
+        tooling_destination="$RUNNER_TEMP/runtime-package-tooling"
+        python3 -B ci/tooling_discovery.py --destination "$tooling_destination" \
+          --repository-root "$GITHUB_WORKSPACE" --java-executable "$java_executable" \
+          --policy-revision "$REVISION" --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --purpose runtime-package --candidate-run-id "$TOOLING_RUN_ID"
+        test -f "$tooling_destination/capture/tooling-policy.json"
+        printf 'policy=%s/capture/tooling-policy.json\n' "$tooling_destination" >> "$GITHUB_OUTPUT"
     - id: archive
       if: inputs.phase == 'binary' && contains(fromJSON('["macos-arm64","macos-x64","linux-arm64","linux-x64","windows-x64"]'), inputs.component)
       uses: ./.github/actions/setup-runtime-archive
@@ -87,6 +108,7 @@ runs:
         SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
         SDK_APPLE_VALIDATION_POLICY: ${{ inputs.sdk-apple-validation-policy }}
         ARCHIVE: ${{ steps.archive.outputs.archive }}
+        RUNTIME_PACKAGE_TOOLING: ${{ steps.package-tooling.outputs.policy }}
         SUPERVISOR_ID: ${{ inputs.supervisor-id }}
         SUPERVISOR_SHA256: ${{ inputs.supervisor-sha256 }}
         TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
@@ -95,6 +117,7 @@ runs:
       run: |
         set -euo pipefail
         extra=()
+        if [ -n "$RUNTIME_PACKAGE_TOOLING" ]; then extra+=(--runtime-package-tooling "$RUNTIME_PACKAGE_TOOLING"); fi
         if [ -n "$ARCHIVE" ]; then extra+=(--app-server-archive "$ARCHIVE"); fi
         if [ -n "$SDK_VALIDATION_TOOLING" ]; then extra+=(--sdk-validation-tooling "$SDK_VALIDATION_TOOLING"); fi
         if [ -n "${SDK_APPLE_VALIDATION_POLICY:-}" ]; then extra+=(--sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY"); fi

@@ -6379,6 +6379,39 @@ def execute_runtime_supervisor(
         destination=destination / "supervisor", environ=environment)
 
 
+@contextmanager
+def _runtime_package_tooling(root, revision, environment, tooling):
+    """Hold the exact signed producer and borrowed libraries through package production."""
+    from products.gradle_bootstrap import require_preprovisioned_gradle, verified_runtime_package_libraries
+    from products.tooling import verified_tooling_capture
+
+    policy = require_exact_keys(dict(tooling), {"evidence", "publicKey", "javaExecutable",
+        "requiredTrustDomain", "keyring", "keysDirectory"}, "Runtime package caller tooling")
+    if policy["requiredTrustDomain"] != "release":
+        raise ValueError("Runtime package tooling requires protected release authentication")
+    java = Path(policy["javaExecutable"])
+    expected_java = Path(environment.get("JAVA_HOME", "")) / "bin" / ("java.exe" if os.name == "nt" else "java")
+    if (not java.is_absolute() or java.resolve(strict=True) != java or
+            not expected_java.is_absolute() or expected_java.resolve(strict=True) != java):
+        raise ValueError("Runtime package Java must match the provisioned caller JAVA_HOME")
+    java_bytes = read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True)
+    wrapper_path = "gradle/wrapper/gradle-wrapper.properties"
+    wrapper = git_regular_blob_bytes(root, revision, wrapper_path, max_bytes=64 * 1024)
+    if wrapper != read_regular_file_bytes(root / wrapper_path, max_bytes=64 * 1024, reject_symlink_parents=True):
+        raise ValueError("Runtime package wrapper policy differs from its exact source")
+    installation = require_preprovisioned_gradle(wrapper, environment)
+    try:
+        with verified_tooling_capture(Path(policy["evidence"]), root, Path(policy["publicKey"]),
+                required_trust_domain="release", policy_revision=revision, use="runtime-package",
+                keyring=Path(policy["keyring"]) if policy["keyring"] is not None else None,
+                keys_directory=Path(policy["keysDirectory"]) if policy["keysDirectory"] is not None else None) as jar:
+            with verified_runtime_package_libraries(root, revision, installation, jar) as libraries:
+                yield {"java_executable": java, "tooling_jar": jar, "libraries": libraries}
+    finally:
+        if java_bytes != read_regular_file_bytes(java, max_bytes=128 * 1024 * 1024, reject_symlink_parents=True):
+            raise ValueError("Runtime package Java changed during use")
+
+
 def execute_runtime_phase(
     plan_path: Path, discovery_root: Path, state_root: Path | None,
     instance: PhaseInstanceId, destination: Path, *, expected_build_key: str,
@@ -6388,6 +6421,7 @@ def execute_runtime_phase(
     sdk_original_workflow_sha: str | None = None,
     supervisor_upload: Mapping[str, Any] | None = None,
     app_server_archive: Path | None = None,
+    runtime_package_tooling: Mapping[str, Any] | None = None,
     sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None, completed_frozen=None,
 ) -> dict[str, Any]:
     """Execute the fixed phase, retaining diagnostics separately from its shard.
@@ -6427,7 +6461,16 @@ def execute_runtime_phase(
         raise ValueError("Native binary requires a pinned app-server archive")
     if not needs_archive and app_server_archive is not None:
         raise ValueError("App-server archive is only valid for native binary production")
-    environment, wrapper = _runtime_worker_environment(root, state.producer, destination, environment)
+    native_package = instance.phase == "package" and instance.component in NATIVE_TARGETS
+    if runtime_package_tooling is not None and not native_package:
+        raise ValueError("Runtime package tooling is only valid for native package production")
+    if native_package and runtime_package_tooling is None:
+        raise ValueError("Native Runtime packaging requires authenticated package tooling")
+    if instance.phase == "package":
+        environment = _worker_process_environment(root, state.producer, destination, environment)
+        wrapper = None
+    else:
+        environment, wrapper = _runtime_worker_environment(root, state.producer, destination, environment)
     _allow_locked_runtime_node_fetch(instance, environment)
     stage = root / f"codex-agent-runtime-desktop/build/product-stage/runtime/{instance.component}/{instance.phase}"
     if instance.phase == "validation" and instance.component not in NATIVE_TARGETS:
@@ -6487,34 +6530,55 @@ def execute_runtime_phase(
         if read_regular_file_bytes(init_script, reject_symlink_parents=True) != git_regular_blob_bytes(
                 root, state.producer["commit"], init_script.relative_to(root).as_posix(), max_bytes=64 * 1024):
             raise ValueError(f"{instance.component} compiler policy differs from its exact Git source")
-    command = _runtime_worker_command(wrapper, properties, environment, init_script=init_script)
-    started = time.monotonic_ns()
-    with (destination / "gradle.log").open("xb") as log:
-        completed = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=False)
-    write_canonical_json(destination / "execution.json", {
-        "schemaVersion": 1, "producer": state.producer, "buildKey": ready["buildKey"],
-        "command": command, "host": host, "observations": observation,
-        "returnCode": completed.returncode, "elapsedNs": time.monotonic_ns() - started,
-    })
-    if completed.returncode != 0:
-        raise ValueError(f"Runtime phase failed with exit code {completed.returncode}; see {destination / 'gradle.log'}")
-    _runtime_worker_checkout(root, state.producer)
-    if (destination / "python-bytecode").exists() or (destination / "python-bytecode").is_symlink():
-        raise ValueError("Runtime worker private Python bytecode namespace was modified")
-    if input_inventory != regular_file_inventory(destination / "inputs", allow_empty=True):
-        raise ValueError("Runtime worker inputs changed during execution")
-    if instance.component in NATIVE_TARGETS and instance.phase == "validation":
-        from products.runtime_validation_projection import project_native_validation_stage
-        project_native_validation_stage(
-            stage, Path(properties["codexAgent.runtimePackageStage"]), destination / "raw-validation",
-            target=instance.component, version=state.expected_fixed["versions"]["runtime-release"],
-            producer=state.producer,
-        )
-    return finalize_phase_object(
-        stage_root=stage, phase_plan={key: ready[key] for key in PHASE_PLAN_KEYS}, producer=state.producer,
-        product_version=state.expected_fixed["versions"]["runtime-release"],
-        trust_domain="development" if state.plan["event"] == "pull_request" else "release",
-        destination=destination / "shard")
+    with ExitStack() as package_scope:
+        package_arguments = {}
+        if native_package:
+            package_arguments = package_scope.enter_context(_runtime_package_tooling(
+                root, state.producer["commit"], environment, runtime_package_tooling))
+        started = time.monotonic_ns()
+        log_path = destination / ("package.log" if instance.phase == "package" else "gradle.log")
+        with log_path.open("xb") as log:
+            if instance.phase == "package":
+                if native_package:
+                    from runtime_native_phase import execute_package
+                    package_arguments.update(environ=environment, log=log)
+                else:
+                    from runtime_adapter_phase import execute_package
+                execution = execute_package(ready, properties, repository_root=root,
+                    revision=state.producer["commit"], stage_root=stage,
+                    verified_contract_manifest=manifest, **package_arguments)
+                command, return_code = execution["command"], execution["returnCode"]
+            else:
+                command = _runtime_worker_command(wrapper, properties, environment, init_script=init_script)
+                completed = subprocess.run(command, cwd=root, env=environment, stdout=log,
+                                           stderr=subprocess.STDOUT, check=False)
+                return_code = completed.returncode
+        write_canonical_json(destination / "execution.json", {
+            "schemaVersion": 1, "producer": state.producer, "buildKey": ready["buildKey"],
+            "command": command, "host": host, "observations": observation,
+            "returnCode": return_code, "elapsedNs": time.monotonic_ns() - started,
+        })
+        if return_code != 0:
+            raise ValueError(f"Runtime phase failed with exit code {return_code}; see {log_path}")
+        _runtime_worker_checkout(root, state.producer)
+        if (destination / "python-bytecode").exists() or (destination / "python-bytecode").is_symlink():
+            raise ValueError("Runtime worker private Python bytecode namespace was modified")
+        if input_inventory != regular_file_inventory(destination / "inputs", allow_empty=True):
+            raise ValueError("Runtime worker inputs changed during execution")
+        if instance.component in NATIVE_TARGETS and instance.phase == "validation":
+            from products.runtime_validation_projection import project_native_validation_stage
+            project_native_validation_stage(
+                stage, Path(properties["codexAgent.runtimePackageStage"]), destination / "raw-validation",
+                target=instance.component, version=state.expected_fixed["versions"]["runtime-release"],
+                producer=state.producer,
+            )
+        # Producer owners must exit successfully before a receipt/shard can exist.
+        package_scope.close()
+        return finalize_phase_object(
+            stage_root=stage, phase_plan={key: ready[key] for key in PHASE_PLAN_KEYS}, producer=state.producer,
+            product_version=state.expected_fixed["versions"]["runtime-release"],
+            trust_domain="development" if state.plan["event"] == "pull_request" else "release",
+            destination=destination / "shard")
 
 
 @collection_admission_scope
@@ -11348,6 +11412,7 @@ def parser() -> argparse.ArgumentParser:
         predecessors_command.add_argument("--sdk-apple-validation-policy", type=Path)
         predecessors_command.add_argument("--sdk-original-workflow-sha")
         if name == "execute-runtime-phase":
+            predecessors_command.add_argument("--runtime-package-tooling", type=Path)
             predecessors_command.add_argument("--app-server-archive", type=Path,
                                               help="Existing native binary archive; verified against exact Git policy")
             predecessors_command.add_argument("--supervisor-artifact-id", type=int)
@@ -11573,6 +11638,9 @@ def main(argv: list[str] | None = None) -> int:
                              "execute-runtime-phase": execute_runtime_phase}[arguments.command]
                 additional = {}
                 if arguments.command == "execute-runtime-phase":
+                    if arguments.runtime_package_tooling is not None:
+                        additional["runtime_package_tooling"] = _canonical_control(
+                            arguments.runtime_package_tooling, "Caller Runtime package tooling policy")
                     if arguments.app_server_archive is not None:
                         additional["app_server_archive"] = arguments.app_server_archive
                     values = (arguments.supervisor_artifact_id, arguments.supervisor_artifact_sha256,

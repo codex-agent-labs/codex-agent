@@ -1,7 +1,7 @@
-"""Native Gradle arguments from an already authenticated original phase closure.
+"""Native routing and fixed package operations from an authenticated phase closure.
 
-This is translation, not admission, planning, toolchain observation or execution.
-The worker owns authentication and the common Contract/version/candidate fields.
+The worker owns authentication, source and input lifetimes, tooling qualification,
+and final output admission. Package operations reuse the unchanged producers.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import tempfile
 from typing import Any
 
@@ -288,6 +289,109 @@ def main(argv: list[str] | None = None) -> int:
         if len(inventory) != 1 or inventory[0]["relativePath"] != spec["asset"]:
             raise ValueError("Pinned archive cache must contain exactly the selected asset")
     return 0
+
+
+
+def execute_package(plan, properties, *, repository_root, revision, stage_root,
+                    verified_contract_manifest, java_executable, tooling_jar, libraries, environ, log):
+    """Invoke the unchanged, precompiled task and existing C ABI writer only.
+
+    The worker owns authenticated tooling/library scopes and keeps them alive
+    through this operation and the full output gate. Paths are not authority.
+    """
+    from runtime_adapter_phase import _fresh_package_stage, _package_inputs
+    from products.c_abi import CAbiPackageInput, TARGET_SPECS, c_abi_archive_file_name, package_c_abi_sdk
+    from products.inventory import snapshot_regular_tree
+    from products.receipt import verify_output_manifest_identity, write_output_manifest
+    from products.runtime_flags import load_runtime_binary_flags
+
+    _native_plan(plan)
+    component, version, compatibility, original, previous = _package_inputs(
+        plan, properties, repository_root=repository_root, revision=revision,
+        verified_contract_manifest=verified_contract_manifest)
+    root = Path(repository_root)
+
+    def source(relative, limit=1024 * 1024):
+        path = root / relative
+        if read_regular_file_bytes(path, max_bytes=limit, reject_symlink_parents=True) != git_regular_blob_bytes(
+                root, revision, relative, max_bytes=limit):
+            raise ValueError("Runtime package source differs from its exact Git authority: " + relative)
+        return path
+
+    manifest = read_distribution_manifest(source(_DISTRIBUTION_MANIFEST))
+    target = next(target for target, value in PRODUCT_RUNTIME_TARGETS.items() if value == component)
+    distribution = next(item for item in manifest.distributions if item.target == target)
+    spec = TARGET_SPECS[target]
+    flags = load_runtime_binary_flags(source("codex-agent-runtime-desktop/native/c-api/binary-flags.json"))[component]
+    roles = {name: (base, relative) for name, base, relative in flags.roles}
+    if roles["exportPolicy"][0] != "repository":
+        raise ValueError("Runtime export policy must be a repository input")
+    export = source(roles["exportPolicy"][1])
+    header = source("codex-agent-runtime-desktop/native/c-api/include/codex_agent.h")
+    license_file, notice = source("LICENSE"), source("THIRD_PARTY_NOTICES.md")
+    app_license = source("legal/openai-codex/openai-codex-LICENSE.txt")
+    app_notice = source("legal/openai-codex/openai-codex-NOTICE.txt")
+    if not libraries:
+        raise ValueError("Runtime package requires its authenticated Gradle library closure")
+    for path in (java_executable, tooling_jar, *libraries):
+        value = Path(path)
+        if not value.is_absolute() or value.resolve(strict=True) != value or not value.is_file():
+            raise ValueError("Runtime package executable and classpath must be canonical regular files")
+    stage = _fresh_package_stage(stage_root)
+    outputs = stage / "outputs"
+    (outputs / "app-server").mkdir(parents=True)
+    package = outputs / "app-server" / f"codex-agent-runtime-desktop-{compatibility}-{distribution.classifier}.zip"
+    with tempfile.TemporaryDirectory(prefix="runtime-package-bootstrap-", dir=stage.parent) as temporary:
+        private = Path(temporary).resolve() / "private"
+        classpath = os.pathsep.join(map(str, (tooling_jar, *libraries)))
+        # Java argument files avoid Windows' command length limit without changing classpath order.
+        escaped = classpath.translate(str.maketrans({"\\": "\\\\", '"': '\\"',
+                                                    "\n": "\\n", "\r": "\\r", "\t": "\\t", "\f": "\\f"}))
+        classpath_file = private.parent / "classpath.args"
+        classpath_file.write_text('-classpath\n"' + escaped + '"\n', encoding="utf-8")
+        home, temp = private / "home", private / "tmp"
+        environment = dict(environ)
+        environment.update(HOME=str(home), GRADLE_USER_HOME=str(home), TMPDIR=str(temp), TMP=str(temp), TEMP=str(temp))
+        command = [str(java_executable), "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                   "-Dorg.gradle.native=false", "-Duser.timezone=UTC", "-Duser.home=" + str(home), "-Djava.io.tmpdir=" + str(temp),
+                   "@" + str(classpath_file), "RuntimePackageMain",
+                   str(private), str(original / "outputs/app-server" / distribution.asset),
+                   str(original / "outputs/supervisor" / distribution.supervisor_executable_name),
+                   str(app_license), str(app_notice), str(package), manifest.release_tag, compatibility,
+                   manifest.version, target, distribution.classifier, distribution.asset,
+                   distribution.archive_sha256, distribution.archive_entry, distribution.binary_sha256,
+                   distribution.executable_name, distribution.supervisor_executable_name]
+        completed = subprocess.run(command, cwd=root, env=environment, stdout=log,
+                                   stderr=subprocess.STDOUT, check=False)
+    if completed.returncode:
+        return {"command": command, "returnCode": completed.returncode}
+    import_paths = {}
+    if target == "mingwX64":
+        for role, argument in (("gnuImportLibraryOutput", "gnu_import_library"),
+                               ("msvcImportLibraryOutput", "msvc_import_library")):
+            if roles[role][0] != "output":
+                raise ValueError("Runtime import library must be an original binary output")
+            import_paths[argument] = original / "outputs/c-abi/lib" / Path(roles[role][1]).name
+    package_c_abi_sdk(CAbiPackageInput(
+        target=target, classifier=spec.classifier, library_version=compatibility,
+        producer_commit=properties["codexAgent.candidateCommit"], producer_tree=properties["codexAgent.candidateTree"],
+        reviewed_header=original / "outputs/c-abi/include/codex_agent.h", license=license_file, notice=notice,
+        library=original / "outputs/c-abi/lib" / Path(spec.library_path).name,
+        export_policy=original / "outputs/c-abi/export-policy" / export.name, **import_paths),
+        outputs / "c-abi" / c_abi_archive_file_name(compatibility, target))
+    for source_file, relative in ((header, "include/" + header.name),
+                                  (license_file, "legal/" + license_file.name),
+                                  (notice, "legal/" + notice.name),
+                                  (export, "export-policy/" + export.name)):
+        destination = outputs / "c-abi-reference" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(read_regular_file_bytes(source_file, reject_symlink_parents=True))
+    snapshot_regular_tree(original / "outputs/validation-runner", outputs / "validation-runner")
+    verify_output_manifest_identity(original, "runtime", component, "binary", component, previous)
+    write_output_manifest(stage, "runtime", component, "package", component, version,
+                          {kind: "outputs/" + kind for kind in
+                           ("app-server", "c-abi", "c-abi-reference", "validation-runner")})
+    return {"command": command, "returnCode": 0}
 
 
 if __name__ == "__main__":

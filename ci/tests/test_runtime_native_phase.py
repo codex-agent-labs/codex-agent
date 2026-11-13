@@ -314,3 +314,180 @@ class RuntimeNativeBinaryPlanTest(unittest.TestCase):
                 runtime_native_phase.binary_plan(plan, **arguments)
         finally:
             source.write_bytes(original)
+
+
+class RuntimeNativePackageTest(unittest.TestCase):
+    """Tiny imported B fixtures; only Java process boundary is mocked."""
+    def setUp(self):
+        import io
+        from products.c_abi import C_ABI_REPOSITORY_ROOT
+        self.temporary = tempfile.TemporaryDirectory(prefix="native-package-operation-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.repo = C_ABI_REPOSITORY_ROOT
+        self.version = (self.repo / "gradle/release/versions/runtime.txt").read_text().strip()
+        self.log = io.BytesIO()
+        self.java, self.jar, self.library = [self.root / name for name in ("java", "tooling.jar", "library.jar")]
+        for path in (self.java, self.jar, self.library):
+            path.write_bytes(b"mock subprocess path; not authenticated tooling")
+
+    def fixture(self, component):
+        from products.c_abi import TARGET_SPECS
+        from products.runtime_evidence import PRODUCT_RUNTIME_TARGETS, read_distribution_manifest
+        from products.receipt import write_output_manifest
+        target = next(key for key, value in PRODUCT_RUNTIME_TARGETS.items() if value == component)
+        distribution = next(item for item in read_distribution_manifest(
+            self.repo / runtime_native_phase._DISTRIBUTION_MANIFEST).distributions if item.target == target)
+        spec = TARGET_SPECS[target]
+        flags = load_runtime_binary_flags(self.repo / "codex-agent-runtime-desktop/native/c-api/binary-flags.json")[component]
+        roles = {name: (base, relative) for name, base, relative in flags.roles}
+        original = self.root / component / "original"
+        values = {
+            "app-server/" + distribution.asset: b"synthetic pinned archive: Java boundary mocked",
+            "supervisor/" + distribution.supervisor_executable_name: b"synthetic supervisor",
+            "c-abi/include/codex_agent.h": (self.repo / "codex-agent-runtime-desktop/native/c-api/include/codex_agent.h").read_bytes(),
+            "c-abi/export-policy/" + Path(roles["exportPolicy"][1]).name: (self.repo / roles["exportPolicy"][1]).read_bytes(),
+            "c-abi/lib/" + Path(spec.library_path).name: b"synthetic unvalidated binary; no product authority",
+            "validation-runner/nested/runner": b"original validation runner",
+        }
+        for name in ("gnuImportLibraryOutput", "msvcImportLibraryOutput"):
+            if name in roles:
+                values["c-abi/lib/" + Path(roles[name][1]).name] = name.encode()
+        for relative, raw in values.items():
+            path = original / "outputs" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        write_output_manifest(original, "runtime", component, "binary", component, self.version,
+                              {kind: "outputs/" + kind for kind in ("app-server", "supervisor", "c-abi", "validation-runner")})
+        plan = {"schemaVersion": 1, "product": "runtime", "component": component, "phase": "package",
+                "target": component, "buildKey": "sha256:" + "3" * 64, "inputs": {}}
+        props = {"codexAgent." + key: plan[key] for key in ("product", "component", "phase", "target")}
+        props.update({"codexAgent.candidateCommit": REVISION, "codexAgent.candidateTree": "2" * 40,
+                      "codexAgent.runtimeVersion": self.version, "codexAgent.runtimeBinaryVersion": self.version,
+                      "codexAgent.runtimeBinaryStage": str(original), "codexAgent.contractVersion": "0.8.0"})
+        return plan, props, original, distribution, spec, roles
+
+    def invoke(self, plan, props, output, child, **extra):
+        def git_bytes(root, revision, relative, **kwargs):
+            self.assertEqual(REVISION, revision)
+            return (root / relative).read_bytes()
+        with mock.patch("runtime_native_phase.git_regular_blob_bytes", side_effect=git_bytes), \
+                mock.patch("runtime_adapter_phase.git_regular_blob_bytes", side_effect=git_bytes), \
+                mock.patch("runtime_native_phase.subprocess.run", side_effect=child) as process:
+            result = runtime_native_phase.execute_package(plan, props, repository_root=self.repo, revision=REVISION,
+                stage_root=output, verified_contract_manifest={"contractVersion": "0.8.0", "components": ["common", plan["component"]]},
+                java_executable=self.java, tooling_jar=self.jar, libraries=extra.pop("libraries", (self.library,)),
+                environ={"PATH": "/nonexistent", "KEEP": "sanitized caller value"}, log=self.log, **extra)
+        return result, process
+
+    def test_five_native_targets_keep_fixed_java_arguments_and_exact_existing_cabi_writer(self):
+        import json
+        import os
+        from products.c_abi import CAbiPackageInput, c_abi_archive_file_name, package_c_abi_sdk
+        from products.inventory import regular_file_inventory
+        from products.receipt import verify_output_manifest_identity
+        for component in NATIVE_TARGETS:
+            with self.subTest(component=component):
+                plan, props, original, distribution, spec, roles = self.fixture(component)
+                before = regular_file_inventory(original)
+                stage = self.root / component / "package"
+                def child(command, **kwargs):
+                    self.assertEqual(1, command.count("-Duser.timezone=UTC"))
+                    index = command.index("RuntimePackageMain")
+                    args = command[index + 1:]
+                    self.assertEqual(17, len(args))
+                    self.assertEqual([str(original / "outputs/app-server" / distribution.asset),
+                                      str(original / "outputs/supervisor" / distribution.supervisor_executable_name)], args[1:3])
+                    self.assertEqual([str(self.repo / "legal/openai-codex/openai-codex-LICENSE.txt"),
+                                      str(self.repo / "legal/openai-codex/openai-codex-NOTICE.txt")], args[3:5])
+                    self.assertEqual([distribution.target, distribution.classifier, distribution.asset,
+                                      distribution.archive_sha256, distribution.archive_entry, distribution.binary_sha256,
+                                      distribution.executable_name, distribution.supervisor_executable_name], args[9:])
+                    self.assertTrue(command[index - 1].startswith("@"))
+                    classpath_file = Path(command[index - 1][1:])
+                    self.assertEqual(Path(args[0]).parent, classpath_file.parent)
+                    self.assertEqual('-classpath\n' + json.dumps(str(self.jar) + os.pathsep + str(self.library), ensure_ascii=False) + '\n',
+                                     classpath_file.read_text(encoding="utf-8"))
+                    self.assertEqual(str(Path(args[0]) / "home"), kwargs["env"]["HOME"])
+                    self.assertEqual(kwargs["env"]["HOME"], kwargs["env"]["GRADLE_USER_HOME"])
+                    self.assertEqual("/nonexistent", kwargs["env"]["PATH"])
+                    self.assertEqual(self.repo, kwargs["cwd"])
+                    self.assertFalse(Path(args[0]).exists())
+                    Path(args[5]).write_bytes(b"synthetic direct Java package")
+                    return subprocess.CompletedProcess(command, 0)
+                result, process = self.invoke(plan, props, stage, child)
+                self.assertEqual(0, result["returnCode"])
+                process.assert_called_once()
+                self.assertFalse(Path(result["command"][result["command"].index("RuntimePackageMain") + 1]).parent.exists())
+                manifest = verify_output_manifest_identity(stage, "runtime", component, "package", component, self.version)
+                self.assertEqual({"app-server", "c-abi", "c-abi-reference", "validation-runner"},
+                                 {row["kind"] for row in manifest["outputs"]})
+                imports = {argument: original / "outputs/c-abi/lib" / Path(roles[role][1]).name
+                           for role, argument in (("gnuImportLibraryOutput", "gnu_import_library"),
+                                                  ("msvcImportLibraryOutput", "msvc_import_library")) if role in roles}
+                expected = self.root / component / "expected-cabi.zip"
+                package_c_abi_sdk(CAbiPackageInput(distribution.target, spec.classifier, self.version,
+                    REVISION, "2" * 40, original / "outputs/c-abi/include/codex_agent.h", self.repo / "LICENSE",
+                    self.repo / "THIRD_PARTY_NOTICES.md", original / "outputs/c-abi/lib" / Path(spec.library_path).name,
+                    original / "outputs/c-abi/export-policy" / Path(roles["exportPolicy"][1]).name, **imports), expected)
+                self.assertEqual(expected.read_bytes(), (stage / "outputs/c-abi" / c_abi_archive_file_name(self.version, distribution.target)).read_bytes())
+                self.assertEqual((self.repo / "LICENSE").read_bytes(), (stage / "outputs/c-abi-reference/legal/LICENSE").read_bytes())
+                self.assertEqual(before, regular_file_inventory(original))
+
+    def test_classpath_argfile_preserves_escaping_order_and_bounds_windows_command(self):
+        import json
+        import os
+        plan, props, _, _, _, _ = self.fixture("linux-x64")
+        name = 'space #hash \'single\'.jar' if os.name == "nt" else 'space "quote" \\backslash #hash \'single\'\t\n\r\f.jar'
+        special = self.root / name
+        special.write_bytes(b"synthetic library")
+        libraries = [special]
+        for index in range(339):
+            path = self.root / (str(index).zfill(3) + "-" + "a" * 140 + ".jar")
+            path.write_bytes(b"synthetic library")
+            libraries.append(path)
+        self.assertGreater(len(os.pathsep.join(map(str, (self.jar, *libraries)))), 47_058)
+        def child(command, **kwargs):
+            self.assertEqual(1, command.count("-Duser.timezone=UTC"))
+            self.assertLess(len(subprocess.list2cmdline(command)), 32_767)
+            index = command.index("RuntimePackageMain")
+            self.assertTrue(command[index - 1].startswith("@"))
+            argument_file = Path(command[index - 1][1:])
+            self.assertEqual(Path(command[index + 1]).parent, argument_file.parent)
+            self.assertFalse(Path(command[index + 1]).exists())
+            expected = json.dumps(os.pathsep.join(map(str, (self.jar, *libraries))), ensure_ascii=False)
+            self.assertEqual(('-classpath\n' + expected + '\n').encode(), argument_file.read_bytes())
+            return subprocess.CompletedProcess(command, 19)
+        result, process = self.invoke(plan, props, self.root / "long-classpath", child, libraries=libraries)
+        process.assert_called_once()
+        self.assertEqual(19, result["returnCode"])
+        self.assertFalse(Path(result["command"][result["command"].index("RuntimePackageMain") - 1][1:]).exists())
+
+    def test_failed_java_keeps_original_exit_and_never_writes_manifest_or_cabi(self):
+        plan, props, original, _, _, _ = self.fixture("linux-x64")
+        from products.inventory import regular_file_inventory
+        before = regular_file_inventory(original)
+        stage = self.root / "failed-package"
+        result, _ = self.invoke(plan, props, stage, lambda command, **kw: subprocess.CompletedProcess(command, 19))
+        self.assertEqual(19, result["returnCode"])
+        self.assertTrue(result["command"][result["command"].index("RuntimePackageMain") - 1].startswith("@"))
+        self.assertFalse(Path(result["command"][result["command"].index("RuntimePackageMain") - 1][1:]).exists())
+        self.assertFalse((stage / "outputs/c-abi").exists())
+        self.assertFalse((stage / "output-manifest.json").exists())
+        self.assertEqual(before, regular_file_inventory(original))
+
+    def test_post_child_original_mutation_rejects_before_output_manifest(self):
+        plan, props, original, _, _, _ = self.fixture("macos-arm64")
+        argument_files = []
+        def child(command, **kwargs):
+            argument_files.append(Path(command[command.index("RuntimePackageMain") - 1][1:]))
+            self.assertTrue(argument_files[-1].is_file())
+            args = command[command.index("RuntimePackageMain") + 1:]
+            Path(args[5]).write_bytes(b"synthetic Java result")
+            (original / "outputs/validation-runner/nested/runner").write_bytes(b"changed")
+            return subprocess.CompletedProcess(command, 0)
+        with self.assertRaises(ValueError):
+            self.invoke(plan, props, self.root / "late", child)
+        self.assertEqual(1, len(argument_files))
+        self.assertFalse(argument_files[0].exists())
+        self.assertFalse((self.root / "late/output-manifest.json").exists())

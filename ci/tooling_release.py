@@ -51,7 +51,8 @@ RETAINED_UNSIGNED_TOOLING = {'artifactBytes': 7064336,
 def attest_tooling_ci(repository_root, plan_path, destination, *, trusted_source_sha,
                      trusted_workflow_sha, transport_producer, event_payload,
                      environment: Mapping[str, str], token=None, release_handoffs=(),
-                     trusted_workflow_path=None, trusted_job_name=None, original_tooling=None):
+                     trusted_workflow_path=None, trusted_job_name=None, original_tooling=None,
+                     purpose="full"):
     """Sign exact original tooling bytes, or forward their existing release envelope.
 
 release_handoffs contains complete tooling-evidence directories, not raw JARs
@@ -62,6 +63,11 @@ No executable or product bytes are built, executed or repacked here.
         trusted_source_sha=trusted_source_sha, trusted_workflow_sha=trusted_workflow_sha,
         transport_producer=transport_producer, event_payload=event_payload, environment=environment)
     repository_root, caller_producer, source_tree, expected_environment, reason = context
+    if purpose not in {"full", "runtime-package"}:
+        raise ValueError("Unsupported tooling purpose")
+    if purpose == "runtime-package" and (original_tooling is not None or
+            trusted_workflow_path is None or trusted_job_name is None):
+        raise ValueError("Runtime package tooling requires an exact original workflow/job; no SDK recovery locator")
     if original_tooling is not None and original_tooling != RETAINED_UNSIGNED_TOOLING:
         raise ValueError("Unsigned tooling recovery differs from the reviewed original locator")
     producer = caller_producer if original_tooling is None else original_tooling["producer"]
@@ -151,7 +157,8 @@ No executable or product bytes are built, executed or repacked here.
             artifacts = paginated_items(
                 f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
                 "artifacts", token)
-            selected = [item for item in artifacts if type(item) is dict and item.get("name") == f"codex-agent-ci-contracts-{producer['tree']}"]
+            unsigned_prefix = "codex-agent-ci-contracts-runtime-package" if purpose == "runtime-package" else "codex-agent-ci-contracts"
+            selected = [item for item in artifacts if type(item) is dict and item.get("name") == f"{unsigned_prefix}-{producer['tree']}"]
             if len(selected) != 1:
                 raise ValueError("Original tooling upload is missing or ambiguous")
             selected_id, selected_digest = selected[0].get("id"), selected[0].get("digest")
@@ -163,7 +170,8 @@ No executable or product bytes are built, executed or repacked here.
             raise ValueError("Tooling original plan differs from protected caller producer")
         inventories = {name: read_regular_file_bytes(plan_path.parent / "inventories/contracts" / name,
                         reject_symlink_parents=True) for name in INPUT_NAMES.values()}
-        name = f"codex-agent-ci-contracts-{producer['tree']}"
+        unsigned_prefix = "codex-agent-ci-contracts-runtime-package" if purpose == "runtime-package" else "codex-agent-ci-contracts"
+        name = f"{unsigned_prefix}-{producer['tree']}"
         artifact, raw = _download_contract_ci_upload(selected_id, selected_digest,
             name, producer, tooling_observed["run"], token)
         _require_artifact_job_window(tooling_observed, job, artifact)
@@ -187,10 +195,12 @@ No executable or product bytes are built, executed or repacked here.
         if any(receipt.get(field) != value for field, value in expected.items()):
             raise ValueError("Original tooling receipt differs from observed producer/upload")
         value = _value(original, signing, repository_root)
-        if original_tooling is not None:
-            # Source/embedded verifier compatibility must pass before signing an old build.
+        if original_tooling is not None or purpose == "runtime-package":
+            # Old SDK builds and every Runtime-purpose build need current source
+            # compatibility before reading the protected signing key.
             write_canonical_json(fresh / ATTESTATION, value)
-            _verify_tooling_policy(original / "lane" / JAR, fresh, repository_root, trusted_source_sha)
+            _verify_tooling_policy(original / "lane" / JAR, fresh, repository_root, trusted_source_sha,
+                **({"use": purpose} if purpose != "full" else {}))
         unchanged()
         retained = None
         for number, candidate in enumerate(release_handoffs):
@@ -247,6 +257,7 @@ def main(argv=None):
     parser.add_argument("--trusted-job-name")
     parser.add_argument("--release-handoff", type=Path, action="append", default=[])
     parser.add_argument("--original-tooling")
+    parser.add_argument("--purpose", choices=("full", "runtime-package"), default="full")
     arguments = parser.parse_args(argv)
     try:
         payload = load_json_bytes(read_regular_file_bytes(Path(os.environ["GITHUB_EVENT_PATH"]),
@@ -262,6 +273,7 @@ def main(argv=None):
             release_handoffs=arguments.release_handoff,
             trusted_workflow_path=arguments.trusted_workflow_path,
             trusted_job_name=arguments.trusted_job_name,
+            **({"purpose": arguments.purpose} if arguments.purpose != "full" else {}),
             original_tooling=None if arguments.original_tooling is None else load_json_bytes(arguments.original_tooling.encode("utf-8")))
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))

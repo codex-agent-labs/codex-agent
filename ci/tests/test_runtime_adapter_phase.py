@@ -206,5 +206,99 @@ class RuntimeAdapterPhaseTest(unittest.TestCase):
             properties(self.plan("node-js", "package"), predecessor=missing)
 
 
+class RuntimeAdapterPackageTest(unittest.TestCase):
+    def setUp(self):
+        from products.receipt import write_output_manifest
+        self.temporary = tempfile.TemporaryDirectory(prefix="adapter-package-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.repo = Path(__file__).resolve().parents[1]
+        self.revision = "1" * 40
+        self.write_manifest = write_output_manifest
+
+    def fixture(self, component):
+        original = self.root / component / "original"
+        kinds = ["adapter", "publication", "validation-runner"]
+        if component == "node-js":
+            kinds.append("binding-test-runner")
+        for kind in kinds:
+            path = original / "outputs" / kind / "nested" / "artifact"
+            path.parent.mkdir(parents=True)
+            path.write_bytes((component + kind).encode())
+        self.write_manifest(original, "runtime", component, "binary", component, "0.8.1",
+                            {kind: "outputs/" + kind for kind in kinds})
+        plan = {"product": "runtime", "component": component, "phase": "package", "target": component}
+        props = {"codexAgent." + key: value for key, value in plan.items()}
+        props.update({"codexAgent.candidateCommit": self.revision, "codexAgent.runtimeVersion": "0.8.9",
+                      "codexAgent.runtimeBinaryVersion": "0.8.1", "codexAgent.runtimeBinaryStage": str(original),
+                      "codexAgent.contractVersion": "0.8.0"})
+        return plan, props, original, kinds
+
+    def invoke(self, plan, props, stage, manifest=None):
+        from runtime_adapter_phase import execute_package
+        with mock.patch("runtime_adapter_phase.git_regular_blob_bytes", return_value=b"0.8.9\n"):
+            return execute_package(plan, props, repository_root=self.repo, revision=self.revision,
+                stage_root=stage, verified_contract_manifest=manifest or
+                {"contractVersion": "0.8.0", "components": ["common", plan["component"]]})
+
+    def test_all_three_packages_copy_exact_fixed_original_roots_without_child_process(self):
+        from products.inventory import regular_file_inventory
+        from products.receipt import verify_output_manifest_identity
+        for component in RUNTIME_ADAPTERS:
+            with self.subTest(component=component):
+                plan, props, original, kinds = self.fixture(component)
+                before = regular_file_inventory(original)
+                stage = self.root / component / "package"
+                with mock.patch("runtime_adapter_phase.subprocess.run", side_effect=AssertionError("no process")):
+                    self.assertEqual({"command": [], "returnCode": 0}, self.invoke(plan, props, stage))
+                manifest = verify_output_manifest_identity(stage, "runtime", component, "package", component, "0.8.9")
+                self.assertEqual(set(kinds), {row["kind"] for row in manifest["outputs"]})
+                self.assertEqual(before, regular_file_inventory(original))
+                for kind in kinds:
+                    self.assertEqual(regular_file_inventory(original / "outputs" / kind),
+                                     regular_file_inventory(stage / "outputs" / kind))
+                (stage / "outputs/adapter/nested/artifact").write_bytes(b"private output")
+                self.assertEqual(before, regular_file_inventory(original))
+
+    def test_contract_version_source_compatibility_and_original_integrity_fail_before_copy(self):
+        plan, props, original, _ = self.fixture("jvm")
+        cases = [({**plan, "phase": "binary"}, props, None),
+                 (plan, {**props, "codexAgent.candidateCommit": "2" * 40}, None),
+                 (plan, {**props, "codexAgent.runtimeVersion": "0.9.0"}, None),
+                 (plan, {**props, "codexAgent.runtimeBinaryVersion": "0.7.1"}, None),
+                 (plan, {**props, "codexAgent.runtimeBinaryVersion": "0.8.1+metadata"}, None),
+                 (plan, props, {"contractVersion": "0.7.0", "components": ["common", "jvm"]}),
+                 (plan, props, {"contractVersion": "0.8.0", "components": ["common"]})]
+        for index, (selected, values, contract) in enumerate(cases):
+            stage = self.root / f"rejected-{index}"
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                self.invoke(selected, values, stage, contract)
+            self.assertFalse(stage.exists())
+        (original / "outputs/adapter/nested/artifact").write_bytes(b"changed original")
+        with self.assertRaises(ValueError):
+            self.invoke(plan, props, self.root / "tampered")
+        self.assertFalse((self.root / "tampered").exists())
+
+    def test_symbolic_input_and_existing_output_reject_and_late_original_mutation_is_detected(self):
+        from products.inventory import snapshot_regular_tree
+        plan, props, original, _ = self.fixture("jvm")
+        alias = self.root / "alias"
+        alias.symlink_to(original, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.invoke(plan, {**props, "codexAgent.runtimeBinaryStage": str(alias)}, self.root / "alias-out")
+        existing = self.root / "existing"
+        existing.mkdir()
+        (existing / "sentinel").write_bytes(b"preserve")
+        with self.assertRaises(FileExistsError):
+            self.invoke(plan, props, existing)
+        self.assertEqual(b"preserve", (existing / "sentinel").read_bytes())
+        def mutate(source, destination):
+            snapshot_regular_tree(source, destination)
+            (original / "outputs/adapter/nested/artifact").write_bytes(b"late mutation")
+        with mock.patch("runtime_adapter_phase.snapshot_regular_tree", side_effect=mutate), self.assertRaises(ValueError):
+            self.invoke(plan, props, self.root / "late-out")
+        self.assertFalse((self.root / "late-out/output-manifest.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
