@@ -266,7 +266,26 @@ case "$lane" in
     [ "${#tasks[@]}" -eq 0 ] || ./gradlew "${tasks[@]}" "${args[@]}"
     ;;
   consumer-common) ./gradlew verifyStagedKmpConsumerCommon "${args[@]}" ;;
-  consumer-android) ./gradlew verifyStagedKmpConsumerAndroid "${args[@]}" ;;
+  consumer-android)
+    case "${CODEX_AGENT_ANDROID_INSTALLED_CONSUMER:-false}" in
+      false) ./gradlew verifyStagedKmpConsumerAndroid "${args[@]}"; exit ;;
+      true) ;;
+      *) echo 'Unsupported installed Android consumer selection' >&2; exit 1 ;;
+    esac
+    completion=(--completed-frozen-policy "${CODEX_AGENT_COMPLETED_REUSE_POLICY:?approved native policy is required}")
+    if [ -n "${SDK_STATE_SDK_WAVE:-}" ]; then
+      completion+=(--sdk-state-wave "$SDK_STATE_SDK_WAVE")
+    fi
+    python3 -B -m ci.sdk_completion capture \
+      --plan "$PWD/build/ci/impact-plan.json" \
+      --destination "$PWD/build/ci/android-installed-consumer" \
+      --artifact-id "${SDK_STATE_ARTIFACT_ID:?completed SDK state is required}" \
+      --artifact-sha256 "${SDK_STATE_ARTIFACT_SHA256:?completed SDK digest is required}" \
+      --state-wave "${SDK_STATE_WAVE:?completed state wave is required}" \
+      --trusted-workflow-sha "${TRUSTED_WORKFLOW_SHA:?current publisher is required}" \
+      --repository-root "$PWD" --github-output "${GITHUB_OUTPUT:?GitHub output is required}" \
+      --android-installed-consumer "${completion[@]}"
+    ;;
   consumer-desktop) ./gradlew verifyStagedKmpConsumerDesktop "${args[@]}" ;;
   consumer-ios-device) ./gradlew verifyStagedKmpConsumerIosDevice "${args[@]}" ;;
   consumer-ios-simulator) ./gradlew verifyStagedKmpConsumerIosSimulator "${args[@]}" ;;

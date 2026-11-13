@@ -1,0 +1,18 @@
+// Fixed private selector; current source and native input versions must agree.
+def expectedSdk = __CODEX_SDK_VERSION__
+def expectedRuntime = __CODEX_RUNTIME_VERSION__
+def expectedContract = __CODEX_CONTRACT_VERSION__
+gradle.projectsEvaluated {
+    def inventory = gradle.rootProject.tasks.named(__CODEX_INVENTORY__).get()
+    if (inventory.inputs.properties.sdkVersion != expectedSdk ||
+        inventory.inputs.properties.runtimeVersion != expectedRuntime ||
+        inventory.inputs.properties.contractVersion != expectedContract) {
+        throw new GradleException("Installed consumer inventory differs from authenticated product versions")
+    }
+    gradle.rootProject.tasks.named(__CODEX_TASK__).configure { consumer ->
+        if (consumer.sdkVersion.get() != expectedSdk || consumer.runtimeVersion.get() != expectedRuntime) {
+            throw new GradleException("Installed consumer task differs from authenticated product versions")
+        }
+        consumer.templateDirectory.set(new File(__CODEX_TEMPLATE__))
+    }
+}
