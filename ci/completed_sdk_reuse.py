@@ -336,12 +336,14 @@ def _spec(spec):
     collected = collected_validation(spec)
     context = source_predecessor_context(spec)
     reuse = (collected or context) and "reuseCompletion" in spec
+    checkpoint = context and "reuseCheckpoint" in spec
     require_exact_keys(spec, {"schemaVersion", "parent", "parentProofSha256", "source", "stateRoot",
         "controls", "completedPhases", "originals", "contractControls", "contractFiles"}
         | ({"sourcePlan"} if collected else set())
         | ({"receiptObjects"} if collected and "receiptObjects" in spec else set())
         | ({"sourcePredecessors"} if context else set())
-        | ({"reuseCompletion", "reuseCompletionProofSha256"} if reuse else set()), "Incremental SDK spec")
+        | ({"reuseCompletion", "reuseCompletionProofSha256"} if reuse else set())
+        | ({"reuseCheckpoint"} if checkpoint else set()), "Incremental SDK spec")
     if type(spec["schemaVersion"]) is not int or spec["schemaVersion"] not in (2, 3, 4):
         raise ValueError("Unsupported incremental SDK spec")
     if context:
@@ -398,6 +400,18 @@ def _spec(spec):
         producer = spec["source"]["producer"]
         if (earlier["runId"], earlier["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
             raise ValueError("Reused native completion must precede its collected source")
+    if checkpoint:
+        if reuse or spec["source"]["jobName"] != "product-validation / sdk-collect-10":
+            raise ValueError("Completed checkpoint requires the distinct final collector recipe")
+        selection = require_exact_keys(spec["reuseCheckpoint"], {"ownerPolicySha256", "checkpoint"},
+                                       "Completed checkpoint selector")
+        require_sha256(selection["ownerPolicySha256"], "Completed checkpoint owner digest")
+        output = require_exact_keys(selection["checkpoint"], {"kind", "source", "native", "subjectSha256"},
+                                    "Completed checkpoint envelope selector")
+        if output["kind"] != "sdk-checkpoint" or output["source"] != spec["source"]:
+            raise ValueError("Completed checkpoint changes its exact final collector source")
+        native._native_pin_arguments(output["native"])
+        require_sha256(output["subjectSha256"], "Completed checkpoint native subject")
     native._commit(spec["source"]["inventoryCommit"])
     for row in originals.values():
         require_exact_keys(row, set(IDENTITY) | {"artifactId", "artifactSha256", "jobId", "workflowSha"},
@@ -451,7 +465,7 @@ def validate_extension(spec, proof, arguments, *, root, revision, frozen, token,
     import reuse_qualification as native
     originals = _spec(spec)
     if _checkpoint is not None:
-        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer, _HistoricalCheckpointIssuer):
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointConsumer, _HistoricalCheckpointIssuer, _CompletedCheckpointIssuer):
             raise ValueError("Checkpoint semantics require a private authenticated consumer witness")
         _checkpoint.match(spec, proof, arguments, consumer_revision, token)
     if source_predecessor_context(spec):
@@ -548,7 +562,7 @@ def _qualified_members(spec, prior, phases, receipts, *, root=None, _checkpoint=
         raise ValueError("Object reuse requires an earlier incremental native completion")
     old, proof = extension["spec"], extension["proof"]
     if _checkpoint is not None:
-        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointIssuer):
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointIssuer, _CompletedCheckpointIssuer):
             raise ValueError("Checkpoint inheritance requires a private authenticated predecessor")
         _checkpoint.inherit(spec, prior)
     if (old["schemaVersion"] not in (3, 4) or old["parent"] != spec["parent"]
@@ -598,7 +612,7 @@ def _inherited_receipt_objects(spec, prior, *, _checkpoint=None):
         raise ValueError("Receipt inheritance requires an earlier incremental completion")
     old, proof = extension["spec"], extension["proof"]
     if _checkpoint is not None:
-        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointIssuer):
+        if type(_checkpoint) not in (_CheckpointConsumer, _HistoricalCheckpointIssuer, _CompletedCheckpointIssuer):
             raise ValueError("Receipt inheritance requires an authenticated checkpoint")
         _checkpoint.inherit(spec, prior)
     if (old["schemaVersion"] not in (3, 4) or old["parent"] != spec["parent"]
@@ -2640,6 +2654,100 @@ def _prepare_main():
         for name, value in (("recipe.json", spec), ("controls.json", controls), ("prepared.json", report)):
             write_canonical_json(args.output / name, value)
     print(json.dumps(report, sort_keys=True))
+
+
+class _CompletedCheckpointIssuer(_CheckpointConsumer):
+    """One complete checkpoint, bound to a distinct ordinary proof issuer."""
+    __slots__ = ("_flat_spec",)
+
+    def __init__(self, *args, spec, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._flat_spec = canonical_json_bytes(spec)
+
+    def inherit(self, spec, prior):
+        super().inherit(spec, prior)
+        if canonical_json_bytes(spec) != self._flat_spec:
+            raise ValueError("Completed checkpoint changes its fixed flat recipe")
+
+
+def issue_completed_checkpoint(spec, work, *, root, revision, frozen, token, history, current_policy):
+    """Reissue a complete signed checkpoint through the ordinary SDK proof role.
+
+    The checkpoint envelope is authenticated intact. Its inner proof supplies
+    qualified predicates only inside this issuer's live private witness.
+    """
+    import product_reuse as products
+    import reuse_qualification as native
+    from datetime import datetime
+    spec, history, current_policy = (load_canonical_json_bytes(canonical_json_bytes(value))
+                                    for value in (spec, history, current_policy))
+    _spec(spec)
+    history = validate_checkpoint_history(history)
+    native.validate_completed_reuse_policy(current_policy)
+    if (history["consumerCommit"] != current_policy["consumerCommit"]
+            or history["currentOwner"]["bootstrap"] != current_policy.get("sdkCompletion")):
+        raise ValueError("Completed checkpoint changes its independently approved current policy")
+    if not native._compatible_verifier(current_policy["consumerCommit"]):
+        raise ValueError("Completed checkpoint differs from its approved consumer source")
+    current = native._observe_current_completed_issuer(root, revision, token)
+    selection = spec["reuseCheckpoint"]
+    policies = {row["sha256"]: row["policy"] for row in history["historicalPolicies"]}
+    owner = history["currentOwner"]
+    policies[sha256_bytes(canonical_json_bytes(owner))] = owner
+    owner = policies.get(selection["ownerPolicySha256"])
+    if owner is None:
+        raise ValueError("Completed checkpoint owner is not independently approved")
+    output = selection["checkpoint"]
+    selected = checkpoint_selection(owner, output)
+    if selected is None:
+        raise ValueError("Completed checkpoint requires a genuine checkpoint envelope")
+    arguments, identity = selected
+    if ((arguments["run_id"], arguments["run_attempt"]) >=
+            (current["producer"]["runId"], current["producer"]["runAttempt"])):
+        raise ValueError("Completed checkpoint must precede its actual ordinary issuer")
+    with products._fresh_ci_observation(output["source"]["producer"], token) as observation:
+        custody = _fetch_checkpoint_envelope(owner, output["source"], arguments, identity,
+            Path(work) / "checkpoint", token, observation, _history=history)
+        if custody["subjectSha256"] != output["subjectSha256"]:
+            raise ValueError("Completed checkpoint changes its exact native subject")
+        envelope = custody["envelope"]
+        expected = {key: value for key, value in envelope["recipe"].items()
+                    if key not in ("reuseCompletion", "reuseCompletionProofSha256")}
+        expected["reuseCheckpoint"] = selection
+        if spec != expected:
+            raise ValueError("Completed checkpoint differs from its complete original recipe")
+        issuer = custody["transport"]["checkpointIssuerJob"]
+        if (current["job"]["id"] in (issuer["id"], output["source"]["jobId"])
+                or datetime.fromisoformat(current["job"]["started_at"].replace("Z", "+00:00")) <
+                   datetime.fromisoformat(issuer["completed_at"].replace("Z", "+00:00"))):
+            raise ValueError("Completed checkpoint must finish before the ordinary issuer")
+        parent_frozen = native._sdk_parent_frozen_spec(root, owner["bootstrap"], frozen, token)
+        witness = _CompletedCheckpointIssuer(
+            {"kind": "completed-sdk-issuer", "producer": current["producer"]}, custody,
+            observation, token, (), _CHECKPOINT_CONSUMER, bootstrap=current_policy["sdkCompletion"],
+            next_source=spec["source"], spec=spec)
+        try:
+            prior = witness.validate(root=root, revision=None, frozen=parent_frozen,
+                                     consumer_revision=revision, token=token)
+            sdk = {key: value for key, value in prior.items() if key != "extension"}
+            controls = envelope["completion"]["controls"]
+            request, phases, receipts = validate_controls(spec, controls, _base(parent_frozen, sdk))
+            available = _records(request["availableObjects"], "Complete checkpoint objects")
+            if set(available) != set(PHASE_INSTANCE_IDS):
+                raise ValueError("Completed checkpoint must cover every current phase")
+            qualified = _qualified_members(spec, prior, phases, receipts, root=root, _checkpoint=witness)
+            if len(qualified) != len(phases):
+                raise ValueError("Completed checkpoint cannot inherit a partial or changed phase")
+            inputs = _CheckpointIssueInputs(spec, revision, controls, envelope["completion"]["source"],
+                parent_frozen, sdk, prior, observation, token, _CHECKPOINT_INPUTS, previous=witness)
+            report = issue_extension(spec, work, root=root, revision=revision, frozen=frozen,
+                                     token=token, _checkpoint=inputs)
+            inputs.check(spec, revision, token)
+        finally:
+            witness._active = False
+            witness._originals.clear()
+    return {**report, "inheritedCheckpointSubjectSha256": output["subjectSha256"],
+            "inheritedCheckpointObjects": len(qualified), "currentCompletedIssuerJobId": current["job"]["id"]}
 
 
 if __name__ == "__main__":

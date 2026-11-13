@@ -17,7 +17,7 @@ if __package__:
 
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-    require_array, require_exact_keys, require_sha256,
+    require_array, require_exact_keys, require_integer, require_sha256,
     require_sorted_unique_records, sha256_bytes, validate_file_record,
 )
 from products.receipt import validate_phase_receipt
@@ -2112,6 +2112,51 @@ def sdk_checkpoint_job_output(work, artifact_id, artifact_sha256, github_output_
     return output
 
 
+def _observe_current_completed_issuer(root, revision, token):
+    """Observe the fixed portable proof role, never masquerading as product CI."""
+    import os
+    import product_reuse as products
+    from products.inventory import run_git
+    from products.restore import bounded_verify
+    if (os.environ.get("QUALIFICATION_ISSUER_REPOSITORY") != REPOSITORY
+            or os.environ.get("QUALIFICATION_ISSUER_PATH") != ISSUER_WORKFLOW
+            or os.environ.get("QUALIFICATION_ISSUER_SHA") != revision
+            or os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
+            or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
+            or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
+            or os.environ.get("GITHUB_SHA") != revision
+            or os.environ.get("GITHUB_JOB") != "completed-sdk"
+            or run_git(root, "rev-parse", "HEAD").strip() != revision):
+        raise ValueError("Completed checkpoint requires the actual ordinary native issuer")
+    run_id = require_integer(int(os.environ["GITHUB_RUN_ID"]), "Completed issuer run", 1)
+    attempt = require_integer(int(os.environ["GITHUB_RUN_ATTEMPT"]), "Completed issuer attempt", 1)
+    tree = _commit(run_git(root, "rev-parse", revision + "^{tree}").strip())
+    url = f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}"
+    source, run, jobs = bounded_verify(lambda read: read(), (
+        lambda: products.api_json(f"https://api.github.com/repos/{REPOSITORY}/git/commits/{revision}", token),
+        lambda: products.api_json(url, token),
+        lambda: products.paginated_items(url + "/jobs", "jobs", token)))
+    if (run.get("id") != run_id or run.get("run_attempt") != attempt
+            or run.get("path") != ".github/workflows/portable-reuse-proof.yml"
+            or run.get("event") != "pull_request" or not products.run_matches_pr(run, 31)
+            or (run.get("status"), run.get("conclusion")) != ("in_progress", None)
+            or any(type(run.get(field)) is not dict
+                   or run[field].get("full_name") != REPOSITORY or run[field].get("fork") is not False
+                   for field in ("repository", "head_repository"))):
+        raise ValueError("Ordinary completed issuer differs from its current protected run")
+    products._require_ci_workflow_reference(run, f"{REPOSITORY}/{ISSUER_WORKFLOW}@{revision}", revision)
+    products._validate_tested_commit(run, source, expected_commit=revision, expected_tree=tree, pull_request=31)
+    selected = products._matching_ci_jobs(jobs, "completion / completed-sdk")
+    if (len(selected) != 1 or selected[0].get("run_id") != run_id
+            or selected[0].get("head_sha") != run["head_sha"]
+            or (selected[0].get("status"), selected[0].get("conclusion")) != ("in_progress", None)):
+        raise ValueError("Ordinary completed issuer job is missing, ambiguous or not current")
+    require_integer(selected[0].get("id"), "Current completed issuer job", 1)
+    producer = {"repository": REPOSITORY, "workflowPath": run["path"], "event": "pull_request",
+        "pullRequest": 31, "commit": revision, "tree": tree, "runId": run_id, "runAttempt": attempt}
+    return {"producer": producer, "job": selected[0]}
+
+
 def issue_completed_sdk(work, token):
     """Authenticate one successful completed resume once; never replay or rebuild it."""
     import hashlib
@@ -2137,6 +2182,24 @@ def issue_completed_sdk(work, token):
     work = Path(work).resolve()
     work.mkdir(exist_ok=False)
     if spec.get("schemaVersion") in (2, 3, 4):
+        if "reuseCheckpoint" in spec:
+            from completed_sdk_reuse import issue_completed_checkpoint, validate_checkpoint_history
+            current_path = Path(os.environ["CODEX_AGENT_COMPLETED_REUSE_POLICY"])
+            current_bytes = read_regular_file_bytes(current_path, max_bytes=LIMIT, reject_symlink_parents=True)
+            current_policy = load_canonical_json_bytes(current_bytes)
+            validate_completed_reuse_policy(current_policy)
+            reference = current_policy["sdkCheckpointHistory"]
+            history_path = Path(reference["path"])
+            history_bytes = read_regular_file_bytes(history_path, max_bytes=LIMIT, reject_symlink_parents=True)
+            if sha256_bytes(history_bytes) != reference["sha256"]:
+                raise ValueError("Completed checkpoint history differs from its protected policy")
+            history = validate_checkpoint_history(load_canonical_json_bytes(history_bytes))
+            report = issue_completed_checkpoint(spec, work, root=root, revision=commit, frozen=frozen,
+                token=token, history=history, current_policy=current_policy)
+            if (read_regular_file_bytes(current_path, max_bytes=LIMIT, reject_symlink_parents=True) != current_bytes
+                    or read_regular_file_bytes(history_path, max_bytes=LIMIT, reject_symlink_parents=True) != history_bytes):
+                raise ValueError("Completed checkpoint policy changed during issuance")
+            return report
         from completed_sdk_reuse import issue_extension
         return issue_extension(spec, work, root=root, revision=commit, frozen=frozen, token=token)
     artifact, observed, locator = _observe_completed_sdk_resume(spec, token)

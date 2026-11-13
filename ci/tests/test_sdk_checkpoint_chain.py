@@ -281,3 +281,204 @@ class SdkCheckpointChainTest(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class CompletedCheckpointFlatIssuerTest(unittest.TestCase):
+    """Existing tiny native/HTTP fixtures; the new role never reads an SDK body."""
+
+    def setUp(self):
+        from ci.tests.test_sdk_checkpoint_consumer import HistoricalCheckpointConsumerTest
+        self.h = HistoricalCheckpointConsumerTest(); self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        h, f = self.h, self.h.f
+        self.f = f
+        f.run.update(status='completed', conclusion='success')
+        f.source['jobName'] = 'product-validation / sdk-collect-10'
+        f.policy['collectors'] = sorted(set(f.policy['collectors']) | {f.source['jobName']})
+        f.collector['name'] = f.source['jobName']
+        f.identity = completed.checkpoint_archive_identity(f.policy, f.source,
+            **{k: v for k, v in native._native_pin_arguments(f.selector).items()
+               if k in ('signer_commit', 'source_commit', 'run_id', 'run_attempt')})
+        f.issuer['name'] = f.identity['jobName']
+        f.artifacts[f.source['artifactId']]['name'] = (
+            f"codex-agent-sdk-wave-10-state-{f.producer['tree']}-attempt-{f.producer['runAttempt']}")
+        f.artifacts[992]['name'] = completed.collector_control_artifact_name(f.source)
+        f.envelope['sourceCheckpoint']['source'] = deepcopy(f.source)
+        f.envelope['ownerPolicySha256'] = sha256_bytes(canonical_json_bytes(f.policy))
+        f.envelope['completion']['specSha256'] = sha256_bytes(canonical_json_bytes(f.spec))
+        f.envelope['completion']['source'] = products._runtime_original_locator(
+            f.artifacts[f.source['artifactId']], f.source['workflowSha'],
+            completed.PhaseInstanceId('sdk', 'javascript', 'metadata', 'node'), f.collector)
+        f.upload()
+        h.history['historicalPolicies'] = [
+            {'sha256': f.envelope['ownerPolicySha256'], 'policy': deepcopy(f.policy)}]
+        self.selection = {'ownerPolicySha256': f.envelope['ownerPolicySha256'],
+            'checkpoint': {'kind': 'sdk-checkpoint', 'source': deepcopy(f.source),
+                'native': deepcopy(f.selector), 'subjectSha256': sha256_bytes(f.subject)}}
+        self.spec = {k: deepcopy(v) for k, v in f.spec.items()
+                     if k not in ('reuseCompletion', 'reuseCompletionProofSha256')}
+        self.spec['reuseCheckpoint'] = deepcopy(self.selection)
+        h.producer['workflowPath'] = '.github/workflows/portable-reuse-proof.yml'
+        h.current_run['path'] = h.producer['workflowPath']
+        h.current_run['referenced_workflows'] = [{
+            'path': native.REPOSITORY + '/' + native.ISSUER_WORKFLOW + '@' + h.producer['commit'],
+            'sha': h.producer['commit']}]
+        h.current_job['name'] = 'completion / completed-sdk'
+        self.env = {'QUALIFICATION_ISSUER_SHA': h.producer['commit'],
+            'QUALIFICATION_ISSUER_REPOSITORY': native.REPOSITORY,
+            'QUALIFICATION_ISSUER_PATH': native.ISSUER_WORKFLOW,
+            'GITHUB_REPOSITORY': native.REPOSITORY, 'GITHUB_EVENT_NAME': 'pull_request',
+            'GITHUB_REF': 'refs/pull/31/merge', 'GITHUB_SHA': h.producer['commit'],
+            'GITHUB_RUN_ID': str(h.producer['runId']), 'GITHUB_RUN_ATTEMPT': str(h.producer['runAttempt']),
+            'GITHUB_JOB': 'completed-sdk'}
+        self.number = 0
+        self.claims = completed._records(
+            f.envelope['completion']['controls']['runtime-state/reuse-wave-request.json']['availableObjects'], 'fixture')
+        self.witnesses = []
+        original_api = f.api
+        def api(url, token):
+            for job in (h.fixture.issued.job, f.collector):
+                if url == f'https://api.github.com/repos/{native.REPOSITORY}/actions/jobs/{job["id"]}':
+                    f.urls.append(url)
+                    return json.dumps({**deepcopy(job), 'run_attempt': f.producer['runAttempt']}).encode()
+            return original_api(url, token)
+        f.api = api
+
+    @contextmanager
+    def boundaries(self, *, current_error=False, compatible=True):
+        import os
+        h, f, c = self.h, self.f, self.h.fixture
+        with h.boundaries(), ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, self.env, clear=True))
+            stack.enter_context(patch('products.inventory.run_git', side_effect=lambda root, *args: h.producer['commit'] if args[-1] == 'HEAD' else h.producer['tree']))
+            stack.enter_context(patch.object(native, '_compatible_verifier', return_value=compatible))
+            stack.enter_context(patch.object(completed, 'PHASE_INSTANCE_IDS', tuple(self.claims)))
+            stack.enter_context(patch.object(completed, '_inventory_revision', return_value=f.producer['commit']))
+            self.current_keys = stack.enter_context(patch.object(completed, 'validate_current',
+                side_effect=ValueError('current owning inputs changed') if current_error else None))
+            stack.enter_context(patch.object(completed, '_base', return_value=c.issued.fixture.base))
+            stack.enter_context(patch.object(native, '_sdk_parent_frozen_spec', return_value=c.issued.fixture.base))
+            parent = deepcopy(c.issued.fixture.parent_sdk)
+            parent['proof'] = deepcopy(f.envelope['completion']['parentProof'])
+            stack.enter_context(patch.object(native, '_validate_completed_sdk', return_value=parent))
+            stack.enter_context(patch.object(native, '_fetch_completed_sdk', side_effect=AssertionError('old native refetch')))
+            stack.enter_context(patch.object(completed, '_contract_files'))
+            original = completed.observe_original
+            def observe(pin, receipt, token, **kw):
+                self.assertIn('native_locator', kw)
+                self.assertNotIn('_fresh_observation', kw)
+                if receipt['component'] == 'csharp':
+                    return {}, [], c.issued.old_locator
+                return original(pin, receipt, token, **kw)
+            stack.enter_context(patch.object(completed, 'observe_original', side_effect=observe))
+            original_source = completed.observe_source
+            def source(pin, token, **kw):
+                if not kw.get('contract'):
+                    return original_source(pin, token, **kw)
+                self.assertTrue(kw['contract'])
+                return {'name': 'contract'}, [{'run': {}}], f.envelope['completion']['contractSource']
+            stack.enter_context(patch.object(completed, 'observe_source', side_effect=source))
+            def download(*args, destination, **kw):
+                with zipfile.ZipFile(destination, 'w') as archive:
+                    for row in f.spec['contractFiles']:
+                        archive.writestr(row['relativePath'], b'{}')
+            stack.enter_context(patch.object(products, '_download_contract_ci_upload', side_effect=download))
+            self.objects = stack.enter_context(patch('runtime_reference_archive.open_reference_archive',
+                side_effect=AssertionError('qualified object body opened')))
+            self.object_verifier = stack.enter_context(patch('products.restore.verify_object',
+                side_effect=AssertionError('qualified object rehashed')))
+            if hasattr(completed, '_CompletedCheckpointIssuer'):
+                initializer = completed._CompletedCheckpointIssuer.__init__
+                def capture(witness, *args, **kwargs):
+                    initializer(witness, *args, **kwargs); self.witnesses.append(witness)
+                stack.enter_context(patch.object(completed._CompletedCheckpointIssuer, '__init__', capture))
+            yield
+
+    def issue(self, *, current_error=False):
+        self.number += 1; work = self.f.root / ('flat-' + str(self.number)); work.mkdir()
+        with self.boundaries(current_error=current_error):
+            completed._spec(self.spec)
+            report = completed.issue_completed_checkpoint(self.spec, work, root=self.f.root,
+                revision=self.h.producer['commit'], frozen=self.h.fixture.issued.fixture.base,
+                token='synthetic', history=self.h.history, current_policy=self.h.policy)
+        return report, work
+
+    def test_complete_checkpoint_emits_normal_proof_without_old_bodies(self):
+        original = canonical_json_bytes(self.f.envelope)
+        report, work = self.issue()
+        proof = json.loads((work / 'completion.json').read_bytes())
+        self.assertEqual('completed-sdk-reuse', proof['kind'])
+        self.assertEqual(self.h.producer['commit'], proof['issuerCommit'])
+        self.assertEqual(sha256_bytes(canonical_json_bytes(self.spec)), proof['specSha256'])
+        self.assertEqual(self.f.envelope['completion']['members'], proof['members'])
+        self.assertEqual(self.f.envelope['completion']['originals'], proof['originals'])
+        self.assertEqual(0, report['verifiedObjectBytes'])
+        self.assertEqual(0, report['originalMemberRangeBytes'])
+        self.assertEqual(len(self.spec['completedPhases']), report['nativePinnedOriginalObservations'])
+        self.objects.assert_not_called(); self.object_verifier.assert_not_called()
+        self.assertEqual(original, canonical_json_bytes(self.f.envelope))
+        self.assertEqual([990], self.f.downloads)
+        self.assertEqual(1, len(self.f.verified))
+        self.assertEqual(self.h.producer['commit'], self.current_keys.call_args_list[0].kwargs['revision'])
+        with self.assertRaisesRegex(ValueError, 'closed'):
+            self.witnesses[0].check()
+        self.assertEqual('.github/workflows/ci.yml', self.f.producer['workflowPath'])
+        self.assertEqual('.github/workflows/portable-reuse-proof.yml', self.h.producer['workflowPath'])
+        # The ordinary signed-proof consumer needs no checkpoint witness or
+        # archive. The fixture supplies its existing parent-native trust seam.
+        old_downloads, old_signatures = list(self.f.downloads), len(self.f.verified)
+        later_consumer = 'f' * 40
+        with self.boundaries(), patch.object(native, '_fetch_qualification_archive',
+                side_effect=AssertionError('ordinary receipt flow refetched a checkpoint')):
+            admitted = completed.validate_extension(self.spec, proof,
+                {'signer_commit': self.h.producer['commit']}, root=self.f.root,
+                revision=None, consumer_revision=later_consumer,
+                frozen=self.h.fixture.issued.fixture.base, token='synthetic')
+            self.assertEqual({'spec': self.spec, 'proof': proof}, admitted['extension'])
+            self.assertEqual(later_consumer, self.current_keys.call_args.kwargs['revision'])
+            self.objects.assert_not_called(); self.object_verifier.assert_not_called()
+        self.assertEqual(old_downloads, self.f.downloads)
+        self.assertEqual(old_signatures, len(self.f.verified))
+        with self.assertRaisesRegex(ValueError, 'closed'):
+            self.witnesses[0].check()
+
+    def test_wrong_current_role_owner_subject_or_signature_never_inherits(self):
+        import os
+        original = deepcopy((self.env, self.h.history, self.spec, self.h.current_job, self.h.current_run))
+        for fault in ('env-role', 'official-role', 'workflow', 'owner', 'source', 'subject', 'signature', 'chronology'):
+            with self.subTest(fault=fault):
+                self.env, self.h.history, self.spec, self.h.current_job, self.h.current_run = deepcopy(original)
+                if fault == 'env-role': self.env['GITHUB_JOB'] = 'completed-sdk-checkpoint'
+                elif fault == 'official-role': self.h.current_job['name'] = 'product-validation / plan'
+                elif fault == 'workflow': self.h.current_run['path'] = '.github/workflows/ci.yml'
+                elif fault == 'owner': self.h.history['historicalPolicies'] = []
+                elif fault == 'source': self.spec['reuseCheckpoint']['checkpoint']['source']['producer']['commit'] = 'a' * 40
+                elif fault == 'subject': self.spec['reuseCheckpoint']['checkpoint']['subjectSha256'] = 'sha256:' + '1' * 64
+                elif fault == 'chronology': self.h.current_job['started_at'] = '2026-10-24T10:00:00Z'
+                verifier = patch.object(self.f, 'verify', side_effect=ValueError('native signature'))
+                with verifier if fault == 'signature' else ExitStack():
+                    with self.assertRaises(ValueError):
+                        self.issue()
+                self.assertFalse((self.f.root / ('flat-' + str(self.number)) / 'completion.json').exists())
+
+    def test_changed_tuple_incomplete_or_current_inputs_fail_closed(self):
+        old = deepcopy(self.spec)
+        for fault in ('tuple', 'incomplete', 'current'):
+            with self.subTest(fault=fault):
+                self.spec = deepcopy(old)
+                if fault == 'tuple': self.spec['completedPhases'][0]['objectSha256'] = 'sha256:' + '2' * 64
+                elif fault == 'incomplete': self.claims[completed.PhaseInstanceId('sdk', 'sdk-ios', 'metadata', 'ios')] = {}
+                with self.assertRaises(ValueError):
+                    self.issue(current_error=fault == 'current')
+                self.assertFalse((self.f.root / ('flat-' + str(self.number)) / 'completion.json').exists())
+                self.claims.pop(completed.PhaseInstanceId('sdk', 'sdk-ios', 'metadata', 'ios'), None)
+                for witness in self.witnesses:
+                    with self.assertRaisesRegex(ValueError, 'closed'):
+                        witness.check()
+
+    def test_approved_current_source_mismatch_precedes_outer_acquisition(self):
+        with self.boundaries(compatible=False), patch.object(completed, '_fetch_checkpoint_envelope') as fetch:
+            with self.assertRaisesRegex(ValueError, 'approved consumer source'):
+                completed.issue_completed_checkpoint(self.spec, self.f.root / 'incompatible', root=self.f.root,
+                    revision=self.h.producer['commit'], frozen=self.h.fixture.issued.fixture.base,
+                    token='synthetic', history=self.h.history, current_policy=self.h.policy)
+            fetch.assert_not_called()
