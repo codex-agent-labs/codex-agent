@@ -23,6 +23,10 @@ inputs:
     default: none
   force-build:
     default: "false"
+  tooling-purpose:
+    description: Fixed signed-tooling role for a tooling-only contracts invocation
+    required: false
+    default: full
   contract-tooling-only:
     description: Build only release tooling when authenticated Contract phases are already available.
     default: "false"
@@ -72,9 +76,15 @@ runs:
         REUSE_DISABLED: ${{ inputs.reuse-disabled }}
         REUSE_ONLY: ${{ inputs.reuse-only }}
         TOOLING_ONLY: ${{ inputs.contract-tooling-only }}
+        TOOLING_PURPOSE: ${{ inputs.tooling-purpose }}
       shell: bash
       run: |
         printf 'PYTHONDONTWRITEBYTECODE=1\n' >> "$GITHUB_ENV"
+        case "$TOOLING_PURPOSE" in
+          full) ;;
+          runtime-package) test "$TOOLING_ONLY" = true; test "$LANE" = contracts ;;
+          *) echo "Unsupported tooling purpose" >&2; exit 1 ;;
+        esac
         if [ "$TOOLING_ONLY" = true ]; then
           test "$LANE" = contracts
           test "$REUSE_DISABLED" = true
@@ -415,8 +425,17 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.contract-tooling-only }}" = true ]; then
-          ./gradlew --init-script "$PWD/.github/actions/run-ci-lane/release_tooling.init.gradle" :build-logic:releaseToolingJar --info --stacktrace
-          python3 -B -m unittest ci.tests.test_tooling_apple_classpath
+          case "${{ inputs.tooling-purpose }}" in
+            full)
+              ./gradlew --init-script "$PWD/.github/actions/run-ci-lane/release_tooling.init.gradle" :build-logic:releaseToolingJar --info --stacktrace
+              python3 -B -m unittest ci.tests.test_tooling_apple_classpath
+              ;;
+            runtime-package)
+              ./gradlew --dependency-verification=strict --no-daemon -p runtime/build-logic --init-script "$PWD/.github/actions/run-ci-lane/runtime_package_tooling.init.gradle" runtimePackageToolingJar --info --stacktrace
+              python3 -B -m unittest ci.tests.test_runtime_package_tooling
+              ;;
+            *) exit 1 ;;
+          esac
         else
           ci/run-lane.sh "${{ inputs.lane }}"
         fi
@@ -719,8 +738,10 @@ runs:
         fi
         producer=()
         [ -z "$PRODUCER_IDENTITIES" ] || producer=(--producer-identities "$PRODUCER_IDENTITIES")
+        suffix=''
+        [ "${{ inputs.tooling-purpose }}" != runtime-package ] || suffix=-runtime-package
         python3 ci/stage.py --plan build/ci/impact-plan.json --lane "$LANE" \
-          --output build/ci/lane --artifact-name "codex-agent-ci-$LANE-$TREE" \
+          --output build/ci/lane --artifact-name "codex-agent-ci-$LANE$suffix-$TREE" \
           "${restored[@]}" "${forced[@]}" "${producer[@]}"
     - id: identity
       if: >-
@@ -740,7 +761,9 @@ runs:
         if [ "$REUSED" = true ]; then
           printf 'artifact_name=%s\npath=build/ci/reuse/full\n' "$REUSED_NAME" >> "$GITHUB_OUTPUT"
         else
-          printf 'artifact_name=codex-agent-ci-%s-%s\npath=build/ci/lane\n' "$LANE" "$TREE" >> "$GITHUB_OUTPUT"
+          suffix=''
+          [ "${{ inputs.tooling-purpose }}" != runtime-package ] || suffix=-runtime-package
+          printf 'artifact_name=codex-agent-ci-%s%s-%s\npath=build/ci/lane\n' "$LANE" "$suffix" "$TREE" >> "$GITHUB_OUTPUT"
         fi
     - id: upload_lane
       if: >-
@@ -753,7 +776,7 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         if-no-files-found: error
-        overwrite: true
+        overwrite: ${{ inputs.tooling-purpose != 'runtime-package' }}
         name: ${{ steps.identity.outputs.artifact_name }}
         path: ${{ steps.identity.outputs.path }}
         compression-level: 0

@@ -22,12 +22,13 @@ from products.inventory import (
     require_array, require_integer, require_sha256, run_git, verified_zip_contents, write_canonical_json,
 )
 from products.receipt import validate_producer
-from products.tooling import _COMPILER_INPUTS
+from products.tooling import _COMPILER_INPUTS, _RUNTIME_PACKAGE_COMPILER_INPUTS
 from runtime_reference_transport import measured
 
 
 _API = "https://api.github.com/repos/codex-agent-labs/codex-agent/actions"
 _NAME = re.compile(r"codex-agent-release-tooling-([0-9a-f]{40})-attempt-([1-9][0-9]*)")
+_RUNTIME_NAME = re.compile(r"codex-agent-runtime-package-tooling-([0-9a-f]{40})-attempt-([1-9][0-9]*)")
 _PRIOR_TOOLING_WORKFLOW_SHAS = (
     "00feb2e6ffc0e633042ac4cebfb6495718fb82f7",
     "cc4f623bf4d1e244a8469eea92c4baf9c00a5434",
@@ -127,14 +128,18 @@ def candidate_run_ids(artifacts):
 
 
 def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
-                        trusted_workflow_sha, policy_revision, java_executable, token):
+                        trusted_workflow_sha, policy_revision, java_executable, token, tooling_use="full"):
     """Candidate hints cannot bypass capture's original job/signature/policy gate."""
+    if tooling_use not in {"full", "runtime-package"}:
+        raise ValueError("Unsupported tooling discovery purpose")
+    compiler_inputs = _RUNTIME_PACKAGE_COMPILER_INPUTS if tooling_use == "runtime-package" else _COMPILER_INPUTS
+    artifact_name = _RUNTIME_NAME if tooling_use == "runtime-package" else _NAME
     runs = tuple(dict.fromkeys(require_integer(value, "Candidate tooling run ID", 1)
                                for value in candidate_run_ids))
     repository = Path(repository_root).resolve(strict=True)
     if run_git(repository, "rev-parse", f"{policy_revision}^{{commit}}").strip() != policy_revision:
         raise ValueError("Tooling discovery requires an exact caller policy commit")
-    compiler = git_inventory(repository, policy_revision, _COMPILER_INPUTS)
+    compiler = git_inventory(repository, policy_revision, compiler_inputs)
     if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
         raise ValueError("Tooling discovery requires a pinned workflow SHA")
     java = Path(java_executable)
@@ -159,7 +164,7 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
         for run_id in runs:
             artifacts = paginated_items(f"{_API}/runs/{run_id}/artifacts", "artifacts", token)
             for artifact in artifacts:
-                match = _NAME.fullmatch(artifact.get("name", "")) if type(artifact) is dict and type(artifact.get("name")) is str else None
+                match = artifact_name.fullmatch(artifact.get("name", "")) if type(artifact) is dict and type(artifact.get("name")) is str else None
                 if match is None or artifact.get("expired") is not False:
                     continue
                 identifier_hint = artifact.get("id")
@@ -169,7 +174,7 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                     # A local tree hint can reject obsolete compiler inputs, never admit tooling.
                     # Missing historical Git keeps the existing full authentication path.
                     try:
-                        prior_compiler = git_inventory(repository, match[1], _COMPILER_INPUTS)
+                        prior_compiler = git_inventory(repository, match[1], compiler_inputs)
                     except subprocess.CalledProcessError:
                         prior_compiler = None
                     if prior_compiler is not None and prior_compiler != compiler:
@@ -202,6 +207,7 @@ def discover_tooling_ci(destination, repository_root, *, candidate_run_ids,
                         transport_archive=archive,
                         artifact_id=identifier, artifact_sha256=digest, transport_producer=producer,
                         policy_revision=policy_revision, java_executable=java, token=token,
+                        **({"tooling_use": tooling_use} if tooling_use != "full" else {}),
                         **_original_tooling_workflow(producer, trusted_workflow_sha, token,
                                                      repository_root=repository))
                 except (ValueError, OSError) as error:
@@ -234,11 +240,13 @@ def main(argv=None):
     for name in ("trusted-workflow-sha", "policy-revision"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--candidate-run-id", type=int, action="append", default=[])
+    parser.add_argument("--purpose", choices=("full", "runtime-package"), default="full")
     args = parser.parse_args(argv)
     try:
         discover_tooling_ci(args.destination, args.repository_root, candidate_run_ids=args.candidate_run_id,
             trusted_workflow_sha=args.trusted_workflow_sha, policy_revision=args.policy_revision,
-            java_executable=args.java_executable, token=os.environ["GITHUB_TOKEN"])
+            java_executable=args.java_executable, token=os.environ["GITHUB_TOKEN"],
+            **({"tooling_use": args.purpose} if args.purpose != "full" else {}))
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     return 0

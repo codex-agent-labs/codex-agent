@@ -45,6 +45,68 @@ _INSPECTOR_INPUTS = (
     "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/Program.cs",
     "codex-agent-bindings/csharp/tools/VerifySdkRuntimeRoot/VerifySdkRuntimeRoot.csproj",
 )
+_RUNTIME_PACKAGE_PROFILE = ".github/actions/run-ci-lane/runtime-package-tooling-libraries.json"
+_RUNTIME_PACKAGE_COMPILER_INPUTS = (
+    *(f"runtime/build-logic/src/main/kotlin/{name}.kt" for name in (
+        "DesktopRuntimePackageTask", "DesktopRuntimeZipModes", "RuntimeReleaseIo", "RuntimeDownload")),
+    "runtime/build-logic/build.gradle.kts", "runtime/build-logic/settings.gradle.kts",
+    "runtime/build-logic/gradle.lockfile", "runtime/build-logic/settings-gradle.lockfile",
+    "runtime/build-logic/gradle/verification-metadata.xml", "gradle/libs.versions.toml",
+    "gradle/wrapper/gradle-wrapper.properties",
+    ".github/actions/run-ci-lane/runtime_package_tooling.init.gradle",
+    ".github/actions/run-ci-lane/runtime-package-bootstrap/RuntimePackageMain.java",
+    _RUNTIME_PACKAGE_PROFILE,
+)
+_RUNTIME_PACKAGE_CLASSES = frozenset(name + ".class" for name in (
+    "RuntimePackageMain", "RuntimePackageMain$Worker", "RuntimePackageMain$1",
+    "PackageDesktopCodexRuntimeTask", "PackageDesktopCodexRuntimeTask$Companion",
+    "PackageDesktopCodexRuntimeTask$packageRuntime$4",
+    "PackageDesktopCodexRuntimeTask$packageRuntime$entries$1",
+    "PackageDesktopCodexRuntimeTask$writePackage$$inlined$sortedBy$1",
+    "DesktopRuntimeZipModesKt", "RuntimeReleaseIoKt", "RuntimeDownloadKt",
+))
+
+
+def _verify_runtime_package_policy(jar, repository, revision, original):
+    expected = git_inventory(repository, revision, _RUNTIME_PACKAGE_COMPILER_INPUTS)
+    rows = [line.split("\t", 3) for line in expected.splitlines()]
+    if (any(len(row) != 4 or row[0] not in {"100644", "100755"} or row[1] != "blob" for row in rows)
+            or {row[3] for row in rows} != set(_RUNTIME_PACKAGE_COMPILER_INPUTS)
+            or expected != git_inventory(repository, original, _RUNTIME_PACKAGE_COMPILER_INPUTS)):
+        raise ValueError("Runtime package compiler/build inputs differ from applicable policy")
+    # The signed original build binds this exact profile; the owning executor
+    # separately checks every installed library before using its private scope.
+    from .gradle_bootstrap import runtime_package_library_profile
+    profile = git_regular_blob_bytes(repository, revision, _RUNTIME_PACKAGE_PROFILE, max_bytes=128 * 1024)
+    bundled = {item["resourcePath"]: item for item in
+               runtime_package_library_profile(repository, revision)["bundledLibraries"]}
+    names = set()
+    allowed = _RUNTIME_PACKAGE_CLASSES | {
+        "META-INF/MANIFEST.MF", "META-INF/runtime-package-tooling.kotlin_module",
+        "runtime-package-tooling-libraries.json",
+    } | bundled.keys()
+    with zipfile.ZipFile(io.BytesIO(read_regular_file_bytes(jar, max_bytes=16 * 1024 * 1024))) as archive:
+        entries = archive.infolist()
+        if len(entries) > 64 or sum(entry.file_size for entry in entries) > 16 * 1024 * 1024:
+            raise ValueError("Runtime package tooling JAR is oversized")
+        for entry in entries:
+            name = require_relative_path(entry.filename.rstrip("/"), "Runtime package JAR path")
+            if name in names or stat.S_IFMT(entry.external_attr >> 16) not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                raise ValueError("Runtime package tooling has duplicate or nonregular entries")
+            names.add(name)
+            if entry.is_dir():
+                if name not in {"META-INF", "dependencies"}:
+                    raise ValueError("Runtime package tooling has an undeclared directory")
+            elif name not in allowed:
+                raise ValueError("Runtime package tooling has an undeclared executable/resource")
+        if names - {"META-INF", "dependencies"} != allowed:
+            raise ValueError("Runtime package tooling class/resource closure is incomplete")
+        if archive.read("runtime-package-tooling-libraries.json") != profile:
+            raise ValueError("Runtime package tooling dependency profile differs from Git")
+        for name, item in bundled.items():
+            entry = archive.getinfo(name)
+            if entry.file_size != item["bytes"] or sha256_bytes(archive.read(entry)) != "sha256:" + item["sha256"]:
+                raise ValueError("Runtime package tooling bundled dependency differs from Git")
 
 
 def _json(path):
@@ -168,6 +230,11 @@ def _verify_tooling_policy(jar: Path, captured: Path, repository: Path, revision
         original = _json(captured / "original/tooling-build-receipt.json")["producer"]["commit"]
     else:
         original = _json(captured / "original/lane/lane-receipt.json")["validationCommit"]
+    if use == "runtime-package":
+        if value["schemaVersion"] != 1:
+            raise ValueError("Runtime package tooling requires an original hosted compiler receipt")
+        _verify_runtime_package_policy(jar, repository, revision, original)
+        return
     entries = dict(tree_entries(repository, revision))
     inspector_required = _INSPECTOR_INPUTS[0] in entries
     if inspector_required:
@@ -275,8 +342,10 @@ def verified_tooling_capture(evidence: Path, repository: Path, public_key: Path,
     from .sdk_apple_content import _snapshot_apple_tree
     snapshot_private_tree = _snapshot_apple_tree if sys.platform == "darwin" else snapshot_regular_tree
 
-    if use not in {"full", "javascript-validation"} or (use != "full" and policy_revision is None):
+    if use not in {"full", "javascript-validation", "runtime-package"} or (use != "full" and policy_revision is None):
         raise ValueError("Tooling consumer scope requires an explicit supported Git policy")
+    if use == "runtime-package" and required_trust_domain != "release":
+        raise ValueError("Runtime package tooling requires release trust")
     evidence, repository, public_key = Path(evidence), Path(repository), Path(public_key)
     with verification_session(), tempfile.TemporaryDirectory(prefix="verified-tooling-") as temporary:
         before = regular_file_inventory(evidence, allow_empty=True)

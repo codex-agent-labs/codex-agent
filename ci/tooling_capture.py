@@ -56,6 +56,10 @@ def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sh
     Original signatures/receipts are preserved; current retrieval is separate.
     """
     repository = Path(repository_root).resolve(strict=True)
+    if tooling_use not in {"full", "javascript-validation", "runtime-package"}:
+        raise ValueError("Unsupported tooling purpose")
+    if tooling_use == "runtime-package" and (trusted_workflow_path is None or trusted_job_name is None):
+        raise ValueError("Runtime package tooling requires an exact original workflow/job")
     if run_git(repository, "rev-parse", f"{policy_revision}^{{commit}}").strip() != policy_revision:
         raise ValueError("Tooling capture requires an exact caller policy commit")
     java = Path(java_executable)
@@ -88,7 +92,8 @@ def capture_tooling_ci(destination, repository_root, *, artifact_id, artifact_sh
                            }}})
         observed = _observe_ci_producer_jobs({"tooling": transport_producer},
             jobs_by_phase={"tooling": job}, token=token, **workflow_policy)
-        name = (f"codex-agent-release-tooling-{transport_producer['tree']}"
+        prefix = "codex-agent-runtime-package-tooling" if tooling_use == "runtime-package" else "codex-agent-release-tooling"
+        name = (f"{prefix}-{transport_producer['tree']}"
                 f"-attempt-{transport_producer['runAttempt']}")
         artifact, raw = _download_contract_ci_upload(artifact_id, artifact_sha256, name,
             transport_producer, observed[0]["run"], token,
@@ -144,6 +149,7 @@ def main(argv=None):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--trusted-workflow-path")
     parser.add_argument("--trusted-job-name")
+    parser.add_argument("--purpose", choices=("full", "runtime-package"), default="full")
     args = parser.parse_args(argv)
     try:
         producer = load_canonical_json_bytes(read_regular_file_bytes(args.transport_producer,
@@ -153,7 +159,8 @@ def main(argv=None):
             trusted_workflow_sha=args.trusted_workflow_sha, policy_revision=args.policy_revision,
             java_executable=args.java_executable, token=os.environ["GITHUB_TOKEN"],
             trusted_workflow_path=args.trusted_workflow_path,
-            trusted_job_name=args.trusted_job_name)
+            trusted_job_name=args.trusted_job_name,
+            **({"tooling_use": args.purpose} if args.purpose != "full" else {}))
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     return 0

@@ -6,6 +6,10 @@ on:
       planOutputs:
         required: true
         type: string
+      toolingPurpose:
+        required: false
+        default: full
+        type: string
       trustedWorkflowSha:
         required: true
         type: string
@@ -82,6 +86,7 @@ jobs:
           lane: contracts
           force-build: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}
           contract-tooling-only: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' && fromJSON(inputs.planOutputs).contract_next_phase != 'binary' }}
+          tooling-purpose: ${{ inputs.toolingPurpose }}
           reuse-disabled: ${{ fromJSON(inputs.planOutputs).tooling_miss == 'true' }}
           plan-artifact: ${{ fromJSON(inputs.planOutputs).plan_artifact }}
           validation-commit: ${{ fromJSON(inputs.planOutputs).validation_commit }}
@@ -164,10 +169,16 @@ jobs:
           VALIDATION_TREE: ${{ fromJSON(inputs.planOutputs).validation_tree }}
           GITHUB_TOKEN: ${{ github.token }}
           CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+          TOOLING_PURPOSE: ${{ inputs.toolingPurpose }}
           ORIGINAL_TOOLING: ${{ fromJSON(inputs.planOutputs).tooling_unsigned_recovery }}
         run: |
           set -euo pipefail
           flags=()
+          case "$TOOLING_PURPOSE" in
+            full) ;;
+            runtime-package) flags+=(--purpose runtime-package) ;;
+            *) exit 1 ;;
+          esac
           [ -z "$ORIGINAL_TOOLING" ] || flags+=(--original-tooling "$ORIGINAL_TOOLING")
           python3 -B trusted-source/ci/tooling_release.py "${flags[@]}" \
             --repository-root "$GITHUB_WORKSPACE/trusted-source" \
@@ -195,7 +206,7 @@ jobs:
           if-no-files-found: error
           overwrite: false
           include-hidden-files: true
-          name: codex-agent-release-tooling-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
+          name: ${{ inputs.toolingPurpose == 'runtime-package' && 'codex-agent-runtime-package-tooling' || 'codex-agent-release-tooling' }}-${{ fromJSON(inputs.planOutputs).validation_tree }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tooling-release-evidence
           compression-level: 0
           retention-days: 90

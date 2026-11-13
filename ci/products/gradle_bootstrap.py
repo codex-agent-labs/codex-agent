@@ -4,17 +4,195 @@ This checks Gradle's installed-cache fast path, not distribution authenticity or
 network isolation. Toolchain admission must independently authenticate tool bytes.
 """
 
+from contextlib import contextmanager
 import hashlib
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tempfile
 import time
 import xml.etree.ElementTree as ET
+import zipfile
 
 from .inventory import git_regular_blob_bytes, read_regular_file_bytes, require_regular_directory
 from .toolchain import _properties
 from .restore import _VERIFICATION_SESSION, _stage_fingerprint
 from .inventory import _is_windows, canonical_json_bytes, regular_file_inventory, write_canonical_json
+from .inventory import (
+    _open_regular_file, _stat_identity, load_canonical_json_bytes, require_exact_keys,
+    require_integer, require_relative_path, require_sha256, require_sorted_unique_records, require_string,
+)
+from .restore import verification_session
+
+
+def runtime_package_library_profile(repository: Path, policy_revision: str):
+    """Read the fixed source-bound profile; this is data, not an admission verdict."""
+    if type(policy_revision) is not str or re.fullmatch(r"[0-9a-f]{40}", policy_revision) is None:
+        raise ValueError("Runtime package libraries require an exact Git policy")
+    raw = git_regular_blob_bytes(repository, policy_revision,
+        ".github/actions/run-ci-lane/runtime-package-tooling-libraries.json", max_bytes=256 * 1024)
+    profile = require_exact_keys(load_canonical_json_bytes(raw),
+        {"schemaVersion", "gradleVersion", "distribution", "libraries", "excludedCompilerJars",
+         "bundledLibraries", "excludedLibraries"},
+        "Runtime package library profile")
+    version = profile["gradleVersion"]
+    if type(profile["schemaVersion"]) is not int or profile["schemaVersion"] != 1 or \
+            type(version) is not str or re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", version) is None:
+        raise ValueError("Unsupported Runtime package library profile")
+    distribution = require_exact_keys(profile["distribution"], {"url", "bytes", "sha256"}, "Gradle distribution")
+    require_integer(distribution["bytes"], "Gradle distribution bytes", 1)
+    require_sha256("sha256:" + require_string(distribution["sha256"], "Gradle distribution SHA"), "Gradle distribution SHA")
+    wrapper = _properties(git_regular_blob_bytes(repository, policy_revision,
+        "gradle/wrapper/gradle-wrapper.properties", max_bytes=4096), "Original Gradle wrapper properties")
+    if distribution["url"] != f"https://services.gradle.org/distributions/gradle-{version}-bin.zip" or \
+            wrapper.get("distributionUrl", "").replace("\\:", ":") != distribution["url"] or \
+            wrapper.get("distributionSha256Sum") != distribution["sha256"]:
+        raise ValueError("Runtime package libraries differ from the pinned Gradle distribution")
+    rows = require_sorted_unique_records(profile["libraries"], "Runtime package libraries")
+    if not 1 <= len(rows) <= 512:
+        raise ValueError("Runtime package library count is outside its bound")
+    compiler = re.compile(r"lib/kotlin-(?:compiler|scripting-compiler|scripting-compiler-impl)-embeddable-[0-9.]+\.jar")
+    excluded = profile["excludedCompilerJars"]
+    if type(excluded) is not list or len(excluded) != 3 or any(type(p) is not str or compiler.fullmatch(p) is None for p in excluded) or \
+            excluded != sorted(set(excluded)):
+        raise ValueError("Runtime package compiler exclusions are invalid")
+    serialization = re.compile(r"lib/kotlinx-serialization-(?:core|json)-jvm-[0-9.]+\.jar")
+    excluded = profile["excludedLibraries"]
+    if type(excluded) is not list or len(excluded) != 2 or any(type(p) is not str or serialization.fullmatch(p) is None for p in excluded) or \
+            excluded != sorted(set(excluded)):
+        raise ValueError("Runtime package replaced library exclusions are invalid")
+    for row in rows:
+        require_exact_keys(row, {"relativePath", "bytes", "sha256"}, "Runtime package library")
+        relative = require_relative_path(row["relativePath"], "Runtime package library path")
+        if re.fullmatch(r"lib/(?:plugins/)?[A-Za-z0-9_.+-]+\.jar", relative) is None or \
+                Path(relative).name.startswith(("kotlin-compiler-", "kotlin-scripting-compiler-", "kotlinx-serialization-core-jvm-", "kotlinx-serialization-json-jvm-")):
+            raise ValueError("Runtime package classpath contains an unsupported or compiler path")
+        if require_integer(row["bytes"], "Runtime package library bytes", 1) > 128 * 1024 * 1024:
+            raise ValueError("Runtime package library exceeds its size bound")
+        require_sha256("sha256:" + require_string(row["sha256"], "Runtime package library SHA"), "Runtime package library SHA")
+    bundles = require_sorted_unique_records(profile["bundledLibraries"], "Runtime package bundled libraries", path_field="resourcePath")
+    expected = {f"dependencies/kotlinx-serialization-{name}-jvm-1.9.0.jar":
+                f"org.jetbrains.kotlinx:kotlinx-serialization-{name}-jvm:1.9.0" for name in ("core", "json")}
+    if {row["resourcePath"] for row in bundles} != set(expected):
+        raise ValueError("Runtime package requires its exact two original serialization libraries")
+    for row in bundles:
+        require_exact_keys(row, {"moduleId", "resourcePath", "bytes", "sha256"}, "Runtime package bundled library")
+        if row["moduleId"] != expected[row["resourcePath"]] or \
+                require_integer(row["bytes"], "Runtime package bundled library bytes", 1) > 4 * 1024 * 1024:
+            raise ValueError("Runtime package bundled library identity is invalid")
+        require_sha256("sha256:" + require_string(row["sha256"], "Runtime package bundled library SHA"), "Runtime package bundled library SHA")
+    return profile
+
+
+@contextmanager
+def verified_runtime_package_libraries(repository: Path, policy_revision: str,
+                                       installation: Path, runtime_tooling_jar: Path):
+    """Borrow libraries inside the caller's authenticated Runtime tooling scope.
+
+    The caller owns current-source/tooling authorization. The wrapper cache and
+    its .ok marker are locators only. Only the two fixed nested dependencies are
+    materialized; all distribution libraries remain in their original locations.
+    """
+    profile = runtime_package_library_profile(repository, policy_revision)
+    version = profile["gradleVersion"]
+    rows = profile["libraries"]
+    installation = Path(installation)
+    require_regular_directory(installation, "Runtime package Gradle installation")
+    if not installation.is_absolute() or installation.resolve(strict=True) != installation or installation.name != f"gradle-{version}":
+        raise ValueError("Runtime package Gradle installation is not the exact normalized root")
+    paths = tuple(installation / row["relativePath"] for row in rows)
+
+    def inspect(known, *, unchanged=False, verify_bytes=False):
+        identities = []
+        for index, (path, row) in enumerate(zip(paths, rows, strict=True)):
+            descriptor, metadata = _open_regular_file(path, "Runtime package library", reject_symlink_parents=True)
+            try:
+                before = _stat_identity(metadata)
+                prior = known[index] if known is not None else None
+                if metadata.st_size != row["bytes"] or unchanged and before != prior:
+                    raise ValueError("Runtime package library changed during use")
+                if verify_bytes or before != prior:
+                    with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                        actual = hashlib.file_digest(stream, "sha256").hexdigest()
+                    if actual != row["sha256"]:
+                        raise ValueError("Runtime package library bytes differ from Git policy")
+                if before != _stat_identity(os.fstat(descriptor)):
+                    raise ValueError("Runtime package library changed while reading")
+                reopened, after = _open_regular_file(path, "Runtime package library", reject_symlink_parents=True)
+                try:
+                    if before != _stat_identity(after):
+                        raise ValueError("Runtime package library path changed while reading")
+                finally:
+                    os.close(reopened)
+                identities.append(before)
+            finally:
+                os.close(descriptor)
+        return tuple(identities)
+
+    with verification_session() as session, tempfile.TemporaryDirectory(prefix="runtime-package-libraries-") as temporary:
+        key = (str(installation), canonical_json_bytes(profile))
+        with session["lock"]:
+            known = session.setdefault("runtimePackageLibraries", {}).get(key) if not _is_windows() else None
+        checked = inspect(known)
+        with session["lock"]:
+            if not _is_windows() and len(session["runtimePackageLibraries"]) < 8:
+                session["runtimePackageLibraries"][key] = checked
+        jar = Path(runtime_tooling_jar)
+        descriptor, metadata = _open_regular_file(jar, "Authenticated Runtime tooling JAR", reject_symlink_parents=True)
+        jar_identity = _stat_identity(metadata)
+        staged = []
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as stream, zipfile.ZipFile(stream) as contents:
+                for row in profile["bundledLibraries"]:
+                    members = [entry for entry in contents.infolist() if entry.filename == row["resourcePath"]]
+                    if len(members) != 1:
+                        raise ValueError("Runtime tooling lacks its exact bundled library")
+                    member = members[0]
+                    if member.file_size != row["bytes"] or member.flag_bits & 1 or \
+                            stat.S_IFMT(member.external_attr >> 16) not in (0, stat.S_IFREG):
+                        raise ValueError("Runtime bundled library member is unsafe")
+                    target = Path(temporary).resolve() / Path(row["resourcePath"]).name
+                    digest = hashlib.sha256()
+                    count = 0
+                    with contents.open(member) as source, target.open("xb") as output:
+                        while block := source.read(1024 * 1024):
+                            count += len(block)
+                            if count > row["bytes"]:
+                                raise ValueError("Runtime bundled library exceeds its exact size")
+                            digest.update(block)
+                            output.write(block)
+                    if count != row["bytes"] or digest.hexdigest() != row["sha256"]:
+                        raise ValueError("Runtime bundled library differs from Git policy")
+                    staged.append((target, _stat_identity(target.stat()), row["sha256"]))
+
+            def unchanged_tooling():
+                if _stat_identity(os.fstat(descriptor)) != jar_identity:
+                    raise ValueError("Authenticated Runtime tooling JAR changed during use")
+                for path, expected, digest in [(jar, jar_identity, None), *staged]:
+                    current, metadata = _open_regular_file(path, "Runtime library owner", reject_symlink_parents=True)
+                    try:
+                        if _stat_identity(metadata) != expected:
+                            raise ValueError("Runtime library owner changed during use")
+                        if digest is not None and _is_windows():
+                            with os.fdopen(current, "rb", closefd=False) as source:
+                                if hashlib.file_digest(source, "sha256").hexdigest() != digest:
+                                    raise ValueError("Runtime bundled library changed during use")
+                        if _stat_identity(os.fstat(current)) != expected:
+                            raise ValueError("Runtime library owner changed while reading")
+                    finally:
+                        os.close(current)
+
+            unchanged_tooling()
+            inspect(checked, unchanged=True)
+            try:
+                yield tuple(path for path, _, _ in staged) + paths
+            finally:
+                unchanged_tooling()
+                inspect(checked, unchanged=True, verify_bytes=_is_windows())
+        finally:
+            os.close(descriptor)
 
 
 def require_preprovisioned_gradle(properties_bytes: bytes, environment) -> Path:

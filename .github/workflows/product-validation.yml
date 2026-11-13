@@ -7,6 +7,10 @@ on:
         description: PR-only toolkit provision/reuse; does not authorize products or full acceptance
         type: boolean
         default: false
+      toolingPurpose:
+        description: Fixed signed-tooling role; Runtime bootstrap never replaces SDK tooling
+        type: string
+        default: full
       reuseCompletedParity:
         description: Reuse the protected original parity report only for a complete native SDK state
         type: boolean
@@ -364,6 +368,7 @@ jobs:
       contract_reconciliation_required: 'false'
       native_contract_complete: 'false'
       contract_matrix: ${{ steps.tooling.outputs.contract_matrix }}
+      tooling_purpose: ${{ inputs.toolingPurpose }}
       tooling_required: ${{ steps.tooling.outputs.tooling_required }}
       tooling_miss: ${{ steps.tooling.outputs.tooling_miss }}
       tooling_unsigned_recovery: ${{ steps.tooling.outputs.tooling_unsigned_recovery }}
@@ -427,6 +432,7 @@ jobs:
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
           POLICY_REVISION: ${{ steps.impact.outputs.validation_commit }}
           REVIEWED_SOURCE_SHA: ${{ steps.publication.outputs.source-sha }}
+          TOOLING_PURPOSE: ${{ inputs.toolingPurpose }}
         run: |
           python3 -B - <<'PYTHON'
           import os, sys, tempfile
@@ -439,7 +445,11 @@ jobs:
           from tooling_release import RETAINED_UNSIGNED_TOOLING
           from tooling_capture import _ensure_original_source
           from products.inventory import canonical_json_bytes, git_inventory, load_json_bytes, run_git
-          from products.tooling import _COMPILER_INPUTS, _INSPECTOR_INPUTS
+          from products.tooling import _COMPILER_INPUTS, _INSPECTOR_INPUTS, _RUNTIME_PACKAGE_COMPILER_INPUTS
+          purpose = os.environ['TOOLING_PURPOSE']
+          if purpose not in {'full', 'runtime-package'}:
+              raise ValueError('Tooling-only purpose is unsupported')
+          compiler_inputs = _RUNTIME_PACKAGE_COMPILER_INPUTS if purpose == 'runtime-package' else _COMPILER_INPUTS
           repository = Path.cwd().resolve(strict=True)
           java = (Path(os.environ['JAVA_HOME_17_X64']) / 'bin/java').resolve(strict=True)
           with tempfile.TemporaryDirectory(prefix='tooling-only-', dir=os.environ['RUNNER_TEMP']) as temporary:
@@ -447,10 +457,11 @@ jobs:
               # Current/previous attempts and subsequent control-only commits remain
               # eligible; every selected upload still passes the full existing gate.
               introduction = os.environ['REVIEWED_SOURCE_SHA']
-              search_floor = '405608e77a44650bb7e724e0d1bff78b122429b1'
+              search_floor = ('97b25e71fc1f17666f823b2b1fbd59d27c414c71' if purpose == 'runtime-package'
+                              else '405608e77a44650bb7e724e0d1bff78b122429b1')
               revision = os.environ['POLICY_REVISION']
               run_git(repository, '--no-replace-objects', 'merge-base', '--is-ancestor', introduction, revision)
-              if git_inventory(repository, introduction, _COMPILER_INPUTS) != git_inventory(repository, revision, _COMPILER_INPUTS):
+              if git_inventory(repository, introduction, compiler_inputs) != git_inventory(repository, revision, compiler_inputs):
                   raise ValueError('Tooling-only search requires the reviewed compiler introduction')
               # Keep the old search floor so a control-only publication cannot hide
               # compatible tooling from an earlier reviewed compiler-equivalent source.
@@ -463,12 +474,14 @@ jobs:
               runs = paginated_items('https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs?' + query,
                                      'workflow_runs', os.environ['GITHUB_TOKEN'])
               run_ids = tuple(dict.fromkeys([int(os.environ['GITHUB_RUN_ID']),
-                  *sorted((run['id'] for run in runs), reverse=True), 40333301688, 40171845008]))
+                  *sorted((run['id'] for run in runs), reverse=True),
+                  *((40333301688, 40171845008) if purpose == 'full' else ())]))
               result = discover_tooling_ci(Path(temporary).resolve() / 'capture', repository,
                   candidate_run_ids=run_ids,
                   trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
                   policy_revision=os.environ['POLICY_REVISION'], java_executable=java,
-                  token=os.environ['GITHUB_TOKEN'])
+                  token=os.environ['GITHUB_TOKEN'],
+                  **({'tooling_use': purpose} if purpose != 'full' else {}))
               selected = result['selected']
               # These exact 43 resources belong to the reviewed unsigned locator's
               # original JAR (sha256:a49c7be5fa9014dc7c1d60d4d63e862f5f7f2a691c958d355830920aca2ea4eb).
@@ -522,7 +535,7 @@ jobs:
               )
               recovery_inputs = _COMPILER_INPUTS + _INSPECTOR_INPUTS + retained_resources
               recovery = None
-              if selected is None:
+              if selected is None and purpose == 'full':
                   _ensure_original_source(repository, RETAINED_UNSIGNED_TOOLING['producer'])
                   if git_inventory(repository, RETAINED_UNSIGNED_TOOLING['producer']['commit'], recovery_inputs) == git_inventory(repository, revision, recovery_inputs):
                       recovery = RETAINED_UNSIGNED_TOOLING
@@ -954,6 +967,7 @@ jobs:
     uses: ./.github/workflows/contract-validation.yml
     with:
       planOutputs: ${{ inputs.toolingOnly && toJSON(needs.tooling-plan.outputs) || toJSON(needs.plan.outputs) }}
+      toolingPurpose: ${{ inputs.toolingOnly && inputs.toolingPurpose || 'full' }}
       trustedWorkflowSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.publisher_sha || needs.plan.outputs.publisher_sha }}
       trustedSourceSha: ${{ inputs.toolingOnly && needs.tooling-plan.outputs.source_sha || needs.plan.outputs.source_sha }}
     secrets: inherit

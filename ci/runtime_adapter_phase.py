@@ -1,4 +1,4 @@
-"""Map authenticated Runtime adapter predecessors to existing Gradle inputs.
+"""Map authenticated Runtime adapter predecessors and execute fixed package copies.
 
 The caller owns original-state replay, receipt authentication and validation
 handoff construction. These properties are not execution admission or proof.
@@ -12,7 +12,11 @@ import shutil
 import subprocess
 from typing import Any
 
-from products.inventory import require_regular_directory, require_semver
+from products.inventory import (
+    git_regular_blob_bytes, require_regular_directory, require_semver, snapshot_regular_tree,
+)
+from products.plan import _runtime_compatibility_version
+from products.receipt import verify_output_manifest_identity, write_output_manifest
 from products.registry import NATIVE_TARGETS, PHASE_INSTANCE_IDS, RUNTIME_ADAPTERS
 from products.runtime_evidence import PINNED_NODE_VERSION
 
@@ -120,3 +124,64 @@ not a caller-selected Maven repository or an unverified projection.
     if phase == "validation" and target in NATIVE_TARGETS:
         result.update(imported(target, "package", target, "runtimeNativePackage"))
     return result
+
+
+def _package_inputs(plan, properties, *, repository_root, revision, verified_contract_manifest):
+    """Check routing of the caller's authenticated Contract and private B snapshot.
+
+    This is not an admission API. The owning worker keeps original receipt,
+    source and input lifetime checks around execution and finalization.
+    """
+    identity = tuple(plan.get(key) for key in ("product", "component", "phase", "target"))
+    if identity not in {(i.product, i.component, i.phase, i.target) for i in PHASE_INSTANCE_IDS
+                        if i.product == "runtime" and i.phase == "package"}:
+        raise ValueError("Runtime package requires an exact registered package identity")
+    if tuple(properties.get("codexAgent." + key) for key in
+             ("product", "component", "phase", "target")) != identity:
+        raise ValueError("Runtime package properties differ from its elected identity")
+    if properties.get("codexAgent.candidateCommit") != revision:
+        raise ValueError("Runtime package candidate differs from its exact source")
+    version = require_semver(properties["codexAgent.runtimeVersion"], "Runtime version")
+    if git_regular_blob_bytes(repository_root, revision, "gradle/release/versions/runtime.txt",
+                              max_bytes=1024) != (version + "\n").encode("ascii"):
+        raise ValueError("Runtime package version differs from its Git authority")
+    manifest = verified_contract_manifest
+    if (manifest["contractVersion"] != properties["codexAgent.contractVersion"]
+            or any(part not in manifest["components"] for part in ("common", identity[1]))):
+        raise ValueError("Runtime package requires its exact Contract version and components")
+    previous = require_semver(properties["codexAgent.runtimeBinaryVersion"], "Original Runtime version")
+    if "+" in version or "+" in previous:
+        raise ValueError("Runtime compatibility versions must not contain build metadata")
+    compatibility = _runtime_compatibility_version(version)
+    if _runtime_compatibility_version(previous) != compatibility:
+        raise ValueError("Original Runtime binary is outside the current compatibility line")
+    original = Path(_directory(Path(properties["codexAgent.runtimeBinaryStage"]), "Original Runtime binary"))
+    verify_output_manifest_identity(original, "runtime", identity[1], "binary", identity[1], previous)
+    return identity[1], version, compatibility, original, previous
+
+
+def _fresh_package_stage(stage_root):
+    stage = Path(stage_root)
+    if not stage.is_absolute() or stage.resolve(strict=False) != stage:
+        raise ValueError("Runtime package output must be an absolute normalized path")
+    stage.mkdir(parents=True, exist_ok=False)
+    return stage
+
+
+def execute_package(plan, properties, *, repository_root, revision, stage_root,
+                    verified_contract_manifest):
+    """Copy only the fixed package roots from an authenticated adapter B stage."""
+    _identity(plan)
+    component, version, _, original, previous = _package_inputs(
+        plan, properties, repository_root=repository_root, revision=revision,
+        verified_contract_manifest=verified_contract_manifest)
+    stage = _fresh_package_stage(stage_root)
+    kinds = ("adapter", "publication", "validation-runner")
+    if component == "node-js":
+        kinds += ("binding-test-runner",)
+    roots = {kind: "outputs/" + kind for kind in kinds}
+    for relative in roots.values():
+        snapshot_regular_tree(original / relative, stage / relative)
+    verify_output_manifest_identity(original, "runtime", component, "binary", component, previous)
+    write_output_manifest(stage, "runtime", component, "package", component, version, roots)
+    return {"command": [], "returnCode": 0}
