@@ -8,6 +8,7 @@ remain external authority that the existing full gates must authenticate.
 import argparse
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 
 if __package__:
@@ -19,6 +20,7 @@ from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admis
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, load_json_bytes, read_regular_file_bytes,
     publish_regular_tree, regular_file_inventory, snapshot_regular_tree, write_canonical_json,
+    verified_zip_contents,
 )
 from products.registry import PhaseInstanceId
 from products.restore import verification_scoped
@@ -38,6 +40,135 @@ from sdk_phase import maven_consumed_predecessors
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-android", "validation", "android")
 _LIMIT = 512 * 1024 * 1024
+
+_CONSUMER_INPUTS = (
+    PhaseInstanceId("contract", "contract", "binary", "common"),
+    PhaseInstanceId("sdk", "sdk-core", "package", "common"),
+    PhaseInstanceId("sdk", "sdk-android", "package", "android"),
+)
+
+
+@product_reuse.measured
+def run_retained_android_consumer(state, *, plan_path, repository_root, environ):
+    """Consume the existing private replay state; never authenticate a caller dict.
+
+    The fixed SDK capture callback owns native authority through this call and
+    publishes its result only after every surrounding context exits.
+    """
+    from reuse_qualification import CompletedFrozenReuse
+    from products.contract_model import contract_maven_identity
+    from runtime_reference_transport import ENVIRONMENT as authority_environment
+
+    require_no_signing_secret(environ)
+    if (type(state) is not product_reuse._VerifiedProductState
+            or type(state.completed_frozen) is not CompletedFrozenReuse):
+        raise ValueError("Installed Android consumer requires live native replay authority")
+    root = Path(repository_root).resolve(strict=True)
+    plan_path = Path(plan_path).absolute()
+    plan_bytes = _read(plan_path)
+    if (load_json_bytes(plan_bytes) != state.plan
+            or state.consumer != product_reuse._consumer(state.plan, environ)
+            or environ.get("CI_VALIDATION_COMMIT") != state.plan["validationCommit"]
+            or environ.get("CI_VALIDATION_TREE") != state.plan["validationTree"]
+            or not any(state.plan["lanes"].get("consumer-android", {}).get(key) is True
+                       for key in ("build", "test", "metadata"))):
+        raise ValueError("Installed Android consumer differs from its authorized lane")
+    native = state.completed_frozen
+    native.check_consumer(state.consumer)
+    records = {}
+    for instance in _CONSUMER_INPUTS:
+        record = state.prior_by_instance.get(instance)
+        carrier = state.prior_carrier_phases.get(instance)
+        if (record is None or carrier is None or record["state"] not in {"retained", "reused"}
+                or any(record[key] != carrier[key] for key in (
+                    "product", "component", "phase", "target", "buildKey", "receiptSha256", "objectSha256"))):
+            raise ValueError("Installed Android consumer lacks an exact completed predecessor")
+        records[instance] = record
+    originals = canonical_json_bytes([records[instance] for instance in _CONSUMER_INPUTS])
+    product_reuse._runtime_worker_checkout(root, state.producer)
+    with tempfile.TemporaryDirectory(prefix="sdk-android-installed-consumer-") as temporary:
+        private = Path(temporary).resolve()
+        predecessors = private / "predecessors"
+        predecessors.mkdir()
+        restored = product_reuse._restore_product_objects(state, _CONSUMER_INPUTS, predecessors)
+        stages = {}
+        for instance in _CONSUMER_INPUTS:
+            original = restored[instance]
+            envelope = native.envelope(records[instance], original["receiptBytes"])
+            version = state.expected_fixed["versions"]["contract" if instance.product == "contract" else "sdk"]
+            if (envelope is None or envelope["receipt"] != original["receipt"]
+                    or original["receipt"]["productVersion"] != version):
+                raise ValueError("Installed Android input differs from its native original receipt")
+            stages[instance] = predecessors / "-".join((
+                instance.product, instance.component, instance.phase, instance.target)) / "stage"
+        before = regular_file_inventory(predecessors)
+        maven = private / "maven"
+        maven.mkdir()
+
+        def add(relative, contents):
+            # Same disjoint Maven union as sdk_facade_inputs; never overwrite.
+            target = maven / relative
+            if target.exists() or target.is_symlink():
+                raise ValueError("Installed Android Maven inputs overlap")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as output:
+                output.write(contents)
+
+        for instance in _CONSUMER_INPUTS[1:]:
+            source = stages[instance] / "outputs/maven"
+            for row in regular_file_inventory(source):
+                add(row["relativePath"], _read(source / row["relativePath"]))
+        contract = restored[_CONSUMER_INPUTS[0]]["receipt"]
+        outputs = contract["outputs"]
+        if len(outputs) != 1 or outputs[0]["kind"] != "contract-bundle":
+            raise ValueError("Installed Android consumer requires the original Contract bundle")
+        output = outputs[0]
+        _, members, transport = verified_zip_contents(
+            stages[_CONSUMER_INPUTS[0]] / output["relativePath"], canonical_stored=True,
+            max_archive_bytes=_LIMIT, max_total_bytes=1024 * 1024 * 1024, max_members=4096)
+        if transport != {key: output[key] for key in ("bytes", "sha256")}:
+            raise ValueError("Installed Android Contract bundle changed")
+        names = sorted(name for name in members if name.startswith("maven/"))
+        if not names:
+            raise ValueError("Installed Android Contract Maven closure is empty")
+        for name in names:
+            contract_maven_identity(name, contract["productVersion"])
+            add(name.removeprefix("maven/"), members[name])
+        del members
+        maven_before = regular_file_inventory(maven)
+
+        def unchanged():
+            require_no_signing_secret(environ)
+            native.check_consumer(state.consumer)
+            product_reuse._runtime_worker_checkout(root, state.producer)
+            if (_read(plan_path) != plan_bytes or regular_file_inventory(predecessors) != before
+                    or regular_file_inventory(maven) != maven_before
+                    or canonical_json_bytes([state.prior_by_instance[instance]
+                                             for instance in _CONSUMER_INPUTS]) != originals):
+                raise ValueError("Installed Android consumer inputs changed during use")
+
+        command = [str(root / "gradlew"), "verifyStagedKmpConsumerAndroid",
+                   "--build-cache", "--parallel", "--stacktrace",
+                   "-PcodexAgent.candidateCommit=" + state.plan["validationCommit"],
+                   "-PcodexAgent.candidateTree=" + state.plan["validationTree"],
+                   "-PcodexAgent.mavenRepositoryDirectory=" + str(maven)]
+        environment = {key: value for key, value in environ.items()
+                       if key not in {"GITHUB_TOKEN", "GH_TOKEN", "REUSE_AUTHORITY_READ_TOKEN",
+                                      *authority_environment}}
+        unchanged()
+        try:
+            subprocess.run(command, cwd=root, env=environment, stdin=subprocess.DEVNULL, check=True)
+        finally:
+            unchanged()
+        # Existing lane staging requires this exact Maven transport location.
+        # It is output data, not authority: outer capture exits must still pass
+        # before the action may stage a successful receipt or publish outputs.
+        projection = (root / "build/protected-candidate" / state.plan["validationCommit"] /
+                      "consumer-maven/android")
+        publish_regular_tree(maven, projection, expected_inventory=maven_before)
+        product_reuse.count("androidInstalledMavenProjectionTrees")
+        product_reuse.count("androidInstalledMavenProjectionBytes", sum(row["bytes"] for row in maven_before))
+        unchanged()
 
 
 def _read(path):

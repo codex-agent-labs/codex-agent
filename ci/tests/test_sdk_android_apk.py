@@ -57,6 +57,77 @@ class AndroidApkTest(unittest.TestCase):
             (source / name).write_bytes((self.lane / original).read_bytes() if original else b"fixture evidence\n")
         return source
 
+    def retained_source_checks(self, destination, failure=None):
+        receipt=json.loads((self.lane/'lane-receipt.json').read_bytes())
+        producer={**{key:receipt[key] for key in ('repository','workflowPath','event','runId','runAttempt','pullRequest')},
+            'commit':receipt['validationCommit'],'tree':receipt['validationTree']}
+        real_run,real_output=subprocess.run,subprocess.check_output
+        def execute(command,**kwargs):
+            if command[0] != str(self.f.root.resolve()/'gradlew'):return real_run(command,**kwargs)
+            self.assertEqual(apk._check_tasks(self.value),command[1:1+len(apk._check_tasks(self.value))])
+            self.assertFalse(any('assemble' in x or 'ciProductPhase' in x for x in command))
+            if failure=='process':raise subprocess.CalledProcessError(1,command)
+            if failure!='missing':
+                for action,(_,pattern,_) in apk.SOURCE_CHECKS.items():
+                    if self.value['lanes']['android'][action]:
+                        p=self.f.root/pattern.replace('**/*.xml','debug/TEST-unit.xml')
+                        p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'<testsuite tests="1" failures="0"/>')
+            if failure=='mutation':self.plan.write_bytes(self.plan.read_bytes()+b' ')
+        def java(command,**kwargs):
+            return 'fixture Java' if command==['/fixture/java/bin/java','-version'] else real_output(command,**kwargs)
+        with patch.object(apk.products,'_validate_plan',return_value=self.value), \
+                patch.object(apk.products,'_consumer',return_value={'producer':producer}), \
+                patch.object(apk.products,'_runtime_worker_checkout'), \
+                patch.object(apk.subprocess,'run',side_effect=execute), \
+                patch.object(apk.subprocess,'check_output',side_effect=java), \
+                patch.dict(os.environ,{'JAVA_HOME':'/fixture/java','RUNNER_OS':'Linux','RUNNER_ARCH':'X64'}):
+            apk.source_checks(self.f.root,self.plan,destination)
+        return producer
+
+    def test_retained_gate_joins_source_subset_without_old_schema_or_firebase(self):
+        import tempfile,shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve();checks=root/'receipts/android'
+            producer=self.retained_source_checks(checks)
+            receipt=json.loads((checks/'lane-receipt.json').read_bytes())
+            self.assertNotIn('build',receipt['toolchain']['validationActions'])
+            self.assertTrue(all(row['kind']=='android-source-check' for row in receipt['evidence']))
+            contribution={'consumer':producer,'kind':'mocked observed original boundary'}
+            args=dict(repository_root=self.f.root,trusted_workflow_sha='a'*40,artifact_id=12,
+                artifact_sha256='sha256:'+'b'*64,contribution_sha256='sha256:'+'c'*64,environ={})
+            before=self.plan.read_bytes()
+            with patch.object(apk,'observed_android_contribution',return_value=contribution) as observe:
+                value=apk.aggregate_retained_android(self.plan,checks.parent,root/'accepted',**args)
+                observe.assert_called_once()
+                self.assertEqual('current-validation-contributions',value['kind'])
+                self.assertEqual({'android'},set(value['laneReceipts']))
+                self.assertEqual(before,self.plan.read_bytes())
+                for change in ('missing-test','fake-build','fake-firebase','duplicate'):
+                    with self.subTest(change=change):
+                        raw=(checks/'lane-receipt.json').read_bytes();changed=json.loads(raw)
+                        if change=='missing-test':changed['toolchain']['validationActions']=''
+                        elif change=='fake-build':changed['toolchain']['validationActions']='build,metadata,test'
+                        elif change=='fake-firebase':changed['evidence'][0]['kind']='firebase-runtime-evidence'
+                        else:shutil.copytree(checks,root/'receipts/duplicate')
+                        (checks/'lane-receipt.json').write_text(json.dumps(changed))
+                        with self.assertRaises(ValueError):apk.aggregate_retained_android(self.plan,checks.parent,root/change,**args)
+                        self.assertFalse((root/change).exists());(checks/'lane-receipt.json').write_bytes(raw)
+                        if change=='duplicate':shutil.rmtree(root/'receipts/duplicate')
+
+    def test_source_checks_process_missing_output_and_mutation_never_publish(self):
+        import tempfile,shutil
+        raw=self.plan.read_bytes()
+        for failure in ('process','missing','mutation'):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as temporary:
+                self.plan.write_bytes(raw)
+                directory=self.f.root/'codex-agent-runtime-android/build'
+                if directory.exists():shutil.rmtree(directory)
+                destination=Path(temporary).resolve()/'checks'
+                with self.assertRaises((ValueError,subprocess.CalledProcessError)):
+                    self.retained_source_checks(destination,failure)
+                self.assertFalse(destination.exists())
+        self.plan.write_bytes(raw)
+
     def test_build_only_initial_and_separate_final_preserve_original(self):
         before = apk.regular_file_inventory(self.lane, allow_empty=True)
         checked = apk.check(self.plan, self.lane)
@@ -217,6 +288,174 @@ class AndroidApkTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exact six"):
                 apk.command(root, {**policy, "extra": str(root)})
 
+
+
+class RetainedAndroidContributionTest(unittest.TestCase):
+    """Synthetic native boundary; real receipt/content, private files and upload checks."""
+    def setUp(self):
+        from copy import deepcopy
+        from ci.tests.test_products import phase_receipt
+        from products.receipt import compute_build_key
+        from products.plan import _upstream_record
+        from products.sdk_android_validation_content import android_validation_content
+        self.tmp = __import__('tempfile').TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.plan = self.root / 'impact-plan.json'
+        self.plan_value = dict(repository='codex-agent-labs/codex-agent', event='pull_request', pullRequest=31,
+            validationCommit='a'*40, validationTree='b'*40, mergeReady=True, remoteBuildAuthorized=True,
+            remoteBuildAuthorizationReason='pull-request-final')
+        self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value))
+        self.env = dict(GITHUB_ACTIONS='true', GITHUB_JOB='merge-gate', GITHUB_TOKEN='fixture',
+            GITHUB_REPOSITORY=self.plan_value['repository'], GITHUB_EVENT_NAME='pull_request',
+            GITHUB_SHA='a'*40, GITHUB_RUN_ID='21', GITHUB_RUN_ATTEMPT='2')
+        self.current = apk.products._consumer(self.plan_value, self.env)['producer']
+        package = phase_receipt()
+        package.update(product='sdk', component='sdk-android', phase='package', target='android')
+        package['producer'].update(workflowPath='.github/workflows/ci.yml', commit='c'*40, tree='d'*40)
+        package['buildKey'] = compute_build_key(product='sdk', component='sdk-android', phase='package',
+            target='android', inputs=package['inputs'])
+        content = android_validation_content(sdk_version=package['productVersion'],
+            package_outputs_digest=_upstream_record(package)['outputsDigest'],
+            release_aar_sha256='sha256:'+'d'*64, bundled_runtime_sha256='sha256:'+'e'*64)
+        self.content = apk.canonical_json_bytes(content)
+        validation = deepcopy(package)
+        validation['phase'] = 'validation'
+        validation['inputs']['upstreamArtifacts'] = [_upstream_record(package)]
+        validation['buildKey'] = compute_build_key(product='sdk', component='sdk-android', phase='validation',
+            target='android', inputs=validation['inputs'])
+        validation['outputs'] = [dict(kind='android-validation-content',
+            relativePath='outputs/validation/android-validation.json', bytes=len(self.content),
+            sha256=apk.sha256_bytes(self.content))]
+        self.receipts = {apk._ANDROID_V: validation, apk._ANDROID_P: package}
+        self.records = {key: {**{field:getattr(key,field) for field in apk.products._IDENTITY_KEYS},
+            'buildKey':value['buildKey'], 'receiptSha256':apk.sha256_bytes(apk.canonical_json_bytes(value)),
+            'objectSha256':'sha256:' + ('1' if key == apk._ANDROID_V else '2')*64}
+            for key,value in self.receipts.items()}
+        import reuse_qualification
+        self.native = object.__new__(reuse_qualification.CompletedFrozenReuse)
+        self.state = apk.products._VerifiedProductState(self.plan_value, self.current,
+            {'kind':'ci','producer':self.current}, (apk._ANDROID_V,), (apk._ANDROID_P,apk._ANDROID_V),
+            {}, {}, {}, {}, {}, self.records, {}, self.native)
+        self.alive = True
+        self.materializations = []
+
+    def envelope(self, row):
+        identity = apk.products._identity(row)
+        if row != self.records[identity]:
+            raise ValueError('fixture native tuple changed')
+        receipt = self.receipts[identity]
+        return dict(receipt=receipt,receiptBytes=apk.canonical_json_bytes(receipt),
+            receiptSha256=row['receiptSha256'],objectSha256=row['objectSha256'])
+
+    def materialize(self, state, identities, destination):
+        self.assertIs(state,self.state);self.assertEqual((apk._ANDROID_V,),identities)
+        self.materializations.append(identities)
+        path=destination/'sdk-sdk-android-validation-android/stage/outputs/validation/android-validation.json'
+        path.parent.mkdir(parents=True);path.write_bytes(self.content)
+        return {apk._ANDROID_V:self.envelope(self.records[apk._ANDROID_V])}
+
+    def consumer(self, value):
+        if not self.alive or value != {'kind':'ci','producer':self.current}:
+            raise ValueError('fixture authority lifetime/current consumer')
+
+    def scopes(self):
+        from contextlib import ExitStack
+        import reuse_qualification
+        from products.restore import verification_session
+        stack=ExitStack();stack.enter_context(verification_session())
+        stack.enter_context(patch.object(reuse_qualification.CompletedFrozenReuse,'check_consumer',side_effect=self.consumer))
+        stack.enter_context(patch.object(reuse_qualification.CompletedFrozenReuse,'envelope',side_effect=self.envelope))
+        stack.enter_context(patch.object(apk.products,'_restore_product_objects',side_effect=self.materialize))
+        return stack
+
+    def contribution(self):
+        return apk.retained_android_contribution(self.state,self.plan,environ=self.env)
+
+    def test_original_v_and_p_bind_current_consumer_with_one_v_body_only(self):
+        from copy import deepcopy
+        original=deepcopy(self.receipts)
+        with self.scopes():
+            value=self.contribution()
+        self.assertEqual([ (apk._ANDROID_V,) ],self.materializations)
+        self.assertEqual(original,self.receipts)
+        self.assertEqual(self.current,value['consumer'])
+        self.assertNotEqual(self.current,value['validation']['receipt']['producer'])
+        self.assertEqual(original[apk._ANDROID_P],value['package']['receipt'])
+        self.assertEqual(apk.sha256_bytes(self.plan.read_bytes()),value['planSha256'])
+
+    def test_wrong_type_selection_dependency_and_late_mutation_reject(self):
+        from dataclasses import replace
+        from copy import deepcopy
+        for change in ('type','selection','dependency','plan','lifetime'):
+            with self.subTest(change=change),self.scopes():
+                state=self.state
+                original=deepcopy(self.receipts)
+                raw=self.plan.read_bytes()
+                if change=='type':state=replace(state,completed_frozen=object())
+                if change=='selection':state=replace(state,closure=(apk._ANDROID_P,))
+                if change=='dependency':self.receipts[apk._ANDROID_V]['inputs']['upstreamArtifacts'][0]['outputsDigest']='sha256:'+'f'*64
+                materialize=self.materialize
+                def restore(*args):
+                    result=materialize(*args)
+                    if change=='plan':self.plan.write_bytes(raw+b' ')
+                    if change=='lifetime':self.alive=False
+                    return result
+                with patch.object(apk.products,'_restore_product_objects',side_effect=restore),self.assertRaises(ValueError):
+                    apk.retained_android_contribution(state,self.plan,environ=self.env)
+                self.receipts=original;self.plan.write_bytes(raw);self.alive=True
+
+    def test_observed_completion_upload_checks_source_window_digest_and_singleton(self):
+        import io,zipfile
+        from copy import deepcopy
+        with self.scopes():value=self.contribution()
+        raw=apk.canonical_json_bytes(value)
+        options=dict(repository_root=self.root,trusted_workflow_sha='4'*40,artifact_id=22,
+            artifact_sha256='',contribution_sha256=apk.sha256_bytes(raw),environ=self.env)
+        observation=dict(run=dict(id=21,head_sha='9'*40,status='in_progress'),jobs=[dict(
+            id=5,name='product-validation / sdk-completion',status='completed',conclusion='success',
+            started_at='2026-11-01T10:00:00Z',completed_at='2026-11-01T10:05:00Z')])
+        for change in ('none','source','window','digest','extra','plan','owner-exit'):
+            with self.subTest(change=change):
+                report=deepcopy(value)
+                if change=='source':report['consumer']['commit']='f'*40
+                report_raw=apk.canonical_json_bytes(report)
+                stream=io.BytesIO()
+                with zipfile.ZipFile(stream,'w') as archive:
+                    archive.writestr(apk._CONTRIBUTION_FILE,report_raw)
+                    if change=='extra':archive.writestr('unexpected',b'extra')
+                uploaded=stream.getvalue()
+                artifact=dict(id=22,name=f"codex-agent-sdk-android-contribution-{self.current['tree']}-attempt-2",
+                    digest=apk.sha256_bytes(uploaded),size_in_bytes=len(uploaded),expired=False,
+                    archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/22/zip',
+                    workflow_run=dict(id=21,head_sha='9'*40),created_at='2026-11-01T10:03:00Z')
+                if change=='window':artifact['created_at']='2026-11-01T09:59:00Z'
+                options.update(artifact_sha256=apk.sha256_bytes(uploaded),contribution_sha256=apk.sha256_bytes(report_raw))
+                if change=='digest':options['contribution_sha256']='sha256:'+'0'*64
+                original_plan=self.plan.read_bytes()
+                def download(*args,**kwargs):
+                    kwargs['destination'].write_bytes(uploaded)
+                    if change=='plan':self.plan.write_bytes(original_plan+b' ')
+                from contextlib import contextmanager
+                from products.restore import verification_session
+                @contextmanager
+                def session():
+                    with verification_session():yield
+                    if change=='owner-exit':raise ValueError('late observation owner')
+                with patch.object(apk.products,'_validate_plan',return_value=self.plan_value), \
+                        patch.object(apk.products,'_git_value',side_effect=lambda r,c,v:self.current['tree' if 'tree' in v else 'commit']), \
+                        patch.object(apk.products,'_observe_ci_producer_jobs',return_value=[observation]) as observe, \
+                        patch.object(apk.products,'api_json',return_value=artifact), \
+                        patch.object(apk.products,'_reuse_contract_ci_upload',side_effect=download), \
+                        patch('products.restore.verification_session',session):
+                    if change=='none':
+                        self.assertEqual(value,apk.observed_android_contribution(self.plan,**options))
+                        self.assertEqual({'completion':{'path':'.github/workflows/product-validation.yml','sha':'4'*40}},
+                            observe.call_args.kwargs['trusted_workflows_by_phase'])
+                        self.assertEqual({'completion':self.current},observe.call_args.args[0])
+                    else:
+                        with self.assertRaises(ValueError):apk.observed_android_contribution(self.plan,**options)
+                self.plan.write_bytes(original_plan)
 
 if __name__ == "__main__":
     unittest.main()

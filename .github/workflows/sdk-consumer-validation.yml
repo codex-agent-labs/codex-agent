@@ -15,6 +15,19 @@ on:
       matrix:
         required: true
         type: string
+      retainedAndroidConsumer:
+        required: false
+        type: boolean
+        default: false
+      sdkOutputs:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+    secrets:
+      authority_read_token:
+        required: false
 
 permissions:
   actions: read
@@ -32,6 +45,27 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
+          fetch-depth: ${{ matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer && '0' || '1' }}
+      - id: native-state
+        if: matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer
+        env:
+          SDK_OUTPUTS: ${{ inputs.sdkOutputs }}
+        shell: bash
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_completion_state import _state
+          from ci.reuse import github_output
+          outputs = json.loads(os.environ['SDK_OUTPUTS'])
+          if outputs.get('full_reuse') != 'true' or outputs.get('wave_failed') != 'false':
+              raise ValueError('Retained Android consumer requires successful full-reuse product resume')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), _state(outputs, runtime_wave='0', sdk_wave=''))
+          PYCODE
+      - if: matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
       - if: matrix.lane == 'consumer-desktop' || matrix.lane == 'consumer-node-js' || matrix.lane == 'consumer-node-wasm'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -49,12 +83,12 @@ jobs:
           test "$(find build/ci/desktop-classifiers -type f -name '*-app-server-*.zip' | wc -l | tr -d ' ')" -eq 5
           test "$(find build/ci/desktop-classifiers -type f -name '*-c-abi-*.zip' | wc -l | tr -d ' ')" -eq 5
           printf 'DESKTOP_CLASSIFIERS=%s/build/ci/desktop-classifiers\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
-      - if: matrix.lane == 'consumer-android'
+      - if: matrix.lane == 'consumer-android' && !inputs.retainedAndroidConsumer
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-agent-ci-android-${{ inputs.validationTree }}
           path: build/ci/android-lane
-      - if: matrix.lane == 'consumer-android'
+      - if: matrix.lane == 'consumer-android' && !inputs.retainedAndroidConsumer
         shell: bash
         run: |
           aar=$(find build/ci/android-lane/payload -type f -name codex-agent-runtime-android-release.aar -print -quit)
@@ -65,6 +99,13 @@ jobs:
               "$GITHUB_WORKSPACE" "$aar" "$GITHUB_WORKSPACE" "$(dirname "$evidence")" >> "$GITHUB_ENV"
           fi
       - uses: ./.github/actions/run-ci-lane
+        env:
+          GITHUB_TOKEN: ${{ matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer && github.token || '' }}
+          SDK_STATE_ARTIFACT_ID: ${{ steps.native-state.outputs.artifact_id }}
+          SDK_STATE_ARTIFACT_SHA256: ${{ steps.native-state.outputs.artifact_digest }}
+          SDK_STATE_WAVE: ${{ steps.native-state.outputs.state_wave }}
+          SDK_STATE_SDK_WAVE: ${{ steps.native-state.outputs.sdk_state_wave }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
         with:
           lane: ${{ matrix.lane }}
           plan-artifact: ${{ inputs.planArtifact }}
@@ -73,4 +114,5 @@ jobs:
           build: ${{ matrix.build }}
           test: ${{ matrix.test }}
           metadata: ${{ matrix.metadata }}
+          android-installed-consumer: ${{ matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer && 'true' || 'false' }}
           node-version: ${{ contains(matrix.lane, 'node') && '24.18.0' || 'none' }}

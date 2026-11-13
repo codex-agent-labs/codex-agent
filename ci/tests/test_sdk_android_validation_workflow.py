@@ -526,5 +526,243 @@ class AndroidValidationWorkflowTest(unittest.TestCase):
                 add.assert_called_once()
 
 
+class RetainedAndroidConsumerTest(unittest.TestCase):
+    """Synthetic live-state boundary; no native authentication or Gradle runs."""
+
+    def setUp(self):
+        from reuse_qualification import CompletedFrozenReuse
+        self.native_type = CompletedFrozenReuse
+        temporary = tempfile.TemporaryDirectory(prefix="retained-android-consumer-test-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.plan_path = self.root / "plan.json"
+        self.plan = {"repository": "codex-agent-labs/codex-agent", "event": "pull_request",
+                     "pullRequest": 31, "validationCommit": "a" * 40, "validationTree": "b" * 40,
+                     "lanes": {"consumer-android": {"build": True, "test": True, "metadata": False}}}
+        write_canonical_json(self.plan_path, self.plan)
+        self.environment = {"GITHUB_RUN_ID": "20", "GITHUB_RUN_ATTEMPT": "1",
+                            "CI_VALIDATION_COMMIT": "a" * 40, "CI_VALIDATION_TREE": "b" * 40,
+                            "GITHUB_TOKEN": "synthetic-read-token", "ANDROID_HOME": "/installed/android"}
+        consumer = workflow.product_reuse._consumer(self.plan, self.environment)
+        self.records = {instance: {
+            **{key: getattr(instance, key) for key in ("product", "component", "phase", "target")},
+            "state": "retained", "buildKey": "sha256:" + str(index) * 64,
+            "receiptSha256": "sha256:" + str(index + 3) * 64, "objectSha256": "sha256:" + "9" * 64,
+        } for index, instance in enumerate(workflow._CONSUMER_INPUTS, 1)}
+        self.state = workflow.product_reuse._VerifiedProductState(
+            plan=self.plan, producer=consumer["producer"], consumer=consumer,
+            requested=workflow._CONSUMER_INPUTS, closure=workflow._CONSUMER_INPUTS,
+            expected_fixed={"versions": {"sdk": "0.8.7", "contract": "0.8.0"}},
+            rebased_request={}, prior={}, prior_by_instance=self.records, sources={},
+            prior_carrier_phases=deepcopy(self.records), prior_ready_plans={},
+            completed_frozen=object.__new__(CompletedFrozenReuse))
+        self.restored = {}
+        self.private_roots = []
+        self.collision = False
+        self.native_live = True
+        self.check = self.enterContext(patch.object(CompletedFrozenReuse, "check_consumer", side_effect=self.check_live))
+        self.envelope = self.enterContext(patch.object(CompletedFrozenReuse, "envelope", side_effect=self.original))
+        self.checkout = self.enterContext(patch.object(workflow.product_reuse, "_runtime_worker_checkout"))
+        self.restore = self.enterContext(patch.object(workflow.product_reuse, "_restore_product_objects",
+                                                     side_effect=self.restore_inputs))
+        self.run = self.enterContext(patch.object(workflow.subprocess, "run"))
+        self.count = self.enterContext(patch.object(workflow.product_reuse, "count"))
+        self.projection = self.root / "build/protected-candidate" / ("a" * 40) / "consumer-maven/android"
+
+    def check_live(self, consumer):
+        self.assertEqual(self.state.consumer, consumer)
+        if not self.native_live:
+            raise ValueError("Native owner expired")
+
+    def original(self, record, raw):
+        instance = workflow.product_reuse._identity(record)
+        self.assertEqual(self.restored[instance]["receiptBytes"], raw)
+        return {"receipt": self.restored[instance]["receipt"]}
+
+    def restore_inputs(self, state, instances, destination):
+        from ci.products.contract import _write_contract_zip
+        self.assertIs(state, self.state)
+        self.assertEqual(workflow._CONSUMER_INPUTS, instances)
+        self.private_roots.append(destination.parent)
+        for index, instance in enumerate(instances):
+            stage = destination / "-".join((instance.product, instance.component, instance.phase, instance.target)) / "stage"
+            stage.mkdir(parents=True)
+            version = "0.8.0" if index == 0 else "0.8.7"
+            receipt = {"productVersion": version, "producer": {"commit": "c" * 40}}
+            if index == 0:
+                content = self.root / "contract-content"
+                file = content / "maven/io/github/codex-agent-labs/codex-agent-core/0.8.0/codex-agent-core-0.8.0.pom"
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b"original contract Maven bytes")
+                archive = stage / "outputs/contract.zip"
+                archive.parent.mkdir()
+                _write_contract_zip(content, archive)
+                receipt["outputs"] = [{"relativePath": "outputs/contract.zip", "kind": "contract-bundle",
+                                       "bytes": archive.stat().st_size, "sha256": sha256_file(archive)}]
+            else:
+                artifact = "codex-agent" if index == 1 or self.collision else "codex-agent-runtime-android"
+                output = stage / f"outputs/maven/io/github/codex-agent-labs/{artifact}/{version}/{artifact}-{version}.pom"
+                output.parent.mkdir(parents=True)
+                output.write_bytes(f"original {instance.component}".encode())
+            self.restored[instance] = {"receipt": receipt, "receiptBytes": canonical_json_bytes(receipt)}
+        return self.restored
+
+    def consume(self, state=None):
+        return workflow.run_retained_android_consumer(self.state if state is None else state,
+            plan_path=self.plan_path, repository_root=self.root, environ=self.environment)
+
+    def test_exact_three_originals_fixed_command_and_private_lifetime(self):
+        def execute(command, **kwargs):
+            self.assertEqual([str(self.root / "gradlew"), "verifyStagedKmpConsumerAndroid",
+                              "--build-cache", "--parallel", "--stacktrace",
+                              "-PcodexAgent.candidateCommit=" + "a" * 40,
+                              "-PcodexAgent.candidateTree=" + "b" * 40], command[:-1])
+            maven = Path(command[-1].removeprefix("-PcodexAgent.mavenRepositoryDirectory="))
+            self.assertEqual(3, len(regular_file_inventory(maven)))
+            self.assertTrue(self.private_roots[0].is_dir())
+            self.assertEqual(self.root, kwargs["cwd"])
+            self.assertIs(kwargs["check"], True)
+            self.assertEqual(workflow.subprocess.DEVNULL, kwargs["stdin"])
+            self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
+            self.assertEqual("/installed/android", kwargs["env"]["ANDROID_HOME"])
+        self.run.side_effect = execute
+        self.assertIsNone(self.consume())
+        self.run.assert_called_once()
+        self.restore.assert_called_once()
+        self.assertEqual(3, self.envelope.call_count)
+        projected = regular_file_inventory(self.projection)
+        self.assertEqual(3, len(projected))
+        self.count.assert_any_call("androidInstalledMavenProjectionTrees")
+        self.count.assert_any_call("androidInstalledMavenProjectionBytes", sum(row["bytes"] for row in projected))
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+        self.assertEqual("c" * 40, self.restored[workflow._CONSUMER_INPUTS[2]]["receipt"]["producer"]["commit"])
+
+    def test_rejects_caller_dict_missing_native_and_changed_current_selection(self):
+        from dataclasses import replace
+        for state in ({"complete": True}, replace(self.state, completed_frozen=None)):
+            with self.subTest(state=type(state).__name__), self.assertRaisesRegex(ValueError, "live native"):
+                self.consume(state)
+        self.records[workflow._CONSUMER_INPUTS[2]]["objectSha256"] = "sha256:" + "e" * 64
+        with self.assertRaisesRegex(ValueError, "exact completed predecessor"):
+            self.consume()
+        self.restore.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_rejects_unauthorized_lane_and_original_receipt_mismatch(self):
+        self.environment["CI_VALIDATION_TREE"] = "e" * 40
+        with self.assertRaisesRegex(ValueError, "authorized lane"):
+            self.consume()
+        self.environment["CI_VALIDATION_TREE"] = "b" * 40
+        self.envelope.return_value = None
+        self.envelope.side_effect = None
+        with self.assertRaisesRegex(ValueError, "native original receipt"):
+            self.consume()
+        self.run.assert_not_called()
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+
+    def test_overlapping_maven_inputs_fail_before_consumer(self):
+        self.collision = True
+        with self.assertRaisesRegex(ValueError, "inputs overlap"):
+            self.consume()
+        self.run.assert_not_called()
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+
+    def test_late_input_change_or_native_exit_cannot_return_success(self):
+        def mutate(command, **kwargs):
+            maven = Path(command[-1].split("=", 1)[1])
+            next(maven.rglob("*.pom")).write_bytes(b"changed after child launch")
+        self.run.side_effect = mutate
+        with self.assertRaisesRegex(ValueError, "inputs changed"):
+            self.consume()
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+        self.assertFalse(self.projection.exists())
+        self.run.side_effect = lambda *args, **kwargs: setattr(self, "native_live", False)
+        with self.assertRaisesRegex(ValueError, "Native owner expired"):
+            self.consume()
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+        self.assertFalse(self.projection.exists())
+
+    def test_child_failure_propagates_after_lifetime_recheck_and_cleanup(self):
+        self.run.side_effect = workflow.subprocess.CalledProcessError(7, ["fixed-consumer"])
+        with self.assertRaises(workflow.subprocess.CalledProcessError) as caught:
+            self.consume()
+        self.assertEqual(7, caught.exception.returncode)
+        self.assertEqual(3, self.check.call_count)
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+        self.assertFalse(self.projection.exists())
+
+    def test_projection_is_fresh_and_never_overwrites_existing_output(self):
+        self.projection.mkdir(parents=True)
+        sentinel = self.projection / "existing"
+        sentinel.write_bytes(b"preserve this original")
+        with self.assertRaisesRegex(ValueError, "must not exist"):
+            self.consume()
+        self.assertEqual(b"preserve this original", sentinel.read_bytes())
+        self.assertTrue(all(not path.exists() for path in self.private_roots))
+
+
+class RetainedAndroidConsumerRoutingTest(unittest.TestCase):
+    def test_only_same_job_canonical_full_consumer_skips_second_execution(self):
+        root = Path(__file__).resolve().parents[2]
+        action = (root / ".github/actions/run-ci-lane/action.yml").read_text()
+        execution = action.split("    - id: execution\n", 1)[1].split("      continue-on-error:", 1)[0]
+        condition = " ".join(execution.split("if: >-", 1)[1].split())
+        values = {"inputs.contract-tooling-only": "false", "inputs.reuse-only": "false",
+                  "steps.reuse.outputs.reused": "false", "steps.portable-runtime-products.outcome": "skipped",
+                  "inputs.force-build": "false", "steps.selection.outputs.test": "true",
+                  "steps.selection.outputs.metadata": "false", "steps.selection.outputs.build": "true",
+                  "steps.production.outputs.reused": "false"}
+        for lane, mode, production, expected in (
+                ("consumer-android", "true", "success", False),
+                ("consumer-android", "true", "skipped", True),
+                ("consumer-android", "true", "failure", False),
+                ("consumer-android", "false", "success", True),
+                ("consumer-desktop", "true", "success", True),
+                ("consumer-node-js", "false", "success", True)):
+            with self.subTest(lane=lane, mode=mode, production=production):
+                selected = {**values, "inputs.lane": lane, "inputs.android-installed-consumer": mode,
+                            "steps.production-execution.outcome": production}
+                expression = condition
+                for key, value in sorted(selected.items(), key=lambda item: -len(item[0])):
+                    expression = expression.replace(key, repr(value))
+                expression = expression.replace("&&", " and ").replace("||", " or ").replace("!(", "not (")
+                self.assertEqual(expected, eval(expression, {"__builtins__": {}}))
+        # No serialized capability or production reuse result skips this check.
+        self.assertIn("inputs.android-installed-consumer == 'true' && steps.production-execution.outcome == 'success'", condition)
+        self.assertEqual(2, action.count("CODEX_AGENT_ANDROID_INSTALLED_CONSUMER: ${{ inputs.android-installed-consumer }}"))
+        workflow_text = (root / ".github/workflows/sdk-consumer-validation.yml").read_text()
+        self.assertIn("android-installed-consumer: ${{ matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer && 'true' || 'false' }}", workflow_text)
+        legacy = workflow_text.split("      - if: matrix.lane == 'consumer-android' && !inputs.retainedAndroidConsumer\n", 1)[1]
+        self.assertIn("name: codex-agent-ci-android-${{ inputs.validationTree }}", legacy.split("      - if:", 1)[0])
+
+    def test_fixed_branch_invokes_one_capture_and_requires_native_policy(self):
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="android-consumer-routing-") as temporary:
+            work = Path(temporary).resolve()
+            executable = work / "python3"
+            executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$RECORDED_ARGUMENTS"\n')
+            executable.chmod(0o755)
+            recorded = work / "arguments"
+            environment = {"PATH": str(work), "CI_VALIDATION_COMMIT": "a" * 40,
+                "CI_VALIDATION_TREE": "b" * 40, "CODEX_AGENT_ANDROID_INSTALLED_CONSUMER": "true",
+                "CODEX_AGENT_COMPLETED_REUSE_POLICY": str(work / "native-policy.json"),
+                "SDK_STATE_ARTIFACT_ID": "17", "SDK_STATE_ARTIFACT_SHA256": "sha256:" + "c" * 64,
+                "SDK_STATE_WAVE": "0", "SDK_STATE_SDK_WAVE": "10", "TRUSTED_WORKFLOW_SHA": "d" * 40,
+                "GITHUB_OUTPUT": str(work / "github-output"), "RECORDED_ARGUMENTS": str(recorded)}
+            command = ["/bin/bash", str(root / "ci/run-lane.sh"), "consumer-android"]
+            subprocess.run(command, cwd=work, env=environment, check=True, capture_output=True)
+            arguments = recorded.read_text().splitlines()
+            self.assertEqual(["-B", "-m", "ci.sdk_completion", "capture"], arguments[:4])
+            self.assertEqual(1, arguments.count("--android-installed-consumer"))
+            self.assertEqual("10", arguments[arguments.index("--sdk-state-wave") + 1])
+            self.assertNotIn("verifyStagedKmpConsumerAndroid", arguments)
+            recorded.unlink()
+            del environment["CODEX_AGENT_COMPLETED_REUSE_POLICY"]
+            result = subprocess.run(command, cwd=work, env=environment, capture_output=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(recorded.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

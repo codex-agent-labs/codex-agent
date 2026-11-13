@@ -360,7 +360,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
 
     def test_final_shell_invokes_only_fixed_completion_cli_with_optional_policy(self):
         block = self.job("sdk-completion").split("        id: completion\n", 1)[1]
-        script = textwrap.dedent(block.split("          script: |\n", 1)[1])
+        script = textwrap.dedent(block.split("          script: |\n", 1)[1].split("\n      - ", 1)[0])
         with tempfile.TemporaryDirectory(prefix="sdk-completion-shell-") as temporary:
             root = Path(temporary)
             executable = root / "python3"
@@ -379,7 +379,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ.get("PATH", ""),
                             "PLAN_DIRECTORY": "/held plan", "ARTIFACT_ID": "91",
                             "ARTIFACT_SHA256": "sha256:" + "a" * 64, "STATE_WAVE": "0",
-                            "SDK_STATE_WAVE": "8", "SDK_VALIDATION_TOOLING": policy,
+                            "SDK_STATE_WAVE": "8", "SDK_VALIDATION_TOOLING": policy, "RETAINED_ANDROID": "false",
                             "TRUSTED_WORKFLOW_SHA": "c" * 40,
                             "GITHUB_WORKSPACE": "/candidate repository", "GITHUB_OUTPUT": str(output),
                             "GITHUB_TOKEN": "not-a-command-argument", "ARGV_CAPTURE": str(arguments), "MOCK_EXIT": str(status)}
@@ -838,7 +838,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         gate = self.job('merge-gate')
         for marker in ('name: Require an exact receipt set', 'name: Stage the exact reusable validation artifact'):
             block = gate.split('      - ' + marker + '\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertIn('if: ${{ !inputs.fullReuseAcceptanceOnly }}', block)
+            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' }}", block)
         block = gate.split('      - name: Authenticate current-head acceptance without restoring product bodies\n', 1)[1].split('\n      - ', 1)[0]
         self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', block)
         for name in ('FULL_REUSE_ACCEPTANCE_ONLY', 'RUNTIME_RECOVERY_ONLY', 'SDK_RECOVERY_ONLY',
@@ -952,3 +952,109 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetainedAndroidParentWorkflowTest(unittest.TestCase):
+    def setUp(self):
+        self.parent = (ROOT / '.github/workflows/product-validation.yml').read_text()
+        self.child = (ROOT / '.github/workflows/sdk-consumer-validation.yml').read_text()
+
+    def test_retained_route_is_only_existing_authorized_native_selection(self):
+        expression = re.search(r"(?m)^      retained_android: \$\{\{ (.*?) \}\}$", self.parent)[1]
+        values = {name: False for name in ('inputs.fullReuseAcceptanceOnly', 'inputs.runtimeRecoveryOnly', 'inputs.sdkRecoveryOnly')}
+        values.update({name: 'true' for name in (
+            'steps.event-authorization.outputs.authorized', 'steps.impact.outputs.remote_build_authorized',
+            'steps.impact.outputs.lane_android', 'steps.impact.outputs.lane_android_test',
+            'steps.impact.outputs.lane_android_metadata', 'steps.product-reuse.outputs.native_resume_ready',
+            'steps.product-reuse.outputs.native_resume_full_reuse')})
+        values['steps.validation-reuse.outputs.reused'] = 'false'
+        def enabled(current):
+            code = expression
+            for key in sorted(current, key=len, reverse=True): code = code.replace(key, repr(current[key]))
+            code = code.replace('&&', ' and ').replace('||', ' or ')
+            code = re.sub(r'!(?!=)', ' not ', code)
+            return eval(code, {'__builtins__': {}}, {})
+        self.assertTrue(enabled(values))
+        for key in values:
+            if key.endswith(('lane_android_test', 'lane_android_metadata')): continue
+            for invalid in (True,) if key.startswith('inputs.') else ('', 'malformed', 'false'):
+                current = dict(values); current[key] = invalid
+                if key.endswith('reused') and invalid == 'false': current[key] = 'true'
+                with self.subTest(key=key, value=invalid): self.assertFalse(enabled(current))
+        for test, metadata, expected in (('true','false',True),('false','true',True),('false','false',False)):
+            current = dict(values, **{'steps.impact.outputs.lane_android_test':test,
+                                     'steps.impact.outputs.lane_android_metadata':metadata})
+            self.assertEqual(expected, enabled(current))
+        self.assertIn("retainedAndroidConsumer: ${{ needs.plan.outputs.retained_android == 'true' }}", self.parent)
+        self.assertIn("matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer && 'true' || 'false'", self.child)
+        self.assertEqual(2, self.child.count("if: matrix.lane == 'consumer-android' && !inputs.retainedAndroidConsumer"))
+        self.assertIn("if: matrix.lane == 'consumer-android' && inputs.retainedAndroidConsumer\n        uses: codex-agent-labs", self.child)
+        self.assertIn("retainedAndroidConsumer:\n        required: false\n        type: boolean\n        default: false", self.child)
+
+    def test_actual_source_check_caller_uses_private_external_destination(self):
+        from ci import sdk_android_evidence_capture as android
+        from products.sdk_package import _require_capability_output_separate
+        block = self.parent.split('      - name: Run only selected Android source tests and lint\n', 1)[1]
+        script = textwrap.dedent(block.split("          python3 -B - <<'PYCODE'\n", 1)[1].split('          PYCODE',1)[0])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); checkout = root / 'checkout'; checkout.mkdir()
+            runner = root / 'runner'; runner.mkdir()
+            with patch.dict(os.environ, GITHUB_WORKSPACE=str(checkout), RUNNER_TEMP=str(runner)), \
+                    patch.object(android, 'source_checks') as invoke:
+                exec(compile(script, '<actual-parent-source-check-step>', 'exec'), {})
+            invoke.assert_called_once_with(checkout, Path('build/ci/android-source-plan/impact-plan.json'), runner / 'android-source-checks')
+            _require_capability_output_separate(invoke.call_args.args[2], (checkout, invoke.call_args.args[1]))
+            self.assertIn('path: ${{ runner.temp }}/android-source-checks', block)
+
+    def test_contribution_upload_and_merge_are_distinct_from_legacy_reuse(self):
+        self.assertIn('--android-contribution-directory "$RUNNER_TEMP/android-contribution"', self.parent)
+        upload = self.parent.split('      - id: android-contribution-upload\n',1)[1].split('\n  sdk-completion-full-reuse:',1)[0]
+        self.assertIn('overwrite: false', upload)
+        self.assertIn("if: needs.plan.outputs.retained_android == 'true' && steps.android-contribution.outputs.sha256 != ''", upload)
+        self.assertIn('codex-agent-sdk-android-contribution-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}', upload)
+        gate = self.parent.split('  merge-gate:\n',1)[1]
+        for name in ('Require an exact receipt set', 'Stage the exact reusable validation artifact'):
+            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' }}", gate)
+        self.assertIn("aggregate_retained_android(plan, Path('build/ci/receipts')", gate)
+        self.assertIn("artifact_id=int(os.environ['ARTIFACT_ID']), artifact_sha256=os.environ['ARTIFACT_SHA256']", gate)
+        self.assertIn("contribution_sha256=os.environ['CONTRIBUTION_SHA256'], environ=os.environ", gate)
+        self.assertIn('test "$SDK_COMPLETION_RESULT" = success || exit 1', gate)
+        self.assertIn('test "$ANDROID_SOURCE_RESULT" = success || exit 1', gate)
+        self.assertIn('name: codex-agent-current-validation-contributions-', gate)
+
+
+    def test_retained_consumer_uses_early_resume_exact_state_not_late_completion(self):
+        job = self.parent.split('  consumers:\n', 1)[1].split('\n  sdk-ios-binary-plan:', 1)[0]
+        needs = re.search(r'needs: \[([^\]]+)\]', job)[1].split(', ')
+        self.assertIn('product-resume', needs); self.assertNotIn('sdk-completion', needs)
+        self.assertIn("needs.plan.outputs.retained_android != 'true' || needs.product-resume.result == 'success'", job)
+        self.assertIn('sdkOutputs: ${{ toJSON(needs.product-resume.outputs) }}', job)
+        self.assertIn('sdk-completion', self.parent.split('  merge-gate:\n',1)[1].split('    runs-on:',1)[0])
+        script = self.child.split('      - id: native-state\n',1)[1].split("          python3 -B - <<'PYCODE'\n",1)[1].split('          PYCODE',1)[0]
+        script = textwrap.dedent(script)
+        valid = {'artifact_id':'17','artifact_digest':'sha256:'+'a'*64,'full_reuse':'true','wave_failed':'false'}
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary)/'output'
+            for change in ({}, {'full_reuse':'false'}, {'wave_failed':'true'}, {'artifact_id':''},
+                           {'artifact_digest':'wrong'}, {'state_wave':'1'}, {'sdk_state_wave':'10'}):
+                with self.subTest(change=change), patch.dict(os.environ, SDK_OUTPUTS=json.dumps({**valid,**change}), GITHUB_OUTPUT=str(destination)):
+                    if change:
+                        with self.assertRaises(ValueError): exec(compile(script,'<actual-early-state-selector>','exec'),{})
+                        self.assertFalse(destination.exists())
+                    else:
+                        exec(compile(script,'<actual-early-state-selector>','exec'),{})
+                        self.assertEqual({'artifact_id':'17','artifact_digest':'sha256:'+'a'*64,'state_wave':'0','sdk_state_wave':''},
+                            dict(line.split('=',1) for line in destination.read_text().splitlines()))
+                        destination.unlink()
+
+    def test_existing_tooling_arguments_preserve_fixed_android_contribution_flag(self):
+        job = self.parent.split('  sdk-completion:\n',1)[1].split('\n  sdk-completion-full-reuse:',1)[0]
+        setup = job.split('            tooling=()\n',1)[1].split('            python3 -B -m ci.sdk_completion capture',1)[0]
+        script = 'set -euo pipefail\ntooling=()\n'+textwrap.dedent(setup)+'\nprintf "%s\\0" "${tooling[@]}"\n'
+        environment = {'RETAINED_ANDROID':'true','RUNNER_TEMP':'/private/runner',
+            'SDK_VALIDATION_TOOLING':'/approved/sdk-tooling','SDK_APPLE_VALIDATION_POLICY':'/approved/apple',
+            'CODEX_AGENT_COMPLETED_REUSE_POLICY':'/approved/native','SDK_STATE_WAVE':''}
+        result = subprocess.run(['/bin/bash','-c',script],env=environment,check=True,capture_output=True)
+        self.assertEqual(['--android-contribution-directory','/private/runner/android-contribution',
+            '--sdk-validation-tooling','/approved/sdk-tooling','--sdk-apple-validation-policy','/approved/apple',
+            '--completed-frozen-policy','/approved/native'],result.stdout.decode().rstrip('\0').split('\0'))

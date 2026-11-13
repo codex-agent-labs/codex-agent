@@ -23,6 +23,9 @@ inputs:
     default: none
   force-build:
     default: "false"
+  android-installed-consumer:
+    description: Run the fixed Android installed consumer from authenticated canonical packages once.
+    default: "false"
   tooling-purpose:
     description: Fixed signed-tooling role for a tooling-only contracts invocation
     required: false
@@ -77,9 +80,15 @@ runs:
         REUSE_ONLY: ${{ inputs.reuse-only }}
         TOOLING_ONLY: ${{ inputs.contract-tooling-only }}
         TOOLING_PURPOSE: ${{ inputs.tooling-purpose }}
+        ANDROID_INSTALLED_CONSUMER: ${{ inputs.android-installed-consumer }}
       shell: bash
       run: |
         printf 'PYTHONDONTWRITEBYTECODE=1\n' >> "$GITHUB_ENV"
+        case "${ANDROID_INSTALLED_CONSUMER-false}" in
+          false) ;;
+          true) test "$LANE" = consumer-android ;;
+          *) echo "Unsupported installed consumer selection" >&2; exit 1 ;;
+        esac
         case "$TOOLING_PURPOSE" in
           full) ;;
           runtime-package) test "$TOOLING_ONLY" = true; test "$LANE" = contracts ;;
@@ -420,6 +429,7 @@ runs:
         CI_NODE_JS_REQUIRED: ${{ steps.selection.outputs.node_js }}
         CI_NODE_WASM_REQUIRED: ${{ steps.selection.outputs.node_wasm }}
         CI_PRODUCTION_REUSED: 'false'
+        CODEX_AGENT_ANDROID_INSTALLED_CONSUMER: ${{ inputs.android-installed-consumer }}
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
         CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash
@@ -590,6 +600,7 @@ runs:
     - id: execution
       if: >-
         inputs.contract-tooling-only != 'true' && inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
+        !(inputs.lane == 'consumer-android' && inputs.android-installed-consumer == 'true' && steps.production-execution.outcome == 'success') &&
         steps.production-execution.outcome != 'failure' &&
         steps.portable-runtime-products.outcome != 'failure' &&
         (inputs.force-build == 'true' || steps.selection.outputs.test == 'true' ||
@@ -603,6 +614,7 @@ runs:
         CI_NODE_JS_REQUIRED: ${{ steps.selection.outputs.node_js }}
         CI_NODE_WASM_REQUIRED: ${{ steps.selection.outputs.node_wasm }}
         CI_PRODUCTION_REUSED: 'true'
+        CODEX_AGENT_ANDROID_INSTALLED_CONSUMER: ${{ inputs.android-installed-consumer }}
         CI_VALIDATION_COMMIT: ${{ inputs.validation-commit }}
         CI_VALIDATION_TREE: ${{ inputs.validation-tree }}
       shell: bash

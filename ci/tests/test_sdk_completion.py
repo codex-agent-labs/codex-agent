@@ -918,6 +918,156 @@ class SdkCompletionTest(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+    def test_fixed_android_contribution_reuses_exact_single_state_inspection(self):
+        import sdk_android_evidence_capture as android
+        state = object()
+        contribution = {'kind':'fixture qualified Android contribution'}
+        value = inspected([phase(identity) for identity in self.sdk])
+        def inspect(*args, **kwargs):
+            self.assertNotIn('requested_scope', kwargs)
+            kwargs['_verified_state_consumer'](state)
+            return value
+        with patch.object(completion.products,'inspect_products',side_effect=inspect) as replay, \
+                patch.object(android,'retained_android_contribution',return_value=contribution) as consume:
+            result=completion.require_sdk_completion(*self.paths,repository_root=self.root,environ=self.environment,
+                include_android_contribution=True)
+        replay.assert_called_once()
+        consume.assert_called_once_with(state,self.paths[0],environ=self.environment)
+        self.assertEqual(contribution,result.pop('androidContribution'))
+        self.assertEqual({'complete':True,'phaseCount':62,'fullReuse':True},result)
+        with patch.object(completion.products,'inspect_products',return_value=value),self.assertRaisesRegex(ValueError,'single verified state'):
+            completion.require_sdk_completion(*self.paths,include_android_contribution=True)
+
+    def test_android_contribution_publishes_after_all_exits_and_never_on_late_failure(self):
+        import sdk_android_evidence_capture as android
+        from products.restore import _VERIFICATION_SESSION,verification_session
+        for failure in ('none','callback','gate','authority-exit','session-exit'):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary).resolve();output=root/'output';contribution=root/'contribution'
+                events=[];held={'live':False};state=object()
+                @contextmanager
+                def authority(args):
+                    held['live']=True;events.append('enter')
+                    try:yield {'completed_frozen':object()}
+                    finally:held['live']=False;events.append('exit')
+                    if failure=='authority-exit':raise ValueError('late authority failure')
+                @contextmanager
+                def session():
+                    with verification_session():yield
+                    if failure=='session-exit':raise ValueError('late session failure')
+                def consume(*args,**kwargs):
+                    self.assertTrue(held['live']);self.assertIsNotNone(_VERIFICATION_SESSION.get())
+                    self.assertIs(state,args[0]);events.append('consume')
+                    if failure=='callback':raise ValueError('failed native contribution')
+                    return {'kind':'fixture native contribution'}
+                def inspect(*args,**kwargs):
+                    kwargs['_verified_state_consumer'](state)
+                    return inspected([phase(item,'waiting' if failure=='gate' else 'retained') for item in self.sdk])
+                real_publish=completion.publish_regular_tree
+                def publish(*args,**kwargs):
+                    self.assertFalse(held['live']);self.assertIsNone(_VERIFICATION_SESSION.get())
+                    self.assertEqual(['enter','consume','exit'],events)
+                    return real_publish(*args,**kwargs)
+                argv=['--plan',str(self.paths[0]),'--destination',str(root/'capture'),
+                    '--repository-root',str(root),'--github-output',str(output),
+                    '--artifact-id','91','--artifact-sha256','sha256:'+'a'*64,
+                    '--trusted-workflow-sha','d'*40,'--completed-frozen-policy','/policy/native.json',
+                    '--android-contribution-directory',str(contribution)]
+                with patch.object(completion,'completed_frozen_options',authority), \
+                        patch.object(completion,'verification_session',session), \
+                        patch.object(completion.products,'capture_runtime_resume_upload') as capture, \
+                        patch.object(completion.products,'inspect_products',side_effect=inspect) as replay, \
+                        patch.object(android,'retained_android_contribution',side_effect=consume), \
+                        patch.object(completion,'publish_regular_tree',side_effect=publish),redirect_stderr(io.StringIO()):
+                    if failure=='none':
+                        self.assertEqual(0,completion._capture_main(argv))
+                        raw=(contribution/'android-contribution.json').read_bytes()
+                        self.assertIn('androidContributionSha256='+completion.sha256_bytes(raw),output.read_text())
+                    else:
+                        with self.assertRaises(SystemExit):completion._capture_main(argv)
+                        self.assertFalse(contribution.exists());self.assertFalse(output.exists())
+                    capture.assert_called_once();replay.assert_called_once()
+
+
+    def test_fixed_installed_android_consumer_shares_replay_and_keeps_default_report(self):
+        import sdk_android_validation_workflow as android_consumer
+        import sdk_android_evidence_capture as android
+        state = object()
+        for include_contribution in (False, True):
+            with self.subTest(contribution=include_contribution):
+                def inspect(*args, **kwargs):
+                    self.assertNotIn('requested_scope', kwargs)
+                    consume = kwargs['_verified_state_consumer']
+                    consume(state)
+                    with self.assertRaisesRegex(ValueError, 'more than once'):
+                        consume(state)
+                    return inspected([phase(identity) for identity in self.sdk])
+                with patch.object(completion.products, 'inspect_products', side_effect=inspect) as replay, \
+                        patch.object(android_consumer, 'run_retained_android_consumer', return_value=None, create=True) as consume, \
+                        patch.object(android, 'retained_android_contribution', return_value={'kind': 'fixture'}) as contribution:
+                    result = completion.require_sdk_completion(*self.paths, repository_root=self.root,
+                        environ=self.environment, android_installed_consumer=True,
+                        include_android_contribution=include_contribution)
+                replay.assert_called_once()
+                consume.assert_called_once_with(state, plan_path=self.paths[0],
+                    repository_root=self.root, environ=self.environment)
+                self.assertEqual(int(include_contribution), contribution.call_count)
+                if include_contribution:
+                    self.assertEqual({'kind': 'fixture'}, result.pop('androidContribution'))
+                self.assertEqual({'complete': True, 'phaseCount': 62, 'fullReuse': True}, result)
+
+    def test_installed_android_capture_outputs_follow_all_owners_and_fail_closed(self):
+        import sdk_android_validation_workflow as android_consumer
+        from products.restore import _VERIFICATION_SESSION, verification_session
+        for failure in ('none', 'consumer', 'gate', 'authority-exit', 'session-exit'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); output = root / 'github-output'; state = object()
+                events = []; live = {'value': False}
+                @contextmanager
+                def authority(args):
+                    live['value'] = True
+                    try:
+                        yield {'completed_frozen': object()}
+                    finally:
+                        live['value'] = False; events.append('authority-exit')
+                    if failure == 'authority-exit': raise ValueError('late authority failure')
+                @contextmanager
+                def session():
+                    with verification_session(): yield
+                    events.append('session-exit')
+                    if failure == 'session-exit': raise ValueError('late session failure')
+                def consume(actual, **kwargs):
+                    self.assertIs(state, actual); self.assertTrue(live['value'])
+                    self.assertIsNotNone(_VERIFICATION_SESSION.get()); events.append('consume')
+                    if failure == 'consumer': raise ValueError('failed installed consumer')
+                def inspect(*args, **kwargs):
+                    kwargs['_verified_state_consumer'](state)
+                    return inspected([phase(identity, 'waiting' if failure == 'gate' else 'retained') for identity in self.sdk])
+                actual_output = completion.github_output
+                def emit(*args):
+                    self.assertFalse(live['value']); self.assertIsNone(_VERIFICATION_SESSION.get())
+                    self.assertEqual(['consume', 'authority-exit', 'session-exit'], events)
+                    actual_output(*args)
+                argv = ['--plan', str(self.paths[0]), '--destination', str(root / 'capture'),
+                    '--repository-root', str(root), '--github-output', str(output),
+                    '--artifact-id', '91', '--artifact-sha256', 'sha256:' + 'a'*64,
+                    '--trusted-workflow-sha', 'd'*40, '--completed-frozen-policy', '/policy/native.json',
+                    '--android-installed-consumer']
+                with patch.object(completion, 'completed_frozen_options', authority), \
+                        patch.object(completion, 'verification_session', session), \
+                        patch.object(completion.products, 'capture_runtime_resume_upload') as capture, \
+                        patch.object(completion.products, 'inspect_products', side_effect=inspect) as replay, \
+                        patch.object(android_consumer, 'run_retained_android_consumer', side_effect=consume, create=True), \
+                        patch.object(completion, 'github_output', side_effect=emit), redirect_stderr(io.StringIO()):
+                    if failure == 'none':
+                        self.assertEqual(0, completion._capture_main(argv))
+                        self.assertEqual({'complete=true', 'phaseCount=62', 'fullReuse=true'}, set(output.read_text().splitlines()))
+                    else:
+                        with self.assertRaises(SystemExit): completion._capture_main(argv)
+                        self.assertFalse(output.exists())
+                    capture.assert_called_once(); replay.assert_called_once()
+
+
 class CurrentHeadAcceptanceTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="current-head-fixture-")

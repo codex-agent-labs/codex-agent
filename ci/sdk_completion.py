@@ -227,7 +227,7 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                            repository_root=None, environ=None, sdk_validation_tooling=None,
                            sdk_apple_validation_policy=None, sdk_original_workflow_sha=None,
                            sdk_facade_metadata_admission=None, sdk_android_metadata_admission=None,
-                           completed_frozen=None):
+                           completed_frozen=None, include_android_contribution=False, android_installed_consumer=False):
     """Check the full replayed SDK closure, not a family matrix or new election.
 
     Existing inspection authenticates the exact result schema, requested closure,
@@ -236,6 +236,22 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
     the same authenticated replay's global result for the final merge gate.
     No SDK selection is a successful no-op, not evidence of a produced SDK.
     """
+    if type(include_android_contribution) is not bool or type(android_installed_consumer) is not bool:
+        raise ValueError("Fixed Android consumer selections must be boolean")
+    contribution, consumed = [], []
+    def consume_android(state):
+        if consumed:
+            raise ValueError("Android completion state was consumed more than once")
+        consumed.append(True)
+        environment = os.environ if environ is None else environ
+        if include_android_contribution:
+            from sdk_android_evidence_capture import retained_android_contribution
+            contribution.append(retained_android_contribution(state, plan_path, environ=environment))
+        if android_installed_consumer:
+            from sdk_android_validation_workflow import run_retained_android_consumer
+            run_retained_android_consumer(state, plan_path=plan_path,
+                repository_root=repository_root, environ=environment)
+
     inspected = products.inspect_products(plan_path, discovery_root, state_root,
         repository_root=repository_root, environ=environ,
         **({"sdk_validation_tooling": sdk_validation_tooling} if sdk_validation_tooling is not None else {}),
@@ -244,6 +260,7 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
         **({"sdk_original_workflow_sha": sdk_original_workflow_sha}
            if sdk_original_workflow_sha is not None else {}),
         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}),
+        **({"_verified_state_consumer": consume_android} if include_android_contribution or android_installed_consumer else {}),
         **products._metadata_admissions(sdk_facade_metadata_admission, sdk_android_metadata_admission))
     result = require_exact_keys(require_object(inspected, "SDK completion inspection").get("result"),
                                 products._REUSE_RESULT_KEYS, "SDK completion replay result")
@@ -270,7 +287,10 @@ def require_sdk_completion(plan_path, discovery_root, state_root=None, *,
                 require_sha256(phase[field], "Completed SDK phase " + field)
     if unresolved:
         raise ValueError("Selected SDK phases remain unresolved: " + ", ".join(unresolved))
-    return {"complete": True, "phaseCount": count, "fullReuse": result["fullReuse"]}
+    if (include_android_contribution or android_installed_consumer) and len(consumed) != 1:
+        raise ValueError("Android consumer lacks its single verified state")
+    return {"complete": True, "phaseCount": count, "fullReuse": result["fullReuse"],
+            **({"androidContribution": contribution[0]} if include_android_contribution else {})}
 
 
 def require_repository_completion(plan_path, discovery_root, state_root=None, **options):
@@ -779,12 +799,23 @@ def _capture_main(argv):
     parser.add_argument("--trusted-workflow-sha", required=True)
     parser.add_argument("--state-wave", type=int, default=0)
     parser.add_argument("--sdk-state-wave", type=int)
+    parser.add_argument("--android-contribution-directory", type=Path)
+    parser.add_argument("--android-installed-consumer", action="store_true")
     for name in ("sdk-validation-tooling", "sdk-apple-validation-policy"):
         parser.add_argument("--" + name, type=Path)
     add_metadata_admission_arguments(parser)
     add_completed_frozen_argument(parser)
     args = parser.parse_args(argv)
     try:
+        if (args.android_contribution_directory is not None or args.android_installed_consumer) and args.completed_frozen_policy is None:
+            raise ValueError("Android consumption requires explicit native authority")
+        if args.android_contribution_directory is not None:
+            from products.sdk_package import _require_capability_output_separate
+            contribution_destination = args.android_contribution_directory.absolute()
+            _require_capability_output_separate(contribution_destination,
+                (args.plan, args.destination, args.completed_frozen_policy))
+            if contribution_destination.exists() or contribution_destination.is_symlink():
+                raise ValueError("Android contribution destination must be fresh")
         # This process owns one capability and one verification lifetime. No
         # captured matrix or serialized success substitutes for the full gate.
         with verification_session(), products._ci_observation_batch(
@@ -805,8 +836,18 @@ def _capture_main(argv):
             result = require_sdk_completion(original / "product-resume-inputs/plan/impact-plan.json",
                 discovery, state, repository_root=args.repository_root, environ=os.environ,
                 sdk_original_workflow_sha=args.trusted_workflow_sha,
+                **({"include_android_contribution": True}
+                   if args.android_contribution_directory is not None else {}),
+                **({"android_installed_consumer": True} if args.android_installed_consumer else {}),
                 **policies, **admissions, **completed)
         # All original, policy and native-custody exits precede output publication.
+        if args.android_contribution_directory is not None:
+            raw = canonical_json_bytes(result.pop("androidContribution"))
+            with tempfile.TemporaryDirectory(prefix="android-contribution-") as temporary:
+                staged = Path(temporary).resolve()
+                (staged / "android-contribution.json").write_bytes(raw)
+                publish_regular_tree(staged, contribution_destination)
+            result["androidContributionSha256"] = sha256_bytes(raw)
         github_output(args.github_output, result)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
