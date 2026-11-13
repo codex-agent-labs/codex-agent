@@ -43,6 +43,34 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                     continue
                 count += 1
                 with self.subTest(job=name):
+                    header = job.split('    steps:', 1)[0]
+                    self.assertNotIn('outputs.apple-policy', header)
+                    if name == 'workflow-build-logic':
+                        # The fixed test runner consumes tooling, not Apple product state.
+                        self.assertIn('- id: test-tooling\n', step)
+                        self.assertNotIn('plan-id:', step)
+                        self.assertNotIn('prepare-sdk-apple-policy', job)
+                        for binding in (
+                            'trusted-workflow-sha: ${{ needs.plan.outputs.publisher_sha }}',
+                            'trusted-workflow-path: .github/workflows/contract-validation.yml',
+                            'trusted-job-name: product-validation / contract-validation / tooling-attestation',
+                            'policy-revision: ${{ needs.plan.outputs.validation_commit }}',
+                        ):
+                            self.assertIn(binding, step)
+                        consumers = [part for part in self.steps(job)
+                                     if 'python3 -B .github/actions/run-ci-lane/build-logic-tests.py' in part]
+                        self.assertEqual(1, len(consumers))
+                        self.assertLess(job.index(step), job.index(consumers[0]))
+                        for binding in (
+                            'TEST_TOOLING_POLICY: ${{ steps.test-tooling.outputs.tooling-policy }}',
+                            'TEST_POLICY_REVISION: ${{ needs.plan.outputs.validation_commit }}',
+                            '--tooling-policy "$TEST_TOOLING_POLICY"',
+                            '--policy-revision "$TEST_POLICY_REVISION"',
+                        ):
+                            self.assertIn(binding, consumers[0])
+                        self.assertNotRegex(job, r'ci/product_reuse\.py|-m ci\.(?:sdk_workflow|sdk_completion)|'
+                                            r'uses: \./\.github/actions/(?:capture-runtime-state|run-runtime-product-phase)')
+                        continue
                     self.assertIn('- id: tooling', step)
                     explicit = [part for part in self.steps(job)
                                 if 'uses: ./.github/actions/prepare-sdk-apple-policy' in part]
@@ -55,8 +83,6 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
                         self.assertTrue(
                             'plan-id: ${{ needs.plan.outputs.plan_id }}' in step or
                             'plan-id: ${{ fromJSON(inputs.planOutputs).plan_id }}' in step)
-                    header = job.split('    steps:', 1)[0]
-                    self.assertNotIn('outputs.apple-policy', header)
         self.assertGreaterEqual(count, 40)
 
     def test_every_state_and_worker_action_receives_supported_local_policy(self):
