@@ -19,6 +19,7 @@ if str(_CI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CI_ROOT))
 
 from native_wrappers import (  # noqa: E402
+    build_csharp_binary,
     FORBIDDEN_C_ABI_PROOFS,
     HOSTS,
     LANGUAGES,
@@ -29,7 +30,9 @@ from native_wrappers import (  # noqa: E402
     package_once,
     safe_extract_tar,
     safe_extract_zip,
+    set_source_sdk_version,
 )
+from ci.products.sdk_dotnet_toolchain import _host_identity
 from ci.products.c_abi import (
     C_ABI_PACKAGE_MANIFEST,
     TARGET_SPECS,
@@ -59,21 +62,31 @@ def _tool_selection() -> tuple[tuple[str, ...], dict[str, str]]:
         python_build = False
     available = {
         "python": python_build,
-        "csharp": shutil.which("dotnet") is not None,
+        "csharp": (shutil.which("dotnet") is not None
+                   and _host_identity() == ("Linux", "X64", "ubuntu-24.04")),
         "rust": shutil.which("cargo") is not None,
         "cpp": shutil.which("cmake") is not None and shutil.which("c++") is not None,
         "dart": False,
     }
     reasons = {
         "python": "current Python has no executable build.__main__ package",
-        "csharp": "dotnet is unavailable",
+        "csharp": "C# fixture requires dotnet on pinned ubuntu-24.04/Linux/X64",
         "rust": "cargo is unavailable",
         "cpp": "cmake or c++ is unavailable",
         "dart": "package_once has no offline Dart pub resolution option",
     }
+    selected = tuple(language for language in LANGUAGES if available[language])
+    requested = os.environ.get("CODEX_AGENT_TEST_NATIVE_PACKAGE_LANGUAGES")
+    if requested is not None:
+        languages = requested.split(",")
+        if (len(set(languages)) != len(languages)
+                or any(language not in available or not available[language] for language in languages)):
+            raise ValueError("requested fixture languages must be a nonempty unique available subset")
+        selected = tuple(language for language in LANGUAGES if language in languages)
     return (
-        tuple(language for language in LANGUAGES if available[language]),
-        {language: reasons[language] for language in LANGUAGES if not available[language]},
+        selected,
+        {language: reasons[language] if not available[language] else "not selected for this opt-in fixture"
+         for language in LANGUAGES if language not in selected},
     )
 
 
@@ -287,7 +300,16 @@ def build_sdk_packages(
         "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE": "1",
         "DOTNET_NOLOGO": "1",
     }):
-        package_once(sources, sdks, packages, sdk_version, languages)
+        binary = profile = None
+        if "csharp" in languages:
+            set_source_sdk_version(sources, sdk_version, ("csharp",))
+            binary = root / "csharp-fixture-binary"
+            profile = _REPOSITORY / "gradle/release/toolchains/sdk/csharp.json"
+            build_csharp_binary(
+                sources / "csharp/src/CodexAgent", sdks / "sdk-compatibility.json",
+                sdks / "sdk-runtime-root.pub", binary, sdk_version, profile,
+            )
+        package_once(sources, sdks, packages, sdk_version, languages, binary, profile)
     package_files = {
         path.relative_to(packages).as_posix(): path
         for path in files(packages)

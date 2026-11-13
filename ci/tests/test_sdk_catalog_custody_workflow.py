@@ -23,7 +23,7 @@ class SdkCatalogCustodyWorkflowTest(unittest.TestCase):
         dispatch = caller.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertIn("default: validation", dispatch)
         self.assertIn("options: [validation, build-logic-diagnostics, sdk-catalog-custody, runtime-toolchain-capture, runtime-phase10-record, contract-phase10-record, sdk-phase10-authority, sdk-phase10-record, sdk-phase10-maven-sidecars, sdk-runtime-library-validation, runtime-library-authorizations]", dispatch)
-        self.assertEqual(10, len(re.findall(r"^      [A-Za-z][A-Za-z0-9]*:\s*$", dispatch, re.MULTILINE)))
+        self.assertEqual(11, len(re.findall(r"^      [A-Za-z][A-Za-z0-9]*:\s*$", dispatch, re.MULTILINE)))
         validation = workflow_job(caller, "product-validation")
         custody = workflow_job(caller, "sdk-failed-catalog-custody")
         gate = workflow_job(caller, "merge-gate")
