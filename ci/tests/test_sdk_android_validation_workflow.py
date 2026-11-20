@@ -899,6 +899,9 @@ class RetainedInstalledConsumerTest(unittest.TestCase):
         self.restore.assert_not_called()
 
     def test_dedicated_template_changes_only_exact_target_declarations(self):
+        selector = (self.root / workflow._CONSUMER_TEMPLATE / "target-template.init.gradle").read_text()
+        self.assertLess(selector.index("if (gradle.parent != null) return"),
+                        selector.index("tasks.named(__CODEX_INVENTORY__).get()"))
         original = (Path.cwd() / "gradle/release/kmp-consumer-template/build.gradle.kts").read_text()
         new = (self.root / workflow._CONSUMER_TEMPLATE / "build.gradle.kts").read_text()
         self.assertEqual(original[original.index('if (consumerTarget == "desktop") {'):],

@@ -6629,11 +6629,11 @@ jobs:
       - id: validation-contributions
         if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true'
         run: |
-          python3 -B - <<'PYCODE'
+          PYTHONPATH="$PWD/ci" python3 -B - <<'PYCODE'
           import os
           from pathlib import Path
-          from ci.products.inventory import read_regular_file_bytes, sha256_bytes
-          from ci.reuse import github_output
+          from products.inventory import read_regular_file_bytes, sha256_bytes
+          from reuse import github_output
           path = Path(os.environ['RUNNER_TEMP']) / 'validation-contributions/canonical-contributions.json'
           raw = read_regular_file_bytes(path, max_bytes=1024 * 1024, reject_symlink_parents=True)
           github_output(Path(os.environ['GITHUB_OUTPUT']), {'sha256': sha256_bytes(raw)})

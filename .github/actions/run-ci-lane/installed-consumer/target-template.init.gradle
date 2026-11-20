@@ -3,6 +3,7 @@ def expectedSdk = __CODEX_SDK_VERSION__
 def expectedRuntime = __CODEX_RUNTIME_VERSION__
 def expectedContract = __CODEX_CONTRACT_VERSION__
 gradle.projectsEvaluated {
+    if (gradle.parent != null) return
     def inventory = gradle.rootProject.tasks.named(__CODEX_INVENTORY__).get()
     if (inventory.inputs.properties.sdkVersion != expectedSdk ||
         inventory.inputs.properties.runtimeVersion != expectedRuntime ||

@@ -1006,6 +1006,21 @@ class RetainedAndroidParentWorkflowTest(unittest.TestCase):
             _require_capability_output_separate(invoke.call_args.args[2], (checkout, invoke.call_args.args[1]))
             self.assertIn('path: ${{ runner.temp }}/android-source-checks', block)
 
+    def test_contribution_digest_step_in_fresh_worker_shell(self):
+        step = self.parent.split('      - id: validation-contributions\n', 1)[1].split('      - id:', 1)[0]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Path(temporary).resolve()
+            payload = runner / 'validation-contributions/canonical-contributions.json'
+            payload.parent.mkdir()
+            payload.write_bytes(b'{"schemaVersion":1}\n')
+            output = runner / 'github-output'
+            env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+            subprocess.run(['bash', '-eu', '-c', script], cwd=ROOT, check=True,
+                           env={**env, 'RUNNER_TEMP': str(runner), 'GITHUB_OUTPUT': str(output)})
+            digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+            self.assertEqual(f'sha256=sha256:{digest}\n', output.read_text())
+
     def test_contribution_upload_and_merge_are_distinct_from_legacy_reuse(self):
         self.assertIn('--validation-contribution-directory "$RUNNER_TEMP/validation-contributions"', self.parent)
         upload = self.parent.split('      - id: validation-contributions-upload\n',1)[1].split('\n  sdk-completion-full-reuse:',1)[0]
