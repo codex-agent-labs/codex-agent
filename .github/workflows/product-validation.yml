@@ -592,13 +592,21 @@ jobs:
       plan_id: ${{ steps.upload_plan.outputs.artifact-id }}
       plan_control_id: ${{ steps.upload_plan_control.outputs.artifact-id }}
       plan_digest: sha256:${{ steps.upload_plan.outputs.artifact-digest }}
-      product_matrix: ${{ steps.product-selection.outputs.product_matrix }}
+      product_matrix: ${{ steps.reviewed-runtime-selection.outputs.product_matrix }}
       contract_matrix: ${{ steps.product-selection.outputs.contract_matrix }}
       consumer_matrix: ${{ steps.impact.outputs.consumer_matrix }}
-      desktop_matrix: ${{ steps.retained-native-source-selection.outputs.legacy_matrix }}
-      any_desktop: ${{ steps.retained-native-source-selection.outputs.any_desktop }}
-      retained_native_source_matrix: ${{ steps.retained-native-source-selection.outputs.matrix }}
+      desktop_matrix: ${{ steps.reviewed-runtime-selection.outputs.desktop_matrix }}
+      any_desktop: ${{ steps.reviewed-runtime-selection.outputs.any_desktop }}
+      retained_native_source_matrix: ${{ steps.source-validation-originals.outputs.matrix || '[]' }}
+      retained_apple_source_miss: ${{ steps.source-validation-originals.outputs.swift_miss || 'false' }}
+      reused_source_lanes: ${{ steps.source-validation-originals.outputs.reused || '[]' }}
       retained_native_source: ${{ steps.retained-native-source-selection.outputs.enabled }}
+      reviewed_runtime: ${{ steps.reviewed-runtime-selection.outputs.enabled }}
+      reviewed_android: ${{ steps.reviewed-runtime-selection.outputs.android }}
+      reviewed_contracts: ${{ steps.reviewed-runtime-selection.outputs.contracts }}
+      retained_apple: ${{ steps.retained-apple-selection.outputs.enabled }}
+      retained_apple_reviewed: ${{ steps.retained-apple-selection.outputs.reviewed }}
+      retained_apple_source: ${{ steps.retained-apple-selection.outputs.swift_source }}
       native_wrappers: ${{ steps.impact.outputs.native_wrappers }}
       any_apple: ${{ steps.impact.outputs.any_apple }}
       lane_android: ${{ steps.impact.outputs.lane_android }}
@@ -611,7 +619,7 @@ jobs:
       lane_android_test: ${{ steps.impact.outputs.lane_android_test }}
       lane_android_metadata: ${{ steps.impact.outputs.lane_android_metadata }}
       lane_node_js: ${{ steps.impact.outputs.lane_node_js }}
-      lane_desktop_linux_arm64: ${{ steps.impact.outputs.lane_desktop_linux_arm64 }}
+      lane_desktop_linux_arm64: ${{ steps.reviewed-runtime-selection.outputs.linux_arm64 }}
       lane_desktop_linux_arm64_build: ${{ steps.impact.outputs.lane_desktop_linux_arm64_build }}
       lane_desktop_linux_arm64_test: ${{ steps.impact.outputs.lane_desktop_linux_arm64_test }}
       lane_desktop_linux_arm64_metadata: ${{ steps.impact.outputs.lane_desktop_linux_arm64_metadata }}
@@ -826,6 +834,7 @@ jobs:
           PY
       - id: retained-native-source-selection
         env:
+          HOST_SOURCE_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly && !inputs.toolingOnly && github.event.action == 'labeled' && github.event.label.name == 'ci:remote-final' && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:retained-source-validation') }}
           ORDINARY_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && !inputs.toolingOnly }}
           AUTHORIZED: ${{ steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' }}
           VALIDATION_REUSED: ${{ steps.validation-reuse.outputs.reused }}
@@ -846,7 +855,12 @@ jobs:
               raise ValueError('Invalid retained native source-test selection')
           original = os.environ['DESKTOP_MATRIX']
           matrix, legacy, any_desktop = [], original, os.environ['ANY_DESKTOP']
-          if flags == ['true', 'true', 'false', 'true', 'true']:
+          host_source = os.environ.get('HOST_SOURCE_MODE', 'false')
+          if host_source not in ('true', 'false'):
+              raise ValueError('Invalid retained source-only opt-in')
+          if host_source == 'true' and flags != ['false', 'true', 'false', 'true', 'true']:
+              raise ValueError('Source-only recovery requires authorized unchanged full native reuse')
+          if flags == ['true', 'true', 'false', 'true', 'true'] or host_source == 'true':
               plan = json.loads(Path('build/ci/impact-plan.json').read_text())
               for target in ('linux-x64', 'macos-x64', 'windows-x64'):
                   lane = 'desktop-' + target
@@ -905,6 +919,127 @@ jobs:
               'matrix': json.dumps(matrix, separators=(',', ':')),
               'reused': json.dumps(reused, separators=(',', ':'))})
           PYCODE
+      - id: retained-apple-selection
+        env:
+          HOST_SOURCE_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly && !inputs.toolingOnly && github.event.action == 'labeled' && github.event.label.name == 'ci:remote-final' && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:retained-source-validation') }}
+          ORDINARY_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && !inputs.toolingOnly }}
+          AUTHORIZED: ${{ steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' }}
+          VALIDATION_REUSED: ${{ steps.validation-reuse.outputs.reused }}
+          NATIVE_READY: ${{ steps.product-reuse.outputs.native_resume_ready }}
+          NATIVE_FULL_REUSE: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
+          CANONICAL_CALLBACK: ${{ (steps.impact.outputs.lane_android == 'true' && (steps.impact.outputs.lane_android_test == 'true' || steps.impact.outputs.lane_android_metadata == 'true')) || steps.product-selection.outputs.retained_node_js == 'true' || steps.retained-consumer-selection.outputs.enabled == 'true' }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('ci').resolve()))
+          from sdk_android_evidence_capture import _apple_lanes
+          from reuse import github_output
+          flags = [os.environ[key] for key in ('ORDINARY_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE', 'CANONICAL_CALLBACK')]
+          if any(v not in ('', 'true', 'false') for v in flags):
+              raise ValueError('Invalid retained Apple selection')
+          enabled = reviewed = swift_source = False
+          if flags == ['true', 'true', 'false', 'true', 'true', 'true']:
+              plan = json.loads(Path('build/ci/impact-plan.json').read_text())
+              names = ('ios-framework-device', 'ios-framework-simulator', 'ios-swift-tests')
+              enabled = any(plan['lanes'][lane][a] for lane in names for a in ('build', 'test', 'metadata'))
+              if enabled:
+                  _apple_lanes(plan, True)
+                  swift_source = any(plan['lanes']['ios-swift-build'][a] for a in ('build', 'test'))
+                  reviewed = any(plan['lanes'][lane][a] for lane in ('ios-package', 'ios-privacy-metrics', 'ios-kotlin-tests', 'ios-native-tests', 'ios-rust-device', 'ios-rust-simulator') for a in ('build', 'test', 'metadata'))
+          host_source = os.environ.get('HOST_SOURCE_MODE', 'false')
+          if host_source not in ('true', 'false'):
+              raise ValueError('Invalid retained source-only opt-in')
+          if host_source == 'true':
+              if flags[:5] != ['false', 'true', 'false', 'true', 'true']:
+                  raise ValueError('Source-only recovery requires authorized unchanged full native reuse')
+              plan = json.loads(Path('build/ci/impact-plan.json').read_text())
+              actions = [plan['lanes']['ios-swift-build'][a] for a in ('build', 'test')]
+              if any(type(action) is not bool for action in actions):
+                  raise ValueError('Swift source-test lane selection must be boolean')
+              swift_source = any(actions)
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(enabled).lower(), 'reviewed': str(reviewed).lower(), 'swift_source': str(swift_source).lower()})
+          PYCODE
+
+      - id: source-validation-originals
+        if: steps.retained-native-source-selection.outputs.enabled == 'true' || steps.retained-apple-selection.outputs.swift_source == 'true'
+        env:
+          NATIVE_MATRIX: ${{ steps.retained-native-source-selection.outputs.matrix }}
+          SWIFT_SELECTED: ${{ steps.retained-apple-selection.outputs.swift_source }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_android_evidence_capture import select_source_validation_reuse
+          from ci.reuse import github_output
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          plan = json.loads((root / 'build/ci/impact-plan.json').read_bytes())
+          matrix = json.loads(os.environ['NATIVE_MATRIX'])
+          swift = os.environ['SWIFT_SELECTED'] == 'true'
+          reused = select_source_validation_reuse(plan, repository_root=root, revision=plan['validationCommit'],
+              trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+              completed_frozen_policy=Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']),
+              native_source_tests=bool(matrix), apple_source_tests=swift)
+          selected = {row['lane'] for row in matrix}
+          if swift:
+              selected.add('ios-swift-build')
+          if reused != sorted(set(reused)) or not selected.issuperset(reused):
+              raise ValueError('Authenticated source originals differ from selected lanes')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {
+              'matrix': json.dumps([row for row in matrix if row['lane'] not in reused], separators=(',', ':')),
+              'swift_miss': str(swift and 'ios-swift-build' not in reused).lower(),
+              'reused': json.dumps(reused, separators=(',', ':'))})
+          PYCODE
+      - id: reviewed-runtime-selection
+        env:
+          ORDINARY_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && !inputs.toolingOnly }}
+          AUTHORIZED: ${{ steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' }}
+          VALIDATION_REUSED: ${{ steps.validation-reuse.outputs.reused }}
+          NATIVE_READY: ${{ steps.product-reuse.outputs.native_resume_ready }}
+          NATIVE_FULL_REUSE: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
+          CANONICAL_CALLBACK: ${{ steps.retained-native-source-selection.outputs.enabled == 'true' || (steps.impact.outputs.lane_android == 'true' && (steps.impact.outputs.lane_android_test == 'true' || steps.impact.outputs.lane_android_metadata == 'true')) || steps.product-selection.outputs.retained_node_js == 'true' || steps.retained-consumer-selection.outputs.enabled == 'true' }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
+          TOOLING_MISS: ${{ steps.product-reuse.outputs.tooling_miss }}
+          PRODUCT_MATRIX: ${{ steps.product-selection.outputs.product_matrix }}
+          DESKTOP_MATRIX: ${{ steps.retained-native-source-selection.outputs.legacy_matrix }}
+          ANY_DESKTOP: ${{ steps.retained-native-source-selection.outputs.any_desktop }}
+          LINUX_ARM64: ${{ steps.impact.outputs.lane_desktop_linux_arm64 }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import importlib.util, json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('ci').resolve()))
+          from reuse import github_output
+          flags = [os.environ[key] for key in ('ORDINARY_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE', 'CANONICAL_CALLBACK')]
+          if any(v not in ('', 'true', 'false') for v in flags):
+              raise ValueError('Invalid reviewed Runtime selection')
+          product, desktop = os.environ['PRODUCT_MATRIX'], os.environ['DESKTOP_MATRIX']
+          any_desktop, linux = os.environ['ANY_DESKTOP'], os.environ['LINUX_ARM64']
+          selected = {}
+          if os.environ['TOOLING_MISS'] not in ('', 'true', 'false'):
+              raise ValueError('Invalid reviewed Contract tooling state')
+          if flags == ['true', 'true', 'false', 'true', 'true', 'true']:
+              spec = importlib.util.spec_from_file_location('runtime_reviewed_selection',
+                  Path('.github/actions/run-ci-lane/runtime_reviewed_validation.py'))
+              reader = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(reader)
+              plan = json.loads(Path('build/ci/impact-plan.json').read_text())
+              selected = reader.select_reviewed_runtime_routing(plan, root=Path.cwd(),
+                  trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], enabled=True,
+                  tooling_miss=os.environ['TOOLING_MISS'] != 'false')
+              if selected:
+                  product = json.dumps([row for row in json.loads(product) if row['lane'] not in selected], separators=(',', ':'))
+                  desktop_rows = [row for row in json.loads(desktop) if row['lane'] not in selected]
+                  desktop = json.dumps(desktop_rows, separators=(',', ':'))
+                  linux = 'false' if 'desktop-linux-arm64' in selected else linux
+                  any_desktop = str(bool(desktop_rows) or linux == 'true').lower()
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(bool(selected)).lower(),
+              'product_matrix': product, 'desktop_matrix': desktop,
+              'any_desktop': any_desktop, 'linux_arm64': linux,
+              'android': str('android' in selected).lower(), 'contracts': str('contracts' in selected).lower()})
+          PYCODE
+
       - name: Require unchanged Contract ownership before SDK continuation
         if: (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && steps.product-reuse.outcome == 'success'
         env:
@@ -3180,7 +3315,7 @@ jobs:
 
   android:
     if: >-
-      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true')
+      !inputs.fullReuseAcceptanceOnly && (needs.plan.outputs.reviewed_android != 'true' && !inputs.runtimeRecoveryOnly && inputs.sdkRecoveryOnly != true && needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' && needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_android == 'true')
     needs: [workflow-lint, plan]
     runs-on: ubuntu-24.04
     outputs:
@@ -3262,7 +3397,8 @@ jobs:
 
   retained-native-source:
     if: >-
-      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && !inputs.toolingOnly &&
+      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && !inputs.toolingOnly &&
+      (!inputs.sdkRecoveryOnly || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:retained-source-validation'))) &&
       always() && needs.workflow-lint.result == 'success' && needs.plan.result == 'success' &&
       needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
       needs.plan.outputs.retained_native_source_matrix != '[]' &&
@@ -3318,6 +3454,27 @@ jobs:
       validationTree: ${{ needs.plan.outputs.validation_tree }}
 
 
+  retained-apple-source:
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && !inputs.toolingOnly &&
+      (!inputs.sdkRecoveryOnly || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:retained-source-validation'))) &&
+      always() && needs.workflow-lint.result == 'success' && needs.plan.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.retained_apple_source_miss == 'true' &&
+      needs.product-resume.result == 'success' && needs.product-resume.outputs.full_reuse == 'true')
+    needs: [workflow-lint, plan, product-resume]
+    uses: ./.github/workflows/apple-runtime-evidence.yml
+    with:
+      planArtifact: ${{ needs.plan.outputs.plan_artifact }}
+      planControlId: ${{ needs.plan.outputs.plan_control_id }}
+      validationCommit: ${{ needs.plan.outputs.validation_commit }}
+      validationTree: ${{ needs.plan.outputs.validation_tree }}
+      resumeOutputs: ${{ toJSON(needs.product-resume.outputs) }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      retainedSwiftSourceOnly: true
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
   apple:
     if: >-
       !inputs.fullReuseAcceptanceOnly && (
@@ -3336,6 +3493,9 @@ jobs:
       validationTree: ${{ needs.plan.outputs.validation_tree }}
       sdkBinaryOnly: ${{ inputs.sdkRecoveryOnly }}
       retainedInstalledConsumers: ${{ needs.plan.outputs.retained_consumers == 'true' }}
+      retainedAppleChecks: ${{ needs.plan.outputs.retained_apple == 'true' }}
+      retainedAppleReviewedChecks: ${{ needs.plan.outputs.retained_apple_reviewed == 'true' }}
+      retainedSwiftSourceChecks: ${{ needs.plan.outputs.retained_apple_source == 'true' }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
 
   consumers:
@@ -6686,6 +6846,8 @@ jobs:
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
           RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
           RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
+          RETAINED_APPLE: ${{ needs.plan.outputs.retained_apple }}
+          RETAINED_APPLE_REVIEWED: ${{ needs.plan.outputs.retained_apple_reviewed }}
           SDK_CHECKPOINT: ${{ steps.parent.outputs.checkpoint }}
           ARTIFACT_ID: ${{ steps.parent.outputs.artifact_id }}
           ARTIFACT_SHA256: ${{ steps.parent.outputs.artifact_digest }}
@@ -6700,6 +6862,17 @@ jobs:
           script: |
             set -euo pipefail
             tooling=()
+            if [ "$RETAINED_APPLE" = true ]; then
+              if [ "$RETAINED_ANDROID" != true ] && [ "$RETAINED_NODE_JS" != true ] && [ "$RETAINED_CONSUMERS" != true ]; then
+                echo 'Retained Apple requires the existing canonical callback' >&2; exit 1
+              fi
+              export CODEX_AGENT_APPLE_VALIDATION_CONTRIBUTION=ios-frameworks-and-swift-v1
+              if [ "$RETAINED_APPLE_REVIEWED" = true ]; then
+                export CODEX_AGENT_APPLE_REVIEWED_CHECKS=reviewed-originals-v1
+              fi
+            elif [ "$RETAINED_APPLE_REVIEWED" = true ]; then
+              echo 'Reviewed Apple checks require the fixed Apple profile' >&2; exit 1
+            fi
             if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ] || [ "$RETAINED_CONSUMERS" = true ]; then
               tooling+=(--validation-contribution-directory "$RUNNER_TEMP/validation-contributions")
             fi
@@ -7128,7 +7301,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always() && !inputs.toolingOnly
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, retained-apple-source, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -7166,8 +7339,13 @@ jobs:
           RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
           RETAINED_NATIVE_SOURCE: ${{ needs.plan.outputs.retained_native_source }}
           ANDROID_SOURCE_RESULT: ${{ needs.android.result }}
+          REVIEWED_ANDROID: ${{ needs.plan.outputs.reviewed_android }}
           RETAINED_CONSUMERS_RESULT: ${{ needs.retained-consumers.result }}
           RETAINED_NATIVE_SOURCE_RESULT: ${{ needs.retained-native-source.result }}
+          RETAINED_NATIVE_SOURCE_MATRIX: ${{ needs.plan.outputs.retained_native_source_matrix }}
+          RETAINED_APPLE_SOURCE_MISS: ${{ needs.plan.outputs.retained_apple_source_miss }}
+          RETAINED_APPLE_SOURCE: ${{ needs.plan.outputs.retained_apple_source }}
+          RETAINED_APPLE_SOURCE_RESULT: ${{ needs.retained-apple-source.result }}
           RETAINED_CONSUMER_MATRIX: ${{ needs.plan.outputs.retained_consumer_matrix }}
           VALIDATION_CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
           VALIDATION_CONTRIBUTION_ARTIFACT_ID: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_id }}
@@ -7222,8 +7400,19 @@ jobs:
           if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
             exit 1
           fi
+          if [ "$RETAINED_APPLE_SOURCE" = true ]; then
+            if [ "$RETAINED_APPLE_SOURCE_MISS" = true ]; then
+              test "$RETAINED_APPLE_SOURCE_RESULT" = success || exit 1
+            else
+              test "$RETAINED_APPLE_SOURCE_RESULT" = skipped || exit 1
+            fi
+          fi
           if [ "$RETAINED_ANDROID" = true ]; then
-            test "$ANDROID_SOURCE_RESULT" = success || exit 1
+            if [ "$REVIEWED_ANDROID" = true ]; then
+              test "$ANDROID_SOURCE_RESULT" = skipped || exit 1
+            else
+              test "$ANDROID_SOURCE_RESULT" = success || exit 1
+            fi
           fi
           if [ "$RETAINED_CONSUMERS" = true ]; then
             if [ "$RETAINED_CONSUMER_MATRIX" = '[]' ]; then
@@ -7271,7 +7460,11 @@ jobs:
             [[ "$TOOLING_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
           if [ "$RETAINED_NATIVE_SOURCE" = true ]; then
-            test "$RETAINED_NATIVE_SOURCE_RESULT" = success || exit 1
+            if [ "$RETAINED_NATIVE_SOURCE_MATRIX" != '[]' ]; then
+              test "$RETAINED_NATIVE_SOURCE_RESULT" = success || exit 1
+            else
+              test "$RETAINED_NATIVE_SOURCE_RESULT" = skipped || exit 1
+            fi
           fi
           if [ "$PRODUCT_RESUME_RESULT" = success ]; then
             test "$SDK_COMPLETION_RESULT" = success || exit 1
@@ -7313,8 +7506,8 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
-          fetch-depth: ${{ (needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true') && '0' || '1' }}
-      - if: needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true'
+          fetch-depth: ${{ (needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true' || needs.plan.outputs.retained_apple_source == 'true' || needs.plan.outputs.reviewed_runtime == 'true') && '0' || '1' }}
+      - if: needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true' || needs.plan.outputs.retained_apple_source == 'true' || needs.plan.outputs.reviewed_runtime == 'true'
         uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
@@ -7349,7 +7542,7 @@ jobs:
           cp -R "$source" build/ci/native-wrapper-release
           echo 'restored=true' >> "$GITHUB_OUTPUT"
       - name: Require exact current source receipts and canonical contributions
-        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true'
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true' || needs.plan.outputs.retained_apple_source == 'true' || needs.plan.outputs.reviewed_runtime == 'true'
         env:
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
@@ -7360,7 +7553,12 @@ jobs:
           RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
           RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
           RETAINED_NATIVE_SOURCE: ${{ needs.plan.outputs.retained_native_source }}
+          REVIEWED_RUNTIME: ${{ needs.plan.outputs.reviewed_runtime }}
+          RETAINED_APPLE: ${{ needs.plan.outputs.retained_apple }}
+          RETAINED_APPLE_REVIEWED: ${{ needs.plan.outputs.retained_apple_reviewed }}
+          RETAINED_APPLE_SOURCE: ${{ needs.plan.outputs.retained_apple_source }}
           REUSED_CONSUMER_LANES: ${{ needs.plan.outputs.reused_consumer_lanes }}
+          REUSED_SOURCE_LANES: ${{ needs.plan.outputs.reused_source_lanes }}
           PARITY_OUTPUTS: ${{ toJSON(needs.sdk-parity.outputs) }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -7386,9 +7584,14 @@ jobs:
               artifact_id=int(os.environ['ARTIFACT_ID']) if canonical else None,
               artifact_sha256=os.environ['ARTIFACT_SHA256'] if canonical else None,
               contribution_sha256=os.environ['CONTRIBUTION_SHA256'] if canonical else None, environ=os.environ,
-              native_source_tests=native,
+              native_source_tests=native, reviewed_runtime=os.environ['REVIEWED_RUNTIME'] == 'true',
+              apple=os.environ['RETAINED_APPLE'] == 'true',
+              apple_reviewed=os.environ['RETAINED_APPLE_REVIEWED'] == 'true',
+              apple_source_tests=os.environ['RETAINED_APPLE_SOURCE'] == 'true',
+              reused_source_lanes=json.loads(os.environ['REUSED_SOURCE_LANES']),
               completed_frozen_policy=(Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY'])
-                  if native or os.environ['RETAINED_CONSUMERS'] == 'true' else None),
+                  if native or os.environ['RETAINED_APPLE_SOURCE'] == 'true' or os.environ['RETAINED_CONSUMERS'] == 'true'
+                  or os.environ['REVIEWED_RUNTIME'] == 'true' else None),
               android=os.environ['RETAINED_ANDROID'] == 'true', node_js=node, parity=parity,
               installed_consumers=os.environ['RETAINED_CONSUMERS'] == 'true',
               **(dict(installed_consumer_policy=Path(os.environ['CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY']),
@@ -7397,7 +7600,7 @@ jobs:
               auxiliary_contracts=os.environ['TOOLING_MISS'] == 'true' and not any(contract[k] for k in ('build', 'test', 'metadata')))
           PYCODE
       - name: Preserve distinct current validation contributions
-        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true'
+        if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true' || needs.plan.outputs.retained_apple_source == 'true' || needs.plan.outputs.reviewed_runtime == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-agent-current-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
@@ -7407,7 +7610,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - name: Require an exact receipt set
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
         env:
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
@@ -7432,7 +7635,7 @@ jobs:
           run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}
           path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
           M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
@@ -7470,7 +7673,7 @@ jobs:
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
         with:
           if-no-files-found: error
           overwrite: true
