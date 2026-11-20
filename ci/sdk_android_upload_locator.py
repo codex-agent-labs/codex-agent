@@ -41,12 +41,18 @@ def retained_android_evidence_origin(build_key, consumer, *, phase="validation")
             "trustedAndroidWorkflowSha": origin["workflow_sha"],
             "trustedSourceCommit": "d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
             "trustedSourceTree": origin["producer"]["tree"]}}
+    fixture_validation = (phase == "validation" and
+        build_key == "sha256:812589fb951acd978bded008066d57eb59113c597a4ebbef66873cada8332571")
     producer = {"repository": REPOSITORY, "workflowPath": ".github/workflows/ci.yml",
         "commit": "986d173ae4c05cf3ec456bef463641376a65e6d3",
         "tree": "554dee42106c5c00e0114d166fb2c52b2a5aa1e0", "event": "pull_request",
         "runId": 39012954522, "runAttempt": 2, "pullRequest": 31}
     expected = {"validation": "sha256:2ff282b398d370be407038bdbf3e4cace0ef024c1c9d2e2f0fca5ba20a228637",
                 "metadata": "sha256:a0b5893e50c08d2f0386781d732032a075d4032717fe36648becd8c43e22b93d"}
+    if fixture_validation:
+        producer = {**producer, "commit": "db89763a59757d36b72da56117f5498efe02acd6",
+            "tree": "678cbafb596df74e698560c4ff6e8319883fb8a6", "runId": 40140521274}
+        expected = {"validation": build_key}
     if (phase not in expected or build_key != expected[phase]
             or any(consumer.get(name) != producer[name]
                    for name in ("repository", "workflowPath", "event", "pullRequest"))
@@ -54,6 +60,17 @@ def retained_android_evidence_origin(build_key, consumer, *, phase="validation")
                    for name in ("runId", "runAttempt"))
             or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
         return None
+    if fixture_validation:
+        return {"producer": producer,
+            "workflowSha": "50b21ae250d6a515f29a2d067628ad4e0bf6f213",
+            "authority": {"schemaVersion": 1,
+                "trustedAndroidWorkflowSha": "50b21ae250d6a515f29a2d067628ad4e0bf6f213",
+                "trustedSourceCommit": "d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
+                "trustedSourceTree": "678cbafb596df74e698560c4ff6e8319883fb8a6"},
+            "final": {"artifact_id": 12579597166,
+                "artifact_sha256": "sha256:d3c5d81e248085b1801a931853d76904f0ec4306b7cda1cbac8566be83ab9aab"},
+            "protected": {"artifact_id": 12579348524,
+                "artifact_sha256": "sha256:decfa84a095914eb4a7231f05f88bcbdef95fe987e36b796adc079531998fd6c"}}
     return {"producer": producer,
         "workflowSha": "26622ad8247c4c411890d22bc3519332ad11fb25",
         "authority": {"schemaVersion": 1,
@@ -93,16 +110,25 @@ def capture_retained_android_plan(origin, root, destination, *, token):
     job = "product-validation / plan"
     observed = products._observe_ci_producer_jobs({"plan": producer}, jobs_by_phase={"plan": job},
         trusted_workflow_sha=origin["workflowSha"], token=token)[0]
-    artifact = products._contract_ci_upload_metadata(12093438301,
-        "sha256:f08b52c4fe7e730d23129e235061d381b3cb3437c12ceecf87893e3218beda52",
-        "codex-agent-ci-plan-" + producer["tree"], producer, observed["run"], token)
-    products._require_artifact_job_window(observed, job, artifact)
+    artifact_id = 12093438301
+    artifact_sha256 = "sha256:f08b52c4fe7e730d23129e235061d381b3cb3437c12ceecf87893e3218beda52"
     members = {
         "impact-plan.json": (166986, "7beceac7d13ba4fc92018494d28f52887d5ba55b4f05ff661c9edebfb39a5261"),
         "inventories/android/production-inputs.git-tree": (115438, "2fbe0ee28e686d8874c7e5444e0235b3cfafbd5717eb360d1b69fa50ed1f1e4a"),
         "inventories/android/test-inputs.git-tree": (1911, "65be67ce424143079d3ee33943cb5161f0a7a136447af8a42a2a3d3f29bf2cf3"),
         "inventories/android/metadata-inputs.git-tree": (314, "04f68e123cb2c77b5863adc88dfe4930d401ef99d4e7e7881f198de93fbc9f4c"),
     }
+    if producer["runId"] == 40140521274:
+        artifact_id = 12578322474
+        artifact_sha256 = "sha256:0273d9f7eeb167276732148a7e9080d1585bee747435baf5fdd68bec30e95569"
+        members = {**members,
+            "impact-plan.json": (170201, "8d9d69af893b1416f746e07b0c983f841a0bf64b4383dc550189fa1e3cf325f4"),
+            "inventories/android/production-inputs.git-tree":
+                (120991, "fada8575a9ef1e5c47b2e567fd57e3e662296542c17c5f0d6decf510b502ac8b"),
+        }
+    artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256,
+        "codex-agent-ci-plan-" + producer["tree"], producer, observed["run"], token)
+    products._require_artifact_job_window(observed, job, artifact)
     destination = Path(destination)
     if destination.exists() or destination.is_symlink() or destination.resolve(strict=False) != destination:
         raise ValueError("Retained Android plan destination must be fresh and non-symbolic")
