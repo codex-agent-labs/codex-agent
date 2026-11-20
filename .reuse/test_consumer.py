@@ -86,20 +86,20 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            self.assertIn(len(original["gitHistory"]), (153, 154))
+            self.assertIn(len(original["gitHistory"]), (154, 155))
             baseline = {"repository": consumer.authority.REPOSITORY,
-                "commit": "cb516309ef7a8b003966a9b8133be44bf5e2fc16",
-                "tree": "cebf146a27c3fa3d64ab0bf38fd177cd4f7ea293"}
-            retained = canonical_json_bytes(original["gitHistory"][:153])
+                "commit": "79a57b87dbdec7ea0393b1f8e1eddb6bab75cdad",
+                "tree": "3d98d91bdeb41ec2591b7c110526982fb8b66c76"}
+            retained = canonical_json_bytes(original["gitHistory"][:154])
             expanded = copy.deepcopy(original)
-            if len(expanded["gitHistory"]) == 153:
+            if len(expanded["gitHistory"]) == 154:
                 expanded["gitHistory"].append(baseline)
             self.assertEqual(expanded["gitHistory"][-1], baseline)
             expanded["policy"]["requalificationBaseline"] = baseline["commit"]
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(expanded), APPROVAL), expanded)
-            self.assertEqual(canonical_json_bytes(expanded["gitHistory"][:153]), retained)
+            self.assertEqual(canonical_json_bytes(expanded["gitHistory"][:154]), retained)
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL), original)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -110,7 +110,7 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(155)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(156)]
                     elif fault == "duplicate": rows[-1] = dict(rows[0])
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
