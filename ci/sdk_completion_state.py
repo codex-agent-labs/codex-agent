@@ -1,7 +1,7 @@
 """Select final SDK replay transport; no planning or evidence authentication."""
 
 from .sdk_native_continuation import _job, _locator
-from .products.inventory import require_object, require_sha256
+from .products.inventory import load_json_bytes, require_object, require_sha256
 
 
 _JOBS = (
@@ -170,6 +170,27 @@ def select_sdk_completion_state(needs):
             if current != parent and current["sdk_state_wave"] != wave:
                 raise ValueError("Android state differs from its original predecessor or wave: " + name)
             parent = current
+        checkpoint = jobs["sdk-android-metadata-result"]["outputs"].get("checkpoint", "")
+        if type(checkpoint) is not str or len(checkpoint.encode("utf-8")) > 16 * 1024 or "\n" in checkpoint or "\r" in checkpoint:
+            raise ValueError("Final SDK checkpoint must be a bounded single-line selector")
+        if checkpoint:
+            selected = load_json_bytes(checkpoint.encode("utf-8"))
+            source = selected.get("source") if type(selected) is dict else None
+            if (parent["state_wave"], parent["sdk_state_wave"]) != ("0", "18"):
+                # No-work Android results preserve earlier checkpoint hints.
+                # This final edge authenticates none of them; keep the prior
+                # flat-state behavior, but never attach C18 to an older state.
+                if type(source) is dict and source.get("jobName") == "product-validation / sdk-android-metadata-result / sdk-collect-18":
+                    raise ValueError("Final SDK checkpoint differs from its selected collector state")
+                return parent
+            if (type(selected) is not dict or selected.get("kind") != "sdk-checkpoint" or type(source) is not dict
+                    or source.get("jobName") != "product-validation / sdk-android-metadata-result / sdk-collect-18"
+                    or (parent["state_wave"], parent["sdk_state_wave"]) != ("0", "18")
+                    or type(source.get("artifactId")) is not int
+                    or str(source["artifactId"]) != parent["artifact_id"]
+                    or source.get("artifactSha256") != parent["artifact_digest"]):
+                raise ValueError("Final SDK checkpoint differs from its selected collector state")
+            parent = {**parent, "checkpoint": checkpoint}
         return parent
     if (planned["result"] != "skipped" or any(_locator(native["outputs"]).values())
             or any(_locator(validation["outputs"]).values())

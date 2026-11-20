@@ -1216,3 +1216,77 @@ class AndroidCheckpointConsumerTest(unittest.TestCase):
                             self.assertIs(type(witness),completed._HistoricalCheckpointIssuer)
                             self.assertIs(witness.observation,witness._current_observation)
                         with self.assertRaisesRegex(ValueError,"closed"):witness.check()
+
+
+class FinalCheckpointConsumerTest(unittest.TestCase):
+    def fixture(self, job):
+        helper = AndroidCheckpointConsumerTest(); self.addCleanup(helper.doCleanups)
+        t = helper.fixture(wave=18); f = t.f
+        result = f.envelope['completion']['controls']['runtime-state/reuse-wave-result.json']
+        # The final edge consumes a complete 112-phase control, unlike the
+        # deliberately partial existing wave17 fixture. Native signing remains
+        # the same explicit synthetic boundary; result validation is real.
+        objects = [{**products._identity_record(instance),
+                    'buildKey': sha256_bytes(('key:' + str(instance)).encode()),
+                    'receiptSha256': sha256_bytes(('receipt:' + str(instance)).encode()),
+                    'objectSha256': sha256_bytes(('object:' + str(instance)).encode())}
+                   for instance in products._dependency_closure(completed.PHASE_INSTANCE_IDS)]
+        result.update(schemaVersion=1, result='complete', fullReuse=True,
+            matrices={'contract': [], 'runtime': [], 'sdk': []}, continuationRequirements=[],
+            phases=[{**row, 'state': 'retained', 'source': None, 'transportSource': None, 'misses': []}
+                    for row in objects])
+        f.envelope['completion']['controls']['runtime-state/reuse-wave-request.json']['availableObjects'] = objects
+        t.forwarder['name'] = 'product-validation / sdk-android-metadata-result / sdk-android-metadata-result'
+        t.completion = {**t.forwarder, 'id': 995, 'name': 'product-validation / sdk-completion',
+            'started_at': '2026-10-24T10:41:00Z', 'completed_at': '2026-10-24T10:42:00Z'}
+        t.current['name'] = 'product-validation / ' + ('sdk-parity / sdk-parity' if job == 'sdk-parity' else job)
+        f.jobs = [f.collector, f.issuer, t.forwarder, t.current]
+        if job != 'sdk-completion': f.jobs.append(t.completion)
+        path = '.github/workflows/sdk-binding-parity.yml'
+        t.workflows[path] = (Path(products.__file__).resolve().parents[1] / path).read_bytes()
+        f.run['referenced_workflows'].append({'path': native.REPOSITORY+'/'+path+'@'+f.policy['collectorWorkflowSha'],
+                                            'sha': f.policy['collectorWorkflowSha']})
+        f.upload(); t.output.update(native=f.selector, subjectSha256=sha256_bytes(f.subject))
+        return helper, t
+
+    @contextmanager
+    def open(self, helper, t, job):
+        with helper.open(t, job) as witness:
+            yield witness
+
+    def test_exact_final_roles_have_native_custody_forwarders_and_private_lifetime(self):
+        for job in ('sdk-completion', 'sdk-parity', 'sdk-catalog'):
+            with self.subTest(job=job):
+                helper, t = self.fixture(job)
+                with self.open(helper, t, job) as witness:
+                    self.assertEqual(t.f.policy['bootstrap'], witness.bootstrap())
+                    self.assertEqual([990], t.f.downloads)
+                    self.assertEqual(1, sum('/jobs?' in url for url in t.f.urls))
+                    with self.assertRaisesRegex(ValueError, 'another consumer'):
+                        witness.check(consumer={**t.consumer, 'producer': {**t.f.producer, 'runAttempt': 99}})
+                with self.assertRaisesRegex(ValueError, 'closed'): witness.check()
+
+    def test_final_roles_reject_missing_edges_failed_forwarders_old_owner_and_incomplete_state(self):
+        for fault in ('needs', 'output', 'selector', 'forwarder', 'completion', 'early', 'owner', 'incomplete', 'workflow', 'producer'):
+            with self.subTest(fault=fault):
+                helper, t = self.fixture('sdk-parity'); f = t.f
+                if fault == 'needs':
+                    path = '.github/workflows/product-validation.yml'
+                    t.workflows[path] = t.workflows[path].replace(b', sdk-android-metadata-result]\n', b']\n')
+                elif fault == 'output':
+                    path = '.github/workflows/product-validation.yml'
+                    t.workflows[path] = t.workflows[path].replace(b'checkpoint: ${{ steps.parent.outputs.checkpoint }}', b'checkpoint: none')
+                elif fault == 'selector':
+                    path = '.github/workflows/sdk-binding-parity.yml'
+                    t.workflows[path] = t.workflows[path].replace(b'SDK_CHECKPOINT: ${{ fromJSON(inputs.sdkOutputs).checkpoint }}', b'SDK_CHECKPOINT: wrong')
+                elif fault == 'forwarder': t.forwarder['conclusion'] = 'failure'
+                elif fault == 'completion': t.completion['conclusion'] = 'failure'
+                elif fault == 'early': t.current['started_at'] = '2026-10-24T10:41:30Z'
+                elif fault == 'owner': f.policy['collectors'].remove(completed._ANDROID_METADATA_COLLECTOR)
+                elif fault == 'incomplete':
+                    f.envelope['completion']['controls']['runtime-state/reuse-wave-result.json']['phases'].append(t.ready)
+                    f.upload(); t.output.update(native=f.selector, subjectSha256=sha256_bytes(f.subject))
+                elif fault == 'workflow': f.run['referenced_workflows'].pop()
+                elif fault == 'producer': t.consumer['producer']['runAttempt'] += 1
+                with self.assertRaises(ValueError):
+                    with self.open(helper, t, 'sdk-parity'): self.fail('invalid late checkpoint yielded a witness')

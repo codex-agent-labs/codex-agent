@@ -684,7 +684,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                    'plan', 'contract-validation',
                    'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(109, len(jobs))
+        self.assertEqual(110, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
@@ -838,7 +838,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         gate = self.job('merge-gate')
         for marker in ('name: Require an exact receipt set', 'name: Stage the exact reusable validation artifact'):
             block = gate.split('      - ' + marker + '\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}", block)
+            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' }}", block)
         block = gate.split('      - name: Authenticate current-head acceptance without restoring product bodies\n', 1)[1].split('\n      - ', 1)[0]
         self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', block)
         for name in ('FULL_REUSE_ACCEPTANCE_ONLY', 'RUNTIME_RECOVERY_ONLY', 'SDK_RECOVERY_ONLY',
@@ -1029,10 +1029,13 @@ class RetainedAndroidParentWorkflowTest(unittest.TestCase):
         self.assertIn('codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}', upload)
         gate = self.parent.split('  merge-gate:\n',1)[1]
         for name in ('Require an exact receipt set', 'Stage the exact reusable validation artifact'):
-            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' }}", gate)
+            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' }}", gate)
         self.assertIn("aggregate_retained_validation(plan, Path('build/ci/receipts')", gate)
-        self.assertIn("artifact_id=int(os.environ['ARTIFACT_ID']), artifact_sha256=os.environ['ARTIFACT_SHA256']", gate)
-        self.assertIn("contribution_sha256=os.environ['CONTRIBUTION_SHA256'], environ=os.environ", gate)
+        self.assertIn("canonical = any(os.environ[key] == 'true' for key in ('RETAINED_ANDROID', 'RETAINED_NODE_JS', 'RETAINED_CONSUMERS'))", gate)
+        for field, expression in (("artifact_id", "int(os.environ['ARTIFACT_ID'])"),
+                                  ("artifact_sha256", "os.environ['ARTIFACT_SHA256']"),
+                                  ("contribution_sha256", "os.environ['CONTRIBUTION_SHA256']")):
+            self.assertIn(f"{field}={expression} if canonical else None", gate)
         self.assertIn('test "$SDK_COMPLETION_RESULT" = success || exit 1', gate)
         self.assertIn('test "$ANDROID_SOURCE_RESULT" = success || exit 1', gate)
         self.assertIn('name: codex-agent-current-validation-contributions-', gate)
@@ -1113,3 +1116,45 @@ class SharedCanonicalWorkflowTest(unittest.TestCase):
         self.assertIn('tooling+=(--include-node-js-contribution)',completion)
         consumers=parent.split('  consumers:\n',1)[1].split('\n  sdk-ios-binary-plan:',1)[0]
         self.assertNotIn('sdk-completion',re.search(r'needs: \[([^\]]+)\]',consumers)[1])
+
+
+class FinalCheckpointWorkflowTest(unittest.TestCase):
+    def test_final_checkpoint_owner_and_cli_pairs_follow_only_the_selected_state(self):
+        helper = SdkCompletionWorkflowTest(); helper.setUp()
+        completion = helper.job('sdk-completion'); catalog = helper.job('sdk-catalog')
+        parity = (ROOT / '.github/workflows/sdk-binding-parity.yml').read_text()
+        self.assertIn("checkpoint-owner: ${{ steps.parent.outputs.checkpoint != '' && 'true' || 'false' }}", completion)
+        self.assertLess(completion.index('      - id: parent'), completion.index('/restore-reuse-qualification@'))
+        for text in (catalog, parity):
+            self.assertIn("checkpoint-owner: ${{ env.SDK_CHECKPOINT != '' && 'true' || 'false' }}", text)
+        for text in (completion, catalog, parity):
+            self.assertIn('if [ -n "${SDK_CHECKPOINT:-}" ]; then', text)
+            self.assertIn('--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$SDK_CHECKPOINT"', text)
+        self.assertIn('checkpoint: ${{ steps.parent.outputs.checkpoint }}', completion)
+        self.assertIn('SDK_CHECKPOINT: ${{ steps.parent.outputs.checkpoint }}', completion)
+        self.assertIn('SDK_CHECKPOINT: ${{ needs.sdk-completion.outputs.checkpoint }}', catalog)
+        self.assertIn('SDK_CHECKPOINT: ${{ fromJSON(inputs.sdkOutputs).checkpoint }}', parity)
+        self.assertIn("SDK_CHECKPOINT: ''", helper.job('sdk-completion-full-reuse'))
+        # Raw transport capture remains unchanged; proof is required by each
+        # actual semantic CLI, rather than leaked through ambient action input.
+        for text in (catalog, parity):
+            self.assertNotIn('CODEX_AGENT_SDK_CHECKPOINT:', text)
+        block = completion.split('        id: completion\n', 1)[1]
+        script = textwrap.dedent(block.split('          script: |\n', 1)[1].split('\n      - ', 1)[0])
+        with tempfile.TemporaryDirectory(prefix='final-checkpoint-shell-') as temporary:
+            root = Path(temporary); executable = root / 'python3'; args = root / 'args.json'
+            executable.write_text(f'#!{sys.executable}\nimport json,os,pathlib,sys\npathlib.Path(os.environ["ARGV_CAPTURE"]).write_text(json.dumps(sys.argv[1:]))\n')
+            executable.chmod(0o755)
+            env = {**os.environ, 'PATH':str(root)+os.pathsep+os.environ.get('PATH',''),
+                'PLAN_DIRECTORY':'/held plan','ARTIFACT_ID':'188','ARTIFACT_SHA256':'sha256:'+'a'*64,
+                'STATE_WAVE':'0','SDK_STATE_WAVE':'18','SDK_VALIDATION_TOOLING':'','RETAINED_ANDROID':'false',
+                'RETAINED_NODE_JS':'false','RETAINED_CONSUMERS':'false','TRUSTED_WORKFLOW_SHA':'b'*40,
+                'GITHUB_WORKSPACE':'/candidate checkout','GITHUB_OUTPUT':str(root/'output'),
+                'ARGV_CAPTURE':str(args),'SDK_CHECKPOINT':'{"kind":"sdk-checkpoint","spaces":"kept exact"}',
+                'CODEX_AGENT_CHECKPOINT_OWNER_POLICY':'/private owner/policy.json'}
+            result = subprocess.run(['bash','-c',script],env=env,capture_output=True,text=True)
+            self.assertEqual(0,result.returncode,result.stderr)
+            actual=json.loads(args.read_text());at=actual.index('--sdk-checkpoint-owner')
+            self.assertEqual(['--sdk-checkpoint-owner',env['CODEX_AGENT_CHECKPOINT_OWNER_POLICY'],
+                              '--sdk-checkpoint',env['SDK_CHECKPOINT']],actual[at:at+4])
+            self.assertFalse((root/'output').exists())

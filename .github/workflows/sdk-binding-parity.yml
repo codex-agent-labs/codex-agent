@@ -61,6 +61,8 @@ env:
 
 jobs:
   sdk-parity:
+    env:
+      SDK_CHECKPOINT: ${{ fromJSON(inputs.sdkOutputs).checkpoint }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     outputs:
@@ -93,6 +95,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
           sdk-parity: ${{ inputs.reuseCompletedParity }}
+          checkpoint-owner: ${{ env.SDK_CHECKPOINT != '' && 'true' || 'false' }}
       - if: ${{ !inputs.importedOnly }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -369,6 +372,10 @@ jobs:
           set -euo pipefail
           reuse=()
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then reuse+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
+          if [ -n "${SDK_CHECKPOINT:-}" ]; then
+            test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+            reuse+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$SDK_CHECKPOINT")
+          fi
           python3 -B -m ci.sdk_workflow parity --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
             --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
@@ -391,6 +398,11 @@ jobs:
           test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
           test -n "${CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY:-}"
           test ! -e "$RUNNER_TEMP/sdk-parity-reuse.log"
+          checkpoint=()
+          if [ -n "${SDK_CHECKPOINT:-}" ]; then
+            test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+            checkpoint+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$SDK_CHECKPOINT")
+          fi
           python3 -B -m ci.sdk_completion --hosted-parity --plan "$PLAN" \
             --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
             --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
@@ -398,7 +410,7 @@ jobs:
             --sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY" \
             --repository-root "$GITHUB_WORKSPACE" \
             --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY" \
-            --parity-policy "$CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY" \
+            --parity-policy "$CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY" ${checkpoint[@]+"${checkpoint[@]}"} \
             | tee "$RUNNER_TEMP/sdk-parity-reuse.log"
       - id: upload
         if: ${{ !inputs.reuseCompletedParity }}

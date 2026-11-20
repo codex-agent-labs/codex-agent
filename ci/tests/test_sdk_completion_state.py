@@ -1,6 +1,7 @@
 """Pure workflow-output routing, not upload authentication or SDK acceptance."""
 
 from copy import deepcopy
+import json
 import unittest
 
 from ci import sdk_completion_state as state
@@ -372,3 +373,50 @@ class SdkCompletionStateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinalCheckpointRoutingTest(unittest.TestCase):
+    def test_exact_final_checkpoint_is_forwarded_only_with_its_selected_state(self):
+        value = handoff()
+        selected = locator("188", sdk="18")
+        checkpoint = {"kind": "sdk-checkpoint", "source": {
+            "jobName": "product-validation / sdk-android-metadata-result / sdk-collect-18",
+            "artifactId": 188, "artifactSha256": selected['artifact_digest']}}
+        raw = json.dumps(checkpoint, separators=(',', ':'))
+        value['sdk-android-metadata-result'] = job('success', **selected, checkpoint=raw)
+        before = deepcopy(value)
+        self.assertEqual({**selected, 'checkpoint': raw}, state.select_sdk_completion_state(value))
+        self.assertEqual(before, value)
+        for fault in ('artifact', 'digest', 'role', 'wave', 'malformed', 'failed'):
+            with self.subTest(fault=fault):
+                candidate = deepcopy(value); output = candidate['sdk-android-metadata-result']['outputs']
+                changed = deepcopy(checkpoint)
+                if fault == 'artifact': changed['source']['artifactId'] += 1
+                elif fault == 'digest': changed['source']['artifactSha256'] = 'sha256:' + 'b' * 64
+                elif fault == 'role': changed['source']['jobName'] = 'product-validation / sdk-collect-10'
+                elif fault == 'wave': output['sdk_state_wave'] = '17'
+                elif fault == 'failed': candidate['sdk-android-metadata-result']['result'] = 'failure'
+                output['checkpoint'] = '[' if fault == 'malformed' else json.dumps(changed)
+                with self.assertRaises(ValueError): state.select_sdk_completion_state(candidate)
+        value['sdk-android-metadata-result']['outputs'].pop('checkpoint')
+        self.assertEqual(selected, state.select_sdk_completion_state(value))
+
+    def test_inherited_earlier_checkpoint_remains_an_unconsumed_hint(self):
+        value = handoff()
+        # Android V collected C17; metadata had no work and forwarded that state.
+        for name in ('sdk-android-validation-result', 'sdk-android-metadata-result'):
+            value[name] = job('success', **locator('177', sdk='17'))
+        selected = value['sdk-android-metadata-result']['outputs']
+        checkpoint = {'kind': 'sdk-checkpoint', 'source': {
+            'jobName': 'product-validation / sdk-android-validation-result / sdk-collect-17',
+            'artifactId': int(selected['artifact_id']), 'artifactSha256': selected['artifact_digest']}}
+        expected = state._state(selected)
+        selected['checkpoint'] = json.dumps(checkpoint)
+        original = deepcopy(value)
+        self.assertEqual(expected, state.select_sdk_completion_state(value))
+        self.assertNotIn('checkpoint', state.select_sdk_completion_state(value))
+        self.assertEqual(original, value)
+        checkpoint['source']['jobName'] = 'product-validation / sdk-android-metadata-result / sdk-collect-18'
+        selected['checkpoint'] = json.dumps(checkpoint)
+        with self.assertRaisesRegex(ValueError, 'selected collector state'):
+            state.select_sdk_completion_state(value)

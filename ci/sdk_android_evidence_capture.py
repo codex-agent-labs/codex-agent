@@ -9,6 +9,7 @@ Firebase APK/AAR/XML gate. No transport or structural check grants that authorit
 
 import argparse
 from copy import deepcopy
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import subprocess
@@ -1191,7 +1192,7 @@ def _observed_installed_consumers(producer, observation, contribution, plan, roo
 def observed_validation_contributions(plan, *, repository_root, trusted_workflow_sha,
         artifact_id, artifact_sha256, contribution_sha256, environ, android=False, node_js=False, parity=None,
         installed_consumers=False, installed_consumer_policy=None, completed_frozen_policy=None,
-        reused_installed_lanes=()):
+        reused_installed_lanes=(), native_source_tests=False):
     """Authenticate a bounded original SDK completion output, never a caller verdict."""
     from products.restore import verification_session
     require_no_signing_secret(environ)
@@ -1207,9 +1208,26 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     if any(environ.get(key) != producer[field] for key, field in (
             ("GITHUB_REPOSITORY", "repository"), ("GITHUB_EVENT_NAME", "event"), ("GITHUB_SHA", "commit"))):
         raise ValueError("Android contribution environment differs from its current plan")
-    require_sha256(contribution_sha256, "Android contribution digest")
-    require_sha256(artifact_sha256, "Android contribution upload digest")
-    require_integer(artifact_id, "Android contribution upload ID", 1)
+    canonical_selected = android or node_js or installed_consumers
+    if canonical_selected:
+        require_sha256(contribution_sha256, "Android contribution digest")
+        require_sha256(artifact_sha256, "Android contribution upload digest")
+        require_integer(artifact_id, "Android contribution upload ID", 1)
+    elif not native_source_tests or any(v is not None for v in (artifact_id, artifact_sha256, contribution_sha256)):
+        raise ValueError("Native-only source gate cannot supply an unrelated canonical upload")
+    reader = None
+    targets = ()
+    if type(native_source_tests) is not bool:
+        raise ValueError("Native source-test routing must be boolean")
+    if native_source_tests:
+        import importlib.util
+        path = root / ".github/actions/run-ci-lane/runtime_source_validation.py"
+        spec = importlib.util.spec_from_file_location("retained_native_source_reader", path)
+        reader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reader)
+        targets = reader.selected_native_source_targets(value, True)
+        if completed_frozen_policy is None:
+            raise ValueError("Native source gate requires explicit current native policy")
     token = environ["GITHUB_TOKEN"]
     lanes = _installed_lanes(value, installed_consumers)
     if installed_consumer_policy is not None and not installed_consumers:
@@ -1220,18 +1238,21 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
             or list(reused_installed_lanes) != sorted(reused)):
         raise ValueError("Installed consumer scheduling differs from current protected compatibility")
     job = "product-validation / sdk-completion"
-    jobs = {"completion": job}
+    jobs = {"completion": job} if canonical_selected else {}
     if node_js:
         jobs["parity"] = "product-validation / sdk-parity / sdk-parity"
     elif parity is not None:
         raise ValueError("Unselected Node-JS contribution cannot supply parity")
     jobs.update({lane: "product-validation / retained-consumers / " + lane for lane in lanes})
+    jobs.update({"native-source-" + target:
+        "product-validation / retained-native-source / retained-native-" + target for target in targets})
     with verification_session(), products._ci_observation_batch(
-            (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True):
+            (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True), ExitStack() as native_scope:
         producers = {key: reused[key]["producer"] if key in reused else producer for key in jobs}
         observations = products._observe_ci_producer_jobs(producers, jobs_by_phase=jobs,
             token=token, trusted_workflows_by_phase={key: {
                 "path": ".github/workflows/" + ("sdk-consumer-validation.yml" if key in lanes else
+                    "desktop-runtime-evidence.yml" if key.startswith("native-source-") else
                     "sdk-binding-parity.yml" if key == "parity" else "product-validation.yml"),
                 "sha": reused[key]["workflowSha"] if key in reused else trusted_workflow_sha} for key in jobs})
         if reused:
@@ -1246,29 +1267,31 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
             observed, = observations
             original_observations = {}
 
-        artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256,
-            f"codex-agent-sdk-validation-contributions-{producer['tree']}-attempt-{producer['runAttempt']}",
-            producer, observed["run"], token)
-        products._require_artifact_job_window(observed, job, artifact)
-        size = require_integer(artifact["size_in_bytes"], "Android contribution upload bytes", 1)
-        if size > _CONTRIBUTION_LIMIT:
-            raise ValueError("Android contribution upload exceeds its bound")
-        with tempfile.TemporaryDirectory(prefix="android-contribution-upload-") as temporary:
-            archive = Path(temporary).resolve() / "contribution.zip"
-            products._reuse_contract_ci_upload(artifact, producer, observed["run"], token,
-                destination=archive, limit=_CONTRIBUTION_LIMIT, artifact_sha256=artifact_sha256, size=size)
-            inventory, retained, transport = verified_zip_contents(archive,
-                max_archive_bytes=_CONTRIBUTION_LIMIT, max_members=1, max_entry_bytes=_CONTRIBUTION_LIMIT,
-                max_total_bytes=_CONTRIBUTION_LIMIT, retained_paths=(_VALIDATION_FILE,),
-                max_retained_bytes=_CONTRIBUTION_LIMIT, require_sorted=False)
-            raw = retained.get(_VALIDATION_FILE, b"")
-            if (transport != {"bytes": size, "sha256": artifact_sha256}
-                    or inventory != [{"relativePath": _VALIDATION_FILE, "bytes": len(raw),
-                                      "sha256": contribution_sha256}]
-                    or retained != {_VALIDATION_FILE: raw}):
-                raise ValueError("Android contribution differs from its exact original upload")
-            contribution = _validate_validation_contributions(load_canonical_json_bytes(raw), producer,
-                sha256_bytes(plan_raw), value, android=android, node_js=node_js, installed_consumers=installed_consumers)
+        contribution = None
+        if canonical_selected:
+            artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256,
+                f"codex-agent-sdk-validation-contributions-{producer['tree']}-attempt-{producer['runAttempt']}",
+                producer, observed["run"], token)
+            products._require_artifact_job_window(observed, job, artifact)
+            size = require_integer(artifact["size_in_bytes"], "Android contribution upload bytes", 1)
+            if size > _CONTRIBUTION_LIMIT:
+                raise ValueError("Android contribution upload exceeds its bound")
+            with tempfile.TemporaryDirectory(prefix="android-contribution-upload-") as temporary:
+                archive = Path(temporary).resolve() / "contribution.zip"
+                products._reuse_contract_ci_upload(artifact, producer, observed["run"], token,
+                    destination=archive, limit=_CONTRIBUTION_LIMIT, artifact_sha256=artifact_sha256, size=size)
+                inventory, retained, transport = verified_zip_contents(archive,
+                    max_archive_bytes=_CONTRIBUTION_LIMIT, max_members=1, max_entry_bytes=_CONTRIBUTION_LIMIT,
+                    max_total_bytes=_CONTRIBUTION_LIMIT, retained_paths=(_VALIDATION_FILE,),
+                    max_retained_bytes=_CONTRIBUTION_LIMIT, require_sorted=False)
+                raw = retained.get(_VALIDATION_FILE, b"")
+                if (transport != {"bytes": size, "sha256": artifact_sha256}
+                        or inventory != [{"relativePath": _VALIDATION_FILE, "bytes": len(raw),
+                                          "sha256": contribution_sha256}]
+                        or retained != {_VALIDATION_FILE: raw}):
+                    raise ValueError("Android contribution differs from its exact original upload")
+                contribution = _validate_validation_contributions(load_canonical_json_bytes(raw), producer,
+                    sha256_bytes(plan_raw), value, android=android, node_js=node_js, installed_consumers=installed_consumers)
         installed_results = (_observed_installed_consumers(producer, observed, contribution, value, root, token,
             reused=reused, observations=original_observations,
             policy_sha256=sha256_bytes(reuse_inputs[0][1]) if reuse_inputs else None)
@@ -1279,6 +1302,14 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                 raise ValueError("Node-JS contribution changes current source inventories")
             parity_result = _observed_node_parity(producer, observed,
                 contribution["nodeJs"]["parityExpectedPhases"], parity, token)
+        native_results = None
+        if targets:
+            from reuse_qualification import completed_frozen_options
+            completed = native_scope.enter_context(completed_frozen_options({
+                "completed_frozen_policy": completed_frozen_policy, "repository_root": root, "plan": plan}))
+            native_results = reader.observed_native_source_tests(completed["completed_frozen"],
+                plan=value, plan_sha256=sha256_bytes(plan_raw), root=root,
+                consumer=products._consumer(value, environ), observation=observed, token=token)
         if (_installed_reuse_selection(root, producer["commit"], trusted_workflow_sha, lanes,
                 installed_consumer_policy, completed_frozen_policy) != (reused, reuse_inputs)
                 or read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw
@@ -1287,13 +1318,15 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                 or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
                 or node_js and contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True)):
             raise ValueError("Current contribution consumer or inputs changed during observation")
+    if native_source_tests:
+        return contribution, parity_result, installed_results, native_results
     return (contribution, parity_result, installed_results) if installed_consumers else (contribution, parity_result)
 
 
 def aggregate_retained_validation(plan, receipts, destination, *, repository_root,
         trusted_workflow_sha, artifact_id, artifact_sha256, contribution_sha256,
         environ, auxiliary_contracts=False, android=False, node_js=False, parity=None, installed_consumers=False,
-        installed_consumer_policy=None, completed_frozen_policy=None, reused_installed_lanes=()):
+        installed_consumer_policy=None, completed_frozen_policy=None, reused_installed_lanes=(), native_source_tests=False):
     """Combine current checks with an observed native contribution; never schema1 reuse."""
     from receipt import required_lanes, parse_validation_actions
     plan, receipts, destination = map(Path, (plan, receipts, destination))
@@ -1301,17 +1334,23 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
     if destination.exists() or destination.is_symlink():
         raise ValueError("Current Android gate destination must be fresh")
     plan_raw = read_regular_file_bytes(plan, reject_symlink_parents=True)
-    selected = _authorized_plan(plan)
+    selected = (products._validate_plan(plan, Path(repository_root).resolve(strict=True))
+                if native_source_tests and not (android or node_js or installed_consumers)
+                else _authorized_plan(plan))
     required = required_lanes(selected)
-    _contribution_selection(selected, android, node_js, installed_consumers)
+    if android or node_js or installed_consumers:
+        _contribution_selection(selected, android, node_js, installed_consumers)
+    elif native_source_tests is not True:
+        raise ValueError("Current contribution gate has no selected duty")
     observed = observed_validation_contributions(plan, repository_root=repository_root,
         trusted_workflow_sha=trusted_workflow_sha, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, contribution_sha256=contribution_sha256, environ=environ,
         android=android, node_js=node_js, parity=parity, installed_consumers=installed_consumers,
         installed_consumer_policy=installed_consumer_policy, completed_frozen_policy=completed_frozen_policy,
-        reused_installed_lanes=reused_installed_lanes)
+        reused_installed_lanes=reused_installed_lanes, native_source_tests=native_source_tests)
     contribution, parity_result = observed[:2]
     installed_results = observed[2] if installed_consumers else None
+    native_results = observed[3] if native_source_tests else None
     originals, controls = {}, {}
     for path in receipts.rglob("lane-receipt.json"):
         raw = read_regular_file_bytes(path, reject_symlink_parents=True)
@@ -1334,6 +1373,7 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         originals[lane] = value
         controls[path] = raw
     expected = set(required) - ({"node-js"} if node_js else set()) - set(_installed_lanes(selected, installed_consumers))
+    expected -= set(native_results or {})
     if auxiliary_contracts:
         auxiliary = originals.get("contracts")
         if ("contracts" in expected or auxiliary is None
@@ -1347,11 +1387,14 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
             and not any(row["kind"] == "firebase-runtime-evidence" for row in originals["android"]["evidence"])):
         raise ValueError("Legacy Android still requires its original Firebase evidence")
     result = {"schemaVersion": 1, "kind": "current-validation-contributions", "result": "passed",
-        "consumer": contribution["consumer"], "planSha256": sha256_bytes(plan_raw),
-        "canonical": {"artifactId": artifact_id, "artifactSha256": artifact_sha256,
-                      "contributionSha256": contribution_sha256, "original": contribution},
+        "consumer": (contribution["consumer"] if contribution is not None else
+                     products._consumer(selected, environ)["producer"]), "planSha256": sha256_bytes(plan_raw),
+        **({"canonical": {"artifactId": artifact_id, "artifactSha256": artifact_sha256,
+                          "contributionSha256": contribution_sha256, "original": contribution}}
+           if contribution is not None else {}),
         **({"sdkParity": parity_result} if node_js else {}),
         **({"installedConsumers": installed_results} if installed_consumers else {}),
+        **({"nativeSourceTests": native_results} if native_source_tests else {}),
         "laneReceipts": {lane: sha256_bytes(canonical_json_bytes(value)) for lane, value in sorted(originals.items())}}
     if read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw or any(
             read_regular_file_bytes(path, reject_symlink_parents=True) != raw for path, raw in controls.items()):
