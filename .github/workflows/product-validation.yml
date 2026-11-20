@@ -831,8 +831,10 @@ jobs:
           python3 -B - <<'PYCODE'
           import json, os
           from pathlib import Path
-          from ci.impact import CONSUMER_RUNNERS
-          from ci.reuse import github_output
+          import sys
+          sys.path.insert(0, str(Path('ci').resolve()))
+          from impact import CONSUMER_RUNNERS
+          from reuse import github_output
           flags = [os.environ[key] for key in ('CONSUMER_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE')]
           if any(value not in ('', 'true', 'false') for value in flags):
               raise ValueError('Invalid retained installed-consumer selection')

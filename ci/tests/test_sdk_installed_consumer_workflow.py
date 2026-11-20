@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -35,6 +36,14 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
             original = plan.read_bytes()
             output = Path('result')
             keys = ('CONSUMER_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE')
+            # Exercise the workflow's fresh interpreter without the test suite's import path.
+            Path('ci').symlink_to(ROOT / 'ci', target_is_directory=True)
+            env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+            env.update(zip(keys, ('true', 'true', 'false', 'true', 'true')))
+            subprocess.run([sys.executable, '-BS', '-'], input=script, text=True,
+                           env={**env, 'GITHUB_OUTPUT': str(output)}, check=True)
+            self.assertEqual(7, len(json.loads(dict(line.split('=', 1) for line in
+                                                     output.read_text().splitlines())['matrix'])))
             for flags in product(('true', 'false'), repeat=5):
                 with self.subTest(flags=flags), patch.dict(os.environ, dict(zip(keys, flags), GITHUB_OUTPUT=str(output))):
                     output.unlink(missing_ok=True)
