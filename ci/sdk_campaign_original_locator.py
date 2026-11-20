@@ -140,6 +140,24 @@ def retained_core_origin(phase, build_key, consumer, *, target="common", compone
             "workflow_sha": selected["workflowSha"], "workflow_path": ".github/workflows/product-validation.yml",
             "job_name": f"product-validation / sdk-{component}-validation-{target}"}
     if ((component, phase, target) == ("sdk-android", "metadata", "android")
+            and build_key == "sha256:0cb03e6e5ea0f2b262139a8ff9ec37a88a7502892923e2af6f3d5d65caf7b83d"):
+        producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
+            "commit": "8013684c8e30198c88ae03870da66158fb1f4691", "tree": "6bcde1da86d19d5fcc613536db654f05c4eeac7e",
+            "event": "pull_request", "runId": 44785322796, "runAttempt": 1, "pullRequest": 31}
+        if (any(consumer.get(name) != producer[name] for name in ("repository", "workflowPath", "event", "pullRequest"))
+                or any(type(consumer.get(name)) is not int or consumer[name] < 1 for name in ("runId", "runAttempt"))
+                or (consumer["runId"], consumer["runAttempt"]) <= (producer["runId"], producer["runAttempt"])):
+            return None
+        return {"producer": producer, "artifact_id": 14655834019,
+            "artifact_sha256": "sha256:284d5dc0e328947c5216b89cc5cf2803a6cbd957b35c32300cec7838a4e9e712",
+            "receipt_sha256": "sha256:28ada59bb6458d2c92d5edf6c6e313b8d6e8e5ec12b58a3199f047b266838e06",
+            "object_sha256": "sha256:9bd42c8d3a4e37f17a9440b7281410ca32fb217ee4de6624225d72a7e4a126f8",
+            "job_id": 136468216189, "workflow_sha": "b0724dca6049abba5e9893d80155d3034145f5a5",
+            "workflow_path": ".github/workflows/sdk-android-metadata-validation.yml",
+            "job_name": "product-validation / sdk-android-metadata-result / sdk-android-metadata-android",
+            "context": {"repositoryRoot": "/home/runner/work/codex-agent/codex-agent",
+                "metadataRequest": "/home/runner/work/codex-agent/codex-agent/build/sdk-android-metadata-worker/metadata-request.json"}}
+    if ((component, phase, target) == ("sdk-android", "metadata", "android")
             and build_key == "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"):
         producer = {"repository": "codex-agent-labs/codex-agent", "workflowPath": ".github/workflows/ci.yml",
             "commit": "db89763a59757d36b72da56117f5498efe02acd6", "tree": "678cbafb596df74e698560c4ff6e8319883fb8a6",

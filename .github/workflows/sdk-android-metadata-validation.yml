@@ -21,6 +21,10 @@ on:
       metadataPlan:
         required: true
         type: string
+      sdkCheckpoints:
+        description: Enable bounded new-result checkpoints
+        type: boolean
+        default: false
       trustedWorkflowSha:
         required: true
         type: string
@@ -32,7 +36,12 @@ on:
       authority_read_token:
         description: Read-only protected reuse authority; scoped to qualification restoration
         required: false
+      PRODUCT_READ_APP_PRIVATE_KEY:
+        description: Forward only to the protected product-read checkpoint issuer
+        required: false
     outputs:
+      checkpoint:
+        value: ${{ jobs.sdk-android-metadata-result.outputs.checkpoint }}
       artifact_id:
         value: ${{ jobs.sdk-android-metadata-result.outputs.artifact_id }}
       routing:
@@ -55,6 +64,8 @@ env:
 
 jobs:
   sdk-android-metadata:
+    env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ fromJSON(inputs.validationWave).outputs.checkpoint }}
     name: sdk-android-metadata-android
     if: >-
       always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
@@ -79,6 +90,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: ${{ fromJSON(inputs.validationWave).outputs.checkpoint != '' && 'true' || 'false' }}
       - id: authority
         name: Check independent protected source pins before platform setup
         env:
@@ -193,6 +205,9 @@ jobs:
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
             policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
           fi
+          if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
+            policy+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$CODEX_AGENT_SDK_CHECKPOINT")
+          fi
           if [ -n "${CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE:-}" ]; then
             policy+=(--retained-sdk-inputs-source "$CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE")
           fi
@@ -294,6 +309,9 @@ jobs:
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
             selected+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
           fi
+          if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
+            selected+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$CODEX_AGENT_SDK_CHECKPOINT")
+          fi
           python3 -B -m ci.sdk_android_validation_handoff \
             --plan "${{ steps.validation-state.outputs.plan-path }}" \
             --discovery-root "${{ steps.validation-state.outputs.discovery-root }}" \
@@ -344,6 +362,8 @@ jobs:
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
 
   sdk-collect-18:
+    env:
+      CODEX_AGENT_SDK_CHECKPOINT: ${{ fromJSON(inputs.validationWave).outputs.checkpoint }}
     needs: [sdk-android-metadata]
     if: >-
       always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
@@ -359,6 +379,7 @@ jobs:
       routing: ${{ steps.collect.outputs.routing }}
       artifact_digest: ${{ steps.collect.outputs.artifact-sha256 }}
       wave_failed: ${{ steps.collect.outputs.wave-failed }}
+      checkpoint_inputs: ${{ steps.collect.outputs.checkpoint-inputs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -368,6 +389,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
+          checkpoint-owner: ${{ fromJSON(inputs.validationWave).outputs.checkpoint != '' && 'true' || 'false' }}
       - name: Select installed caller Java
         run: |
           set -euo pipefail
@@ -399,13 +421,30 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.tooling.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+          checkpoint-controls: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
           wave: '18'
           tree: ${{ fromJSON(inputs.planOutputs).validation_tree }}
           sdk-worker-workflow-path: .github/workflows/sdk-android-metadata-validation.yml
           sdk-worker-job-name: product-validation / sdk-android-metadata-result / sdk-android-metadata-android
 
+  sdk-checkpoint-18:
+    needs: [sdk-collect-18]
+    if: inputs.sdkCheckpoints && needs.sdk-collect-18.result == 'success'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: codex-agent-labs/codex-agent/.github/workflows/reuse-qualification.yml@reuse-authority
+    with:
+      sdk-checkpoint: ${{ needs.sdk-collect-18.outputs.checkpoint_inputs || '{}' }}
+      sdk-preceding-checkpoint: ${{ fromJSON(inputs.validationWave).outputs.checkpoint }}
+    secrets:
+      authority_read_token: ${{ secrets.authority_read_token }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
+
   sdk-android-metadata-result:
-    needs: [sdk-android-metadata, sdk-collect-18]
+    needs: [sdk-android-metadata, sdk-collect-18, sdk-checkpoint-18]
     if: >-
       always() && fromJSON(inputs.planOutputs).event_authorized == 'true' &&
       fromJSON(inputs.planOutputs).remote_build_authorized == 'true' &&
@@ -414,6 +453,7 @@ jobs:
       fromJSON(inputs.metadataPlan).result == 'success'
     runs-on: ubuntu-24.04
     outputs:
+      checkpoint: ${{ steps.result.outputs.checkpoint }}
       artifact_id: ${{ steps.result.outputs.artifact_id }}
       routing: ${{ steps.result.outputs.routing }}
       artifact_digest: ${{ steps.result.outputs.artifact_digest }}
@@ -429,6 +469,8 @@ jobs:
         name: Fail only after collecting Android metadata results
         env:
           RESULTS: ${{ toJSON(needs) }}
+          SDK_CHECKPOINTS: ${{ inputs.sdkCheckpoints }}
+          PRECEDING_CHECKPOINT: ${{ fromJSON(inputs.validationWave).outputs.checkpoint }}
           VALIDATION_WAVE: ${{ inputs.validationWave }}
           METADATA_PLAN: ${{ inputs.metadataPlan }}
           PROTECTED_AUTHORITY: ${{ inputs.protectedAndroidAuthority }}
@@ -436,7 +478,7 @@ jobs:
           python3 -B - <<'PY'
           import json, os
           from pathlib import Path
-          from ci.sdk_native_continuation import select_native_state
+          from ci.sdk_native_continuation import select_native_state, select_checkpoint_output
           from ci.reuse import github_output
           needs = json.loads(os.environ['RESULTS'])
           needs['sdk-android-validation-result'] = json.loads(os.environ['VALIDATION_WAVE'])
@@ -444,6 +486,8 @@ jobs:
           if (needs['sdk-android-metadata-plan']['outputs'].get('sdk_workers_required') == 'true'
                   and not os.environ['PROTECTED_AUTHORITY']):
               raise ValueError('Fresh Android metadata lacks protected Firebase/source authority')
-          github_output(Path(os.environ['GITHUB_OUTPUT']),
-                        select_native_state(needs, stage='android-metadata'))
+          result = select_native_state(needs, stage='android-metadata')
+          result['checkpoint'] = select_checkpoint_output(needs, os.environ['PRECEDING_CHECKPOINT'],
+              stage='android-metadata', enabled=os.environ['SDK_CHECKPOINTS'] == 'true')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), result)
           PY

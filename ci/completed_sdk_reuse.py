@@ -698,7 +698,33 @@ class _CheckpointIssueInputs:
             self.previous.inherit(spec, self.prior)
 
 
-def _checkpoint_originals(controls, prior, base, source, observation, token):
+def _checkpoint_historical_publisher(run, source, path, history):
+    """Protected owner history selects an original publisher, never a result pin."""
+    import product_reuse as products
+    import reuse_qualification as native
+    history = validate_checkpoint_history(history)
+    if history["currentOwner"]["collectorWorkflowSha"] != source["workflowSha"]:
+        raise ValueError("Original publisher history changes its current protected collector")
+    selected = set()
+    for row in history["historicalPolicies"]:
+        owner = row["policy"]
+        paths = {CHECKPOINT_ROUTES[job].workflow_path if job in CHECKPOINT_ROUTES else
+                 ".github/workflows/product-validation.yml" for job in owner["collectors"]}
+        if path not in paths:
+            continue
+        sha = owner["collectorWorkflowSha"]
+        try:
+            for workflow in {".github/workflows/product-validation.yml", path}:
+                products._require_ci_workflow_reference(run, f"{native.REPOSITORY}/{workflow}@{sha}", sha)
+        except ValueError:
+            continue
+        selected.add(sha)
+    if len(selected) != 1:
+        raise ValueError("Original SDK publisher is missing or ambiguous in protected owner history")
+    return selected.pop()
+
+
+def _checkpoint_originals(controls, prior, base, source, observation, token, *, _history=None):
     """Keep qualified pins; resolve new originals at their own reviewed source."""
     import product_reuse as products
     from sdk_campaign_original_locator import fresh_sdk_worker_route, retained_core_origin
@@ -756,8 +782,13 @@ def _checkpoint_originals(controls, prior, base, source, observation, token):
                 raise ValueError("Checkpoint retained original changes its reviewed tuple or registered route")
             workflow_sha = retained["workflow_sha"]
         else:
-            workflow_sha = (source["workflowSha"] if current else products._runtime_prior_workflow_sha(
-                products._original_ci_run(producer, token), source["workflowSha"]))
+            if current:
+                workflow_sha = source["workflowSha"]
+            else:
+                original_run = products._original_ci_run(producer, token)
+                workflow_sha = products._runtime_prior_workflow_sha(original_run, source["workflowSha"])
+                if workflow_sha is None and _history is not None:
+                    workflow_sha = _checkpoint_historical_publisher(original_run, source, path, _history)
         if workflow_sha is None:
             raise ValueError("New checkpoint original lacks its reviewed original workflow")
         observed = products._observe_ci_producer_jobs({"original": receipt["producer"]},
@@ -812,10 +843,14 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
         {"kind": "existing-sdk-completion", "native": policy["bootstrap"],
          "subjectSha256": policy["bootstrapProofSha256"]})
     historical = previous if "ownerPolicySha256" in previous else None
-    if historical is not None:
+    if history is not None or historical is not None:
         history = validate_checkpoint_history(history)
-        if history["currentOwner"] != policy or current_policy is None:
+        native.validate_completed_reuse_policy(current_policy)
+        if (history["currentOwner"] != policy
+                or history["consumerCommit"] != current_policy["consumerCommit"]
+                or policy["bootstrap"] != current_policy.get("sdkCompletion")):
             raise ValueError("Historical issuance requires its independent current owner and consumer policy")
+    if historical is not None:
         previous = require_exact_keys(historical, {"ownerPolicySha256", "checkpoint"},
                                       "Historical issuer selector")["checkpoint"]
     else:
@@ -874,7 +909,7 @@ def issue_checkpoint(policy, source, control_selector, work, *, root, revision, 
         # schema-one parent. Fetching/authenticating that parent again adds no gate.
         sdk = {key: value for key, value in prior.items() if key != "extension"}
         originals = _checkpoint_originals(collected["controls"], prior, _base(parent_frozen, sdk),
-                                          source, observation, token)
+                                          source, observation, token, _history=history)
         recipe_policy = {"parent": policy["parent"], "parentProofSha256": policy["parentProofSha256"],
             "contractControls": old["spec"]["contractControls"], "contractFiles": old["spec"]["contractFiles"]}
         if predecessor is None:
@@ -1645,6 +1680,93 @@ def _checkpoint_core_package_edges(raw, binary_raw, package_raw, source_job, *, 
     return parent_sha, binary_sha, sha256_bytes(package_raw)
 
 
+_ANDROID_VALIDATION_COLLECTOR = "product-validation / sdk-android-validation-result / sdk-collect-17"
+_ANDROID_METADATA_COLLECTOR = "product-validation / sdk-android-metadata-result / sdk-collect-18"
+_ANDROID_CHECKPOINT_WORKFLOWS = (".github/workflows/sdk-android-validation.yml",
+                                 ".github/workflows/sdk-android-metadata-validation.yml")
+
+
+def _checkpoint_android_workflow_edges(raw, validation_raw, metadata_raw):
+    """The literal nested 17 -> result -> worker/collector -> 18 route only."""
+    parent = _checkpoint_workflow_jobs(raw)
+    validation, validation_outputs = _checkpoint_workflow_control(validation_raw)
+    metadata, metadata_outputs = _checkpoint_workflow_control(metadata_raw)
+    for jobs, outputs, wave, stage in ((validation, validation_outputs, 17, "validation"),
+                                       (metadata, metadata_outputs, 18, "metadata")):
+        worker, collector, issuer, result = (f"sdk-android-{stage}", f"sdk-collect-{wave}",
+                                            f"sdk-checkpoint-{wave}", f"sdk-android-{stage}-result")
+        _checkpoint_edges(jobs, collector, issuer, result)
+        if (jobs.get(worker, {}).get("name") != worker + "-android"
+                or jobs[collector].get("name", collector) != collector
+                or _checkpoint_needs(jobs, collector) != [worker]
+                or _checkpoint_needs(jobs, result) != [worker, collector, issuer]
+                or type(jobs[issuer].get("with")) is not dict
+                or jobs[issuer]["with"].get("sdk-checkpoint") !=
+                   "${{ needs." + collector + ".outputs.checkpoint_inputs || '{}' }}"
+                or type(jobs[result].get("outputs")) is not dict
+                or jobs[result]["outputs"].get("checkpoint") != "${{ steps.result.outputs.checkpoint }}"
+                or outputs.get("checkpoint", {}).get("value") !=
+                   "${{ jobs." + result + ".outputs.checkpoint }}"):
+            raise ValueError("Android checkpoint changes its exact worker/collector/result route")
+    # The metadata child's established filename includes '-validation'.
+    caller = "sdk-android-metadata-result"
+    selector = "${{ fromJSON(inputs.validationWave).outputs.checkpoint }}"
+    if (parent.get("sdk-android-validation-result", {}).get("uses") != "./" + _ANDROID_CHECKPOINT_WORKFLOWS[0]
+            or parent.get(caller, {}).get("uses") != "./" + _ANDROID_CHECKPOINT_WORKFLOWS[1]
+            or "sdk-android-validation-result" not in _checkpoint_needs(parent, caller)
+            or type(parent[caller].get("with")) is not dict
+            or parent[caller]["with"].get("validationWave") != "${{ toJSON(needs.sdk-android-validation-result) }}"
+            or metadata["sdk-checkpoint-18"]["with"].get("sdk-preceding-checkpoint") != selector
+            or any(type(metadata[name].get("env")) is not dict
+                   or metadata[name]["env"].get("CODEX_AGENT_SDK_CHECKPOINT") != selector
+                   for name in ("sdk-android-metadata", "sdk-collect-18"))):
+        raise ValueError("Android checkpoint changes its exact parent/child forwarding selector")
+    return tuple(sha256_bytes(value) for value in (raw, validation_raw, metadata_raw))
+
+
+def _android_checkpoint_metadata_key(custody):
+    phases = _records(custody["envelope"]["completion"]["controls"]
+                      ["runtime-state/reuse-wave-result.json"]["phases"], "Signed Android checkpoint result")
+    row = phases.get(PhaseInstanceId("sdk", "sdk-android", "metadata", "android"))
+    if (row is None or row.get("state") != "build"
+            or row.get("receiptSha256") is not None or row.get("objectSha256") is not None):
+        raise ValueError("Checkpoint17 lacks its unique ready Android metadata key")
+    return require_sha256(row.get("buildKey"), "Signed Android metadata build key")
+
+
+def _android_checkpoint_forwarders(custody, observation, current, policy, token, *, metadata_worker):
+    """Observe exact successful child jobs between the signer and current role."""
+    import product_reuse as products
+    from datetime import datetime
+    from products.inventory import require_integer
+    source = custody["envelope"]["recipe"]["source"]
+    previous = custody["transport"]["checkpointIssuerJob"]
+    used = {previous["id"], source["jobId"], current["id"]}
+    roles = [("product-validation / sdk-android-validation-result / sdk-android-validation-result",
+              _ANDROID_CHECKPOINT_WORKFLOWS[0], None)]
+    if metadata_worker:
+        roles.append(("product-validation / sdk-android-metadata-result / sdk-android-metadata-android",
+                      _ANDROID_CHECKPOINT_WORKFLOWS[1], _android_checkpoint_metadata_key(custody)))
+    def when(value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    for name, path, key in roles:
+        observed = products._observe_ci_producer_jobs({"forwarder": source["producer"]},
+            jobs_by_phase={"forwarder": name}, token=token, _fresh_observation=observation,
+            **({"build_keys_by_phase": {"forwarder": key}} if key is not None else {}),
+            trusted_workflows_by_phase={"forwarder": {"path": path, "sha": policy["collectorWorkflowSha"]}})[0]
+        jobs = products._matching_ci_jobs(observed["jobs"], name, expected_build_key=key)
+        if len(jobs) != 1:
+            raise ValueError("Android checkpoint forwarder is missing or ambiguous")
+        forwarder = jobs[0]
+        require_integer(forwarder.get("id"), "Android checkpoint forwarder ID", 1)
+        if (forwarder["id"] in used or when(forwarder["started_at"]) < when(previous["completed_at"])
+                or when(current["started_at"]) < when(forwarder["completed_at"])):
+            raise ValueError("Android checkpoint forwarder does not precede its exact current consumer")
+        used.add(forwarder["id"])
+        previous = forwarder
+    return previous, used
+
+
 _CHECKPOINT_CONSUMER = object()
 
 
@@ -1767,13 +1889,21 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
     # ponytail: register actual wired edges only; cross-workflow forwarding follows
     # its own literal caller/child evidence, never numeric wave ordering.
     next_collector = None
+    android = job in {"sdk-android-metadata", "sdk-collect-18", "sdk-checkpoint-18"}
     current_name = "product-validation / sdk-sdk-ios-metadata-ios"
     package = job in {"sdk-core-package", "sdk-collect-12"} and _next_source is None
     nested = job == "sdk-checkpoint-11" and _next_source is not None
     collecting = job in {"sdk-collect-10", "sdk-collect-11", "sdk-collect-12"} and _next_source is None
     core = job in {"sdk-core-binary", "sdk-collect-11"} and _next_source is None or nested or package
     binary_collector = "product-validation / sdk-core-binary-wave / sdk-collect-11"
-    if core:
+    if android:
+        if (source["jobName"] != _ANDROID_VALIDATION_COLLECTOR
+                or not {_ANDROID_VALIDATION_COLLECTOR, _ANDROID_METADATA_COLLECTOR} <= set(policy["collectors"])
+                or (job == "sdk-checkpoint-18") != (_next_source is not None)):
+            raise ValueError("Android checkpoint is outside its registered 17 to 18 edge")
+        current_name = (_ANDROID_METADATA_COLLECTOR if job == "sdk-collect-18" else
+                        "product-validation / sdk-android-metadata-result / sdk-android-metadata-android")
+    elif core:
         allowed = {"product-validation / sdk-collect-9", "product-validation / sdk-collect-10"}
         if package:
             allowed.add(binary_collector)
@@ -1795,12 +1925,13 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
         next_identity = checkpoint_archive_identity(policy, _next_source,
             signer_commit=policy["issuerCommit"], source_commit=source["producer"]["commit"],
             run_id=source["producer"]["runId"], run_attempt=source["producer"]["runAttempt"])
-        expected_source = binary_collector if nested else "product-validation / sdk-collect-10"
-        if (job not in {"sdk-checkpoint-10", "sdk-checkpoint-11"} or _next_source["jobName"] != expected_source
+        expected_source = (_ANDROID_METADATA_COLLECTOR if android else
+                           binary_collector if nested else "product-validation / sdk-collect-10")
+        if (job not in {"sdk-checkpoint-10", "sdk-checkpoint-11", "sdk-checkpoint-18"} or _next_source["jobName"] != expected_source
                 or _next_source["producer"] != source["producer"]):
             raise ValueError("Checkpoint predecessor is outside its registered next issuer edge")
         next_collector, current_name = expected_source.rsplit(" / ", 1)[1], next_identity["jobName"]
-    if (not core and (source["jobName"] != "product-validation / sdk-collect-9"
+    if (not core and not android and (source["jobName"] != "product-validation / sdk-collect-9"
             or next_collector is None and job not in {"sdk-ios-metadata", "sdk-collect-10"})
             or consumer != {"kind": "ci", "producer": source["producer"]}):
         raise ValueError("Checkpoint is outside its registered current consumer edge")
@@ -1808,7 +1939,12 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
     workflow = git_regular_blob_bytes(root, policy["collectorWorkflowSha"],
         ".github/workflows/product-validation.yml", max_bytes=1024 * 1024)
     child_paths = []
-    if core:
+    if android:
+        child_paths.extend(_ANDROID_CHECKPOINT_WORKFLOWS)
+        child_bytes = [git_regular_blob_bytes(root, policy["collectorWorkflowSha"], path,
+                       max_bytes=1024 * 1024) for path in child_paths]
+        workflow_sha = _checkpoint_android_workflow_edges(workflow, *child_bytes)
+    elif core:
         child_path = ".github/workflows/sdk-core-binary-validation.yml"
         child = git_regular_blob_bytes(root, policy["collectorWorkflowSha"], child_path, max_bytes=1024 * 1024)
         child_paths.append(child_path)
@@ -1840,7 +1976,8 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
         for child_path in child_paths:
             products._require_ci_workflow_reference(fresh["run"],
                 f"{native.REPOSITORY}/{child_path}@{policy['collectorWorkflowSha']}", policy["collectorWorkflowSha"])
-        matches = products._matching_ci_jobs(fresh["jobs"], current_name)
+        expected_key = _android_checkpoint_metadata_key(custody) if android and job == "sdk-android-metadata" else None
+        matches = products._matching_ci_jobs(fresh["jobs"], current_name, expected_build_key=expected_key)
         if len(matches) != 1:
             raise ValueError("Checkpoint consumer job is missing or ambiguous")
         current, issuer = matches[0], custody["transport"]["checkpointIssuerJob"]
@@ -1873,6 +2010,10 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
             used_ids.add(result["id"])
             return result
 
+        if android:
+            previous, android_ids = _android_checkpoint_forwarders(custody, observation, current, policy, token,
+                metadata_worker=job != "sdk-android-metadata")
+            used_ids.update(android_ids)
         if core and source["jobName"] == "product-validation / sdk-collect-9":
             name = "product-validation / sdk-checkpoint-10 / completed-sdk-checkpoint"
             previous = successful(name, native.ISSUER_WORKFLOW, policy["issuerCommit"])
@@ -1908,6 +2049,8 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
         if _next_source is not None:
             _, _, next_locator = observe_source(_next_source, token, _fresh_observation=observation)
             if (next_locator["job"]["id"] in used_ids
+                    or android and datetime.fromisoformat(next_locator["job"]["started_at"].replace("Z", "+00:00"))
+                       < datetime.fromisoformat(previous["completed_at"].replace("Z", "+00:00"))
                     or datetime.fromisoformat(next_locator["job"]["completed_at"].replace("Z", "+00:00"))
                        > datetime.fromisoformat(current["started_at"].replace("Z", "+00:00"))):
                 raise ValueError("Next checkpoint collector must finish before its actual issuer")
@@ -2006,7 +2149,7 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
     if _issuer_source is not None:
         _issuer_source = _collector_control_source(_issuer_source)
         issuer_wave = _COLLECTED_WAVES[_issuer_source["jobName"]]
-        if _issuer_source["producer"] != producer or issuer_wave not in {4, 6, 7, 8}:
+        if _issuer_source["producer"] != producer or issuer_wave not in {4, 6, 7, 8, 17, 18}:
             raise ValueError("Checkpoint discovery changes its exact current issuer source")
         checkpoint_archive_identity(history["currentOwner"], _issuer_source,
             signer_commit=history["currentOwner"]["issuerCommit"], source_commit=producer["commit"],
@@ -2034,7 +2177,7 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
         same_attempt = (run, attempt) == (producer["runId"], producer["runAttempt"])
         if ((run, attempt) > (producer["runId"], producer["runAttempt"])
                 or same_attempt and (wave, issuer_wave) not in _NATIVE_CHECKPOINT_EDGES
-                or wave not in {4, 6, 7, 8}):
+                or wave not in {4, 6, 7, 8, 17, 18}):
             continue
         artifact_id = require_integer(artifact.get("id"), "Discovered checkpoint artifact", 1)
         digest = require_sha256(artifact.get("digest"), "Discovered checkpoint digest")
@@ -2051,8 +2194,10 @@ def discover_historical_checkpoint(history, current_policy, *, root, consumer, t
                 with products._fresh_ci_observation(producer, token) as observation:
                     same_attempt_jobs = products._fresh_ci_observation_values(observation, producer, token)["jobs"]
             wave = int(artifact["name"].split("-")[3])
+            prefix = (_ANDROID_VALIDATION_COLLECTOR.rsplit(" / ", 1)[0] if wave == 17 else
+                      _ANDROID_METADATA_COLLECTOR.rsplit(" / ", 1)[0] if wave == 18 else "product-validation")
             jobs = products._matching_ci_jobs(same_attempt_jobs,
-                f"product-validation / sdk-checkpoint-{wave} / completed-sdk-checkpoint")
+                f"{prefix} / sdk-checkpoint-{wave} / completed-sdk-checkpoint")
             if len(jobs) > 1:
                 raise ValueError("Current checkpoint discovery has ambiguous issuer jobs")
             if not jobs or (jobs[0].get("status"), jobs[0].get("conclusion")) != ("completed", "success"):
@@ -2133,7 +2278,7 @@ class _HistoricalCheckpointConsumer(_CheckpointConsumer):
 
 
 # These are actual native collection dependencies, never numeric wave ordering.
-_NATIVE_CHECKPOINT_EDGES = {(4, 7), (4, 8), (7, 8)}
+_NATIVE_CHECKPOINT_EDGES = {(4, 7), (4, 8), (7, 8), (17, 18)}
 
 
 class _HistoricalCheckpointIssuer(_HistoricalCheckpointConsumer):
@@ -2202,7 +2347,7 @@ def _historical_checkpoint_scope(history, selection, work, *, root, current_poli
     current_name = "product-validation / " + job
     if _next_source is not None:
         _next_source = load_canonical_json_bytes(canonical_json_bytes(_next_source))
-        if (_next_source["producer"] != producer or _COLLECTED_WAVES.get(_next_source["jobName"]) not in {4, 6, 7, 8}
+        if (_next_source["producer"] != producer or _COLLECTED_WAVES.get(_next_source["jobName"]) not in {4, 6, 7, 8, 17, 18}
                 or job != "sdk-checkpoint-" + str(_COLLECTED_WAVES[_next_source["jobName"]])):
             raise ValueError("Historical predecessor requires its registered current native/JavaScript issuer")
         current_name = checkpoint_archive_identity(current_owner, _next_source,
@@ -2254,10 +2399,21 @@ def _historical_checkpoint_scope(history, selection, work, *, root, current_poli
                     or datetime.fromisoformat(current_job["started_at"].replace("Z", "+00:00"))
                        < datetime.fromisoformat(issuer["completed_at"].replace("Z", "+00:00"))):
                 raise ValueError("Historical checkpoint is not bound to its actual later current job")
+            android_previous, android_ids = None, set()
+            if native_edge and source["jobName"] == _ANDROID_VALIDATION_COLLECTOR:
+                from products.inventory import git_regular_blob_bytes
+                paths = (".github/workflows/product-validation.yml", *_ANDROID_CHECKPOINT_WORKFLOWS)
+                _checkpoint_android_workflow_edges(*(git_regular_blob_bytes(root,
+                    current_owner["collectorWorkflowSha"], path, max_bytes=1024 * 1024) for path in paths))
+                android_previous, android_ids = _android_checkpoint_forwarders(custody, current_observation, current_job,
+                    current_owner, token, metadata_worker=True)
             if _next_source is not None:
                 _, _, locator = observe_source(_next_source, token, _fresh_observation=current_observation)
                 collected = locator["job"]
                 if (collected["id"] in (current_job["id"], issuer["id"], source["jobId"])
+                        or collected["id"] in android_ids
+                        or android_previous is not None and datetime.fromisoformat(collected["started_at"].replace("Z", "+00:00"))
+                           < datetime.fromisoformat(android_previous["completed_at"].replace("Z", "+00:00"))
                         or native_edge and datetime.fromisoformat(custody["envelope"]["completion"]["source"]["job"]["completed_at"].replace("Z", "+00:00"))
                            > datetime.fromisoformat(collected["started_at"].replace("Z", "+00:00"))
                         or datetime.fromisoformat(collected["completed_at"].replace("Z", "+00:00"))
