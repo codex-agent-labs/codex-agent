@@ -1454,11 +1454,38 @@ def _source_reuse_selection(root, revision, workflow_sha, lanes, policy_path, na
     native = load_canonical_json_bytes(native_raw)
     authority = load_canonical_json_bytes(git_regular_blob_bytes(root, workflow_sha,
         ".reuse/completed-reuse.json", max_bytes=16*1024*1024))
-    if (canonical_json_bytes(native) != canonical_json_bytes(authority["policy"])
-            or type(native.get("schemaVersion")) is not int or native["schemaVersion"] != 1
-            or native.get("kind") != "completed-frozen-reuse"):
+    if (type(native) is not dict
+            or canonical_json_bytes({key: value for key, value in native.items() if key != "sdkCheckpointHistory"})
+                != canonical_json_bytes(authority["policy"])):
         raise ValueError("Source validation native policy differs from its protected publisher")
+    from reuse_qualification import validate_completed_reuse_policy
+    validate_completed_reuse_policy(native)
     snapshots += ((str(native_policy_path), native_raw),)
+    if "sdkCheckpointHistory" in native:
+        from completed_sdk_reuse import validate_checkpoint_history
+        from products.inventory import require_exact_keys
+        owner_path = ".reuse/checkpoint-owner.json"
+        owner_raw = git_regular_blob_bytes(root, workflow_sha, owner_path, max_bytes=16*1024*1024)
+        owner = require_exact_keys(load_canonical_json_bytes(owner_raw), {
+            "schemaVersion", "kind", "parent", "parentProofSha256", "bootstrap", "bootstrapProofSha256",
+            "collectors", "historicalPolicies"}, "Protected checkpoint owner descriptor")
+        if (owner["kind"] != "sdk-checkpoint-owner-authorization"
+                or owner["bootstrap"] != native["sdkCompletion"]):
+            raise ValueError("Source validation checkpoint owner differs from its protected native pins")
+        expected = validate_checkpoint_history({"schemaVersion": 1, "kind": "sdk-checkpoint-history",
+            "consumerCommit": native["consumerCommit"],
+            "currentOwner": {**{key: value for key, value in owner.items() if key != "historicalPolicies"},
+                "kind": "sdk-checkpoint-owner", "issuerCommit": workflow_sha, "collectorWorkflowSha": workflow_sha},
+            "historicalPolicies": owner["historicalPolicies"]})
+        reference = native["sdkCheckpointHistory"]
+        history_path = Path(reference["path"])
+        if history_path.resolve(strict=True) != history_path:
+            raise ValueError("Checkpoint history path must be normalized and non-symbolic")
+        history_raw = read_regular_file_bytes(history_path, max_bytes=16*1024*1024, reject_symlink_parents=True)
+        if (sha256_bytes(history_raw) != reference["sha256"]
+                or history_raw != canonical_json_bytes(expected)):
+            raise ValueError("Source validation checkpoint history differs from its protected publisher")
+        snapshots += (("git:" + workflow_sha + ":" + owner_path, owner_raw), (str(history_path), history_raw))
     # Scheduling only: a new native pin needs an authenticated per-target rebind.
     # The later gate always checks the actual current tuples through the live owner.
     runtime_pin = {field: native.get(field) for field in policy["runtimeCompletion"]}

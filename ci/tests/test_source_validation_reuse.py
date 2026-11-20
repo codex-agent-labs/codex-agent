@@ -49,7 +49,8 @@ class SourceValidationReuseTest(unittest.TestCase):
             originals={lane:dict(producer=self.original,workflowSha="f"*40,jobId=10+i,artifactId=20+i,
                 artifactSha256="sha256:"+"4"*64,planSha256="sha256:"+"5"*64)
                 for i,lane in enumerate(sorted(gate._SOURCE_WORKFLOWS))})
-        self.native = dict(schemaVersion=1,kind="completed-frozen-reuse",sdkCompletion=deepcopy(self.pin), **self.runtime_pin)
+        self.native = dict(schemaVersion=1,kind="completed-frozen-reuse",sdkCompletion=deepcopy(self.pin),
+            consumerCommit=self.current["commit"],verifierPolicySha256="sha256:"+"9"*64, **self.runtime_pin)
         self.native_path = self.root/"native.json"
         self.native_path.write_bytes(gate.canonical_json_bytes(self.native))
         self.raw = gate.canonical_json_bytes(self.policy)
@@ -68,6 +69,7 @@ class SourceValidationReuseTest(unittest.TestCase):
 
     def blob(self, root, revision, path, *, max_bytes):
         self.assertEqual(self.publisher, revision)
+        if path == ".reuse/checkpoint-owner.json": return gate.canonical_json_bytes(self.checkpoint)
         return self.raw if path == gate._SOURCE_POLICY else gate.canonical_json_bytes({"policy":self.native})
 
     def selection(self, **options):
@@ -121,6 +123,73 @@ class SourceValidationReuseTest(unittest.TestCase):
             entry=kind+b'0'*40+b'\t'+gate._SOURCE_POLICY.encode()+b'\0'
             with patch.object(inventory,'run_git',return_value=entry):
                 with self.assertRaisesRegex(ValueError,'regular'):self.selection()
+
+    def checkpoint_projection(self):
+        from completed_sdk_reuse import _COLLECTED_WAVES
+        owner = dict(schemaVersion=1,kind="sdk-checkpoint-owner",issuerCommit=self.publisher,
+            collectorWorkflowSha=self.publisher,parent=deepcopy(self.runtime_pin),parentProofSha256="sha256:"+"6"*64,
+            bootstrap=deepcopy(self.pin),bootstrapProofSha256="sha256:"+"7"*64,
+            collectors=[sorted(_COLLECTED_WAVES)[0]])
+        history = dict(schemaVersion=1,kind="sdk-checkpoint-history",consumerCommit=self.current["commit"],
+            currentOwner=owner,historicalPolicies=[dict(policy=deepcopy(owner),sha256=gate.sha256_bytes(gate.canonical_json_bytes(owner)))])
+        self.checkpoint = {key:value for key,value in owner.items() if key not in ("issuerCommit","collectorWorkflowSha")}
+        self.checkpoint.update(kind="sdk-checkpoint-owner-authorization",historicalPolicies=deepcopy(history["historicalPolicies"]))
+        self.history_path = self.root/"checkpoint-owner-history.json"
+        return history
+
+    def write_checkpoint_projection(self, history):
+        raw=gate.canonical_json_bytes(history); self.history_path.write_bytes(raw)
+        self.native_path.write_bytes(gate.canonical_json_bytes({**self.native,
+            "sdkCheckpointHistory":dict(path=str(self.history_path),sha256=gate.sha256_bytes(raw))}))
+
+    def test_provisioned_checkpoint_history_matches_protected_owner_and_is_snapshotted(self):
+        history=self.checkpoint_projection(); self.write_checkpoint_projection(history)
+        with self.git_scope():
+            self.assertEqual(sorted(gate._SOURCE_WORKFLOWS),self.selection())
+            _, snapshots=gate._source_reuse_selection(self.root,self.current["commit"],self.publisher,
+                tuple(gate._SOURCE_WORKFLOWS),None,self.native_path)
+            self.assertIn((str(self.history_path),gate.canonical_json_bytes(history)),snapshots)
+            self.assertIn(("git:"+self.publisher+":.reuse/checkpoint-owner.json",gate.canonical_json_bytes(self.checkpoint)),snapshots)
+            self.history_path.write_bytes(gate.canonical_json_bytes({**history,"consumerCommit":"0"*40}))
+            with self.assertRaisesRegex(ValueError,"checkpoint history"):self.selection()
+
+    def test_checkpoint_projection_cannot_change_base_owner_history_or_reference(self):
+        history=self.checkpoint_projection(); protected=deepcopy(self.checkpoint)
+        modes=("consumer","issuer","workflow","bootstrap","parent","history","unknown-history",
+            "bool-history","bool-base","base","unknown-policy","unknown-reference","digest","relative","protected-bootstrap",
+            "protected-kind","protected-extra")
+        with self.git_scope():
+            for mode in modes:
+                with self.subTest(mode=mode):
+                    self.checkpoint=deepcopy(protected); changed=deepcopy(history)
+                    if mode=="consumer":changed["consumerCommit"]="0"*40
+                    elif mode in ("issuer","workflow"):
+                        changed["currentOwner"]["issuerCommit" if mode=="issuer" else "collectorWorkflowSha"]="0"*40
+                    elif mode in ("bootstrap","parent"):changed["currentOwner"][mode]["artifactId"]+=1
+                    elif mode=="history":changed["historicalPolicies"]=[]
+                    elif mode=="unknown-history":changed["extra"]=True
+                    elif mode=="bool-history":changed["schemaVersion"]=True
+                    elif mode=="protected-bootstrap":self.checkpoint["bootstrap"]["artifactId"]+=1
+                    elif mode=="protected-kind":self.checkpoint["kind"]="sdk-checkpoint-owner"
+                    elif mode=="protected-extra":self.checkpoint["extra"]=True
+                    self.write_checkpoint_projection(changed)
+                    projected=gate.load_canonical_json_bytes(self.native_path.read_bytes())
+                    if mode=="base":projected["artifactId"]+=1
+                    elif mode=="bool-base":projected["schemaVersion"]=True
+                    elif mode=="unknown-policy":projected["extra"]=True
+                    elif mode=="unknown-reference":projected["sdkCheckpointHistory"]["extra"]=True
+                    elif mode=="digest":projected["sdkCheckpointHistory"]["sha256"]="sha256:"+"0"*64
+                    elif mode=="relative":projected["sdkCheckpointHistory"]["path"]="checkpoint-owner-history.json"
+                    self.native_path.write_bytes(gate.canonical_json_bytes(projected))
+                    with self.assertRaises(ValueError):self.selection()
+
+    def test_checkpoint_projection_rejects_missing_or_symbolic_sidecar(self):
+        history=self.checkpoint_projection(); self.write_checkpoint_projection(history)
+        raw=self.history_path.read_bytes(); self.history_path.unlink()
+        with self.git_scope():
+            with self.assertRaises(FileNotFoundError):self.selection()
+            target=self.root/"real-history.json"; target.write_bytes(raw); self.history_path.symlink_to(target)
+            with self.assertRaisesRegex(ValueError,"non-symbolic"):self.selection()
 
     def test_policy_rejects_unknown_duplicate_and_malformed_originals(self):
         for mode in ('bool-schema','unknown','job','workflow','producer','digest','duplicate','empty'):
