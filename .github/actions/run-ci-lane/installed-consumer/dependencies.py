@@ -14,16 +14,18 @@ import time
 import xml.etree.ElementTree as ET
 
 from products.inventory import (
-    canonical_json_bytes, git_regular_blob_bytes, read_regular_file_bytes,
-    require_regular_directory, require_relative_path, require_semver,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes, read_regular_file_bytes,
+    require_array, require_exact_keys, require_integer, require_regular_directory,
+    require_relative_path, require_semver, require_sha256,
     write_canonical_json,
 )
 from products.restore import memoized_file_inventory
 from products.signing_isolation import require_no_signing_secret
-from products.toolchain import _metadata_checksum
+from products.toolchain import _metadata_checksum, _tree_digest
 
 
 _POLICY = ".github/actions/sdk-ios-binary-worker/verification-metadata.xml"
+_NATIVE_POLICY = ".github/actions/sdk-ios-binary-worker/native-dependencies.json"
 _TEMPLATE = ".github/actions/run-ci-lane/installed-consumer/build.gradle.kts"
 _BASE_TEMPLATE = "gradle/release/kmp-consumer-template/build.gradle.kts"
 _SETTINGS = "gradle/release/kmp-consumer-template/settings.gradle.kts"
@@ -124,6 +126,7 @@ def prepare_dependencies(*, repository, revision, target, maven, maven_inventory
             read_regular_file_bytes(root / "gradle/wrapper/gradle-wrapper.properties", reject_symlink_parents=True) != inputs["gradle/wrapper/gradle-wrapper.properties"]:
         raise ValueError("Installed dependency wrapper differs from its exact source")
     native_pin = None
+    native_dependencies = []
     if target in _NATIVE:
         if platform.system() != "Darwin" or platform.machine() not in {"arm64", "aarch64"}:
             raise ValueError("Installed native preparation requires its elected macOS ARM64 host")
@@ -132,6 +135,21 @@ def prepare_dependencies(*, repository, revision, target, maven, maven_inventory
         if native_pin != _metadata_checksum(git_regular_blob_bytes(root, revision,
                 "runtime/gradle/verification-metadata.xml", max_bytes=4 * 1024**2), name):
             raise ValueError("Installed native compiler archive differs between immutable policies")
+        inputs[_NATIVE_POLICY] = git_regular_blob_bytes(root, revision, _NATIVE_POLICY, max_bytes=64 * 1024)
+        policy = require_exact_keys(load_canonical_json_bytes(inputs[_NATIVE_POLICY]),
+            {"schemaVersion", "kotlinVersion", "host", "dependencies"}, "Installed native dependency policy")
+        if (require_integer(policy["schemaVersion"], "Installed native policy schema", 1) != 1 or
+                policy["kotlinVersion"] != "2.3.10" or policy["host"] != "macos_arm64"):
+            raise ValueError("Installed native dependency policy differs from its fixed compiler/host")
+        for record in require_array(policy["dependencies"], "Installed native dependencies"):
+            require_exact_keys(record, {"name", "treeSha256"}, "Installed native dependency")
+            if record["name"] not in {"libffi-3.3-1-macos-arm64", "llvm-19-aarch64-macos-essentials-79"}:
+                raise ValueError("Unsupported installed native dependency")
+            native_dependencies.append((record["name"], require_sha256(record["treeSha256"],
+                "Installed native dependency tree")))
+        if sorted(name for name, _ in native_dependencies) != [
+                "libffi-3.3-1-macos-arm64", "llvm-19-aarch64-macos-essentials-79"]:
+            raise ValueError("Installed native policy must contain exactly the required two trees")
     metadata = _verification_metadata(inputs[_POLICY], maven, rows)
     environment = dict(environment)
     java = Path(environment.get("JAVA_HOME", ""))
@@ -160,6 +178,7 @@ def prepare_dependencies(*, repository, revision, target, maven, maven_inventory
     wrapper = root / "gradlew"
     original = _runtime_worker_command(wrapper, {}, environment, build_directory=".")
     command = [*original[:original.index("--offline")], "-p", str(fixture), "-I", str(script),
+        *(["downloadKotlinNativeDistribution"] if native_pin is not None else []),
         "resolveInstalledConsumerDependencies", "--dependency-verification=strict",
         "--no-daemon", "--no-configuration-cache", "--console=plain",
         "-PCENTRAL_STAGING=" + str(maven), "-PcodexAgent.sdkVersion=" + sdk_version,
@@ -190,6 +209,14 @@ def prepare_dependencies(*, repository, revision, target, maven, maven_inventory
                 stdout=log, stderr=subprocess.STDOUT, check=False)
         if result.returncode:
             raise ValueError(f"Pinned installed dependency preparation failed; see {destination / 'gradle.log'}")
+        if native_dependencies:
+            konan = Path(environment.get("KONAN_DATA_DIR", str(Path.home() / ".konan")))
+            require_regular_directory(konan, "Installed Konan data directory")
+            if not konan.is_absolute() or konan.resolve(strict=True) != konan:
+                raise ValueError("Installed Konan data directory must be normalized")
+            for name, expected in native_dependencies:
+                if _tree_digest(konan / "dependencies" / name, "Installed native dependency") != expected:
+                    raise ValueError("Installed native dependency differs from its approved immutable tree")
     finally:
         unchanged()
     write_canonical_json(destination / "result.json", {"schemaVersion": 1, "target": target,
