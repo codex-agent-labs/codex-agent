@@ -695,6 +695,98 @@ _NODE_SDK = tuple(products.PhaseInstanceId("sdk", "javascript", phase, "node")
                   for phase in ("package", "validation", "metadata"))
 
 
+# Fixed ordinary-lane equivalence; this selects proof, never compiler/source/privacy work.
+_APPLE_PROFILE_ENV = "CODEX_AGENT_APPLE_VALIDATION_CONTRIBUTION"
+_APPLE_PROFILE = "ios-frameworks-and-swift-v1"
+_APPLE_REVIEW_ENV = "CODEX_AGENT_APPLE_REVIEWED_CHECKS"
+_APPLE_REVIEW_PROFILE = "reviewed-originals-v1"
+_APPLE_B, _APPLE_P, _APPLE_DEVICE_V, _APPLE_SIMULATOR_V = (
+    products.PhaseInstanceId("sdk", "sdk-ios", phase, target) for phase, target in (
+        ("binary", "ios"), ("package", "ios"),
+        ("validation", "ios-arm64"), ("validation", "ios-simulator-arm64")))
+_APPLE = {
+    "ios-framework-device": ("build", "linkReleaseFrameworkIosArm64", (_APPLE_B,)),
+    "ios-framework-simulator": ("build", "linkReleaseFrameworkIosSimulatorArm64", (_APPLE_B,)),
+    "ios-swift-tests": ("test", "generateCodexAgentAppleBindingEvidence",
+                        (_APPLE_B, _APPLE_P, _APPLE_DEVICE_V, _APPLE_SIMULATOR_V)),
+}
+
+
+def _apple_profile(environ):
+    profile = environ.get(_APPLE_PROFILE_ENV)
+    if profile is None:
+        return False
+    if (profile != _APPLE_PROFILE or environ.get("GITHUB_ACTIONS") != "true"
+            or environ.get("GITHUB_JOB") != "sdk-completion"):
+        raise ValueError("Apple contribution requires the fixed SDK completion caller profile")
+    return True
+
+
+def _apple_review_module(root):
+    import importlib.util
+    path = Path(root) / ".github/actions/run-ci-lane/apple_package_validation.py"
+    spec = importlib.util.spec_from_file_location("reviewed_apple_package_controls", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _apple_review_profile(environ, apple):
+    value = environ.get(_APPLE_REVIEW_ENV)
+    if value is None:
+        return False
+    if not apple or value != _APPLE_REVIEW_PROFILE:
+        raise ValueError("Reviewed Apple checks require the fixed Apple caller profile")
+    publisher = environ.get("TRUSTED_WORKFLOW_SHA", "")
+    if products._OID.fullmatch(publisher) is None:
+        raise ValueError("Reviewed Apple checks require the caller's immutable publisher")
+    return True
+
+
+def _apple_original_identities(plan, apple_reviewed):
+    identities = {i for lane in _apple_lanes(plan, True) for i in _APPLE[lane][2]}
+    if apple_reviewed:
+        identities.update((_APPLE_B, _APPLE_P, _APPLE_DEVICE_V, _APPLE_SIMULATOR_V))
+    return tuple(sorted(identities))
+
+
+def _apple_lanes(plan, enabled):
+    from receipt import required_lanes
+    if type(enabled) is not bool:
+        raise ValueError("Apple contribution requires a fixed boolean selection")
+    lanes = tuple(sorted(set(required_lanes(plan)) & set(_APPLE))) if enabled else ()
+    if enabled and not lanes:
+        raise ValueError("Apple contribution has no selected fixed lane")
+    for lane in lanes:
+        # These fixed run-lane branches have one task action and no metadata command.
+        # Preserve the plan's metadata flag; it must not substitute for the task.
+        actions = {action for action in ("build", "test", "metadata") if plan["lanes"][lane][action]}
+        if _APPLE[lane][0] not in actions or actions - {_APPLE[lane][0], "metadata"}:
+            raise ValueError("Apple contribution cannot replace unmatched lane actions")
+    return lanes
+
+
+def _apple_lane_projection(plan, lanes):
+    return {lane: {"actions": {a: plan["lanes"][lane][a] for a in ("build", "test", "metadata")},
+                   "task": ":codex-agent-runtime-ios:" + _APPLE[lane][1],
+                   "inputs": [dict(zip(products._IDENTITY_KEYS, (i.product, i.component, i.phase, i.target)))
+                              for i in _APPLE[lane][2]]} for lane in lanes}
+
+
+def _apple_input_inventories(plan_path, root, plan, lanes, *, verify_transport=False):
+    from impact import inventory, effective_pathspecs
+    result = {}
+    for lane in lanes:
+        result[lane] = {}
+        for category, name in INPUT_NAMES.items():
+            raw = inventory(root, plan["validationCommit"], effective_pathspecs(root, lane, category)).encode()
+            if verify_transport and read_regular_file_bytes(plan_path.parent / "inventories" / lane / name,
+                    max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != raw:
+                raise ValueError("Apple source inventory differs from the original current plan")
+            result[lane][name] = sha256_bytes(raw)
+    return result
+
+
 _INSTALLED_BASE = tuple(products.PhaseInstanceId(*row) for row in (
     ("contract", "contract", "binary", "common"), ("sdk", "sdk-core", "package", "common")))
 _INSTALLED_RUNTIME = products.PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
@@ -727,9 +819,10 @@ def _installed_identities(lanes):
     return tuple(sorted(set(_INSTALLED_BASE) | {i for lane in lanes for i in _INSTALLED[lane][2]}))
 
 
-def _contribution_selection(plan, android, node_js, installed_consumers=False):
+def _contribution_selection(plan, android, node_js, installed_consumers=False, apple=False):
     _installed_lanes(plan, installed_consumers)
-    if type(android) is not bool or type(node_js) is not bool or not (android or node_js or installed_consumers):
+    _apple_lanes(plan, apple)
+    if type(android) is not bool or type(node_js) is not bool or not (android or node_js or installed_consumers or apple):
         raise ValueError("Current contributions require fixed boolean selections")
     lanes = plan["lanes"]
     if android and not any(lanes["android"][action] for action in ("test", "metadata")):
@@ -753,15 +846,18 @@ def _node_input_inventories(plan_path, root, plan, *, verify_transport=False):
     return result
 
 
-def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, android, node_js, installed_consumers=False):
+def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, android, node_js, installed_consumers=False, apple=False, apple_reviewed=False):
     from products.inventory import require_exact_keys
     from products.receipt import validate_phase_receipt
     from sdk_completion import _repository_report
-    _contribution_selection(plan, android, node_js, installed_consumers)
+    _contribution_selection(plan, android, node_js, installed_consumers, apple)
     keys = {"schemaVersion", "kind", "consumer", "planSha256"}
     if android: keys.add("android")
     if node_js: keys.add("nodeJs")
     if installed_consumers: keys.add("installedConsumers")
+    if apple: keys.add("apple")
+    if type(apple_reviewed) is not bool or apple_reviewed and not apple:
+        raise ValueError("Reviewed Apple checks require selected Apple contributions")
     value = require_exact_keys(value, keys, "Current canonical contributions")
     if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
             or value["kind"] != _VALIDATION_KIND or value["consumer"] != consumer
@@ -793,6 +889,28 @@ def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, an
                         or any(row[key] != phases[identity][key]
                                for key in ("buildKey", "receiptSha256", "objectSha256"))):
                     raise ValueError("Node-JS contribution substitutes an original tuple")
+    if apple:
+        retained = require_exact_keys(value["apple"], {"lanes", "originals", "inputInventories"}
+            | ({"reviewedChecks"} if apple_reviewed else set()), "Apple contribution")
+        lanes = _apple_lanes(plan, True)
+        if retained["lanes"] != _apple_lane_projection(plan, lanes):
+            raise ValueError("Apple contribution changes selected tasks or inputs")
+        require_exact_keys(retained["inputInventories"], set(lanes), "Apple source lanes")
+        for lane in lanes:
+            require_exact_keys(retained["inputInventories"][lane], set(INPUT_NAMES.values()), "Apple source inventories")
+            for digest in retained["inputInventories"][lane].values():
+                require_sha256(digest, "Apple source inventory SHA")
+        identities = _apple_original_identities(plan, apple_reviewed)
+        if type(retained["originals"]) is not list or len(retained["originals"]) != len(identities):
+            raise ValueError("Apple contribution changes its deduplicated original set")
+        for identity, row in zip(identities, retained["originals"]):
+            row = require_exact_keys(row, {"buildKey", "receiptSha256", "objectSha256", "receipt"}, "Apple original")
+            receipt = validate_phase_receipt(row["receipt"])
+            if (products._identity(receipt) != identity or row["buildKey"] != receipt["buildKey"]
+                    or row["receiptSha256"] != sha256_bytes(canonical_json_bytes(receipt))):
+                raise ValueError("Apple contribution substitutes an original receipt")
+            for key in ("buildKey", "receiptSha256", "objectSha256"):
+                require_sha256(row[key], "Apple original " + key)
     if installed_consumers:
         installed = require_exact_keys(value["installedConsumers"], {"lanes", "originals"}, "Installed consumer inputs")
         lanes = _installed_lanes(plan, True)
@@ -840,7 +958,7 @@ def _retained_dependency_plan(state, identity, envelope):
 
 def retained_validation_contributions(state, plan_path, *, repository_root, environ,
                                       android=False, node_js=False, installed_consumers=False):
-    """Consume two fixed contributions in the caller's existing verified-state lifetime."""
+    """Consume fixed contributions in the caller's existing verified-state lifetime."""
     from contextlib import nullcontext
     from reuse_qualification import CompletedFrozenReuse
     if type(state) is not products._VerifiedProductState or type(state.completed_frozen) is not CompletedFrozenReuse:
@@ -849,7 +967,10 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
     raw = read_regular_file_bytes(plan_path, reject_symlink_parents=True)
     if products._validate_plan(plan_path, root) != state.plan or load_json_bytes(raw) != state.plan:
         raise ValueError("Current contribution differs from the original verified plan")
-    _contribution_selection(state.plan, android, node_js, installed_consumers)
+    apple = _apple_profile(environ)
+    apple_reviewed = _apple_review_profile(environ, apple)
+    apple_publisher = environ.get("TRUSTED_WORKFLOW_SHA") if apple_reviewed else None
+    _contribution_selection(state.plan, android, node_js, installed_consumers, apple)
     native, consumer = state.completed_frozen, state.consumer
     native.check_consumer(consumer)
     if consumer != products._consumer(state.plan, environ):
@@ -886,6 +1007,32 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
             for identity, original in originals.items():
                 if native.envelope(context.prior_by_instance[identity])["receipt"] != original["receipt"]:
                     raise ValueError("Node-JS original changed during consumption")
+    if apple:
+        lanes = _apple_lanes(state.plan, True)
+        identities = _apple_original_identities(state.plan, apple_reviewed)
+        if any(identity not in state.closure for identity in identities):
+            raise ValueError("Apple contribution is outside the current native closure")
+        originals = []
+        for identity in identities:
+            record = state.prior_by_instance.get(identity)
+            envelope = None if record is None else native.envelope(record)
+            if envelope is None or record["state"] not in {"retained", "reused"}:
+                raise ValueError("Apple contribution lacks its exact current native original")
+            _retained_dependency_plan(state, identity, envelope)
+            originals.append({**{key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
+                              "receipt": envelope["receipt"]})
+        result["apple"] = load_canonical_json_bytes(canonical_json_bytes({
+            "lanes": _apple_lane_projection(state.plan, lanes), "originals": originals,
+            "inputInventories": _apple_input_inventories(plan_path, root, state.plan, lanes)}))
+        for identity, original in zip(identities, originals):
+            if native.envelope(state.prior_by_instance[identity])["receipt"] != original["receipt"]:
+                raise ValueError("Apple original changed during contribution")
+        if apple_reviewed:
+            reviewed = _apple_review_module(root).reviewed_apple_contribution(state, plan_path,
+                repository_root=root, environ=environ, trusted_workflow_sha=apple_publisher)
+            if reviewed.pop("originals") != originals:
+                raise ValueError("Reviewed Apple checks change their shared originals")
+            result["apple"]["reviewedChecks"] = reviewed
     if installed_consumers:
         lanes = _installed_lanes(state.plan, True)
         identities = _installed_identities(lanes)
@@ -908,14 +1055,20 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
             if native.envelope(state.prior_by_instance[identity])["receipt"] != original["receipt"]:
                 raise ValueError("Installed consumer original changed during consumption")
     _validate_validation_contributions(result, consumer["producer"], sha256_bytes(raw), state.plan,
-                                       android=android, node_js=node_js, installed_consumers=installed_consumers)
+                                       android=android, node_js=node_js, installed_consumers=installed_consumers, apple=apple, apple_reviewed=apple_reviewed)
     native.check_consumer(consumer)
     if (canonical_json_bytes(state.prior) != before or read_regular_file_bytes(plan_path, reject_symlink_parents=True) != raw
             or state.plan != load_json_bytes(raw)
             or products._consumer(state.plan, environ) != consumer
             or products._git_value(root, "rev-parse", "HEAD^{commit}") != consumer["producer"]["commit"]
+            or _apple_profile(environ) != apple
+            or _apple_review_profile(environ, apple) != apple_reviewed
+            or apple_reviewed and environ.get("TRUSTED_WORKFLOW_SHA") != apple_publisher
+            or apple and _apple_input_inventories(plan_path, root, state.plan, _apple_lanes(state.plan, True)) != result["apple"]["inputInventories"]
             or node_js and _node_input_inventories(plan_path, root, state.plan) != result["nodeJs"]["inputInventories"]):
         raise ValueError("Current contribution changed or outlived its original inputs")
+    if apple and len(canonical_json_bytes(result)) > _CONTRIBUTION_LIMIT - 4096:
+        raise ValueError("Apple contribution exceeds the existing upload bound including ZIP headers")
     return result
 
 
@@ -1130,7 +1283,7 @@ def select_installed_consumer_reuse(plan, *, repository_root, revision, trusted_
 
 
 def _observed_installed_consumers(producer, observation, contribution, plan, root, token,
-                                  *, reused=None, observations=None, policy_sha256=None):
+                                  *, reused=None, observations=None, policy_sha256=None, artifact_listing=None):
     """One current-run discovery, using the already observed exact consumer jobs."""
     lanes = _installed_lanes(plan, True)
     originals = {products._identity(row["receipt"]): row
@@ -1142,7 +1295,7 @@ def _observed_installed_consumers(producer, observation, contribution, plan, roo
             raise ValueError("Installed consumer native input differs from current source versions")
     reused = {} if reused is None else reused
     # Current attempts remain fresh; historical locators need no rediscovery.
-    listing = (products.paginated_items(
+    listing = artifact_listing if artifact_listing is not None else (products.paginated_items(
         f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
         "artifacts", token) if set(lanes) - set(reused) else [])
     results = {}
@@ -1189,10 +1342,226 @@ def _observed_installed_consumers(producer, observation, contribution, plan, roo
     return results
 
 
+_SOURCE_POLICY = ".reuse/completed-source-validations.json"
+_SOURCE_WORKFLOWS = {
+    **{"desktop-" + target: ".github/workflows/desktop-runtime-evidence.yml"
+       for target in ("linux-x64", "macos-x64", "windows-x64")},
+    "ios-swift-build": ".github/workflows/apple-runtime-evidence.yml",
+}
+_SOURCE_NATIVE_RECIPE = (
+    ".github/actions/run-ci-lane/runtime_source_validation.py", "ci/native_wrappers.py",
+    "ci/product_reuse.py", "ci/reuse_qualification.py", "ci/products/inventory.py",
+    "ci/products/restore.py", "ci/runtime_reference_archive.py", "ci/runtime_reference_transport.py",
+    "codex-agent-runtime-desktop/src/commonTest/**", "codex-agent-runtime-desktop/src/desktopTest/**",
+    "codex-agent-runtime-desktop/src/nativeTest/**",
+)
+_SOURCE_SWIFT_RECIPE = (*_INSTALLED_RECIPE,
+    ".github/actions/run-ci-lane/apple_source_validation.py",
+    "ci/runtime_reference_archive.py", "ci/runtime_reference_transport.py",
+    "codex-agent-runtime-ios/apple/Package.swift", "codex-agent-runtime-ios/apple/Sources/**",
+    "codex-agent-runtime-ios/apple/Tests/**")
+
+
+def _source_lanes(plan, native_source_tests, apple_source_tests):
+    if type(native_source_tests) is not bool or type(apple_source_tests) is not bool:
+        raise ValueError("Source validation selection must use explicit booleans")
+    lanes = []
+    for lane in _SOURCE_WORKFLOWS:
+        if lane == "ios-swift-build":
+            actions, enabled = ("build", "test"), apple_source_tests
+        else:
+            actions, enabled = ("test",), native_source_tests
+        if enabled:
+            values = [plan["lanes"][lane][action] for action in actions]
+            if any(type(value) is not bool for value in values):
+                raise ValueError("Source validation plan selection is not boolean")
+            if any(values):
+                lanes.append(lane)
+    return tuple(sorted(lanes))
+
+
+def validate_source_validation_policy(raw):
+    from products.inventory import require_exact_keys
+    if type(raw) is not bytes or len(raw) > _INSTALLED_POLICY_LIMIT:
+        raise ValueError("Source validation policy exceeds its bound")
+    value = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "kind", "runtimeCompletion", "sdkCompletion", "originals"}, "Source validation policy")
+    if type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1 or value["kind"] != "completed-source-validations":
+        raise ValueError("Unsupported source validation policy")
+    # Exactly the same immutable native locator schema as installed consumers.
+    from reuse_qualification import _native_pin_arguments
+    _native_pin_arguments(value["sdkCompletion"])
+    _native_pin_arguments(value["runtimeCompletion"])
+    rows = value["originals"]
+    if type(rows) is not dict or not rows or not set(rows) <= set(_SOURCE_WORKFLOWS):
+        raise ValueError("Source validation policy has unsupported lanes")
+    seen = set()
+    for lane, row in rows.items():
+        require_exact_keys(row, {"producer", "workflowSha", "jobId", "artifactId",
+                                "artifactSha256", "planSha256"}, "Source validation original")
+        producer = products.validate_producer(row["producer"])
+        if (producer["repository"] != "codex-agent-labs/codex-agent"
+                or producer["workflowPath"] != ".github/workflows/ci.yml"
+                or producer["event"] != "pull_request" or producer["pullRequest"] != 31
+                or type(row["workflowSha"]) is not str or products._OID.fullmatch(row["workflowSha"]) is None):
+            raise ValueError("Source validation original changes its approved producer/workflow scope")
+        for field in ("jobId", "artifactId"):
+            require_integer(row[field], "Source original " + field, 1)
+        for field in ("artifactSha256", "planSha256"):
+            require_sha256(row[field], "Source original " + field)
+        identifier = producer["runId"], producer["runAttempt"], row["jobId"]
+        if identifier in seen:
+            raise ValueError("Source validation policy duplicates an original job")
+        seen.add(identifier)
+    return value
+
+
+def _source_reuse_selection(root, revision, workflow_sha, lanes, policy_path, native_policy_path):
+    from products.inventory import git_inventory, git_regular_blob_bytes, run_git
+    if not lanes:
+        if policy_path is not None:
+            raise ValueError("Unselected source checks cannot supply an original policy")
+        return {}, ()
+    if type(workflow_sha) is not str or products._OID.fullmatch(workflow_sha) is None:
+        raise ValueError("Source originals require the exact current protected publisher")
+    # Exact nonrecursive lookup distinguishes an absent leaf from a directory/symlink.
+    entry = run_git(root, "ls-tree", "-z", workflow_sha, "--", _SOURCE_POLICY, binary=True)
+    if not entry:
+        if policy_path is not None:
+            raise ValueError("Caller source policy is absent from the protected publisher")
+        return {}, ()
+    records = entry.split(b"\0")
+    if len(records) != 2 or records[1] or b"\t" not in records[0]:
+        raise ValueError("Source policy Git entry is ambiguous")
+    metadata, name = records[0].split(b"\t", 1)
+    fields = metadata.split()
+    if (len(fields) != 3 or fields[0] not in (b"100644", b"100755")
+            or fields[1] != b"blob" or name != _SOURCE_POLICY.encode()):
+        raise ValueError("Source policy Git entry is not a regular file")
+    raw = git_regular_blob_bytes(root, workflow_sha, _SOURCE_POLICY, max_bytes=_INSTALLED_POLICY_LIMIT)
+    snapshots = (("git:" + workflow_sha + ":" + _SOURCE_POLICY, raw),)
+    if policy_path is not None:
+        policy_path = Path(policy_path).absolute()
+        local_raw = read_regular_file_bytes(policy_path, max_bytes=_INSTALLED_POLICY_LIMIT, reject_symlink_parents=True)
+        if local_raw != raw:
+            raise ValueError("Source original policy differs from the current protected Git publisher")
+        snapshots += ((str(policy_path), local_raw),)
+    if native_policy_path is None:
+        raise ValueError("Source originals require the current native policy")
+    native_policy_path = Path(native_policy_path).absolute()
+    policy = validate_source_validation_policy(raw)
+    native_raw = read_regular_file_bytes(native_policy_path, max_bytes=16*1024*1024, reject_symlink_parents=True)
+    native = load_canonical_json_bytes(native_raw)
+    authority = load_canonical_json_bytes(git_regular_blob_bytes(root, workflow_sha,
+        ".reuse/completed-reuse.json", max_bytes=16*1024*1024))
+    if (canonical_json_bytes(native) != canonical_json_bytes(authority["policy"])
+            or type(native.get("schemaVersion")) is not int or native["schemaVersion"] != 1
+            or native.get("kind") != "completed-frozen-reuse"):
+        raise ValueError("Source validation native policy differs from its protected publisher")
+    snapshots += ((str(native_policy_path), native_raw),)
+    # Scheduling only: a new native pin needs an authenticated per-target rebind.
+    # The later gate always checks the actual current tuples through the live owner.
+    runtime_pin = {field: native.get(field) for field in policy["runtimeCompletion"]}
+    from reuse_qualification import _native_pin_arguments
+    _native_pin_arguments(runtime_pin)
+    matched, inventories = {}, {}
+    def recipe(tree, workflow, swift):
+        key = tree, workflow, swift
+        if key not in inventories:
+            inputs = git_inventory(root, tree, _SOURCE_SWIFT_RECIPE if swift else _SOURCE_NATIVE_RECIPE)
+            child = git_inventory(root, workflow, (_SOURCE_WORKFLOWS["ios-swift-build" if swift else "desktop-linux-x64"],))
+            if not inputs or not child:
+                raise ValueError("Source validation recipe or child workflow is empty")
+            inventories[key] = (inputs, child)
+        return inventories[key]
+    for lane in lanes:
+        if (policy["sdkCompletion"] != native.get("sdkCompletion") if lane == "ios-swift-build"
+                else policy["runtimeCompletion"] != runtime_pin):
+            continue
+        row = policy["originals"].get(lane)
+        if row is not None and recipe(revision, workflow_sha, lane == "ios-swift-build") == recipe(
+                row["producer"]["tree"], row["workflowSha"], lane == "ios-swift-build"):
+            matched[lane] = row
+    return matched, (*snapshots, tuple(sorted(inventories.items())))
+
+
+def select_source_validation_reuse(plan, *, repository_root, revision, trusted_workflow_sha,
+        policy_path=None, completed_frozen_policy=None, native_source_tests=False, apple_source_tests=False):
+    """Return compatible selected names only; no control or semantic acceptance."""
+    lanes = _source_lanes(plan, native_source_tests, apple_source_tests)
+    reused, _ = _source_reuse_selection(Path(repository_root).resolve(strict=True), revision,
+        trusted_workflow_sha, lanes, policy_path, completed_frozen_policy)
+    return sorted(reused)
+
+
+def _source_control_upload(producer, observation, *, name, job, names, token,
+                           listing=None, original=None):
+    """One bounded three-control transport; no semantic or native authority."""
+    if original is None:
+        matches = [r for r in listing if type(r) is dict and r.get("name") == name]
+        if len(matches) != 1:
+            raise ValueError("Source validation upload is missing or ambiguous")
+        identifier = require_integer(matches[0].get("id"), "Source control artifact ID", 1)
+        digest = require_sha256(matches[0].get("digest"), "Source control artifact SHA")
+    else:
+        observed_job, = products._matching_ci_jobs(observation["jobs"], job)
+        if observed_job["id"] != original["jobId"]:
+            raise ValueError("Source validation job differs from its protected original")
+        identifier, digest = original["artifactId"], original["artifactSha256"]
+    artifact = products._contract_ci_upload_metadata(identifier, digest, name, producer, observation["run"], token)
+    products._require_artifact_job_window(observation, job, artifact)
+    size = require_integer(artifact["size_in_bytes"], "Source control bytes", 1)
+    if size > _CONTRIBUTION_LIMIT:
+        raise ValueError("Source validation upload exceeds its control-only bound")
+    with tempfile.TemporaryDirectory(prefix="source-validation-controls-") as temporary:
+        archive = Path(temporary).resolve() / "controls.zip"
+        products._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+            destination=archive, limit=_CONTRIBUTION_LIMIT, artifact_sha256=digest, size=size)
+        inventory, members, transport = verified_zip_contents(archive,
+            max_archive_bytes=_CONTRIBUTION_LIMIT, max_members=3, max_entry_bytes=_CONTRIBUTION_LIMIT,
+            max_total_bytes=_CONTRIBUTION_LIMIT, retained_paths=names,
+            max_retained_bytes=_CONTRIBUTION_LIMIT, require_sorted=False)
+        if transport != {"bytes": size, "sha256": digest} or {r["relativePath"] for r in inventory} != set(names):
+            raise ValueError("Source validation upload changes its exact three-control closure")
+    return identifier, digest, members
+
+
+def _observed_source_validations(native, *, lanes, native_reader, swift_reader, plan_sha256,
+        root, consumer, observations, token, listing, reused, policy_sha256):
+    def expected(lane):
+        return (swift_reader._expected(native, consumer, root) if lane == "ios-swift-build" else
+                native_reader._native_merge_inputs(native, consumer, root, lane.removeprefix("desktop-")))
+    before = {lane: expected(lane) for lane in lanes}
+    results = {}
+    for lane in lanes:
+        original = reused.get(lane)
+        owner = consumer["producer"] if original is None else original["producer"]
+        observation = observations[(owner["runId"], owner["runAttempt"])]
+        swift = lane == "ios-swift-build"
+        target = lane.removeprefix("desktop-")
+        job = ("product-validation / retained-apple-source / retained-swift-simulator" if swift else
+               "product-validation / retained-native-source / retained-native-" + target)
+        prefix = "codex-agent-retained-swift-source-" if swift else "codex-agent-retained-native-source-" + target + "-"
+        names = swift_reader._NAMES if swift else ("retained-source-tests.json", "discovery.log", "execution.log")
+        identifier, digest, members = _source_control_upload(owner, observation,
+            name=prefix + owner["tree"] + "-attempt-" + str(owner["runAttempt"]), job=job,
+            names=names, token=token, listing=listing, original=original)
+        original_plan = plan_sha256 if original is None else original["planSha256"]
+        record = (swift_reader._validate_controls(members, owner, original_plan, before[lane]) if swift else
+                  native_reader._validate_native_source_controls(members, owner, original_plan, target, before[lane]))
+        results[lane] = {"artifactId": identifier, "artifactSha256": digest, "original": record,
+            **({"recordSha256": sha256_bytes(members[names[0]])} if not swift or original is not None else {}),
+            **({"retainedRuntimeValidations": before[lane]["retainedRuntimeValidations"]} if not swift else {}),
+            **({"policySha256": policy_sha256, "originalJobId": original["jobId"]} if original is not None else {})}
+    if {lane: expected(lane) for lane in lanes} != before:
+        raise ValueError("Source validation native authority or current inputs changed during observation")
+    return results
+
+
 def observed_validation_contributions(plan, *, repository_root, trusted_workflow_sha,
         artifact_id, artifact_sha256, contribution_sha256, environ, android=False, node_js=False, parity=None,
         installed_consumers=False, installed_consumer_policy=None, completed_frozen_policy=None,
-        reused_installed_lanes=(), native_source_tests=False):
+        reused_installed_lanes=(), native_source_tests=False, apple=False, apple_reviewed=False, apple_source_tests=False, reviewed_runtime=False, source_validation_policy=None, reused_source_lanes=()):
     """Authenticate a bounded original SDK completion output, never a caller verdict."""
     from products.restore import verification_session
     require_no_signing_secret(environ)
@@ -1208,7 +1577,9 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     if any(environ.get(key) != producer[field] for key, field in (
             ("GITHUB_REPOSITORY", "repository"), ("GITHUB_EVENT_NAME", "event"), ("GITHUB_SHA", "commit"))):
         raise ValueError("Android contribution environment differs from its current plan")
-    canonical_selected = android or node_js or installed_consumers
+    canonical_selected = android or node_js or installed_consumers or apple
+    if type(reviewed_runtime) is not bool or reviewed_runtime and not (canonical_selected or native_source_tests):
+        raise ValueError("Reviewed Runtime duties require an existing observed ordinary contribution scope")
     if canonical_selected:
         require_sha256(contribution_sha256, "Android contribution digest")
         require_sha256(artifact_sha256, "Android contribution upload digest")
@@ -1228,6 +1599,27 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
         targets = reader.selected_native_source_targets(value, True)
         if completed_frozen_policy is None:
             raise ValueError("Native source gate requires explicit current native policy")
+    reviewed_reader = None
+    if reviewed_runtime:
+        if completed_frozen_policy is None:
+            raise ValueError("Reviewed Runtime duties require the current native policy")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("reviewed_runtime_reader",
+            root / ".github/actions/run-ci-lane/runtime_reviewed_validation.py")
+        reviewed_reader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reviewed_reader)
+        reviewed_reader.selected_reviewed_runtime_lanes(value, True)
+    swift_reader = None
+    if type(apple_source_tests) is not bool or apple_source_tests and not apple:
+        raise ValueError("Swift source checks require explicit ordinary Apple routing")
+    if apple_source_tests:
+        if not any(value["lanes"]["ios-swift-build"][a] for a in ("build", "test")) or completed_frozen_policy is None:
+            raise ValueError("Swift source checks lack their selected current lane/native policy")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("retained_swift_source_reader",
+            root / ".github/actions/run-ci-lane/apple_source_validation.py")
+        swift_reader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(swift_reader)
     token = environ["GITHUB_TOKEN"]
     lanes = _installed_lanes(value, installed_consumers)
     if installed_consumer_policy is not None and not installed_consumers:
@@ -1237,6 +1629,11 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     if (type(reused_installed_lanes) not in (tuple, list)
             or list(reused_installed_lanes) != sorted(reused)):
         raise ValueError("Installed consumer scheduling differs from current protected compatibility")
+    source_lanes = _source_lanes(value, native_source_tests, apple_source_tests)
+    source_reused, source_inputs = _source_reuse_selection(root, producer["commit"], trusted_workflow_sha,
+        source_lanes, source_validation_policy, completed_frozen_policy)
+    if (type(reused_source_lanes) not in (tuple, list) or list(reused_source_lanes) != sorted(source_reused)):
+        raise ValueError("Source validation scheduling differs from protected compatibility")
     job = "product-validation / sdk-completion"
     jobs = {"completion": job} if canonical_selected else {}
     if node_js:
@@ -1244,28 +1641,38 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     elif parity is not None:
         raise ValueError("Unselected Node-JS contribution cannot supply parity")
     jobs.update({lane: "product-validation / retained-consumers / " + lane for lane in lanes})
+    if apple_source_tests:
+        jobs["apple-source"] = "product-validation / retained-apple-source / retained-swift-simulator"
     jobs.update({"native-source-" + target:
         "product-validation / retained-native-source / retained-native-" + target for target in targets})
     with verification_session(), products._ci_observation_batch(
             (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True), ExitStack() as native_scope:
-        producers = {key: reused[key]["producer"] if key in reused else producer for key in jobs}
+        source_keys = {("apple-source" if lane == "ios-swift-build" else
+                        "native-source-" + lane.removeprefix("desktop-")): row for lane, row in source_reused.items()}
+        original_jobs = {**reused, **source_keys}
+        producers = {key: original_jobs[key]["producer"] if key in original_jobs else producer for key in jobs}
         observations = products._observe_ci_producer_jobs(producers, jobs_by_phase=jobs,
             token=token, trusted_workflows_by_phase={key: {
                 "path": ".github/workflows/" + ("sdk-consumer-validation.yml" if key in lanes else
                     "desktop-runtime-evidence.yml" if key.startswith("native-source-") else
+                    "apple-runtime-evidence.yml" if key == "apple-source" else
                     "sdk-binding-parity.yml" if key == "parity" else "product-validation.yml"),
-                "sha": reused[key]["workflowSha"] if key in reused else trusted_workflow_sha} for key in jobs})
-        if reused:
+                "sha": original_jobs[key]["workflowSha"] if key in original_jobs else trusted_workflow_sha} for key in jobs})
+        if original_jobs:
             by_attempt = {(row["run"]["id"], row["run"]["run_attempt"]): row for row in observations}
             if len(by_attempt) != len(observations):
-                raise ValueError("Installed original observations duplicate an attempt")
-            def observation_for(owner):
-                return by_attempt[(owner["runId"], owner["runAttempt"])]
-            observed = observation_for(producer)
-            original_observations = {lane: observation_for(row["producer"]) for lane, row in reused.items()}
+                raise ValueError("Original observations duplicate an attempt")
+            # An all-reused native-only gate need not observe a nonexistent current worker.
+            observed = by_attempt.get((producer["runId"], producer["runAttempt"]))
         else:
             observed, = observations
-            original_observations = {}
+            by_attempt = {(producer["runId"], producer["runAttempt"]): observed}
+        original_observations = {lane: by_attempt[(row["producer"]["runId"], row["producer"]["runAttempt"])]
+                                 for lane, row in reused.items()}
+        fresh_controls = (set(lanes) - set(reused)) | (set(source_lanes) - set(source_reused))
+        listing = (products.paginated_items(
+            f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
+            "artifacts", token) if fresh_controls else [])
 
         contribution = None
         if canonical_selected:
@@ -1291,10 +1698,19 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                         or retained != {_VALIDATION_FILE: raw}):
                     raise ValueError("Android contribution differs from its exact original upload")
                 contribution = _validate_validation_contributions(load_canonical_json_bytes(raw), producer,
-                    sha256_bytes(plan_raw), value, android=android, node_js=node_js, installed_consumers=installed_consumers)
+                    sha256_bytes(plan_raw), value, android=android, node_js=node_js, installed_consumers=installed_consumers,
+                    apple=apple, apple_reviewed=apple_reviewed)
+        if apple:
+            if contribution["apple"]["inputInventories"] != _apple_input_inventories(
+                    plan, root, value, _apple_lanes(value, True), verify_transport=True):
+                raise ValueError("Apple contribution changes current source inventories")
+            if apple_reviewed:
+                reviewed = dict(contribution["apple"]["reviewedChecks"], originals=contribution["apple"]["originals"])
+                _apple_review_module(root).validate_reviewed_apple_contribution(reviewed, plan,
+                    repository_root=root, environ=environ, trusted_workflow_sha=trusted_workflow_sha)
         installed_results = (_observed_installed_consumers(producer, observed, contribution, value, root, token,
             reused=reused, observations=original_observations,
-            policy_sha256=sha256_bytes(reuse_inputs[0][1]) if reuse_inputs else None)
+            policy_sha256=sha256_bytes(reuse_inputs[0][1]) if reuse_inputs else None, artifact_listing=listing)
             if installed_consumers else None)
         parity_result = None
         if node_js:
@@ -1302,22 +1718,42 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                 raise ValueError("Node-JS contribution changes current source inventories")
             parity_result = _observed_node_parity(producer, observed,
                 contribution["nodeJs"]["parityExpectedPhases"], parity, token)
-        native_results = None
-        if targets:
+        native_results = swift_results = reviewed_result = None
+        if targets or apple_source_tests or reviewed_runtime:
             from reuse_qualification import completed_frozen_options
             completed = native_scope.enter_context(completed_frozen_options({
                 "completed_frozen_policy": completed_frozen_policy, "repository_root": root, "plan": plan}))
-            native_results = reader.observed_native_source_tests(completed["completed_frozen"],
-                plan=value, plan_sha256=sha256_bytes(plan_raw), root=root,
-                consumer=products._consumer(value, environ), observation=observed, token=token)
-        if (_installed_reuse_selection(root, producer["commit"], trusted_workflow_sha, lanes,
+            if source_lanes:
+                source_results = _observed_source_validations(completed["completed_frozen"],
+                    lanes=source_lanes, native_reader=reader, swift_reader=swift_reader,
+                    plan_sha256=sha256_bytes(plan_raw), root=root, consumer=products._consumer(value, environ),
+                    observations=by_attempt, token=token, listing=listing, reused=source_reused,
+                    policy_sha256=sha256_bytes(source_inputs[0][1]) if source_inputs else None)
+                if targets:
+                    native_results = {lane: row for lane, row in source_results.items() if lane != "ios-swift-build"}
+                if apple_source_tests:
+                    swift_results = {"ios-swift-build": source_results["ios-swift-build"]}
+            if reviewed_runtime:
+                reviewed_result = reviewed_reader.reviewed_runtime_contribution(completed["completed_frozen"],
+                    plan=value, plan_sha256=sha256_bytes(plan_raw), root=root,
+                    consumer=products._consumer(value, environ), environ=environ,
+                    trusted_workflow_sha=trusted_workflow_sha)
+        if (_source_reuse_selection(root, producer["commit"], trusted_workflow_sha, source_lanes,
+                source_validation_policy, completed_frozen_policy) != (source_reused, source_inputs)
+                or _installed_reuse_selection(root, producer["commit"], trusted_workflow_sha, lanes,
                 installed_consumer_policy, completed_frozen_policy) != (reused, reuse_inputs)
                 or read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw
                 or products._consumer(value, environ)["producer"] != producer
                 or products._git_value(root, "rev-parse", "HEAD^{commit}") != producer["commit"]
                 or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
+                or apple and contribution["apple"]["inputInventories"] != _apple_input_inventories(
+                    plan, root, value, _apple_lanes(value, True), verify_transport=True)
                 or node_js and contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True)):
             raise ValueError("Current contribution consumer or inputs changed during observation")
+    if reviewed_runtime:
+        return contribution, parity_result, installed_results, native_results, swift_results, reviewed_result
+    if apple_source_tests:
+        return contribution, parity_result, installed_results, native_results, swift_results
     if native_source_tests:
         return contribution, parity_result, installed_results, native_results
     return (contribution, parity_result, installed_results) if installed_consumers else (contribution, parity_result)
@@ -1326,7 +1762,7 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
 def aggregate_retained_validation(plan, receipts, destination, *, repository_root,
         trusted_workflow_sha, artifact_id, artifact_sha256, contribution_sha256,
         environ, auxiliary_contracts=False, android=False, node_js=False, parity=None, installed_consumers=False,
-        installed_consumer_policy=None, completed_frozen_policy=None, reused_installed_lanes=(), native_source_tests=False):
+        installed_consumer_policy=None, completed_frozen_policy=None, reused_installed_lanes=(), native_source_tests=False, apple=False, apple_reviewed=False, apple_source_tests=False, reviewed_runtime=False, source_validation_policy=None, reused_source_lanes=()):
     """Combine current checks with an observed native contribution; never schema1 reuse."""
     from receipt import required_lanes, parse_validation_actions
     plan, receipts, destination = map(Path, (plan, receipts, destination))
@@ -1335,11 +1771,11 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         raise ValueError("Current Android gate destination must be fresh")
     plan_raw = read_regular_file_bytes(plan, reject_symlink_parents=True)
     selected = (products._validate_plan(plan, Path(repository_root).resolve(strict=True))
-                if native_source_tests and not (android or node_js or installed_consumers)
+                if native_source_tests and not (android or node_js or installed_consumers or apple)
                 else _authorized_plan(plan))
     required = required_lanes(selected)
-    if android or node_js or installed_consumers:
-        _contribution_selection(selected, android, node_js, installed_consumers)
+    if android or node_js or installed_consumers or apple:
+        _contribution_selection(selected, android, node_js, installed_consumers, apple)
     elif native_source_tests is not True:
         raise ValueError("Current contribution gate has no selected duty")
     observed = observed_validation_contributions(plan, repository_root=repository_root,
@@ -1347,10 +1783,14 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         artifact_sha256=artifact_sha256, contribution_sha256=contribution_sha256, environ=environ,
         android=android, node_js=node_js, parity=parity, installed_consumers=installed_consumers,
         installed_consumer_policy=installed_consumer_policy, completed_frozen_policy=completed_frozen_policy,
-        reused_installed_lanes=reused_installed_lanes, native_source_tests=native_source_tests)
+        reused_installed_lanes=reused_installed_lanes, native_source_tests=native_source_tests,
+        apple=apple, apple_reviewed=apple_reviewed, apple_source_tests=apple_source_tests, reviewed_runtime=reviewed_runtime,
+        source_validation_policy=source_validation_policy, reused_source_lanes=reused_source_lanes)
     contribution, parity_result = observed[:2]
     installed_results = observed[2] if installed_consumers else None
     native_results = observed[3] if native_source_tests else None
+    swift_results = observed[4] if apple_source_tests else None
+    reviewed_result = observed[5] if reviewed_runtime else None
     originals, controls = {}, {}
     for path in receipts.rglob("lane-receipt.json"):
         raw = read_regular_file_bytes(path, reject_symlink_parents=True)
@@ -1374,6 +1814,14 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         controls[path] = raw
     expected = set(required) - ({"node-js"} if node_js else set()) - set(_installed_lanes(selected, installed_consumers))
     expected -= set(native_results or {})
+    expected -= set(swift_results or {})
+    expected -= set(reviewed_result["lanes"] if reviewed_result else {})
+    expected -= set(_apple_lanes(selected, apple))
+    if apple_reviewed:
+        reviewed_lanes = set(contribution["apple"]["reviewedChecks"]["selectedLanes"])
+        expected -= reviewed_lanes & {"ios-privacy-metrics", "ios-kotlin-tests", "ios-native-tests",
+                                     "ios-rust-device", "ios-rust-simulator"}
+    # ios-package remains required: local reviewed controls do not pass the root Swift URL/checksum gate.
     if auxiliary_contracts:
         auxiliary = originals.get("contracts")
         if ("contracts" in expected or auxiliary is None
@@ -1395,6 +1843,8 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         **({"sdkParity": parity_result} if node_js else {}),
         **({"installedConsumers": installed_results} if installed_consumers else {}),
         **({"nativeSourceTests": native_results} if native_source_tests else {}),
+        **({"swiftSourceTests": swift_results} if apple_source_tests else {}),
+        **({"reviewedRuntime": reviewed_result} if reviewed_runtime else {}),
         "laneReceipts": {lane: sha256_bytes(canonical_json_bytes(value)) for lane, value in sorted(originals.items())}}
     if read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw or any(
             read_regular_file_bytes(path, reject_symlink_parents=True) != raw for path, raw in controls.items()):

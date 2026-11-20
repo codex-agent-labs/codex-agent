@@ -76,8 +76,10 @@ class NativeMergeTest(unittest.TestCase):
             return {key:envelope['receipt'][key] for key in PHASE_PLAN_KEYS}
         stack.enter_context(patch.object(reuse_qualification.CompletedFrozenReuse,'phase_plan',side_effect=phase))
         stack.enter_context(patch.object(gate.products,'_versions',return_value={'runtime-release':'fixture'}))
+        stack.enter_context(patch.object(inventory,'run_git',return_value=b''))
         for owner in (inventory,reader):
-            stack.enter_context(patch.object(owner,'git_inventory',return_value='fixture'))
+            stack.enter_context(patch.object(owner,'git_inventory',side_effect=lambda root, revision, paths:
+                '' if paths == (gate._SOURCE_POLICY,) else 'fixture'))
             stack.enter_context(patch.object(owner,'git_inventory_paths',return_value=[r['relativePath'] for r in self.source]))
             stack.enter_context(patch.object(owner,'git_file_inventory',return_value=self.source))
         return stack
@@ -179,7 +181,7 @@ class NativeMergeTest(unittest.TestCase):
         self.assertEqual(('linux-x64',),reader.selected_native_source_targets(self.value,True))
         with self.assertRaises(ValueError):reader.selected_native_source_targets(self.value,'true')
         parent=(ROOT/'.github/workflows/product-validation.yml').read_text().split('  merge-gate:\n',1)[1]
-        self.assertIn('desktop, retained-native-source, sdk-native-wrappers',parent)
+        self.assertIn('desktop, retained-native-source, retained-apple-source, sdk-native-wrappers',parent)
         self.assertIn('test "$RETAINED_NATIVE_SOURCE_RESULT" = success || exit 1',parent)
         self.assertIn("native_source_tests=native",parent)
         self.assertIn("needs.plan.outputs.retained_native_source != 'true'",parent)

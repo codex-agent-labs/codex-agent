@@ -74,6 +74,31 @@ class NativeSourceCallerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_code(code(SELECT), self.environment)
 
+    def test_only_missing_source_validations_reach_workers(self):
+        step = code(PARENT.split('      - id: source-validation-originals\n', 1)[1])
+        self.plan['validationCommit'] = 'a' * 40
+        matrix = self.rows[:2]
+        first, second = (row['lane'] for row in matrix)
+        swift = 'ios-swift-build'
+        env = dict(GITHUB_WORKSPACE=str(self.root), TRUSTED_WORKFLOW_SHA='b' * 40,
+                   CODEX_AGENT_COMPLETED_REUSE_POLICY=str(self.root / 'protected.json'),
+                   NATIVE_MATRIX=json.dumps(matrix), SWIFT_SELECTED='true')
+        for reused, pending, swift_miss in (([], matrix, 'true'), ([first], [matrix[1]], 'true'),
+                                            (sorted([first, second, swift]), [], 'false')):
+            with self.subTest(reused=reused), patch(
+                'ci.sdk_android_evidence_capture.select_source_validation_reuse', return_value=reused
+            ) as reader:
+                result = self.run_code(step, env)
+                self.assertEqual(pending, json.loads(result['matrix']))
+                self.assertEqual(swift_miss, result['swift_miss'])
+                self.assertEqual(reused, json.loads(result['reused']))
+                reader.assert_called_once_with(self.plan, repository_root=self.root, revision='a' * 40,
+                    trusted_workflow_sha='b' * 40, completed_frozen_policy=self.root / 'protected.json',
+                    native_source_tests=True, apple_source_tests=True)
+        with patch('ci.sdk_android_evidence_capture.select_source_validation_reuse', return_value=['desktop-windows-x64']):
+            with self.assertRaisesRegex(ValueError, 'selected lanes'):
+                self.run_code(step, env)
+
     def test_exact_resume_locator_rejects_failed_state_wave_or_host(self):
         outputs = dict(full_reuse='true', wave_failed='false', artifact_id='123',
             artifact_digest='sha256:'+'a'*64, state_wave='0', sdk_state_wave='')

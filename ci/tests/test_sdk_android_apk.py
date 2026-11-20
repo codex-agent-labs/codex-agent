@@ -1147,3 +1147,195 @@ class InstalledConsumerContributionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrdinaryAppleContributionTest(unittest.TestCase):
+    """Synthetic native boundary; actual fixed phase plans, controls and lifetime guards."""
+    envelope = SharedCanonicalContributionTest.envelope
+    materialize = SharedCanonicalContributionTest.materialize
+    consumer = SharedCanonicalContributionTest.consumer
+    scopes = SharedCanonicalContributionTest.scopes
+    node_scopes = SharedCanonicalContributionTest.node_scopes
+    seal_native = SharedCanonicalContributionTest.seal_native
+
+    def setUp(self):
+        SharedCanonicalContributionTest.setUp(self)
+        from receipt import LANES
+        self.plan_value['lanes'] = {lane: dict(build=False, test=False, metadata=False) for lane in LANES}
+        for lane, (action, _, _) in apk._APPLE.items():
+            self.plan_value['lanes'][lane][action] = True
+            self.plan_value['lanes'][lane]['metadata'] = True
+            directory = self.plan.parent / 'inventories' / lane
+            directory.mkdir(parents=True)
+            for name in apk.INPUT_NAMES.values():
+                (directory / name).write_bytes(b'original-git-record\n')
+        self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value))
+        self.env.update(GITHUB_JOB='sdk-completion')
+        self.env[apk._APPLE_PROFILE_ENV] = apk._APPLE_PROFILE
+
+    def contribution(self):
+        return apk.retained_validation_contributions(self.state, self.plan,
+            repository_root=self.root, environ=self.env)
+
+    def test_three_lanes_share_four_exact_originals_without_body_replay(self):
+        from copy import deepcopy
+        originals = deepcopy(self.receipts)
+        with self.node_scopes(), patch.object(apk, '_retained_dependency_plan', wraps=apk._retained_dependency_plan) as joins, \
+                patch.object(apk.products, '_full_sdk_parity_context', side_effect=AssertionError('new full replay')):
+            value = self.contribution()
+        identities = (apk._APPLE_B, apk._APPLE_P, apk._APPLE_DEVICE_V, apk._APPLE_SIMULATOR_V)
+        self.assertEqual(sorted(identities), [call.args[1] for call in joins.call_args_list])
+        self.assertEqual(4, len(value['apple']['originals']))
+        self.assertEqual(set(apk._APPLE), set(value['apple']['lanes']))
+        self.assertEqual([originals[i] for i in sorted(identities)], [r['receipt'] for r in value['apple']['originals']])
+        self.assertEqual(originals, self.receipts)
+        self.assertEqual([], self.materializations)
+        self.assertNotIn('ios-kotlin-tests', value['apple']['lanes'])
+        self.assertNotIn('ios-privacy-metrics', value['apple']['lanes'])
+        self.assertNotEqual(value['consumer'], value['apple']['originals'][0]['receipt']['producer'])
+
+    def test_combined_control_budget_rejects_before_publication(self):
+        with self.node_scopes():
+            value = self.contribution()
+            size = len(apk.canonical_json_bytes(value))
+            with patch.object(apk, '_CONTRIBUTION_LIMIT', size + 4095):
+                with self.assertRaisesRegex(ValueError, 'upload bound'):
+                    self.contribution()
+            with patch.object(apk, '_CONTRIBUTION_LIMIT', size + 4096):
+                self.assertEqual(value, self.contribution())
+        self.assertEqual([], self.materializations)
+
+    def test_profile_absence_preserves_old_shape_and_rejects_wrong_caller_or_actions(self):
+        self.env.pop(apk._APPLE_PROFILE_ENV)
+        self.plan_value['lanes']['node-js']['build'] = True
+        self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value))
+        with self.node_scopes():
+            value = apk.retained_validation_contributions(self.state, self.plan,
+                repository_root=self.root, environ=self.env, node_js=True)
+        self.assertEqual({'schemaVersion', 'kind', 'consumer', 'planSha256', 'nodeJs'}, set(value))
+        for profile, job in [('true', 'sdk-completion'), (apk._APPLE_PROFILE, 'other-job')]:
+            self.env.update({apk._APPLE_PROFILE_ENV: profile, 'GITHUB_JOB': job})
+            with self.node_scopes(), self.assertRaisesRegex(ValueError, 'fixed SDK completion'):
+                self.contribution()
+        self.env.update({apk._APPLE_PROFILE_ENV: apk._APPLE_PROFILE, 'GITHUB_JOB': 'sdk-completion'})
+        self.plan_value['lanes']['ios-swift-tests']['build'] = True
+        self.plan.write_bytes(apk.canonical_json_bytes(self.plan_value))
+        with self.node_scopes(), self.assertRaisesRegex(ValueError, 'unmatched lane actions'):
+            self.contribution()
+
+    def test_missing_original_projection_or_late_lifetime_change_denies(self):
+        from copy import deepcopy
+        from dataclasses import replace
+        original_state = self.state
+        for change in ('missing', 'tuple', 'parent', 'closure', 'dead', 'profile', 'inventory'):
+            receipts, records, env = deepcopy(self.receipts), deepcopy(self.records), dict(self.env)
+            try:
+                with self.subTest(change=change), self.node_scopes() as scope:
+                    if change == 'missing': self.records.pop(apk._APPLE_SIMULATOR_V)
+                    if change == 'tuple': self.records[apk._APPLE_B]['objectSha256'] = 'sha256:' + 'f'*64
+                    if change == 'parent': self.receipts[apk._APPLE_P]['inputs']['upstreamArtifacts'][0]['outputsDigest'] = 'sha256:' + 'f'*64
+                    if change == 'closure': self.state = replace(self.state, closure=())
+                    if change == 'dead': self.alive = False
+                    if change == 'profile':
+                        def inventory(*args, **kwargs):
+                            self.env.pop(apk._APPLE_PROFILE_ENV, None)
+                            return 'original-git-record\n'
+                        scope.enter_context(patch('impact.inventory', side_effect=inventory))
+                    if change == 'inventory':
+                        scope.enter_context(patch('impact.inventory', side_effect=['original-git-record\n']*9 + ['changed\n']*9))
+                    with self.assertRaises(ValueError): self.contribution()
+            finally:
+                self.receipts, self.records, self.env, self.alive = receipts, records, env, True
+                self.state = replace(original_state, prior_by_instance=records, prior_carrier_phases=records)
+        self.assertEqual([], self.materializations)
+
+    def test_reader_requires_explicit_exact_lane_task_original_and_source_binding(self):
+        from copy import deepcopy
+        with self.node_scopes(): value = self.contribution()
+        for change in ('none', 'undeclared', 'duplicate', 'task', 'source', 'receipt', 'object'):
+            record = deepcopy(value)
+            if change == 'duplicate': record['apple']['originals'].append(record['apple']['originals'][0])
+            if change == 'task': record['apple']['lanes']['ios-swift-tests']['task'] = ':unmatchedPrivacyAudit'
+            if change == 'source': record['consumer']['commit'] = 'f'*40
+            if change == 'receipt': record['apple']['originals'][0]['receipt']['producer']['commit'] = 'f'*40
+            if change == 'object': record['apple']['originals'][0]['objectSha256'] = 'untrusted'
+            def check():
+                return apk._validate_validation_contributions(record, self.current,
+                    apk.sha256_bytes(self.plan.read_bytes()), self.plan_value,
+                    android=False, node_js=False, apple=change != 'undeclared')
+            with self.subTest(change=change):
+                if change == 'none': self.assertEqual(record, check())
+                else:
+                    with self.assertRaises(ValueError): check()
+
+    def test_same_bounded_observed_upload_requires_source_window_and_original_plan(self):
+        import io, zipfile
+        with self.node_scopes(): value = self.contribution()
+        self.env['GITHUB_JOB'] = 'merge-gate'
+        observation = dict(run=dict(id=21, head_sha='9'*40, status='in_progress'), jobs=[dict(
+            id=5, name='product-validation / sdk-completion', status='completed', conclusion='success',
+            started_at='2026-11-01T10:00:00Z', completed_at='2026-11-01T10:05:00Z')])
+        raw = apk.canonical_json_bytes(value)
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive: archive.writestr(apk._VALIDATION_FILE, raw)
+        uploaded = stream.getvalue()
+        for change in ('none', 'window', 'inventory', 'late-exit'):
+            artifact = dict(id=22, name=f"codex-agent-sdk-validation-contributions-{self.current['tree']}-attempt-2",
+                digest=apk.sha256_bytes(uploaded), size_in_bytes=len(uploaded), expired=False,
+                archive_download_url='https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/22/zip',
+                workflow_run=dict(id=21, head_sha='9'*40), created_at='2026-11-01T10:03:00Z')
+            if change == 'window': artifact['created_at'] = '2026-11-01T09:59:00Z'
+            inventory = self.plan.parent / 'inventories/ios-swift-tests' / next(iter(apk.INPUT_NAMES.values()))
+            if change == 'inventory': inventory.write_bytes(b'changed\n')
+            from contextlib import contextmanager
+            from products.restore import verification_session
+            @contextmanager
+            def session():
+                with verification_session(): yield
+                if change == 'late-exit': raise ValueError('late native observer owner')
+            with self.subTest(change=change), self.node_scopes(), \
+                    patch.object(apk.products, '_git_value', side_effect=lambda r,c,v:self.current['tree' if 'tree' in v else 'commit']), \
+                    patch.object(apk.products, '_observe_ci_producer_jobs', return_value=[observation]) as observe, \
+                    patch.object(apk.products, 'api_json', return_value=artifact), \
+                    patch.object(apk.products, '_reuse_contract_ci_upload', side_effect=lambda *a,**k:k['destination'].write_bytes(uploaded)), \
+                    patch('products.restore.verification_session', session):
+                def check():
+                    return apk.observed_validation_contributions(self.plan, repository_root=self.root,
+                        trusted_workflow_sha='4'*40, artifact_id=22, artifact_sha256=apk.sha256_bytes(uploaded),
+                        contribution_sha256=apk.sha256_bytes(raw), environ=self.env, apple=True)
+                if change == 'none':
+                    self.assertEqual((value, None), check())
+                    self.assertEqual({'completion': self.current}, observe.call_args.args[0])
+                else:
+                    with self.assertRaises(ValueError): check()
+            inventory.write_bytes(b'original-git-record\n')
+
+    def test_aggregate_exempts_only_three_lanes_and_keeps_privacy_and_source_receipts(self):
+        with self.node_scopes(): value = self.contribution()
+        receipts = self.root / 'legacy-receipts'; receipts.mkdir()
+        required = [*apk._APPLE, 'ios-kotlin-tests', 'ios-privacy-metrics']
+        for lane in required[3:]:
+            directory = receipts / lane; directory.mkdir()
+            (directory / 'lane-receipt.json').write_bytes(apk.canonical_json_bytes(dict(lane=lane)))
+        for change in ('none', 'missing-privacy', 'old-framework'):
+            privacy = receipts / 'ios-privacy-metrics/lane-receipt.json'
+            if change == 'missing-privacy': privacy.unlink()
+            extra = receipts / 'extra'; extra.mkdir(exist_ok=True)
+            if change == 'old-framework': (extra / 'lane-receipt.json').write_bytes(apk.canonical_json_bytes(dict(lane='ios-framework-device')))
+            with self.subTest(change=change), patch.object(apk, '_authorized_plan', return_value=self.plan_value), \
+                    patch('receipt.required_lanes', return_value=required), \
+                    patch.object(apk, 'observed_validation_contributions', return_value=(value, None)) as observe, \
+                    patch.object(apk, 'validate_receipt', side_effect=lambda p,*a,**k:apk.load_json_bytes(p.read_bytes())):
+                destination = self.root / ('gate-' + change)
+                def check():
+                    return apk.aggregate_retained_validation(self.plan, receipts, destination, repository_root=self.root,
+                        trusted_workflow_sha='4'*40, artifact_id=22, artifact_sha256='sha256:'+'a'*64,
+                        contribution_sha256='sha256:'+'b'*64, environ=self.env, apple=True)
+                if change == 'none':
+                    result = check()
+                    self.assertEqual({'ios-kotlin-tests', 'ios-privacy-metrics'}, set(result['laneReceipts']))
+                    self.assertTrue(observe.call_args.kwargs['apple'])
+                else:
+                    with self.assertRaises(ValueError): check()
+                    self.assertFalse(destination.exists())
+            privacy.write_bytes(apk.canonical_json_bytes(dict(lane='ios-privacy-metrics')))

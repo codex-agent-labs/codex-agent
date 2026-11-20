@@ -26,7 +26,7 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
     def test_authorized_native_selection_is_exact_and_does_not_change_plan(self):
         from ci.receipt import LANES
 
-        step = self.parent.split('      - id: retained-consumer-selection\n', 1)[1].split('      - name:', 1)[0]
+        step = self.parent.split('      - id: retained-consumer-selection\n', 1)[1].split('\n      - ', 1)[0]
         script = textwrap.dedent(step.split("          python3 -B - <<'PYCODE'\n", 1)[1].split('          PYCODE', 1)[0])
         self.assertIn("CONSUMER_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.toolingOnly }}", step)
         self.assertNotIn('!inputs.sdkRecoveryOnly', step)
