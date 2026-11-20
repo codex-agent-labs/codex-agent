@@ -1,6 +1,7 @@
 package io.github.codex_agent_labs.codexagent.app.runtime.bootstrap
 
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import androidx.sqlite.execSQL
 import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexJsonLine
 import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexRuntimeConfiguration
 import io.github.codex_agent_labs.codexagent.appserver.runtime.CodexRuntimeEvent
@@ -46,7 +47,9 @@ class AndroidRuntimeHostTest {
         }
         FileSystem.SYSTEM.sink(certificate).buffer().use { it.writeUtf8("test certificate") }
         assertTrue(File(executable.toString()).setExecutable(true))
-        BundledSQLiteDriver().open(logsTemplate.toString()).close()
+        BundledSQLiteDriver().open(logsTemplate.toString()).use { database ->
+            database.execSQL("CREATE TABLE logs (feedback_log_body TEXT)")
+        }
 
         var bundlePath: String? = null
         val runtime = AndroidCodexRuntime(
@@ -154,7 +157,9 @@ class AndroidRuntimeHostTest {
         }
         FileSystem.SYSTEM.write(certificate) { writeUtf8("test certificate") }
         assertTrue(File(executable.toString()).setExecutable(true))
-        BundledSQLiteDriver().open(logsTemplate.toString()).close()
+        BundledSQLiteDriver().open(logsTemplate.toString()).use { database ->
+            database.execSQL("CREATE TABLE logs (feedback_log_body TEXT)")
+        }
         val bundlePaths = mutableListOf<String>()
         val runtimes = (1..2).map {
             AndroidCodexRuntime(
