@@ -54,7 +54,7 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: matrix.test
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-ci-portable-${{ inputs.validationTree }}
           path: build/ci/portable
@@ -90,7 +90,7 @@ jobs:
           python3 ci/runner_identity.py capture --node-requested 24.18.0
           --role linux-x64-cross-builder
           --output build/ci/linux-arm64-producer-identities/linux-x64-cross-builder.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: true
@@ -112,7 +112,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-linux-arm64-cross-builder-identity-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-producer-identities
@@ -130,7 +130,7 @@ jobs:
           producer-identities: build/ci/linux-arm64-producer-identities
           record-producer-role: linux-arm64-supervisor
           reuse-only: "true"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: true
@@ -157,7 +157,7 @@ jobs:
         with:
           cache-read-only: "true"
           node-version: "24.18.0"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-linux-arm64-producer-identities-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-producer-identities
@@ -169,7 +169,7 @@ jobs:
             --expected build/ci/linux-arm64-producer-identities/linux-arm64-supervisor.json \
             --actual build/ci/current-linux-arm64-supervisor.json
       - run: ./gradlew :codex-agent-runtime-desktop:compileDesktopProcessSupervisor --stacktrace
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: true
@@ -197,7 +197,7 @@ jobs:
         with:
           cache-read-only: "true"
           node-version: "24.18.0"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-linux-arm64-producer-identities-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-producer-identities
@@ -209,7 +209,7 @@ jobs:
             --expected build/ci/linux-arm64-producer-identities/linux-x64-cross-builder.json \
             --actual build/ci/current-linux-x64-cross-builder.json
       - if: needs.linux-arm64-reuse.outputs.production_reused == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-arm64-production-transport-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-production
@@ -226,14 +226,14 @@ jobs:
           mkdir -p codex-agent-runtime-desktop/build/distributions
           cp "${archives[0]}" codex-agent-runtime-desktop/build/distributions/
       - if: inputs.linuxArm64Test
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-ci-portable-${{ inputs.validationTree }}
           path: build/ci/portable
       - if: inputs.linuxArm64Test
         run: cp -R build/ci/portable/payload/. .
       - if: needs.linux-arm64-reuse.outputs.production_reused != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-ci-linux-arm64-supervisor-${{ inputs.validationTree }}
           path: build/desktop-supervisors
@@ -268,7 +268,7 @@ jobs:
           test "${#archives[@]}" -eq 1
           mkdir -p build/linux-arm64-inputs
           cp "${archives[0]}" build/linux-arm64-inputs/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: true
@@ -294,11 +294,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-linux-arm64-producer-identities-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-producer-identities
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-ci-linux-arm64-input-${{ inputs.validationTree }}
           path: build/ci/linux-arm64-input
