@@ -9,9 +9,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import zipfile
+from urllib.parse import quote
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -21,7 +23,7 @@ from ci.sdk_completion import verify_completed_parity_archive
 from ci.products.aggregate import validate_sdk_compatibility
 from ci.products.index import SignedProductIndex, verify_release_product_index
 from ci.products.inventory import (
-    load_canonical_json_bytes, read_regular_file_bytes,
+    canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     require_array, require_exact_keys, require_integer, require_semver, require_sha256,
     sha256_bytes, sha256_file,
 )
@@ -48,6 +50,87 @@ _PACKAGES = {
 }
 _RESOURCE = "outputs/evidence/sdk-compatibility.json"
 _PARITY_PINS = {"archiveSha256", "archiveBytes", "phaseIdentitiesSha256"}
+
+
+# Fixed, reviewed public products/targets. Only the literal binary URL/checksum
+# may vary. No Swift evaluation: computed values, comments hiding declarations,
+# extra targets or conditional syntax require an explicit source-contract review.
+_PUBLIC_SWIFT_STRUCTURE = "sha256:8c1a2cd0051e80b7f307d088ec249031cdfc164bfd0e065e62de8a2f792957c2"
+_PUBLIC_SWIFT_BINARY = re.compile(
+    rb'\.binaryTarget\(\s*name:\s*"CodexAgent",\s*'
+    rb'url:\s*"([^"\\\r\n]+)",\s*checksum:\s*"([0-9a-f]{64})"\s*\)')
+
+
+def verify_public_swift_declaration(raw: bytes, receipt: dict, *, sdk_version: str) -> dict:
+    """Pure declaration check only: no source, receipt or public-release authority.
+
+    Both callers separately bind raw to the exact P input and current source.
+    The complete join / live native owner authenticates the supplied P receipt.
+    """
+    require_semver(sdk_version, "Public Swift SDK version")
+    if type(raw) is not bytes or not 0 < len(raw) <= 16 * 1024:
+        raise ValueError("Public Swift manifest exceeds its fixed source bound")
+    matches = list(_PUBLIC_SWIFT_BINARY.finditer(raw))
+    if len(matches) != 1:
+        raise ValueError("Public Swift manifest requires one unambiguous literal binary target")
+    match = matches[0]
+    structure = raw[:match.start()] + b"<CodexAgent binary target>" + raw[match.end():]
+    if sha256_bytes(structure) != _PUBLIC_SWIFT_STRUCTURE:
+        raise ValueError("Public Swift manifest differs from the reviewed public structure")
+    if ([receipt.get(name) for name in ("product", "component", "phase", "target")] !=
+            ["sdk", "sdk-ios", "package", "ios"] or receipt["productVersion"] != sdk_version):
+        raise ValueError("Public Swift manifest requires the exact SDK iOS package")
+    name = f"CodexAgent-{sdk_version}.xcframework.zip"
+    archive = [row for row in receipt["outputs"] if row["relativePath"] == "outputs/apple/" + name]
+    checksum = [row for row in receipt["outputs"] if row["relativePath"] == "outputs/apple/" + name + ".sha256"]
+    if len(archive) != 1 or len(checksum) != 1:
+        raise ValueError("Public Swift package lacks unique archive/checksum records")
+    archive, checksum = archive[0], checksum[0]
+    digest = require_sha256(archive["sha256"], "Public Swift archive").removeprefix("sha256:")
+    if (archive["kind"] != "apple" or checksum["kind"] != "apple"
+            or type(archive["bytes"]) is not int or archive["bytes"] <= 0
+            or type(checksum["bytes"]) is not int or checksum["bytes"] != 65
+            or checksum["sha256"] != sha256_bytes((digest + "\n").encode("ascii"))):
+        raise ValueError("Public Swift package checksum record differs from the exact archive")
+    tag = "sdk/v" + sdk_version
+    url = "https://github.com/codex-agent-labs/codex-agent/releases/download/" + quote(tag, safe="") + "/" + name
+    if match.group(1) != url.encode("ascii") or match.group(2) != digest.encode("ascii"):
+        raise ValueError("Public Swift manifest differs from the planned SDK URL/checksum")
+    return {"manifestSha256": sha256_bytes(raw), "releaseTag": tag, "assetUrl": url,
+            "packageBuildKey": receipt["buildKey"],
+            "packageReceiptSha256": sha256_bytes(canonical_json_bytes(receipt)),
+            "archive": archive, "checksum": checksum}
+
+
+def verify_candidate_public_swift_source(repository: Path, receipt: dict, *,
+        expected_commit: str, expected_tree: str, sdk_version: str) -> dict:
+    """Bind landed public metadata to an already authenticated iOS P receipt.
+
+    This consumes no archive/member and grants no receipt authority. The normal
+    forwarder's complete join supplies this exact receipt within its live session.
+    """
+    from ci.sdk_catalog_promotion_caller import _landed_commit
+    from ci.sdk_phase11_bytes import _landed_tree
+
+    require_semver(sdk_version, "Public Swift SDK version")
+    if any(type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None
+           for value in (expected_commit, expected_tree)):
+        raise ValueError("Public Swift source requires exact approved commit/tree")
+    if (_landed_commit(repository) != expected_commit or _landed_tree(repository) != expected_tree):
+        raise ValueError("Public Swift source differs from approved landed commit/tree")
+    raw = git_regular_blob_bytes(repository, expected_commit, "Package.swift", max_bytes=16 * 1024)
+    if read_regular_file_bytes(repository / "Package.swift", max_bytes=16 * 1024,
+                               reject_symlink_parents=True) != raw:
+        raise ValueError("Public Swift source is not the landed Git blob")
+    row = {"relativePath": "Package.swift", "bytes": len(raw), "sha256": sha256_bytes(raw)}
+    if [item for item in receipt["inputs"]["inventory"] if item["relativePath"] == "Package.swift"] != [row]:
+        raise ValueError("Public Swift source differs from its authenticated package input")
+    declaration = verify_public_swift_declaration(raw, receipt, sdk_version=sdk_version)
+    if (_landed_commit(repository) != expected_commit or _landed_tree(repository) != expected_tree
+            or read_regular_file_bytes(repository / "Package.swift", max_bytes=16 * 1024,
+                                       reject_symlink_parents=True) != raw):
+        raise ValueError("Public Swift source changed during the candidate join")
+    return {"sourceCommit": expected_commit, "sourceTree": expected_tree, **declaration}
 
 
 def _selection(value: dict) -> tuple[dict, dict, dict]:

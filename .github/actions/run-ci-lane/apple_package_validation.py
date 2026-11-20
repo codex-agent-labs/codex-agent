@@ -53,10 +53,20 @@ def _package_controls(envelopes, sources):
     checksum = (selected["xcframework"]["sha256"].removeprefix("sha256:") + "\n").encode("ascii")
     if selected["checksum"]["bytes"] != len(checksum) or selected["checksum"]["sha256"] != sha256_bytes(checksum):
         raise ValueError("Apple checksum output differs from the native archive digest")
+    from ci.sdk_candidate_semantics import verify_public_swift_declaration
+    public = {"source": source_rows["Package.swift"], "result": "metadata-failed",
+              "purpose": "planned-public-url-and-checksum", "declaration": None,
+              "failure": None, "publicAvailabilityVerified": False}
+    try:
+        public["declaration"] = verify_public_swift_declaration(
+            sources["Package.swift"], package, sdk_version=version)
+    except ValueError as error:
+        public["failure"] = str(error)
+    else:
+        public["result"] = "metadata-passed"
     return {"sdkVersion": version, "outputs": selected,
             "localManifest": source_rows[_MANIFEST], "legalSources": [source_rows[p] for p in _LEGAL],
-            "publicManifest": {"source": source_rows["Package.swift"], "result": "not-verified",
-                               "purpose": "candidate-release-publication"}}
+            "publicManifest": public}
 
 
 def _retained_apple_package_contribution(state, plan_path, *, repository_root, environ, trusted_workflow_sha=None):
@@ -115,7 +125,8 @@ def _retained_apple_package_contribution(state, plan_path, *, repository_root, e
     if reviewed:
         result.update(kind="current-reviewed-apple-controls", approvedReview=review,
             selectedLanes=_selected_lanes(state.plan, True),
-            missingEvidence=["public-release-swift-manifest", "hosted-ordinary-lane-acceptance",
+            missingEvidence=["public-release-availability" if result["publicManifest"]["result"] == "metadata-passed"
+                             else "public-release-swift-manifest", "hosted-ordinary-lane-acceptance",
                              "full-tree-body-measurement-if-required"],
             scope=[*result["scope"], "reviewed-local-privacy", "reviewed-local-deployment",
                    "reviewed-original-artifact-size-metadata", "reviewed-local-kotlin-source-tests",
@@ -274,9 +285,14 @@ def _reviewed_controls(root, revision, publisher, envelopes, package_sources):
     if metrics["compressedXcframeworkBytes"] != package["outputs"]["xcframework"]["bytes"]:
         raise ValueError("Reviewed Apple archive size differs from its native output")
     public = checks["publicSwiftManifest"]
-    if (public.get("result") != "not-passed" or public.get("purpose") != "public-release-url-and-checksum"
-            or public.get("source") != package["publicManifest"]["source"]):
-        raise ValueError("Apple review must preserve the current public manifest limitation")
+    metadata = package["publicManifest"]
+    metadata_passed = metadata["result"] == "metadata-passed"
+    if (public.get("result") != ("passed" if metadata_passed else "not-passed")
+            or public.get("purpose") != "public-release-url-and-checksum"
+            or public.get("source") != metadata["source"]
+            or (metadata_passed and (public.get("declaration") != metadata["declaration"]
+                                    or public.get("publicAvailabilityVerified") is not False))):
+        raise ValueError("Apple review differs from the actual public manifest metadata")
     for check, field in (("privacy", "completion"), ("privacy", "audit"), ("deployment", "completion"),
                          ("artifactSizeMetadata", "index"), ("artifactSizeMetadata", "custody"),
                          ("artifactSizeMetadata", "priorWholeNestedZip"), ("artifactSizeMetadata", "verifier"),
@@ -356,7 +372,8 @@ def validate_reviewed_apple_contribution(value, plan_path, *, repository_root, e
                 "native-package-legal-source-identity", "reviewed-local-privacy", "reviewed-local-deployment",
                 "reviewed-original-artifact-size-metadata", "reviewed-local-kotlin-source-tests",
                    "qualified-original-native-rust-prerequisites"]
-            or value["missingEvidence"] != ["public-release-swift-manifest", "hosted-ordinary-lane-acceptance",
+            or value["missingEvidence"] != ["public-release-availability" if package["publicManifest"]["result"] == "metadata-passed"
+                                           else "public-release-swift-manifest", "hosted-ordinary-lane-acceptance",
                                            "full-tree-body-measurement-if-required"]):
         raise ValueError("Apple contribution differs from the protected reviewed checks")
     if (_VERIFICATION_SESSION.get() is not session or read_regular_file_bytes(path, reject_symlink_parents=True) != raw
