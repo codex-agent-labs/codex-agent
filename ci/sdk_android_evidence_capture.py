@@ -1016,7 +1016,120 @@ def _validate_installed_controls(members, producer, plan_sha256, lane, originals
     return record
 
 
-def _observed_installed_consumers(producer, observation, contribution, plan, root, token):
+# Same semantic-producer boundary as original parity: admission code and parent
+# scheduling are not the executed test recipe. The raw originals remain intact.
+_INSTALLED_POLICY_LIMIT = 16 * 1024
+_INSTALLED_RECIPE = (
+    "gradle/build-logic/src/main/**", "**/*.gradle.kts", "**/gradle.properties",
+    "**/gradle.lockfile", "**/gradle/verification-metadata.xml", "gradle/libs.versions.toml",
+    "gradle/wrapper/**", "gradle/verification-metadata.xml", "gradle.properties",
+    "settings.gradle.kts", "build.gradle.kts", "gradlew", "gradlew.bat",
+    "gradle/release/versions/*.txt", "gradle/release/sdk-default-runtime.txt",
+    "gradle/release/toolchains/**", "gradle/release/kmp-consumer-template/**",
+    ".github/actions/run-ci-lane/installed-consumer/**", ".github/actions/setup-kmp/action.yml",
+    ".github/actions/run-ci-lane/release_tooling.init.gradle",
+    ".github/actions/run-ci-lane/release_tooling_classes.json",
+    "ci/sdk_android_validation_workflow.py", "ci/sdk_completion.py",
+    "ci/products/gradle_bootstrap.py", "ci/product_reuse.py", "ci/products/toolchain.py",
+    ".github/actions/sdk-ios-binary-worker/verification-metadata.xml",
+    ".github/actions/sdk-ios-binary-worker/native-dependencies.json",
+)
+_INSTALLED_WORKFLOW = ".github/workflows/sdk-consumer-validation.yml"
+
+
+def validate_installed_consumer_policy(raw):
+    """Protected original locators only; neither a verdict nor native authority."""
+    from products.inventory import require_exact_keys
+    if type(raw) is not bytes or len(raw) > _INSTALLED_POLICY_LIMIT:
+        raise ValueError("Installed consumer policy exceeds its bound")
+    value = require_exact_keys(load_canonical_json_bytes(raw), {
+        "schemaVersion", "kind", "sdkCompletion", "originals"}, "Installed consumer policy")
+    if (type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or value["kind"] != "completed-installed-consumers"):
+        raise ValueError("Unsupported installed consumer policy")
+    native = require_exact_keys(value["sdkCompletion"], {
+        "artifactId", "artifactSha256", "runId", "runAttempt", "signerCommit", "sourceCommit"},
+        "Installed consumer native completion")
+    for field in ("artifactId", "runId", "runAttempt"):
+        require_integer(native[field], "Installed native " + field, 1)
+    require_sha256(native["artifactSha256"], "Installed native digest")
+    for field in ("signerCommit", "sourceCommit"):
+        if type(native[field]) is not str or products._OID.fullmatch(native[field]) is None:
+            raise ValueError("Installed consumer native source is not immutable")
+    originals = value["originals"]
+    if type(originals) is not dict or not originals or not set(originals) <= set(_INSTALLED):
+        raise ValueError("Installed consumer policy has unsupported lanes")
+    identities = set()
+    for lane, entry in originals.items():
+        row = require_exact_keys(entry, {"producer", "workflowSha", "jobId", "artifactId",
+            "artifactSha256", "planSha256"}, "Installed consumer original")
+        producer = products.validate_producer(row["producer"])
+        if (producer["repository"] != "codex-agent-labs/codex-agent"
+                or producer["workflowPath"] != ".github/workflows/ci.yml"
+                or producer["event"] != "pull_request" or producer["pullRequest"] != 31):
+            raise ValueError("Installed consumer original changes the approved PR scope")
+        if type(row["workflowSha"]) is not str or products._OID.fullmatch(row["workflowSha"]) is None:
+            raise ValueError("Installed consumer workflow must be immutable")
+        for field in ("jobId", "artifactId"):
+            require_integer(row[field], "Installed original " + field, 1)
+        for field in ("artifactSha256", "planSha256"):
+            require_sha256(row[field], "Installed original " + field)
+        identity = producer["runId"], producer["runAttempt"], row["jobId"]
+        if identity in identities:
+            raise ValueError("Installed consumer policy duplicates an original job")
+        identities.add(identity)
+    return value
+
+
+def _installed_reuse_selection(root, revision, workflow_sha, lanes, policy_path, native_policy_path):
+    """Provisional fixed-lane scheduling; final observation checks every original."""
+    from products.inventory import git_inventory
+    if policy_path is None:
+        return {}, ()
+    if (native_policy_path is None or type(workflow_sha) is not str
+            or products._OID.fullmatch(workflow_sha) is None):
+        raise ValueError("Installed original policy requires current native and workflow pins")
+    policy_path, native_policy_path = Path(policy_path).absolute(), Path(native_policy_path).absolute()
+    raw = read_regular_file_bytes(policy_path, max_bytes=_INSTALLED_POLICY_LIMIT, reject_symlink_parents=True)
+    native_raw = read_regular_file_bytes(native_policy_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    policy = validate_installed_consumer_policy(raw)
+    native = load_canonical_json_bytes(native_raw)
+    if (type(native) is not dict or type(native.get("schemaVersion")) is not int or native["schemaVersion"] != 1
+            or native.get("kind") != "completed-frozen-reuse"):
+        raise ValueError("Installed consumer requires the provisioned native policy")
+    snapshots = ((str(policy_path), raw), (str(native_policy_path), native_raw))
+    if native.get("sdkCompletion") != policy["sdkCompletion"]:
+        return {}, snapshots
+    source = git_inventory(root, revision, _INSTALLED_RECIPE)
+    workflow = git_inventory(root, workflow_sha, (_INSTALLED_WORKFLOW,))
+    if not source or not workflow:
+        raise ValueError("Installed consumer current recipe is empty")
+    matched, recipes = {}, {}
+    for lane in lanes:
+        row = policy["originals"].get(lane)
+        if row is None:
+            continue
+        key = row["producer"]["tree"], row["workflowSha"]
+        if key not in recipes:
+            recipes[key] = (git_inventory(root, key[0], _INSTALLED_RECIPE),
+                            git_inventory(root, key[1], (_INSTALLED_WORKFLOW,)))
+        if recipes[key] == (source, workflow):
+            matched[lane] = row
+    return matched, (*snapshots, source, workflow)
+
+
+def select_installed_consumer_reuse(plan, *, repository_root, revision, trusted_workflow_sha,
+                                    policy_path=None, completed_frozen_policy=None):
+    """Return only compatible selected names, never an accepted test result."""
+    lanes = _installed_lanes(plan, True)
+    root = Path(repository_root).resolve(strict=True)
+    selected, _ = _installed_reuse_selection(root, revision, trusted_workflow_sha, lanes,
+                                            policy_path, completed_frozen_policy)
+    return sorted(selected)
+
+
+def _observed_installed_consumers(producer, observation, contribution, plan, root, token,
+                                  *, reused=None, observations=None, policy_sha256=None):
     """One current-run discovery, using the already observed exact consumer jobs."""
     lanes = _installed_lanes(plan, True)
     originals = {products._identity(row["receipt"]): row
@@ -1026,22 +1139,30 @@ def _observed_installed_consumers(producer, observation, contribution, plan, roo
         version = versions["runtime-release" if identity.product == "runtime" else identity.product]
         if row["receipt"]["productVersion"] != version:
             raise ValueError("Installed consumer native input differs from current source versions")
-    # Existing caches deliberately do not reuse live/current-run observations.
-    # Discover all fixed names once; each exact current upload is freshly checked.
-    listing = products.paginated_items(
+    reused = {} if reused is None else reused
+    # Current attempts remain fresh; historical locators need no rediscovery.
+    listing = (products.paginated_items(
         f"https://api.github.com/repos/{producer['repository']}/actions/runs/{producer['runId']}/artifacts",
-        "artifacts", token)
+        "artifacts", token) if set(lanes) - set(reused) else [])
     results = {}
     for lane in lanes:
-        name = f"codex-agent-installed-consumer-{lane}-{producer['tree']}-attempt-{producer['runAttempt']}"
-        matches = [row for row in listing if type(row) is dict and row.get("name") == name]
-        if len(matches) != 1:
-            raise ValueError("Installed consumer upload is missing or ambiguous")
-        selected = matches[0]
-        artifact_id = require_integer(selected.get("id"), "Installed consumer artifact ID", 1)
-        digest = require_sha256(selected.get("digest"), "Installed consumer upload SHA")
-        artifact = products._contract_ci_upload_metadata(artifact_id, digest, name, producer, observation["run"], token)
-        products._require_artifact_job_window(observation, "product-validation / retained-consumers / " + lane, artifact)
+        original = reused.get(lane)
+        owner = producer if original is None else original["producer"]
+        observed = observation if original is None else observations[lane]
+        name = f"codex-agent-installed-consumer-{lane}-{owner['tree']}-attempt-{owner['runAttempt']}"
+        if original is None:
+            matches = [row for row in listing if type(row) is dict and row.get("name") == name]
+            if len(matches) != 1:
+                raise ValueError("Installed consumer upload is missing or ambiguous")
+            artifact_id = require_integer(matches[0].get("id"), "Installed consumer artifact ID", 1)
+            digest = require_sha256(matches[0].get("digest"), "Installed consumer upload SHA")
+        else:
+            job, = products._matching_ci_jobs(observed["jobs"], "product-validation / retained-consumers / " + lane)
+            if job["id"] != original["jobId"]:
+                raise ValueError("Installed consumer original job differs from protected policy")
+            artifact_id, digest = original["artifactId"], original["artifactSha256"]
+        artifact = products._contract_ci_upload_metadata(artifact_id, digest, name, owner, observed["run"], token)
+        products._require_artifact_job_window(observed, "product-validation / retained-consumers / " + lane, artifact)
         size = require_integer(artifact["size_in_bytes"], "Installed consumer upload bytes", 1)
         if size > _CONTRIBUTION_LIMIT:
             raise ValueError("Installed consumer upload exceeds its control-only bound")
@@ -1049,7 +1170,7 @@ def _observed_installed_consumers(producer, observation, contribution, plan, roo
         names = ("installed-consumer.json", f"kmp-consumer-{target}.json", f"maven-inventory-{target}.json")
         with tempfile.TemporaryDirectory(prefix="installed-consumer-controls-") as temporary:
             archive = Path(temporary).resolve() / "controls.zip"
-            products._reuse_contract_ci_upload(artifact, producer, observation["run"], token,
+            products._reuse_contract_ci_upload(artifact, owner, observed["run"], token,
                 destination=archive, limit=_CONTRIBUTION_LIMIT, artifact_sha256=digest, size=size)
             inventory, members, transport = verified_zip_contents(archive,
                 max_archive_bytes=_CONTRIBUTION_LIMIT, max_members=3, max_entry_bytes=_CONTRIBUTION_LIMIT,
@@ -1058,15 +1179,19 @@ def _observed_installed_consumers(producer, observation, contribution, plan, roo
             if (transport != {"bytes": size, "sha256": digest}
                     or {row["relativePath"] for row in inventory} != set(names)):
                 raise ValueError("Installed consumer upload differs from its fixed control closure")
-            record = _validate_installed_controls(members, producer, contribution["planSha256"], lane, originals, versions)
+            record = _validate_installed_controls(members, owner,
+                contribution["planSha256"] if original is None else original["planSha256"], lane, originals, versions)
         results[lane] = {"artifactId": artifact_id, "artifactSha256": digest,
-                         "recordSha256": sha256_bytes(members["installed-consumer.json"]), "original": record}
+                         "recordSha256": sha256_bytes(members["installed-consumer.json"]), "original": record,
+                         **({"policySha256": policy_sha256, "originalJobId": original["jobId"]}
+                            if original is not None else {})}
     return results
 
 
 def observed_validation_contributions(plan, *, repository_root, trusted_workflow_sha,
         artifact_id, artifact_sha256, contribution_sha256, environ, android=False, node_js=False, parity=None,
-        installed_consumers=False):
+        installed_consumers=False, installed_consumer_policy=None, completed_frozen_policy=None,
+        reused_installed_lanes=()):
     """Authenticate a bounded original SDK completion output, never a caller verdict."""
     from products.restore import verification_session
     require_no_signing_secret(environ)
@@ -1087,6 +1212,13 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     require_integer(artifact_id, "Android contribution upload ID", 1)
     token = environ["GITHUB_TOKEN"]
     lanes = _installed_lanes(value, installed_consumers)
+    if installed_consumer_policy is not None and not installed_consumers:
+        raise ValueError("Unselected installed consumers cannot supply original policy")
+    reused, reuse_inputs = _installed_reuse_selection(root, producer["commit"], trusted_workflow_sha,
+        lanes, installed_consumer_policy, completed_frozen_policy)
+    if (type(reused_installed_lanes) not in (tuple, list)
+            or list(reused_installed_lanes) != sorted(reused)):
+        raise ValueError("Installed consumer scheduling differs from current protected compatibility")
     job = "product-validation / sdk-completion"
     jobs = {"completion": job}
     if node_js:
@@ -1096,11 +1228,24 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
     jobs.update({lane: "product-validation / retained-consumers / " + lane for lane in lanes})
     with verification_session(), products._ci_observation_batch(
             (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True):
-        observed, = products._observe_ci_producer_jobs({key: producer for key in jobs}, jobs_by_phase=jobs,
+        producers = {key: reused[key]["producer"] if key in reused else producer for key in jobs}
+        observations = products._observe_ci_producer_jobs(producers, jobs_by_phase=jobs,
             token=token, trusted_workflows_by_phase={key: {
                 "path": ".github/workflows/" + ("sdk-consumer-validation.yml" if key in lanes else
                     "sdk-binding-parity.yml" if key == "parity" else "product-validation.yml"),
-                "sha": trusted_workflow_sha} for key in jobs})
+                "sha": reused[key]["workflowSha"] if key in reused else trusted_workflow_sha} for key in jobs})
+        if reused:
+            by_attempt = {(row["run"]["id"], row["run"]["run_attempt"]): row for row in observations}
+            if len(by_attempt) != len(observations):
+                raise ValueError("Installed original observations duplicate an attempt")
+            def observation_for(owner):
+                return by_attempt[(owner["runId"], owner["runAttempt"])]
+            observed = observation_for(producer)
+            original_observations = {lane: observation_for(row["producer"]) for lane, row in reused.items()}
+        else:
+            observed, = observations
+            original_observations = {}
+
         artifact = products._contract_ci_upload_metadata(artifact_id, artifact_sha256,
             f"codex-agent-sdk-validation-contributions-{producer['tree']}-attempt-{producer['runAttempt']}",
             producer, observed["run"], token)
@@ -1124,15 +1269,19 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
                 raise ValueError("Android contribution differs from its exact original upload")
             contribution = _validate_validation_contributions(load_canonical_json_bytes(raw), producer,
                 sha256_bytes(plan_raw), value, android=android, node_js=node_js, installed_consumers=installed_consumers)
-        installed_results = (_observed_installed_consumers(producer, observed, contribution, value, root, token)
-                             if installed_consumers else None)
+        installed_results = (_observed_installed_consumers(producer, observed, contribution, value, root, token,
+            reused=reused, observations=original_observations,
+            policy_sha256=sha256_bytes(reuse_inputs[0][1]) if reuse_inputs else None)
+            if installed_consumers else None)
         parity_result = None
         if node_js:
             if contribution["nodeJs"]["inputInventories"] != _node_input_inventories(plan, root, value, verify_transport=True):
                 raise ValueError("Node-JS contribution changes current source inventories")
             parity_result = _observed_node_parity(producer, observed,
                 contribution["nodeJs"]["parityExpectedPhases"], parity, token)
-        if (read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw
+        if (_installed_reuse_selection(root, producer["commit"], trusted_workflow_sha, lanes,
+                installed_consumer_policy, completed_frozen_policy) != (reused, reuse_inputs)
+                or read_regular_file_bytes(plan, reject_symlink_parents=True) != plan_raw
                 or products._consumer(value, environ)["producer"] != producer
                 or products._git_value(root, "rev-parse", "HEAD^{commit}") != producer["commit"]
                 or products._git_value(root, "rev-parse", "HEAD^{tree}") != producer["tree"]
@@ -1143,7 +1292,8 @@ def observed_validation_contributions(plan, *, repository_root, trusted_workflow
 
 def aggregate_retained_validation(plan, receipts, destination, *, repository_root,
         trusted_workflow_sha, artifact_id, artifact_sha256, contribution_sha256,
-        environ, auxiliary_contracts=False, android=False, node_js=False, parity=None, installed_consumers=False):
+        environ, auxiliary_contracts=False, android=False, node_js=False, parity=None, installed_consumers=False,
+        installed_consumer_policy=None, completed_frozen_policy=None, reused_installed_lanes=()):
     """Combine current checks with an observed native contribution; never schema1 reuse."""
     from receipt import required_lanes, parse_validation_actions
     plan, receipts, destination = map(Path, (plan, receipts, destination))
@@ -1157,7 +1307,9 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
     observed = observed_validation_contributions(plan, repository_root=repository_root,
         trusted_workflow_sha=trusted_workflow_sha, artifact_id=artifact_id,
         artifact_sha256=artifact_sha256, contribution_sha256=contribution_sha256, environ=environ,
-        android=android, node_js=node_js, parity=parity, installed_consumers=installed_consumers)
+        android=android, node_js=node_js, parity=parity, installed_consumers=installed_consumers,
+        installed_consumer_policy=installed_consumer_policy, completed_frozen_policy=completed_frozen_policy,
+        reused_installed_lanes=reused_installed_lanes)
     contribution, parity_result = observed[:2]
     installed_results = observed[2] if installed_consumers else None
     originals, controls = {}, {}

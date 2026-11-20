@@ -946,6 +946,204 @@ class InstalledConsumerContributionTest(unittest.TestCase):
             with self.assertRaises(ValueError):apk.aggregate_retained_validation(self.plan,receipts,self.root/'missing',**options)
             self.assertFalse((self.root/'duplicate').exists());self.assertFalse((self.root/'missing').exists())
 
+    def original_policy(self, lanes=None):
+        original=dict(self.current,commit='7'*40,tree='8'*40,runId=20,runAttempt=1)
+        native=dict(artifactId=11,artifactSha256='sha256:'+'1'*64,runId=12,runAttempt=1,
+            signerCommit='3'*40,sourceCommit='4'*40)
+        value=dict(schemaVersion=1,kind='completed-installed-consumers',sdkCompletion=native,
+            originals={lane:dict(producer=original,workflowSha='6'*40,jobId=n,artifactId=n,
+                artifactSha256='sha256:'+'2'*64,planSha256='sha256:'+'3'*64)
+                for n,lane in enumerate(sorted(apk._INSTALLED if lanes is None else lanes),23)})
+        policy=self.root/'original-consumers.json';policy.write_bytes(apk.canonical_json_bytes(value))
+        current=self.root/'native-policy.json';current.write_bytes(apk.canonical_json_bytes(dict(
+            schemaVersion=1,kind='completed-frozen-reuse',sdkCompletion=native)))
+        return value,policy,current
+
+    def test_original_policy_and_recipe_select_only_exact_native_bound_lanes(self):
+        from copy import deepcopy
+        value,policy,native=self.original_policy()
+        options=dict(repository_root=self.root,revision=self.current['commit'],trusted_workflow_sha='4'*40,
+            policy_path=policy,completed_frozen_policy=native)
+        def recipe(root, revision, paths):return 'workflow' if paths==(apk._INSTALLED_WORKFLOW,) else 'source'
+        with patch('products.inventory.git_inventory',side_effect=recipe) as inventory:
+            self.assertEqual(sorted(apk._INSTALLED),apk.select_installed_consumer_reuse(self.plan_value,**options))
+            self.assertEqual(4,inventory.call_count)  # one original recipe shared by seven lanes
+            for kind in ('native','task','template','lock','setup','child','missing','symlink'):
+                with self.subTest(kind=kind):
+                    changed=deepcopy(value)
+                    if kind=='native':changed['sdkCompletion']['artifactId']+=1
+                    policy.write_bytes(apk.canonical_json_bytes(changed))
+                    def changed_recipe(root,revision,paths):
+                        return 'changed' if revision=='8'*40 and kind in ('task','template','lock','setup') or revision=='6'*40 and kind=='child' else recipe(root,revision,paths)
+                    with patch('products.inventory.git_inventory',side_effect=changed_recipe):
+                        if kind=='missing':policy.unlink()
+                        if kind=='symlink':policy.unlink();policy.symlink_to(native)
+                        if kind in ('missing','symlink'):
+                            with self.assertRaises((ValueError,FileNotFoundError)):apk.select_installed_consumer_reuse(self.plan_value,**options)
+                            if policy.is_symlink():policy.unlink()
+                        else:self.assertEqual([],apk.select_installed_consumer_reuse(self.plan_value,**options))
+                    policy.write_bytes(apk.canonical_json_bytes(value))
+            for kind in ('unknown','boolean','duplicate','wrong-pr','bad-digest'):
+                changed=deepcopy(value);rows=list(changed['originals'].values())
+                if kind=='unknown':changed['verdict']='passed'
+                if kind=='boolean':changed['schemaVersion']=True
+                if kind=='duplicate':rows[1]['jobId']=rows[0]['jobId']
+                if kind=='wrong-pr':rows[0]['producer']['pullRequest']=32
+                if kind=='bad-digest':rows[0]['artifactSha256']='not-a-digest'
+                with self.subTest(kind=kind),self.assertRaises(ValueError):apk.validate_installed_consumer_policy(apk.canonical_json_bytes(changed))
+            self.assertEqual([],apk.select_installed_consumer_reuse(self.plan_value,**{**options,'policy_path':None}))
+        self.assertNotIn('ci/sdk_android_evidence_capture.py',apk._INSTALLED_RECIPE)
+        self.assertIn('ci/sdk_completion.py',apk._INSTALLED_RECIPE)
+
+    def test_original_recipe_binds_delegated_dependency_preparation(self):
+        _, policy, native = self.original_policy()
+        options = dict(repository_root=self.root, revision=self.current['commit'],
+            trusted_workflow_sha='4'*40, policy_path=policy, completed_frozen_policy=native)
+        inputs = (
+            '.github/actions/run-ci-lane/installed-consumer/dependencies.py',
+            'ci/sdk_android_validation_workflow.py', 'ci/products/gradle_bootstrap.py',
+            'ci/product_reuse.py', 'ci/products/toolchain.py',
+            '.github/actions/sdk-ios-binary-worker/verification-metadata.xml',
+            '.github/actions/sdk-ios-binary-worker/native-dependencies.json',
+            'runtime/gradle/verification-metadata.xml',
+            'gradle/build-logic/build.gradle.kts', 'gradle/build-logic/settings.gradle.kts',
+            'gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties',
+            'gradlew', 'gradle/release/kmp-consumer-template/settings.gradle.kts',
+            '.github/actions/run-ci-lane/installed-consumer/build.gradle.kts',
+        )
+        changed = None
+        operation = None
+        def entries(root, revision):
+            result = []
+            for path in (*inputs, apk._INSTALLED_WORKFLOW, 'ci/sdk_android_evidence_capture.py'):
+                mode, oid = '100644', 'a'*40
+                if revision == self.current['commit'] and path == changed:
+                    if operation == 'removed':
+                        continue
+                    if operation == 'symlink':
+                        mode = '120000'
+                    else:
+                        oid = 'b'*40
+                result.append((path, f'{mode}\tblob\t{oid}\t{path}'))
+            return tuple(result)
+        # Exercise real git_inventory filtering; only immutable Git tree rows are synthetic.
+        with patch('products.inventory.tree_entries', side_effect=entries):
+            self.assertEqual(sorted(apk._INSTALLED), apk.select_installed_consumer_reuse(self.plan_value, **options))
+            for changed in inputs:
+                for operation in ('changed', 'removed', 'symlink'):
+                    with self.subTest(path=changed, operation=operation):
+                        self.assertEqual([], apk.select_installed_consumer_reuse(self.plan_value, **options))
+            changed, operation = 'ci/sdk_android_evidence_capture.py', 'changed'
+            self.assertEqual(sorted(apk._INSTALLED), apk.select_installed_consumer_reuse(self.plan_value, **options))
+
+    def test_original_controls_mix_fresh_and_reused_in_one_observer_without_relabeling(self):
+        import io,zipfile
+        from copy import deepcopy
+        for all_reused in (False,True):
+            with self.subTest(all_reused=all_reused):
+                lanes=sorted(apk._INSTALLED)
+                reused=lanes if all_reused else lanes[:3]
+                policy,policy_path,native_path=self.original_policy(reused)
+                with self.node_scopes():value=self.installed()
+                raw=apk.canonical_json_bytes(value);payloads={};artifacts={};observations={}
+                def archive(members):
+                    stream=io.BytesIO()
+                    with zipfile.ZipFile(stream,'w') as z:
+                        for name,data in members.items():z.writestr(name,data)
+                    return stream.getvalue()
+                def add(identity,name,job,owner,members):
+                    payloads[identity]=archive(members)
+                    artifacts[identity]=dict(id=identity,name=name,digest=apk.sha256_bytes(payloads[identity]),
+                        size_in_bytes=len(payloads[identity]),expired=False,workflow_run=dict(id=owner['runId'],head_sha='9'*40),
+                        created_at='2026-11-01T10:03:00Z',archive_download_url=f'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/{identity}/zip')
+                    observation=observations.setdefault(owner['runId'],dict(run=dict(id=owner['runId'],run_attempt=owner['runAttempt'],
+                        head_sha='9'*40,status='in_progress' if owner==self.current else 'completed'),jobs=[]))
+                    observation['jobs'].append(dict(id=identity,name=job,status='completed',conclusion='success',
+                        started_at='2026-11-01T10:00:00Z',completed_at='2026-11-01T10:05:00Z'))
+                add(22,f"codex-agent-sdk-validation-contributions-{self.current['tree']}-attempt-2",
+                    'product-validation / sdk-completion',self.current,{apk._VALIDATION_FILE:raw})
+                for n,lane in enumerate(lanes,23):
+                    members,_=self.controls(value,lane);record=apk.load_json_bytes(members['installed-consumer.json'])
+                    original=policy['originals'].get(lane);owner=self.current if original is None else original['producer']
+                    if original:
+                        record['producer']=owner;record['planSha256']=original['planSha256']
+                    members['installed-consumer.json']=apk.canonical_json_bytes(record)
+                    add(n,f"codex-agent-installed-consumer-{lane}-{owner['tree']}-attempt-{owner['runAttempt']}",
+                        'product-validation / retained-consumers / '+lane,owner,members)
+                    if original:original['artifactSha256']=artifacts[n]['digest']
+                policy_path.write_bytes(apk.canonical_json_bytes(policy));original_bytes=policy_path.read_bytes()
+                options=dict(repository_root=self.root,trusted_workflow_sha='4'*40,artifact_id=22,
+                    artifact_sha256=artifacts[22]['digest'],contribution_sha256=apk.sha256_bytes(raw),environ=self.env,
+                    installed_consumers=True,installed_consumer_policy=policy_path,completed_frozen_policy=native_path,
+                    reused_installed_lanes=reused)
+                def fetch(a,*args,**kw):kw['destination'].write_bytes(payloads[a['id']])
+                with self.node_scopes(),patch('products.inventory.git_inventory',return_value='exact recipe'), \
+                        patch.object(apk.products,'_git_value',side_effect=lambda r,c,v:self.current['tree' if 'tree' in v else 'commit']), \
+                        patch.object(apk.products,'_observe_ci_producer_jobs',return_value=list(observations.values())) as observe, \
+                        patch.object(apk.products,'_versions',return_value=self.versions), \
+                        patch.object(apk.products,'paginated_items',return_value=list(artifacts.values())) as listing, \
+                        patch.object(apk.products,'api_json',side_effect=lambda url,t:artifacts[int(url.rsplit('/',1)[1])]), \
+                        patch.object(apk.products,'_reuse_contract_ci_upload',side_effect=fetch) as download, \
+                        patch.object(apk.products,'_restore_product_objects',side_effect=AssertionError('no bodies')):
+                    actual=apk.observed_validation_contributions(self.plan,**options)
+                    observe.assert_called_once();self.assertEqual(0 if all_reused else 1,listing.call_count)
+                    self.assertEqual(8,download.call_count);self.assertEqual(value,actual[0])
+                    self.assertEqual(set(lanes),set(actual[2]));self.assertEqual(original_bytes,policy_path.read_bytes())
+                    for lane in lanes:
+                        entry=actual[2][lane];original=policy['originals'].get(lane)
+                        self.assertEqual(self.current if original is None else original['producer'],entry['original']['producer'])
+                        self.assertEqual(value['planSha256'] if original is None else original['planSha256'],entry['original']['planSha256'])
+                        self.assertEqual('4'*40 if original is None else '6'*40,observe.call_args.kwargs['trusted_workflows_by_phase'][lane]['sha'])
+                    for fault in ('schedule','job','expired','window','producer','policy-late','native-late'):
+                        with self.subTest(fault=fault):
+                            saved=deepcopy(artifacts[23]);saved_native=native_path.read_bytes()
+                            supplied=dict(options)
+                            if fault=='schedule':supplied['reused_installed_lanes']=[]
+                            if fault=='job':observations[20]['jobs'][0]['id']+=100
+                            if fault=='expired':artifacts[23]['expired']=True
+                            if fault=='window':artifacts[23]['created_at']='2026-11-01T09:00:00Z'
+                            if fault=='producer':artifacts[23]['workflow_run']['id']=21
+                            def changed_fetch(a,*args,**kw):
+                                fetch(a,*args,**kw)
+                                if fault=='policy-late':policy_path.write_bytes(original_bytes+b' ')
+                                if fault=='native-late':native_path.write_bytes(saved_native+b' ')
+                            download.side_effect=changed_fetch
+                            with self.assertRaises(ValueError):apk.observed_validation_contributions(self.plan,**supplied)
+                            download.side_effect=fetch
+                            if fault=='job':observations[20]['jobs'][0]['id']-=100
+                            artifacts[23]=saved;policy_path.write_bytes(original_bytes);native_path.write_bytes(saved_native)
+
+    def test_reuse_selector_keeps_plan_and_skips_only_compatible_worker_names(self):
+        import textwrap
+        import sdk_android_evidence_capture as selector
+        source=(Path(__file__).resolve().parents[2]/'.github/workflows/product-validation.yml').read_text()
+        block=source.split('      - id: retained-consumer-selection\n',1)[1].split('      - name: Require unchanged Contract',1)[0]
+        code=textwrap.dedent(block.split("          python3 -B - <<'PYCODE'\n",1)[1].split('          PYCODE',1)[0])
+        plan=self.root/'build/ci/impact-plan.json';plan.parent.mkdir(parents=True);plan.write_bytes(self.plan.read_bytes())
+        output=self.root/'selector-output';before=plan.read_bytes();cwd=Path.cwd()
+        env={key:'true' for key in ('CONSUMER_MODE','AUTHORIZED','NATIVE_READY','NATIVE_FULL_REUSE')}
+        env.update(VALIDATION_REUSED='false',TRUSTED_WORKFLOW_SHA='4'*40,GITHUB_OUTPUT=str(output),
+            CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY='policy',CODEX_AGENT_COMPLETED_REUSE_POLICY='native')
+        try:
+            os.chdir(self.root)
+            for reused in ([],['consumer-android'],sorted(apk._INSTALLED)):
+                with patch.dict(os.environ,env,clear=True),patch.object(selector,'select_installed_consumer_reuse',return_value=reused) as select:
+                    output.unlink(missing_ok=True);exec(compile(code,'<selector>','exec'),{})
+                    result=dict(line.split('=',1) for line in output.read_text().splitlines())
+                    self.assertEqual('true',result['enabled']);self.assertEqual(reused,json.loads(result['reused']))
+                    self.assertEqual(set(apk._INSTALLED)-set(reused),{row['lane'] for row in json.loads(result['matrix'])})
+                    select.assert_called_once();self.assertEqual(before,plan.read_bytes())
+            with patch.dict(os.environ,{**env,'NATIVE_FULL_REUSE':'false'},clear=True),patch.object(selector,'select_installed_consumer_reuse') as select:
+                output.unlink();exec(compile(code,'<selector>','exec'),{});select.assert_not_called()
+            with patch.dict(os.environ,env,clear=True),patch.object(selector,'select_installed_consumer_reuse',side_effect=ValueError('missing policy')):
+                output.unlink()
+                with self.assertRaises(ValueError):exec(compile(code,'<selector>','exec'),{})
+                self.assertFalse(output.exists())
+        finally:os.chdir(cwd)
+        self.assertIn("needs.plan.outputs.retained_consumer_matrix != '[]'",source)
+        self.assertIn('test "$RETAINED_CONSUMERS_RESULT" = skipped',source)
+        self.assertIn('if [ "$RECOVERY_ONLY" = true ]; then',source)
+
 
 if __name__ == "__main__":
     unittest.main()

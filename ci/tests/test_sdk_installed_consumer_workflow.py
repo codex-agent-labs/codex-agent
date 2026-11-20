@@ -24,6 +24,8 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
         self.apple = (ROOT / '.github/workflows/apple-runtime-evidence.yml').read_text()
 
     def test_authorized_native_selection_is_exact_and_does_not_change_plan(self):
+        from ci.receipt import LANES
+
         step = self.parent.split('      - id: retained-consumer-selection\n', 1)[1].split('      - name:', 1)[0]
         script = textwrap.dedent(step.split("          python3 -B - <<'PYCODE'\n", 1)[1].split('          PYCODE', 1)[0])
         self.assertIn("CONSUMER_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.toolingOnly }}", step)
@@ -32,7 +34,9 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, chdir(temporary):
             plan = Path('build/ci/impact-plan.json')
             plan.parent.mkdir(parents=True)
-            value = {'lanes': {'consumer-' + lane: dict(build=False, test=True, metadata=False) for lane in lanes}}
+            value = {'validationCommit': 'a' * 40,
+                     'lanes': {lane: dict(build=False, test=lane in {'consumer-' + target for target in lanes},
+                                         metadata=False) for lane in LANES}}
             plan.write_text(json.dumps(value))
             original = plan.read_bytes()
             output = Path('result')
@@ -41,17 +45,52 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
             Path('ci').symlink_to(ROOT / 'ci', target_is_directory=True)
             env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
             env.update(zip(keys, ('true', 'true', 'false', 'true', 'true')))
+            native = dict(artifactId=1, artifactSha256='sha256:' + '1' * 64, runId=2, runAttempt=1,
+                          signerCommit='b' * 40, sourceCommit='c' * 40)
+            policy = Path('original-consumers.json').resolve()
+            policy_value = dict(schemaVersion=1, kind='completed-installed-consumers', sdkCompletion=native,
+                originals={'consumer-android': dict(producer=dict(repository='codex-agent-labs/codex-agent',
+                    workflowPath='.github/workflows/ci.yml', event='pull_request', pullRequest=31,
+                    commit='d' * 40, tree='e' * 40, runId=3, runAttempt=1), workflowSha='f' * 40,
+                    jobId=4, artifactId=5, artifactSha256='sha256:' + '2' * 64, planSha256='sha256:' + '3' * 64)})
+            policy.write_text(json.dumps(policy_value, sort_keys=True, separators=(',', ':')) + '\n')
+            current_native = Path('native-policy.json').resolve()
+            # A valid old policy for different native inputs schedules all fresh
+            # lanes without inventing accepted originals or requiring Git fixtures.
+            current_native.write_text(json.dumps(dict(schemaVersion=1, kind='completed-frozen-reuse',
+                sdkCompletion={**native, 'artifactId': 6}), sort_keys=True, separators=(',', ':')) + '\n')
+            policy_env = dict(TRUSTED_WORKFLOW_SHA='f' * 40,
+                CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY=str(policy),
+                CODEX_AGENT_COMPLETED_REUSE_POLICY=str(current_native))
+            env.update(policy_env)
             subprocess.run([sys.executable, '-BS', '-'], input=script, text=True,
                            env={**env, 'GITHUB_OUTPUT': str(output)}, check=True)
             self.assertEqual(7, len(json.loads(dict(line.split('=', 1) for line in
                                                      output.read_text().splitlines())['matrix'])))
+            for unavailable in ('missing', 'malformed'):
+                with self.subTest(policy=unavailable):
+                    original_policy = policy.read_bytes()
+                    output.unlink(missing_ok=True)
+                    if unavailable == 'missing':
+                        policy.unlink()
+                    else:
+                        policy.write_text('{}\n')
+                    try:
+                        failed = subprocess.run([sys.executable, '-BS', '-'], input=script, text=True,
+                            env={**env, 'GITHUB_OUTPUT': str(output)}, capture_output=True)
+                        self.assertNotEqual(0, failed.returncode)
+                        self.assertFalse(output.exists())
+                    finally:
+                        policy.write_bytes(original_policy)
             for flags in product(('true', 'false'), repeat=5):
-                with self.subTest(flags=flags), patch.dict(os.environ, dict(zip(keys, flags), GITHUB_OUTPUT=str(output))):
+                with self.subTest(flags=flags), patch.dict(os.environ,
+                        dict(zip(keys, flags), GITHUB_OUTPUT=str(output), **policy_env)):
                     output.unlink(missing_ok=True)
                     exec(compile(script, 'saved-consumer-selector', 'exec'), {})
                     result = dict(line.split('=', 1) for line in output.read_text().splitlines())
                     expected = flags == ('true', 'true', 'false', 'true', 'true')
                     self.assertEqual(str(expected).lower(), result['enabled'])
+                    self.assertEqual([], json.loads(result['reused']))
                     matrix = json.loads(result['matrix'])
                     self.assertEqual({'consumer-' + lane for lane in lanes} if expected else set(), {row['lane'] for row in matrix})
                     for row in matrix:
@@ -66,7 +105,7 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
             with patch.dict(os.environ, dict(zip(keys, ('true', 'true', 'false', 'true', 'true')), GITHUB_OUTPUT=str(output))):
                 output.unlink()
                 exec(compile(script, 'saved-consumer-selector', 'exec'), {})
-                self.assertEqual('enabled=false\nmatrix=[]\n', output.read_text())
+                self.assertEqual('enabled=false\nmatrix=[]\nreused=[]\n', output.read_text())
 
     def test_consumers_start_from_early_state_and_forward_only_controls(self):
         early = self.parent.split('\n  retained-consumers:\n', 1)[1].split('\n  sdk-ios-binary-plan:', 1)[0]

@@ -1,6 +1,9 @@
 name: Provision owner-approved reuse verification
 description: Resolve fresh owner-only caller pins; consumers authenticate native completion before reuse.
 inputs:
+  installed-consumers:
+    default: 'false'
+    description: Provision the protected original installed-consumer policy in this existing pass.
   sdk-parity:
     default: 'false'
     description: Provision the separate owner-approved original parity policy in this existing pass.
@@ -44,6 +47,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         CHECKPOINT_OWNER: ${{ inputs.checkpoint-owner }}
         SDK_PARITY: ${{ inputs.sdk-parity }}
+        INSTALLED_CONSUMERS: ${{ inputs.installed-consumers }}
         APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
         REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
         REQUESTED_RUN: ${{ inputs.run-id }}
@@ -65,6 +69,12 @@ runs:
           true) test -z "$APPROVED_ARTIFACT_ID"; parity=(--sdk-parity) ;;
           *) echo 'Invalid SDK parity provisioning selection' >&2; exit 1 ;;
         esac
+        installed=()
+        case "$INSTALLED_CONSUMERS" in
+          false) ;;
+          true) test -z "$APPROVED_ARTIFACT_ID"; installed=(--installed-consumers) ;;
+          *) echo 'Invalid installed consumer provisioning selection' >&2; exit 1 ;;
+        esac
         case "$(uname -s)/$(uname -m)" in
           Linux/x86_64|Linux/aarch64|Darwin/x86_64|Darwin/arm64|MINGW64_NT-*/x86_64) ;;
           *) echo 'supported=false' >> "$GITHUB_OUTPUT"; exit 0 ;;
@@ -72,7 +82,7 @@ runs:
         source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
         operation=provision
         if [ -n "$APPROVED_ARTIFACT_ID" ]; then operation=setup; fi
-        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${checkpoint[@]+"${checkpoint[@]}"} ${parity[@]+"${parity[@]}"}
+        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${checkpoint[@]+"${checkpoint[@]}"} ${parity[@]+"${parity[@]}"} ${installed[@]+"${installed[@]}"}
         bash "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}/.github/actions/restore-reuse-qualification/install-gh.sh"
     - name: Provision independent completion pins or authenticate an explicitly selected body qualification
       if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''
