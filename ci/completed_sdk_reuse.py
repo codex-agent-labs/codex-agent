@@ -1557,7 +1557,8 @@ def _checkpoint_workflow_control(raw):
             if fields is None or field is None or field[1] in fields:
                 raise ValueError("Checkpoint job fields require unique literal keys")
             section = field[1]
-            fields[section] = {} if section in {"with", "env", "outputs"} and not field[2] else field[2]
+            literal_mapping = not field[2] or (section == "outputs" and re.fullmatch(r"&" + identifier, field[2]))
+            fields[section] = {} if section in {"with", "env", "outputs"} and literal_mapping else field[2]
         elif in_jobs and indent == 6 and fields is not None and type(fields.get(section)) is dict:
             field = re.fullmatch(r"(" + identifier + r"):[ \t]*(.*)", line[6:])
             if field is None or field[1] in fields[section]:
@@ -1726,6 +1727,40 @@ def _checkpoint_android_workflow_edges(raw, validation_raw, metadata_raw):
     return tuple(sha256_bytes(value) for value in (raw, validation_raw, metadata_raw))
 
 
+def _checkpoint_final_workflow_edges(raw, validation_raw, metadata_raw, *, job, parity_raw=None):
+    """Only the wired C18 -> result -> completion -> parity/catalog edges."""
+    _checkpoint_android_workflow_edges(raw, validation_raw, metadata_raw)
+    jobs = _checkpoint_workflow_jobs(raw)
+    completion = jobs.get("sdk-completion", {})
+    if ("sdk-android-metadata-result" not in _checkpoint_needs(jobs, "sdk-completion")
+            or completion.get("name", "sdk-completion") != "sdk-completion"
+            or type(completion.get("env")) is not dict
+            or completion["env"].get("SDK_CHECKPOINT") != "${{ needs.sdk-android-metadata-result.outputs.checkpoint }}"
+            or type(completion.get("outputs")) is not dict
+            or completion["outputs"].get("checkpoint") != "${{ steps.parent.outputs.checkpoint }}"):
+        raise ValueError("Final checkpoint changes its exact completion forwarding edge")
+    if job == "sdk-catalog":
+        catalog = jobs.get(job, {})
+        if ("sdk-completion" not in _checkpoint_needs(jobs, job)
+                or catalog.get("name", job) != job or type(catalog.get("env")) is not dict
+                or catalog["env"].get("SDK_CHECKPOINT") != "${{ needs.sdk-completion.outputs.checkpoint }}"):
+            raise ValueError("Final checkpoint changes its exact catalog forwarding edge")
+    elif job == "sdk-parity":
+        caller = jobs.get(job, {})
+        child = _checkpoint_workflow_jobs(parity_raw).get(job, {})
+        if ("sdk-completion" not in _checkpoint_needs(jobs, job)
+                or caller.get("uses") != "./.github/workflows/sdk-binding-parity.yml"
+                or type(caller.get("with")) is not dict
+                or caller["with"].get("sdkOutputs") != "${{ toJSON(fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs) }}"
+                or child.get("name", job) != job or type(child.get("env")) is not dict
+                or child["env"].get("SDK_CHECKPOINT") != "${{ fromJSON(inputs.sdkOutputs).checkpoint }}"):
+            raise ValueError("Final checkpoint changes its exact parity forwarding edge")
+    elif job != "sdk-completion":
+        raise ValueError("Unregistered final checkpoint consumer")
+    return tuple(sha256_bytes(value) for value in (raw, validation_raw, metadata_raw,
+                                                  *((parity_raw,) if parity_raw is not None else ())))
+
+
 def _android_checkpoint_metadata_key(custody):
     phases = _records(custody["envelope"]["completion"]["controls"]
                       ["runtime-state/reuse-wave-result.json"]["phases"], "Signed Android checkpoint result")
@@ -1892,13 +1927,19 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
     # its own literal caller/child evidence, never numeric wave ordering.
     next_collector = None
     android = job in {"sdk-android-metadata", "sdk-collect-18", "sdk-checkpoint-18"}
+    final = job in {"sdk-completion", "sdk-parity", "sdk-catalog"} and _next_source is None
     current_name = "product-validation / sdk-sdk-ios-metadata-ios"
     package = job in {"sdk-core-package", "sdk-collect-12"} and _next_source is None
     nested = job == "sdk-checkpoint-11" and _next_source is not None
     collecting = job in {"sdk-collect-10", "sdk-collect-11", "sdk-collect-12"} and _next_source is None
     core = job in {"sdk-core-binary", "sdk-collect-11"} and _next_source is None or nested or package
     binary_collector = "product-validation / sdk-core-binary-wave / sdk-collect-11"
-    if android:
+    if final:
+        if (source["jobName"] != _ANDROID_METADATA_COLLECTOR
+                or _ANDROID_METADATA_COLLECTOR not in policy["collectors"]):
+            raise ValueError("Final checkpoint requires its exact approved Android18 collector")
+        current_name = "product-validation / " + ("sdk-parity / sdk-parity" if job == "sdk-parity" else job)
+    elif android:
         if (source["jobName"] != _ANDROID_VALIDATION_COLLECTOR
                 or not {_ANDROID_VALIDATION_COLLECTOR, _ANDROID_METADATA_COLLECTOR} <= set(policy["collectors"])
                 or (job == "sdk-checkpoint-18") != (_next_source is not None)):
@@ -1933,7 +1974,7 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
                 or _next_source["producer"] != source["producer"]):
             raise ValueError("Checkpoint predecessor is outside its registered next issuer edge")
         next_collector, current_name = expected_source.rsplit(" / ", 1)[1], next_identity["jobName"]
-    if (not core and not android and (source["jobName"] != "product-validation / sdk-collect-9"
+    if (not core and not android and not final and (source["jobName"] != "product-validation / sdk-collect-9"
             or next_collector is None and job not in {"sdk-ios-metadata", "sdk-collect-10"})
             or consumer != {"kind": "ci", "producer": source["producer"]}):
         raise ValueError("Checkpoint is outside its registered current consumer edge")
@@ -1941,7 +1982,17 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
     workflow = git_regular_blob_bytes(root, policy["collectorWorkflowSha"],
         ".github/workflows/product-validation.yml", max_bytes=1024 * 1024)
     child_paths = []
-    if android:
+    if final:
+        child_paths.extend(_ANDROID_CHECKPOINT_WORKFLOWS)
+        child_bytes = [git_regular_blob_bytes(root, policy["collectorWorkflowSha"], path,
+                       max_bytes=1024 * 1024) for path in child_paths]
+        parity_raw = None
+        if job == "sdk-parity":
+            child_paths.append(".github/workflows/sdk-binding-parity.yml")
+            parity_raw = git_regular_blob_bytes(root, policy["collectorWorkflowSha"], child_paths[-1],
+                                                max_bytes=1024 * 1024)
+        workflow_sha = _checkpoint_final_workflow_edges(workflow, *child_bytes, job=job, parity_raw=parity_raw)
+    elif android:
         child_paths.extend(_ANDROID_CHECKPOINT_WORKFLOWS)
         child_bytes = [git_regular_blob_bytes(root, policy["collectorWorkflowSha"], path,
                        max_bytes=1024 * 1024) for path in child_paths]
@@ -1974,6 +2025,14 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
         custody = _fetch_checkpoint_envelope(policy, source, arguments, identity, work, token, observation)
         if custody["subjectSha256"] != output["subjectSha256"]:
             raise ValueError("Checkpoint selector changes its exact native subject")
+        if final:
+            controls = custody["envelope"]["completion"]["controls"]
+            products._validate_reuse_result(controls["runtime-state/reuse-wave-result.json"],
+                                            tuple(PHASE_INSTANCE_IDS), require_complete=True)
+            available = _records(controls["runtime-state/reuse-wave-request.json"]["availableObjects"],
+                                 "Final checkpoint objects")
+            if set(available) != set(PHASE_INSTANCE_IDS):
+                raise ValueError("Final checkpoint lacks its complete current phase closure")
         fresh = products._fresh_ci_observation_values(observation, source["producer"], token)
         for child_path in child_paths:
             products._require_ci_workflow_reference(fresh["run"],
@@ -2012,6 +2071,12 @@ def checkpoint_consumer(policy, output, work, *, root, consumer, job, token, _ne
             used_ids.add(result["id"])
             return result
 
+        if final:
+            previous = successful("product-validation / sdk-android-metadata-result / sdk-android-metadata-result",
+                _ANDROID_CHECKPOINT_WORKFLOWS[1], policy["collectorWorkflowSha"])
+            if job != "sdk-completion":
+                previous = successful("product-validation / sdk-completion",
+                    ".github/workflows/product-validation.yml", policy["collectorWorkflowSha"])
         if android:
             previous, android_ids = _android_checkpoint_forwarders(custody, observation, current, policy, token,
                 metadata_worker=job != "sdk-android-metadata")

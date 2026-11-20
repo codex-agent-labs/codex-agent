@@ -28,17 +28,117 @@ on:
         required: true
         type: boolean
 
+      retainedNativeSource:
+        type: boolean
+        default: false
+      planControlId:
+        type: string
+        default: ''
+      resumeOutputs:
+        type: string
+        default: ''
+      trustedWorkflowSha:
+        type: string
+        default: ''
+    secrets:
+      authority_read_token:
+        required: false
+
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: ci-desktop-${{ inputs.validationTree }}
+  group: ci-desktop-${{ inputs.validationTree }}${{ inputs.retainedNativeSource && '-retained-source' || '' }}
   cancel-in-progress: true
 
 jobs:
+  retained-native-source:
+    if: inputs.retainedNativeSource && inputs.matrix != '[]'
+    name: retained-native-${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CODEX_AGENT_THROUGHPUT_TRACE: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+          fetch-depth: 0
+      - id: native-state
+        env:
+          RESUME_OUTPUTS: ${{ inputs.resumeOutputs }}
+          TARGET: ${{ matrix.target }}
+          LANE: ${{ matrix.lane }}
+          HOST_RUNNER: ${{ matrix.runner }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_completion_state import _state
+          from ci.impact import DESKTOP_RUNNERS
+          from ci.reuse import github_output
+          target, lane = os.environ['TARGET'], os.environ['LANE']
+          if target not in ('linux-x64', 'macos-x64', 'windows-x64') or lane != 'desktop-' + target or DESKTOP_RUNNERS[lane] != os.environ['HOST_RUNNER']:
+              raise ValueError('Native source-test caller is not a fixed matching-host route')
+          outputs = json.loads(os.environ['RESUME_OUTPUTS'])
+          if outputs.get('full_reuse') != 'true' or outputs.get('wave_failed') != 'false':
+              raise ValueError('Native source tests require the exact successful retained state')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), _state(outputs, runtime_wave='0', sdk_wave=''))
+          PYCODE
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.planControlId }}
+          path: build/ci
+          merge-multiple: true
+      - name: Run complete source tests from exact retained native executables
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+          CI_VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+          CI_VALIDATION_TREE: ${{ inputs.validationTree }}
+          ARTIFACT_ID: ${{ steps.native-state.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.native-state.outputs.artifact_digest }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          python3 -B .github/actions/run-ci-lane/runtime_source_validation.py \
+            --target "$TARGET" --plan "$PWD/build/ci/impact-plan.json" \
+            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --completed-frozen-policy "${CODEX_AGENT_COMPLETED_REUSE_POLICY:?native authority required}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-retained-native-source-${{ matrix.target }}-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
+          path: build/ci/retained-source-tests/native-${{ matrix.target }}/controls
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-retained-native-source-diagnostics-${{ matrix.target }}-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
+          path: build/ci/retained-source-tests/native-${{ matrix.target }}/failure.log
+          if-no-files-found: warn
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+
   runtime:
-    if: inputs.matrix != '[]'
+    if: ${{ !inputs.retainedNativeSource && inputs.matrix != '[]' }}
     name: ${{ matrix.lane }}
     strategy:
       fail-fast: false
