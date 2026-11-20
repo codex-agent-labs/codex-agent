@@ -813,13 +813,35 @@ def _validate_validation_contributions(value, consumer, plan_sha256, plan, *, an
     return value
 
 
+def _retained_dependency_plan(state, identity, envelope):
+    """Use the live planner's exact original joins, including projected edges."""
+    from products.registry import phase_instance_dependencies
+    from products.restore import PHASE_PLAN_KEYS
+    upstream = []
+    for parent in phase_instance_dependencies(identity):
+        record = state.prior_by_instance.get(parent)
+        value = None if record is None else state.completed_frozen.envelope(record)
+        if value is None:
+            raise ValueError("Current contribution lacks an exact original dependency")
+        upstream.append(value)
+    inputs = envelope["receipt"]["inputs"]
+    # The state has already admitted these current inputs. Reuse the same native
+    # gate instead of replacing authenticated projection fields with bare edges.
+    selected = state.completed_frozen.phase_plan(identity, {
+            "inventory": inputs["inventory"], "versions": state.expected_fixed["versions"],
+            "toolchain_profile_digest": inputs["toolchainProfileDigest"],
+            "flags_digest": inputs["flagsDigest"],
+            "output_schema_version": inputs["outputSchemaVersion"],
+            }, envelope, upstream)
+    if selected != {key: envelope["receipt"][key] for key in PHASE_PLAN_KEYS}:
+        raise ValueError("Current contribution changes original dependency edges")
+
+
 def retained_validation_contributions(state, plan_path, *, repository_root, environ,
                                       android=False, node_js=False, installed_consumers=False):
     """Consume two fixed contributions in the caller's existing verified-state lifetime."""
     from contextlib import nullcontext
     from reuse_qualification import CompletedFrozenReuse
-    from products.plan import _upstream_record
-    from products.registry import phase_instance_dependencies
     if type(state) is not products._VerifiedProductState or type(state.completed_frozen) is not CompletedFrozenReuse:
         raise ValueError("Current contributions require the concrete live native state")
     plan_path, root = Path(plan_path).absolute(), Path(repository_root).resolve(strict=True)
@@ -850,15 +872,7 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
                 envelope = None if record is None else native.envelope(record)
                 if envelope is None or record["state"] not in {"retained", "reused"}:
                     raise ValueError("Node-JS contribution lacks its current native original")
-                upstream = []
-                for parent in phase_instance_dependencies(identity):
-                    parent_record = context.prior_by_instance.get(parent)
-                    parent_envelope = None if parent_record is None else native.envelope(parent_record)
-                    if parent_envelope is None:
-                        raise ValueError("Node-JS contribution lacks an original dependency")
-                    upstream.append(_upstream_record(parent_envelope["receipt"]))
-                if envelope["receipt"]["inputs"]["upstreamArtifacts"] != sorted(upstream, key=products._identity):
-                    raise ValueError("Node-JS contribution changes original dependency edges")
+                _retained_dependency_plan(context, identity, envelope)
                 originals[identity] = {**{key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
                                        "receipt": envelope["receipt"]}
             node = {"originals": [originals[item] for item in _NODE_RUNTIME],
@@ -882,15 +896,7 @@ def retained_validation_contributions(state, plan_path, *, repository_root, envi
             envelope = None if record is None else native.envelope(record)
             if envelope is None or record["state"] not in {"retained", "reused"}:
                 raise ValueError("Installed consumer lacks its exact native original")
-            upstream = []
-            for parent in phase_instance_dependencies(identity):
-                parent_record = state.prior_by_instance.get(parent)
-                parent_envelope = None if parent_record is None else native.envelope(parent_record)
-                if parent_envelope is None:
-                    raise ValueError("Installed consumer lacks an exact original dependency")
-                upstream.append(_upstream_record(parent_envelope["receipt"]))
-            if envelope["receipt"]["inputs"]["upstreamArtifacts"] != sorted(upstream, key=products._identity):
-                raise ValueError("Installed consumer changes original dependency edges")
+            _retained_dependency_plan(state, identity, envelope)
             originals.append({**{key: record[key] for key in ("buildKey", "receiptSha256", "objectSha256")},
                               "receipt": envelope["receipt"]})
         result["installedConsumers"] = load_canonical_json_bytes(canonical_json_bytes({
