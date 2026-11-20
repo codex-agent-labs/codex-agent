@@ -401,7 +401,9 @@ def _spec(spec):
         if (earlier["runId"], earlier["runAttempt"]) >= (producer["runId"], producer["runAttempt"]):
             raise ValueError("Reused native completion must precede its collected source")
     if checkpoint:
-        if reuse or spec["source"]["jobName"] != "product-validation / sdk-collect-10":
+        if reuse or spec["source"]["jobName"] not in {
+                "product-validation / sdk-collect-10",
+                "product-validation / sdk-android-metadata-result / sdk-collect-18"}:
             raise ValueError("Completed checkpoint requires the distinct final collector recipe")
         selection = require_exact_keys(spec["reuseCheckpoint"], {"ownerPolicySha256", "checkpoint"},
                                        "Completed checkpoint selector")

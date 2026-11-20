@@ -32,9 +32,11 @@ class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        # Collector 17 inherits the previous signed completion, including both original Apple validations.
-        self.assertEqual((13785575491, "b6e6a569310be3a26bc43db513c16ecfc2318eb5"),
-            (spec["reuseCompletion"]["artifactId"], spec["reuseCompletion"]["sourceCommit"]))
+        self.assertEqual({
+            "ios-arm64": "sha256:df681cfa14cd2e4fbbe04e077a2d4696c0bbcad0cde0e0b6732076d206020034",
+            "ios-simulator-arm64": "sha256:574eef75ff7ff5dee0c8dd3dc60f5a46ac2ac849952218ac6067b92c5bcb045f",
+        }, {row["target"]: row["receiptSha256"] for row in spec["completedPhases"]
+            if row["component"] == "sdk-ios" and row["phase"] == "validation"})
         self.assertEqual({"ios-arm64": 13212931745, "ios-simulator-arm64": 13213005852},
             {row["target"]: row["artifactId"] for row in spec["originals"]
              if row["component"] == "sdk-ios" and row["phase"] == "validation"})

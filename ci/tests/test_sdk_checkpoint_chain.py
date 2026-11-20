@@ -285,6 +285,8 @@ if __name__ == '__main__': unittest.main()
 class CompletedCheckpointFlatIssuerTest(unittest.TestCase):
     """Existing tiny native/HTTP fixtures; the new role never reads an SDK body."""
 
+    collector_name = "product-validation / sdk-collect-10"
+
     def setUp(self):
         from ci.tests.test_sdk_checkpoint_consumer import HistoricalCheckpointConsumerTest
         self.h = HistoricalCheckpointConsumerTest(); self.h.setUp()
@@ -292,15 +294,19 @@ class CompletedCheckpointFlatIssuerTest(unittest.TestCase):
         h, f = self.h, self.h.f
         self.f = f
         f.run.update(status='completed', conclusion='success')
-        f.source['jobName'] = 'product-validation / sdk-collect-10'
+        f.source['jobName'] = self.collector_name
         f.policy['collectors'] = sorted(set(f.policy['collectors']) | {f.source['jobName']})
         f.collector['name'] = f.source['jobName']
         f.identity = completed.checkpoint_archive_identity(f.policy, f.source,
             **{k: v for k, v in native._native_pin_arguments(f.selector).items()
                if k in ('signer_commit', 'source_commit', 'run_id', 'run_attempt')})
         f.issuer['name'] = f.identity['jobName']
+        if not any(row['path'] == f.identity['collectorWorkflow'] for row in f.run['referenced_workflows']):
+            f.run['referenced_workflows'].append(
+                {'path': f.identity['collectorWorkflow'], 'sha': f.source['workflowSha']})
         f.artifacts[f.source['artifactId']]['name'] = (
-            f"codex-agent-sdk-wave-10-state-{f.producer['tree']}-attempt-{f.producer['runAttempt']}")
+            f"codex-agent-sdk-wave-{completed._COLLECTED_WAVES[self.collector_name]}-state-"
+            f"{f.producer['tree']}-attempt-{f.producer['runAttempt']}")
         f.artifacts[992]['name'] = completed.collector_control_artifact_name(f.source)
         f.envelope['sourceCheckpoint']['source'] = deepcopy(f.source)
         f.envelope['ownerPolicySha256'] = sha256_bytes(canonical_json_bytes(f.policy))
@@ -481,4 +487,35 @@ class CompletedCheckpointFlatIssuerTest(unittest.TestCase):
                 completed.issue_completed_checkpoint(self.spec, self.f.root / 'incompatible', root=self.f.root,
                     revision=self.h.producer['commit'], frozen=self.h.fixture.issued.fixture.base,
                     token='synthetic', history=self.h.history, current_policy=self.h.policy)
+            fetch.assert_not_called()
+
+
+class AndroidCompletedCheckpointFlatIssuerTest(CompletedCheckpointFlatIssuerTest):
+    """The same full-state, native-custody and lifetime gates under exact C18."""
+
+    collector_name = "product-validation / sdk-android-metadata-result / sdk-collect-18"
+
+    def test_other_registered_collectors_cannot_issue_flat_completion(self):
+        for name in ("product-validation / sdk-collect-9",
+                     "product-validation / sdk-core-metadata-wave / sdk-collect-14",
+                     "product-validation / sdk-android-validation-result / sdk-collect-17"):
+            with self.subTest(collector=name):
+                spec = deepcopy(self.spec)
+                spec['source']['jobName'] = name
+                spec['reuseCheckpoint']['checkpoint']['source'] = deepcopy(spec['source'])
+                with self.assertRaisesRegex(ValueError, 'distinct final collector'):
+                    completed._spec(spec)
+
+    def test_original_owner_must_explicitly_include_android_collector(self):
+        policy = deepcopy(self.h.history['historicalPolicies'][0]['policy'])
+        policy['collectors'].remove(self.collector_name)
+        digest = sha256_bytes(canonical_json_bytes(policy))
+        self.h.history['historicalPolicies'] = [{'sha256': digest, 'policy': policy}]
+        self.spec['reuseCheckpoint']['ownerPolicySha256'] = digest
+        with self.boundaries(), patch.object(completed, '_fetch_checkpoint_envelope') as fetch:
+            with self.assertRaisesRegex(ValueError, 'approved issuer/collector'):
+                completed.issue_completed_checkpoint(self.spec, self.f.root / 'unapproved-role',
+                    root=self.f.root, revision=self.h.producer['commit'],
+                    frozen=self.h.fixture.issued.fixture.base, token='synthetic',
+                    history=self.h.history, current_policy=self.h.policy)
             fetch.assert_not_called()
