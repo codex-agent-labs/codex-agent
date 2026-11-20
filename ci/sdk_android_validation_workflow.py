@@ -234,41 +234,31 @@ def _run_retained_installed_consumer(state, *, lane, plan_path, repository_root,
         maven = private / "maven"
         maven.mkdir()
 
-        def add(relative, contents):
-            file = maven / relative
-            if file.exists() or file.is_symlink():
-                raise ValueError("Installed consumer Maven inputs overlap")
-            file.parent.mkdir(parents=True, exist_ok=True)
-            with file.open("xb") as output:
-                output.write(contents)
-
-        for instance in restored_instances[1:]:
+        for instance in restored_instances:
             source = stages[instance] / "outputs/maven"
             roots = ([source / component for component in _RUNTIME_COMPONENTS[target]]
                      if instance == _RUNTIME_MAVEN else [source])
             for selected in roots:
-                for row in regular_file_inventory(selected):
+                prefix = selected.relative_to(stages[instance]).as_posix() + "/"
+                expected = sorted(({
+                    "relativePath": row["relativePath"].removeprefix(prefix),
+                    "bytes": row["bytes"], "sha256": row["sha256"],
+                } for row in restored[instance]["receipt"]["outputs"]
+                    if row["kind"] == "maven" and row["relativePath"].startswith(prefix)),
+                    key=lambda row: row["relativePath"])
+                captured_prefix = selected.relative_to(predecessors).as_posix() + "/"
+                captured = [{**row, "relativePath": row["relativePath"].removeprefix(captured_prefix)}
+                            for row in before if row["relativePath"].startswith(captured_prefix)]
+                if not expected or captured != expected:
+                    raise ValueError("Installed consumer Maven files differ from the native receipt")
+                for row in expected:
+                    if instance == _CONSUMER_INPUTS[0]:
+                        contract_maven_identity("maven/" + row["relativePath"],
+                            restored[instance]["receipt"]["productVersion"])
                     destination = maven / row["relativePath"]
                     if destination.exists() or destination.is_symlink():
                         raise ValueError("Installed consumer Maven inputs overlap")
                     _copy_exact(selected / row["relativePath"], destination, row)
-        contract = restored[_CONSUMER_INPUTS[0]]["receipt"]
-        outputs = contract["outputs"]
-        if len(outputs) != 1 or outputs[0]["kind"] != "contract-bundle":
-            raise ValueError("Installed consumer requires the original Contract bundle")
-        output = outputs[0]
-        _, members, transport = verified_zip_contents(
-            stages[_CONSUMER_INPUTS[0]] / output["relativePath"], canonical_stored=True,
-            max_archive_bytes=_LIMIT, max_total_bytes=1024 * 1024 * 1024, max_members=4096)
-        if transport != {key: output[key] for key in ("bytes", "sha256")}:
-            raise ValueError("Installed consumer Contract bundle changed")
-        names = sorted(name for name in members if name.startswith("maven/"))
-        if not names:
-            raise ValueError("Installed consumer Contract Maven closure is empty")
-        for name in names:
-            contract_maven_identity(name, contract["productVersion"])
-            add(name.removeprefix("maven/"), members[name])
-        del members
         template_unchanged = lambda: None
         command = [str(root / "gradlew"), task, "--build-cache", "--parallel", "--stacktrace",
                    "-PcodexAgent.candidateCommit=" + state.plan["validationCommit"],

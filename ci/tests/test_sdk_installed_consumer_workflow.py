@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+from string import Template
 import subprocess
 import sys
 import tempfile
@@ -83,9 +84,32 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
         self.assertIn('--installed-consumer-output "$RUNNER_TEMP/installed-consumer-controls"', worker)
         self.assertIn('path: ${{ runner.temp }}/installed-consumer-controls', worker)
         self.assertIn('overwrite: false', worker)
-        for obsolete in ('run-ci-lane', 'ci/stage.py', 'codex-agent-ci-', 'desktop-classifiers', 'rust-toolchain'):
+        self.assertIn('name: codex-agent-ci-plan-control-${{ inputs.validationTree }}', worker)
+        self.assertIn('path: build/ci/impact-plan.json', self.parent.split('      - id: upload_plan_control\n')[-1].split('      - id:', 1)[0])
+        self.assertNotIn('codex-agent-ci-', worker.split('uses: actions/upload-artifact@', 1)[1])
+        for obsolete in ('run-ci-lane', 'ci/stage.py', 'desktop-classifiers', 'rust-toolchain'):
             self.assertNotIn(obsolete, worker)
         self.assertIn("if: ${{ !inputs.retainedInstalledConsumers }}", self.child)
+
+    def test_worker_paths_pass_the_capture_boundary(self):
+        from ci.sdk_completion import products
+        from products.sdk_package import _require_capability_output_separate
+
+        worker = self.child.split('\n  installed-consumer:\n', 1)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve() / 'checkout'
+            workspace.mkdir()
+            env = dict(GITHUB_WORKSPACE=str(workspace), PWD=str(workspace),
+                       RUNNER_TEMP=str(workspace.parent / 'runner-temp'))
+
+            def path_argument(name):
+                value, = re.findall(r'--' + name + r' "([^"\n]+)"', worker)
+                return Path(Template(value).substitute(env))
+
+            state = path_argument('destination')
+            self.assertEqual(state, products._prepare_destination(state, workspace))
+            _require_capability_output_separate(path_argument('installed-consumer-output'),
+                                                (state, path_argument('plan')))
 
     def test_apple_selection_preserves_every_nonconsumer_duty(self):
         step = self.apple.split('      - id: lanes\n', 1)[1].split('\n  native-tests:', 1)[0]

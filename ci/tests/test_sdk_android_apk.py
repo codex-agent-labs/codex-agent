@@ -461,7 +461,6 @@ class RetainedAndroidContributionTest(unittest.TestCase):
                 self.plan.write_bytes(original_plan)
 
 class SharedCanonicalContributionTest(unittest.TestCase):
-    envelope = RetainedAndroidContributionTest.envelope
     materialize = RetainedAndroidContributionTest.materialize
     consumer = RetainedAndroidContributionTest.consumer
     scopes = RetainedAndroidContributionTest.scopes
@@ -495,11 +494,38 @@ class SharedCanonicalContributionTest(unittest.TestCase):
         self.state=replace(self.state,closure=apk.products.PHASE_INSTANCE_IDS,
             prior=inspected([self.records[i] for i in sorted(self.records)])['result'],
             prior_by_instance=self.records,prior_carrier_phases=self.records)
+        self.seal_native()
         self.inventories=self.plan.parent/'inventories/node-js';self.inventories.mkdir(parents=True)
         for name in apk.INPUT_NAMES.values():(self.inventories/name).write_bytes(b'original-git-record\n')
 
+    def seal_native(self):
+        """Synthetic admission boundary; execute the real native phase_plan below."""
+        from copy import deepcopy
+        from dataclasses import replace
+        from products.registry import VERSION_IDENTITIES
+        versions={name:'0.2.0' for name in VERSION_IDENTITIES}
+        self.state=replace(self.state,expected_fixed={'versions':versions})
+        self.native_rows=deepcopy(self.records)
+        self.native_spec={'request':{'versions':versions,'phaseAuthorities':[
+            {**{k:getattr(i,k) for k in apk.products._IDENTITY_KEYS},
+             **{k:r['inputs'][k] for k in ('toolchainProfileDigest','flagsDigest','outputSchemaVersion')}}
+            for i,r in self.receipts.items()]}}
+        self.native._sdk_context=None
+
+    def envelope(self, row, receipt_bytes=None):
+        identity=apk.products._identity(row);expected=self.native_rows[identity]
+        if any(row[k]!=expected[k] for k in (*apk.products._IDENTITY_KEYS,'buildKey','receiptSha256','objectSha256')):
+            raise ValueError('fixture native tuple changed')
+        receipt=self.receipts[identity];raw=apk.canonical_json_bytes(receipt)
+        if apk.sha256_bytes(raw)!=expected['receiptSha256'] or (receipt_bytes is not None and receipt_bytes!=raw):
+            raise ValueError('fixture original receipt bytes changed')
+        return dict(receipt=receipt,receiptBytes=raw,receiptSha256=expected['receiptSha256'],objectSha256=expected['objectSha256'])
+
     def node_scopes(self):
+        import reuse_qualification
         stack=self.scopes()
+        stack.enter_context(patch.object(reuse_qualification.CompletedFrozenReuse,'_values',
+            return_value=(self.native_spec,self.native_rows)))
         stack.enter_context(patch.object(apk.products,'_validate_plan',return_value=self.plan_value))
         stack.enter_context(patch.object(apk.products,'_git_value',return_value=self.current['commit']))
         stack.enter_context(patch('impact.inventory',return_value='original-git-record\n'))
@@ -509,6 +535,45 @@ class SharedCanonicalContributionTest(unittest.TestCase):
     def contribution(self, android=False):
         return apk.retained_validation_contributions(self.state,self.plan,repository_root=self.root,
             environ=self.env,android=android,node_js=True)
+
+    def test_native_planner_preserves_projected_edges_and_rejects_changed_originals(self):
+        from copy import deepcopy
+        from products.receipt import compute_build_key
+        selected=(apk._NODE_RUNTIME[1],apk._INSTALLED_BASE[1],apk._NODE_SDK[-1])
+        for identity in selected:
+            receipt=self.receipts[identity]
+            edge=receipt['inputs']['upstreamArtifacts'][0]
+            if identity==apk._NODE_SDK[-1]:
+                # JavaScript M uses the authenticated normalized V inventory.
+                edge['outputsDigest']='sha256:'+'9'*64
+            else:
+                # Contract semantic projection permits an older raw M identity.
+                edge['buildKey']='sha256:'+'8'*64
+                edge['contractProjection']=dict(schemaVersion=1,contractVersion='0.2.0',
+                    bundlePath='outputs/codex-agent-contract-0.2.0.zip',
+                    componentDigests=[dict(component='common',sha256='sha256:'+'7'*64)],
+                    **{k:'sha256:'+'6'*64 for k in ('receiptSha256','bundleSha256','manifestSha256','contractDigest')})
+            receipt['buildKey']=compute_build_key(**{k:getattr(identity,k) for k in apk.products._IDENTITY_KEYS},inputs=receipt['inputs'])
+            self.records[identity].update(buildKey=receipt['buildKey'],receiptSha256=apk.sha256_bytes(apk.canonical_json_bytes(receipt)))
+        self.seal_native();before=deepcopy(self.receipts)
+        with self.node_scopes():
+            for identity in selected:
+                apk._retained_dependency_plan(self.state,identity,self.envelope(self.records[identity]))
+            self.assertEqual(before,self.receipts)
+            identity=selected[1];envelope=self.envelope(self.records[identity])
+            for change in ('projection','parent','missing','version'):
+                with self.subTest(change=change):
+                    altered=deepcopy(envelope);records=deepcopy(self.records);versions=dict(self.state.expected_fixed['versions'])
+                    try:
+                        if change=='projection':altered['receipt']['inputs']['upstreamArtifacts'][0]['contractProjection']['contractDigest']='sha256:'+'f'*64
+                        parent=apk.products._identity(envelope['receipt']['inputs']['upstreamArtifacts'][0])
+                        if change=='parent':self.records[parent]['objectSha256']='sha256:'+'f'*64
+                        if change=='missing':self.records.pop(parent)
+                        if change=='version':self.state.expected_fixed['versions']['sdk']='0.3.0'
+                        with self.assertRaises(ValueError):apk._retained_dependency_plan(self.state,identity,altered)
+                    finally:
+                        self.records.clear();self.records.update(records)
+                        self.state.expected_fixed['versions'].clear();self.state.expected_fixed['versions'].update(versions)
 
     def test_shared_originals_use_no_node_bodies_or_second_full_context(self):
         from copy import deepcopy
@@ -708,6 +773,7 @@ class InstalledConsumerContributionTest(unittest.TestCase):
     consumer = SharedCanonicalContributionTest.consumer
     scopes = SharedCanonicalContributionTest.scopes
     node_scopes = SharedCanonicalContributionTest.node_scopes
+    seal_native = SharedCanonicalContributionTest.seal_native
 
     def setUp(self):
         SharedCanonicalContributionTest.setUp(self)
@@ -723,6 +789,7 @@ class InstalledConsumerContributionTest(unittest.TestCase):
             for i in phase_instance_dependencies(identity)],key=apk.products._identity)
         receipt['buildKey']=compute_build_key(**{key:getattr(identity,key) for key in apk.products._IDENTITY_KEYS},inputs=receipt['inputs'])
         self.records[identity].update(buildKey=receipt['buildKey'],receiptSha256=apk.sha256_bytes(apk.canonical_json_bytes(receipt)))
+        self.seal_native()
         self.versions={key:self.receipts[identity]['productVersion'] for key,identity in (
             ('contract',apk._INSTALLED_BASE[0]),('sdk',apk._INSTALLED_BASE[1]),('runtime-release',apk._INSTALLED_RUNTIME))}
 

@@ -581,7 +581,6 @@ class RetainedAndroidConsumerTest(unittest.TestCase):
         return {"receipt": self.restored[instance]["receipt"]}
 
     def restore_inputs(self, state, instances, destination):
-        from ci.products.contract import _write_contract_zip
         self.assertIs(state, self.state)
         self.assertEqual(workflow._CONSUMER_INPUTS, instances)
         self.private_roots.append(destination.parent)
@@ -591,20 +590,21 @@ class RetainedAndroidConsumerTest(unittest.TestCase):
             version = "0.8.0" if index == 0 else "0.8.7"
             receipt = {"productVersion": version, "producer": {"commit": "c" * 40}}
             if index == 0:
-                content = self.root / "contract-content"
-                file = content / "maven/io/github/codex-agent-labs/codex-agent-core/0.8.0/codex-agent-core-0.8.0.pom"
+                # Real Contract B exposes Maven leaves alongside execution/evidence;
+                # the single contract-bundle output belongs to a later phase.
+                file = stage / "outputs/maven/io/github/codex-agent-labs/codex-agent-core/0.8.0/codex-agent-core-0.8.0.pom"
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_bytes(b"original contract Maven bytes")
-                archive = stage / "outputs/contract.zip"
-                archive.parent.mkdir()
-                _write_contract_zip(content, archive)
-                receipt["outputs"] = [{"relativePath": "outputs/contract.zip", "kind": "contract-bundle",
-                                       "bytes": archive.stat().st_size, "sha256": sha256_file(archive)}]
+                evidence = stage / "outputs/evidence/canonical-api.json"
+                evidence.parent.mkdir()
+                evidence.write_bytes(b"original non-Maven evidence")
             else:
                 artifact = "codex-agent" if index == 1 or self.collision else "codex-agent-runtime-android"
                 output = stage / f"outputs/maven/io/github/codex-agent-labs/{artifact}/{version}/{artifact}-{version}.pom"
                 output.parent.mkdir(parents=True)
                 output.write_bytes(f"original {instance.component}".encode())
+            receipt["outputs"] = [{**row, "kind": "maven" if row["relativePath"].startswith("outputs/maven/") else "evidence"}
+                                  for row in regular_file_inventory(stage)]
             self.restored[instance] = {"receipt": receipt, "receiptBytes": canonical_json_bytes(receipt)}
         return self.restored
 
@@ -667,6 +667,26 @@ class RetainedAndroidConsumerTest(unittest.TestCase):
             self.consume()
         self.run.assert_not_called()
         self.assertTrue(all(not path.exists() for path in self.private_roots))
+
+    def test_native_maven_inventory_rejects_changed_missing_or_extra_leaves(self):
+        for mode in ("changed", "missing", "extra"):
+            def restore(state, instances, destination):
+                result = self.restore_inputs(state, instances, destination)
+                maven = destination / "contract-contract-binary-common/stage/outputs/maven"
+                original = next(maven.rglob("*.pom"))
+                if mode == "changed":
+                    original.write_bytes(b"different from native receipt")
+                elif mode == "missing":
+                    original.unlink()
+                else:
+                    (maven / "unlisted.pom").write_bytes(b"not admitted")
+                return result
+            self.restore.side_effect = restore
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                self.consume()
+            self.run.assert_not_called()
+            self.assertFalse(self.projection.exists())
+            self.assertTrue(all(not path.exists() for path in self.private_roots))
 
     def test_late_input_change_or_native_exit_cannot_return_success(self):
         def mutate(command, **kwargs):
@@ -756,7 +776,8 @@ class RetainedInstalledConsumerTest(unittest.TestCase):
                 path.parent.mkdir(parents=True)
                 path.write_bytes(component.encode())
             receipt = {"productVersion": "0.8.7" if self.bad_runtime_version else "0.8.2",
-                       "producer": {"commit": "d" * 40}}
+                       "producer": {"commit": "d" * 40},
+                       "outputs": [{**row, "kind": "maven"} for row in regular_file_inventory(stage)]}
             self.restored[instance] = {"receipt": receipt, "receiptBytes": canonical_json_bytes(receipt)}
         return self.restored
 
