@@ -505,7 +505,7 @@ def sdk_parity_policy(raw):
     return policy
 
 
-def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=False):
+def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=False, installed_consumers=False):
     from products.inventory import canonical_json_bytes, git_regular_blob_bytes, load_canonical_json_bytes
     raw = authority.contents(".reuse/completed-reuse.json", value["authorityCommit"])
     document = completed_descriptor(raw, value)
@@ -528,6 +528,15 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
     if sdk_parity:
         parity_raw = authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"])
         sdk_parity_policy(parity_raw)
+    if type(installed_consumers) is not bool:
+        raise ValueError("Installed consumer provisioning requires an explicit boolean")
+    installed_raw = None
+    if installed_consumers:
+        from sdk_android_evidence_capture import validate_installed_consumer_policy
+        installed_raw = authority.contents(".reuse/completed-installed-consumers.json", value["authorityCommit"], maximum=16 * 1024)
+        installed = validate_installed_consumer_policy(installed_raw)
+        if installed["sdkCompletion"] != document["policy"].get("sdkCompletion"):
+            raise ValueError("Protected installed consumers differ from current native completion")
     acquired = histories(root, document["gitHistory"])
     spec, _ = completed_sdk_spec(root, document, value, os.environ.get("GITHUB_TOKEN", ""))
     if document["retainedSdkInputsSource"] != spec["sdkInputs"]["source"]:
@@ -548,6 +557,10 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
         parity_path = work / "completed-sdk-parity-policy.json"
         with parity_path.open("xb") as output:
             output.write(parity_raw)
+    if installed_consumers:
+        installed_path = work / "completed-installed-consumers-policy.json"
+        with installed_path.open("xb") as output:
+            output.write(installed_raw)
     # This only distributes caller-owned pins. Each actual CLI independently
     # acquires native proof and checks current inputs before any completed reuse.
     paths = {}
@@ -567,6 +580,10 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
             authority.contents(".reuse/completed-sdk-parity.json", value["authorityCommit"]) != parity_raw
             or regular(parity_path, 4096) != parity_raw):
         raise ValueError("Protected SDK parity descriptor changed during provisioning")
+    if installed_consumers and (
+            authority.contents(".reuse/completed-installed-consumers.json", value["authorityCommit"], maximum=16 * 1024) != installed_raw
+            or regular(installed_path, 16 * 1024) != installed_raw):
+        raise ValueError("Protected installed consumer policy changed during provisioning")
     result = {"kind": "completed-reuse-policy", "authorityCommit": value["authorityCommit"],
               "approvedConsumerCommit": value["activeVerifier"],
               "descriptorSha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
@@ -575,7 +592,11 @@ def completed_environment(root, work, value, *, checkpoint=False, sdk_parity=Fal
     if sdk_parity:
         result["sdkParityPolicySha256"] = "sha256:" + hashlib.sha256(parity_raw).hexdigest()
         result["sdkParityAuthentication"] = "required by each explicit consumer"
-    return result, {**({"CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY": str(parity_path)} if sdk_parity else {}),
+    if installed_consumers:
+        result["installedConsumerPolicySha256"] = "sha256:" + hashlib.sha256(installed_raw).hexdigest()
+        result["installedConsumerAuthentication"] = "required by each explicit consumer"
+    return result, {**({"CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY": str(installed_path)} if installed_consumers else {}),
+                    **({"CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY": str(parity_path)} if sdk_parity else {}),
                     **({"CODEX_AGENT_CHECKPOINT_OWNER_POLICY": str(owner_path)} if checkpoint else {}),
                     "CODEX_AGENT_COMPLETED_REUSE_POLICY": paths["policy"],
                     "CODEX_AGENT_RETAINED_SDK_INPUTS_SOURCE": (
@@ -618,6 +639,7 @@ def main():
     parser.add_argument("--artifact-id", type=int)
     parser.add_argument("--checkpoint-owner", action="store_true")
     parser.add_argument("--sdk-parity", action="store_true")
+    parser.add_argument("--installed-consumers", action="store_true")
     args = parser.parse_args()
     root, work = args.repository_root.resolve(strict=True), args.work.absolute()
     work.mkdir(parents=True, exist_ok=True)
@@ -629,6 +651,8 @@ def main():
         raise ValueError("Checkpoint owner policy requires the existing combined provisioning pass")
     if args.sdk_parity and args.operation != "provision":
         raise ValueError("SDK parity policy requires the existing combined provisioning pass")
+    if args.installed_consumers and args.operation != "provision":
+        raise ValueError("Installed consumer policy requires the existing combined provisioning pass")
     value = approved(args.expected_authority_commit)
     os.chdir(root)  # Existing production commands use the consumer checkout as cwd.
     environment = None
@@ -638,7 +662,8 @@ def main():
             snapshot_result = result
             result, environment = completed_environment(root, work, value,
                 **({"checkpoint": True} if args.checkpoint_owner else {}),
-                **({"sdk_parity": True} if args.sdk_parity else {}))
+                **({"sdk_parity": True} if args.sdk_parity else {}),
+                **({"installed_consumers": True} if args.installed_consumers else {}))
             authority.protection(authority.api(f"branches/{authority.BRANCH}/protection"))
             if authority.api(f"branches/{authority.BRANCH}")["commit"]["sha"] != value["authorityCommit"]:
                 raise ValueError("Approval reference changed during provisioning")
@@ -674,6 +699,9 @@ def main():
                       "consumerCommit": git(root, "rev-parse", "HEAD").decode().strip(),
                       "freshQualificationAuthority": fresh}
     if environment is not None:
+        if args.installed_consumers and "sha256:" + hashlib.sha256(regular(
+                work / "completed-installed-consumers-policy.json", 16 * 1024)).hexdigest() != result["installedConsumerPolicySha256"]:
+            raise ValueError("Provisioned installed consumer policy changed before export")
         if args.sdk_parity and "sha256:" + hashlib.sha256(regular(
                 work / "completed-sdk-parity-policy.json", 4096)).hexdigest() != result["sdkParityPolicySha256"]:
             raise ValueError("Provisioned SDK parity policy changed before export")

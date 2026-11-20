@@ -433,6 +433,82 @@ class AcquisitionTests(unittest.TestCase):
                     consumer.main()
                 approved.assert_not_called()
 
+    def test_installed_consumers_provision_uses_same_authority_and_rejects_changed_policy(self):
+        from products.inventory import canonical_json_bytes
+        document = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        raw = canonical_json_bytes(document)
+        parity = canonical_json_bytes(dict(schemaVersion=1,kind="completed-installed-consumers",
+            sdkCompletion=document["policy"]["sdkCompletion"], originals={"consumer-common":dict(
+                producer=dict(repository="codex-agent-labs/codex-agent",workflowPath=".github/workflows/ci.yml",
+                    event="pull_request",pullRequest=31,commit="7"*40,tree="8"*40,runId=20,runAttempt=1),
+                workflowSha="6"*40,jobId=23,artifactId=23,artifactSha256="sha256:"+"2"*64,planSha256="sha256:"+"3"*64)}))
+        protection = {"restrictions": {"users": [{"login": "ciurlaro", "id": 19213191}], "teams": [], "apps": []},
+            **{name: {"enabled": enabled} for name, enabled in (("enforce_admins", True),
+                ("block_creations", True), ("allow_force_pushes", False), ("allow_deletions", False))}}
+        original = Path.cwd()
+        for fault in ("off", None, "source", "descriptor", "local", "late-local", "occupied", "symlink", "branch"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve();work = root / "private";work.mkdir();export = root / "env"
+                policy_path = work / "completed-installed-consumers-policy.json";reads = []
+                value = {**APPROVAL, **({"activeVerifier": "f" * 40} if fault == "source" else {})}
+                if fault == "occupied": policy_path.write_bytes(parity)
+                if fault == "symlink": policy_path.symlink_to(root / "missing")
+                def fetch(path, revision, **options):
+                    self.assertEqual(revision, APPROVAL["authorityCommit"]);reads.append(path)
+                    if path == ".reuse/completed-reuse.json": return raw
+                    self.assertEqual(path, ".reuse/completed-installed-consumers.json");self.assertEqual(options, {"maximum":16*1024})
+                    if reads.count(path) == 2:
+                        if fault == "descriptor": return parity + b" "
+                        if fault == "local": policy_path.write_bytes(parity + b" ")
+                    return parity
+                def observe(path):
+                    if path.endswith("/protection"): return protection
+                    self.assertEqual(path, "branches/reuse-authority")
+                    if fault == "late-local": policy_path.write_bytes(parity + b" ")
+                    return {"commit": {"sha": "f" * 40 if fault == "branch" else APPROVAL["authorityCommit"]}}
+                try:
+                    with patch.dict(os.environ, {"GITHUB_ENV": str(export)}, clear=True), \
+                            patch.object(consumer.sys, "argv", ["consumer", "provision", "--repository-root", str(root),
+                                "--work", str(work), *([] if fault == "off" else ["--installed-consumers"])]), \
+                            patch.object(consumer, "approved", return_value=value) as approved, \
+                            patch.object(consumer, "snapshot", return_value={}) as snapshot, \
+                            patch.object(consumer.authority, "contents", side_effect=fetch), \
+                            patch.object(consumer.authority, "api", side_effect=observe), \
+                            patch.object(consumer, "histories", return_value=[{} for _ in document["gitHistory"]]) as history, \
+                            patch.object(consumer, "retained_sdk_binding_current", return_value=True), \
+                            patch.object(consumer, "completed_sdk_spec", return_value=({"sdkInputs": {
+                                "source": document["retainedSdkInputsSource"]}}, 62)), contextlib.redirect_stdout(io.StringIO()):
+                        if fault not in (None, "off"):
+                            with self.assertRaises((ValueError, FileExistsError)): consumer.main()
+                            self.assertFalse(export.exists())
+                            self.assertFalse((work / "provision.json").exists())
+                        else:
+                            consumer.main()
+                            approved.assert_called_once_with(None)
+                            snapshot.assert_called_once_with(root, value, work)
+                            history.assert_called_once_with(root, document["gitHistory"])
+                            self.assertEqual(reads.count(".reuse/completed-installed-consumers.json"), 0 if fault == "off" else 2)
+                            result = json.loads((work / "provision.json").read_bytes())
+                            self.assertEqual(result["productArtifactDownloads"], 0)
+                            self.assertEqual(result["nativeAuthentication"], "required by each explicit consumer")
+                            if fault == "off":
+                                self.assertNotIn("INSTALLED_CONSUMERS_POLICY", export.read_text())
+                                self.assertFalse(policy_path.exists())
+                            else:
+                                self.assertEqual(policy_path.read_bytes(), parity)
+                                self.assertIn("CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY=" + str(policy_path), export.read_text())
+                                self.assertEqual(result["installedConsumerAuthentication"], "required by each explicit consumer")
+                finally: os.chdir(original)
+
+    def test_installed_consumers_selector_is_provision_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode in ("setup", "restore", "verify"):
+                with self.subTest(mode=mode), patch.object(consumer.sys, "argv", ["consumer", mode,
+                        "--repository-root", temporary, "--work", temporary + "/work", "--installed-consumers"]), \
+                        patch.object(consumer, "approved") as approved, self.assertRaisesRegex(ValueError, "combined provisioning"):
+                    consumer.main()
+                approved.assert_not_called()
+
     def test_native_provision_resolves_once_and_checks_fresh_governance_before_export(self):
         protection = {"restrictions": {"users": [{"login": "ciurlaro", "id": 19213191}], "teams": [], "apps": []},
             **{name: {"enabled": enabled} for name, enabled in (("enforce_admins", True),

@@ -604,6 +604,7 @@ jobs:
       retained_node_js: ${{ steps.product-selection.outputs.retained_node_js }}
       retained_consumers: ${{ steps.retained-consumer-selection.outputs.enabled }}
       retained_consumer_matrix: ${{ steps.retained-consumer-selection.outputs.matrix }}
+      reused_consumer_lanes: ${{ steps.retained-consumer-selection.outputs.reused }}
       lane_android_build: ${{ steps.impact.outputs.lane_android_build }}
       lane_android_test: ${{ steps.impact.outputs.lane_android_test }}
       lane_android_metadata: ${{ steps.impact.outputs.lane_android_metadata }}
@@ -724,6 +725,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
           checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
+          installed-consumers: ${{ steps.impact.outputs.consumer_matrix != '[]' && !inputs.runtimeRecoveryOnly && !inputs.fullReuseAcceptanceOnly && 'true' || 'false' }}
       - id: product-reuse
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && steps.validation-reuse.outputs.reused != 'true'
         env:
@@ -827,6 +829,7 @@ jobs:
           VALIDATION_REUSED: ${{ steps.validation-reuse.outputs.reused }}
           NATIVE_READY: ${{ steps.product-reuse.outputs.native_resume_ready }}
           NATIVE_FULL_REUSE: ${{ steps.product-reuse.outputs.native_resume_full_reuse }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           python3 -B - <<'PYCODE'
           import json, os
@@ -835,10 +838,11 @@ jobs:
           sys.path.insert(0, str(Path('ci').resolve()))
           from impact import CONSUMER_RUNNERS
           from reuse import github_output
+          from sdk_android_evidence_capture import select_installed_consumer_reuse
           flags = [os.environ[key] for key in ('CONSUMER_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE')]
           if any(value not in ('', 'true', 'false') for value in flags):
               raise ValueError('Invalid retained installed-consumer selection')
-          matrix = []
+          matrix, reused = [], []
           if flags == ['true', 'true', 'false', 'true', 'true']:
               plan = json.loads(Path('build/ci/impact-plan.json').read_text())
               runners = {**CONSUMER_RUNNERS, **{lane: 'macos-26' for lane in (
@@ -847,8 +851,16 @@ jobs:
                   **{action: plan['lanes'][lane][action] for action in ('build', 'test', 'metadata')})
                   for lane, runner in sorted(runners.items())
                   if any(plan['lanes'][lane][action] for action in ('build', 'test', 'metadata'))]
-          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(bool(matrix)).lower(),
-              'matrix': json.dumps(matrix, separators=(',', ':'))})
+              if matrix:
+                  reused = select_installed_consumer_reuse(plan, repository_root=Path.cwd(),
+                      revision=plan['validationCommit'], trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+                      policy_path=Path(os.environ['CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY']),
+                      completed_frozen_policy=Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']))
+          enabled = bool(matrix)
+          matrix = [row for row in matrix if row['lane'] not in reused]
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(enabled).lower(),
+              'matrix': json.dumps(matrix, separators=(',', ':')),
+              'reused': json.dumps(reused, separators=(',', ':'))})
           PYCODE
       - name: Require unchanged Contract ownership before SDK continuation
         if: (inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly) && steps.product-reuse.outcome == 'success'
@@ -3278,7 +3290,8 @@ jobs:
     if: >-
       !inputs.fullReuseAcceptanceOnly && (
       always() && needs.workflow-lint.result == 'success' && needs.plan.result == 'success' &&
-      needs.plan.outputs.retained_consumers == 'true' && needs.product-resume.result == 'success'
+      needs.plan.outputs.retained_consumers == 'true' && needs.plan.outputs.retained_consumer_matrix != '[]' &&
+      needs.product-resume.result == 'success'
       )
     needs: [workflow-lint, plan, product-resume]
     uses: ./.github/workflows/sdk-consumer-validation.yml
@@ -7056,6 +7069,7 @@ jobs:
           RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
           ANDROID_SOURCE_RESULT: ${{ needs.android.result }}
           RETAINED_CONSUMERS_RESULT: ${{ needs.retained-consumers.result }}
+          RETAINED_CONSUMER_MATRIX: ${{ needs.plan.outputs.retained_consumer_matrix }}
           VALIDATION_CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
           VALIDATION_CONTRIBUTION_ARTIFACT_ID: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_id }}
           VALIDATION_CONTRIBUTION_ARTIFACT_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_sha256 }}
@@ -7112,7 +7126,13 @@ jobs:
           if [ "$RETAINED_ANDROID" = true ]; then
             test "$ANDROID_SOURCE_RESULT" = success || exit 1
           fi
-          if [ "$RETAINED_CONSUMERS" = true ]; then test "$RETAINED_CONSUMERS_RESULT" = success || exit 1; fi
+          if [ "$RETAINED_CONSUMERS" = true ]; then
+            if [ "$RETAINED_CONSUMER_MATRIX" = '[]' ]; then
+              test "$RETAINED_CONSUMERS_RESULT" = skipped || exit 1
+            else
+              test "$RETAINED_CONSUMERS_RESULT" = success || exit 1
+            fi
+          fi
           if [ "$RETAINED_ANDROID" = true ] || [ "$RETAINED_NODE_JS" = true ] || [ "$RETAINED_CONSUMERS" = true ]; then
             test "$SDK_COMPLETION_RESULT" = success || exit 1
             test "$SDK_COMPLETE" = true || exit 1
@@ -7191,6 +7211,12 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
+          fetch-depth: ${{ needs.plan.outputs.retained_consumers == 'true' && '0' || '1' }}
+      - if: needs.plan.outputs.retained_consumers == 'true'
+        uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+          installed-consumers: 'true'
       - if: ${{ !inputs.fullReuseAcceptanceOnly }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -7231,6 +7257,7 @@ jobs:
           RETAINED_ANDROID: ${{ needs.plan.outputs.retained_android }}
           RETAINED_NODE_JS: ${{ needs.plan.outputs.retained_node_js }}
           RETAINED_CONSUMERS: ${{ needs.plan.outputs.retained_consumers }}
+          REUSED_CONSUMER_LANES: ${{ needs.plan.outputs.reused_consumer_lanes }}
           PARITY_OUTPUTS: ${{ toJSON(needs.sdk-parity.outputs) }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -7255,6 +7282,10 @@ jobs:
               contribution_sha256=os.environ['CONTRIBUTION_SHA256'], environ=os.environ,
               android=os.environ['RETAINED_ANDROID'] == 'true', node_js=node, parity=parity,
               installed_consumers=os.environ['RETAINED_CONSUMERS'] == 'true',
+              **(dict(installed_consumer_policy=Path(os.environ['CODEX_AGENT_COMPLETED_INSTALLED_CONSUMERS_POLICY']),
+                  completed_frozen_policy=Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']),
+                  reused_installed_lanes=json.loads(os.environ['REUSED_CONSUMER_LANES']))
+                  if os.environ['RETAINED_CONSUMERS'] == 'true' else {}),
               auxiliary_contracts=os.environ['TOOLING_MISS'] == 'true' and not any(contract[k] for k in ('build', 'test', 'metadata')))
           PYCODE
       - name: Preserve distinct current validation contributions
