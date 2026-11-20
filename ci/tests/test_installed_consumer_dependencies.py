@@ -38,7 +38,8 @@ class InstalledConsumerDependenciesTest(unittest.TestCase):
             "variants": [{"files": [{"name": "codex-agent.jar", "url": "codex-agent-0.8.0.jar"}]}]}))
         self.rows = regular_file_inventory(self.maven)
         self.blobs = {path: (ROOT / path).read_bytes() for path in (
-            dependencies._POLICY, dependencies._TEMPLATE, dependencies._BASE_TEMPLATE, dependencies._SETTINGS,
+            dependencies._POLICY, dependencies._NATIVE_POLICY, dependencies._TEMPLATE,
+            dependencies._BASE_TEMPLATE, dependencies._SETTINGS,
             "runtime/gradle/verification-metadata.xml")}
         self.blobs.update({"gradlew": b"synthetic wrapper",
                            "gradle/wrapper/gradle-wrapper.properties": b"pinned wrapper"})
@@ -55,6 +56,17 @@ class InstalledConsumerDependenciesTest(unittest.TestCase):
         arguments.update(changes)
         return dependencies.prepare_dependencies(**arguments)
 
+    def native_fixture(self, name="konan"):
+        konan = self.root / name
+        policy = json.loads((ROOT / dependencies._NATIVE_POLICY).read_bytes())
+        for record in policy["dependencies"]:
+            tree = konan / "dependencies" / record["name"]
+            tree.mkdir(parents=True)
+            (tree / "input").write_bytes(b"pinned native dependency")
+            record["treeSha256"] = dependencies._tree_digest(tree, "Synthetic native dependency")
+        self.blobs[dependencies._NATIVE_POLICY] = dependencies.canonical_json_bytes(policy)
+        return konan, {"JAVA_HOME": str(self.root), "KONAN_DATA_DIR": str(konan)}
+
     def test_selected_non_native_dependencies_only_without_compile_or_product_copy(self):
         for target in ("common", "android", "node-js", "node-wasm"):
             with self.subTest(target=target):
@@ -65,6 +77,7 @@ class InstalledConsumerDependenciesTest(unittest.TestCase):
                 self.assertIn("--dependency-verification=strict", command)
                 self.assertNotIn("--offline", command)
                 self.assertNotIn("ciProductPhase", command)
+                self.assertNotIn("downloadKotlinNativeDistribution", command)
                 self.assertFalse(any(value.startswith("compile") for value in command))
                 self.assertIn("-PCENTRAL_STAGING=" + str(self.maven), command)
                 script = (output / "consumer/resolve.gradle").read_text()
@@ -90,11 +103,15 @@ class InstalledConsumerDependenciesTest(unittest.TestCase):
         self.assertEqual(4, self.run.call_count)
 
     def test_native_target_uses_only_pinned_host_distribution_and_target_configurations(self):
+        _, environment = self.native_fixture()
         with patch.object(dependencies.platform, "system", return_value="Darwin"), \
                 patch.object(dependencies.platform, "machine", return_value="arm64"):
-            self.prepare("ios-device")
+            self.prepare("ios-device", environment=environment)
         command = self.run.call_args.args[0]
         self.assertIn("-Pkotlin.native.distribution.type=prebuilt", command)
+        self.assertLess(command.index("downloadKotlinNativeDistribution"),
+            command.index("resolveInstalledConsumerDependencies"))
+        self.assertEqual(1, self.run.call_count)
         script = (self.root / "seed/consumer/resolve.gradle").read_text()
         self.assertIn('"kotlinNativeBundleConfiguration"', script)
         self.assertIn('"iosArm64CompileKlibraries"', script)
@@ -105,6 +122,52 @@ class InstalledConsumerDependenciesTest(unittest.TestCase):
         result = json.loads((self.root / "seed/result.json").read_bytes())
         self.assertEqual(dependencies._metadata_checksum(self.blobs[dependencies._POLICY],
             "kotlin-native-prebuilt-2.3.10-macos-aarch64.tar.gz"), result["nativeArchiveSha256"])
+
+    def test_native_missing_or_tampered_tree_rejects_success_after_preparation(self):
+        for kind in ("missing", "tampered"):
+            with self.subTest(kind=kind), \
+                    patch.object(dependencies.platform, "system", return_value="Darwin"), \
+                    patch.object(dependencies.platform, "machine", return_value="arm64"):
+                konan, environment = self.native_fixture(kind + "-konan")
+                tree = konan / "dependencies/libffi-3.3-1-macos-arm64"
+                def mutate(*args, **kwargs):
+                    if kind == "missing":
+                        tree.rename(tree.with_name("untrusted"))
+                    else:
+                        (tree / "input").write_bytes(b"mutated native dependency")
+                    return subprocess.CompletedProcess([], 0)
+                self.run.side_effect = mutate
+                output = self.root / kind
+                with self.assertRaises(ValueError):
+                    self.prepare("ios-simulator", destination=output, environment=environment)
+                self.assertFalse((output / "result.json").exists())
+                self.assertTrue((output / "gradle.log").is_file())
+
+    def test_native_policy_shape_and_late_mutation_fail_closed(self):
+        _, environment = self.native_fixture()
+        original = self.blobs[dependencies._NATIVE_POLICY]
+        with patch.object(dependencies.platform, "system", return_value="Darwin"), \
+                patch.object(dependencies.platform, "machine", return_value="arm64"):
+            for kind in ("duplicate", "wrong-host", "unknown-name"):
+                policy = json.loads(original)
+                if kind == "duplicate":
+                    policy["dependencies"].append(policy["dependencies"][0])
+                elif kind == "wrong-host":
+                    policy["host"] = "linux_x64"
+                else:
+                    policy["dependencies"][0]["name"] = "../untrusted"
+                self.blobs[dependencies._NATIVE_POLICY] = dependencies.canonical_json_bytes(policy)
+                with self.subTest(kind=kind), self.assertRaises(ValueError):
+                    self.prepare("desktop", environment=environment)
+            self.run.assert_not_called()
+            self.blobs[dependencies._NATIVE_POLICY] = original
+            def mutate(*args, **kwargs):
+                self.blobs[dependencies._NATIVE_POLICY] = original + b" "
+                return subprocess.CompletedProcess([], 0)
+            self.run.side_effect = mutate
+            with self.assertRaisesRegex(ValueError, "source changed"):
+                self.prepare("desktop", environment=environment)
+            self.assertFalse((self.root / "seed/result.json").exists())
 
     def test_native_host_or_policy_mismatch_fails_before_execution(self):
         with patch.object(dependencies.platform, "system", return_value="Linux"):
