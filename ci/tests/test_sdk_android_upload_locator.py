@@ -22,6 +22,7 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         script = textwrap.dedent(step.split("          python3 -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
         key = "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"
         metadata = dict(product="sdk", component="sdk-android", phase="metadata", target="android", buildKey=key)
+        successor = {**metadata, "buildKey": "sha256:0cb03e6e5ea0f2b262139a8ff9ec37a88a7502892923e2af6f3d5d65caf7b83d"}
         authority = dict(schemaVersion=1,
             trustedAndroidWorkflowSha="50b21ae250d6a515f29a2d067628ad4e0bf6f213",
             trustedSourceCommit="d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
@@ -29,6 +30,8 @@ class AndroidUploadLocatorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             for index, (changes, ready, expected) in enumerate((
                     ({}, [metadata], True),
+                    ({"GITHUB_RUN_ID": "44795649341"}, [successor], True),
+                    ({"GITHUB_RUN_ID": "44785322796"}, [successor], False),
                     ({}, [{**metadata, "buildKey": "sha256:" + "0" * 64}], False),
                     ({"PULL_REQUEST": "32"}, [metadata], False),
                     ({"GITHUB_REPOSITORY": "other/repo"}, [metadata], False),

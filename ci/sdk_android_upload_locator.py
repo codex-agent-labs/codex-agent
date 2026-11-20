@@ -29,18 +29,20 @@ _OID = re.compile(r"[0-9a-f]{40}")
 
 def retained_android_evidence_origin(build_key, consumer, *, phase="validation"):
     """Select reviewed device evidence, not a validation verdict or new producer."""
-    if (phase == "metadata" and
-            build_key == "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba"):
+    fixture_authority = {"schemaVersion": 1,
+        "trustedAndroidWorkflowSha": "50b21ae250d6a515f29a2d067628ad4e0bf6f213",
+        "trustedSourceCommit": "d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
+        "trustedSourceTree": "678cbafb596df74e698560c4ff6e8319883fb8a6"}
+    if phase == "metadata" and build_key in {
+            "sha256:6390796ea14dbff3a02840ccbe8683f08976985da6dbc3a4dec533d8937c50ba",
+            "sha256:0cb03e6e5ea0f2b262139a8ff9ec37a88a7502892923e2af6f3d5d65caf7b83d"}:
         from sdk_campaign_original_locator import retained_core_origin
         origin = retained_core_origin(phase, build_key, consumer, component="sdk-android", target="android")
         if origin is None:
             return None
-        # Metadata routing needs only the original caller's authority. The worker
-        # and collector still authenticate the original upload and its contents.
-        return {"authority": {"schemaVersion": 1,
-            "trustedAndroidWorkflowSha": origin["workflow_sha"],
-            "trustedSourceCommit": "d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
-            "trustedSourceTree": origin["producer"]["tree"]}}
+        # Both metadata originals consumed the same protected Firebase run.
+        # The later metadata producer has its own distinct workflow and tree.
+        return {"authority": fixture_authority}
     fixture_validation = (phase == "validation" and
         build_key == "sha256:812589fb951acd978bded008066d57eb59113c597a4ebbef66873cada8332571")
     producer = {"repository": REPOSITORY, "workflowPath": ".github/workflows/ci.yml",
@@ -62,11 +64,8 @@ def retained_android_evidence_origin(build_key, consumer, *, phase="validation")
         return None
     if fixture_validation:
         return {"producer": producer,
-            "workflowSha": "50b21ae250d6a515f29a2d067628ad4e0bf6f213",
-            "authority": {"schemaVersion": 1,
-                "trustedAndroidWorkflowSha": "50b21ae250d6a515f29a2d067628ad4e0bf6f213",
-                "trustedSourceCommit": "d8fff91c7fde6e3721fe4979fe911e2020dc7eda",
-                "trustedSourceTree": "678cbafb596df74e698560c4ff6e8319883fb8a6"},
+            "workflowSha": fixture_authority["trustedAndroidWorkflowSha"],
+            "authority": fixture_authority,
             "final": {"artifact_id": 12579597166,
                 "artifact_sha256": "sha256:d3c5d81e248085b1801a931853d76904f0ec4306b7cda1cbac8566be83ab9aab"},
             "protected": {"artifact_id": 12579348524,
