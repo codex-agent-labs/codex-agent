@@ -2,19 +2,21 @@ import java.io.File
 import java.nio.file.Files
 import javax.inject.Inject
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.intOrNull
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.LocalState
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
@@ -28,6 +30,7 @@ import org.gradle.work.DisableCachingByDefault
 internal data class SimulatorSelection(val runtimeIdentifier: String, val udid: String, val state: String)
 internal data class SimulatorStatus(val available: Boolean, val state: String)
 internal data class SwiftTestSummary(val total: Int, val failed: Int)
+internal data class SwiftTestCaseResult(val identifier: String, val status: String)
 
 internal fun selectSimulator(
     runtimesJson: String,
@@ -74,7 +77,7 @@ internal fun parseSwiftTestSummary(json: String): SwiftTestSummary {
     val summary = releaseJson.parseToJsonElement(json) as? JsonObject ?: error("xcresult summary is invalid")
     return SwiftTestSummary(
         summary.releaseInt("totalTestCount"),
-        summary["failedTests"]?.jsonPrimitive?.intOrNull ?: 0,
+        if ("failedTests" in summary) summary.releaseInt("failedTests") else 0,
     )
 }
 
@@ -84,6 +87,75 @@ internal fun verifySwiftTestSummary(summary: SwiftTestSummary, expectedTestCount
     }
     check(summary.total > 0) { "Swift package test targets were empty" }
     check(summary.failed == 0) { "Swift package tests failed: ${summary.failed}" }
+}
+
+internal fun parseSwiftTestCaseResults(json: String): List<SwiftTestCaseResult> {
+    val root = releaseJson.parseToJsonElement(json) as? JsonObject ?: error("xcresult tests are invalid")
+    check(root.keys == setOf("devices", "testNodes", "testPlanConfigurations")) {
+        "xcresult tests schema is invalid"
+    }
+    val results = mutableListOf<SwiftTestCaseResult>()
+    fun collect(node: JsonObject) {
+        if (node.releaseString("nodeType") == "Test Case") {
+            val identifier = node.releaseString("nodeIdentifier")
+            val name = node.releaseString("name")
+            check(identifier.substringAfter('/') == name) { "xcresult test identity is inconsistent: $identifier" }
+            results += SwiftTestCaseResult(identifier, node.releaseString("result"))
+        }
+        node["children"]?.let { children ->
+            check(children is JsonArray) { "xcresult test node children are invalid" }
+            children.forEach { child ->
+                collect(child as? JsonObject ?: error("xcresult test node is invalid"))
+            }
+        }
+    }
+    root.releaseArray("testNodes").forEach { node ->
+        collect(node as? JsonObject ?: error("xcresult test node is invalid"))
+    }
+    check(results.isNotEmpty()) { "xcresult contains no test cases" }
+    check(results.map(SwiftTestCaseResult::identifier).distinct().size == results.size) {
+        "xcresult contains duplicate test identities"
+    }
+    return results.sortedBy(SwiftTestCaseResult::identifier)
+}
+
+internal fun verifySwiftTestCaseResults(
+    summary: SwiftTestSummary,
+    results: List<SwiftTestCaseResult>,
+    expectedIdentifiers: List<String>,
+) {
+    check(expectedIdentifiers.isNotEmpty() && expectedIdentifiers.none(String::isBlank) &&
+        expectedIdentifiers.distinct().size == expectedIdentifiers.size) { "Expected Swift test identities are invalid" }
+    verifySwiftTestSummary(summary, expectedIdentifiers.size)
+    check(results.map(SwiftTestCaseResult::identifier) == expectedIdentifiers.sorted()) {
+        "Swift package test identities changed: ${results.map(SwiftTestCaseResult::identifier)}"
+    }
+    check(results.size == summary.total) { "xcresult summary and test inventory disagree" }
+    check(results.all { it.status == "Passed" }) {
+        "Swift package test statuses changed: ${results.filter { it.status != "Passed" }}"
+    }
+}
+
+internal fun swiftTestEvidence(
+    summary: SwiftTestSummary,
+    results: List<SwiftTestCaseResult>,
+    xcresultSha256: String,
+): JsonObject {
+    check(xcresultSha256.matches(Regex("[0-9a-f]{64}"))) { "xcresult SHA-256 is invalid" }
+    return buildJsonObject {
+        put("schemaVersion", JsonPrimitive(1))
+        put("protocol", JsonPrimitive("codex-agent-apple-xctest-v1"))
+        put("result", JsonPrimitive("passed"))
+        put("totalTestCount", JsonPrimitive(summary.total))
+        put("failedTests", JsonPrimitive(summary.failed))
+        put("xcresultSha256", JsonPrimitive(xcresultSha256))
+        put("tests", buildJsonArray {
+            results.forEach { test -> add(buildJsonObject {
+                put("identifier", JsonPrimitive(test.identifier))
+                put("status", JsonPrimitive(test.status))
+            }) }
+        })
+    }
 }
 
 internal fun swiftAuthenticationXcodebuildCommand(
@@ -178,14 +250,44 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
     abstract val compiledProductsDirectory: DirectoryProperty
     @get:Input abstract val runtimeName: Property<String>
     @get:Input abstract val deviceTypeIdentifier: Property<String>
-    @get:Input abstract val expectedTestCount: Property<Int>
+    @get:Input abstract val expectedTestIdentifiers: ListProperty<String>
     @get:LocalState abstract val derivedDataDirectory: DirectoryProperty
     @get:OutputFile abstract val simulatorDevicesFile: RegularFileProperty
     @get:OutputDirectory abstract val resultBundleDirectory: DirectoryProperty
     @get:OutputFile abstract val summaryFile: RegularFileProperty
+    @get:OutputDirectory abstract val rawEvidenceDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val simulatorRawEvidenceDirectory: DirectoryProperty
+    @get:Internal abstract val ownedEvidenceDirectory: DirectoryProperty
+
+    init {
+        ownedEvidenceDirectory.convention(project.layout.buildDirectory.dir("swift-authentication-evidence-task"))
+        rawEvidenceDirectory.convention(ownedEvidenceDirectory.dir("raw"))
+        simulatorRawEvidenceDirectory.convention(ownedEvidenceDirectory.dir("simulator-raw"))
+    }
 
     @TaskAction fun verify() {
         val resultBundle = resultBundleDirectory.get().asFile
+        val raw = rawEvidenceDirectory.get().asFile
+        val simulatorRaw = simulatorRawEvidenceDirectory.get().asFile
+        val owned = ownedEvidenceDirectory.get().asFile
+        val originalInputs = listOf(packageDirectory.get().asFile, derivedDataDirectory.get().asFile,
+            resultBundle, summaryFile.get().asFile, simulatorDevicesFile.get().asFile) +
+            listOfNotNull(compiledProductsDirectory.orNull?.asFile)
+        (originalInputs + listOf(raw, simulatorRaw, owned)).forEach {
+            requireApplePackagePathWithoutSymlinks(it, "XCTest raw evidence")
+        }
+        check(raw.canonicalFile == owned.canonicalFile.resolve("raw") &&
+            simulatorRaw.canonicalFile == owned.canonicalFile.resolve("simulator-raw") && originalInputs.none {
+            val input = it.canonicalFile.toPath()
+            listOf(raw, simulatorRaw).any { directory ->
+                input.startsWith(directory.canonicalFile.toPath()) || directory.canonicalFile.toPath().startsWith(input)
+            }
+        }) { "XCTest raw evidence overlaps an input or is not task-owned" }
+        deleteReleaseTree(raw)
+        Files.createDirectories(raw.toPath())
+        deleteReleaseTree(simulatorRaw)
+        Files.createDirectories(simulatorRaw.toPath())
+        Files.deleteIfExists(summaryFile.get().asFile.toPath())
         val importedProducts = compiledProductsDirectory.orNull?.asFile
         if (importedProducts != null) {
             check(importedProducts.isDirectory) { "Imported Swift compilation products are missing" }
@@ -197,20 +299,25 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
         repeat(2) { attempt ->
             val runtimes = processes.captureReleaseProcess(
                 listOf("/usr/bin/xcrun", "simctl", "list", "-j", "runtimes"),
+                captureDirectory = simulatorRaw.resolve("attempt-$attempt/runtimes"),
             )
             val devices = processes.captureReleaseProcess(
                 listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available"),
+                captureDirectory = simulatorRaw.resolve("attempt-$attempt/devices"),
             )
             val simulator = selectSimulator(runtimes, devices, runtimeName.get(), deviceTypeIdentifier.get())
             try {
                 if (simulator.state != "Booted") {
-                    processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "simctl", "boot", simulator.udid))
+                    processes.captureReleaseProcess(listOf("/usr/bin/xcrun", "simctl", "boot", simulator.udid),
+                        captureDirectory = simulatorRaw.resolve("attempt-$attempt/boot"))
                 }
                 processes.captureReleaseProcess(
                     listOf("/usr/bin/xcrun", "simctl", "bootstatus", simulator.udid, "-b"),
+                    captureDirectory = simulatorRaw.resolve("attempt-$attempt/bootstatus"),
                 )
                 val readyDevices = processes.captureReleaseProcess(
                     listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available"),
+                    captureDirectory = simulatorRaw.resolve("attempt-$attempt/ready-devices"),
                 )
                 check(simulatorStatus(readyDevices, simulator.runtimeIdentifier, simulator.udid) ==
                     SimulatorStatus(true, "Booted")) { "Selected simulator is not available and booted" }
@@ -227,26 +334,45 @@ abstract class VerifySwiftAuthenticationTestsTask @Inject constructor(
                         importedProducts != null,
                     ),
                     packageDirectory.get().asFile,
+                    captureDirectory = raw.resolve("attempt-$attempt/xcodebuild"),
                 )
                 if (testOutput.isNotBlank()) logger.lifecycle(testOutput.trimEnd())
                 val summaryJson = processes.captureReleaseProcess(
                     listOf(
                         "/usr/bin/xcrun", "xcresulttool", "get", "test-results", "summary",
-                        "--path", resultBundle.absolutePath, "--format", "json",
+                        "--path", resultBundle.absolutePath, "--compact",
                     ),
+                    captureDirectory = raw.resolve("attempt-$attempt/summary"),
                 )
-                summaryFile.get().asFile.apply {
-                    Files.createDirectories(toPath().parent)
-                    writeText(summaryJson)
-                }
                 val summary = parseSwiftTestSummary(summaryJson)
-                verifySwiftTestSummary(summary, expectedTestCount.get())
+                val testsJson = processes.captureReleaseProcess(
+                    listOf(
+                        "/usr/bin/xcrun", "xcresulttool", "get", "test-results", "tests",
+                        "--path", resultBundle.absolutePath, "--compact",
+                    ),
+                    captureDirectory = raw.resolve("attempt-$attempt/tests"),
+                )
+                val tests = parseSwiftTestCaseResults(testsJson)
+                verifySwiftTestCaseResults(summary, tests, expectedTestIdentifiers.get())
+                summaryFile.get().asFile.atomicWriteJson(
+                    swiftTestEvidence(summary, tests, resultBundle.crossLanguageTreeDigest()),
+                )
+                raw.resolve("successful-attempt.json").atomicWriteJson(buildJsonObject {
+                    put("schemaVersion", JsonPrimitive(1))
+                    put("attempt", JsonPrimitive(attempt))
+                })
                 logger.lifecycle("Swift package tests executed: ${summary.total}")
                 return
             } catch (failure: Throwable) {
+                simulatorRaw.resolve("attempt-$attempt/failure.json").atomicWriteJson(buildJsonObject {
+                    put("schemaVersion", JsonPrimitive(1))
+                    put("exceptionClass", JsonPrimitive(failure.javaClass.name))
+                    put("message", failure.message?.let(::JsonPrimitive) ?: JsonNull)
+                })
                 val latestDevices = runCatching {
                     processes.captureReleaseProcess(
                         listOf("/usr/bin/xcrun", "simctl", "list", "-j", "devices", "available"),
+                        captureDirectory = simulatorRaw.resolve("attempt-$attempt/retry-devices"),
                     )
                 }.getOrNull()
                 if (shouldRetryDisappearedSimulator(

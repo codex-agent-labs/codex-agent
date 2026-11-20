@@ -110,7 +110,7 @@ jobs:
           test "$(jq -r .promotionRunAttempt "$promotion_receipt")" = "$promotion_run_attempt"
           manifest="$PAYLOAD/candidate-manifest.json"
           jq -e '
-            .schemaVersion == 12 and
+            .schemaVersion == 17 and
             (.evidence.releaseTooling | keys | sort) == ["bytes", "fileName", "sha256"]
           ' "$manifest" >/dev/null
           release_tool_name=$(jq -r .evidence.releaseTooling.fileName "$manifest")
@@ -143,7 +143,9 @@ jobs:
             --repository "$GITHUB_WORKSPACE" \
             --manifest "$PAYLOAD/candidate-manifest.json" \
             --payload "$PAYLOAD" \
-            --version "${RELEASE_TAG#v}" \
+            --contract-version "$(cat gradle/release/versions/contract.txt)" \
+            --runtime-version "$(cat gradle/release/versions/runtime.txt)" \
+            --sdk-version "$(cat gradle/release/versions/sdk.txt)" \
             --tag "$RELEASE_TAG" \
             --commit "$CANDIDATE_COMMIT" \
             --verification-output "$VERIFICATION" \
@@ -242,16 +244,30 @@ jobs:
           PAYLOAD: ${{ steps.paths.outputs.payload }}
           RECORD: ${{ steps.paths.outputs.record }}
           RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
+          NATIVE_WRAPPER_ASSETS: ${{ steps.candidate.outputs.nativeWrapperAssets }}
+          SBOM_ASSET: ${{ steps.candidate.outputs.sbomAsset }}
           SWIFT_ASSET: ${{ steps.candidate.outputs.swiftAsset }}
           RELEASE_IS_DRAFT: ${{ steps.release.outputs.draft }}
         run: |
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' \
+            <<< "$NATIVE_WRAPPER_ASSETS" >/dev/null
+          mapfile -t native_assets < <(jq -r '.[]' <<< "$NATIVE_WRAPPER_ASSETS")
+          native_paths=()
+          for asset in "${native_assets[@]}"; do
+            [[ "$asset" != */* && "$asset" != *\\* ]]
+            test -f "$PAYLOAD/$asset"
+            native_paths+=("$PAYLOAD/$asset")
+          done
+          test "$(printf '%s\n' "${native_assets[@]}" | sort -u | wc -l | tr -d ' ')" \
+            -eq "${#native_assets[@]}"
           if [ "$RELEASE_IS_DRAFT" = true ]; then
             gh release upload "$RELEASE_TAG" "$RECORD" "$PAYLOAD/$SWIFT_ASSET" \
-              "$PAYLOAD/$SWIFT_ASSET.sha256" "$PAYLOAD/candidate-manifest.json" \
+              "$PAYLOAD/$SWIFT_ASSET.sha256" "$PAYLOAD/$SBOM_ASSET" \
+              "$PAYLOAD/candidate-manifest.json" "${native_paths[@]}" \
               --repo "$GITHUB_REPOSITORY" --clobber
           fi
           release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-          test "$(jq '.assets | length' <<<"$release_json")" -eq 4
+          test "$(jq '.assets | length' <<<"$release_json")" -eq "$((5 + ${#native_assets[@]}))"
           while IFS='|' read -r asset_name asset_path; do
             expected_digest="sha256:$(openssl dgst -sha256 "$asset_path" | awk '{print $NF}')"
             asset_count=$(jq --arg asset_name "$asset_name" \
@@ -260,12 +276,17 @@ jobs:
             api_digest=$(jq -r --arg asset_name "$asset_name" \
               '.assets[] | select(.name == $asset_name) | .digest' <<<"$release_json")
             test "$api_digest" = "$expected_digest"
-          done <<EOF
-          $SWIFT_ASSET|$PAYLOAD/$SWIFT_ASSET
-          $SWIFT_ASSET.sha256|$PAYLOAD/$SWIFT_ASSET.sha256
-          candidate-manifest.json|$PAYLOAD/candidate-manifest.json
-          central-deployment.json|$RECORD
-          EOF
+          done < <(
+            printf '%s\n' \
+              "$SWIFT_ASSET|$PAYLOAD/$SWIFT_ASSET" \
+              "$SWIFT_ASSET.sha256|$PAYLOAD/$SWIFT_ASSET.sha256" \
+              "$SBOM_ASSET|$PAYLOAD/$SBOM_ASSET" \
+              "candidate-manifest.json|$PAYLOAD/candidate-manifest.json" \
+              "central-deployment.json|$RECORD"
+            for asset in "${native_assets[@]}"; do
+              printf '%s|%s\n' "$asset" "$PAYLOAD/$asset"
+            done
+          )
       - name: Publish and verify the exact GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -288,6 +309,7 @@ jobs:
             ${{ steps.paths.outputs.record }}
             ${{ steps.paths.outputs.verification }}
             ${{ steps.paths.outputs.payload }}/candidate-manifest.json
+            ${{ steps.paths.outputs.payload }}/${{ steps.candidate.outputs.sbomAsset }}
           retention-days: 90
 
   swift-resolution:

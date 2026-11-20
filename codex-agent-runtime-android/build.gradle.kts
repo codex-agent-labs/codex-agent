@@ -13,6 +13,11 @@ plugins {
 }
 
 val codexAgentRepositoryUrl = rootProject.extra["codexAgent.repositoryUrl"].toString()
+val contractDependency: Any = if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+    "${project.group}:codex-agent-core:${rootProject.extra["codexAgent.authenticatedContractVersion"]}"
+} else {
+    project(":codex-agent-core")
+}
 
 val bundledSqliteTest = dependencies.create(libs.androidx.sqlite.bundled.get()) as ExternalModuleDependency
 bundledSqliteTest.attributes {
@@ -37,6 +42,7 @@ extensions.configure<LibraryExtension> {
             useLegacyPackaging = true
         }
     }
+    sourceSets.getByName("main").assets.srcDir(rootProject.layout.projectDirectory.dir("legal/openai-codex"))
 }
 
 kotlin {
@@ -44,7 +50,7 @@ kotlin {
 }
 
 dependencies {
-    api(project(":codex-agent-client"))
+    api(contractDependency)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.sqlite.framework)
@@ -102,5 +108,12 @@ mavenPublishing {
 }
 
 dependencyLocking {
+    lockFile.set(layout.projectDirectory.file(
+        if (rootProject.extra.has("codexAgent.authenticatedContractVersion")) {
+            "gradle-authenticated-contract.lockfile"
+        } else {
+            "gradle.lockfile"
+        },
+    ))
     lockAllConfigurations()
 }

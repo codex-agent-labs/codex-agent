@@ -1,0 +1,357 @@
+name: Prepare Android Core metadata caller inputs
+description: Rebuild fresh Core policy or replay independently selected signed reused originals; this is not release admission.
+inputs:
+  plan-id:
+    required: true
+    description: Original impact-plan upload ID.
+  core13-artifact-id:
+    required: true
+    description: Current campaign's independently selected predecessor-state upload ID; never a historical upload.
+  core13-artifact-sha256:
+    required: true
+    description: Current campaign's exact predecessor-state upload digest.
+  before-state-wave:
+    required: true
+    description: Current predecessor locator's exact Runtime state wave, zero through five.
+  before-sdk-state-wave:
+    default: ''
+    description: Current predecessor locator's exact SDK state wave, blank or one through thirteen.
+  metadata-artifact-id:
+    default: ''
+    description: Successful Core-14 worker's official upload ID, not a value read from that upload.
+  metadata-artifact-sha256:
+    default: ''
+    description: Successful Core-14 worker's official upload digest.
+  metadata-build-key:
+    required: true
+    description: Independently elected Core-14 metadata build key.
+  metadata-receipt-sha256:
+    required: true
+    description: Successful Core-14 worker's receipt digest.
+  metadata-original-context:
+    default: ''
+    description: Original Core worker invocation context from successful job outputs.
+  sdk-inputs-id:
+    default: ''
+    description: Original SDK inputs upload ID.
+  sdk-inputs-sha256:
+    default: ''
+    description: Original SDK inputs upload digest.
+  trusted-workflow-sha:
+    required: true
+    description: Independently reviewed workflow revision.
+  sdk-validation-tooling:
+    required: true
+    description: Independently captured release-tooling policy path.
+  keyring:
+    required: true
+    description: Caller-supplied release keyring path.
+  keys-directory:
+    required: true
+    description: Caller-supplied release public-key directory.
+  native-compiler-archive-ios-arm64:
+    default: ''
+    description: Caller-owned Git-pinned macOS Arm64 archive.
+  native-compiler-archive-ios-simulator-arm64:
+    default: ''
+    description: Caller-owned Git-pinned macOS Arm64 archive.
+  native-compiler-archive-linux-arm64:
+    default: ''
+    description: Caller-owned Git-pinned Linux Arm64 archive.
+  native-compiler-archive-linux-x64:
+    default: ''
+    description: Caller-owned Git-pinned Linux x64 archive.
+  native-compiler-archive-macos-arm64:
+    default: ''
+    description: Caller-owned Git-pinned macOS Arm64 archive.
+  native-compiler-archive-macos-x64:
+    default: ''
+    description: Caller-owned Git-pinned macOS x64 archive.
+  native-compiler-archive-windows-x64:
+    default: ''
+    description: Caller-owned Git-pinned Windows x64 archive.
+  reused-catalog:
+    default: ''
+    description: Caller-owned signed catalog locator outside the checkout and retained carrier.
+  reused-catalog-root:
+    default: ''
+    description: Retained catalog carrier root; never a trust source.
+  reused-catalog-source:
+    default: ''
+    description: Same-PR, stable, or promoted-main signed catalog source.
+  reused-receipt-sha256:
+    default: ''
+    description: Caller-owned canonical map pinning the metadata and all eleven original validation receipts.
+  reused-public-key:
+    default: ''
+    description: Independent same-PR catalog verification key.
+  reused-keyring:
+    default: ''
+    description: Independent release catalog verification keyring.
+  reused-keys-directory:
+    default: ''
+    description: Independent release catalog public-key directory.
+  reused-replay-policy:
+    default: ''
+    description: Caller-owned eleven-target replay policy outside the checkout and carrier.
+  reused-original-context:
+    default: ''
+    description: Independently supplied original Core invocation context, not recovered from the carrier.
+  reused-context-manifest:
+    default: ''
+    description: Protected release-signed original Core invocation context outside the checkout and carrier.
+  reused-context-signature:
+    default: ''
+    description: Detached signature over the exact protected context manifest.
+  reused-context-keyring:
+    default: ''
+    description: Caller-owned release keyring for the protected context signature.
+  reused-context-keys-directory:
+    default: ''
+    description: Caller-owned release public keys for the protected context signature.
+  reused-metadata-receipt:
+    default: ''
+    description: Exact retained metadata receipt selected by the signed catalog and receipt map.
+  reused-after-state-root:
+    default: ''
+    description: Separately captured current state after the reused Core-14 election.
+  android-runtime-archive:
+    default: ''
+    description: Caller-owned Android archive checked against the candidate Git pin before reuse election.
+  sdk-apple-validation-policy:
+    default: ''
+    description: Optional independently captured Apple validation policy.
+outputs:
+  metadata-receipt:
+    description: Absolute selected receipt path; reusable bytes remain candidates until original-upload replay.
+    value: ${{ steps.prepare.outputs.metadata_receipt || steps.reused.outputs.metadata_receipt }}
+  replay-policy:
+    description: Absolute caller-owned eleven-target policy path.
+    value: ${{ steps.prepare.outputs.replay_policy || steps.reused.outputs.replay_policy }}
+  original-context:
+    description: Absolute caller-owned canonical original-context path.
+    value: ${{ steps.prepare.outputs.original_context || steps.reused.outputs.original_context }}
+runs:
+  using: composite
+  steps:
+    - id: route
+      name: Reject mixed or incomplete Core caller authority before capture
+      shell: bash
+      env:
+        FRESH_ARTIFACT_ID: ${{ inputs.metadata-artifact-id }}
+        FRESH_ARTIFACT_SHA256: ${{ inputs.metadata-artifact-sha256 }}
+        FRESH_CONTEXT: ${{ inputs.metadata-original-context }}
+        FRESH_SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        FRESH_SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        BEFORE_STATE_WAVE: ${{ inputs.before-state-wave }}
+        BEFORE_SDK_STATE_WAVE: ${{ inputs.before-sdk-state-wave }}
+        REUSED_CATALOG: ${{ inputs.reused-catalog }}
+        REUSED_CATALOG_ROOT: ${{ inputs.reused-catalog-root }}
+        REUSED_CATALOG_SOURCE: ${{ inputs.reused-catalog-source }}
+        REUSED_RECEIPTS: ${{ inputs.reused-receipt-sha256 }}
+        REUSED_POLICY: ${{ inputs.reused-replay-policy }}
+        REUSED_CONTEXT: ${{ inputs.reused-original-context }}
+        REUSED_CONTEXT_MANIFEST: ${{ inputs.reused-context-manifest }}
+        REUSED_CONTEXT_SIGNATURE: ${{ inputs.reused-context-signature }}
+        REUSED_CONTEXT_KEYRING: ${{ inputs.reused-context-keyring }}
+        REUSED_CONTEXT_KEYS_DIRECTORY: ${{ inputs.reused-context-keys-directory }}
+        REUSED_METADATA_RECEIPT: ${{ inputs.reused-metadata-receipt }}
+        REUSED_AFTER_STATE: ${{ inputs.reused-after-state-root }}
+        ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        REUSED_PUBLIC_KEY: ${{ inputs.reused-public-key }}
+        REUSED_KEYRING: ${{ inputs.reused-keyring }}
+        REUSED_KEYS_DIRECTORY: ${{ inputs.reused-keys-directory }}
+        IOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-arm64 }}
+        IOS_SIMULATOR_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-simulator-arm64 }}
+        LINUX_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-arm64 }}
+        LINUX_X64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-x64 }}
+        MACOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-arm64 }}
+        MACOS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-x64 }}
+        WINDOWS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-windows-x64 }}
+      run: |
+        set -euo pipefail
+        case "$BEFORE_STATE_WAVE:$BEFORE_SDK_STATE_WAVE" in
+          0:|1:|2:|3:|4:|5:|0:1|0:2|0:3|0:4|0:5|0:6|0:7|0:8|0:9|0:10|0:11|0:12|0:13) ;;
+          *) echo 'Core caller predecessor requires the exact current wave tuple' >&2; exit 1 ;;
+        esac
+        if [ -n "$REUSED_CATALOG" ]; then
+          for name in REUSED_CATALOG_ROOT REUSED_CATALOG_SOURCE REUSED_RECEIPTS REUSED_POLICY REUSED_CONTEXT REUSED_CONTEXT_MANIFEST REUSED_CONTEXT_SIGNATURE REUSED_CONTEXT_KEYRING REUSED_CONTEXT_KEYS_DIRECTORY REUSED_METADATA_RECEIPT REUSED_AFTER_STATE ANDROID_ARCHIVE; do
+            test -n "${!name}" || { echo "Missing independent reused Core input: $name" >&2; exit 1; }
+          done
+          for name in FRESH_ARTIFACT_ID FRESH_ARTIFACT_SHA256 FRESH_CONTEXT FRESH_SDK_INPUTS_ID FRESH_SDK_INPUTS_SHA256; do
+            test -z "${!name}" || { echo "Fresh Core input is forbidden on reused route: $name" >&2; exit 1; }
+          done
+          for name in IOS_ARM64_ARCHIVE IOS_SIMULATOR_ARM64_ARCHIVE LINUX_ARM64_ARCHIVE LINUX_X64_ARCHIVE MACOS_ARM64_ARCHIVE MACOS_X64_ARCHIVE WINDOWS_X64_ARCHIVE; do
+            test -z "${!name}" || { echo "Fresh Core native archive is forbidden on reused route: $name" >&2; exit 1; }
+          done
+          case "$REUSED_CATALOG_SOURCE" in
+            same-pr) test -n "$REUSED_PUBLIC_KEY" && test -z "$REUSED_KEYRING" && test -z "$REUSED_KEYS_DIRECTORY" ;;
+            stable|promoted-main) test -z "$REUSED_PUBLIC_KEY" && test -n "$REUSED_KEYRING" && test -n "$REUSED_KEYS_DIRECTORY" ;;
+            *) false ;;
+          esac || { echo 'Reused Core catalog lacks independent source-specific trust' >&2; exit 1; }
+        else
+          for name in REUSED_CATALOG_ROOT REUSED_CATALOG_SOURCE REUSED_RECEIPTS REUSED_POLICY REUSED_CONTEXT REUSED_CONTEXT_MANIFEST REUSED_CONTEXT_SIGNATURE REUSED_CONTEXT_KEYRING REUSED_CONTEXT_KEYS_DIRECTORY REUSED_METADATA_RECEIPT REUSED_AFTER_STATE REUSED_PUBLIC_KEY REUSED_KEYRING REUSED_KEYS_DIRECTORY ANDROID_ARCHIVE; do
+            test -z "${!name}" || { echo "Incomplete reused Core input: $name" >&2; exit 1; }
+          done
+          for name in FRESH_ARTIFACT_ID FRESH_ARTIFACT_SHA256 FRESH_CONTEXT FRESH_SDK_INPUTS_ID FRESH_SDK_INPUTS_SHA256; do
+            test -n "${!name}" || { echo "Missing fresh Core input: $name" >&2; exit 1; }
+          done
+          for name in IOS_ARM64_ARCHIVE IOS_SIMULATOR_ARM64_ARCHIVE LINUX_ARM64_ARCHIVE LINUX_X64_ARCHIVE MACOS_ARM64_ARCHIVE MACOS_X64_ARCHIVE WINDOWS_X64_ARCHIVE; do
+            test -n "${!name}" || { echo "Missing fresh Core native archive: $name" >&2; exit 1; }
+          done
+        fi
+    - id: before
+      uses: ./.github/actions/capture-runtime-state
+      with:
+        product: sdk
+        sdk-family: core-metadata
+        plan-id: ${{ inputs.plan-id }}
+        artifact-id: ${{ inputs.core13-artifact-id }}
+        artifact-sha256: ${{ inputs.core13-artifact-sha256 }}
+        state-wave: ${{ inputs.before-state-wave }}
+        sdk-state-wave: ${{ inputs.before-sdk-state-wave }}
+        trusted-workflow-sha: ${{ inputs.trusted-workflow-sha }}
+        sdk-validation-tooling: ${{ inputs.sdk-validation-tooling }}
+        sdk-apple-validation-policy: ${{ inputs.sdk-apple-validation-policy }}
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      if: inputs.reused-catalog == ''
+      with:
+        artifact-ids: ${{ inputs.metadata-artifact-id }}
+        path: build/sdk-core-metadata-worker
+        merge-multiple: true
+    - id: prepare
+      if: inputs.reused-catalog == ''
+      name: Rebuild fresh Core originals from independent caller authority
+      shell: bash
+      env:
+        PLAN: ${{ steps.before.outputs.plan-path }}
+        DISCOVERY: ${{ steps.before.outputs.discovery-root }}
+        BEFORE_STATE: ${{ steps.before.outputs.state-root }}
+        METADATA_BUILD_KEY: ${{ inputs.metadata-build-key }}
+        METADATA_RECEIPT_SHA256: ${{ inputs.metadata-receipt-sha256 }}
+        METADATA_ARTIFACT_ID: ${{ inputs.metadata-artifact-id }}
+        METADATA_ARTIFACT_SHA256: ${{ inputs.metadata-artifact-sha256 }}
+        METADATA_ORIGINAL_CONTEXT: ${{ inputs.metadata-original-context }}
+        SDK_INPUTS_ID: ${{ inputs.sdk-inputs-id }}
+        SDK_INPUTS_SHA256: ${{ inputs.sdk-inputs-sha256 }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        SDK_VALIDATION_TOOLING: ${{ inputs.sdk-validation-tooling }}
+        KEYRING: ${{ inputs.keyring }}
+        KEYS_DIRECTORY: ${{ inputs.keys-directory }}
+        IOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-arm64 }}
+        IOS_SIMULATOR_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-ios-simulator-arm64 }}
+        LINUX_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-arm64 }}
+        LINUX_X64_ARCHIVE: ${{ inputs.native-compiler-archive-linux-x64 }}
+        MACOS_ARM64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-arm64 }}
+        MACOS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-macos-x64 }}
+        WINDOWS_X64_ARCHIVE: ${{ inputs.native-compiler-archive-windows-x64 }}
+        APPLE_POLICY: ${{ inputs.sdk-apple-validation-policy }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        caller_dir=$(mktemp -d "$RUNNER_TEMP/android-core14-caller.XXXXXXXX")
+        export CALLER_DIR="$caller_dir"
+        python3 -B - <<'PY'
+        import os
+        from pathlib import Path
+
+        from ci.products.inventory import canonical_json_bytes, load_json_bytes
+        from ci.products.signing_isolation import require_no_signing_secret
+        from ci.sdk_android_core14_fresh_inputs import prepare
+
+        require_no_signing_secret(os.environ)
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+        destination = Path(os.environ['CALLER_DIR']) / 'replay-policy.json'
+        context_path = Path(os.environ['CALLER_DIR']) / 'original-context.json'
+        archives = {
+            'ios-arm64': os.environ['IOS_ARM64_ARCHIVE'],
+            'ios-simulator-arm64': os.environ['IOS_SIMULATOR_ARM64_ARCHIVE'],
+            'linux-arm64': os.environ['LINUX_ARM64_ARCHIVE'],
+            'linux-x64': os.environ['LINUX_X64_ARCHIVE'],
+            'macos-arm64': os.environ['MACOS_ARM64_ARCHIVE'],
+            'macos-x64': os.environ['MACOS_X64_ARCHIVE'],
+            'windows-x64': os.environ['WINDOWS_X64_ARCHIVE'],
+        }
+        result = prepare(
+            Path(os.environ['PLAN']), Path(os.environ['DISCOVERY']),
+            Path(os.environ['BEFORE_STATE']), root / 'build/sdk-core-metadata-worker',
+            root / 'build/sdk-android-core14-requests', destination,
+            expected_metadata_build_key=os.environ['METADATA_BUILD_KEY'],
+            expected_metadata_receipt_sha256=os.environ['METADATA_RECEIPT_SHA256'],
+            metadata_artifact_id=int(os.environ['METADATA_ARTIFACT_ID']),
+            metadata_artifact_sha256=os.environ['METADATA_ARTIFACT_SHA256'],
+            metadata_original_context=load_json_bytes(os.environ['METADATA_ORIGINAL_CONTEXT'].encode('utf-8')),
+            sdk_inputs_artifact_id=int(os.environ['SDK_INPUTS_ID']),
+            sdk_inputs_artifact_sha256=os.environ['SDK_INPUTS_SHA256'],
+            trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+            sdk_validation_tooling=Path(os.environ['SDK_VALIDATION_TOOLING']),
+            native_compiler_archives=archives,
+            keyring=Path(os.environ['KEYRING']),
+            keys_directory=Path(os.environ['KEYS_DIRECTORY']),
+            repository_root=root, environ=os.environ, token=os.environ['GITHUB_TOKEN'],
+            **({'sdk_apple_validation_policy': Path(os.environ['APPLE_POLICY'])}
+               if os.environ['APPLE_POLICY'] else {}),
+        )
+        context_path.write_bytes(canonical_json_bytes(result['originalContext']))
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write(f"metadata_receipt={result['metadataReceipt']}\n")
+            output.write(f'replay_policy={destination}\n')
+            output.write(f'original_context={context_path}\n')
+        PY
+    - id: reused
+      if: inputs.reused-catalog != ''
+      name: Replay signed Core originals before Android election
+      shell: bash
+      env:
+        PLAN: ${{ steps.before.outputs.plan-path }}
+        DISCOVERY: ${{ steps.before.outputs.discovery-root }}
+        BEFORE_STATE: ${{ steps.before.outputs.state-root }}
+        AFTER_STATE: ${{ inputs.reused-after-state-root }}
+        METADATA_RECEIPT: ${{ inputs.reused-metadata-receipt }}
+        METADATA_BUILD_KEY: ${{ inputs.metadata-build-key }}
+        METADATA_RECEIPT_SHA256: ${{ inputs.metadata-receipt-sha256 }}
+        REPLAY_POLICY: ${{ inputs.reused-replay-policy }}
+        ORIGINAL_CONTEXT: ${{ inputs.reused-original-context }}
+        CONTEXT_MANIFEST: ${{ inputs.reused-context-manifest }}
+        CONTEXT_SIGNATURE: ${{ inputs.reused-context-signature }}
+        CONTEXT_KEYRING: ${{ inputs.reused-context-keyring }}
+        CONTEXT_KEYS_DIRECTORY: ${{ inputs.reused-context-keys-directory }}
+        CATALOG: ${{ inputs.reused-catalog }}
+        CATALOG_ROOT: ${{ inputs.reused-catalog-root }}
+        CATALOG_SOURCE: ${{ inputs.reused-catalog-source }}
+        RECEIPT_SHA256: ${{ inputs.reused-receipt-sha256 }}
+        PUBLIC_KEY: ${{ inputs.reused-public-key }}
+        REUSED_KEYRING: ${{ inputs.reused-keyring }}
+        REUSED_KEYS_DIRECTORY: ${{ inputs.reused-keys-directory }}
+        ANDROID_ARCHIVE: ${{ inputs.android-runtime-archive }}
+        TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted-workflow-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        trust=()
+        if [ -n "$PUBLIC_KEY" ]; then
+          trust=(--reused-public-key "$PUBLIC_KEY")
+        else
+          trust=(--reused-keyring "$REUSED_KEYRING" --reused-keys-directory "$REUSED_KEYS_DIRECTORY")
+        fi
+        python3 -B -m ci.sdk_android_core14_caller elect \
+          --plan "$PLAN" --discovery-root "$DISCOVERY" \
+          --before-state-root "$BEFORE_STATE" --after-state-root "$AFTER_STATE" \
+          --metadata-receipt "$METADATA_RECEIPT" \
+          --expected-metadata-build-key "$METADATA_BUILD_KEY" \
+          --expected-metadata-receipt-sha256 "$METADATA_RECEIPT_SHA256" \
+          --replay-policy "$REPLAY_POLICY" --original-context "$ORIGINAL_CONTEXT" \
+          --reused-context-manifest "$CONTEXT_MANIFEST" \
+          --reused-context-signature "$CONTEXT_SIGNATURE" \
+          --reused-context-keyring "$CONTEXT_KEYRING" \
+          --reused-context-keys-directory "$CONTEXT_KEYS_DIRECTORY" \
+          --repository-root "$GITHUB_WORKSPACE" --android-runtime-archive "$ANDROID_ARCHIVE" \
+          --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+          --reused-catalog "$CATALOG" --reused-catalog-root "$CATALOG_ROOT" \
+          --reused-catalog-source "$CATALOG_SOURCE" --reused-receipt-sha256 "$RECEIPT_SHA256" \
+          "${trust[@]}" --github-output "$GITHUB_OUTPUT"
+        {
+          echo "metadata_receipt=$METADATA_RECEIPT"
+          echo "replay_policy=$REPLAY_POLICY"
+          echo "original_context=$ORIGINAL_CONTEXT"
+        } >> "$GITHUB_OUTPUT"

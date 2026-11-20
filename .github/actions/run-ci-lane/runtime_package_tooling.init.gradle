@@ -1,0 +1,119 @@
+// Separate bootstrap assembly. The four Runtime producer/helper sources stay unchanged.
+// Invoke only against runtime/build-logic; no SDK classes/resources enter this JAR.
+allprojects {
+    afterEvaluate { owner ->
+    if (owner.name != 'codex-agent-runtime-build-logic') {
+        throw new GradleException('Runtime package tooling requires its standalone build-logic project')
+    }
+    def repository = owner.layout.projectDirectory.dir('../..').asFile.canonicalFile
+    def sourceNames = ['DesktopRuntimePackageTask', 'DesktopRuntimeZipModes', 'RuntimeReleaseIo', 'RuntimeDownload']
+    def sourceFiles = sourceNames.collect { new File(owner.projectDir, "src/main/kotlin/${it}.kt") }
+    def launcher = new File(repository, '.github/actions/run-ci-lane/runtime-package-bootstrap/RuntimePackageMain.java')
+    def profile = new File(repository, '.github/actions/run-ci-lane/runtime-package-tooling-libraries.json')
+    def dependencyProfile = new groovy.json.JsonSlurper().parse(profile)
+    if (dependencyProfile.schemaVersion != 1 || dependencyProfile.gradleVersion != gradle.gradleVersion) {
+        throw new GradleException('Runtime package tooling Gradle dependency profile differs')
+    }
+    def libraryFiles = dependencyProfile.libraries.collect { row ->
+        def path = row.relativePath
+        if (!(path instanceof String) || !(path ==~ /lib\/(?:plugins\/)?[A-Za-z0-9_.-]+\.jar/) ||
+                dependencyProfile.excludedCompilerJars.contains(path) || dependencyProfile.excludedLibraries.contains(path)) {
+            throw new GradleException('Runtime package tooling dependency path is invalid')
+        }
+        new File(gradle.gradleHomeDir, path)
+    }
+    if (libraryFiles.size() != libraryFiles.unique(false).size() || libraryFiles.empty) {
+        throw new GradleException('Runtime package tooling dependency profile is empty or duplicated')
+    }
+    def bundledIds = [
+        'org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.9.0': 'dependencies/kotlinx-serialization-core-jvm-1.9.0.jar',
+        'org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.9.0': 'dependencies/kotlinx-serialization-json-jvm-1.9.0.jar',
+    ]
+    if (dependencyProfile.bundledLibraries.size() != 2 ||
+            dependencyProfile.bundledLibraries.collectEntries { [(it.moduleId): it.resourcePath] } != bundledIds) {
+        throw new GradleException('Runtime package tooling bundled dependencies differ')
+    }
+    def originalDependencies = owner.configurations.named('compileClasspath').get().resolvedConfiguration.resolvedArtifacts
+    def bundledFiles = dependencyProfile.bundledLibraries.collect { row ->
+        def matching = originalDependencies.findAll { it.moduleVersion.id.toString() == row.moduleId }
+        if (matching.size() != 1) throw new GradleException('Original Runtime dependency is missing or ambiguous')
+        matching[0].file
+    }
+    def checkLibraries = {
+        (dependencyProfile.libraries + dependencyProfile.bundledLibraries).eachWithIndex { row, index ->
+            def file = (libraryFiles + bundledFiles)[index]
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            if (!java.nio.file.Files.isRegularFile(file.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+                    file.length() != row.bytes) {
+                throw new GradleException('Runtime package tooling dependency length/type differs')
+            }
+            file.withInputStream { input ->
+                byte[] buffer = new byte[65536]
+                int count
+                while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count)
+            }
+            if (digest.digest().encodeHex().toString() != row.sha256) {
+                throw new GradleException('Runtime package tooling dependency SHA differs')
+            }
+        }
+    }
+    def original = owner.tasks.named('compileKotlin').get()
+    def isolated = owner.sourceSets.create('runtimePackageTooling')
+    isolated.java.setSrcDirs([])
+    isolated.resources.setSrcDirs([])
+    def kotlinOutput = owner.layout.buildDirectory.dir('runtime-package-tooling/kotlin')
+    def javaOutput = owner.layout.buildDirectory.dir('runtime-package-tooling/java')
+    def compile = owner.tasks.named('compileRuntimePackageToolingKotlin') {
+        setSource(sourceFiles)
+        libraries.setFrom(owner.configurations.named('compileClasspath'))
+        destinationDirectory.set(kotlinOutput)
+        compilerOptions.jvmTarget.set(original.compilerOptions.jvmTarget)
+        compilerOptions.languageVersion.set(original.compilerOptions.languageVersion)
+        compilerOptions.apiVersion.set(original.compilerOptions.apiVersion)
+        compilerOptions.freeCompilerArgs.set(original.compilerOptions.freeCompilerArgs)
+        compilerOptions.moduleName.set('runtime-package-tooling')
+        inputs.file(profile)
+        doFirst {
+            checkLibraries()
+            owner.delete(kotlinOutput)
+        }
+    }
+    def javaCompile = owner.tasks.named('compileRuntimePackageToolingJava') {
+        dependsOn(compile)
+        source(launcher)
+        classpath = owner.files(kotlinOutput, libraryFiles)
+        destinationDirectory.set(javaOutput)
+        options.release.set(17)
+        options.compilerArgs.add('-proc:none')
+        doFirst { owner.delete(javaOutput) }
+    }
+    owner.tasks.register('runtimePackageToolingJar', org.gradle.jvm.tasks.Jar) {
+        dependsOn(javaCompile)
+        // Schema1 staging consumes this slot. A separate fresh task may fill it,
+        // but must never replace an existing SDK or Runtime tooling original.
+        archiveFileName.set('codex-agent-release-tooling.jar')
+        destinationDirectory.set(new File(repository, 'gradle/build-logic/build/libs'))
+        from(kotlinOutput)
+        from(javaOutput)
+        from(profile)
+        dependencyProfile.bundledLibraries.eachWithIndex { row, index ->
+            from(bundledFiles[index]) {
+                into('dependencies')
+                rename { row.resourcePath.substring('dependencies/'.length()) }
+            }
+        }
+        manifest.attributes('Main-Class': 'RuntimePackageMain')
+        preserveFileTimestamps = false
+        reproducibleFileOrder = true
+        duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.FAIL
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
+        doFirst {
+            if (java.nio.file.Files.exists(archiveFile.get().asFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw new GradleException('Runtime package tooling staging slot must be fresh')
+            }
+        }
+        doLast { checkLibraries() }
+    }
+}
+}

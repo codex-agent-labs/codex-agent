@@ -2,6 +2,15 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.io.path.createTempDirectory
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import org.apache.commons.compress.archivers.zip.UnixStat
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 
 class ImportedAppleFrameworkTasksTest {
     @Test
@@ -24,4 +33,164 @@ class ImportedAppleFrameworkTasksTest {
             failure.message,
         )
     }
+
+    @Test
+    fun `verified XCFramework archive is extracted only through its import proof`() = fixture().use { fixture ->
+        extractVerifiedAppleXCFramework(
+            fixture.evidence, fixture.receipt, "0.2.0", fixture.work, fixture.output,
+        )
+        assertEquals(
+            setOf("Info.plist", "ios-arm64", "ios-arm64-simulator"),
+            fixture.output.list()?.toSet(),
+        )
+        assertTrue(fixture.output.resolve("ios-arm64/CodexAgent.framework/CodexAgent").isFile)
+        assertFalse(fixture.output.walkTopDown().any { java.nio.file.Files.isSymbolicLink(it.toPath()) })
+    }
+
+    @Test
+    fun `schema two import receipt preserves distinct producer and consumer roles`() = fixture().use { fixture ->
+        fixture.writeProofAndReceipt(schema = 2)
+        extractVerifiedAppleXCFramework(
+            fixture.evidence, fixture.receipt, "0.2.0", fixture.work, fixture.output,
+        )
+        listOf("producer", "original-receipt", "proof").forEach { mutation ->
+            fixture.writeProofAndReceipt(schema = 2, mutation = mutation)
+            assertFailsWith<IllegalStateException>(mutation) {
+                extractVerifiedAppleXCFramework(
+                    fixture.evidence, fixture.receipt, "0.2.0", fixture.work, fixture.output,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `unsafe incomplete or cross-paired verified XCFramework archives are rejected`() {
+        listOf("proof", "archive", "traversal", "duplicate", "symlink", "missing-slice").forEach { case ->
+            fixture().use { fixture ->
+                when (case) {
+                    "proof" -> fixture.proof.appendText("changed")
+                    "archive" -> fixture.archive.appendText("tampered")
+                    "traversal" -> fixture.writeArchive(extra = listOf("CodexAgent.xcframework/../escape"))
+                    "duplicate" -> fixture.writeArchive(extra = listOf("CodexAgent.xcframework/Info.plist/"))
+                    "symlink" -> fixture.writeArchive(symlink = true)
+                    else -> fixture.writeArchive(includeSimulator = false)
+                }
+                if (case !in setOf("proof", "archive")) fixture.writeProofAndReceipt()
+                assertFailsWith<IllegalStateException>(case) {
+                    extractVerifiedAppleXCFramework(
+                        fixture.evidence, fixture.receipt, "0.2.0", fixture.work, fixture.output,
+                    )
+                }
+                assertFalse(fixture.output.exists())
+            }
+        }
+    }
+
+    @Test
+    fun `imported parity wiring consumes extracted framework without local assembly`() {
+        val source = File("src/main/kotlin/codexagent.ios-runtime.gradle.kts").readText()
+        val stage = source.substringAfter("if (importedAppleXCFramework != null) {")
+            .substringBefore("importedContractEvidence?.let")
+        assertTrue("stageCodexAgentAppleDistribution" in stage)
+        assertTrue("setDependsOn(listOf(importedAppleXCFramework))" in stage)
+        assertTrue("xcframeworkDirectory.set(importedAppleXCFramework.flatMap" in stage)
+        assertFalse("prepareCodexAgentReleaseXCFramework" in stage)
+        val evidence = source.substringAfter("importedContractEvidence?.let")
+            .substringBefore("tasks.register(\"verifyIosRuntime\")")
+        assertTrue("appleCompilerEvidence.configure" in evidence)
+        assertTrue("val frameworkDependency = importedAppleXCFramework ?:" in evidence)
+        assertEquals(2, evidence.split("xcframeworkDirectory.set(imported.flatMap").size - 1)
+        val registration = File("src/main/kotlin/IosVerifiedDistributionRegistration.kt").readText()
+        assertTrue("if (distribution.sdkCompatibilityFile != null)" in registration)
+        assertTrue("dependsOn(\":codex-agent-sdk:generateNativeWrapperSdkCompatibility\")" in registration)
+    }
 }
+
+private class VerifiedXCFrameworkFixture : AutoCloseable {
+    private val root = createTempDirectory("verified-xcframework").toFile()
+    val evidence = root.resolve("evidence").apply { mkdirs() }
+    val archive = evidence.resolve("CodexAgent-0.2.0.xcframework.zip")
+    val proof = evidence.resolve(IOS_VERIFIED_DISTRIBUTION_PROOF)
+    val receipt = root.resolve("verification-receipt.json")
+    val work = root.resolve("work")
+    val output = root.resolve("output")
+
+    init {
+        writeArchive()
+        writeProofAndReceipt()
+    }
+
+    fun writeArchive(
+        includeSimulator: Boolean = true,
+        extra: List<String> = emptyList(),
+        symlink: Boolean = false,
+    ) {
+        val members = mutableListOf("CodexAgent.xcframework/Info.plist")
+        val slices = listOf("ios-arm64") + if (includeSimulator) listOf("ios-arm64-simulator") else emptyList()
+        slices.forEach { slice ->
+            val framework = "CodexAgent.xcframework/$slice/CodexAgent.framework"
+            members += listOf(
+                "$framework/CodexAgent",
+                "$framework/Headers/CodexAgent.h",
+                "$framework/Modules/module.modulemap",
+                "$framework/Info.plist",
+                "$framework/PrivacyInfo.xcprivacy",
+                "$framework/META-INF/codex-agent/sdk-compatibility.json",
+            )
+        }
+        val symlinkPath = "CodexAgent.xcframework/ios-arm64/CodexAgent.framework/linked"
+        ZipArchiveOutputStream(archive).use { zip ->
+            (members + extra + if (symlink) listOf(symlinkPath) else emptyList()).forEach { path ->
+                val entry = ZipArchiveEntry(path).apply {
+                    unixMode = when {
+                        path == symlinkPath -> UnixStat.LINK_FLAG or UnixStat.DEFAULT_LINK_PERM
+                        path.endsWith('/') -> UnixStat.DIR_FLAG or UnixStat.DEFAULT_DIR_PERM
+                        else -> UnixStat.FILE_FLAG or UnixStat.DEFAULT_FILE_PERM
+                    }
+                }
+                zip.putArchiveEntry(entry)
+                if (!path.endsWith('/')) zip.write("fixture:$path\n".toByteArray())
+                zip.closeArchiveEntry()
+            }
+        }
+    }
+
+    fun writeProofAndReceipt(schema: Int = 1, mutation: String? = null) {
+        proof.atomicWriteJson(buildJsonObject {
+            if (schema == 2) {
+                put("candidateCommit", JsonPrimitive("1".repeat(40)))
+                put("candidateTree", JsonPrimitive("2".repeat(40)))
+                put("nativeEvidenceReceiptSha256", JsonPrimitive("3".repeat(64)))
+            }
+            put("artifacts", buildJsonArray { add(archive.releaseRecord(archive.name)) })
+        })
+        receipt.atomicWriteJson(buildJsonObject {
+            put("schemaVersion", JsonPrimitive(schema))
+            put("protocol", JsonPrimitive("codex-agent-ios-verified-distribution-import-v$schema"))
+            put("result", JsonPrimitive("passed"))
+            if (schema == 1) {
+                put("candidateCommit", JsonPrimitive("1".repeat(40)))
+                put("candidateTree", JsonPrimitive("2".repeat(40)))
+                put("nativeEvidenceReceiptSha256", JsonPrimitive("3".repeat(64)))
+            } else {
+                put("producerCommit", JsonPrimitive(
+                    if (mutation == "producer") "4".repeat(40) else "1".repeat(40),
+                ))
+                put("producerTree", JsonPrimitive("2".repeat(40)))
+                put("consumerCommit", JsonPrimitive("4".repeat(40)))
+                put("consumerTree", JsonPrimitive("5".repeat(40)))
+                put("originalNativeEvidenceReceiptSha256", JsonPrimitive(
+                    if (mutation == "original-receipt") "6".repeat(64) else "3".repeat(64),
+                ))
+                put("currentNativeEvidenceReceiptSha256", JsonPrimitive("7".repeat(64)))
+            }
+            put("sourceProofSha256", JsonPrimitive(
+                if (mutation == "proof") "8".repeat(64) else proof.releaseDigest(),
+            ))
+        })
+    }
+
+    override fun close() = root.deleteRecursively().let { }
+}
+
+private fun fixture() = VerifiedXCFrameworkFixture()

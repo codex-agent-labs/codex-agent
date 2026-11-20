@@ -14,8 +14,8 @@ runs:
         if (-not (Test-Path $devCommand)) { throw "VsDevCmd.bat is missing" }
         $environment = & $env:ComSpec /d /s /c "`"$devCommand`" -no_logo -arch=x64 -host_arch=x64 && set"
         if ($LASTEXITCODE -ne 0) { throw "VsDevCmd failed with exit code $LASTEXITCODE" }
-        $required = @("Path", "INCLUDE", "LIB")
-        @("Path", "INCLUDE", "LIB", "LIBPATH") | ForEach-Object {
+        $required = @("Path", "INCLUDE", "LIB", "VCToolsVersion", "WindowsSDKVersion")
+        ($required + @("LIBPATH")) | ForEach-Object {
           $name = $_
           $entry = $environment | Where-Object { $_ -match "^$name=" } | Select-Object -First 1
           if ($name -in $required -and -not $entry) { throw "VsDevCmd did not define $name" }

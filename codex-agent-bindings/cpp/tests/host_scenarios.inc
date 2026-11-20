@@ -1,0 +1,7 @@
+HOST_SCENARIO("cpp.host:000", "ready-construction-agent-identity-owned-parent-projection")
+HOST_SCENARIO("cpp.host:001", "ready-agent-identity-owned-parent-projection")
+HOST_SCENARIO("cpp.host:002", "host-create-five-input-copy-owned-context-fail-closed")
+HOST_SCENARIO("cpp.host:003", "host-close-success-failure-cancellation-repeated-close-owned-quiescence")
+HOST_SCENARIO("cpp.host:004", "host-select-workspace-copy-success-failure-cancellation-owned-quiescence")
+HOST_SCENARIO("cpp.host:005", "host-start-success-failure-cancellation-owned-quiescence")
+HOST_SCENARIO("cpp.host:006", "host-state-current-subsequent-terminal-cancellation-identity-workspace-copy-owned-quiescence")

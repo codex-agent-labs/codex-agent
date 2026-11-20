@@ -9,14 +9,66 @@ import okio.buffer
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class RuntimeLogPrivacyGuardTest {
     @Test
+    fun waitsForRuntimeOwnedFinalLogSchemaWithoutReplacingIt() {
+        BundledSQLiteDriver().open(":memory:").use { database ->
+            assertFails { installRuntimeLogPrivacyGuard(database) }
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM sqlite_schema WHERE name = 'logs'"))
+
+            database.execSQL("CREATE TABLE logs (message TEXT)")
+            database.execSQL("INSERT INTO logs VALUES ('pre-migration log')")
+            assertFails { installRuntimeLogPrivacyGuard(database) }
+            assertEquals(1, database.longQuery("SELECT COUNT(*) FROM logs"))
+
+            database.execSQL("ALTER TABLE logs RENAME COLUMN message TO feedback_log_body")
+            installRuntimeLogPrivacyGuard(database)
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM logs"))
+            database.execSQL("INSERT INTO logs VALUES ('later log')")
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM logs"))
+        }
+    }
+
+    @Test
+    fun removesStaleDeleteTriggerBeforeClearingExistingLogs() {
+        BundledSQLiteDriver().open(":memory:").use { database ->
+            database.execSQL("CREATE TABLE logs (feedback_log_body TEXT)")
+            database.execSQL("INSERT INTO logs VALUES ('sensitive log')")
+            database.execSQL(
+                "CREATE TRIGGER codex_agent_drop_runtime_logs BEFORE DELETE ON logs " +
+                    "BEGIN SELECT RAISE(IGNORE); END",
+            )
+
+            installRuntimeLogPrivacyGuard(database)
+
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM logs"))
+        }
+    }
+
+    @Test
+    fun replacesStaleSameNameTriggerBeforeAcceptingNewLogs() {
+        BundledSQLiteDriver().open(":memory:").use { database ->
+            database.execSQL("CREATE TABLE logs (feedback_log_body TEXT)")
+            database.execSQL(
+                "CREATE TRIGGER codex_agent_drop_runtime_logs BEFORE INSERT ON logs " +
+                    "BEGIN SELECT 1; END",
+            )
+
+            installRuntimeLogPrivacyGuard(database)
+
+            database.execSQL("INSERT INTO logs VALUES ('sensitive log')")
+            assertEquals(0, database.longQuery("SELECT COUNT(*) FROM logs"))
+        }
+    }
+
+    @Test
     fun deletesExistingLogsRejectsLaterInsertsAndEnablesSecureDeletion() {
         BundledSQLiteDriver().open(":memory:").use { database ->
-            database.execSQL("CREATE TABLE logs (message TEXT)")
+            database.execSQL("CREATE TABLE logs (feedback_log_body TEXT)")
             database.execSQL("INSERT INTO logs VALUES ('existing sensitive log')")
 
             installRuntimeLogPrivacyGuard(database)
@@ -43,7 +95,7 @@ class RuntimeLogPrivacyGuardTest {
         try {
             BundledSQLiteDriver().open(databasePath.toString()).use { database ->
                 database.prepare("PRAGMA journal_mode=WAL").use { check(it.step()) }
-                database.execSQL("CREATE TABLE logs (message TEXT)")
+                database.execSQL("CREATE TABLE logs (feedback_log_body TEXT)")
                 database.execSQL("INSERT INTO logs VALUES ('$sentinel')")
 
                 installRuntimeLogPrivacyGuard(database)

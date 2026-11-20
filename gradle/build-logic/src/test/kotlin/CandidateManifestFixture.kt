@@ -4,11 +4,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
-internal fun schema12CandidateManifest(
-    version: String,
+internal fun schema17CandidateManifest(
+    versions: ProductVersions,
     commit: String,
     centralBundles: Map<String, File> = emptyMap(),
 ): JsonObject {
+    val version = versions.sdk
     fun record(name: String) = buildJsonObject {
         put("fileName", JsonPrimitive(name))
         put("bytes", JsonPrimitive(1))
@@ -36,6 +37,9 @@ internal fun schema12CandidateManifest(
     return buildJsonObject {
         put("schemaVersion", JsonPrimitive(PROMOTED_CANDIDATE_SCHEMA))
         put("version", JsonPrimitive(version))
+        put("contractVersion", JsonPrimitive(versions.contract))
+        put("runtimeVersion", JsonPrimitive(versions.runtime))
+        put("sdkVersion", JsonPrimitive(versions.sdk))
         put("releaseTag", JsonPrimitive("v$version"))
         put("candidateCommit", JsonPrimitive(commit))
         put("candidateTree", JsonPrimitive("d".repeat(40)))
@@ -49,6 +53,12 @@ internal fun schema12CandidateManifest(
             put("centralBundles", buildJsonArray {
                 centralBundleShardNames.forEach { add(centralRecord(it)) }
             })
+            put("nativeWrapperPackages", buildJsonArray {
+                nativeWrapperBindings.map { "codex-agent-${it.id}.package" }.sorted().forEach {
+                    add(record(it))
+                }
+            })
+            put("sbom", record(aggregateReleaseSbomFileName(version)))
         })
         put("evidence", buildJsonObject {
             mapOf(
@@ -81,6 +91,10 @@ internal fun schema12CandidateManifest(
                     nodeRuntimeEvidenceFileName(it, NODE_RUNTIME_WASM_BACKEND)
                 },
                 "androidRuntime" to candidateFirebaseAndroidEvidenceFileNames,
+                "crossLanguageM11" to crossLanguageM11EvidenceFileNames,
+                "nativeWrapperPackageToolchains" to nativeWrapperBindings.map {
+                    "codex-agent-${it.id}-package-toolchain.tsv"
+                },
             ).forEach { (name, fileNames) ->
                 put(name, buildJsonArray { fileNames.forEach { add(runtimeRecord(it)) } })
             }

@@ -1,0 +1,227 @@
+name: Contract Phase-10 Later Record
+
+on:
+  workflow_call:
+    inputs:
+      attestationJson:
+        required: true
+        type: string
+    outputs:
+      recordArtifactId:
+        value: ${{ jobs.record.outputs.artifact_id }}
+      recordArtifactSha256:
+        value: ${{ jobs.record.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  record:
+    name: contract-phase10-record
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'contract-phase10-record'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require independently approved completed-run control before checkout
+        id: authority
+        env:
+          CONTROL_JSON: ${{ inputs.attestationJson }}
+          CONTROL_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PHASE10_CONTROL_APPROVED_SHA256 }}
+          SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PINS_JSON: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_JSON }}
+          PINS_SHA256: ${{ vars.CODEX_AGENT_CONTRACT_PHASE11_PINS_SHA256 }}
+          PGP_KEY_SHA256: ${{ vars.CODEX_AGENT_PRODUCT_PGP_PUBLIC_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PINS_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PGP_KEY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test -n "$CONTROL_JSON" && test -n "$PINS_JSON"
+          printf '%s\n' "$CONTROL_JSON" > "$RUNNER_TEMP/contract-control.json"
+          printf '%s\n' "$PINS_JSON" > "$RUNNER_TEMP/contract-phase11-pins.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/contract-control.json" | cut -d ' ' -f 1)" = "$CONTROL_SHA256"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/contract-phase11-pins.json" | cut -d ' ' -f 1)" = "$PINS_SHA256"
+          python3 - "$RUNNER_TEMP/contract-control.json" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+          def unique(pairs):
+              value = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise ValueError("duplicate Contract control key")
+                  value[key] = item
+              return value
+          def no_float(_):
+              raise ValueError("Contract control cannot contain a float")
+          raw = Path(sys.argv[1]).read_bytes()
+          value = json.loads(raw, object_pairs_hook=unique, parse_float=no_float,
+                             parse_constant=no_float)
+          expected = {"schemaVersion", "originalRunId", "originalRunAttempt",
+                      "validationCommit", "validationTree", "planArtifactId",
+                      "planArtifactSha256", "outputArtifactId", "outputArtifactSha256",
+                      "originalWorkflowSha", "originalJobName", "trustedSourceCommit",
+                      "phase11PinsSha256", "pgpKeySha256"}
+          if type(value) is not dict or set(value) != expected or value["schemaVersion"] != 1:
+              raise ValueError("Contract control has unknown or missing fields")
+          if raw != (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                ensure_ascii=False, allow_nan=False) + "\n").encode():
+              raise ValueError("Contract control is not canonical JSON")
+          for field in ("originalRunId", "originalRunAttempt", "planArtifactId", "outputArtifactId"):
+              if type(value[field]) is not int or value[field] < 1:
+                  raise ValueError(f"invalid {field}")
+          for field in ("validationCommit", "validationTree", "originalWorkflowSha",
+                        "trustedSourceCommit"):
+              if type(value[field]) is not str or not re.fullmatch(r"[0-9a-f]{40}", value[field]):
+                  raise ValueError(f"invalid {field}")
+          for field in ("planArtifactSha256", "outputArtifactSha256",
+                        "phase11PinsSha256", "pgpKeySha256"):
+              if type(value[field]) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", value[field]):
+                  raise ValueError(f"invalid {field}")
+          if value["originalJobName"] != "product-validation / contract-phase10-output-record / contract-phase10-output":
+              raise ValueError("unreviewed original Contract upload job")
+          PY
+          test "$(jq -er '.trustedSourceCommit' "$RUNNER_TEMP/contract-control.json")" = "$SOURCE_SHA"
+          test "$(jq -er '.phase11PinsSha256' "$RUNNER_TEMP/contract-control.json")" = "$PINS_SHA256"
+          test "$(jq -er '.pgpKeySha256' "$RUNNER_TEMP/contract-control.json")" = "$PGP_KEY_SHA256"
+          {
+            for field in originalRunId originalRunAttempt validationCommit validationTree planArtifactId planArtifactSha256 outputArtifactId outputArtifactSha256 originalWorkflowSha originalJobName; do
+              printf '%s=%s\n' "$field" "$(jq -er ".$field" "$RUNNER_TEMP/contract-control.json")"
+            done
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'pins_sha256=%s\n' "$PINS_SHA256"
+            printf 'pgp_sha256=%s\n' "$PGP_KEY_SHA256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out protected reviewed verifier and signer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact original validation tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.validationCommit }}
+          path: validation-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify pinned original plan artifact before downloading
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_ID: ${{ steps.authority.outputs.planArtifactId }}
+          PLAN_SHA256: ${{ steps.authority.outputs.planArtifactSha256 }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          VALIDATION_COMMIT: ${{ steps.authority.outputs.validationCommit }}
+        run: |
+          set -euo pipefail
+          gh api "repos/codex-agent-labs/codex-agent/actions/artifacts/$PLAN_ID" > "$RUNNER_TEMP/plan-artifact.json"
+          jq -e --argjson id "$PLAN_ID" --argjson run "$ORIGINAL_RUN_ID" \
+            --arg digest "$PLAN_SHA256" --arg commit "$VALIDATION_COMMIT" \
+            '.id == $id and .digest == $digest and .expired == false and
+             .workflow_run.id == $run and .workflow_run.head_sha == $commit' \
+            "$RUNNER_TEMP/plan-artifact.json" > /dev/null
+      - name: Download independently pinned original plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.authority.outputs.planArtifactId }}
+          run-id: ${{ steps.authority.outputs.originalRunId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: plan
+      - name: Download independently pinned original Contract output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.authority.outputs.outputArtifactId }}
+          run-id: ${{ steps.authority.outputs.originalRunId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: phase10-output
+      - name: Verify exact original bytes and prepare external record without signing access
+        id: prepare
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          PINS_SHA256: ${{ steps.authority.outputs.pins_sha256 }}
+          PGP_SHA256: ${{ steps.authority.outputs.pgp_sha256 }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.authority.outputs.originalRunAttempt }}
+          ORIGINAL_WORKFLOW_SHA: ${{ steps.authority.outputs.originalWorkflowSha }}
+          ORIGINAL_JOB_NAME: ${{ steps.authority.outputs.originalJobName }}
+          OUTPUT_ID: ${{ steps.authority.outputs.outputArtifactId }}
+          OUTPUT_SHA256: ${{ steps.authority.outputs.outputArtifactSha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_phase10_output_record.py prepare \
+            --plan plan/impact-plan.json --repository-root trusted-source \
+            --validation-repository validation-source --protected-output phase10-output \
+            --destination "$RUNNER_TEMP/prepared-record" \
+            --phase11-pins "$RUNNER_TEMP/contract-phase11-pins.json" \
+            --expected-phase11-pins-sha256 "$PINS_SHA256" \
+            --trusted-source-commit "$SOURCE_SHA" --trusted-workflow-sha "$ORIGINAL_WORKFLOW_SHA" \
+            --trusted-workflow-path .github/workflows/contract-phase10-output-record.yml \
+            --trusted-job-name "$ORIGINAL_JOB_NAME" --expected-pgp-key-sha256 "$PGP_SHA256" \
+            --artifact-id "$OUTPUT_ID" --artifact-sha256 "$OUTPUT_SHA256" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/prepared-result.json"
+          printf 'record_sha256=%s\n' "$(jq -er '.recordSha256' "$RUNNER_TEMP/prepared-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Sign only the independently prepared record
+        id: sign
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_phase10_record_signer.py \
+            --prepared-record "$RUNNER_TEMP/prepared-record/record.json" \
+            --repository-root trusted-source --trusted-source-commit "$SOURCE_SHA" \
+            --expected-record-sha256 "$RECORD_SHA256" > "$RUNNER_TEMP/sign-result.json"
+          printf 'signature_sha256=%s\n' "$(jq -er '.signatureSha256' "$RUNNER_TEMP/sign-result.json")" >> "$GITHUB_OUTPUT"
+      - name: Reobserve original and publish only the verified signed pair
+        env:
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          PGP_SHA256: ${{ steps.authority.outputs.pgp_sha256 }}
+          ORIGINAL_RUN_ID: ${{ steps.authority.outputs.originalRunId }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.authority.outputs.originalRunAttempt }}
+          ORIGINAL_WORKFLOW_SHA: ${{ steps.authority.outputs.originalWorkflowSha }}
+          ORIGINAL_JOB_NAME: ${{ steps.authority.outputs.originalJobName }}
+          OUTPUT_ID: ${{ steps.authority.outputs.outputArtifactId }}
+          OUTPUT_SHA256: ${{ steps.authority.outputs.outputArtifactSha256 }}
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          SIGNATURE_SHA256: ${{ steps.sign.outputs.signature_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/contract_phase10_output_record.py verify-publish \
+            --plan plan/impact-plan.json --repository-root trusted-source \
+            --validation-repository validation-source --protected-output phase10-output \
+            --destination "$RUNNER_TEMP/verified-record" \
+            --record "$RUNNER_TEMP/prepared-record/record.json" \
+            --signature "$RUNNER_TEMP/prepared-record/record.sig" \
+            --expected-record-sha256 "$RECORD_SHA256" \
+            --expected-signature-sha256 "$SIGNATURE_SHA256" \
+            --trusted-source-commit "$SOURCE_SHA" --trusted-workflow-sha "$ORIGINAL_WORKFLOW_SHA" \
+            --trusted-workflow-path .github/workflows/contract-phase10-output-record.yml \
+            --trusted-job-name "$ORIGINAL_JOB_NAME" --expected-pgp-key-sha256 "$PGP_SHA256" \
+            --artifact-id "$OUTPUT_ID" --artifact-sha256 "$OUTPUT_SHA256" \
+            --original-run-id "$ORIGINAL_RUN_ID" --original-run-attempt "$ORIGINAL_RUN_ATTEMPT"
+      - name: Preserve exact signed Contract record
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-contract-phase10-output-record-${{ steps.authority.outputs.validationTree }}-attestation-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verified-record
+          compression-level: 0
+          retention-days: 90

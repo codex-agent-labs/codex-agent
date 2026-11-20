@@ -1,0 +1,264 @@
+name: Provision owner-approved reuse verification
+description: Resolve fresh owner-only caller pins; consumers authenticate native completion before reuse.
+inputs:
+  installed-consumers:
+    default: 'false'
+    description: Provision the protected original installed-consumer policy in this existing pass.
+  sdk-parity:
+    default: 'false'
+    description: Provision the separate owner-approved original parity policy in this existing pass.
+  checkpoint-owner:
+    default: 'false'
+    description: Provision the separate owner-approved checkpoint policy in this existing pass.
+  repository-root:
+    required: false
+    default: ''
+    description: Explicit trusted checkout root; defaults to the workspace.
+  authority-read-token:
+    required: true
+    description: Repository-scoped Administration and Contents read credential; never a writer token.
+  artifact-id:
+    required: false
+    description: Optional original artifact selector; must be independently approved.
+  artifact-sha256:
+    required: false
+    description: Optional assertion of original artifact digest.
+  run-id:
+    required: false
+    description: Optional assertion of original run.
+  run-attempt:
+    required: false
+    description: Optional assertion of original attempt.
+  issuer-sha:
+    required: false
+    description: Optional assertion; cannot choose trusted code.
+  source-sha:
+    required: false
+    description: Optional assertion; original source is derived after native authentication.
+runs:
+  using: composite
+  steps:
+    - name: Restore exact Git control bytes on Windows
+      if: runner.os == 'Windows'
+      shell: bash
+      env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
+      run: |
+        python3 -I -B - <<'WINDOWS_GIT_BYTES'
+        import importlib.util
+        import os
+        from pathlib import Path, PurePosixPath
+        import stat
+        import subprocess
+        import sys
+        import tempfile
+
+
+        def restore_exact_controls(root, consumer):
+            git = lambda *args, **kwargs: consumer.git(root, *args, **kwargs)
+            head = git("rev-parse", "HEAD").strip()
+            tree = git("ls-tree", "-rz", head.decode(), "--", "ci", ".github")
+            index = git("ls-files", "--stage", "-z", "--", "ci", ".github")
+            expected = {}
+            for entry in tree.split(b"\0"):
+                if not entry:
+                    continue
+                header, encoded = entry.split(b"\t", 1)
+                name = encoded.decode("utf-8")
+                path = PurePosixPath(name)
+                if path.suffix not in consumer.SUFFIXES or consumer.IGNORED.intersection(path.parts):
+                    continue
+                mode, kind, oid = header.decode().split()
+                if (path.as_posix() != name or path.is_absolute() or ".." in path.parts
+                        or any("\\" in part or ":" in part or part.endswith((".", " ")) for part in path.parts)
+                        or mode not in {"100644", "100755"} or kind != "blob"):
+                    raise ValueError("Windows control is not an exact regular Git path")
+                expected[name] = (mode, oid)
+            indexed = {}
+            for entry in index.split(b"\0"):
+                if entry:
+                    header, encoded = entry.split(b"\t", 1)
+                    name = encoded.decode("utf-8")
+                    path = PurePosixPath(name)
+                    if path.suffix in consumer.SUFFIXES and not consumer.IGNORED.intersection(path.parts):
+                        mode, oid, stage = header.decode().split()
+                        if stage != "0" or name in indexed:
+                            raise ValueError("Windows control has an unresolved index")
+                        indexed[name] = (mode, oid)
+            if not expected or indexed != expected:
+                raise ValueError("Windows control index differs from HEAD")
+            originals = consumer.blobs(root, (oid for _, oid in expected.values()))
+
+            def read(name):
+                target = root / name
+                for item in (*reversed(target.parents), target):
+                    info = item.lstat()
+                    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                        raise ValueError("Windows control traverses a link or reparse point")
+                return consumer.regular(target)
+
+            observed = set()
+            for directory in (root / "ci", root / ".github"):
+                for parent, directories, files in os.walk(directory, followlinks=False):
+                    directories[:] = [name for name in directories if name not in consumer.IGNORED]
+                    for name in directories:
+                        info = (Path(parent) / name).lstat()
+                        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                            raise ValueError("Windows control inventory traverses a link or reparse point")
+                    for name in files:
+                        path = Path(parent) / name
+                        if path.suffix in consumer.SUFFIXES:
+                            observed.add(path.relative_to(root).as_posix())
+            if observed != set(expected):
+                raise ValueError("Windows control inventory differs from HEAD")
+
+            def attributes():
+                request = b"".join(name.encode() + b"\0" for name in expected)
+                args = ("check-attr", "-z", "--stdin", "text", "eol", "filter", "working-tree-encoding")
+                cached = git(*args, "--cached", data=request)
+                if git(*args, data=request) != cached:
+                    raise ValueError("Windows control attributes differ from the index")
+                fields = cached.split(b"\0")[:-1]
+                if len(fields) != len(expected) * 12:
+                    raise ValueError("Windows control attribute inventory differs")
+                return cached, {(fields[i].decode(), fields[i + 1].decode()): fields[i + 2].decode()
+                                for i in range(0, len(fields), 3)}
+
+            attrs, values = attributes()
+            before, changes = {}, []
+            for name, (mode, oid) in expected.items():
+                raw, current = originals[oid], read(name)
+                before[name] = current
+                if current == raw:
+                    continue
+                if (not raw or b"\n" not in raw or b"\r" in raw or b"\0" in raw
+                        or any(byte < 32 and byte not in {9, 10} or byte == 127 for byte in raw)
+                        or current != raw.replace(b"\n", b"\r\n")
+                        or values.get((name, "text")) not in {"unspecified", "set", "auto"}
+                        or values.get((name, "eol")) != "unspecified"
+                        or any(values.get((name, attr)) not in {"unspecified", "unset"}
+                               for attr in ("filter", "working-tree-encoding"))):
+                    raise ValueError("Windows control differs beyond the exact Git CRLF checkout")
+                raw.decode("utf-8")
+                changes.append((name, raw, mode))
+
+            def unchanged():
+                if (git("rev-parse", "HEAD").strip() != head
+                        or git("ls-files", "--stage", "-z", "--", "ci", ".github") != index
+                        or attributes()[0] != attrs):
+                    raise ValueError("Windows control Git identity changed during preflight")
+
+            # Validate the entire captured input set before repairing any checkout byte.
+            unchanged()
+            if any(read(name) != raw for name, raw in before.items()):
+                raise ValueError("Windows controls changed before checkout repair")
+            for name, raw, mode in changes:
+                target = root / name
+                if read(name) != before[name]:
+                    raise ValueError("Windows control changed during checkout repair")
+                descriptor, temporary = tempfile.mkstemp(prefix=".exact-git-control-", dir=target.parent)
+                try:
+                    with os.fdopen(descriptor, "wb") as output:
+                        output.write(raw)
+                    os.chmod(temporary, 0o755 if mode == "100755" else 0o644)
+                    os.replace(temporary, target)
+                finally:
+                    Path(temporary).unlink(missing_ok=True)
+            unchanged()
+            if any(read(name) != originals[oid] for name, (_, oid) in expected.items()):
+                raise ValueError("Windows repaired controls differ from pinned Git blobs")
+            print(f"Restored exact Git bytes for {len(changes)} Windows controls; authority verification follows")
+
+
+        def main():
+            if sys.platform != "win32":
+                return
+            root = Path(os.environ["CONSUMER_ROOT"]).absolute()
+            config = subprocess.run(["git", "--no-replace-objects", "-C", str(root),
+                                     "config", "--get", "core.autocrlf"], capture_output=True, timeout=30)
+            if config.returncode == 1:
+                return
+            if config.returncode != 0:
+                raise ValueError("Cannot inspect effective Git autocrlf")
+            value = config.stdout.decode().strip().lower()
+            if value in {"", "false", "no", "off", "0", "input"}:
+                return
+            if value not in {"true", "yes", "on", "1"}:
+                raise ValueError("Invalid effective Git autocrlf")
+            os.environ["GIT_NO_LAZY_FETCH"] = "1"
+            protected = Path(os.environ["GITHUB_ACTION_PATH"]).resolve().parents[2] / ".reuse"
+            sys.path.insert(0, str(protected))
+            spec = importlib.util.spec_from_file_location("protected_checkout_consumer", protected / "consumer.py")
+            consumer = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(consumer)
+            restore_exact_controls(root, consumer)
+
+
+        if __name__ == "__main__":
+            main()
+        WINDOWS_GIT_BYTES
+    - name: Resolve approved source and install its unchanged current-root controls
+      id: native
+      shell: bash
+      env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
+        GITHUB_TOKEN: ${{ github.token }}
+        CHECKPOINT_OWNER: ${{ inputs.checkpoint-owner }}
+        SDK_PARITY: ${{ inputs.sdk-parity }}
+        INSTALLED_CONSUMERS: ${{ inputs.installed-consumers }}
+        APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        REQUESTED_RUN: ${{ inputs.run-id }}
+        REQUESTED_ATTEMPT: ${{ inputs.run-attempt }}
+        REQUESTED_ISSUER: ${{ inputs.issuer-sha }}
+        REQUESTED_SOURCE: ${{ inputs.source-sha }}
+      run: |
+        set -euo pipefail
+        test -n "$REUSE_AUTHORITY_READ_TOKEN"
+        checkpoint=()
+        case "$CHECKPOINT_OWNER" in
+          false) ;;
+          true) test -z "$APPROVED_ARTIFACT_ID"; checkpoint=(--checkpoint-owner) ;;
+          *) echo 'Invalid checkpoint owner provisioning selection' >&2; exit 1 ;;
+        esac
+        parity=()
+        case "$SDK_PARITY" in
+          false) ;;
+          true) test -z "$APPROVED_ARTIFACT_ID"; parity=(--sdk-parity) ;;
+          *) echo 'Invalid SDK parity provisioning selection' >&2; exit 1 ;;
+        esac
+        installed=()
+        case "$INSTALLED_CONSUMERS" in
+          false) ;;
+          true) test -z "$APPROVED_ARTIFACT_ID"; installed=(--installed-consumers) ;;
+          *) echo 'Invalid installed consumer provisioning selection' >&2; exit 1 ;;
+        esac
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64|Linux/aarch64|Darwin/x86_64|Darwin/arm64|MINGW64_NT-*/x86_64) ;;
+          *) echo 'supported=false' >> "$GITHUB_OUTPUT"; exit 0 ;;
+        esac
+        source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        operation=provision
+        if [ -n "$APPROVED_ARTIFACT_ID" ]; then operation=setup; fi
+        python3 -B "$source_root/.reuse/consumer.py" "$operation" --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${checkpoint[@]+"${checkpoint[@]}"} ${parity[@]+"${parity[@]}"} ${installed[@]+"${installed[@]}"}
+        bash "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}/.github/actions/restore-reuse-qualification/install-gh.sh"
+    - name: Provision independent completion pins or authenticate an explicitly selected body qualification
+      if: steps.native.outputs.supported == 'true' && inputs.artifact-id != ''
+      shell: bash
+      env:
+        CONSUMER_ROOT: ${{ inputs.repository-root || github.workspace }}
+        REUSE_AUTHORITY_READ_TOKEN: ${{ inputs.authority-read-token }}
+        APPROVED_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        REQUESTED_ARTIFACT_SHA: ${{ inputs.artifact-sha256 }}
+        REQUESTED_RUN: ${{ inputs.run-id }}
+        REQUESTED_ATTEMPT: ${{ inputs.run-attempt }}
+        REQUESTED_ISSUER: ${{ inputs.issuer-sha }}
+        REQUESTED_SOURCE: ${{ inputs.source-sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        source_root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        selected=()
+        if [ -n "$APPROVED_ARTIFACT_ID" ]; then selected=(--artifact-id "$APPROVED_ARTIFACT_ID"); fi
+        python3 -B "$source_root/.reuse/consumer.py" restore --repository-root "${CONSUMER_ROOT:-$GITHUB_WORKSPACE}" --work "$RUNNER_TEMP/approved-reuse" ${selected[@]+"${selected[@]}"}

@@ -9,7 +9,8 @@ plugins {
     id("com.android.kotlin.multiplatform.library") version "9.2.1" apply false
 }
 
-val codexAgentVersion = providers.gradleProperty("codexAgent.version").get()
+val codexAgentSdkVersion = providers.gradleProperty("codexAgent.sdkVersion").get()
+val codexAgentRuntimeVersion = providers.gradleProperty("codexAgent.runtimeVersion").get()
 val consumerTarget = providers.gradleProperty("codexAgent.consumerTarget").get()
 check(consumerTarget in setOf(
     "common", "android", "desktop", "ios-device", "ios-simulator", "node-js", "node-wasm",
@@ -23,9 +24,13 @@ kotlin {
             namespace = "io.github.codex_agent_labs.codexagent.stagedconsumer"
             compileSdk = 37
             minSdk = 26
+            withJava()
         }
         "desktop" -> {
-            jvm()
+            val desktopJvm = jvm()
+            desktopJvm.compilations.getByName("main").defaultSourceSet {
+                kotlin.srcDir("src/desktopMain/kotlin")
+            }
             macosArm64()
             macosX64()
             linuxArm64()
@@ -40,42 +45,56 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.codex-agent-labs:codex-agent-client:$codexAgentVersion")
+            implementation("io.github.codex-agent-labs:codex-agent:$codexAgentSdkVersion")
         }
         when (consumerTarget) {
             "common" -> Unit
             "android" -> androidMain.dependencies {
-                implementation("io.github.codex-agent-labs:codex-agent-runtime-android:$codexAgentVersion")
+                implementation("io.github.codex-agent-labs:codex-agent-runtime-android:$codexAgentSdkVersion")
             }
             "desktop" -> {
                 jvmMain {
-                    kotlin.srcDir("src/desktopMain/kotlin")
                     dependencies {
-                        implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentVersion")
+                        implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop-jvm:$codexAgentRuntimeVersion")
                     }
                 }
                 listOf(macosMain, linuxMain, mingwX64Main).forEach { sourceSet ->
                     sourceSet.configure {
                         kotlin.srcDir("src/desktopMain/kotlin")
                         dependencies {
-                            implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentVersion")
+                            implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentRuntimeVersion")
                         }
                     }
                 }
             }
             "ios-device", "ios-simulator" -> iosMain.dependencies {
-                implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:$codexAgentVersion")
+                implementation("io.github.codex-agent-labs:codex-agent-runtime-ios:$codexAgentSdkVersion")
             }
             "node-js" -> jsMain.dependencies {
-                implementation("io.github.codex-agent-labs:codex-agent-runtime-node:$codexAgentVersion")
+                implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentRuntimeVersion")
             }
             "node-wasm" -> wasmJsMain {
                 kotlin.srcDir("src/jsMain/kotlin")
                 dependencies {
-                    implementation("io.github.codex-agent-labs:codex-agent-runtime-node:$codexAgentVersion")
+                    implementation("io.github.codex-agent-labs:codex-agent-runtime-desktop:$codexAgentRuntimeVersion")
                 }
             }
         }
+    }
+}
+
+if (consumerTarget == "desktop") {
+    val compileDesktopJava = tasks.named<JavaCompile>("compileJvmMainJava") {
+        source("src/desktopMain/java")
+    }
+    tasks.register<JavaExec>("runDesktopJavaConsumer") {
+        dependsOn("jvmMainClasses")
+        classpath(
+            compileDesktopJava.flatMap { it.destinationDirectory },
+            layout.buildDirectory.dir("classes/kotlin/jvm/main"),
+            configurations.named("jvmRuntimeClasspath"),
+        )
+        mainClass.set("io.github.codex_agent_labs.codexagent.stagedconsumer.DesktopJavaConsumer")
     }
 }
 

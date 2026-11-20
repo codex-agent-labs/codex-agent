@@ -1,0 +1,184 @@
+name: Runtime Promoted Catalog
+
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  capture:
+    name: runtime-promoted-capture
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    env:
+      SOURCE_SHA: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_SOURCE_SHA }}
+      VALIDATED_TREE: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_VALIDATED_TREE }}
+      VALIDATION_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_VALIDATION_WORKFLOW_SHA }}
+      PROMOTION_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_WORKFLOW_SHA }}
+      BUILD_KEY: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_BUILD_KEY }}
+      RECEIPT_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_RECEIPT_SHA256 }}
+      OBJECT_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_OBJECT_SHA256 }}
+      ORIGINAL_COMMIT: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ORIGINAL_COMMIT }}
+      ORIGINAL_RUN_ID: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ORIGINAL_RUN_ID }}
+      ORIGINAL_RUN_ATTEMPT: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ORIGINAL_RUN_ATTEMPT }}
+      UPLOAD_ID: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_UPLOAD_ID }}
+      UPLOAD_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_UPLOAD_SHA256 }}
+      CARRIER_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_CARRIER_SHA256 }}
+      ATTESTATION_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ATTESTATION_SHA256 }}
+      SIGNATURE_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_SIGNATURE_SHA256 }}
+    steps:
+      - name: Require independently approved S1048 Runtime pins before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          for value in "$SOURCE_SHA" "$VALIDATED_TREE" "$VALIDATION_WORKFLOW_SHA" \
+              "$PROMOTION_WORKFLOW_SHA" "$ORIGINAL_COMMIT"; do
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          done
+          for value in "$BUILD_KEY" "$RECEIPT_SHA256" "$OBJECT_SHA256" \
+              "$UPLOAD_SHA256" "$CARRIER_SHA256" "$ATTESTATION_SHA256" "$SIGNATURE_SHA256"; do
+            [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          done
+          for value in "$ORIGINAL_RUN_ID" "$ORIGINAL_RUN_ATTEMPT" "$UPLOAD_ID"; do
+            [[ "$value" =~ ^[1-9][0-9]*$ ]] || exit 1
+          done
+      - name: Check out reviewed Runtime capture verifier only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ env.SOURCE_SHA }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact landed tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ github.sha }}
+          path: landed-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Capture exact original Runtime bytes without signing secrets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_catalog_promotion.py capture \
+            --repository-root trusted-source --candidate-root landed-source \
+            --destination "$RUNNER_TEMP/runtime-promoted-capture" \
+            --trusted-source-sha "$SOURCE_SHA" \
+            --trusted-workflow-sha "$VALIDATION_WORKFLOW_SHA" \
+            --trusted-promotion-workflow-sha "$PROMOTION_WORKFLOW_SHA" \
+            --final-commit "$GITHUB_SHA" --expected-validation-tree "$VALIDATED_TREE" \
+            --expected-build-key "$BUILD_KEY" --expected-receipt-sha256 "$RECEIPT_SHA256" \
+            --expected-object-sha256 "$OBJECT_SHA256" --expected-original-commit "$ORIGINAL_COMMIT" \
+            --expected-original-run-id "$ORIGINAL_RUN_ID" \
+            --expected-original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --expected-upload-artifact-id "$UPLOAD_ID" --expected-upload-sha256 "$UPLOAD_SHA256" \
+            --expected-carrier-inventory-sha256 "$CARRIER_SHA256" \
+            --expected-attestation-sha256 "$ATTESTATION_SHA256" \
+            --expected-signature-sha256 "$SIGNATURE_SHA256"
+      - name: Retain the exact Runtime original and unsigned capture for independent approval
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-runtime-promoted-capture-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-promoted-capture
+          compression-level: 0
+          retention-days: 90
+
+  sign:
+    name: runtime-promoted-catalog
+    needs: capture
+    if: needs.capture.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    env:
+      SOURCE_SHA: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_SOURCE_SHA }}
+      VALIDATED_TREE: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_VALIDATED_TREE }}
+      VALIDATION_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_VALIDATION_WORKFLOW_SHA }}
+      PROMOTION_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_WORKFLOW_SHA }}
+      BUILD_KEY: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_BUILD_KEY }}
+      RECEIPT_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_RECEIPT_SHA256 }}
+      OBJECT_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_OBJECT_SHA256 }}
+      ORIGINAL_COMMIT: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ORIGINAL_COMMIT }}
+      ORIGINAL_RUN_ID: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ORIGINAL_RUN_ID }}
+      ORIGINAL_RUN_ATTEMPT: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ORIGINAL_RUN_ATTEMPT }}
+      UPLOAD_ID: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_UPLOAD_ID }}
+      UPLOAD_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_UPLOAD_SHA256 }}
+      CARRIER_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_CARRIER_SHA256 }}
+      ATTESTATION_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_ATTESTATION_SHA256 }}
+      SIGNATURE_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_SIGNATURE_SHA256 }}
+      CAPTURE_INVENTORY_SHA256: ${{ vars.CODEX_AGENT_RUNTIME_PROMOTION_CAPTURE_INVENTORY_SHA256 }}
+    steps:
+      - name: Require independently approved retained capture before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$CAPTURE_INVENTORY_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]]
+      - name: Check out reviewed Runtime signer only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ env.SOURCE_SHA }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact landed tree as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ github.sha }}
+          path: landed-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download independently approved Runtime capture
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-agent-runtime-promoted-capture-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-promoted-capture
+      - name: Reverify retained bytes and sign only external Runtime catalog without observation token
+        env:
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/runtime_catalog_promotion.py sign \
+            --repository-root trusted-source --candidate-root landed-source \
+            --capture-root "$RUNNER_TEMP/runtime-promoted-capture" \
+            --destination "$RUNNER_TEMP/runtime-promoted-catalog" \
+            --trusted-source-sha "$SOURCE_SHA" \
+            --trusted-workflow-sha "$VALIDATION_WORKFLOW_SHA" \
+            --trusted-promotion-workflow-sha "$PROMOTION_WORKFLOW_SHA" \
+            --final-commit "$GITHUB_SHA" --expected-validation-tree "$VALIDATED_TREE" \
+            --expected-build-key "$BUILD_KEY" --expected-receipt-sha256 "$RECEIPT_SHA256" \
+            --expected-object-sha256 "$OBJECT_SHA256" --expected-original-commit "$ORIGINAL_COMMIT" \
+            --expected-original-run-id "$ORIGINAL_RUN_ID" \
+            --expected-original-run-attempt "$ORIGINAL_RUN_ATTEMPT" \
+            --expected-upload-artifact-id "$UPLOAD_ID" --expected-upload-sha256 "$UPLOAD_SHA256" \
+            --expected-carrier-inventory-sha256 "$CARRIER_SHA256" \
+            --expected-attestation-sha256 "$ATTESTATION_SHA256" \
+            --expected-signature-sha256 "$SIGNATURE_SHA256" \
+            --expected-capture-inventory-sha256 "$CAPTURE_INVENTORY_SHA256"
+      - name: Preserve the immutable signed Runtime promoted catalog
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          name: codex-agent-promoted-runtime-catalog-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-promoted-catalog
+          compression-level: 0
+          retention-days: 90
