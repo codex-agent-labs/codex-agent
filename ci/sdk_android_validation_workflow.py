@@ -10,6 +10,7 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 
@@ -171,6 +172,28 @@ def run_retained_installed_consumer(state, *, lane, plan_path, repository_root, 
 
 
 @product_reuse.measured
+def _prepare_installed_dependencies(root, revision, target, maven, rows, versions, private, environment):
+    from products.gradle_bootstrap import seed_sdk_gradle_dependencies
+
+    destination = private / "build-dependencies"
+    try:
+        seed_sdk_gradle_dependencies(root, revision, root / "gradlew", environment, destination)
+        destination = private / "consumer-dependencies"
+        prepare = runpy.run_path(str(root / _CONSUMER_TEMPLATE / "dependencies.py"))["prepare_dependencies"]
+        prepare(repository=root, revision=revision, target=target, maven=maven, maven_inventory=rows,
+                sdk_version=versions["sdk"], runtime_version=versions["runtime-release"],
+                destination=destination, environment=environment)
+    except ValueError:
+        # The private owner disappears at exit. Keep the causal Gradle error in the job log.
+        log = destination / "gradle.log"
+        if log.is_file() and not log.is_symlink():
+            with log.open("rb") as stream:
+                stream.seek(max(0, stream.seek(0, os.SEEK_END) - 16 * 1024))
+                print(stream.read(16 * 1024).decode("utf-8", errors="replace"), flush=True)
+        raise
+
+
+@product_reuse.measured
 def _run_retained_installed_consumer(state, *, lane, plan_path, repository_root, environ,
                                    legacy_android_projection):
     """Consume one fixed lane inside the existing live replay owner, never caller evidence."""
@@ -265,7 +288,7 @@ def _run_retained_installed_consumer(state, *, lane, plan_path, repository_root,
                    "-PcodexAgent.candidateTree=" + state.plan["validationTree"]]
         if not legacy_android_projection:
             script, template_unchanged = _installed_template(root, private, task, state.expected_fixed["versions"])
-            command.extend(["--init-script", str(script)])
+            command.extend(["--offline", "--init-script", str(script)])
         command.append("-PcodexAgent.mavenRepositoryDirectory=" + str(maven))
         environment = {key: value for key, value in environ.items()
                        if key not in {"GITHUB_TOKEN", "GH_TOKEN", "REUSE_AUTHORITY_READ_TOKEN",
@@ -296,6 +319,10 @@ def _run_retained_installed_consumer(state, *, lane, plan_path, repository_root,
 
             unchanged()
             try:
+                if not legacy_android_projection:
+                    _prepare_installed_dependencies(root, state.producer["commit"], target, maven,
+                        maven_before, state.expected_fixed["versions"], private, environment)
+                    unchanged()
                 subprocess.run(command, cwd=root, env=environment, stdin=subprocess.DEVNULL, check=True)
             finally:
                 unchanged()
