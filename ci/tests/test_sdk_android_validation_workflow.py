@@ -729,6 +729,7 @@ class RetainedInstalledConsumerTest(unittest.TestCase):
 
     def setUp(self):
         RetainedAndroidConsumerTest.setUp(self)
+        self.prepare = self.enterContext(patch.object(workflow, "_prepare_installed_dependencies"))
         self.expected_inputs = workflow._CONSUMER_INPUTS
         self.bad_runtime_version = False
         self.run.side_effect = self.emit_controls
@@ -806,7 +807,17 @@ class RetainedInstalledConsumerTest(unittest.TestCase):
 
     def test_common_returns_only_exact_detached_controls_and_no_maven_projection(self):
         self.select("consumer-common")
+        def inspect_preparation(root, revision, target, maven, rows, versions, private, environment):
+            self.assertEqual((self.root, self.plan["validationCommit"], "common"), (root, revision, target))
+            self.assertEqual(regular_file_inventory(maven), rows)
+            self.assertEqual(private / "maven", maven)
+            self.assertEqual(self.state.expected_fixed["versions"], versions)
+            self.assertNotIn("GITHUB_TOKEN", environment)
+            self.run.assert_not_called()
+        self.prepare.side_effect = inspect_preparation
         result = self.consume()
+        self.prepare.assert_called_once()
+        self.assertIn("--offline", self.run.call_args.args[0])
         self.assertEqual("verifyStagedKmpConsumerCommon", self.run.call_args.args[0][1])
         self.assertEqual(2, len(result["record"]["mavenFiles"]))
         self.assertIn("--init-script", self.run.call_args.args[0])
@@ -818,6 +829,14 @@ class RetainedInstalledConsumerTest(unittest.TestCase):
         self.assertEqual(sha256_file(self.plan_path), result["record"]["planSha256"])
         result["record"]["originalInputs"][0]["buildKey"] = "changed detached control"
         self.assertNotEqual(result["record"]["originalInputs"][0]["buildKey"], self.state.prior_by_instance[self.expected_inputs[0]]["buildKey"])
+
+    def test_dependency_failure_stops_before_any_consumer_command_or_control(self):
+        self.select("consumer-common")
+        self.prepare.side_effect = ValueError("dependency pin mismatch")
+        with self.assertRaisesRegex(ValueError, "dependency pin mismatch"):
+            self.consume()
+        self.run.assert_not_called()
+        self.assertFalse(self.projection.exists())
 
     def test_runtime_lanes_select_exact_components_and_distinct_version_guards(self):
         for lane in ("consumer-desktop", "consumer-node-js", "consumer-node-wasm"):
