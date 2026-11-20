@@ -201,6 +201,9 @@ runs:
         options = {'plan': plan, 'repository_root': root}
         if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
             options['completed_frozen_policy'] = Path(os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY'])
+        if os.environ.get('CODEX_AGENT_SDK_CHECKPOINT'):
+            options['sdk_checkpoint_owner'] = Path(os.environ['CODEX_AGENT_CHECKPOINT_OWNER_POLICY'])
+            options['sdk_checkpoint'] = os.environ['CODEX_AGENT_SDK_CHECKPOINT']
         for name, field in (('CORE_METADATA_POLICY', 'sdk_facade_metadata_policy'),
                             ('ANDROID_METADATA_POLICY', 'sdk_android_metadata_policy')):
             if name in option_paths:

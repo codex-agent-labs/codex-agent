@@ -272,10 +272,19 @@ runs:
             fi
             if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
               test "$STATE_PRODUCT" = sdk
-              case "$SDK_FAMILY" in ios-metadata|core-binary|core-package) ;; *) exit 1 ;; esac
+              case "$SDK_FAMILY" in
+                ios-metadata|core-binary|core-package) ;;
+                android-metadata)
+                  test "$SDK_STATE_WAVE" = 17
+                  case "$PREFLIGHT_WAVE:${GITHUB_JOB:-}" in
+                    :sdk-android-metadata|18:sdk-collect-18) ;;
+                    *) exit 1 ;;
+                  esac ;;
+                *) exit 1 ;;
+              esac
               if [ -n "$PREFLIGHT_WAVE" ]; then
                 case "$SDK_FAMILY:$PREFLIGHT_WAVE:${GITHUB_JOB:-}" in
-                  ios-metadata:10:sdk-collect-10|core-binary:11:sdk-collect-11|core-package:12:sdk-collect-12) ;;
+                  ios-metadata:10:sdk-collect-10|core-binary:11:sdk-collect-11|core-package:12:sdk-collect-12|android-metadata:18:sdk-collect-18) ;;
                   *) exit 1 ;;
                 esac
               fi

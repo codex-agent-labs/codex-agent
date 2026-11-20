@@ -205,4 +205,79 @@ class CheckpointOriginalRecoveryTest(unittest.TestCase):
                 self.assertEqual([],f.member_reads)
 
 
+    def protected_history(self,f,pin):
+        old=deepcopy(f.policy);old['collectorWorkflowSha']=pin
+        history={'schemaVersion':1,'kind':'sdk-checkpoint-history','consumerCommit':'9'*40,
+            'currentOwner':deepcopy(f.policy),'historicalPolicies':[{'sha256':sha256_bytes(canonical_json_bytes(old)),'policy':old}]}
+        current={'schemaVersion':1,'kind':'completed-frozen-reuse','consumerCommit':'9'*40,
+            'verifierPolicySha256':'sha256:'+'a'*64,**f.policy['bootstrap'],'sdkCompletion':deepcopy(f.policy['bootstrap'])}
+        return history,current
+
+    def test_protected_history_recovers_unqualified_original_without_result_pins_or_parent_replay(self):
+        f,producer,_,run,job,attempt=self.fixture();pin='7'*40
+        run['referenced_workflows']=[{'path':producer['repository']+'/.github/workflows/product-validation.yml@'+pin,'sha':pin}]
+        history,current=self.protected_history(f,pin)
+        with self.assertRaisesRegex(ValueError,'reviewed original workflow'):f.issue()
+        self.assertEqual([],f.member_reads)
+        original=canonical_json_bytes(f.receipt);prior=canonical_json_bytes(f.fixture.previous)
+        report,work=f.issue(history=history,current_policy=current)
+        envelope=json.loads((work/'completion.json').read_bytes())
+        row=next(row for row in envelope['recipe']['originals'] if row['component']=='python')
+        self.assertEqual((pin,445,job['id']),(row['workflowSha'],row['artifactId'],row['jobId']))
+        self.assertEqual(original,canonical_json_bytes(f.receipt));self.assertEqual(prior,canonical_json_bytes(f.fixture.previous))
+        self.assertEqual([445],f.member_reads);self.assertEqual(len(f.body),report['verifiedObjectBytes'])
+        f.native_fetch.assert_called_once()
+
+    def test_protected_history_still_rejects_changed_authority_jobs_uploads_and_body(self):
+        for fault in ('unapproved','history-digest','current-owner','current-policy','parent','duplicate-parent','job','expired','tampered'):
+            with self.subTest(fault=fault):
+                f,producer,_,run,job,attempt=self.fixture();pin='7'*40
+                run['referenced_workflows']=[{'path':producer['repository']+'/.github/workflows/product-validation.yml@'+pin,'sha':pin}]
+                history,current=self.protected_history(f,pin)
+                if fault=='unapproved':history['historicalPolicies']=[]
+                elif fault=='history-digest':history['historicalPolicies'][0]['sha256']=sha256_bytes(b'wrong')
+                elif fault=='current-owner':history['currentOwner']['collectorWorkflowSha']='6'*40
+                elif fault=='current-policy':current['consumerCommit']='6'*40
+                elif fault=='parent':run['referenced_workflows'][0]['sha']='6'*40
+                elif fault=='duplicate-parent':run['referenced_workflows']*=2
+                elif fault=='job':job['conclusion']='failure'
+                elif fault=='expired':f.artifact['expired']=True
+                else:f.tamper=True
+                with self.assertRaises(ValueError):f.issue(history=history,current_policy=current)
+                self.assertEqual([445] if fault=='tampered' else [],f.member_reads)
+                self.assertFalse((f.root/'1/completion.json').exists())
+
+    def test_history_requires_registered_android_child_and_exact_original_parent_pair(self):
+        for child in ('correct','missing','wrong','duplicate','unregistered'):
+            with self.subTest(child=child):
+                f,producer,_,run,job,attempt=self.fixture();pin='7'*40
+                run['referenced_workflows']=[{'path':producer['repository']+'/.github/workflows/product-validation.yml@'+pin,'sha':pin}]
+                history,current=self.protected_history(f,pin)
+                old=history['historicalPolicies'][0]['policy']
+                if child!='unregistered':old['collectors']=[completed._ANDROID_VALIDATION_COLLECTOR]
+                history['historicalPolicies'][0]['sha256']=sha256_bytes(canonical_json_bytes(old))
+                receipt=deepcopy(f.receipt);receipt.update(component='sdk-android',phase='validation',target='android')
+                receipt['buildKey']=compute_build_key(**{key:receipt[key] for key in (*completed.IDENTITY,'inputs')})
+                controls=deepcopy(f.fixture.controls);controls['held-python/phase-receipt.json']=receipt
+                phase=controls['runtime-state/reuse-wave-request.json']['availableObjects'][-1]
+                phase.update({key:receipt[key] for key in (*completed.IDENTITY,'buildKey')});phase['receiptSha256']=sha256_bytes(canonical_json_bytes(receipt))
+                job['name'],f.artifact['name']=fresh_sdk_worker_route(completed._identity(receipt),receipt)
+                path='.github/workflows/sdk-android-validation.yml'
+                if child!='missing':run['referenced_workflows'].append({'path':producer['repository']+'/'+path+'@'+pin,'sha':pin if child!='wrong' else '6'*40})
+                if child=='duplicate':run['referenced_workflows'].append(deepcopy(run['referenced_workflows'][-1]))
+                with patch.object(products,'api_json',side_effect=f.api),patch.object(products,'paginated_items',side_effect=f.listing), \
+                        products._fresh_ci_observation(f.producer,'synthetic') as observation, \
+                        products._ci_observation_batch(tuple(str(f.producer[k]) for k in ('runId','runAttempt')),share_nested=True):
+                    def select():return completed._checkpoint_originals(controls,f.fixture.previous,f.fixture.base,
+                        f.fixture.source,observation,'synthetic',_history=history)
+                    if child!='correct':
+                        with self.assertRaisesRegex(ValueError,'protected owner history'):select()
+                    else:
+                        original=next(row for row in select() if row['component']=='sdk-android')
+                        artifact,_,locator=completed.observe_original(original,receipt,'synthetic')
+                        self.assertEqual(pin,original['workflowSha']);self.assertEqual(445,artifact['id'])
+                        self.assertEqual(job['id'],locator['job']['id'])
+                self.assertEqual([],f.member_reads)
+
+
 if __name__=='__main__':unittest.main()

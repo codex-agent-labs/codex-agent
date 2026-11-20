@@ -6409,8 +6409,14 @@ jobs:
       needs.sdk-android-package-result.result == 'success' &&
       needs.sdk-android-validation-plan.result == 'success'
       )
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/sdk-android-validation.yml
     with:
+      sdkCheckpoints: ${{ inputs.sdkCheckpoints }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
@@ -6420,6 +6426,7 @@ jobs:
       protectedAndroidAuthority: ${{ needs.sdk-android-validation-plan.outputs.retained_android_authority || (needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '') }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
 
   sdk-android-metadata-plan:
@@ -6467,8 +6474,14 @@ jobs:
       needs.sdk-android-validation-result.result == 'success' &&
       needs.sdk-android-metadata-plan.result == 'success'
       )
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/sdk-android-metadata-validation.yml
     with:
+      sdkCheckpoints: ${{ inputs.sdkCheckpoints }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       sdkPlan: ${{ toJSON(needs.sdk-plan) }}
       sdkInputs: ${{ toJSON(needs.sdk-inputs) }}
@@ -6479,6 +6492,7 @@ jobs:
       protectedAndroidAuthority: ${{ needs.sdk-android-validation-plan.outputs.retained_android_authority || (needs.android-runtime-evidence.result == 'success' && needs.android-runtime-evidence.outputs.protected_android_authority || '') }}
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+      PRODUCT_READ_APP_PRIVATE_KEY: ${{ secrets.PRODUCT_READ_APP_PRIVATE_KEY }}
 
 
   sdk-completion:

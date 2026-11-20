@@ -103,6 +103,67 @@ class SdkFamilyActionsTest(unittest.TestCase):
             "--input-root", "/original input/with spaces", "--destination", "build/runtime-next",
             "--wave", wave, *selected, "--trusted-workflow-sha", "b" * 40, "--github-output", output]
 
+
+    def test_android_checkpoint_routes_only_current_metadata_worker_and_collector(self):
+        policy = {"CODEX_AGENT_COMPLETED_REUSE_POLICY": "/held/current.json",
+                  "CODEX_AGENT_CHECKPOINT_OWNER_POLICY": "/held/owner.json",
+                  "CODEX_AGENT_SDK_CHECKPOINT": '{"kind":"sdk-checkpoint"}'}
+        worker = {"STATE_PRODUCT": "sdk", "SDK_FAMILY": "android-metadata",
+                  "SDK_STATE_WAVE": "17", "GITHUB_JOB": "sdk-android-metadata"}
+        capture = {**worker, "GITHUB_JOB": "sdk-collect-18", "PREFLIGHT_WAVE": "18"}
+        collect = {"PRODUCT": "sdk", "SDK_FAMILY": "android-metadata", "WAVE": "18",
+                   "SDK_STATE_WAVE": "17", "GITHUB_JOB": "sdk-collect-18",
+                   "CHECKPOINT_CONTROLS": "true"}
+        for name, selected in (("capture", worker), ("capture", capture), ("collect", collect),
+                               ("collect", {**collect, "CAPTURE_DEFERRED": "true"})):
+            with self.subTest(action=name, selected=selected):
+                result, args, token, _ = self.run_action(name, **policy, **selected)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(1, args.count("--sdk-checkpoint-owner"))
+                self.assertEqual(policy["CODEX_AGENT_CHECKPOINT_OWNER_POLICY"],
+                                 args[args.index("--sdk-checkpoint-owner") + 1])
+                self.assertEqual(1, args.count("--sdk-checkpoint"))
+                self.assertEqual(policy["CODEX_AGENT_SDK_CHECKPOINT"],
+                                 args[args.index("--sdk-checkpoint") + 1])
+                self.assertEqual("synthetic environment-only token", token)
+                self.assertNotIn("--token", args)
+                if name == "collect":
+                    self.assertIn("--checkpoint-controls", args)
+                    self.assertEqual(2, len(self.invocations))
+                    if selected.get("CAPTURE_DEFERRED") == "true":
+                        self.assertNotIn("--input-root", args)
+                        self.assertEqual("17", args[args.index("--capture-sdk-state-wave") + 1])
+        for family, wave in (("ios-metadata", "10"), ("core-binary", "11"), ("core-package", "12")):
+            for name, selected in (("capture", {**capture, "PREFLIGHT_WAVE": wave}),
+                                   ("collect", {**collect, "WAVE": wave})):
+                with self.subTest(legacy_family=family, action=name):
+                    selected.update(SDK_FAMILY=family, SDK_STATE_WAVE=str(int(wave)-1),
+                                    GITHUB_JOB="sdk-collect-" + wave)
+                    result, args, _, _ = self.run_action(name, **policy, **selected)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertIn("--sdk-checkpoint", args)
+        result, args, token, _ = self.run_action("capture", **policy, **capture, DEFER_TRANSPORT="true")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIsNone(args)
+        self.assertIsNone(token)
+        for name, selected in (("capture", worker), ("capture", capture), ("collect", collect)):
+            faults = [{"CODEX_AGENT_CHECKPOINT_OWNER_POLICY": ""}, {"SDK_STATE_WAVE": ""},
+                      {"SDK_STATE_WAVE": "16"}, {"SDK_STATE_WAVE": "18"},
+                      {"SDK_FAMILY": "android-validation"}, {"SDK_FAMILY": "android-package"},
+                      {"GITHUB_JOB": "unrelated"},
+                      {"STATE_PRODUCT" if name == "capture" else "PRODUCT": "runtime"}]
+            faults.append({"WAVE": "17"} if name == "collect" else {"PREFLIGHT_WAVE": "17"})
+            if name == "capture":
+                faults.append({"GITHUB_JOB": "sdk-collect-18"} if not selected.get("PREFLIGHT_WAVE")
+                              else {"GITHUB_JOB": "sdk-android-metadata"})
+                faults.append({"TARGET": "android"})
+            for fault in faults:
+                with self.subTest(action=name, selected=selected, fault=fault):
+                    result, args, token, _ = self.run_action(name, **{**policy, **selected, **fault})
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIsNone(args)
+                    self.assertIsNone(token)
+
     def test_capture_routes_each_family_with_exact_original_sdk_state_arguments(self):
         for family, wave in FAMILY_WAVES.items():
             predecessor = str(wave - 1)

@@ -186,6 +186,9 @@ runs:
         if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then
           policy+=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY")
         fi
+        if [ -n "${CODEX_AGENT_SDK_CHECKPOINT:-}" ]; then
+          policy+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$CODEX_AGENT_SDK_CHECKPOINT")
+        fi
         python3 -B -m ci.sdk_workflow matrix \
           --plan "$PLAN" --discovery-root "$DISCOVERY" --state-root "$STATE" \
           --family android-metadata --sdk-validation-tooling "$SDK_TOOLING" \
@@ -360,6 +363,9 @@ runs:
                 fields[flag] = os.environ[name]
         if os.environ.get('CODEX_AGENT_COMPLETED_REUSE_POLICY'):
             fields['--completed-frozen-policy'] = os.environ['CODEX_AGENT_COMPLETED_REUSE_POLICY']
+        if os.environ.get('CODEX_AGENT_SDK_CHECKPOINT'):
+            fields['--sdk-checkpoint-owner'] = os.environ['CODEX_AGENT_CHECKPOINT_OWNER_POLICY']
+            fields['--sdk-checkpoint'] = os.environ['CODEX_AGENT_SDK_CHECKPOINT']
         command = [sys.executable, '-B', '-m', 'ci.sdk_workflow', 'android-metadata']
         command += [part for flag, value in fields.items() for part in (flag, value)]
         subprocess.run(command, cwd=root, check=True)

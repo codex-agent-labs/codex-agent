@@ -257,7 +257,11 @@ class HistoricalIssuerEntryTest(unittest.TestCase):
         e=self.e;e.noop=True
         with patch.object(completed,'discover_historical_checkpoint',return_value=(None,None)):
             work=e.issue(preceding_selector='auto')
-        self.assertNotIn('history',e.core.call_args.kwargs)
+        arguments = e.core.call_args.kwargs
+        self.assertIsNone(arguments['previous'])
+        self.assertIsNone(arguments['_previous_archive_bytes'])
+        self.assertEqual(self.history, arguments['history'])
+        self.assertEqual(self.policy, arguments['current_policy'])
         self.assertEqual(e.fixture.policy['bootstrap'],native.sdk_checkpoint_job_output(work,'','',e.output)['native'])
 
 class CompletedCheckpointIssuerEntryTest(unittest.TestCase):

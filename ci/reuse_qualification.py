@@ -2056,7 +2056,7 @@ def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
     report = issue_checkpoint(policy, inputs["source"], inputs["controlArtifact"], work,
         root=root, revision=commit, frozen=load_canonical_json_bytes(frozen_bytes), token=token, previous=previous,
         **({"history": history, "current_policy": current_policy, "_previous_archive_bytes": archive_bytes}
-           if previous is not None and "ownerPolicySha256" in previous else {}))
+           if historical else {}))
     if any(read_regular_file_bytes(path, max_bytes=LIMIT, reject_symlink_parents=True) != raw for path, raw in held):
         raise ValueError("Historical issuer current policy changed during issuance")
     if read_regular_file_bytes(policy_path, max_bytes=16 * 1024, reject_symlink_parents=True) != owner_bytes:

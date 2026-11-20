@@ -1047,3 +1047,172 @@ class NativeIssuerDiscoveryTest(unittest.TestCase):
                     self.assertEqual([990],reads)
                 else:self.assertEqual((None,None,[]),(result,raw,reads))
                 self.assertEqual([],f.verified)
+
+
+class AndroidCheckpointConsumerTest(unittest.TestCase):
+    def fixture(self, job="sdk-android-metadata", wave=17):
+        t=SdkCheckpointConsumerTest();t.setUp();self.addCleanup(t.doCleanups)
+        f=t.f
+        f.policy["collectors"]=sorted(set(f.policy["collectors"])|{
+            completed._ANDROID_VALIDATION_COLLECTOR,completed._ANDROID_METADATA_COLLECTOR})
+        f.source["jobName"]=(completed._ANDROID_VALIDATION_COLLECTOR if wave==17 else completed._ANDROID_METADATA_COLLECTOR)
+        f.collector["name"]=f.source["jobName"]
+        f.envelope["sourceCheckpoint"]["source"]=f.source
+        f.identity=completed.checkpoint_archive_identity(f.policy,f.source,**{k:v for k,v in native._native_pin_arguments(f.selector).items()
+            if k in ("signer_commit","source_commit","run_id","run_attempt")})
+        f.issuer["name"]=f.identity["jobName"]
+        f.envelope["ownerPolicySha256"]=sha256_bytes(canonical_json_bytes(f.policy))
+        f.envelope["completion"]["specSha256"]=sha256_bytes(canonical_json_bytes(f.spec))
+        f.artifacts[f.source["artifactId"]]["name"]=f"codex-agent-sdk-wave-{wave}-state-{f.producer['tree']}-attempt-{f.producer['runAttempt']}"
+        f.artifacts[992]["name"]=completed.collector_control_artifact_name(f.source)
+        f.envelope["completion"]["source"]=products._runtime_original_locator(f.artifacts[f.source["artifactId"]],
+            f.source["workflowSha"],PhaseInstanceId("sdk","javascript","metadata","node"),f.collector)
+        t.ready={"product":"sdk","component":"sdk-android","phase":"metadata","target":"android",
+            "state":"build","buildKey":"sha256:"+"5"*64,"receiptSha256":None,"objectSha256":None}
+        f.envelope["completion"]["controls"]["runtime-state/reuse-wave-result.json"]["phases"].append(t.ready)
+        t.forwarder={**t.current,"id":994,"name":"product-validation / sdk-android-validation-result / sdk-android-validation-result",
+            "status":"completed","conclusion":"success","started_at":"2026-10-24T10:40:00Z","completed_at":"2026-10-24T10:40:30Z"}
+        t.worker={**t.current,"id":995,"name":"product-validation / sdk-android-metadata-result / sdk-android-metadata-android ("+t.ready["buildKey"]+", ...",
+            "status":"completed","conclusion":"success","started_at":"2026-10-24T10:41:00Z","completed_at":"2026-10-24T10:42:00Z"}
+        current_name=(t.worker["name"] if job=="sdk-android-metadata" else completed._ANDROID_METADATA_COLLECTOR)
+        if job=="sdk-checkpoint-18":current_name="product-validation / sdk-android-metadata-result / sdk-checkpoint-18 / completed-sdk-checkpoint"
+        t.current.update(name=current_name,started_at="2026-10-24T10:44:00Z")
+        f.jobs=[f.collector,f.issuer,t.current,t.forwarder,*([t.worker] if job!="sdk-android-metadata" else [])]
+        t.next_source=None
+        if job=="sdk-checkpoint-18":
+            t.next_source={**deepcopy(f.source),"jobName":completed._ANDROID_METADATA_COLLECTOR,"jobId":996,"artifactId":1003}
+            t.next_collector={**t.worker,"id":996,"name":completed._ANDROID_METADATA_COLLECTOR,
+                "started_at":"2026-10-24T10:42:10Z","completed_at":"2026-10-24T10:43:00Z"}
+            f.jobs.append(t.next_collector)
+            f.artifacts[1003]=f.artifact(1003,f"codex-agent-sdk-wave-18-state-{f.producer['tree']}-attempt-{f.producer['runAttempt']}",
+                f.source["artifactSha256"],f.source["artifactBytes"],"10:42:30")
+        root=Path(products.__file__).resolve().parents[1]
+        t.workflows={path:(root/path).read_bytes() for path in
+            (".github/workflows/product-validation.yml",*completed._ANDROID_CHECKPOINT_WORKFLOWS)}
+        for path in completed._ANDROID_CHECKPOINT_WORKFLOWS:
+            f.run["referenced_workflows"].append({"path":native.REPOSITORY+"/"+path+"@"+f.policy["collectorWorkflowSha"],"sha":f.policy["collectorWorkflowSha"]})
+        f.upload();t.output.update(source=f.source,native=f.selector,subjectSha256=sha256_bytes(f.subject))
+        return t
+
+    @contextmanager
+    def open(self,t,job):
+        f=t.f;f.number+=1
+        with t.boundaries(),patch("products.inventory.git_regular_blob_bytes",side_effect=lambda root,revision,path,**kw:t.workflows[path]), \
+                completed.checkpoint_consumer(f.policy,t.output,f.root/str(f.number),root=f.root,consumer=t.consumer,
+                    job=job,token="synthetic",_next_source=t.next_source) as witness:
+            yield witness
+
+    def test_exact_signed_metadata_key_nested_forwarders_and_lifetime(self):
+        for job in ("sdk-android-metadata","sdk-collect-18","sdk-checkpoint-18"):
+            with self.subTest(job=job):
+                t=self.fixture(job)
+                with self.open(t,job) as witness:
+                    self.assertEqual(t.f.policy["bootstrap"],witness.bootstrap())
+                    self.assertEqual([990],t.f.downloads)
+                    self.assertEqual(1,sum("/jobs?" in url for url in t.f.urls))
+                with self.assertRaisesRegex(ValueError,"closed"):witness.check()
+
+    def test_changed_forwarding_key_or_actual_job_never_grants_authority(self):
+        for fault in ("key","duplicate-ready","not-ready","forwarder-failed","forwarder-late","worker-failed",
+                      "worker-key","collector-early","workflow","source","owner","selector","worker-needs","issuer-needs","result-output"):
+            with self.subTest(fault=fault):
+                job="sdk-checkpoint-18" if fault=="collector-early" else "sdk-collect-18" if fault in {"worker-failed","worker-key"} else "sdk-android-metadata"
+                t=self.fixture(job);f=t.f
+                if fault=="key":t.current["name"]=t.current["name"].replace("5"*64,"6"*64)
+                elif fault=="duplicate-ready":f.envelope["completion"]["controls"]["runtime-state/reuse-wave-result.json"]["phases"].append(deepcopy(t.ready))
+                elif fault=="not-ready":t.ready["state"]="waiting"
+                elif fault=="forwarder-failed":t.forwarder["conclusion"]="failure"
+                elif fault=="forwarder-late":t.forwarder["completed_at"]="2026-10-24T10:45:00Z"
+                elif fault=="worker-failed":t.worker["conclusion"]="failure"
+                elif fault=="worker-key":t.worker["name"]=t.worker["name"].replace("5"*64,"6"*64)
+                elif fault=="collector-early":t.next_collector["started_at"]="2026-10-24T10:41:30Z"
+                elif fault=="workflow":f.run["referenced_workflows"].pop()
+                elif fault=="source":t.consumer={**t.consumer,"producer":{**f.producer,"runAttempt":2}}
+                elif fault=="owner":f.policy["collectors"].remove(completed._ANDROID_METADATA_COLLECTOR)
+                else:
+                    path=completed._ANDROID_CHECKPOINT_WORKFLOWS[1]
+                    before,after={"selector":(b"${{ fromJSON(inputs.validationWave).outputs.checkpoint }}",b"${{ inputs.checkpoint }}"),
+                        "worker-needs":(b"needs: [sdk-android-metadata]",b"needs: [plan]"),
+                        "issuer-needs":(b"needs: [sdk-collect-18]",b"needs: [plan]"),
+                        "result-output":(b"${{ steps.result.outputs.checkpoint }}",b"${{ steps.other.outputs.checkpoint }}")}[fault]
+                    self.assertIn(before,t.workflows[path]);t.workflows[path]=t.workflows[path].replace(before,after)
+                if fault in {"duplicate-ready","not-ready"}:
+                    f.upload();t.output.update(native=f.selector,subjectSha256=sha256_bytes(f.subject))
+                with self.assertRaises(ValueError):
+                    with self.open(t,job):self.fail("invalid Android checkpoint yielded authority")
+
+    def historical(self,wave=17):
+        t=self.fixture(wave=wave);h=HistoricalCheckpointConsumerTest();h.setUp();self.addCleanup(h.doCleanups)
+        h.fixture=t;h.f=t.f;h.owner=deepcopy(t.f.policy)
+        h.owner.update(issuerCommit="b"*40,collectorWorkflowSha="b"*40)
+        h.history["currentOwner"]=h.owner
+        h.history["historicalPolicies"]=[{"sha256":sha256_bytes(canonical_json_bytes(t.f.policy)),"policy":deepcopy(t.f.policy)}]
+        h.policy["sdkCompletion"]=deepcopy(h.owner["bootstrap"])
+        h.selection={"ownerPolicySha256":h.history["historicalPolicies"][0]["sha256"],"checkpoint":deepcopy(t.output)}
+        h.producer={**t.f.producer,"runId":t.f.producer["runId"]+1,"commit":"e"*40,"tree":"d"*40}
+        h.consumer={"kind":"ci","producer":h.producer};h.bind_current()
+        return h
+
+    def test_both_historical_android_checkpoints_keep_independent_owner_and_current_source(self):
+        for wave in (17,18):
+            with self.subTest(wave=wave):
+                h=self.historical(wave)
+                with h.open() as witness:
+                    self.assertIs(type(witness),completed._HistoricalCheckpointConsumer)
+                    self.assertEqual(h.f.policy["bootstrap"],witness.bootstrap())
+                h.history["historicalPolicies"]=[]
+                with self.assertRaises(ValueError):
+                    with h.open():self.fail("unapproved old Android owner yielded authority")
+
+    def test_discovery_finds_android17_and18_without_trusting_the_locator(self):
+        for wave in (17,18):
+            with self.subTest(wave=wave):
+                h=self.historical(wave);f=h.f
+                phases=completed._records(f.spec["completedPhases"],"fixture phases")
+                current={key:{field:row[field] for field in completed.IDENTITY+completed.OBJECT} for key,row in phases.items()}
+                baseline=dict(list(current.items())[:1]);reads=[]
+                def download(artifact,token,path,*args):
+                    reads.append(artifact["id"]);Path(path).write_bytes(f.raw);return artifact,path
+                with h.boundaries(),patch("products.inventory.git_regular_blob_bytes",return_value=canonical_json_bytes(f.spec)), \
+                        patch.object(completed,"_current_checkpoint_baseline",side_effect=[baseline,current]), \
+                        patch.object(products,"_catalog_artifacts",return_value=[f.artifacts[990]]), \
+                        patch.object(products,"_download_contract_ci_upload_bytes",side_effect=download):
+                    selector,raw=completed.discover_historical_checkpoint(h.history,h.policy,root=f.root,consumer=h.consumer,token="synthetic")
+                self.assertEqual(h.selection,selector);self.assertEqual(f.raw,raw);self.assertEqual([990],reads)
+
+
+    def test_same_attempt_android_discovery_and_issuer_keep_literal_edges_and_single_observation(self):
+        t=self.fixture("sdk-checkpoint-18");f=t.f
+        history={"schemaVersion":1,"kind":"sdk-checkpoint-history","consumerCommit":"9"*40,
+            "currentOwner":deepcopy(f.policy),"historicalPolicies":[]}
+        policy={"schemaVersion":1,"kind":"completed-frozen-reuse","consumerCommit":"9"*40,
+            "verifierPolicySha256":"sha256:"+"a"*64,**f.policy["bootstrap"],"sdkCompletion":deepcopy(f.policy["bootstrap"])}
+        selection={"ownerPolicySha256":sha256_bytes(canonical_json_bytes(f.policy)),"checkpoint":deepcopy(t.output)}
+        phases=completed._records(f.spec["completedPhases"],"fixture phases")
+        current={key:{field:row[field] for field in completed.IDENTITY+completed.OBJECT} for key,row in phases.items()}
+        baseline=dict(list(current.items())[:1])
+        def download(artifact,token,path,*args):Path(path).write_bytes(f.raw);return artifact,path
+        with t.boundaries(),patch("products.inventory.git_regular_blob_bytes",return_value=canonical_json_bytes(f.spec)), \
+                patch.object(completed,"_current_checkpoint_baseline",side_effect=[baseline,current]), \
+                patch.object(products,"_catalog_artifacts",return_value=[f.artifacts[990]]), \
+                patch.object(products,"_download_contract_ci_upload_bytes",side_effect=download):
+            found,raw=completed.discover_historical_checkpoint(history,policy,root=f.root,consumer=t.consumer,
+                token="synthetic",_issuer_source=t.next_source)
+        self.assertEqual(selection,found);self.assertEqual(f.raw,raw)
+        for invalid in (False,True):
+            with self.subTest(invalid_edge=invalid):
+                f.number+=1
+                if invalid:
+                    path=completed._ANDROID_CHECKPOINT_WORKFLOWS[1]
+                    t.workflows[path]=t.workflows[path].replace(b"needs: [sdk-collect-18]",b"needs: [plan]")
+                with t.boundaries(),patch("products.inventory.git_regular_blob_bytes",side_effect=lambda root,revision,path,**kw:t.workflows[path]):
+                    scope=completed._historical_checkpoint_issuer(history,selection,f.root/str(f.number),root=f.root,
+                        current_policy=policy,source=t.next_source,token="synthetic",_archive_bytes=f.raw)
+                    if invalid:
+                        with self.assertRaises(ValueError):
+                            with scope:self.fail("unwired same-attempt Android edge yielded authority")
+                    else:
+                        with scope as witness:
+                            self.assertIs(type(witness),completed._HistoricalCheckpointIssuer)
+                            self.assertIs(witness.observation,witness._current_observation)
+                        with self.assertRaisesRegex(ValueError,"closed"):witness.check()
