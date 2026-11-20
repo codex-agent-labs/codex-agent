@@ -205,7 +205,8 @@ def forward(selected, workspace, landed, object_pins):
         result = join_sdk_candidate(output / "catalog", controls, output / "maven", output / "runtime",
             selected["join"], parity_archive=output / "parity/original.zip",
             parity_phase_identities=output / "parity/controls/original-phase-identities.json",
-            use_promoted_objects=True)
+            use_promoted_objects=True, landed_repository=landed,
+            expected_landed_commit=selected["landedCommit"])
         join_elapsed = time.monotonic_ns() - started
         evidence = output / "evidence"
         evidence.mkdir(exist_ok=True)

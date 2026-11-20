@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -279,6 +280,126 @@ class SdkCandidatePackageReadTest(unittest.TestCase):
                 stored["path"].write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
                 with self.assertRaises(ValueError):
                     candidate._package_compatibility(stored["path"], entry, stored["objectSha256"], "0.8.0")
+
+
+
+class SdkCandidatePublicSwiftSourceTest(unittest.TestCase):
+    """Small committed source fixtures only; no package body or release authority."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.git("init", "--quiet")
+        self.original = (Path(__file__).resolve().parents[2] / "Package.swift").read_bytes()
+        match, = candidate._PUBLIC_SWIFT_BINARY.finditer(self.original)
+        self.digest = "1" * 64
+        self.url = ("https://github.com/codex-agent-labs/codex-agent/releases/download/"
+                    "sdk%2Fv0.8.0/CodexAgent-0.8.0.xcframework.zip")
+        self.valid = (self.original[:match.start(1)] + self.url.encode() +
+            self.original[match.end(1):match.start(2)] + self.digest.encode() + self.original[match.end(2):])
+        self.receipt = dict(product="sdk", component="sdk-ios", phase="package", target="ios",
+            productVersion="0.8.0", buildKey=_KEY, inputs={"inventory": [{"relativePath": "Package.swift",
+                "bytes": len(self.valid), "sha256": sha256_bytes(self.valid)}]}, outputs=[
+                dict(kind="apple", relativePath="outputs/apple/CodexAgent-0.8.0.xcframework.zip",
+                     bytes=123, sha256="sha256:" + self.digest),
+                dict(kind="apple", relativePath="outputs/apple/CodexAgent-0.8.0.xcframework.zip.sha256",
+                     bytes=65, sha256=sha256_bytes((self.digest + "\n").encode()))])
+        self.commit(self.valid)
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.root), *args], stderr=subprocess.DEVNULL).decode().strip()
+
+    def commit(self, raw):
+        (self.root / "Package.swift").write_bytes(raw)
+        self.git("add", "Package.swift")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "source fixture")
+        self.commit_id = self.git("rev-parse", "HEAD")
+        self.tree = self.git("rev-parse", "HEAD^{tree}")
+
+    def verify(self, **overrides):
+        args = dict(expected_commit=self.commit_id, expected_tree=self.tree, sdk_version="0.8.0")
+        args.update(overrides)
+        return candidate.verify_candidate_public_swift_source(self.root, self.receipt, **args)
+
+    def test_landed_source_matches_receipt_without_product_reads_or_execution(self):
+        with patch.object(candidate, "_verified_object_snapshot", side_effect=AssertionError("object replay")), \
+             patch.object(zipfile, "ZipFile", side_effect=AssertionError("archive read")):
+            result = self.verify()
+        self.assertEqual(result["assetUrl"], self.url)
+        self.assertEqual(result["releaseTag"], "sdk/v0.8.0")
+        self.assertEqual(result["manifestSha256"], sha256_bytes(self.valid))
+        self.assertEqual(result["packageReceiptSha256"], sha256_bytes(canonical_json_bytes(self.receipt)))
+        self.assertEqual(result["sourceTree"], self.tree)
+
+    def test_wrong_urls_checksums_and_ambiguous_swift_are_rejected(self):
+        cases = {
+            "checked-in-0.2": self.original,
+            "wrong-version": self.valid.replace(b"0.8.0", b"0.2.0"),
+            "unencoded-tag": self.valid.replace(b"sdk%2Fv", b"sdk/v"),
+            "wrong-repository": self.valid.replace(b"codex-agent-labs/", b"another-owner/"),
+            "wrong-archive": self.valid.replace(b"CodexAgent-0.8.0", b"CodexAgentPackage-0.8.0"),
+            "wrong-checksum": self.valid.replace(self.digest.encode(), b"2" * 64),
+            "computed-url": self.valid.replace(self.url.encode(), b'https://github.com/" + "elsewhere'),
+            "duplicate-target": self.valid + b'\n.binaryTarget(name: "CodexAgent", url: "x", checksum: "' + self.digest.encode() + b'")\n',
+            "conditional": b"#if os(macOS)\n" + self.valid + b"#endif\n",
+            "extra-code": self.valid + b"\npackage.targets = []\n",
+            "changed-product": self.valid.replace(b'"CodexAgentObservation"', b'"OtherObservation"'),
+        }
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                self.commit(raw)
+                self.receipt["inputs"]["inventory"] = [{"relativePath": "Package.swift",
+                    "bytes": len(raw), "sha256": sha256_bytes(raw)}]
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_pure_declaration_preview_is_not_a_matching_original_source(self):
+        self.assertEqual(candidate.verify_public_swift_declaration(
+            self.valid, self.receipt, sdk_version="0.8.0")["assetUrl"], self.url)
+        self.receipt["inputs"]["inventory"][0].update(
+            bytes=len(self.original), sha256=sha256_bytes(self.original))
+        with self.assertRaisesRegex(ValueError, "authenticated package input"):
+            self.verify()
+
+    def test_only_actual_approved_git_source_and_exact_checksum_record_are_accepted(self):
+        for kwargs in (dict(expected_commit="f" * 40), dict(expected_tree="e" * 40),
+                       dict(expected_commit="HEAD"), dict(sdk_version="0.2.0")):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.verify(**kwargs)
+        with patch.object(candidate, "read_regular_file_bytes", side_effect=[self.valid, b"changed"]), \
+             self.assertRaisesRegex(ValueError, "changed during"):
+            self.verify()
+        # A corrected private/working copy does not substitute for its landed blob.
+        self.commit(self.original)
+        (self.root / "Package.swift").write_bytes(self.valid)
+        with self.assertRaisesRegex(ValueError, "landed Git blob"):
+            self.verify()
+        self.commit(self.valid)
+        original = copy.deepcopy(self.receipt)
+        for mutate in (
+            lambda r: r["inputs"]["inventory"].clear(),
+            lambda r: r["inputs"]["inventory"].append(dict(r["inputs"]["inventory"][0])),
+            lambda r: r["inputs"]["inventory"][0].update(sha256=_RECEIPT),
+            lambda r: r.update(component="sdk-core"),
+            lambda r: r.update(productVersion="0.2.0"),
+            lambda r: r["outputs"].pop(),
+            lambda r: r["outputs"].append(dict(r["outputs"][0])),
+            lambda r: r["outputs"][1].update(sha256=_RECEIPT),
+            lambda r: r["outputs"][1].update(bytes=64),
+            lambda r: r["outputs"][0].update(kind="evidence"),
+        ):
+            self.receipt = copy.deepcopy(original)
+            mutate(self.receipt)
+            with self.subTest(receipt=self.receipt), self.assertRaises(ValueError):
+                self.verify()
+        self.receipt = original
+        path = self.root / "Package.swift"
+        path.unlink()
+        path.symlink_to(self.root / "elsewhere")
+        with self.assertRaises((ValueError, OSError)):
+            self.verify()
 
 
 if __name__ == "__main__":

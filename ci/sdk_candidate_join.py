@@ -17,7 +17,10 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ci.sdk_candidate_admission import _REPOSITORY, _SECRETS, _TOKENS, candidate_object_root
-from ci.sdk_candidate_semantics import _package_compatibility, _selection, verify_sdk_candidate_semantics
+from ci.sdk_candidate_semantics import (
+    _package_compatibility, _selection, verify_candidate_public_swift_source,
+    verify_sdk_candidate_semantics,
+)
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
     require_exact_keys, require_sha256, sha256_bytes, sha256_file,
@@ -62,10 +65,16 @@ def _verify_default_runtime(library: Path, evidence: Path, root_bytes: bytes,
 def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarded_maven: Path,
                        forwarded_runtime: Path, selection: dict, *,
                        parity_archive: Path, parity_phase_identities: Path,
-                       use_promoted_objects: bool = False) -> dict:
+                       use_promoted_objects: bool = False,
+                       landed_repository: Path | None = None,
+                       expected_landed_commit: str | None = None) -> dict:
     require_no_signing_secret(os.environ)
     if (_TOKENS | _SECRETS) & os.environ.keys():
         raise ValueError("SDK candidate join must not receive token or signing secret")
+    # Component-only local joins keep their existing scope. The normal hosted
+    # forwarder always supplies both source arguments; there is no CLI bypass.
+    if (landed_repository is None) != (expected_landed_commit is None):
+        raise ValueError("Public Swift source requires both landed repository and commit")
     approved = canonical_json_bytes(selection)
     selection = require_exact_keys(selection, {"schemaVersion", "sdk", "runtime"},
                                    "SDK candidate selection")
@@ -153,7 +162,14 @@ def join_sdk_candidate(promoted_catalog: Path, forwarded_objects: Path, forwarde
             or sha256_file(parity_phase_identities, reject_symlink_parents=True) != parity_pins["phaseIdentitiesSha256"]
             or canonical_json_bytes(selection) != approved):
         raise ValueError("SDK candidate inputs changed during Runtime join")
-    return {**joined, "runtimeAuthorizationTargets": list(NATIVE_TARGETS),
+    public_source = {}
+    if landed_repository is not None:
+        ios = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+        public_source["publicSwiftSource"] = {**verify_candidate_public_swift_source(
+            landed_repository, originals[ios]["receipt"],
+            expected_commit=expected_landed_commit, expected_tree=pins["expected_validation_tree"],
+            sdk_version=pins["expected_sdk_version"]), "packageObjectSha256": by_id[ios]["objectSha256"]}
+    return {**joined, **public_source, "runtimeAuthorizationTargets": list(NATIVE_TARGETS),
             "runtimeAuthorizationInventorySha256": runtime_pins["inventorySha256"],
             "sdkRuntimeRootSha256": runtime_pins["rootPublicKeySha256"]}
 

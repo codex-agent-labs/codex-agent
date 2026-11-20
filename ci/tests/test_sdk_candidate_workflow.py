@@ -161,6 +161,8 @@ class SdkCandidateWorkflowTest(unittest.TestCase):
             for method in (mvn, index, runtime, join):
                 method.assert_called_once()
             self.assertTrue(join.call_args.kwargs["use_promoted_objects"])
+            self.assertEqual(join.call_args.kwargs["landed_repository"], workspace / "landed")
+            self.assertEqual(join.call_args.kwargs["expected_landed_commit"], selected["landedCommit"])
             self.assertEqual(join.call_args.args[0], workspace / "candidate/catalog")
             self.assertEqual({row["relativePath"] for row in regular_file_inventory(workspace / "candidate")},
                 {"objects-control/object-pins.json", "evidence/index-transport.json", "evidence/maven-transport.json",

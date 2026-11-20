@@ -90,7 +90,7 @@ class SdkCandidateJoinTest(unittest.TestCase):
         return sha256_bytes(canonical_json_bytes(candidate.regular_file_inventory(self.runtime)))
 
     def verify(self, *, bad_root_for=None, wrong_binary=False, verifier=verify_external_library_authorization,
-               use_promoted_objects=False):
+               use_promoted_objects=False, public_source=False):
         originals = {PhaseInstanceId(*(row[field] for field in ("product", "component", "phase", "target"))):
             {"receipt": {**row, "productVersion": "0.8.0", "inputs": {"inventory": [{
                 "relativePath": "gradle/release/keys/sdk-runtime-root.pub",
@@ -106,13 +106,33 @@ class SdkCandidateJoinTest(unittest.TestCase):
         if wrong_binary:
             predecessor["buildKey"] = sha256_bytes(b"unselected binary")
         originals[PhaseInstanceId("sdk", "csharp", "package", "desktop")]["receipt"]["inputs"]["upstreamArtifacts"] = [predecessor]
-        with patch.object(candidate, "verify_sdk_candidate_semantics", return_value={"admitted": False}) as sdk, \
+        ios = PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
+        if public_source:
+            row = dict(product="sdk", component="sdk-ios", phase="package", target="ios",
+                buildKey=sha256_bytes(b"ios-key"), receiptSha256=sha256_bytes(b"ios-receipt"),
+                objectSha256=sha256_bytes(b"ios-object"))
+            rows = self.rows + [row]
+            write_canonical_json(self.objects / "object-pins.json", {"objects": rows})
+            self.selection["sdk"]["joinPins"]["expected_object_pins_sha256"] = sha256_file(self.objects / "object-pins.json")
+            originals[ios] = {"receipt": {**row, "original": "authenticated existing session"}}
+        with patch.object(candidate, "verify_candidate_public_swift_source", return_value={"fixture": "source checked"}) as swift, \
+             patch.object(candidate, "verify_sdk_candidate_semantics", return_value={"admitted": False}) as sdk, \
              patch.object(candidate, "verify_release_sdk_campaign_objects", return_value=originals) as objects, \
              patch.object(candidate, "_package_compatibility", return_value=self.compatibility) as resource, \
              patch.object(candidate, "verify_external_library_authorization", side_effect=verifier) as signatures:
             result = candidate.join_sdk_candidate(self.promoted, self.objects, self.maven, self.runtime,
                 self.selection, parity_archive=self.parity, parity_phase_identities=self.phases,
-                use_promoted_objects=use_promoted_objects)
+                use_promoted_objects=use_promoted_objects,
+                **({"landed_repository": self.root, "expected_landed_commit": "d" * 40} if public_source else {}))
+        if public_source:
+            swift.assert_called_once_with(self.root, originals[ios]["receipt"],
+                expected_commit="d" * 40,
+                expected_tree=self.selection["sdk"]["joinPins"]["expected_validation_tree"], sdk_version="0.8.0")
+            self.assertIs(swift.call_args.args[1], originals[ios]["receipt"])
+            self.assertEqual(result["publicSwiftSource"]["packageObjectSha256"], row["objectSha256"])
+        else:
+            swift.assert_not_called()
+            self.assertNotIn("publicSwiftSource", result)
         self.assertEqual(1, sdk.call_count)
         self.assertIs(use_promoted_objects, sdk.call_args.kwargs["use_promoted_objects"])
         self.assertEqual(1, objects.call_count)
@@ -121,6 +141,16 @@ class SdkCandidateJoinTest(unittest.TestCase):
         self.assertTrue(resource.call_args.args[0].is_relative_to(object_root))
         self.assertEqual(5, signatures.call_count)
         return result
+
+    def test_public_source_uses_already_authenticated_receipt_in_the_same_join(self):
+        self.verify(public_source=True)
+        for kwargs in ({"landed_repository": self.root}, {"expected_landed_commit": "d" * 40}):
+            with self.subTest(kwargs=kwargs), \
+                 patch.object(candidate, "verify_sdk_candidate_semantics") as admission, \
+                 self.assertRaisesRegex(ValueError, "both landed repository and commit"):
+                candidate.join_sdk_candidate(self.promoted, self.objects, self.maven, self.runtime,
+                    self.selection, parity_archive=self.parity, parity_phase_identities=self.phases, **kwargs)
+            admission.assert_not_called()
 
     def test_shared_catalog_keeps_exact_runtime_root_and_default_checks(self):
         (self.objects / "objects/v1").rename(self.promoted / "v1")
