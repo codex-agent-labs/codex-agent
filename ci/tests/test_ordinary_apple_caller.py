@@ -40,7 +40,7 @@ class OrdinaryAppleCallerTest(unittest.TestCase):
                     {**members,swift._NAMES[1]:report.replace(b'"schemaVersion":1',b'"schemaVersion":true')}):
             with self.assertRaises(ValueError):swift._validate_controls(bad,producer,digest,expected)
 
-    def transport(self):
+    def transport(self, *, base=False):
         leaves={swift._PREFIX+n:n.encode() for n in swift._LEAVES};inner=io.BytesIO()
         with zipfile.ZipFile(inner,'w',compression=zipfile.ZIP_STORED) as z:
             z.writestr('stage/outputs/device/unconsumed.bin',b'x'*(2*1024**2))
@@ -49,10 +49,44 @@ class OrdinaryAppleCallerTest(unittest.TestCase):
         with zipfile.ZipFile(outer,'w',compression=zipfile.ZIP_STORED) as z:z.writestr(member['relativePath'],inner.getvalue())
         artifact={'id':1,'size_in_bytes':len(outer.getvalue()),'digest':swift.sha256_bytes(outer.getvalue()),
             'archive_download_url':'https://api.github.com/repos/codex-agent-labs/codex-agent/actions/artifacts/1/zip'}
-        native=SimpleNamespace(envelope=lambda record:{'receipt':{}},sdk_extension=lambda:{'spec':{},'proof':{'members':[member]}},
+        binary=dict(product='sdk',component='sdk-ios',phase='binary',target='ios')
+        native=SimpleNamespace(envelope=lambda record:{'receipt':{}},
+            sdk_extension=lambda:{'spec':{'schemaVersion':4,'completedPhases':[] if base else [binary]},
+                'proof':{'members':[] if base else [member]}},
+            sdk_original=lambda:{'proof':{'member':member}},
+            observe_sdk=lambda **k:(artifact,{},[]),
             observe_extended_sdk=lambda *a,**k:({},artifact,[]))
         expected={'frameworkFiles':[dict(relativePath=n,bytes=len(v),sha256=swift.sha256_bytes(v)) for n,v in leaves.items()]}
-        return SimpleNamespace(completed_frozen=native,producer={}),{'objectSha256':member['sha256']},expected,RangeOpener({1:outer.getvalue()}),leaves
+        return SimpleNamespace(completed_frozen=native,producer={},plan={}),{'objectSha256':member['sha256']},expected,RangeOpener({1:outer.getvalue()}),leaves
+
+    def test_schema_one_binary_uses_parent_member_and_fresh_source_observation(self):
+        import runtime_reference_archive as transport
+        for invalid in (False, True):
+            state,record,expected,opener,leaves=self.transport(base=True)
+            if invalid:
+                original=state.completed_frozen.sdk_original()
+                original['proof']['member']['sha256']='sha256:'+'0'*64
+                state.completed_frozen.sdk_original=lambda:original
+            with self.subTest(invalid=invalid), \
+                 patch.object(transport.urllib.request,'build_opener',return_value=opener), \
+                 patch.object(swift,'_retained_dependency_plan'), \
+                 patch.object(state.completed_frozen,'observe_sdk',wraps=state.completed_frozen.observe_sdk) as observe, \
+                 patch.object(state.completed_frozen,'observe_extended_sdk',side_effect=AssertionError('base is not extension')), \
+                 patch.object(zipfile.ZipFile,'read',side_effect=AssertionError('no read-all')), \
+                 patch.object(swift.products,'_restore_product_objects',side_effect=AssertionError('no whole object restore')):
+                destination=self.root/('bad-base' if invalid else 'base')
+                if invalid:
+                    with self.assertRaisesRegex(ValueError,'native parent'),ExitStack() as stack:
+                        swift._copy_framework(state,record,expected,destination,stack,'fixture')
+                    observe.assert_not_called()
+                    self.assertFalse(destination.exists())
+                else:
+                    with ExitStack() as stack:
+                        swift._copy_framework(state,record,expected,destination,stack,'fixture')
+                        for n,v in leaves.items():
+                            self.assertEqual(v,(destination/n[len(swift._PREFIX):]).read_bytes())
+                    observe.assert_called_once_with(plan=state.plan,producer=state.producer,token='fixture')
+                    self.assertLess(sum(b-a+1 for _,a,b in opener.requests),1024**2)
 
     def test_streams_only_four_original_leaves_and_holds_authority_until_exit(self):
         import runtime_reference_archive as transport
@@ -230,7 +264,7 @@ class SwiftStorageMeasurementTest(unittest.TestCase):
         self.assertEqual(14 * 1024**3, counters['swiftSourceEntryFreeBytes'])
         self.assertEqual(13 * 1024**3, counters['swiftSourceAfterFrameworkFreeBytes'])
         self.assertEqual(10 * 1024**3, counters['swiftSourceMinimumObservedFreeBytes'])
-        self.assertEqual(5, counters['swiftSourceDiskSamples'])
+        self.assertEqual(6, counters['swiftSourceDiskSamples'])
         self.assertGreater(counters['swiftSourceGradleElapsedNs'], 0)
         record = swift.load_json_bytes(controls[swift._NAMES[0]])
         self.assertNotIn('swiftSourceMinimumObservedFreeBytes', record)
@@ -248,6 +282,17 @@ class SwiftStorageMeasurementTest(unittest.TestCase):
                 else:
                     self.assertEqual(b'held earlier diagnostic', failure.read_bytes())
                     self.assertEqual(1, trace['inclusiveCounters']['swiftSourceFailureLogCaptureErrors'])
+
+    def test_dependency_failure_precedes_framework_intake_and_keeps_causal_tail(self):
+        from contextlib import redirect_stdout
+        output = io.StringIO()
+        with redirect_stdout(output):
+            controls, trace, failure = self.exercise('seed-failure')
+        self.assertIsNone(controls)
+        self.assertFalse(trace['success'])
+        self.assertIn('exact dependency failure', output.getvalue())
+        self.assertFalse(failure.exists())
+        self.assertGreater(trace['inclusiveCounters']['swiftSourceDependencySeedElapsedNs'], 0)
 
     def exercise(self, mode):
         from contextlib import redirect_stderr
@@ -268,9 +313,21 @@ class SwiftStorageMeasurementTest(unittest.TestCase):
         failure = root/'build/ci/retained-swift-source/failure.log'
         if mode == 'existing-diagnostic':
             failure.parent.mkdir(parents=True); failure.write_bytes(b'held earlier diagnostic')
+        seed_calls = []
+        def seed(repository, revision, wrapper, safe, destination):
+            self.assertEqual((root, producer["commit"], root/"gradlew"), (repository, revision, wrapper))
+            self.assertNotIn("GITHUB_TOKEN", safe)
+            self.assertIsNotNone(swift._VERIFICATION_SESSION.get())
+            self.assertFalse((destination.parent/"CodexAgent.framework").exists())
+            seed_calls.append(destination)
+            if mode == "seed-failure":
+                destination.mkdir(); (destination/"gradle.log").write_bytes(b"exact dependency failure\n")
+                raise ValueError("Pinned dependency fixture failed")
         class Child:
             pid = 123; returncode = 0
             def __init__(self, command, **kwargs):
+                assert len(seed_calls) == 1
+                assert "--offline" in command
                 self.polls = iter((None, None, 0))
                 kwargs['stdout'].write(b'fixture success\n' if mode == 'success'
                     else b'original compiler diagnostic\n' + b'x'*swift._LIMIT)
@@ -283,7 +340,7 @@ class SwiftStorageMeasurementTest(unittest.TestCase):
             def poll(self): return next(self.polls)
             def wait(self, **kwargs): self.returncode = 1; return 1
         stderr = io.StringIO()
-        with swift.verification_session(), patch.dict(os.environ, CODEX_AGENT_THROUGHPUT_TRACE='1'), \
+        with swift.verification_session(), patch('products.gradle_bootstrap.seed_sdk_gradle_dependencies', side_effect=seed), patch.dict(os.environ, CODEX_AGENT_THROUGHPUT_TRACE='1'), \
              patch.object(swift, '_expected', return_value=expected), \
              patch.object(swift, '_copy_framework', side_effect=lambda s,r,e,d,stack,t:d.mkdir()), \
              patch.object(swift, 'memoized_file_inventory', return_value=[]), \
@@ -293,14 +350,16 @@ class SwiftStorageMeasurementTest(unittest.TestCase):
              patch.object(swift.products, '_runtime_worker_checkout'), \
              patch.object(swift.subprocess, 'Popen', Child), patch.object(swift.os, 'killpg'), \
              patch.object(swift.time, 'sleep'), \
-             patch.object(swift.shutil, 'disk_usage', side_effect=[SimpleNamespace(free=n*1024**3) for n in (14,13,12,11,10)]), \
+             patch.object(swift.shutil, 'disk_usage', side_effect=[SimpleNamespace(free=n*1024**3) for n in (14,13,13,12,11,10)]), \
              redirect_stderr(stderr):
             controls = None
             if mode == 'success':
                 controls = swift.run_retained_swift_source(state,plan_path=plan_path,repository_root=root,environ=environment)
             else:
-                with self.assertRaisesRegex(ValueError, 'crossed its 2 GiB free-space or control-log bound'):
+                message = 'Pinned dependency fixture failed' if mode == 'seed-failure' else 'crossed its 2 GiB free-space or control-log bound'
+                with self.assertRaisesRegex(ValueError, message):
                     swift.run_retained_swift_source(state,plan_path=plan_path,repository_root=root,environ=environment)
+        self.assertEqual(1, len(seed_calls))
         traces = [json.loads(line.removeprefix('throughput ')) for line in stderr.getvalue().splitlines() if line.startswith('throughput ')]
         trace, = [r for r in traces if r['operation']=='run_retained_swift_source']
         return controls, trace, failure
