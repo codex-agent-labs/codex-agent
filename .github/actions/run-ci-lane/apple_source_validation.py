@@ -84,16 +84,25 @@ def _copy_framework(state, record, expected, destination, stack, token):
     envelope = native.envelope(record)
     _retained_dependency_plan(state, _BINARY, envelope)
     extension = native.sdk_extension()
-    if extension is None or not original_worker_member(extension["spec"]):
-        raise ValueError("Swift framework requires the qualified original worker member")
-    members = [r for r in extension["proof"]["members"] if r["sha256"] == record["objectSha256"]]
-    if len(members) != 1:
-        raise ValueError("Swift binary object is absent or ambiguous")
-    _, artifact, _ = native.observe_extended_sdk(record, producer=state.producer, token=token)
+    if extension is not None and any(products._identity(row) == _BINARY
+                                    for row in extension["spec"]["completedPhases"]):
+        if not original_worker_member(extension["spec"]):
+            raise ValueError("Swift framework requires the qualified original worker member")
+        members = [r for r in extension["proof"]["members"] if r["sha256"] == record["objectSha256"]]
+        if len(members) != 1:
+            raise ValueError("Swift binary object is absent or ambiguous")
+        member = members[0]
+        _, artifact, _ = native.observe_extended_sdk(record, producer=state.producer, token=token)
+    else:
+        original = native.sdk_original()
+        if original is None or original["proof"]["member"]["sha256"] != record["objectSha256"]:
+            raise ValueError("Swift binary object differs from its native parent")
+        member = original["proof"]["member"]
+        artifact, _, _ = native.observe_sdk(plan=state.plan, producer=state.producer, token=token)
     archive, stream = stack.enter_context(open_reference_archive(
         artifact, token, **products._worker_upload_reference_limits(_BINARY)))
     nested = stack.enter_context(open_stored_reference_archive(archive,
-        members[0]["relativePath"], expected_bytes=members[0]["bytes"]))
+        member["relativePath"], expected_bytes=member["bytes"]))
     try:
         for row in expected["frameworkFiles"]:
             copy_reference_member(nested, "stage/" + row["relativePath"],
@@ -173,13 +182,6 @@ def run_retained_swift_source(state, *, plan_path, repository_root, environ):
             products.count("swiftSourceMinimumObservedFreeBytes", minimum_free)
             products.count("swiftSourceDiskSamples", samples)
         stack.callback(storage_observation)
-        _copy_framework(state, record, before, framework, stack, environ["GITHUB_TOKEN"])
-        products.count("swiftSourceAfterFrameworkFreeBytes", sample_free())
-        expected_files = [{"relativePath": r["relativePath"][len(_PREFIX):], "bytes": r["bytes"], "sha256": r["sha256"]}
-                          for r in before["frameworkFiles"]]
-        if memoized_file_inventory(framework) != expected_files:
-            raise ValueError("Swift framework differs from the four consumed original leaves")
-        init = private / "fixed.init.gradle"; init.write_text(_init_script(private))
         from runtime_reference_transport import ENVIRONMENT as authority_environment
         env = {k: v for k, v in environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN", "REUSE_AUTHORITY_READ_TOKEN", *authority_environment}}
         env["CODEX_AGENT_SWIFT_SOURCE_OUTPUT"] = str(private / "output")
@@ -187,6 +189,39 @@ def run_retained_swift_source(state, *, plan_path, repository_root, environ):
         if read_regular_file_bytes(wrapper, reject_symlink_parents=True) != git_regular_blob_bytes(
                 root, state.producer["commit"], "gradlew", max_bytes=64 * 1024):
             raise ValueError("Swift Gradle wrapper differs from current source")
+        from products.gradle_bootstrap import seed_sdk_gradle_dependencies
+        seed = private / "build-dependencies"
+        require_no_signing_secret(environ)
+        products._runtime_worker_checkout(root, state.producer)
+        native.check_request(state.rebased_request)
+        seed_started = time.perf_counter_ns()
+        try:
+            seed_sdk_gradle_dependencies(root, state.producer["commit"], wrapper, env, seed)
+        except ValueError:
+            # The private fixture is retired at exit; retain only its bounded causal tail.
+            diagnostic = seed / "gradle.log"
+            if diagnostic.is_file() and not diagnostic.is_symlink():
+                descriptor, metadata = _open_regular_file(diagnostic, "Swift dependency log", reject_symlink_parents=True)
+                with os.fdopen(descriptor, "rb") as stream:
+                    stream.seek(max(0, metadata.st_size - 16 * 1024))
+                    print(stream.read(16 * 1024).decode("utf-8", errors="replace"), flush=True)
+            raise
+        finally:
+            products.count("swiftSourceDependencySeedElapsedNs", time.perf_counter_ns() - seed_started)
+            products._runtime_worker_checkout(root, state.producer)
+            native.check_request(state.rebased_request)
+            if (_expected(native, state.consumer, root) != before or
+                    read_regular_file_bytes(plan_path, reject_symlink_parents=True) != plan_raw):
+                raise ValueError("Swift source inputs changed during dependency preparation")
+        if sample_free() < 12 * 1024**3:
+            raise ValueError("Swift source check needs 12 GiB free after dependency preparation")
+        _copy_framework(state, record, before, framework, stack, environ["GITHUB_TOKEN"])
+        products.count("swiftSourceAfterFrameworkFreeBytes", sample_free())
+        expected_files = [{"relativePath": r["relativePath"][len(_PREFIX):], "bytes": r["bytes"], "sha256": r["sha256"]}
+                          for r in before["frameworkFiles"]]
+        if memoized_file_inventory(framework) != expected_files:
+            raise ValueError("Swift framework differs from the four consumed original leaves")
+        init = private / "fixed.init.gradle"; init.write_text(_init_script(private))
         command = [str(wrapper), _TASK, "--offline", "--no-build-cache", "--no-configuration-cache", "--stacktrace",
                    "--init-script", str(init), "-PcodexAgent.iosSimulatorFrameworkDirectory=" + str(framework)]
         log = private / "execution.log"
