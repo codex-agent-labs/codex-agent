@@ -86,7 +86,7 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            self.assertIn(len(original["gitHistory"]), (154, 155))
+            self.assertIn(len(original["gitHistory"]), (154, 155, 156, 157))
             baseline = {"repository": consumer.authority.REPOSITORY,
                 "commit": "79a57b87dbdec7ea0393b1f8e1eddb6bab75cdad",
                 "tree": "3d98d91bdeb41ec2591b7c110526982fb8b66c76"}
@@ -94,12 +94,12 @@ class AcquisitionTests(unittest.TestCase):
             expanded = copy.deepcopy(original)
             if len(expanded["gitHistory"]) == 154:
                 expanded["gitHistory"].append(baseline)
-            self.assertEqual(expanded["gitHistory"][-1], baseline)
+            self.assertEqual(expanded["gitHistory"][154], baseline)
             expanded["policy"]["requalificationBaseline"] = baseline["commit"]
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(expanded), APPROVAL), expanded)
             self.assertEqual(canonical_json_bytes(expanded["gitHistory"][:154]), retained)
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL), original)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -110,12 +110,44 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(156)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(158)]
                     elif fault == "duplicate": rows[-1] = dict(rows[0])
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
                     with self.assertRaises(ValueError):
                         consumer.completed_descriptor(canonical_json_bytes(value), APPROVAL)
+
+    def test_bridge_history_preserves_155_rows_and_requires_exact_approved_baseline(self):
+        from products.inventory import canonical_json_bytes
+        document = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
+        retained = copy.deepcopy(document["gitHistory"][:155])
+        self.assertEqual(len(retained), 155)
+        # Actual local Git identities; this descriptor-shape test is not issuer authentication.
+        additions = [
+            {"repository": consumer.authority.REPOSITORY,
+             "commit": "8013684c8e30198c88ae03870da66158fb1f4691",
+             "tree": "6bcde1da86d19d5fcc613536db654f05c4eeac7e"},
+            {"repository": consumer.authority.REPOSITORY,
+             "commit": "ca2db367c818acea4aa2d16b85525b20f1924d33",
+             "tree": "331a98f714d5af9fc8af371e1d385ab57798d614"},
+        ]
+        document["gitHistory"] = retained + additions
+        document["policy"]["requalificationBaseline"] = additions[0]["commit"]
+        approval = copy.deepcopy(APPROVAL)
+        if additions[0]["commit"] not in approval["approvedVerifiers"]:
+            approval["approvedVerifiers"].append(additions[0]["commit"])
+        self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(document), approval), document)
+        self.assertEqual(canonical_json_bytes(document["gitHistory"][:155]), canonical_json_bytes(retained))
+        for fault in ("revoked-baseline", "missing-baseline", "duplicate-issuer"):
+            changed, approvals = copy.deepcopy(document), copy.deepcopy(approval)
+            if fault == "revoked-baseline":
+                approvals["approvedVerifiers"].remove(additions[0]["commit"])
+            elif fault == "missing-baseline":
+                changed["gitHistory"].pop(155)
+            else:
+                changed["gitHistory"][-1] = copy.deepcopy(changed["gitHistory"][0])
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                consumer.completed_descriptor(canonical_json_bytes(changed), approvals)
 
     def test_completed_source_and_parent_use_their_independently_pinned_recipe(self):
         from products.inventory import canonical_json_bytes
