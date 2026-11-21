@@ -173,6 +173,7 @@ from products.runtime_evidence import (
     node_evidence_filename,
 )
 from products.restore import (
+    clone_publish_regular_tree,
     memoized_file_inventory as regular_file_inventory,
     verification_scoped,
     verification_session,
@@ -707,7 +708,9 @@ def _runtime_prior_workflow_sha(run, current_sha):
                              "a3620d11911883e6541ee2ac93f08b9811dfde20",
                              "a1cbc80b15a96cb2915d06afe1e29e319dda52fc",
                              "8f8b138c41312885be34e397e1ce088d80ec17c8",
-                             "de7be70f78755f05e91661c0c8405604cf4f63a2")):
+                             "de7be70f78755f05e91661c0c8405604cf4f63a2",
+                             # Publisher of run 44833963449 (new iOS package d1de146e).
+                             "6b9843249ac85b1c2746e18e324357686b761cd5")):
         try:
             _require_ci_workflow_reference(run,
                 f"codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@{sha}", sha)
@@ -4064,6 +4067,12 @@ def _plan_with_sdk_tooling(request, tooling, *, apple_policy=None, apple_package
                 "Caller-pinned original SDK inputs source")} if retained_source else {}))
     else:
         context = nullcontext(None)
+    from products.sdk_apple_package_admission import active_package_hold
+    hold = active_package_hold()
+    if hold is not None and needs_package and apple_package_origin is not None and apple_policy is not None:
+        # The consumer holds the complete original gate; keep its caller-owned
+        # original plan/receipt/trust scratch alive for the same lifetime.
+        context = nullcontext(hold["stack"].enter_context(context))
     with context as factory:
         if (apple_package_origin is not None and kwargs.get("completed_frozen") is not None
                 and "completed_native_runtime_projection_provider" not in kwargs
@@ -7411,6 +7420,7 @@ def collect_runtime_workers(
                             {"schemaVersion": 1, "files": signed_inventory})
                         provenance_inventory = regular_file_inventory(provenance, allow_empty=True)
                         staged = Path(staging).resolve() / "evidence"
+                        # A reference-only V recaptures P under the one wave-wide authority below.
                         stage_collected_apple_validation(original / "shard",
                             signed_capture / "original/sdk-apple-validation-evidence", staged,
                             target=instance.target, repository=root, policy_revision=state.plan["validationCommit"],
@@ -7467,7 +7477,16 @@ def collect_runtime_workers(
 
         collected = (_native_collection_rows(collect_row, selected) if sdk_family == "native-validation" and len(selected) > 1
                      else nullcontext((collect_row(*item) for item in selected)))
-        with collected as ordered:
+        # Without a pinned workflow no authority exists and reference-only V fails closed.
+        apple_wave = (sdk_family in {"ios-validation", "ios-metadata"} and isinstance(trusted_workflow_sha, str)
+                      and re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is not None)
+        if apple_wave:
+            from sdk_ios_original_validation import package_reference_recapture
+        # One wave-wide authority: reference-only V rows (validated sequentially)
+        # share at most one fully authenticated P recapture; natively completed or
+        # payload-carrying rows never use it. Its exits run before publication.
+        with (package_reference_recapture(trusted_workflow_sha=trusted_workflow_sha, environ=environment,
+                token=token) if apple_wave else nullcontext()), collected as ordered:
             for row, verified in ordered:
                 if row["result"] == "success" and sdk_family == "native-validation":
                     from products.sdk_validation_inputs import append_shared_sdk_validation_evidence
@@ -9720,10 +9739,253 @@ def _prepare_cold_apple_workspace(workspace, environ, archive_bytes):
         raise ValueError(f"Insufficient cold Apple workspace capacity: {after} free bytes; {required} required")
 
 
+class _StreamedZipMembers:
+    """Check every member CRC/size while the whole official body streams past.
+
+    Offsets come from a central directory read over ranges; every byte checked
+    here is also part of the full outer SHA-256 computed by the same stream.
+    """
+
+    def __init__(self, entries, start_dir, size):
+        import zlib
+        self._zlib = zlib
+        self._entries = sorted(entries, key=lambda entry: entry.header_offset)
+        bounds = [entry.header_offset for entry in self._entries] + [start_dir]
+        if (not self._entries or bounds[0] != 0 or start_dir > size
+                or any(left >= right for left, right in zip(bounds, bounds[1:]))):
+            raise ValueError("Original upload ZIP members are not contiguous and ordered")
+        self._limits = list(zip(bounds, bounds[1:]))
+        self._index, self._header, self._state = 0, bytearray(), None
+
+    def _begin(self, entry, header):
+        name_length = int.from_bytes(header[26:28], "little")
+        extra_length = int.from_bytes(header[28:30], "little")
+        return 30 + name_length + extra_length
+
+    def feed(self, begin, chunk):
+        view = memoryview(chunk)
+        position = begin
+        while view and self._index < len(self._entries):
+            entry = self._entries[self._index]
+            start, limit = self._limits[self._index]
+            if position < start:
+                skip = min(len(view), start - position)
+                view, position = view[skip:], position + skip
+                continue
+            if position >= limit:
+                self._finish(entry)
+                continue
+            if self._state is None:
+                take = min(len(view), limit - position)
+                self._header.extend(view[:take])
+                view, position = view[take:], position + take
+                if len(self._header) < 30:
+                    if position >= limit:
+                        raise ValueError("Original upload ZIP local header is truncated")
+                    continue
+                if bytes(self._header[:4]) != b"PK\x03\x04":
+                    raise ValueError("Original upload ZIP local header is malformed")
+                offset = self._begin(entry, self._header)
+                if len(self._header) < offset:
+                    if position >= limit:
+                        raise ValueError("Original upload ZIP local header is truncated")
+                    continue
+                name = bytes(self._header[30:30 + int.from_bytes(self._header[26:28], "little")])
+                method = int.from_bytes(self._header[8:10], "little")
+                if (name.decode("utf-8" if entry.flag_bits & 0x800 else "cp437") != entry.orig_filename
+                        or method != entry.compress_type
+                        or start + offset + entry.compress_size > limit):
+                    raise ValueError("Original upload ZIP local entry differs from its central directory")
+                data = bytes(self._header[offset:])
+                self._state = {"remaining": entry.compress_size, "crc": 0, "bytes": 0,
+                    "inflate": (self._zlib.decompressobj(-15)
+                                if entry.compress_type == zipfile.ZIP_DEFLATED else None)}
+                self._header = bytearray()
+                # Bytes already consumed past the local header belong to the data.
+                position -= len(data)
+                view = memoryview(data + bytes(view))
+                continue
+            state = self._state
+            if state["remaining"]:
+                take = min(len(view), state["remaining"])
+                self._data(entry, state, bytes(view[:take]))
+                state["remaining"] -= take
+                view, position = view[take:], position + take
+                continue
+            self._finish(entry)
+
+    def _data(self, entry, state, raw):
+        pending = raw
+        while True:
+            if state["inflate"] is None:
+                output, pending = pending, b""
+            else:
+                output = state["inflate"].decompress(pending, 8 * 1024 * 1024)
+                pending = state["inflate"].unconsumed_tail
+            state["bytes"] += len(output)
+            if state["bytes"] > entry.file_size:
+                raise ValueError("Original upload ZIP member expands beyond its declared size")
+            state["crc"] = self._zlib.crc32(output, state["crc"])
+            if not pending:
+                return
+
+    def _finish(self, entry):
+        state = self._state
+        if state is None or state["remaining"]:
+            raise ValueError("Original upload ZIP member is truncated")
+        if state["inflate"] is not None:
+            self._data(entry, state, b"")
+            tail = state["inflate"].flush()
+            state["bytes"] += len(tail)
+            state["crc"] = self._zlib.crc32(tail, state["crc"])
+            if not state["inflate"].eof:
+                raise ValueError("Original upload ZIP deflate stream is incomplete")
+        if state["bytes"] != entry.file_size or state["crc"] != entry.CRC:
+            raise ValueError("Original upload ZIP member CRC or size differs")
+        count("streamedZipMembersVerified")
+        self._index += 1
+        self._state = None
+
+    def close(self):
+        if self._index < len(self._entries):
+            self._finish(self._entries[self._index])
+        if self._index != len(self._entries):
+            raise ValueError("Original upload ZIP stream ended before every member")
+
+
+def _stream_upload_projection(artifact, *, token, etag, download_url, members, spans, sparse, max_bytes):
+    """Hash the whole official body once; keep only selected byte spans on disk."""
+    from runtime_reference_archive import _Archive, _DOWNLOAD_BLOCK_BYTES
+    import hashlib
+    size = artifact["size_in_bytes"]
+    bound = max(16 * 1024**3, max_bytes)
+    with sparse.open("xb") as output:
+        output.truncate(size)
+        digest = hashlib.sha256()
+
+        def write(begin, chunk):
+            digest.update(chunk)
+            members.feed(begin, chunk)
+            end = begin + len(chunk)
+            for start, stop in spans:
+                low, high = max(start, begin), min(stop, end)
+                if low < high:
+                    output.seek(low)
+                    output.write(chunk[low - begin:high - begin])
+
+        def read_range(begin, url):
+            with _Archive(artifact, token, max_bytes=bound) as reader:
+                # The ETag pinned by the central-directory read binds every range.
+                reader.etag, reader.download_url = etag, url
+                raw = reader._read_range(begin, min(_DOWNLOAD_BLOCK_BYTES, size - begin))
+                return raw, reader.download_url
+
+        url = download_url
+        offsets = iter(range(0, size, _DOWNLOAD_BLOCK_BYTES))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            pending = deque()
+
+            def submit():
+                begin = next(offsets, None)
+                if begin is not None:
+                    pending.append((begin, pool.submit(copy_context().run, read_range, begin, url)))
+
+            for _ in range(4):
+                submit()
+            while pending:
+                begin, future = pending.popleft()
+                chunk, url = future.result()
+                write(begin, chunk)
+                del chunk
+                submit()
+        members.close()
+        if "sha256:" + digest.hexdigest() != artifact["digest"]:
+            raise ValueError("Original upload differs from its full transport digest")
+        output.flush()
+        os.fsync(output.fileno())
+    count("streamedUploadDigestBytes", size)
+
+
+@measured
+def _project_sdk_ios_package_upload(artifact, token, original, scratch, environment, limits):
+    """Plan-time compact P: full outer SHA and member CRCs, but only shard/ bytes on disk.
+
+    The whole 20 GB upload is streamed through SHA-256 and per-member CRC/size
+    checks without being stored. Consumers still authenticate the complete
+    upload. Returns the exact inventory of the extracted shard members.
+    """
+    from runtime_reference_archive import open_reference_archive, _validate_reference_members
+    max_members = 65_536 if limits["max_members"] > 16_384 else 16_384
+    with open_reference_archive(artifact, token, max_bytes=limits["max_archive_bytes"],
+                                max_members=max_members) as (listing, stream):
+        entries = listing.infolist()
+        start_dir = listing.start_dir
+        etag, download_url = stream.etag, stream.download_url
+        if not etag:
+            raise ValueError("Original upload range identity was not pinned")
+    identity = sorted((entry.filename, entry.header_offset, entry.compress_size, entry.file_size,
+                       entry.CRC, entry.compress_type) for entry in entries)
+    size = artifact["size_in_bytes"]
+    if sum(entry.file_size for entry in entries) > limits["max_total_bytes"]:
+        raise ValueError("Original upload ZIP expanded inventory exceeds its bound")
+    ordered = sorted(entries, key=lambda entry: entry.header_offset)
+    bounds = [entry.header_offset for entry in ordered] + [start_dir]
+    spans = [(bounds[index], bounds[index + 1]) for index, entry in enumerate(ordered)
+             if entry.filename.startswith("shard/") and not entry.is_dir()] + [(start_dir, size)]
+    projected = sum(stop - start for start, stop in spans)
+    if len(spans) < 2:
+        raise ValueError("Original package upload has no phase shard")
+    _prepare_cold_apple_workspace(scratch, environment, projected)
+    if environment.get("GITHUB_ACTIONS") == "true":
+        from runtime_reference_transport import apple_capture_preflight
+        apple_capture_preflight(scratch, original.parent, projected, phase="package-projection")
+    sparse = scratch / "projected-transport.zip"
+    try:
+        _stream_upload_projection(artifact, token=token, etag=etag, download_url=download_url,
+            members=_StreamedZipMembers(entries, start_dir, size), spans=spans, sparse=sparse,
+            max_bytes=limits["max_archive_bytes"])
+        count("projectedUploadStoredBytes", projected)
+        rows = []
+        with sparse.open("rb") as source, zipfile.ZipFile(source) as archive:
+            if (archive.start_dir != start_dir or sorted((entry.filename, entry.header_offset,
+                    entry.compress_size, entry.file_size, entry.CRC, entry.compress_type)
+                    for entry in archive.infolist()) != identity):
+                raise ValueError("Original upload central directory changed after its range read")
+            _validate_reference_members(archive, max_bytes=limits["max_total_bytes"], max_members=max_members)
+            import hashlib
+            for entry in sorted(archive.infolist(), key=lambda value: value.filename):
+                if not entry.filename.startswith("shard/") or entry.is_dir():
+                    continue
+                relative = require_relative_path(entry.filename, "Original shard member")
+                target = original / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest, total = hashlib.sha256(), 0
+                with archive.open(entry) as incoming, target.open("xb") as outgoing:
+                    while chunk := incoming.read(32 * 1024 * 1024):
+                        total += len(chunk)
+                        digest.update(chunk)
+                        outgoing.write(chunk)
+                if total != entry.file_size:
+                    raise ValueError("Original shard member size differs from its central directory")
+                rows.append({"relativePath": relative, "bytes": total, "sha256": "sha256:" + digest.hexdigest()})
+    finally:
+        try:
+            sparse.unlink()
+        except FileNotFoundError:
+            pass
+    rows.sort(key=lambda row: row["relativePath"])
+    if regular_file_inventory(original, allow_empty=True) != rows:
+        raise ValueError("Original shard projection changed during extraction")
+    return rows
+
+
 @measured
 def _capture_sdk_ios_upload(plan_path, destination, **arguments):
     with _captured_sdk_ios_upload(plan_path, destination, **arguments) as (prepared, transport, expected):
-        publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected)
+        # Phase 9.1: same-volume APFS/reflink publication shares extents with
+        # the private capture (a 20 GB zip + its extraction were byte-copied
+        # here); staged bytes are still re-hashed against the pinned inventory.
+        clone_publish_regular_tree(prepared, destination, allow_empty=True, expected_inventory=expected)
     return transport
 
 
@@ -9871,6 +10133,7 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
         locator = _runtime_original_locator(artifact, trusted_workflow_sha, instance, matching[0])
         qualified = _qualified_original_projection(locator) if compact_recovery and not qualify_original else None
         original = prepared / "original"
+        streamed_projection = False
         if qualified is not None:
             from runtime_reference_transport import _copy_exact
             source, fingerprint, retained, policy = qualified
@@ -9878,10 +10141,20 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
                 raise ValueError("SDK original qualification has an unsupported projection")
             for row in retained:
                 _copy_exact(source / row["relativePath"], original / row["relativePath"], row)
+        elif phase == "package" and compact_recovery and transport_archive is None:
+            # Plan/product-resume need only the shard: never store the whole upload there.
+            streamed_projection = True
+            retained = _project_sdk_ios_package_upload(artifact, token, original, prepared.parent,
+                environment, _ios_upload_zip_limits(phase))
         else:
-            if phase == "package" and compact_recovery:
-                _prepare_cold_apple_workspace(prepared.parent, environment, artifact["size_in_bytes"])
             if transport_archive is None:
+                if environment.get("GITHUB_ACTIONS") == "true":
+                    # Exact authenticated size, before the download: archive +
+                    # extraction (+ byte-copy publication where clones are unavailable).
+                    from runtime_reference_transport import apple_capture_preflight
+                    apple_capture_preflight(prepared.parent,
+                        destination.parent if destination.parent.is_dir() else prepared.parent,
+                        artifact["size_in_bytes"], phase=phase)
                 _reuse_contract_ci_upload(artifact, producer, observed[0]["run"], token,
                     destination=archive, limit=_ios_upload_zip_limits(phase)["max_archive_bytes"], artifact_sha256=artifact_sha256,
                     size=artifact["size_in_bytes"])
@@ -9926,7 +10199,7 @@ def _captured_sdk_ios_upload(plan_path, destination, *, phase, receipt_path,
                 or (receipt_path is not None and read_regular_file_bytes(receipt_path,
                     max_bytes=16 * 1024 * 1024, reject_symlink_parents=True) != receipt_bytes)
                 or captured_plan.read_bytes() != plan_bytes
-                or (qualified is None and sha256_file(archive) != artifact_sha256)
+                or (qualified is None and not streamed_projection and sha256_file(archive) != artifact_sha256)
                 or regular_file_inventory(original, allow_empty=True) != retained
                 or regular_file_inventory(prepared, allow_empty=True) != expected_files):
             raise ValueError(f"Apple {phase} original inputs or upload changed before publication")

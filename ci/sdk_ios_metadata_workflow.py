@@ -31,6 +31,26 @@ from products.signing_isolation import require_no_signing_secret
 
 
 _INSTANCE = PhaseInstanceId("sdk", "sdk-ios", "metadata", "ios")
+
+
+def metadata_required_free_bytes(*, package_archive_bytes, clones):
+    """Peak free space for M: one held P recapture plus one Apple replay at a time.
+
+    Reference-only V carriers no longer contain P; M recaptures P once and
+    replays each target's content gate inside it. Same measured budget as every
+    other full-P recapture (2 S with clones, 4 S without, + 46 GiB scratch).
+    """
+    from sdk_ios_original_validation import package_recapture_required_free_bytes
+    return package_recapture_required_free_bytes(package_archive_bytes, clones=clones)
+
+
+def metadata_preflight(roots, *, package_archive_bytes=None):
+    """Refuse M before multi-GB recapture when its measured peak cannot fit."""
+    from sdk_ios_original_validation import package_recapture_preflight
+    return package_recapture_preflight(roots, stage="sdk-ios-metadata",
+                                       package_archive_bytes=package_archive_bytes)
+
+
 _TARGETS = ("ios-arm64", "ios-simulator-arm64")
 _LIMIT = 16 * 1024 * 1024
 
@@ -151,6 +171,8 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
     destination.relative_to(root)
     if destination.exists() or destination.is_symlink():
         raise ValueError("iOS metadata destination must not exist")
+    # Capacity: the full-P recapture preflight runs only if a reference-only V
+    # actually needs P (natively completed inputs need no P payload at all).
     tooling, policy_paths = _tooling(sdk_apple_validation_policy)
     admissions = {name: value for name, value in (
         ("sdk_facade_metadata_admission", sdk_facade_metadata_admission),
@@ -250,7 +272,12 @@ def execute(plan, discovery, state, destination, *, expected_build_key,
                 or canonical_json_bytes(prepared_producer) != producer_bytes):
             raise ValueError("iOS metadata authenticated predecessors changed")
 
-    with tempfile.TemporaryDirectory(prefix="sdk-ios-metadata-") as temporary:
+    from sdk_ios_original_validation import package_reference_recapture
+    # Reference-only V carriers omit P; recapture it once, fully authenticated,
+    # for both targets and both the input and admission replays below.
+    with package_reference_recapture(trusted_workflow_sha=trusted_workflow_sha, environ=environ,
+            token=environ.get("GITHUB_TOKEN")), \
+            tempfile.TemporaryDirectory(prefix="sdk-ios-metadata-") as temporary:
         candidate = Path(temporary).resolve() / "shard"
         inputs_unchanged()
         with verified_sdk_apple_metadata_inputs(repository=root,

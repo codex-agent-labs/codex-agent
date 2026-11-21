@@ -6,6 +6,7 @@ never rewritten.
 """
 
 from contextlib import contextmanager, ExitStack
+from contextvars import ContextVar
 from pathlib import Path
 import sys
 import os
@@ -40,6 +41,117 @@ from sdk_ios_original_package import (
 
 
 _LIMIT = 16 * 1024 * 1024
+# Single source of truth for V's P reference layout; the V writer
+# (sdk_ios_validation_workflow) imports these names from this module.
+PACKAGE_REFERENCE_NAME = "package-reference.json"
+PACKAGE_REFERENCE_MEMBERS = ("capture-transport.json", "original/shard/phase-receipt.json",
+                             "original/shard/phase-object.json")
+_PACKAGE_RECAPTURE = ContextVar("ios_package_reference_recapture", default=None)
+_GIB = 1024**3
+# Measured V/M peak beyond the held P capture: Apple verifier/stage scratch and SDK
+# inputs (run 44833963449 peaked at 85.7e9 B ~= 2 S + 46 GiB) plus reserve.
+_RECAPTURE_SCRATCH_BYTES = 46 * _GIB
+
+
+def package_recapture_required_free_bytes(package_archive_bytes, *, clones):
+    """Free space one full P recapture plus one Apple replay needs on its volume.
+
+    A retained capture is archive + extraction (~2 S); without native clones the
+    staged publication and private replay snapshots add about 2 S more.
+    """
+    require_integer(package_archive_bytes, "Apple original archive bytes", 0)
+    if type(clones) is not bool:
+        raise ValueError("Clone capability must be boolean")
+    return (2 if clones else 4) * package_archive_bytes + _RECAPTURE_SCRATCH_BYTES
+
+
+def package_recapture_preflight(roots, *, stage, package_archive_bytes=None):
+    """Refuse a full P recapture up front when the measured peak cannot fit."""
+    from runtime_reference_transport import (
+        MEASURED_IOS_PACKAGE_ARCHIVE_BYTES, native_clone_capable, require_volume_headroom,
+    )
+    paths = [Path(root) for root in roots]
+    if not paths or any(not path.is_dir() for path in paths):
+        raise ValueError("Apple package recapture capacity requires existing work directories")
+    clones = len({path.stat().st_dev for path in paths}) == 1 and native_clone_capable(*paths)
+    required = package_recapture_required_free_bytes(
+        MEASURED_IOS_PACKAGE_ARCHIVE_BYTES if package_archive_bytes is None else package_archive_bytes,
+        clones=clones)
+    return require_volume_headroom(paths[0], required, stage=stage + ("" if clones else "-byte-copy"))
+
+
+@contextmanager
+def package_reference_recapture(*, trusted_workflow_sha, environ, token):
+    """Caller-pinned authority to recapture P named by reference-only V carriers.
+
+    A V carrier that omits the P payload names only its upload locator and keeps
+    the exact P receipt bytes. Inside this context such a carrier is replayed by
+    recapturing P from the official upload with the full original-capture gates
+    (official listing, digest, size, expiry, provenance, receipt equality). One
+    exact P capture is held for the whole context and shared by both targets.
+    Outside it, reference-only carriers are rejected; nothing is downloaded.
+    """
+    import re
+    if not isinstance(trusted_workflow_sha, str) or re.fullmatch(r"[0-9a-f]{40}", trusted_workflow_sha) is None:
+        raise ValueError("Apple package recapture requires a pinned caller workflow")
+    if _PACKAGE_RECAPTURE.get() is not None:
+        raise ValueError("Apple package recapture authority cannot be nested")
+    with ExitStack() as held:
+        state = {"trustedWorkflowSha": trusted_workflow_sha, "environ": environ, "token": token,
+                 "held": held, "captures": {}}
+        marker = _PACKAGE_RECAPTURE.set(state)
+        try:
+            yield
+        finally:
+            _PACKAGE_RECAPTURE.reset(marker)
+
+
+def _recaptured_reference_package(plan, package_path, locator, **policy):
+    """Return the one held full P capture for this exact locator and receipt."""
+    state = _PACKAGE_RECAPTURE.get()
+    if state is None:
+        raise ValueError("Reference-only Apple validation requires caller package recapture authority")
+    locator = require_exact_keys(locator, {"artifactId", "artifactSha256"}, "Apple validation package locator")
+    require_integer(locator["artifactId"], "Apple validation package upload ID", 1)
+    require_sha256(locator["artifactSha256"], "Apple validation package upload digest")
+    receipt_bytes = read_regular_file_bytes(package_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+    from products.sdk_apple_package_admission import package_policy_identity
+    identity = package_policy_identity(**{name: policy.get(name) for name in (
+        "keyring", "keys_directory", "tooling_evidence", "tooling_public_key", "java_executable",
+        "policy_revision", "required_trust_domain", "tooling_keyring", "tooling_keys_directory",
+        "retained_sdk_inputs_source", "repository_root")})
+    key = (locator["artifactId"], locator["artifactSha256"], sha256_bytes(receipt_bytes))
+    entry = state["captures"].get(key)
+    if entry is not None and entry[0] != identity:
+        raise ValueError("Held Apple package recapture was authenticated under a different caller policy")
+    held = None if entry is None else entry[1]
+    if held is None:
+        if not isinstance(state["token"], str) or not state["token"]:
+            raise ValueError("Apple package recapture requires an observation token")
+        if state["captures"]:
+            raise ValueError("Apple validations reference different original packages")
+        environment = state["environ"] or {}
+        if environment.get("GITHUB_ACTIONS") == "true":
+            # Phase 9.1 capacity control, never admission: refuse before a ~20 GB
+            # download that cannot fit (e.g. a Linux collector without clones).
+            package_recapture_preflight([Path(tempfile.gettempdir()).resolve()],
+                                        stage="apple-package-reference-recapture")
+        # The held private receipt copy outlives this V replay's private directory.
+        receipt_root = Path(state["held"].enter_context(tempfile.TemporaryDirectory(
+            prefix="ios-package-reference-receipt-"))).resolve()
+        receipt_copy = receipt_root / "package-receipt.json"
+        receipt_copy.write_bytes(receipt_bytes)
+        held = state["held"].enter_context(verified_original_ios_package(plan, receipt_copy,
+            artifact_id=locator["artifactId"], artifact_sha256=locator["artifactSha256"],
+            trusted_workflow_sha=state["trustedWorkflowSha"], environ=state["environ"], token=state["token"],
+            **policy))
+        state["captures"][key] = (identity, held)
+    else:
+        from runtime_reference_transport import count
+        count("iosPackageReferenceReuses")
+    if held["receiptBytes"] != receipt_bytes or canonical_json_bytes(held["receipt"]) != receipt_bytes:
+        raise ValueError("Recaptured Apple package differs from its validation-recorded receipt")
+    return held
 
 
 def validation_recovery_origin(phase):
@@ -369,6 +481,59 @@ def verified_retained_ios_validation(plan, validation_receipt_path, *, validatio
 
 
 @contextmanager
+def _held_context(value):
+    """Borrow a capture owned by the caller's recapture authority for one replay."""
+    yield value
+
+
+def _require_package_reference(retained, validation, package_bytes, locator):
+    """Bind V's small P reference to its receipt, locator and V's own upstream row.
+
+    No authority comes from the reference: it must agree with the authenticated
+    V carrier's execution context and receipt, and P is recaptured in full later.
+    """
+    from products.receipt import output_inventory_digest
+    reference_bytes = read_regular_file_bytes(retained / PACKAGE_REFERENCE_NAME, max_bytes=_LIMIT,
+                                              reject_symlink_parents=True)
+    reference = require_exact_keys(load_canonical_json_bytes(reference_bytes),
+        {"schemaVersion", "packageArtifact", "packageReceiptSha256", "packageBuildKey", "packageProducer"},
+        "Apple validation package reference")
+    package = validate_phase_receipt(load_canonical_json_bytes(package_bytes))
+    if (canonical_json_bytes(reference) != reference_bytes or canonical_json_bytes(package) != package_bytes
+            or require_integer(reference["schemaVersion"], "Apple package reference schema", 1) != 1
+            or (package["product"], package["component"], package["phase"], package["target"]) !=
+               ("sdk", "sdk-ios", "package", "ios")):
+        raise ValueError("Reference-only Apple validation lacks an exact package receipt or reference")
+    if (reference["packageArtifact"] != locator
+            or reference["packageReceiptSha256"] != sha256_bytes(package_bytes)
+            or reference["packageBuildKey"] != package["buildKey"]
+            or canonical_json_bytes(reference["packageProducer"]) != canonical_json_bytes(package["producer"])):
+        raise ValueError("Apple package reference differs from its receipt or validation locator")
+    rows = [row for row in validation["inputs"]["upstreamArtifacts"]
+            if (row["product"], row["component"], row["phase"], row["target"]) == ("sdk", "sdk-ios", "package", "ios")]
+    if (len(rows) != 1 or rows[0]["buildKey"] != package["buildKey"]
+            or rows[0]["outputsDigest"] != output_inventory_digest(package["outputs"])
+            or package["productVersion"] != validation["productVersion"]):
+        raise ValueError("Reference-only Apple package receipt differs from its validation lineage")
+
+
+def _compare_package_reference(retained, recaptured):
+    """The fresh full P capture must reproduce V's retained small P members."""
+    recaptured = Path(recaptured)
+    for name in PACKAGE_REFERENCE_MEMBERS[1:]:
+        if read_regular_file_bytes(retained / name, max_bytes=_LIMIT, reject_symlink_parents=True) != \
+                read_regular_file_bytes(recaptured / name, max_bytes=_LIMIT, reject_symlink_parents=True):
+            raise ValueError("Recaptured Apple package differs from its retained validation reference")
+    old, new = (load_canonical_json_bytes(read_regular_file_bytes(path / "capture-transport.json",
+                max_bytes=_LIMIT, reject_symlink_parents=True)) for path in (retained, recaptured))
+    if any(type(value) is not dict for value in (old, new)) or any(
+            old.get(field) != new.get(field) for field in ("captureProducer", "packageReceiptSha256")) or (
+            (old.get("artifact") or {}).get("id"), (old.get("artifact") or {}).get("digest")) != (
+            (new.get("artifact") or {}).get("id"), (new.get("artifact") or {}).get("digest")):
+        raise ValueError("Recaptured Apple package transport differs from its retained validation reference")
+
+
+@contextmanager
 def _verified_ios_validation(plan, validation_receipt_path, *, validation_capture,
         keyring, keys_directory, repository_root, tooling_evidence, tooling_public_key,
         java_executable, policy_revision, required_trust_domain, tooling_keyring=None, tooling_keys_directory=None,
@@ -430,6 +595,9 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
             original = capture / "original"
             compact = (original / "originals/completed").exists()
             recovery = (original / "recovery").exists()
+            reference = (original / "originals/package" / PACKAGE_REFERENCE_NAME).exists()
+            if reference and (compact or recovery or validation_capture is None):
+                raise ValueError("Reference-only Apple package requires an ordinary retained validation carrier")
             if compact and completed_frozen is None:
                 raise ValueError("Compact Apple validation requires independently authenticated native completion")
             if recovery and not compact:
@@ -439,6 +607,10 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                            {"selection", "originals", "worker", "execution", "context", "shard"}),
                 original / "selection": {"impact-plan.json", "phase-plan.json", "producer.json"},
                 original / "originals": {"completed"} if compact else {"package", "sdk", "binary", "native"},
+                **({original / "originals/package": {"capture-transport.json", "original", PACKAGE_REFERENCE_NAME},
+                    original / "originals/package/original": {"shard"},
+                    original / "originals/package/original/shard": {"phase-receipt.json", "phase-object.json"}}
+                   if reference else {}),
                 **({original / "recovery": {"origin.json", "production-worker.zip", "replay.json"}} if recovery else {
                     original / "worker": {"execution.json", "gradle.log"},
                     original / "execution": {"apple-validation-evidence.zip"},
@@ -505,13 +677,21 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                 else:
                     package_path = original / "originals/package/original/shard/phase-receipt.json"
                     package_bytes = read_regular_file_bytes(package_path, max_bytes=_LIMIT, reject_symlink_parents=True)
+                    if reference:
+                        _require_package_reference(original / "originals/package", receipt, package_bytes,
+                                                   context["packageArtifact"])
                     if validation_capture is not None:
                         for name in ("package", "binary"):
                             artifact = _json(original / "originals" / name / "capture-transport.json")["artifact"]
                             locator = context[f"{name}Artifact"]
                             if (artifact.get("id"), artifact.get("digest")) != (locator["artifactId"], locator["artifactSha256"]):
                                 raise ValueError("Retained Apple predecessor differs from its original validation locator")
-                    package_context = (verified_original_ios_package(plan, package_path,
+                    package_context = (_held_context(_recaptured_reference_package(plan, package_path,
+                            context["packageArtifact"], keyring=keyring, keys_directory=keys_directory,
+                            repository_root=root, **tooling,
+                            **({"retained_sdk_inputs_source": retained_sdk_inputs_source}
+                               if retained_sdk_inputs_source is not None else {}))) if reference else
+                        verified_original_ios_package(plan, package_path,
                             artifact_id=context["packageArtifact"]["artifactId"],
                             artifact_sha256=context["packageArtifact"]["artifactSha256"],
                             trusted_workflow_sha=trusted_workflow_sha, keyring=keyring, keys_directory=keys_directory,
@@ -527,7 +707,10 @@ def _verified_ios_validation(plan, validation_receipt_path, *, validation_captur
                     if (package["receiptBytes"] != package_bytes or canonical_json_bytes(package["receipt"]) != package_bytes
                             or package["receipt"]["productVersion"] != receipt["productVersion"]):
                         raise ValueError("Original Apple validation differs from its exact package predecessor")
-                    compare_capture("package", package["packageCapture"])
+                    if reference:
+                        _compare_package_reference(original / "originals/package", package["packageCapture"])
+                    else:
+                        compare_capture("package", package["packageCapture"])
                     compare_capture("sdk", package["sdkCapture"])
                     binary = package["original"] / "inputs/sdk-sdk-ios-binary-ios"
                     binary_receipt = binary / "phase-receipt.json"
