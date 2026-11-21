@@ -510,6 +510,163 @@ class SdkAppleContentTest(unittest.TestCase):
             self.assertEqual(before, regular_file_inventory(self.product))
         self.assertEqual([], self.calls)
 
+    def test_run_44833963449_private_divergence_of_unchanged_original_is_recaptured_once(self):
+        # Device V failure: the authenticated original kept its receipt digest while
+        # only the private native clone hashed differently (same size, new SHA-256).
+        snapshot = content._snapshot_apple_tree
+        package = before_name = "CodexAgentPackage-0.2.0.zip"
+        original = regular_file_inventory(self.product)
+        attempts = []
+
+        def diverging_once(source, destination, **options):
+            snapshot(source, destination, **options)
+            if source == self.product:
+                attempts.append(destination)
+                if len(attempts) == 1:
+                    target = destination / before_name
+                    size = target.stat().st_size
+                    target.write_bytes(b"\0" * size)
+        diagnostics = io.StringIO()
+        with patch.object(content, "_snapshot_apple_tree", diverging_once), redirect_stderr(diagnostics):
+            self.assertEqual(original, self.verify())
+        self.assertEqual(2, len(attempts))
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertEqual(1, len(self.calls))
+        self.assertIn("apple-private-capture-divergence", diagnostics.getvalue())
+        self.assertIn(f'"relativePath": "{package}"', diagnostics.getvalue())
+        self.assertEqual(original, regular_file_inventory(self.product))
+
+    def test_same_size_original_mutation_during_capture_is_rejected_without_recapture(self):
+        snapshot = content._snapshot_apple_tree
+        target = self.product / "CodexAgentPackage-0.2.0.zip"
+        original_bytes = target.read_bytes()
+        attempts = []
+
+        def mutate_original(source, destination, **options):
+            if source == self.product:
+                # Same size, different bytes, after the pre-capture inventory.
+                attempts.append(destination)
+                target.write_bytes(bytes(len(original_bytes)))
+            snapshot(source, destination, **options)
+        try:
+            with patch.object(content, "_snapshot_apple_tree", mutate_original), \
+                    self.assertRaisesRegex(ValueError, "original input changed during capture: product/"
+                                                       "CodexAgentPackage-0.2.0.zip") as caught:
+                self.verify()
+        finally:
+            target.write_bytes(original_bytes)
+        self.assertIn("original-now=", str(caught.exception))
+        self.assertEqual(1, len(attempts))
+        self.assertEqual([], self.calls)
+
+    def test_persistent_private_divergence_is_rejected_after_one_recapture(self):
+        snapshot = content._snapshot_apple_tree
+        attempts = []
+
+        def always_diverging(source, destination, **options):
+            snapshot(source, destination, **options)
+            if source == self.product:
+                attempts.append(destination)
+                (destination / "CodexAgentPackage-0.2.0.zip").write_bytes(b"different private bytes\n")
+        with patch.object(content, "_snapshot_apple_tree", always_diverging), \
+                redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, "private input changed during capture: product/"
+                                                   ".*original unchanged.*recapture also differs"):
+            self.verify()
+        self.assertEqual(2, len(attempts))
+        self.assertEqual([], self.calls)
+
+    def test_private_divergence_rejects_original_replaced_during_recapture(self):
+        snapshot = content._snapshot_apple_tree
+        target = self.product / "CodexAgentPackage-0.2.0.zip"
+        original_bytes = target.read_bytes()
+        attempts = []
+
+        def diverge_then_mutate(source, destination, **options):
+            if source == self.product and attempts:
+                target.write_bytes(b"replaced original\n")
+            snapshot(source, destination, **options)
+            if source == self.product:
+                attempts.append(destination)
+                if len(attempts) == 1:
+                    (destination / target.name).write_bytes(b"different private bytes\n")
+        try:
+            with patch.object(content, "_snapshot_apple_tree", diverge_then_mutate), \
+                    redirect_stderr(io.StringIO()), \
+                    self.assertRaisesRegex(ValueError, "recapture also differs"):
+                self.verify()
+        finally:
+            target.write_bytes(original_bytes)
+        self.assertEqual([], self.calls)
+
+    def test_original_package_replay_recaptures_diverged_product_for_both_validation_targets(self):
+        # Device and simulator V call the same target-independent original-package
+        # replay; each must admit the unchanged elected P and reject a changed one.
+        from ci.products import sdk_apple_package_replay as replay
+        evidence = self.root / "package-execution-events"
+        evidence.mkdir()
+        (evidence / "event.json").write_bytes(b"original event\n")
+        binding = self.root / "input-binding.json"
+        binding.write_bytes(b"original binding\n")
+        files = self.root / "expected-execution-files.json"
+        files.write_bytes(b"{}\n")
+        arguments = dict(product_directory=self.product, binary_frameworks=self.binary, sdk_version="0.2.0",
+            expected_sdk_compatibility=self.compatibility, source_revision="b" * 40,
+            evidence_directory=evidence, execution_binding_file=binding,
+            expected_binding_sha256="sha256:" + "c" * 64, expected_execution_files=files,
+            repository=self.root, tooling_evidence=self.root / "tooling",
+            tooling_public_key=self.root / "pinned.pub", java_executable=self.java,
+            policy_revision="a" * 40, required_trust_domain="development")
+
+        def sources(repository, revision, output):
+            output.mkdir()
+            (output / "source.txt").write_bytes(b"immutable source\n")
+            return {"xcodeVersion": "26.6", "xcodeBuild": "17F113", "swiftVersion": "6.3.3"}
+
+        executed = []
+
+        def execute(command, **kwargs):
+            self.assertEqual("verify-original-apple-package-execution", command[3])
+            fields = dict(zip(command[4::2], command[5::2], strict=True))
+            self.assertEqual(regular_file_inventory(self.product),
+                             regular_file_inventory(Path(fields["--product-directory"])))
+            executed.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        snapshot = content._snapshot_apple_tree
+        original = regular_file_inventory(self.product)
+        target = self.product / "CodexAgentPackage-0.2.0.zip"
+        original_bytes = target.read_bytes()
+        for validation_target in ("ios-arm64", "ios-simulator-arm64"):
+            for mutate_original in (False, True):
+                attempts = []
+
+                def capture(source, destination, **options):
+                    if source == self.product and mutate_original and not attempts:
+                        target.write_bytes(bytes(len(original_bytes)))
+                    snapshot(source, destination, **options)
+                    if source == self.product:
+                        attempts.append(destination)
+                        if len(attempts) == 1 and not mutate_original:
+                            (destination / target.name).write_bytes(bytes(len(original_bytes)))
+                executed.clear()
+                with self.subTest(target=validation_target, mutate_original=mutate_original), \
+                        patch.object(replay, "capture_apple_package_sources", side_effect=sources), \
+                        patch.object(content, "_snapshot_apple_tree", capture), \
+                        patch.object(content, "verified_tooling_capture", self.capture), \
+                        patch.object(content.subprocess, "run", side_effect=execute), \
+                        redirect_stderr(io.StringIO()):
+                    try:
+                        if mutate_original:
+                            with self.assertRaisesRegex(ValueError, "original input changed during capture"):
+                                replay.verify_sdk_apple_original_package_content(**arguments)
+                            self.assertEqual([], executed)
+                        else:
+                            self.assertEqual(original, replay.verify_sdk_apple_original_package_content(**arguments))
+                            self.assertEqual(1, len(executed))
+                    finally:
+                        target.write_bytes(original_bytes)
+
     def test_original_or_private_mutation_prevents_inventory_return(self):
         for option, source in (("--product-directory", self.product / "CodexAgentPackage-0.2.0.zip"),
                                ("--validation-evidence-directory", self.validation / "original-receipt.json"),
@@ -632,6 +789,34 @@ class ApplePrivateSnapshotTest(unittest.TestCase):
     def replacement(self, operation):
         from types import SimpleNamespace
         return patch.object(content.ctypes, "CDLL", return_value=SimpleNamespace(fclonefileat=operation))
+
+    def test_native_clone_flushes_each_source_before_sharing_extents(self):
+        native = self.native()
+        order = []
+
+        def clone(source, destination, name, flags):
+            order.append(("clone", os.fstat(source).st_ino))
+            return native(source, destination, name, flags)
+
+        real_fsync = os.fsync
+
+        def fsync(descriptor):
+            order.append(("fsync", os.fstat(descriptor).st_ino))
+            return real_fsync(descriptor)
+        with self.replacement(clone), patch.object(content.os, "fsync", side_effect=fsync):
+            content._snapshot_apple_tree(self.source, self.destination)
+        inode = self.body.stat().st_ino
+        self.assertEqual([("fsync", inode), ("clone", inode)], order)
+        self.assertEqual(regular_file_inventory(self.source), regular_file_inventory(self.destination))
+
+    def test_native_clone_flush_failure_is_an_error_not_a_divergent_copy(self):
+        def clone(*args):
+            raise AssertionError("clone must not run after a failed flush")
+        with self.replacement(clone), \
+                patch.object(content.os, "fsync", side_effect=OSError(errno.ENOSPC, "No space left on device")), \
+                self.assertRaises(OSError) as caught:
+            content._snapshot_apple_tree(self.source, self.destination)
+        self.assertEqual(errno.ENOSPC, caught.exception.errno)
 
     def test_required_native_clones_reject_every_fallback_and_restore_default(self):
         before = regular_file_inventory(self.source)

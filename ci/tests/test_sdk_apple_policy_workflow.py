@@ -148,7 +148,11 @@ class SdkApplePolicyWorkflowTest(unittest.TestCase):
             script = textwrap.dedent(re.split(r'\n +(?:run|script): \|\n', step, maxsplit=1)[1])
             script = script.replace('${{ inputs.trustedWorkflowSha }}', 'fixture-caller-workflow-sha')
             script = script.replace('${{ needs.plan.outputs.publisher_sha }}', 'fixture-caller-workflow-sha')
-            selected.append((name, script, {}))
+            # The workflow binds these step env values from plan outputs (possibly empty);
+            # the fixture supplies the ordinary non-retained route.
+            selected.append((name, script, {key: 'false' for key in (
+                'RETAINED_ANDROID', 'RETAINED_NODE_JS', 'RETAINED_CONSUMERS',
+                'RETAINED_APPLE', 'RETAINED_APPLE_REVIEWED')} if name == 'sdk-completion' else {}))
         action = (ROOT / '.github/actions/capture-runtime-state/action.yml').read_text()
         script = textwrap.dedent(action.split('    - id: capture\n', 1)[1].split('        script: |\n', 1)[1])
         selected.extend((name, script, environment) for name, environment in (

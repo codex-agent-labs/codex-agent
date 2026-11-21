@@ -5,13 +5,14 @@ context adds no transport or host authority; it holds the existing semantic
 gate and checks that the exact selected package bytes are the ones it replayed.
 """
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
+from contextvars import ContextVar
 import os
 from pathlib import Path
 import re
 
 from .inventory import (canonical_json_bytes, load_canonical_json_bytes, read_regular_file_bytes,
-                        regular_file_inventory, require_exact_keys, require_sha256)
+                        regular_file_inventory, require_exact_keys, require_sha256, sha256_bytes)
 from .receipt import validate_phase_receipt, verify_output_manifest_identity
 from .registry import PhaseInstanceId
 from .restore import verify_phase_shard
@@ -75,6 +76,87 @@ def verified_selected_ios_package(selected_stage, selected_receipt, *, plan,
         finally:
             unchanged()
     unchanged()
+
+
+_HOLD = ContextVar("held_original_apple_packages", default=None)
+
+
+@contextmanager
+def holding_original_packages():
+    """Consumer-owned, in-process custody of complete original package gates.
+
+    Inside this scope an original admission runs its complete gate once and keeps
+    the yielded private capture open until the scope exits; a later consumer in
+    the same process may use it only on an exact receipt/upload/policy match.
+    Nothing is serialized; every inventory/unchanged check runs at scope exit.
+    """
+    if _HOLD.get() is not None:
+        raise ValueError("Original Apple package custody cannot be nested")
+    with ExitStack() as stack:
+        registry = {"stack": stack, "held": {}}
+        token = _HOLD.set(registry)
+        try:
+            yield registry
+        finally:
+            _HOLD.reset(token)
+
+
+def active_package_hold():
+    return _HOLD.get()
+
+
+def _file_identity(path):
+    if path is None:
+        return None
+    return sha256_bytes(read_regular_file_bytes(Path(path), max_bytes=128 * 1024 * 1024,
+                                                reject_symlink_parents=True))
+
+
+def _tree_identity(path):
+    if path is None:
+        return None
+    return sha256_bytes(canonical_json_bytes(regular_file_inventory(Path(path), allow_empty=True)))
+
+
+def package_policy_identity(*, keyring, keys_directory, tooling_evidence, tooling_public_key,
+        java_executable, policy_revision, required_trust_domain, tooling_keyring=None,
+        tooling_keys_directory=None, retained_sdk_inputs_source=None, repository_root=None):
+    """Exact caller policy by content, so equal authority in different paths matches."""
+    return canonical_json_bytes({
+        "keyring": _file_identity(keyring), "keysDirectory": _tree_identity(keys_directory),
+        "toolingEvidence": _tree_identity(tooling_evidence),
+        "toolingPublicKey": _file_identity(tooling_public_key),
+        "javaExecutable": str(Path(java_executable).resolve(strict=True)),
+        "policyRevision": policy_revision, "requiredTrustDomain": required_trust_domain,
+        "toolingKeyring": _file_identity(tooling_keyring),
+        "toolingKeysDirectory": _tree_identity(tooling_keys_directory),
+        "retainedSdkInputsSource": retained_sdk_inputs_source,
+        "repositoryRoot": None if repository_root is None else str(Path(repository_root).resolve(strict=True)),
+    })
+
+
+def held_original_package(registry, receipt_bytes, *, artifact_id, artifact_sha256, policy):
+    """Return an already fully verified original only on an exact identity match."""
+    if registry is None:
+        return None
+    entry = registry["held"].get(sha256_bytes(receipt_bytes))
+    if entry is None:
+        return None
+    key, value = entry
+    # ``policy`` is computed only for a candidate: absent custody reads nothing.
+    if key != (receipt_bytes, artifact_id, artifact_sha256, policy() if callable(policy) else policy):
+        return None
+    shard = verify_phase_shard(value["original"] / "shard", _INSTANCE)
+    if (shard["receiptBytes"] != receipt_bytes or value["receiptBytes"] != receipt_bytes
+            or canonical_json_bytes(value["receipt"]) != receipt_bytes):
+        raise ValueError("Held original Apple package differs from its exact receipt")
+    try:
+        from runtime_reference_transport import count
+    except ImportError:  # pragma: no cover - isolated script namespace without transport
+        pass
+    else:
+        count("applePackageHeldReuses")
+    return value
 
 
 class ApplePackageAdmission:
@@ -151,7 +233,25 @@ class ApplePackageAdmission:
             plan, receipt, digest, options = self._original
             if digest != binding[1]:
                 raise ValueError("Apple package admission changes its selected original")
-            context = verified_original_ios_package(plan, receipt, **options, **self._policy)
+            registry = _HOLD.get()
+            if registry is not None:
+                # Same complete gate, kept open for this process's consumer.
+                held = dict(options, ephemeral_capture=False)
+                key = (binding[0], held["artifact_id"], held["artifact_sha256"], package_policy_identity(
+                    **{name: self._policy[name] for name in ("keyring", "keys_directory", "tooling_evidence",
+                        "tooling_public_key", "java_executable", "policy_revision", "required_trust_domain",
+                        "tooling_keyring", "tooling_keys_directory", "repository_root")},
+                    retained_sdk_inputs_source=held.get("retained_sdk_inputs_source")))
+                entry = registry["held"].get(digest)
+                if entry is None:
+                    value = registry["stack"].enter_context(
+                        verified_original_ios_package(plan, receipt, **held, **self._policy))
+                    registry["held"][digest] = (key, value)
+                elif entry[0] != key:
+                    raise ValueError("Held original Apple package has a different upload or policy")
+                context = nullcontext(registry["held"][digest][1])
+            else:
+                context = verified_original_ios_package(plan, receipt, **options, **self._policy)
         else:
             record = self._records.get(selected["receiptSha256"])
             if record is None:

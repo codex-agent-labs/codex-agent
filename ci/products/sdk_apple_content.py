@@ -9,6 +9,7 @@ import ctypes
 from contextlib import contextmanager
 from contextvars import ContextVar
 import errno
+import json
 import os
 from pathlib import Path
 import shutil
@@ -88,6 +89,11 @@ def _clone_apple_file(source: int, destination: int, name: str, clone) -> None:
     # Keep the byte-copy behavior for immutable/other special file flags.
     if getattr(metadata, "st_flags", 0):
         raise OSError(errno.ENOTSUP, "Flagged Apple input requires byte copy")
+    if sys.platform == "darwin":
+        # A just-written byte-copy source may still hold dirty cached pages. Make
+        # them durable before sharing extents; a capacity failure is an error here
+        # instead of a private clone whose bytes differ from the hashed source.
+        os.fsync(source)
     # Held regular source, held private parent, exclusive leaf. On macOS,
     # CLONE_NOOWNERCOPY; no directory cloning, hardlinks or trust from xattrs.
     if clone(source, destination, os.fsencode(name), 0x2) != 0:
@@ -276,6 +282,50 @@ def _borrow_private_apple_execution(root: Path):
             raise ValueError("Private Apple package execution changed during use")
 
 
+def _first_inventory_difference(expected, captured):
+    expected_files = {row["relativePath"]: row for row in expected}
+    captured_files = {row["relativePath"]: row for row in captured}
+    changed = next(path for path in sorted(expected_files.keys() | captured_files.keys())
+                   if expected_files.get(path) != captured_files.get(path))
+    return changed, expected_files.get(changed), captured_files.get(changed)
+
+
+def _recapture_diverged_private_input(name, source, private, before, captured, *, allow_empty, borrowed):
+    """Classify a private-copy mismatch; only an unchanged original may be recaptured once.
+
+    The original is re-hashed without memoization. Any original change is rejected.
+    If the original still equals the pre-capture inventory, the private copy alone
+    diverged (for example a native clone of unflushed bytes under capacity pressure):
+    discard it and take one fresh snapshot, which must then equal the same inventory.
+    No expectation is ever derived from the private or recaptured bytes.
+    """
+    from .inventory import regular_file_inventory as uncached_inventory
+    for ancestor in (Path(source).absolute(), *Path(source).absolute().parents):
+        require_regular_directory(ancestor, "Apple SDK input ancestry")
+    current = uncached_inventory(source, allow_empty=allow_empty)
+    if current != before:
+        changed, expected, observed = _first_inventory_difference(before, current)
+        raise ValueError(
+            f"Apple SDK original input changed during capture: {name}/{changed}; "
+            f"expected={expected!r}; original-now={observed!r}")
+    changed, expected, observed = _first_inventory_difference(before, captured)
+    message = (f"Apple SDK private input changed during capture: {name}/{changed}; original unchanged; "
+               f"expected={expected!r}; captured={observed!r}")
+    if borrowed:
+        raise ValueError(message)
+    from runtime_reference_transport import count
+    count("applePrivateCaptureRetries")
+    print("apple-private-capture-divergence " + json.dumps(
+        {"input": name, "relativePath": changed, "expected": expected, "captured": observed},
+        sort_keys=True), file=sys.stderr, flush=True)
+    shutil.rmtree(private)
+    _snapshot_apple_tree(source, private, allow_empty=allow_empty)
+    recaptured = uncached_inventory(private, allow_empty=allow_empty)
+    if recaptured != before or uncached_inventory(source, allow_empty=allow_empty) != before:
+        raise ValueError(message + "; recapture also differs")
+    return recaptured
+
+
 def _verify_sdk_apple_with_tooling(
     *, sources: dict[str, tuple[Path, bool]], expected_paths: dict[str, Path],
     command_name: str, argument_builder,
@@ -336,13 +386,9 @@ def _verify_sdk_apple_with_tooling(
                 _snapshot_apple_tree(source, private_sources[name], allow_empty=allow_empty)
             captured = _input_inventory(private_sources[name], allow_empty=allow_empty)
             if captured != before[name]:
-                expected_files = {row["relativePath"]: row for row in before[name]}
-                captured_files = {row["relativePath"]: row for row in captured}
-                changed = next(path for path in sorted(expected_files.keys() | captured_files.keys())
-                               if expected_files.get(path) != captured_files.get(path))
-                raise ValueError(
-                    f"Apple SDK original input changed during capture: {name}/{changed}; "
-                    f"expected={expected_files.get(changed)!r}; captured={captured_files.get(changed)!r}")
+                captured = _recapture_diverged_private_input(
+                    name, source, private_sources[name], before[name], captured,
+                    allow_empty=allow_empty, borrowed=private_sources[name] == source)
         expected = root / "expected"
         expected.mkdir()
         for name, data in expected_bytes.items():

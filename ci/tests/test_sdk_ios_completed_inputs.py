@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from ci import sdk_ios_original_package as reader  # puts ci/ on sys.path first
 import reuse_qualification as native
-from ci import sdk_ios_original_package as reader
 from ci.tests.product_chain_support import reference, write_receipt
 from products.inventory import canonical_json_bytes, sha256_bytes, sha256_file, snapshot_regular_tree
 from products.receipt import write_output_manifest

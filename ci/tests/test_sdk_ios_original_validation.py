@@ -471,3 +471,275 @@ class SdkIosOriginalValidationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class ReferenceOnlyPackageValidationTest(unittest.TestCase):
+    """M replays V carriers that name P only by its authenticated upload locator."""
+
+    def setUp(self):
+        base = SdkIosOriginalValidationTest(methodName="test_retained_validation_replays_all_gates_without_network_or_rewriting")
+        base.setUp()
+        self.addCleanup(base.doCleanups)
+        self.base = base
+
+    def __getattr__(self, name):
+        if name == "base":
+            raise AttributeError(name)
+        return getattr(self.base, name)
+
+    def reference_template(self, receipt_bytes=None, reference_changes=None):
+        package = self.template / "original/originals/package"
+        shutil.rmtree(package)
+        raw = self.fixture.receipt_bytes if receipt_bytes is None else receipt_bytes
+        receipt = workflow.load_canonical_json_bytes(raw)
+        locator = self.execution_context["packageArtifact"]
+        transport = {"artifact": {"id": locator["artifactId"], "digest": locator["artifactSha256"]},
+                     "captureProducer": receipt["producer"], "packageReceiptSha256": sha256_bytes(raw)}
+        write_canonical_json(package / "capture-transport.json", {**transport, "observed": ["historical"]})
+        shard = package / "original/shard"
+        shard.mkdir(parents=True)
+        (shard / "phase-receipt.json").write_bytes(raw)
+        (shard / "phase-object.json").write_bytes(
+            (self.fixture.upload / "original/shard/phase-object.json").read_bytes())
+        write_canonical_json(package / workflow.PACKAGE_REFERENCE_NAME, {"schemaVersion": 1,
+            "packageArtifact": dict(locator), "packageReceiptSha256": sha256_bytes(raw),
+            "packageBuildKey": receipt["buildKey"], "packageProducer": receipt["producer"],
+            **(reference_changes or {})})
+        # The fresh recapture carries fresh observations but the same identity.
+        write_canonical_json(self.fixture.upload / "capture-transport.json", {**transport, "observed": ["fresh"]})
+        self.base.retained_template()
+        # retained_template() normalizes legacy locators; restore V's full P transport and re-seal.
+        write_canonical_json(package / "capture-transport.json", {**transport, "observed": ["historical"]})
+        self.reseal()
+
+    def reseal(self):
+        original = self.template / "original"
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, "w") as archive:
+            for row in regular_file_inventory(original, allow_empty=True):
+                archive.writestr(row["relativePath"], (original / row["relativePath"]).read_bytes())
+        (self.template / "transport.zip").write_bytes(raw.getvalue())
+        transport = workflow.load_canonical_json_bytes((self.template / "capture-transport.json").read_bytes())
+        transport["artifact"]["digest"] = sha256_bytes(raw.getvalue())
+        write_canonical_json(self.template / "capture-transport.json", transport)
+
+    def recapture(self, plan, receipt_path, **arguments):
+        self.assertNotIn("package_capture", arguments)
+        self.assertEqual(("e" * 40, "mock-token"), (arguments["trusted_workflow_sha"], arguments["token"]))
+        self.assertNotIn(self.template, receipt_path.parents)
+        return self.base.package(plan, receipt_path, **arguments)
+
+    def binary(self, plan, receipt_path, **arguments):
+        self.base.captured = arguments["binary_capture"].parent.parent.parent
+        return self.base.binary(plan, receipt_path, **arguments)
+
+    @contextmanager
+    def reference_replay(self, recapture=None):
+        base = self.base
+        with ExitStack() as stack:
+            for owner, name, options in (
+                (workflow.product_reuse, "capture_sdk_ios_validation_upload", {"side_effect": AssertionError("network")}),
+                (workflow.product_reuse, "_validate_plan", {"side_effect": base.validate_plan}),
+                (workflow.product_reuse, "_consumer", {"side_effect": base.consumer}),
+                (workflow, "verified_retained_ios_package", {"side_effect": AssertionError("V payload")}),
+                (workflow, "verified_original_ios_package", {"side_effect": recapture or self.recapture}),
+                (workflow, "verified_retained_ios_binary", {"side_effect": self.binary}),
+                (workflow, "verified_original_ios_binary", {"side_effect": AssertionError("network")}),
+                (workflow, "run_git", {"side_effect": base.git}),
+                (workflow, "git_product_versions", {"return_value": {"sdk": "0.8.0"}}),
+                (workflow, "phase_git_inventory", {"side_effect": base.inventory}),
+                (workflow, "plan_phase", {"side_effect": base.planner}),
+                (workflow, "verify_apple_validation_stage", {"side_effect": self.replay}),
+            ):
+                stack.enter_context(patch.object(owner, name, **options))
+            arguments = {key: value for key, value in base.arguments.items()
+                         if key not in {"artifact_id", "artifact_sha256", "trusted_workflow_sha", "environ", "token"}}
+            yield lambda: workflow.verified_retained_ios_validation(base.fixture.plan, base.receipt_path,
+                                                                     validation_capture=base.template, **arguments)
+
+    def replay(self, **arguments):
+        self.base.captured = arguments["evidence_archive"].parent.parent.parent
+        return self.base.replay(**arguments)
+
+    def policy(self, **changes):
+        return {**{key: value for key, value in self.arguments.items() if key in {
+            "keyring", "keys_directory", "repository_root", "tooling_evidence", "tooling_public_key",
+            "java_executable", "policy_revision", "required_trust_domain"}}, **changes}
+
+    def test_same_package_under_a_different_caller_policy_is_rejected(self):
+        path = self.root / "p.json"
+        path.write_bytes(self.fixture.receipt_bytes)
+        locator = {"artifactId": 701, "artifactSha256": "sha256:" + "7" * 64}
+        with patch.object(workflow, "verified_original_ios_package", side_effect=self.recapture), \
+                self.authority():
+            workflow._recaptured_reference_package(self.fixture.plan, path, locator, **self.policy())
+            self.assertIs(workflow._recaptured_reference_package(self.fixture.plan, path, locator, **self.policy())["receipt"],
+                          self.package_receipt)
+            with self.assertRaisesRegex(ValueError, "different caller policy"):
+                workflow._recaptured_reference_package(self.fixture.plan, path, locator,
+                                                       **self.policy(policy_revision="0" * 40))
+        self.assertEqual(1, self.events.count("package-enter"))
+
+    def test_authority_without_token_is_a_no_op_when_no_reference_only_v_is_replayed(self):
+        # sdk-completion/collectors may enter the authority for every run; legacy and
+        # natively completed carriers never touch it, so no token or download is needed.
+        self.base.retained_template()
+        with self.authority(token=None), self.base.context(retained=True) as value:
+            self.assertEqual(self.raw, value["receiptBytes"])
+        self.assertEqual(1, self.events.count("package-enter"))
+
+    def test_hosted_recapture_refuses_before_download_when_capacity_is_insufficient(self):
+        self.reference_template()
+        from types import SimpleNamespace
+        import io
+        from contextlib import redirect_stderr
+        with patch("runtime_reference_transport.native_clone_capable", return_value=False), \
+                patch("runtime_reference_transport.shutil.disk_usage", return_value=SimpleNamespace(free=14 * 10**9)), \
+                redirect_stderr(io.StringIO()), self.reference_replay() as replay, \
+                workflow.package_reference_recapture(trusted_workflow_sha="e" * 40,
+                    environ={"GITHUB_ACTIONS": "true"}, token="mock-token"), \
+                self.assertRaisesRegex(ValueError, "Insufficient free space for apple-package-reference-recapture-byte-copy"):
+            with replay():
+                pass
+        self.assertNotIn("package-enter", self.events)
+        self.assertEqual(4 * 19_941_206_953 + 46 * 1024**3,
+                         workflow.package_recapture_required_free_bytes(19_941_206_953, clones=False))
+
+    def test_collector_holds_one_wave_wide_authority_around_sequential_apple_rows(self):
+        import ast
+        import inspect
+        from ci import product_reuse
+        source = inspect.getsource(product_reuse.collect_runtime_workers)
+        self.assertEqual(1, source.count("package_reference_recapture("))
+        tree = ast.parse("def wrapper():\n" + "\n".join("    " + line for line in source.splitlines()))
+        withs = [node for node in ast.walk(tree) if isinstance(node, ast.With)
+                 and "package_reference_recapture" in ast.unparse(node.items[0].context_expr)]
+        self.assertEqual(1, len(withs))
+        self.assertIn("ordered", ast.unparse(withs[0].items[-1].optional_vars))
+        self.assertIn('"ios-validation", "ios-metadata"', source)
+
+    def authority(self, token="mock-token"):
+        return workflow.package_reference_recapture(trusted_workflow_sha="e" * 40, environ={}, token=token)
+
+    def test_reference_only_carrier_recaptures_p_once_for_both_targets_and_admissions(self):
+        self.reference_template()
+        before = regular_file_inventory(self.template, allow_empty=True)
+        with self.reference_replay() as replay, self.authority():
+            for _ in range(3):  # device, simulator and the later admission replay
+                with replay() as value:
+                    self.assertEqual(canonical_json_bytes(self.package_receipt), value["package"]["receiptBytes"])
+            self.assertEqual(1, self.events.count("package-enter"))
+            self.assertNotIn("package-exit", self.events)
+        self.assertEqual("package-exit", self.events[-1])
+        self.assertEqual(before, regular_file_inventory(self.template, allow_empty=True))
+
+    def test_reference_only_carrier_without_caller_authority_is_rejected_before_download(self):
+        self.reference_template()
+        with self.reference_replay() as replay, \
+                self.assertRaisesRegex(ValueError, "requires caller package recapture authority"):
+            with replay():
+                pass
+        self.assertNotIn("package-enter", self.events)
+
+    def test_reference_receipt_differing_from_validation_lineage_is_rejected(self):
+        outputs = deepcopy(self.package_receipt["outputs"])
+        outputs[0]["sha256"] = "sha256:" + "0" * 64
+        other = write_receipt(self.root / "other-package.json", product="sdk", component="sdk-ios",
+            phase="package", target="ios", version="0.8.0", version_identity="0.8.0", outputs=outputs,
+            upstream=[], context={"producer": self.fixture.producer})
+        self.reference_template(canonical_json_bytes(other))
+        with self.reference_replay() as replay, self.authority(), \
+                self.assertRaisesRegex(ValueError, "differs from its validation lineage"):
+            with replay():
+                pass
+        self.assertNotIn("package-enter", self.events)
+
+    def test_reference_digest_build_key_producer_or_locator_mismatch_is_rejected(self):
+        for field, value in (("packageReceiptSha256", "sha256:" + "0" * 64),
+                             ("packageBuildKey", "sha256:" + "0" * 64),
+                             ("packageProducer", {**self.fixture.producer, "runId": 1}),
+                             ("packageArtifact", {"artifactId": 999, "artifactSha256": "sha256:" + "7" * 64})):
+            self.base.setUp()
+            self.reference_template(reference_changes={field: value})
+            with self.subTest(field=field), self.reference_replay() as replay, self.authority(), \
+                    self.assertRaisesRegex(ValueError, "differs from its receipt or validation locator"):
+                with replay():
+                    pass
+            self.assertNotIn("package-enter", self.events)
+
+    def test_recapture_differing_from_retained_small_members_is_rejected(self):
+        for member in ("original/shard/phase-object.json", "capture-transport.json"):
+            self.base.setUp()
+            self.reference_template()
+            target = self.fixture.upload / member
+            if member == "capture-transport.json":
+                write_canonical_json(target, {"artifact": {"id": 1, "digest": "sha256:" + "1" * 64}})
+            else:
+                target.write_bytes(b'{"different":"object"}')
+            with self.subTest(member=member), self.reference_replay() as replay, self.authority(), \
+                    self.assertRaisesRegex(ValueError, "Recaptured Apple package .*differs from its retained"):
+                with replay():
+                    pass
+
+    def test_recaptured_receipt_or_digest_mismatch_is_rejected(self):
+        self.reference_template()
+
+        @contextmanager
+        def different(plan, receipt_path, **arguments):
+            with self.recapture(plan, receipt_path, **arguments) as value:
+                yield {**value, "receiptBytes": b"different recaptured receipt"}
+        with self.reference_replay(different) as replay, self.authority(), \
+                self.assertRaisesRegex(ValueError, "Recaptured Apple package differs"):
+            with replay():
+                pass
+
+    def test_expired_or_unauthenticated_upload_fails_closed_and_is_not_held(self):
+        self.reference_template()
+        failures = []
+
+        def expired(plan, receipt_path, **arguments):
+            failures.append(arguments["artifact_id"])
+            raise ValueError("Contract uploaded artifact differs from the caller-bound transport identity")
+        with self.reference_replay(expired) as replay, self.authority():
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, "caller-bound transport identity"):
+                    with replay():
+                        pass
+        self.assertEqual([701, 701], failures)
+
+    def test_missing_token_fails_before_any_recapture(self):
+        self.reference_template()
+        with self.reference_replay() as replay, self.authority(token=None), \
+                self.assertRaisesRegex(ValueError, "observation token"):
+            with replay():
+                pass
+        self.assertNotIn("package-enter", self.events)
+
+    def test_carrier_with_both_payload_and_reference_or_wrong_locator_is_rejected(self):
+        self.base.retained_template()
+        write_canonical_json(self.template / "original/originals/package" / workflow.PACKAGE_REFERENCE_NAME, {})
+        self.base.retained_template()
+        with self.reference_replay() as replay, self.authority(), \
+                self.assertRaisesRegex(ValueError, "unexpected layout"):
+            with replay():
+                pass
+        with self.assertRaisesRegex(ValueError, "pinned caller workflow"):
+            with workflow.package_reference_recapture(trusted_workflow_sha="latest", environ={}, token="t"):
+                pass
+        path = self.root / "p.json"
+        path.write_bytes(self.fixture.receipt_bytes)
+        policy = self.policy()
+        with patch.object(workflow, "verified_original_ios_package", side_effect=self.recapture), \
+                self.authority(), self.assertRaisesRegex(ValueError, "different original packages"):
+            workflow._recaptured_reference_package(self.fixture.plan, path,
+                {"artifactId": 701, "artifactSha256": "sha256:" + "7" * 64}, **policy)
+            workflow._recaptured_reference_package(self.fixture.plan, path,
+                {"artifactId": 999, "artifactSha256": "sha256:" + "7" * 64}, **policy)
+
+
+class PackageReferenceLayoutAgreementTest(unittest.TestCase):
+    def test_reader_constants_equal_the_v_writer(self):
+        from ci import sdk_ios_validation_workflow as writer
+        self.assertEqual(writer.PACKAGE_REFERENCE_NAME, workflow.PACKAGE_REFERENCE_NAME)
+        self.assertEqual(writer.PACKAGE_REFERENCE_MEMBERS, workflow.PACKAGE_REFERENCE_MEMBERS)

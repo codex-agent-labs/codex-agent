@@ -262,6 +262,66 @@ class SdkIosMetadataExecutionTest(unittest.TestCase):
             self.assertEqual(["full-enter", "worker", "full-exit"], self.events)
             self.assertFalse((self.destination / "shard").exists())
 
+    def test_one_caller_pinned_p_recapture_authority_spans_both_full_gates_and_admission(self):
+        import sdk_ios_original_validation as validation
+        calls = []
+
+        observed = []
+
+        @contextmanager
+        def authority(**arguments):
+            calls.append(arguments)
+            observed.append(list(self.events))
+            yield
+            observed.append(list(self.events))
+        with patch.object(validation, "package_reference_recapture", side_effect=authority):
+            self.run_controller()
+        self.assertEqual([[], ["full-enter", "worker", "full-exit", "finalize", "admit"]], observed)
+        self.assertEqual([{"trusted_workflow_sha": self.workflow_sha, "environ": {}, "token": None}], calls)
+
+    def test_reference_only_v_records_are_rejected_without_caller_authority(self):
+        import sdk_ios_original_validation as validation
+        package = self.root / "package-receipt.json"
+        package.write_bytes(b"{}")
+        with self.assertRaisesRegex(ValueError, "requires caller package recapture authority"):
+            validation._recaptured_reference_package(self.plan, package,
+                {"artifactId": 1, "artifactSha256": "sha256:" + "7" * 64})
+
+    def test_hosted_metadata_preflight_refuses_before_state_and_bounds_one_p_capture(self):
+        from runtime_reference_transport import MEASURED_IOS_PACKAGE_ARCHIVE_BYTES
+        clone = workflow.metadata_required_free_bytes(
+            package_archive_bytes=MEASURED_IOS_PACKAGE_ARCHIVE_BYTES, clones=True)
+        copy = workflow.metadata_required_free_bytes(
+            package_archive_bytes=MEASURED_IOS_PACKAGE_ARCHIVE_BYTES, clones=False)
+        # Covers the measured 85.7e9 B V/M peak of run 44833963449 (2 S + 46 GiB).
+        self.assertEqual(2 * MEASURED_IOS_PACKAGE_ARCHIVE_BYTES + 46 * 1024**3, clone)
+        self.assertGreater(clone, 85_672_030_208)
+        self.assertGreater(copy, clone)
+        import sdk_ios_original_validation as validation
+        package = self.root / "package-receipt.json"
+        package.write_bytes(b"{}")
+        with patch.object(validation, "package_recapture_preflight",
+                          side_effect=ValueError("Insufficient free space for apple-package-reference-recapture")) as preflight, \
+                patch.object(validation, "verified_original_ios_package", side_effect=AssertionError("download")), \
+                patch("products.sdk_apple_package_admission.package_policy_identity", return_value=b"policy"), \
+                validation.package_reference_recapture(trusted_workflow_sha=self.workflow_sha,
+                    environ={"GITHUB_ACTIONS": "true"}, token="t"), \
+                self.assertRaisesRegex(ValueError, "Insufficient free space"):
+            validation._recaptured_reference_package(self.plan, package,
+                {"artifactId": 1, "artifactSha256": "sha256:" + "7" * 64})
+        preflight.assert_called_once()
+        from runtime_reference_transport import require_volume_headroom
+        with patch("runtime_reference_transport.native_clone_capable", return_value=True), \
+                patch("runtime_reference_transport.shutil.disk_usage",
+                      return_value=SimpleNamespace(free=clone - 1)), \
+                redirect_stderr(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, "Insufficient free space for sdk-ios-metadata"):
+            workflow.metadata_preflight([self.root])
+        with patch("runtime_reference_transport.native_clone_capable", return_value=True), \
+                patch("runtime_reference_transport.shutil.disk_usage",
+                      return_value=SimpleNamespace(free=clone)), redirect_stderr(io.StringIO()):
+            self.assertEqual(clone, workflow.metadata_preflight([self.root]))
+
     def test_two_full_original_gates_exit_before_final_receipt_and_publication(self):
         result = self.run_controller()
         self.assertEqual(["full-enter", "worker", "full-exit", "finalize", "admit"], self.events)

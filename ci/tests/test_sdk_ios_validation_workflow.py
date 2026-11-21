@@ -55,7 +55,9 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.package = workflow.PhaseInstanceId("sdk", "sdk-ios", "package", "ios")
         self.instance = workflow.PhaseInstanceId("sdk", "sdk-ios", "validation", "ios-arm64")
         self.ready = {"buildKey": "sha256:" + "1" * 64}
-        self.receipt = dict(product="sdk", component="sdk-ios", phase="package", target="ios", productVersion="0.8.0", outputs=[])
+        self.package_producer = {"repository": "codex-agent-labs/codex-agent", "runId": 103, "runAttempt": 1}
+        self.receipt = dict(product="sdk", component="sdk-ios", phase="package", target="ios", productVersion="0.8.0",
+                            outputs=[], buildKey="sha256:" + "6" * 64, producer=self.package_producer)
         self.verified = SimpleNamespace(prior_ready_plans={self.instance: self.ready},
             sources={self.package: self.root / "object"},
             prior_carrier_phases={self.package: dict(buildKey="key", receiptSha256="receipt", objectSha256="object")},
@@ -83,8 +85,28 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
             (directory / "original/stdout.bin").write_bytes(b"")
             (directory / "transport.zip").write_bytes(f"exact {name} transport\n".encode())
             self.captures[name] = directory
+        package = self.captures["package"]
+        (package / "original/shard").mkdir(parents=True)
+        (package / "original/shard/phase-receipt.json").write_bytes(b"original receipt")
+        (package / "original/shard/phase-object.json").write_bytes(b"{\"objectPath\": \"v1/objects\"}")
+        (package / "original/shard/v1").mkdir()
+        (package / "original/shard/v1/payload.zip").write_bytes(b"large P payload that V must not retain")
+        (package / "capture-transport.json").write_bytes(workflow.canonical_json_bytes({
+            "artifact": {"id": 17, "digest": "sha256:" + "2" * 64}, "captureProducer": self.package_producer,
+            "observed": [], "packageReceiptSha256": workflow.product_reuse.sha256_bytes(b"original receipt")}))
         self.capture_inventories = {name: workflow.regular_file_inventory(path, allow_empty=True)
-                                    for name, path in self.captures.items()}
+                                    for name, path in self.captures.items() if name != "package"}
+        self.source_inventories = {name: workflow.regular_file_inventory(path, allow_empty=True)
+                                   for name, path in self.captures.items()}
+        reference = workflow.canonical_json_bytes({"schemaVersion": 1,
+            "packageArtifact": {"artifactId": 17, "artifactSha256": "sha256:" + "2" * 64},
+            "packageReceiptSha256": workflow.product_reuse.sha256_bytes(b"original receipt"),
+            "packageBuildKey": "sha256:" + "6" * 64, "packageProducer": self.package_producer})
+        self.capture_inventories["package"] = sorted(
+            [*(row for row in workflow.regular_file_inventory(package, allow_empty=True)
+               if row["relativePath"] in workflow.PACKAGE_REFERENCE_MEMBERS),
+             {"relativePath": workflow.PACKAGE_REFERENCE_NAME, "bytes": len(reference),
+              "sha256": workflow.product_reuse.sha256_bytes(reference)}], key=lambda row: row["relativePath"])
         self.events = []
         self.state_options = None
         self.mutation = None
@@ -122,7 +144,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         if self.mutation == "stage-exit":
             (self.root / "stage/outputs/validation/apple-validation.json").write_bytes(b"changed content")
         if self.mutation == "retained-exit":
-            (self.destination / "originals/package/original/value.bin").write_bytes(b"changed retained original")
+            (self.destination / "originals/package/original/shard/phase-object.json").write_bytes(b"changed retained original")
         if self.mutation == "retained-raw-exit":
             (self.destination / "execution/apple-validation-evidence.zip").write_bytes(b"changed retained raw")
         if self.mutation == "selection-exit":
@@ -444,7 +466,7 @@ class SdkIosValidationWorkflowTest(unittest.TestCase):
         self.assertEqual({"fixture": "finalized"}, result["shard"])
         self.assertTrue((self.destination / "shard/fixture.json").is_file())
         self.assertEqual(b"original worker diagnostics\n", (self.destination / "worker/gradle.log").read_bytes())
-        for name, inventory in self.capture_inventories.items():
+        for name, inventory in self.source_inventories.items():
             self.assertEqual(inventory, workflow.regular_file_inventory(self.captures[name], allow_empty=True))
 
     def test_metadata_admissions_reach_state_only_and_are_not_serialized(self):

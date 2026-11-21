@@ -847,7 +847,13 @@ class IosSuccessfulPackageRecoveryTest(unittest.TestCase):
     api = fixture.SdkIosPackageUploadTest.api
     archive = fixture.SdkIosPackageUploadTest.archive
     setUp = fixture.SdkIosPackageUploadTest.setUp
-    gates = IosBinaryRecoveryTest.gates
+
+    @contextmanager
+    def gates(self):
+        # Plan-time P capture reads the official upload over pinned ranges.
+        from ci.tests.range_archive_support import official_ranges
+        with IosBinaryRecoveryTest.gates(self), official_ranges(self):
+            yield
 
     def capture(self):
         receipt = load_canonical_json_bytes(self.receipt_bytes)

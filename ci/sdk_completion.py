@@ -855,9 +855,15 @@ def _capture_main(argv):
                 raise ValueError("Installed consumer output must be fresh")
         # This process owns one capability and one verification lifetime. No
         # captured matrix or serialized success substitutes for the full gate.
+        from sdk_ios_original_validation import package_reference_recapture
         with verification_session(), products._ci_observation_batch(
                 tuple(str(os.environ.get(name)) for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")),
-                share_nested=True), metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed:
+                share_nested=True), metadata_admission_options(args) as admissions, completed_frozen_options(args) as completed, \
+                package_reference_recapture(trusted_workflow_sha=args.trusted_workflow_sha, environ=os.environ,
+                    token=os.environ.get("GITHUB_TOKEN", "")):
+            # Natively completed V/M resolve from the signed checkpoint without replay
+            # (products/reuse.py completed_frozen.phase_plan). Only a not-yet-completed
+            # reference-only V recaptures P here, at most once for this process.
             policies = {name: products._canonical_control(path, "Caller SDK policy")
                         for name in ("sdk_validation_tooling", "sdk_apple_validation_policy")
                         if (path := getattr(args, name)) is not None}

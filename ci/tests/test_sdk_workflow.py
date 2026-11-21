@@ -32,14 +32,15 @@ class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        self.assertEqual({
-            "ios-arm64": "sha256:df681cfa14cd2e4fbbe04e077a2d4696c0bbcad0cde0e0b6732076d206020034",
-            "ios-simulator-arm64": "sha256:574eef75ff7ff5dee0c8dd3dc60f5a46ac2ac849952218ac6067b92c5bcb045f",
-        }, {row["target"]: row["receiptSha256"] for row in spec["completedPhases"]
-            if row["component"] == "sdk-ios" and row["phase"] == "validation"})
-        self.assertEqual({"ios-arm64": 13212931745, "ios-simulator-arm64": 13213005852},
-            {row["target"]: row["artifactId"] for row in spec["originals"]
-             if row["component"] == "sdk-ios" and row["phase"] == "validation"})
+        # The 0.8.0 pointer changed P's inputs: the recipe admits the new P d1de146e
+        # and withdraws the old V/M, which must be rebuilt and natively qualified again.
+        self.assertEqual({}, {row["target"]: row["receiptSha256"] for row in spec["completedPhases"]
+            if row["component"] == "sdk-ios" and row["phase"] in ("validation", "metadata")})
+        self.assertEqual([("sha256:d1de146eb9b7d91c038e33f5c8b272153a9db7b4b1fb6972224b0204c25d70ee",
+                           14680642778, 136630805240)],
+            [(row["buildKey"], original["artifactId"], original["jobId"])
+             for row in spec["completedPhases"] for original in spec["originals"]
+             if (row["component"], row["phase"]) == (original["component"], original["phase"]) == ("sdk-ios", "package")])
         self.assertEqual(
             {"buildKey": "sha256:468e22eaa2f42ee56fd101e6bc88a9f49eb20d721eac402c7e35c89b3d4a4bd9",
              "receiptSha256": "sha256:a9aa3a319595b754bc06ad843ff0142a4c7527824768a91cb131a3610c51adab",

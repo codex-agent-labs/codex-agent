@@ -333,6 +333,131 @@ def measured_volume(operation, root):
                 _VOLUMES.reset(token)
 
 
+_GIB = 1024 ** 3
+# Measured in run 44833963449 job 136682707788 (hosted macOS arm64, one APFS
+# volume for workspace and TMPDIR). Values are capacity controls only, never
+# admission, cache or artifact authority.
+#   * Original Apple uploads are ZIPs of mostly incompressible members:
+#     extraction E ~= archive bytes S (19.94e9 archive -> ~21e9 extracted).
+#   * The ephemeral admission pass (zip dropped after extraction) peaked at a
+#     57.6e9 free-space decrease => ~30e9 Apple verifier/stage/SDK-input scratch
+#     beyond the extracted package.
+#   * The retained (non-ephemeral) pass peaked at 85.7e9 before any Xcode work:
+#     zip + extraction + full byte-copied publication of both (~4.2 S) + inputs.
+_APPLE_VERIFIER_SCRATCH = 30 * _GIB
+_APPLE_SDK_INPUTS = 5 * _GIB
+# Xcode DerivedData/test bundle for device builds; simulator additionally boots
+# and installs into a CoreSimulator device. Unmeasured: the simulator job lost
+# its runner and log (136682707819), so these stay conservative estimates.
+_APPLE_XCODE_SCRATCH = {"ios-arm64": 12 * _GIB, "ios-simulator-arm64": 25 * _GIB}
+_HEADROOM_RESERVE = 6 * _GIB
+
+
+def native_clone_capable(*directories):
+    """Probe whether an independent native clone works from the first to each other directory.
+
+    Uses one private 1-byte file per directory pair; never creates hardlinks and
+    removes only the probe files it created.
+    """
+    from products.restore import _clone_regular_file, _native_clone_operation
+    if _native_clone_operation() is None or not directories:
+        return False
+    with tempfile.TemporaryDirectory(prefix=".codex-agent-clone-probe-", dir=directories[0]) as source_root:
+        source = Path(source_root) / "source"
+        source.write_bytes(b"\0")
+        descriptor, metadata = _open_regular_file(source, "Clone probe source")
+        try:
+            for directory in directories[1:] or directories[:1]:
+                with tempfile.TemporaryDirectory(prefix=".codex-agent-clone-probe-", dir=directory) as target:
+                    parent = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                    try:
+                        if not _clone_regular_file(descriptor, metadata, parent, "clone", 0o600):
+                            return False
+                    finally:
+                        os.close(parent)
+        finally:
+            os.close(descriptor)
+    return True
+
+
+def sdk_ios_worker_required_free_bytes(target, *, package_archive_bytes, binary_archive_bytes=0, clones):
+    """Peak additional free space an iOS V worker needs on its workspace volume.
+
+    ``clones`` means publication/retention snapshots share extents (APFS same
+    volume). Without clones each retained capture is held about twice more.
+    """
+    if target not in _APPLE_XCODE_SCRATCH:
+        raise ValueError("iOS worker capacity requires an exact iOS validation target")
+    for value in (package_archive_bytes, binary_archive_bytes):
+        require_integer(value, "Apple original archive bytes", 0)
+    if type(clones) is not bool:
+        raise ValueError("Clone capability must be boolean")
+    # A retained capture holds archive + extracted members (~2 S). Without
+    # clones, staged publication and consumer retention each hold one more
+    # full byte copy while the original capture is live (~4 S).
+    held = 2 if clones else 4
+    capture = held * package_archive_bytes + _APPLE_SDK_INPUTS
+    verification = 2 * package_archive_bytes + _APPLE_SDK_INPUTS + _APPLE_VERIFIER_SCRATCH
+    validation = (held * (package_archive_bytes + binary_archive_bytes) + _APPLE_SDK_INPUTS
+                  + _APPLE_XCODE_SCRATCH[target])
+    return max(capture, verification, validation) + _HEADROOM_RESERVE
+
+
+def require_volume_headroom(root, required_bytes, *, stage):
+    """Fail fast, before expensive work, when measured free space is insufficient.
+
+    Never deletes anything; the caller's measured budget is reported verbatim.
+    """
+    require_integer(required_bytes, "Required free bytes", 0)
+    if not isinstance(stage, str) or not stage:
+        raise ValueError("Volume headroom requires a stage name")
+    path = Path(root)
+    free = shutil.disk_usage(path).free
+    print('volume-headroom ' + json.dumps({"stage": stage, "device": path.stat().st_dev,
+        "freeBytes": free, "requiredFreeBytes": required_bytes, "sufficient": free >= required_bytes},
+        sort_keys=True), file=sys.stderr, flush=True)
+    if free < required_bytes:
+        raise ValueError(f"Insufficient free space for {stage}: {free} bytes free on {path}; "
+                         f"{required_bytes} required by the measured storage budget. "
+                         "Refusing before the expensive step instead of exhausting the runner disk.")
+    return free
+
+
+# Authenticated size of the elected iOS package upload P (d1de146e, run
+# 44833963449). A start-of-job estimate only; exact uploads are rechecked by
+# apple_capture_preflight() from their authenticated metadata before download.
+MEASURED_IOS_PACKAGE_ARCHIVE_BYTES = 19_941_206_953
+
+
+def sdk_ios_worker_preflight(target, roots, *, package_archive_bytes=MEASURED_IOS_PACKAGE_ARCHIVE_BYTES,
+                             binary_archive_bytes=0):
+    """Refuse an iOS V worker up front when its measured peak cannot fit.
+
+    ``roots`` are the workspace/temp/destination directories the worker writes;
+    they must share one volume (otherwise clones cannot apply and the budget is
+    the byte-copy one).
+    """
+    paths = [Path(root) for root in roots]
+    if not paths or any(not path.is_dir() for path in paths):
+        raise ValueError("iOS worker capacity requires existing workspace and temporary directories")
+    same_volume = len({path.stat().st_dev for path in paths}) == 1
+    clones = same_volume and native_clone_capable(*paths)
+    required = sdk_ios_worker_required_free_bytes(target, package_archive_bytes=package_archive_bytes,
+        binary_archive_bytes=binary_archive_bytes, clones=clones)
+    return require_volume_headroom(paths[0], required, stage=f"sdk-ios-validation-{target}"
+                                   + ("" if clones else "-byte-copy"))
+
+
+def apple_capture_preflight(prepared_parent, destination_parent, archive_bytes, *, phase):
+    """Before downloading an Apple original upload: room for archive + extraction (+ copies)."""
+    require_integer(archive_bytes, "Apple original archive bytes", 0)
+    paths = [Path(prepared_parent), Path(destination_parent)]
+    clones = len({path.stat().st_dev for path in paths}) == 1 and native_clone_capable(*paths)
+    required = (2 if clones else 4) * archive_bytes + _HEADROOM_RESERVE
+    return require_volume_headroom(paths[0], required, stage=f"apple-{phase}-capture"
+                                   + ("" if clones else "-byte-copy"))
+
+
 def _path(value):
     path = require_relative_path(value, "Runtime reference path")
     if path.split("/")[0] not in _ROOTS or "/" not in path:
@@ -398,18 +523,77 @@ def validate_references(value, state_wave, *, sdk_state_wave=None):
     return value
 
 
+def _created_file_mode():
+    """Mode an ordinary ``open('xb')`` would create, observed without touching the umask."""
+    directory = tempfile.mkdtemp(prefix="codex-agent-mode-probe-")
+    try:
+        descriptor = os.open(os.path.join(directory, "probe"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        try:
+            return os.fstat(descriptor).st_mode & 0o777
+        finally:
+            os.close(descriptor)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _clone_exact(descriptor, before, destination, destination_directory):
+    """Clone-first verified copy; return the clone digest, or None when unsupported."""
+    from products.restore import _clone_regular_file, _native_clone_operation
+    if _native_clone_operation() is None:
+        return None
+    if destination_directory is None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        parent = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        # Pin the umask-derived mode ordinary exclusive creation would give,
+        # not the source mode that fclonefileat would otherwise copy.
+        mode = _created_file_mode()
+    else:
+        parent, mode = destination_directory, 0o600
+    try:
+        if not _clone_regular_file(descriptor, before, parent, destination.name, mode):
+            return None
+        target = os.open(destination.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
+    finally:
+        if destination_directory is None:
+            os.close(parent)
+    try:
+        digest, remaining = hashlib.sha256(), before.st_size
+        with os.fdopen(target, "rb", closefd=False) as cloned:
+            while remaining:
+                chunk = cloned.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("Runtime reference clone was truncated")
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if cloned.read(1) or _stat_identity(before) != _stat_identity(os.fstat(descriptor)):
+                raise ValueError("Runtime reference source changed during resolution")
+    finally:
+        os.close(target)
+    return digest
+
+
 def _copy_exact(source, destination, record, *, destination_directory=None):
     descriptor, before = _open_regular_file(source, "Runtime reference source", reject_symlink_parents=True)
     try:
         if before.st_size != record["bytes"]:
             raise ValueError("Runtime reference source size differs from its immutable identity")
+        if destination_directory is not None:
+            require_relative_path(destination.name, "Runtime reference destination member")
+        digest = _clone_exact(descriptor, before, destination, destination_directory)
+        if digest is not None:
+            # The private clone's own bytes are hashed; it shares extents only
+            # until either file is written, never an inode or writable alias.
+            if "sha256:" + digest.hexdigest() != record["sha256"]:
+                raise ValueError("Runtime reference source digest differs from its immutable identity")
+            count('verifiedCloneBytes', record['bytes'])
+            count('verifiedClones')
+            return
         if destination_directory is None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             output = destination.open("xb")
         else:
             # Cache publication holds the verified parent descriptor through
             # creation and rename; caller-controlled parents cannot redirect it.
-            require_relative_path(destination.name, "Runtime reference destination member")
             output = os.fdopen(os.open(destination.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                        0o600, dir_fd=destination_directory), "wb")
         digest = hashlib.sha256()

@@ -120,8 +120,9 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             "token": "synthetic-token",
             **changes,
         }
+        from ci.tests.range_archive_support import official_ranges
         with patch.object(capture, "_validate_plan", return_value=self.plan), \
-                patch("reuse.api_request", side_effect=self.api), \
+                patch("reuse.api_request", side_effect=self.api), official_ranges(self), \
                 patch.object(capture, "download_artifact_to_file",
                     side_effect=lambda artifact, token, destination, **kwargs:
                         Path(destination).write_bytes(self.raw)):
@@ -287,7 +288,7 @@ class SdkIosPackageUploadTest(unittest.TestCase):
         if self.phase != "package":
             self.skipTest("cold admission is package-only")
         from products.restore import verification_session
-        with verification_session() as session, patch.object(capture, "publish_regular_tree",
+        with verification_session() as session, patch.object(capture, "clone_publish_regular_tree",
                 side_effect=AssertionError("duplicate publication")):
             with self.held_package() as held:
                 self.assertFalse(self.output.exists())
@@ -523,7 +524,7 @@ class SdkIosPackageUploadTest(unittest.TestCase):
             member.write_bytes(b"late mutation\n")
             return publish_regular_tree(source, destination, **kwargs)
 
-        with patch.object(capture, "publish_regular_tree", side_effect=mutate_before_copy), \
+        with patch.object(capture, "clone_publish_regular_tree", side_effect=mutate_before_copy), \
                 self.assertRaisesRegex(ValueError, "pinned inventory"):
             self.call()
         self.assertFalse(self.output.exists())
@@ -562,7 +563,7 @@ class SdkIosBinaryUploadTest(SdkIosPackageUploadTest):
 
     def test_compact_recovery_authenticates_full_upload_but_materializes_only_shard(self):
         with patch.object(capture, "safe_extract", side_effect=AssertionError("full extraction")), \
-                patch.object(capture, "publish_regular_tree", wraps=publish_regular_tree) as publish:
+                patch.object(capture, "clone_publish_regular_tree", wraps=publish_regular_tree) as publish:
             transport = self.call(compact_recovery=True)
         files = regular_file_inventory(self.output)
         self.assertEqual({"capture-transport.json",
@@ -590,7 +591,7 @@ class SdkIosBinaryUploadTest(SdkIosPackageUploadTest):
         self.raw = bytes(raw)
         self.artifact["digest"] = sha256_bytes(self.raw)
         with self.assertRaisesRegex(ValueError, "malformed or unsafe") as raised, \
-                patch.object(capture, "publish_regular_tree") as publish:
+                patch.object(capture, "clone_publish_regular_tree") as publish:
             self.call(compact_recovery=True)
         self.assertIsInstance(raised.exception.__cause__, zipfile.BadZipFile)
         self.assertIn("CRC", str(raised.exception.__cause__))
@@ -599,7 +600,7 @@ class SdkIosBinaryUploadTest(SdkIosPackageUploadTest):
 
     def test_compact_recovery_rejects_wrong_whole_upload_digest(self):
         self.artifact["digest"] = "sha256:" + "0" * 64
-        with self.assertRaises(ValueError), patch.object(capture, "publish_regular_tree") as publish:
+        with self.assertRaises(ValueError), patch.object(capture, "clone_publish_regular_tree") as publish:
             self.call(compact_recovery=True)
         publish.assert_not_called()
         self.assertFalse(self.output.exists())
