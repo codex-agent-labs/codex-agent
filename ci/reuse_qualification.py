@@ -918,12 +918,53 @@ class CompletedFrozenReuse:
         current = _phase_records(request["availableObjects"], "Current available objects")
         authorities = _phase_records(request["phaseAuthorities"], "Current phase authorities")
         expected = _phase_records(spec["request"]["phaseAuthorities"], "Frozen phase authorities")
+        fresh = self._same_run_checkpoint_phases(phases)
+        checked = []
         for instance, row in phases.items():
-            if (instance not in current or any(current[instance].get(field) != row[field]
-                                               for field in _OBJECT_FIELDS)
-                    or authorities.get(instance) != expected[instance]):
+            if authorities.get(instance) != expected[instance]:
                 raise QualificationIncompatible("Completed reuse requires exact frozen candidates and authorities")
-        return tuple(sorted(phases))
+            if instance not in current and instance in fresh:
+                # Produced later in this run than the request being replayed;
+                # it is no candidate here and its own state replay reverifies it.
+                continue
+            if instance not in current or any(current[instance].get(field) != row[field]
+                                              for field in _OBJECT_FIELDS):
+                raise QualificationIncompatible("Completed reuse requires exact frozen candidates and authorities")
+            checked.append(instance)
+        return tuple(sorted(checked))
+
+    def _same_run_checkpoint_phases(self, phases):
+        """Checkpoint-added SDK phases whose exact receipts this current run produced.
+
+        Only a live same-run checkpoint witness can add them. An earlier request
+        of this run (product resume) predates them, so their absence there is
+        not a dropped frozen candidate. Presence still requires exact identity.
+        """
+        if self._checkpoint is None or self._sdk is None:
+            return frozenset()
+        from completed_sdk_reuse import _CheckpointConsumer
+        from products.registry import PhaseInstanceId
+        if type(self._checkpoint) is not _CheckpointConsumer:
+            return frozenset()  # Historical checkpoints carry only earlier runs.
+        extension = load_canonical_json_bytes(self._sdk).get("extension")
+        if extension is None:
+            return frozenset()
+        self._checkpoint.check()
+        current = load_canonical_json_bytes(self._checkpoint._consumer)["producer"]
+        added = _phase_records(extension["spec"]["completedPhases"], "Checkpoint SDK phases")
+        fresh = set()
+        for fields, raw in self._receipts:
+            instance = PhaseInstanceId(*fields)
+            if instance not in added or instance not in phases:
+                continue
+            if sha256_bytes(raw) != phases[instance]["receiptSha256"]:
+                raise ValueError("Checkpoint receipt differs from its proved digest")
+            producer = load_canonical_json_bytes(raw)["producer"]
+            if (set(producer) == set(current) and type(producer["runAttempt"]) is int
+                    and all(producer[field] == current[field] for field in current if field != "runAttempt")
+                    and producer["runAttempt"] <= current["runAttempt"]):
+                fresh.add(instance)
+        return frozenset(fresh)
 
     def check_consumer(self, consumer):
         self._values()
