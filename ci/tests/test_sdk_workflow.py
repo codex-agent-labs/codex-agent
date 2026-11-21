@@ -33,9 +33,16 @@ class SdkWorkflowTest(unittest.TestCase):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
         # The 0.8.0 pointer changed P's inputs: the recipe admits the new P d1de146e
-        # and withdraws the old V/M, which must be rebuilt and natively qualified again.
-        self.assertEqual({}, {row["target"]: row["receiptSha256"] for row in spec["completedPhases"]
-            if row["component"] == "sdk-ios" and row["phase"] in ("validation", "metadata")})
+        # and the two V rebuilt against it in run 44911620337 (sdk-collect-9);
+        # M is still absent and must be rebuilt and natively qualified again.
+        self.assertEqual({
+            "ios-arm64": "sha256:d5a148d3c84b857f8c185a785142b7d8a5a672d5e45159f78b50bba783d5e5a9",
+            "ios-simulator-arm64": "sha256:8ce18b2c2935beb12cab0f40480f9bd5eebc35b7fa1381d0aab0ad6a13bbfbc1"},
+            {row["target"]: row["receiptSha256"] for row in spec["completedPhases"]
+             if row["component"] == "sdk-ios" and row["phase"] in ("validation", "metadata")})
+        self.assertEqual([("ios-arm64", 14717662879, 136912506241), ("ios-simulator-arm64", 14718275316, 136912506233)],
+            [(row["target"], row["artifactId"], row["jobId"]) for row in spec["originals"]
+             if (row["component"], row["phase"]) == ("sdk-ios", "validation")])
         self.assertEqual([("sha256:d1de146eb9b7d91c038e33f5c8b272153a9db7b4b1fb6972224b0204c25d70ee",
                            14680642778, 136630805240)],
             [(row["buildKey"], original["artifactId"], original["jobId"])

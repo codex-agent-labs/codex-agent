@@ -1622,5 +1622,98 @@ class CompletedSdkControlsTest(unittest.TestCase):
                 completed.validate_current(request, phases, receipts, **arguments)
 
 
+def fields(instance):
+    return {field: getattr(instance, field) for field in completed.IDENTITY}
+
+
+class SameRunCheckpointRequestTest(unittest.TestCase):
+    """Run 44911620337: checkpoint-9 added both fresh iOS validations, then
+    sdk-ios-metadata replayed the earlier product-resume request without them."""
+
+    def setUp(self):
+        import reuse_qualification as native
+        from types import SimpleNamespace
+        from products.registry import PhaseInstanceId
+        self.native = native
+        contract = phase_receipt()
+        self.producer = {**contract['producer'], 'runId': 8, 'runAttempt': 1}
+        earlier = {**contract['producer'], 'runId': 7, 'runAttempt': 1}
+        self.package = PhaseInstanceId('sdk', 'sdk-ios', 'package', 'ios')
+        self.validations = (PhaseInstanceId('sdk', 'sdk-ios', 'validation', 'ios-arm64'),
+                            PhaseInstanceId('sdk', 'sdk-ios', 'validation', 'ios-simulator-arm64'))
+        self.receipts, self.rows, self.authorities = {}, {}, []
+        for instance, producer in ((self.package, earlier), *((item, self.producer) for item in self.validations)):
+            receipt = {**deepcopy(contract), **fields(instance), 'producer': producer}
+            receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in
+                (*completed.IDENTITY, 'inputs')})
+            self.receipts[instance] = receipt
+            self.rows[instance] = {**fields(instance), 'buildKey': receipt['buildKey'],
+                'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
+                'objectSha256': sha256_bytes(instance.target.encode())}
+            self.authorities.append({**fields(instance), **{field: receipt['inputs'][field] for field in
+                ('toolchainProfileDigest', 'flagsDigest', 'outputSchemaVersion')}})
+        self.commit = contract['producer']['commit']
+        self.fixed = {'repository': contract['producer']['repository'], 'pullRequest': 31,
+                      'versions': {'sdk': '0.8.0'}, 'catalogs': []}
+        self.spec = {'request': {**self.fixed, 'phaseAuthorities': self.authorities},
+                     'expectedResult': {'phases': [self.rows[item] for item in sorted(self.rows)]}}
+        self.observation = SimpleNamespace(_raw=b'live')
+
+    def capability(self, *, checkpoint=True, consumer=None, extension=None):
+        witness = None
+        if checkpoint:
+            witness = completed._CheckpointConsumer({'kind': 'ci', 'producer': consumer or self.producer},
+                {'envelope': {}, 'sourceArtifact': {}}, self.observation, 'synthetic', (),
+                completed._CHECKPOINT_CONSUMER)
+        added = extension if extension is not None else sorted(self.rows)
+        sdk = {'spec': {'completedPhase': {'product': 'sdk', 'component': 'sdk-ios', 'phase': 'binary',
+                                           'target': 'ios'}},
+               'extension': {'spec': {'completedPhases': [self.rows[item] for item in added]}, 'proof': {}}}
+        return self.native.CompletedFrozenReuse(deepcopy(self.spec), list(self.receipts.values()),
+            self.native._COMPLETED_FROZEN, revision=self.commit, sdk=sdk, _checkpoint=witness)
+
+    def request(self, available, *, authorities=None):
+        from products.registry import PhaseInstanceId
+        metadata = PhaseInstanceId('sdk', 'sdk-ios', 'metadata', 'ios')
+        return {**self.fixed, 'repositoryRevision': self.commit, 'requested': [fields(metadata)],
+                'phaseAuthorities': authorities or self.authorities,
+                'availableObjects': [{**self.rows[item], 'objectPath': item.target + '.zip'} for item in available]}
+
+    def test_earlier_same_run_request_may_lack_only_fresh_checkpoint_phases(self):
+        cap = self.capability()
+        self.assertEqual((self.package,), cap.check_request(self.request([self.package])))
+        self.assertEqual(tuple(sorted(self.rows)), cap.check_request(self.request(sorted(self.rows))))
+        # A rerun attempt of the same run still recognizes its earlier fresh receipts.
+        retry = self.capability(consumer={**self.producer, 'runAttempt': 2})
+        self.assertEqual((self.package,), retry.check_request(self.request([self.package])))
+
+    def test_exactness_and_authorities_remain_mandatory(self):
+        native = self.native
+        refused = 'exact frozen candidates and authorities'
+        cases = {
+            'earlier-run phase absent': (self.capability(), self.request(list(self.validations))),
+            'no checkpoint witness': (self.capability(checkpoint=False), self.request([self.package])),
+            'another run consumes': (self.capability(consumer={**self.producer, 'runId': 9}),
+                                     self.request([self.package])),
+            'earlier attempt consumes': (self.capability(consumer={**self.producer, 'runAttempt': 0}),
+                                         self.request([self.package])),
+            'not checkpoint-added': (self.capability(extension=[self.package]), self.request([self.package])),
+        }
+        changed = deepcopy(self.authorities)
+        changed[1]['flagsDigest'] = 'sha256:' + '0' * 64
+        cases['fresh authority changed'] = (self.capability(), self.request([self.package], authorities=changed))
+        for name, (cap, request) in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(native.QualificationIncompatible, refused):
+                cap.check_request(request)
+        request = self.request(sorted(self.rows))
+        request['availableObjects'][1]['objectSha256'] = 'sha256:' + '0' * 64
+        with self.assertRaisesRegex(native.QualificationIncompatible, refused):
+            self.capability().check_request(request)
+        cap = self.capability()
+        self.observation._raw = None
+        with self.assertRaisesRegex(ValueError, 'witness is closed'):
+            cap.check_request(self.request([self.package]))
+
+
 if __name__ == '__main__':
     unittest.main()
