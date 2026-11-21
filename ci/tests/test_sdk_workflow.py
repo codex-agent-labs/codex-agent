@@ -66,6 +66,24 @@ class SdkWorkflowTest(unittest.TestCase):
              "sha256": "sha256:bff8c754755c5f76000fcdd7fcad64aa7f9ba06999c2b6689e16d414f25c1f49"},
         ), locator.UPDATED_PARITY_REPORTS)
 
+    def test_q2_raw_report_pins_bind_the_requalified_device_original(self):
+        import sdk_apple_upload_locator as locator
+        spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
+        [completed] = [row for row in spec["completedPhases"]
+                       if (row["component"], row["phase"], row["target"]) == ("sdk-ios", "validation", "ios-arm64")]
+        [original] = [row for row in spec["originals"]
+                      if (row["component"], row["phase"], row["target"]) == ("sdk-ios", "validation", "ios-arm64")]
+        self.assertEqual({"buildKey": completed["buildKey"], "receiptSha256": completed["receiptSha256"],
+                          "artifactId": original["artifactId"], "artifactSha256": original["artifactSha256"],
+                          "jobId": original["jobId"]}, locator.Q2_PARITY_SOURCE)
+        self.assertEqual(1610549702, locator.Q2_PARITY_ARCHIVE_BYTES)
+        self.assertEqual((
+            {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+             "sha256": "sha256:31fcc875561a7d6f079987c5c05925147e5aafb88ff74e5dae41415a006c6b01"},
+            {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+             "sha256": "sha256:c79bdc2bed50b8bd912de44aa0f6c88d26ecc368272bb18ac148463b4d7d7dc4"},
+        ), locator.Q2_PARITY_REPORTS)
+
     def test_compact_apple_parity_requires_qualified_original_and_exact_raw_reports(self):
         from reuse_qualification import CompletedFrozenReuse
         import sdk_apple_upload_locator as locator
@@ -95,6 +113,14 @@ class SdkWorkflowTest(unittest.TestCase):
             "jobId": 125767279918
         }
         self.assertEqual(updated_origin, locator.UPDATED_PARITY_SOURCE)
+        q2_origin = {
+            "buildKey": "sha256:444134535180b521703eb448798a1467a8e258574fdad655dcd0e63b131dd482",
+            "receiptSha256": "sha256:d5a148d3c84b857f8c185a785142b7d8a5a672d5e45159f78b50bba783d5e5a9",
+            "artifactId": 14717662879,
+            "artifactSha256": "sha256:5cbe94dadc743c6256ca643c70e3271bf487052db0da221d2ac53dcfa47cbf93",
+            "jobId": 136912506241,
+        }
+        self.assertEqual(q2_origin, locator.Q2_PARITY_SOURCE)
         row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
         envelope = dict(receipt={"producer": consumer})
         verified = SimpleNamespace(completed_frozen=cap, consumer={"kind": "ci", "producer": consumer},
@@ -112,8 +138,10 @@ class SdkWorkflowTest(unittest.TestCase):
         cases = [(origin, defect) for defect in (None, "authority", "receipt", "upload", "job", "report")]
         cases += [(current_origin, defect) for defect in (None, "key", "authority")]
         cases += [(updated_origin, defect) for defect in (None, "key", "authority", "receipt", "upload", "job", "report", "authority-exit")]
+        cases += [(q2_origin, defect) for defect in (None, "key", "authority", "receipt", "upload", "job", "report",
+                                                     "authority-exit", "ambiguous")]
         for origin, defect in cases:
-            prefix = ("UPDATED" if origin is updated_origin else
+            prefix = ("Q2" if origin is q2_origin else "UPDATED" if origin is updated_origin else
                       "CURRENT" if origin is current_origin else "RETAINED")
             row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
             artifact = dict(id=origin["artifactId"], digest=origin["artifactSha256"])
@@ -125,6 +153,10 @@ class SdkWorkflowTest(unittest.TestCase):
                 verified.prior_by_instance[identity] = {**row, "buildKey": "sha256:" + "0" * 64}
             with self.subTest(origin=prefix, defect=defect), ExitStack() as stack:
                 stack.enter_context(patch.object(locator, "CURRENT_PARITY_SOURCE", current_origin, create=True))
+                if defect == "ambiguous":
+                    # A second reviewed group claiming the same identity is refused.
+                    stack.enter_context(patch.object(locator, "UPDATED_PARITY_SOURCE",
+                        {**updated_origin, **{field: origin[field] for field in ("buildKey", "receiptSha256")}}))
                 for name in ("check_request", "check_consumer"):
                     stack.enter_context(patch.object(CompletedFrozenReuse, name))
                 stack.enter_context(patch.object(CompletedFrozenReuse, "envelope",

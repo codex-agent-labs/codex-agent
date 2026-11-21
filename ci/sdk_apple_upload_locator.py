@@ -85,6 +85,24 @@ UPDATED_PARITY_REPORTS = (
 )
 
 
+# Device reports of the 0.8.0 original rebuilt in run 44911620337, CRC-read from
+# its nested ZIP and its signed capture copy; exact transport pins only.
+Q2_PARITY_SOURCE = {
+    "buildKey": "sha256:444134535180b521703eb448798a1467a8e258574fdad655dcd0e63b131dd482",
+    "receiptSha256": "sha256:d5a148d3c84b857f8c185a785142b7d8a5a672d5e45159f78b50bba783d5e5a9",
+    "artifactId": 14717662879,
+    "artifactSha256": "sha256:5cbe94dadc743c6256ca643c70e3271bf487052db0da221d2ac53dcfa47cbf93",
+    "jobId": 136912506241,
+}
+Q2_PARITY_ARCHIVE_BYTES = 1610549702
+Q2_PARITY_REPORTS = (
+    {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+     "sha256": "sha256:31fcc875561a7d6f079987c5c05925147e5aafb88ff74e5dae41415a006c6b01"},
+    {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+     "sha256": "sha256:c79bdc2bed50b8bd912de44aa0f6c88d26ecc368272bb18ac148463b4d7d7dc4"},
+)
+
+
 def retained_validation_origin(target, build_key, consumer):
     """Select two reviewed successful uploads; selection grants no admission.
 

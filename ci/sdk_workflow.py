@@ -490,6 +490,7 @@ def _completed_apple_parity_files(verified, destination, *, token):
         RETAINED_PARITY_SOURCE, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS,
         CURRENT_PARITY_SOURCE, CURRENT_PARITY_ARCHIVE_BYTES, CURRENT_PARITY_REPORTS,
         UPDATED_PARITY_SOURCE, UPDATED_PARITY_ARCHIVE_BYTES, UPDATED_PARITY_REPORTS,
+        Q2_PARITY_SOURCE, Q2_PARITY_ARCHIVE_BYTES, Q2_PARITY_REPORTS,
     )
     from runtime_reference_archive import (
         open_reference_archive, open_stored_reference_archive, copy_reference_member,
@@ -509,6 +510,7 @@ def _completed_apple_parity_files(verified, destination, *, token):
         (RETAINED_PARITY_SOURCE, RETAINED_PARITY_ARCHIVE_BYTES, RETAINED_PARITY_REPORTS),
         (CURRENT_PARITY_SOURCE, CURRENT_PARITY_ARCHIVE_BYTES, CURRENT_PARITY_REPORTS),
         (UPDATED_PARITY_SOURCE, UPDATED_PARITY_ARCHIVE_BYTES, UPDATED_PARITY_REPORTS),
+        (Q2_PARITY_SOURCE, Q2_PARITY_ARCHIVE_BYTES, Q2_PARITY_REPORTS),
     ) if all(row[field] == group[0][field] for field in ("buildKey", "receiptSha256"))]
     if len(matches) != 1:
         raise ValueError("Compact Apple parity differs from its reviewed original")
