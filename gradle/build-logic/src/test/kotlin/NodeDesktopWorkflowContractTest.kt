@@ -19,7 +19,8 @@ class NodeDesktopWorkflowContractTest {
             "packageNodeWasmRuntimeEvidenceRunner",
         ).forEach { assertTrue(it in driver, it) }
         assertFalse("setup-sccache" in desktop)
-        assertEquals(1, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertEquals(2, Regex("(?m)^    strategy:$").findAll(desktop).count())
+        assertTrue("  retained-native-source:" in desktop)
         assertFalse("  native-wrapper-host-consumers:" in desktop)
         val sdkValidation = workflows.getValue("product-validation.yml")
             .substringAfter("\n  sdk-native-validation:").substringBefore("\n  sdk-collect-7:")
@@ -163,7 +164,8 @@ class NodeDesktopWorkflowContractTest {
 
         assertTrue("needs.plan.outputs.any_desktop == 'true'" in ci)
         assertFalse("needs.plan.outputs.desktop_matrix != '[]'" in ci)
-        assertTrue("if: inputs.matrix != '[]'" in desktop)
+        assertTrue("if: inputs.retainedNativeSource && inputs.matrix != '[]'" in desktop)
+        assertTrue("if: ${'$'}{{ !inputs.retainedNativeSource && inputs.matrix != '[]' }}" in desktop)
         assertTrue("runs-on: ubuntu-24.04" in identity)
         assertTrue("runner_identity.py capture" in identity)
         assertFalse("compileDesktopProcessSupervisor" in identity)

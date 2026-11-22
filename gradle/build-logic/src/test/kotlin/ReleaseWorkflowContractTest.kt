@@ -121,8 +121,10 @@ class ReleaseWorkflowContractTest {
             uploads,
             Regex("(?m)^\\s+if-no-files-found: error$").findAll(combined).count() + optionalDiagnostics + warningDiagnostics,
         )
-        assertEquals(4, optionalDiagnostics)
-        assertEquals(11, warningDiagnostics)
+        assertEquals(5, optionalDiagnostics)
+        assertTrue("name: codex-agent-swift-source-diagnostics-" in combined)
+        assertEquals(12, warningDiagnostics)
+        assertTrue("name: codex-agent-retained-native-source-diagnostics-" in combined)
         assertTrue("name: codex-agent-sdk-wave-9-outcomes-" in combined)
         assertTrue("name: sdk-android-apk-diagnostics-" in combined)
         val lane = actions.getValue("run-ci-lane")
