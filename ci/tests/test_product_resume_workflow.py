@@ -31,6 +31,31 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                 self.assertIn("if: matrix.shard == 0 && steps.actionlint-cache.outputs.cache-hit != 'true'", installer)
                 self.assertIn('lint=(--actionlint "$HOME/go/bin/actionlint")', job)
 
+    def test_ordinary_and_recovery_plans_compose_the_same_native_resume_handoff(self):
+        plan = workflow_job(self.workflow, 'plan')
+        step = plan.split('      - id: product-reuse\n', 1)[1].split('\n      - id:', 1)[0]
+        self.assertIn("if: steps.event-authorization.outputs.authorized == 'true' && "
+                      "steps.impact.outputs.remote_build_authorized == 'true' && "
+                      "steps.validation-reuse.outputs.reused != 'true'", step)
+        self.assertIn('SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}', step)
+        self.assertIn('ORDINARY_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && '
+                      '!inputs.sdkRecoveryOnly && !inputs.toolingOnly }}', step)
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        gate = script[script.index('completion=()'):script.index('python3 ci/product_reuse.py discover')]
+        self.assertEqual(1, gate.count('--native-resume-handoff build/native-product-resume-transport'))
+        probe = gate + 'printf "%s\\n" ${completion[@]+"${completion[@]}"}\n'
+        # Runtime recovery and tooling-only runs keep their own routes without the handoff.
+        for recovery, ordinary, expected in (('true', 'false', True), ('false', 'true', True),
+                                             ('false', 'false', False)):
+            with self.subTest(recovery=recovery, ordinary=ordinary):
+                result = subprocess.run(['bash', '-euo', 'pipefail', '-c', probe], capture_output=True, text=True,
+                    env={'PATH': os.environ['PATH'], 'SDK_RECOVERY_ONLY': recovery, 'ORDINARY_MODE': ordinary,
+                         'SDK_CHECKPOINTS': 'false'})
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(expected, '--native-resume-handoff' in result.stdout.split())
+                if expected:
+                    self.assertIn('build/native-product-resume-transport', result.stdout.split())
+
     def test_parallel_recovery_checks_run_every_module_and_propagate_any_failure(self):
         job = workflow_job(self.workflow, 'recovery-controls')
         step = job.split('      - name: Verify reviewed recovery controls only\n', 1)[1].split('\n      - ', 1)[0]

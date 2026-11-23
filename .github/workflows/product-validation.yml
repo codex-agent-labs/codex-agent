@@ -913,6 +913,9 @@ jobs:
           # Composed native resume may recover an unqualified original package here.
           CODEX_AGENT_COLD_APPLE_WORKSPACE: 'true'
           SDK_RECOVERY_ONLY: ${{ inputs.sdkRecoveryOnly || inputs.fullReuseAcceptanceOnly }}
+          # Ordinary authorized runs compose the same verified native resume, so the
+          # retained Node-JS and reviewed Runtime selections can observe its result.
+          ORDINARY_MODE: ${{ !inputs.fullReuseAcceptanceOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && !inputs.toolingOnly }}
           SDK_CHECKPOINTS: ${{ inputs.sdkCheckpoints }}
           TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
@@ -921,7 +924,7 @@ jobs:
           completion=()
           if [ -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}" ]; then completion=(--completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"); fi
           if [ "$SDK_CHECKPOINTS" = true ]; then completion+=(--sdk-historical-checkpoint auto); fi
-          if [ "$SDK_RECOVERY_ONLY" = true ]; then
+          if [ "$SDK_RECOVERY_ONLY" = true ] || [ "$ORDINARY_MODE" = true ]; then
             completion+=(--native-resume-handoff build/native-product-resume-transport)
           fi
           python3 ci/product_reuse.py discover --plan build/ci/impact-plan.json \
