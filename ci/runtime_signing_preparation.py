@@ -17,13 +17,84 @@ from product_reuse import (
 from runtime_aggregate_release import _destination
 from products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, publish_regular_tree, read_regular_file_bytes,
-    regular_file_inventory, require_exact_keys, require_sha256, require_string, sha256_bytes, snapshot_regular_tree,
+    regular_file_inventory, require_exact_keys, require_relative_path, require_sha256, require_string, sha256_bytes,
+    snapshot_regular_tree,
     write_canonical_json,
 )
 from products.registry import NATIVE_TARGETS
 from products.restore import memoized_file_inventory as regular_file_inventory, verification_scoped
 from products.signing_isolation import require_no_signing_secret
 from products.sdk_apple_validation_admission import apple_validation_policy_arguments
+
+
+_AGGREGATE_IDENTITY = {"product": "runtime", "component": "runtime-aggregate", "phase": "metadata", "target": "aggregate"}
+
+
+def recover_original_aggregate_release(plan_path: Path, selected: Path, selection: Mapping[str, Any],
+                                       destination: Path, *, keyring: Path, keys_directory: Path,
+                                       repository_root: Path, environment: Mapping[str, str],
+                                       trusted_workflow_sha: str, token: str) -> Path | None:
+    """Forward the exact earlier signed carrier of a retained aggregate, never a new signature.
+
+    Completed-frozen discovery restores retained aggregate metadata without
+    rehydrating its release carrier. Ordinary mode then has neither native
+    variant handoffs nor a retained carrier. The selected receipt names the
+    original producer; that run's protected upload is captured with its
+    original CI/job/name/digest gates and staged through the full signature
+    check. The signer later re-verifies the carrier against selected originals.
+    """
+    from product_reuse import (
+        _runtime_prior_workflow_sha, api_json, capture_runtime_aggregate_release_upload, paginated_items,
+    )
+    from products.receipt import validate_producer
+    from products.runtime_aggregate_inputs import stage_runtime_aggregate_release_evidence
+
+    metadata = selection.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("Aggregate selection lacks its selected metadata")
+    key = require_sha256(metadata.get("buildKey"), "Selected aggregate key")
+    digest = require_sha256(metadata.get("receiptSha256"), "Selected aggregate receipt")
+    receipt_path = Path(selected) / require_relative_path(
+        require_string(selection.get("aggregateReceipt"), "Selected aggregate receipt path"),
+        "Selected aggregate receipt path")
+    receipt_bytes = read_regular_file_bytes(receipt_path, max_bytes=16 * 1024 * 1024, reject_symlink_parents=True)
+    if sha256_bytes(receipt_bytes) != digest:
+        raise ValueError("Selected aggregate receipt differs from its selected digest")
+    receipt = load_canonical_json_bytes(receipt_bytes)
+    if (any(receipt.get(field) != value for field, value in _AGGREGATE_IDENTITY.items())
+            or receipt.get("buildKey") != key):
+        raise ValueError("Selected aggregate receipt changes its phase identity")
+    original = validate_producer(receipt.get("producer"))
+    current = validate_producer(selection.get("producer"))
+    if (original["runId"], original["runAttempt"]) >= (current["runId"], current["runAttempt"]):
+        return None  # A current aggregate is attested from fresh native variant handoffs.
+    run = api_json(f"https://api.github.com/repos/{original['repository']}/actions/runs/"
+                   f"{original['runId']}/attempts/{original['runAttempt']}", token)
+    workflow = _runtime_prior_workflow_sha(run, trusted_workflow_sha)
+    if workflow is None:
+        raise ValueError("Retained aggregate source lacks its reviewed original workflow")
+    name = f"codex-agent-runtime-aggregate-release-handoff-{original['tree']}-attempt-{original['runAttempt']}"
+    uploads = paginated_items(f"https://api.github.com/repos/{original['repository']}/actions/runs/"
+                              f"{original['runId']}/artifacts", "artifacts", token)
+    matches = [item for item in uploads if isinstance(item, Mapping) and item.get("name") == name]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError("Retained aggregate release upload is ambiguous")
+    staged = Path(destination)
+    # Capture outside the candidate checkout; only the signature-verified carrier is staged back.
+    with tempfile.TemporaryDirectory(prefix="runtime-retained-aggregate-") as temporary:
+        capture = Path(temporary).resolve() / "capture"
+        capture_runtime_aggregate_release_upload(plan_path, capture, artifact_id=matches[0].get("id"),
+            artifact_sha256=matches[0].get("digest"), trusted_workflow_sha=workflow,
+            expected_build_key=key, expected_metadata_receipt_sha256=digest, original_producer=original,
+            repository_root=repository_root, environ=environment, token=token)
+        records = stage_runtime_aggregate_release_evidence(
+            [{"receiptSha256": digest, "handoffRoot": "original"}],
+            capture, staged, keyring=keyring, keys_directory=keys_directory)
+    if len(records) != 1 or records[0]["receiptSha256"] != digest:
+        raise ValueError("Retained aggregate release staging changed its selected receipt")
+    return staged / records[0]["handoffRoot"]
 
 
 @verification_scoped
@@ -135,9 +206,16 @@ def prepare_runtime_signing_inputs(
                 keyring=trust.keyring, keys_directory=trust.keys,
                 repository_root=candidate, environ=environment, **tooling)
             unchanged()
+            recovered = None
+            if retained is None:
+                retained = recovered = recover_original_aggregate_release(captured_plan, selected, selection,
+                    root / "retained-original", keyring=trust.keyring, keys_directory=trust.keys,
+                    repository_root=candidate, environment=environment,
+                    trusted_workflow_sha=trusted_workflow_sha, token=token)
+                unchanged()
             if retained is not None:
                 retained = Path(retained)
-                retained.relative_to(root / "retained")
+                retained.relative_to(root / ("retained" if recovered is None else "retained-original"))
                 baselines[retained] = regular_file_inventory(retained, allow_empty=True)
         record = {"schemaVersion": 1, "target": target, "expectedBuildKey": expected_build_key,
             "stateWave": state_wave, "producer": producer, "planSha256": sha256_bytes(plan_bytes),

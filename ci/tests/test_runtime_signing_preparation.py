@@ -157,9 +157,43 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
 
     def test_aggregate_without_retained_carrier_has_no_invented_handoff(self):
         self.retained = False
+        recover = self.mock("recover_original_aggregate_release", return_value=None)
         self.invoke(target="aggregate", state_wave=0)
         self.assertFalse((self.root / "output/release-handoff").exists())
         self.assertEqual(self.capture_root / "original/product-resume-state", self.aggregate.call_args.args[2])
+        # The earlier signed carrier is only looked up after the retained lookup missed.
+        self.assertEqual(self.selection, recover.call_args.args[2])
+        self.assertEqual(fixture.PIN, recover.call_args.kwargs["trusted_workflow_sha"])
+        self.assertEqual(self.policy_root / "keyring.json", recover.call_args.kwargs["keyring"])
+
+    def test_native_targets_and_retained_aggregates_never_recover_an_earlier_carrier(self):
+        recover = self.mock("recover_original_aggregate_release", side_effect=AssertionError("unexpected"))
+        for target in (*preparation.NATIVE_TARGETS, "aggregate"):
+            with self.subTest(target=target):
+                self.invoke(self.root / f"output-{target}", target=target)
+        recover.assert_not_called()
+
+    def test_recovered_original_aggregate_carrier_is_forwarded_unchanged(self):
+        self.retained = False
+
+        def recovered(_plan, _selected, _selection, destination, **kwargs):
+            carrier = destination / "handoffs/original"
+            self.write(carrier / "aggregate-input/attestation.sig", b"earlier signed aggregate\x00\xfd")
+            return carrier
+
+        self.mock("recover_original_aggregate_release", side_effect=recovered)
+        self.invoke(target="aggregate")
+        self.assertEqual(b"earlier signed aggregate\x00\xfd",
+                         (self.root / "output/release-handoff/aggregate-input/attestation.sig").read_bytes())
+
+    def test_recovered_carrier_outside_its_private_root_never_publishes(self):
+        self.retained = False
+        outside = self.root / "outside-carrier"
+        self.write(outside / "aggregate-input/attestation.sig", b"forged\n")
+        self.mock("recover_original_aggregate_release", return_value=outside)
+        with self.assertRaises(ValueError):
+            self.invoke(target="aggregate")
+        self.assertFalse((self.root / "output").exists())
 
     def test_private_native_capability_reaches_capture_and_both_readers(self):
         capability = object()  # Composition seam; each real reader rejects forged authority.
