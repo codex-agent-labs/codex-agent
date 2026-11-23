@@ -81,10 +81,8 @@ class ToolingMetadataRotationTest(unittest.TestCase):
                     producer, changed_sdk, TOKEN, repository_root=repository))
                 self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
                     producer, changed_parity, TOKEN, repository_root=repository))
-                # The reviewed Runtime source-check policy is read only by its route validator.
-                self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
-                    producer, changed_runtime_review, TOKEN, repository_root=repository))
             rejected = [('code-change', observed(original), changed_code),
+                        ('reviewed-runtime-control', observed(original), changed_runtime_review),
                         ('other-reviewed-control', observed(original), changed_other_review),
                         ('unreviewed-loader-change', observed(original), changed_loader),
                         ('tooling-child-change', observed(original), changed_child),
@@ -149,6 +147,27 @@ class ToolingDiscoveryTest(unittest.TestCase):
                 exec(compile(code, 'capture-sdk-tooling/action.yml', 'exec'), {})
             invoked.assert_called_once()
 
+    def test_current_release_tooling_original_survives_an_executable_publisher_rotation(self):
+        # Shape of run 45201645704: parent via @reuse-authority, child pinned, both at 10822b99.
+        prior = '10822b990e847b58f4338efea8902939f508b1cc'
+        run = copy.deepcopy(self.fixture.run)
+        run['referenced_workflows'] = [
+            {'path': 'codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority',
+             'ref': 'refs/heads/reuse-authority', 'sha': prior},
+            {'path': f'codex-agent-labs/codex-agent/.github/workflows/contract-validation.yml@{prior}',
+             'ref': 'refs/heads/reuse-authority', 'sha': prior}]
+        with mock.patch.object(tooling_discovery, 'api_json', return_value=run):
+            policy = tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
+        self.assertEqual({'trusted_workflow_sha': prior,
+                          'trusted_workflow_path': '.github/workflows/contract-validation.yml',
+                          'trusted_job_name': 'product-validation / contract-validation / tooling-attestation'}, policy)
+        for index, field, value in ((0, 'ref', 'refs/heads/unprotected'), (1, 'sha', WORKFLOW_PIN)):
+            changed = copy.deepcopy(run)
+            changed['referenced_workflows'][index][field] = value
+            with self.subTest(field=field), mock.patch.object(tooling_discovery, 'api_json', return_value=changed), \
+                    self.assertRaises(ValueError):
+                tooling_discovery._original_tooling_workflow(self.fixture.producer, WORKFLOW_PIN, TOKEN)
+
     def test_original_nested_workflow_survives_pin_rotation_and_rejects_mismatch(self):
         for prior in ('084542245fba5fca34be4ad52e8113ac3f701f16',
                       '822578a948aa83e972b572121958343eefe5c1d0',
@@ -165,7 +184,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
                       '39a98de51cdc803d958187dc69e7940529b6d8e1',
                       '8e3c5272c0ae38b225b772f264105908a0344dbb',
                       'e8276706ada7114429b43228988b02fe57932b79',
-                      '54151c488002cd24ca2a191ee7324720192eebc1'):
+                      '54151c488002cd24ca2a191ee7324720192eebc1',
+                      '10822b990e847b58f4338efea8902939f508b1cc'):
             with self.subTest(prior=prior):
                 run = copy.deepcopy(self.fixture.run)
                 run['referenced_workflows'] = [

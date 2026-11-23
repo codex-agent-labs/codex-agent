@@ -42,6 +42,8 @@ _PRIOR_TOOLING_WORKFLOW_SHAS = (
     "8e3c5272c0ae38b225b772f264105908a0344dbb",
     "e8276706ada7114429b43228988b02fe57932b79",
     "54151c488002cd24ca2a191ee7324720192eebc1",
+    # Protected publisher of the signed release-tooling original from run 45201645704.
+    "10822b990e847b58f4338efea8902939f508b1cc",
 )
 
 
@@ -89,11 +91,8 @@ def _original_tooling_workflow(producer, current_sha, token, *, repository_root=
         # Protected parent and downstream SDK orchestration are not tooling. Original
         # child authority remains exact; capture still checks every compiler
         # input and actual JAR resource against current caller Git policy.
-        # The reviewed Runtime source-check policy is data read only by its route
-        # validator; no tooling producer, loader or capture reads it.
         if set(changed.split(b'\0')) - {b'', b'.reuse/approvals.json', b'.reuse/workflow-publication.json',
                                       b'.reuse/completed-reuse.json',
-                                      b'.reuse/reviewed-runtime-source-checks.json',
                                       b'.github/workflows/product-validation.yml',
                                       b'.github/workflows/sdk-validation.yml',
                                       b'.github/workflows/sdk-binding-parity.yml'}:
