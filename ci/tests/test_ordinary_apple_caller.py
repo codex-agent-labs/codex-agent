@@ -227,12 +227,24 @@ class AppleCompositionTest(unittest.TestCase):
         script = script.split("python3 -B - <<'PYCODE'\n",1)[1].split('          PYCODE',1)[0]
         script = '\n'.join(line[10:] for line in script.splitlines())
         for reviewed in ('true','false'):
-            with patch.dict(os.environ,{'RETAINED_APPLE_REVIEWED':reviewed,'RETAINED_SWIFT_SOURCE':'false'},clear=True), \
+            with patch.dict(os.environ,{'RETAINED_APPLE_REVIEWED':reviewed,'RETAINED_SWIFT_SOURCE':'false','RETAINED_PACKAGE':'false'},clear=True), \
                  patch.object(Path,'read_text',return_value=json.dumps(f.plan_value)):
                 if reviewed == 'true': exec(compile(script,'apple-unmatched-duty-guard','exec'),{})
                 else:
                     with self.assertRaisesRegex(ValueError,'distinct retained-input checks'):
                         exec(compile(script,'apple-unmatched-duty-guard','exec'),{})
+        # The planned ordinary ios-package duty raises until its own retained caller owns it.
+        f.plan_value['lanes']['ios-package']['build'] = True
+        f.plan_value['lanes']['ios-package']['metadata'] = True
+        for package in ('false','true'):
+            with patch.dict(os.environ,{'RETAINED_APPLE_REVIEWED':'true','RETAINED_SWIFT_SOURCE':'false','RETAINED_PACKAGE':package},clear=True), \
+                 patch.object(Path,'read_text',return_value=json.dumps(f.plan_value)):
+                if package == 'true': exec(compile(script,'apple-package-duty-guard','exec'),{})
+                else:
+                    with self.assertRaisesRegex(ValueError,'distinct retained-input checks: ios-package'):
+                        exec(compile(script,'apple-package-duty-guard','exec'),{})
+        for lane in ('ios-package','ios-kotlin-tests','ios-native-tests','ios-rust-device','ios-rust-simulator'):
+            for action in ('build','test','metadata'): f.plan_value['lanes'][lane][action] = False
 
     def test_fixed_workflow_selection_requires_authorized_ordinary_callback(self):
         f = self.fixture
@@ -242,7 +254,7 @@ class AppleCompositionTest(unittest.TestCase):
         script = '\n'.join(line[10:] for line in script.splitlines())
         f.plan_value['lanes']['ios-swift-build']['build'] = True
         f.plan_value['lanes']['ios-privacy-metrics']['test'] = True
-        expected = dict(enabled='true', reviewed='true', swift_source='true')
+        expected = dict(enabled='true', reviewed='true', swift_source='true', package='false')
         env = dict(ORDINARY_MODE='true', AUTHORIZED='true', VALIDATION_REUSED='false',
             NATIVE_READY='true', NATIVE_FULL_REUSE='true', CANONICAL_CALLBACK='true', GITHUB_OUTPUT=str(f.root/'output'))
         import reuse
@@ -253,6 +265,16 @@ class AppleCompositionTest(unittest.TestCase):
                  patch.object(reuse,'github_output') as output:
                 exec(compile(script, 'fixed-retained-apple-selector', 'exec'), {})
                 self.assertEqual(expected if changed is None else {k:'false' for k in expected}, output.call_args.args[1])
+        f.plan_value['lanes']['ios-package']['build'] = True
+        f.plan_value['lanes']['ios-package']['metadata'] = True
+        for changed in (None, 'NATIVE_FULL_REUSE'):
+            case = dict(env)
+            if changed: case[changed] = 'false'
+            with patch.dict(os.environ,case,clear=True), patch.object(Path,'read_text',return_value=json.dumps(f.plan_value)), \
+                 patch.object(reuse,'github_output') as output:
+                exec(compile(script, 'fixed-retained-apple-selector', 'exec'), {})
+                self.assertEqual({**expected, 'package': 'true'} if changed is None else {k:'false' for k in expected},
+                                 output.call_args.args[1])
 
 class SwiftStorageMeasurementTest(unittest.TestCase):
     def test_existing_disk_samples_and_gradle_elapsed_are_reported_without_receipt_changes(self):
