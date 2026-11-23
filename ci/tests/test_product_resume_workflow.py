@@ -73,7 +73,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn('native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}', checks)
         self.assertIn('ref: ${{ steps.publication.outputs.source-sha }}', checks)
         lint = workflow_job(self.workflow, 'workflow-lint')
-        self.assertIn('needs: [plan, recovery-controls, workflow-build-logic]', lint)
+        self.assertIn('needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]', lint)
         gate = lint.split('      - name: Require the same protected publication', 1)[1].split('\n      - ', 1)[0]
         script = textwrap.dedent(gate.split('        run: |\n', 1)[1])
         good = dict(PLAN_RESULT='success', CHECKS_RESULT='success', PLAN_SOURCE='a' * 40,

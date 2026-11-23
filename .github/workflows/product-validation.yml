@@ -217,7 +217,7 @@ jobs:
 
   workflow-lint:
     if: always() && !inputs.toolingOnly
-    needs: [plan, recovery-controls, workflow-build-logic]
+    needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]
     runs-on: ubuntu-24.04
     outputs:
       full_acceptance_current: ${{ steps.acceptance-kind.outputs.full_acceptance_current }}
@@ -239,15 +239,19 @@ jobs:
           [[ "$PLAN_PUBLISHER" =~ ^[0-9a-f]{40}$ ]] || exit 1
           test "$PLAN_SOURCE" = "$CHECKS_SOURCE"
           test "$PLAN_PUBLISHER" = "$CHECKS_PUBLISHER"
-      # Complete ci/tests source checks (fresh or attested) gate merge-gate and
-      # fullAcceptanceCurrent instead; product and SDK work never wait on them.
-      - name: Require complete current build-logic checks
+      # Complete ci/tests source checks (fresh or attested) still gate all product,
+      # signing and SDK work, and additionally gate merge-gate and fullAcceptanceCurrent.
+      - name: Require complete current-source checks
         if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
         env:
+          SOURCE_RESULT: ${{ needs.workflow-source-checks.result }}
+          SOURCE_PASSED: ${{ needs.workflow-source-checks.outputs.passed }}
           BUILD_LOGIC_RESULT: ${{ needs.workflow-build-logic.result }}
           BUILD_LOGIC_REQUIRED: ${{ needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' }}
         run: |
           set -euo pipefail
+          test "$SOURCE_RESULT" = success
+          test "$SOURCE_PASSED" = true
           if [ "$BUILD_LOGIC_REQUIRED" = true ]; then
             test "$BUILD_LOGIC_RESULT" = success
           else

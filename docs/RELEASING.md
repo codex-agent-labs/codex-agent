@@ -43,8 +43,8 @@ has been created; any later push or label change cancels the armed campaign.
 Nothing waits for an earlier run to finish: the planner only admits completed
 original runs, and an unauthorized run produces no product outputs.
 
-The complete `ci/tests` suite is required by `CI / merge-gate`, not by product
-or SDK jobs. It runs as eight deterministic shards, each importing the whole
+The complete `ci/tests` suite gates product, signing and SDK jobs (through
+`workflow-lint`) and `CI / merge-gate`. It runs as eight deterministic shards, each importing the whole
 discovered suite and running a fixed module partition; the join fails unless
 the executed occurrences equal the discovered suite exactly. A fresh pass from
 a same-repository pull request or merge group is recorded with a native GitHub

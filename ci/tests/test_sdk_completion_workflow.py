@@ -718,8 +718,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
             self.assertNotIn('fullReuseAcceptanceOnly', job)
             for forbidden in ('ciProductPhase', 'releaseToolingJar', 'sdk-native-worker', 'tooling-attestation@'):
                 self.assertNotIn(forbidden, job)
-        for command in ('gradlew', 'unittest discover', 'go/bin/actionlint', 'source_checks.py',
-                        'workflow-source-checks'):
+        for command in ('gradlew', 'unittest discover', 'go/bin/actionlint', 'source_checks.py'):
             self.assertNotIn(command, lint)
         self.assertIn("(!inputs.fullReuseAcceptanceOnly || needs.plan.result == 'success')",
                       self.job('product-resume'))
@@ -729,13 +728,14 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                       "needs.product-resume.outputs.full_reuse == 'true'"):
             self.assertIn(guard, fast)
 
-    def test_build_logic_join_no_longer_waits_for_source_checks(self):
+    def test_full_source_check_join_requires_both_selected_checks_before_acceptance(self):
         lint = self.job('workflow-lint')
-        self.assertIn('needs: [plan, recovery-controls, workflow-build-logic]', lint)
-        self.assertNotIn('SOURCE_RESULT', lint)
-        block = lint.split('      - name: Require complete current build-logic checks\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]', lint)
+        block = lint.split('      - name: Require complete current-source checks\n', 1)[1].split('\n      - ', 1)[0]
         self.assertIn("if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'", block)
-        for field, value in (('BUILD_LOGIC_RESULT', 'needs.workflow-build-logic.result'),
+        for field, value in (('SOURCE_RESULT', 'needs.workflow-source-checks.result'),
+                             ('SOURCE_PASSED', 'needs.workflow-source-checks.outputs.passed'),
+                             ('BUILD_LOGIC_RESULT', 'needs.workflow-build-logic.result'),
                              ('BUILD_LOGIC_REQUIRED', "needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true'")):
             self.assertIn(field + ': ${{ ' + value + ' }}', block)
         check = textwrap.dedent(block.split('        run: |\n', 1)[1])
@@ -743,15 +743,16 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn('RECOVERY_ONLY: ${{ inputs.runtimeRecoveryOnly || inputs.sdkRecoveryOnly }}', publication)
         publish = textwrap.dedent(publication.split('        run: |\n', 1)[1])
         for required in (True, False):
-            for build in ('success', 'failure', 'cancelled', 'skipped', ''):
-                with self.subTest(required=required, build=build), tempfile.TemporaryDirectory() as temporary:
+            for source, passed, build in product(('success', 'failure', 'cancelled', 'skipped', ''), ('true', 'false', ''),
+                                                 ('success', 'failure', 'cancelled', 'skipped', '')):
+                with self.subTest(required=required, source=source, passed=passed, build=build), tempfile.TemporaryDirectory() as temporary:
                     output = Path(temporary) / 'outputs'
-                    environment = {**os.environ, 'BUILD_LOGIC_RESULT': build,
+                    environment = {**os.environ, 'SOURCE_RESULT': source, 'SOURCE_PASSED': passed, 'BUILD_LOGIC_RESULT': build,
                                    'BUILD_LOGIC_REQUIRED': str(required).lower(), 'RECOVERY_ONLY': 'false',
                                    'GITHUB_OUTPUT': str(output)}
                     result = subprocess.run(['bash', '-c', check + '\n' + publish], env=environment,
                                             capture_output=True, text=True)
-                    accepted = build == ('success' if required else 'skipped')
+                    accepted = source == 'success' and passed == 'true' and build == ('success' if required else 'skipped')
                     self.assertEqual(accepted, result.returncode == 0, result.stderr)
                     if accepted:
                         self.assertEqual('full_acceptance_current=true\n', output.read_text())
@@ -932,13 +933,11 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertEqual(['plan', 'workflow-source-reuse'], parents('workflow-source-shards'))
         self.assertEqual(['plan', 'workflow-source-reuse', 'workflow-source-shards'], parents('workflow-source-checks'))
         self.assertEqual({'plan', 'contract-validation'}, set(parents('workflow-build-logic')))
-        self.assertEqual({'plan', 'recovery-controls', 'workflow-build-logic'},
+        self.assertEqual({'plan', 'recovery-controls', 'workflow-source-checks', 'workflow-build-logic'},
                          set(parents('workflow-lint')))
-        # No product, Runtime or SDK job waits on the source-check suite; the merge gate does.
+        # Product, signing and SDK work still wait (through workflow-lint) on a complete
+        # fresh or attested source-check pass; the merge gate also requires it directly.
         source_jobs = {'workflow-source-reuse', 'workflow-source-shards', 'workflow-source-checks'}
-        for name in jobs:
-            if name not in source_jobs | {'merge-gate'}:
-                self.assertFalse(source_jobs & set(parents(name)), name)
         self.assertLessEqual(source_jobs, set(parents('merge-gate')))
         for name in ('sdk-parity', 'merge-gate'):
             self.assertIn('workflow-lint', parents(name))

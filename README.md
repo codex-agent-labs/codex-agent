@@ -427,7 +427,8 @@ The complete `ci/tests` suite runs as eight deterministic shards whose joined
 result must cover every discovered test exactly once. An identical tested tree,
 protected workflow definition and runner environment may instead reuse a pass
 that an earlier same-repository run signed with a native GitHub attestation.
-Product and SDK jobs do not wait for this suite; `CI / merge-gate` requires it.
+Product, signing and SDK jobs wait for a complete fresh or attested pass, and
+`CI / merge-gate` requires it as well.
 Successful lanes from an earlier run of the same pull request may be reused;
 full mode never suppresses required work. A merge group
 reuses the pull-request result when its Git tree is identical, otherwise it
