@@ -31,7 +31,7 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
         self.original = {**self.producer, "commit": "c" * 40, "tree": "e" * 40, "runId": 10, "runAttempt": 1}
         self.receipt = {"product": "runtime", "component": "runtime-aggregate", "phase": "metadata",
                         "target": "aggregate", "buildKey": KEY, "producer": self.original}
-        self.uploads = [{"id": 77, "digest": "sha256:" + "f" * 64,
+        self.uploads = [{"id": 77, "digest": "sha256:" + "f" * 64, "size_in_bytes": 1000,
                          "name": f"codex-agent-runtime-aggregate-release-handoff-{'e' * 40}-attempt-1"},
                         {"id": 78, "digest": "sha256:" + "0" * 64, "name": "codex-agent-unrelated"}]
         self.workflow = ORIGINAL_WORKFLOW
@@ -45,6 +45,13 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
         mocked = patch("products.runtime_aggregate_inputs.stage_runtime_aggregate_release_evidence",
                        side_effect=self.stage)
         self.stage_mock = mocked.start()
+        self.addCleanup(mocked.stop)
+        self.scratch = self.root / "scratch"
+        self.scratch.mkdir()
+        self.headroom = []
+        mocked = patch("runtime_reference_transport.require_volume_headroom",
+                       side_effect=lambda root, required, *, stage: self.headroom.append((Path(root), required, stage)))
+        mocked.start()
         self.addCleanup(mocked.stop)
 
     def write_receipt(self, receipt=None):
@@ -64,6 +71,7 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
         return self.uploads
 
     def capture(self, plan_path, destination, **kwargs):
+        self.nested_temporary = Path(tempfile.gettempdir())
         self.calls.append(("capture", destination, kwargs))
         (destination / "original").mkdir(parents=True)
 
@@ -74,7 +82,8 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
     def recover(self, selection):
         return preparation.recover_original_aggregate_release(self.root / "plan.json", self.selected, selection,
             self.root / "retained-original", keyring=self.root / "keyring.json", keys_directory=self.root / "keys",
-            repository_root=self.root / "candidate", environment={"GITHUB_EVENT_NAME": "pull_request"},
+            repository_root=self.root / "candidate", environment={"GITHUB_EVENT_NAME": "pull_request",
+                preparation.SCRATCH_ENVIRONMENT: str(self.scratch)},
             trusted_workflow_sha=PIN, token="synthetic-token")
 
     def test_earlier_original_upload_is_captured_and_signature_staged(self):
@@ -86,7 +95,8 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
             "trusted_workflow_sha": ORIGINAL_WORKFLOW, "expected_build_key": KEY,
             "expected_metadata_receipt_sha256": selection["metadata"]["receiptSha256"],
             "original_producer": self.original, "repository_root": self.root / "candidate",
-            "environ": {"GITHUB_EVENT_NAME": "pull_request"}, "token": "synthetic-token"}, capture[2])
+            "environ": {"GITHUB_EVENT_NAME": "pull_request", preparation.SCRATCH_ENVIRONMENT: str(self.scratch)},
+            "token": "synthetic-token"}, capture[2])
         self.assertNotIn(self.root / "candidate", capture[1].parents)
         stage = next(call for call in self.calls if call[0] == "stage")
         self.assertEqual([{"receiptSha256": selection["metadata"]["receiptSha256"], "handoffRoot": "original"}], stage[1])
@@ -95,6 +105,42 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
         self.assertEqual({"keyring": self.root / "keyring.json", "keys_directory": self.root / "keys"}, stage[4])
         self.assertIn(("run", "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/10/attempts/1"),
                       self.calls)
+
+    def test_capture_and_nested_temporaries_use_the_scratch_after_fail_early_headroom(self):
+        free = {self.scratch.resolve(): 10 ** 15}
+        with patch("shutil.disk_usage", side_effect=lambda path: type("U", (), {
+                "free": free.get(Path(path).resolve(), 1)})()):
+            self.recover(self.write_receipt())
+        capture = next(call for call in self.calls if call[0] == "capture")
+        self.assertIn(self.scratch.resolve(), capture[1].parents)
+        self.assertIn(self.scratch.resolve(), self.nested_temporary.parents)
+        self.assertNotEqual(self.nested_temporary, Path(tempfile.gettempdir()))  # Restored afterwards.
+        gib = 1024 ** 3
+        self.assertEqual([(self.scratch.resolve(), 6 * 1000 + 2 * gib, "runtime-aggregate-release-recovery-scratch"),
+                          (self.root, 1000 + 2 * gib, "runtime-aggregate-release-recovery-output")], self.headroom)
+
+    def test_insufficient_headroom_fails_before_any_download(self):
+        with patch("runtime_reference_transport.require_volume_headroom",
+                   side_effect=ValueError("Insufficient free space for runtime-aggregate-release-recovery-scratch")):
+            with self.assertRaisesRegex(ValueError, "Insufficient free space"):
+                self.recover(self.write_receipt())
+        self.assertFalse(any(call[0] in ("capture", "stage") for call in self.calls))
+
+    def test_upload_without_transport_size_rejects_before_download(self):
+        del self.uploads[0]["size_in_bytes"]
+        with self.assertRaisesRegex(ValueError, "transport size"):
+            self.recover(self.write_receipt())
+        self.assertFalse(any(call[0] in ("capture", "stage") for call in self.calls))
+
+    def test_scratch_environment_must_name_an_existing_absolute_directory(self):
+        for value in ("relative/scratch", str(self.root / "missing")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                preparation.preparation_scratch({preparation.SCRATCH_ENVIRONMENT: value})
+        link = self.root / "scratch-link"
+        link.symlink_to(self.scratch, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            preparation.preparation_scratch({preparation.SCRATCH_ENVIRONMENT: str(link)})
+        self.assertEqual(Path(tempfile.gettempdir()), preparation.preparation_scratch({}))
 
     def test_current_aggregate_needs_fresh_native_handoffs_without_lookup(self):
         self.receipt["producer"] = self.producer

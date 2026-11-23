@@ -177,6 +177,7 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
         self.retained = False
 
         def recovered(_plan, _selected, _selection, destination, **kwargs):
+            self.recovered_root = destination
             carrier = destination / "handoffs/original"
             self.write(carrier / "aggregate-input/attestation.sig", b"earlier signed aggregate\x00\xfd")
             return carrier
@@ -185,6 +186,7 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
         self.invoke(target="aggregate")
         self.assertEqual(b"earlier signed aggregate\x00\xfd",
                          (self.root / "output/release-handoff/aggregate-input/attestation.sig").read_bytes())
+        self.assertFalse(self.recovered_root.exists())  # Staged bytes are freed once copied and verified.
 
     def test_recovered_carrier_outside_its_private_root_never_publishes(self):
         self.retained = False
