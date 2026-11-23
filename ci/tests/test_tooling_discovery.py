@@ -52,6 +52,8 @@ class ToolingMetadataRotationTest(unittest.TestCase):
             changed_parent = commit('.github/workflows/product-validation.yml', 'name: changed orchestration fixture\n')
             changed_sdk = commit('.github/workflows/sdk-validation.yml', 'name: changed downstream SDK fixture\n')
             changed_parity = commit('.github/workflows/sdk-binding-parity.yml', 'name: changed downstream parity fixture\n')
+            changed_runtime_review = commit('.reuse/reviewed-runtime-source-checks.json', '{"syntheticReview":true}\n')
+            changed_other_review = commit('.reuse/reviewed-apple-checks.json', '{"syntheticAppleReview":true}\n')
             changed_loader = commit('.reuse/consumer.py', '# changed consumer loader\n')
             changed_child = commit('.github/workflows/contract-validation.yml', 'name: changed tooling attestation fixture\n')
             changed_code = commit('gradle/build-logic/src/main/kotlin/Tooling.kt', '// changed compiler input\n')
@@ -79,7 +81,11 @@ class ToolingMetadataRotationTest(unittest.TestCase):
                     producer, changed_sdk, TOKEN, repository_root=repository))
                 self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
                     producer, changed_parity, TOKEN, repository_root=repository))
+                # The reviewed Runtime source-check policy is read only by its route validator.
+                self.assertEqual(policy, tooling_discovery._original_tooling_workflow(
+                    producer, changed_runtime_review, TOKEN, repository_root=repository))
             rejected = [('code-change', observed(original), changed_code),
+                        ('other-reviewed-control', observed(original), changed_other_review),
                         ('unreviewed-loader-change', observed(original), changed_loader),
                         ('tooling-child-change', observed(original), changed_child),
                         ('non-ancestor', observed(current), original)]
