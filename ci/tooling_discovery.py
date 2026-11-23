@@ -42,6 +42,8 @@ _PRIOR_TOOLING_WORKFLOW_SHAS = (
     "8e3c5272c0ae38b225b772f264105908a0344dbb",
     "e8276706ada7114429b43228988b02fe57932b79",
     "54151c488002cd24ca2a191ee7324720192eebc1",
+    # Protected publisher of the signed release-tooling original from run 45201645704.
+    "10822b990e847b58f4338efea8902939f508b1cc",
 )
 
 
