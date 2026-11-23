@@ -719,10 +719,7 @@ def write_current_head_acceptance(plan_path, *, report_sha256,
     report_limit = archive_limit = 1024 * 1024
     jobs = {"parity": "product-validation / sdk-parity / sdk-parity",
         "controls": "product-validation / workflow-lint", "resume": "product-validation / product-resume",
-        "completion": "product-validation / sdk-completion-full-reuse",
-        # The complete ci/tests result (fresh shards or an attested pass) no longer
-        # runs inside workflow-lint; the current attempt must show it separately.
-        "sources": "product-validation / workflow-source-checks"}
+        "completion": "product-validation / sdk-completion-full-reuse"}
     with ExitStack() as held:
         descriptor, before = _open_regular_file(plan_path, "Acceptance plan", reject_symlink_parents=True)
         held.callback(os.close, descriptor)
