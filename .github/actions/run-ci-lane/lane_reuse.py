@@ -10,18 +10,27 @@ wrapper only changes how candidates are found and how transient GETs recover:
   legacy run listing applied (completed pull_request run of this workflow,
   this PR, not the current run);
 * transient GETs retry; one candidate run that cannot be observed is skipped
-  and logged, never treated as admitted.
+  and logged, never treated as admitted;
+* a receipt-first prefilter reads only ``lane-receipt.json`` and the selected
+  inventory files of each candidate ZIP over ETag-pinned HTTP ranges, runs the
+  unchanged legacy ``validate_receipt`` on that partial tree, and drops a
+  candidate only when it fails a check that reads no other archive file (or
+  restore's own receipt-field rules). Every other candidate, including any
+  whose ranged read fails or whose layout could extract differently, stays in
+  the list, in order, for the full legacy download.
 
 Download digests, receipts, inventories, runner and toolchain checks and the
 reissued transport receipt all stay in the legacy module, unchanged.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -32,6 +41,27 @@ sys.path.insert(0, str(ROOT / "ci"))
 RETRY_DELAYS = (1, 2, 4, 8, 16, 30, 30)
 MAX_RATE_LIMIT_WAIT = 900
 MAX_INDEX_PAGES = 1000
+RECEIPT = "lane-receipt.json"
+PREFILTER_MEMBER_BYTES = 64 * 1024**2
+PREFILTER_WORKERS = 4
+# Messages validate_receipt raises before it reads any archive file other than
+# the receipt and the selected inventories. No other failure is ever a skip.
+RECEIPT_LEVEL_REJECTIONS = (
+    "Unsupported or non-exact lane receipt schema",
+    "Lane receipt identity mismatch",
+    "Lane receipt repository mismatch",
+    "Reusable lane receipt is outside this PR scope",
+    "Lane was not produced by a passing authoritative CI workflow",
+    "Lane receipt artifact name mismatch",
+    "Lane receipt runner identity mismatch",
+    "Lane receipt toolchain identity mismatch",
+    "Lane receipt validation action coverage is missing or malformed",
+    "Lane receipt inventory set mismatch",
+    "Lane validation action coverage mismatch:",
+    "Lane production inventory mismatch",
+    "Lane test inventory mismatch",
+    "Lane metadata inventory mismatch",
+)
 
 
 def _legacy_module():
@@ -148,20 +178,141 @@ def indexed_candidates(legacy, api_url, repository, workflow, lane, pull_request
                                    row["workflow_run"]["id"], row["id"]), reverse=True)
 
 
-def install(legacy):
-    """Bind the retrying transport and indexed discovery inside this private module only."""
+def _ranged_archive(artifact, token):
+    """The repository's ETag-pinned, bounded HTTP-range ZIP reader (no full download)."""
+    import runtime_reference_archive
+    return runtime_reference_archive.open_reference_archive(
+        artifact, token, max_bytes=16 * 1024**3, max_members=65_536)
+
+
+def receipt_members(infos, categories, inventory_names):
+    """The receipt and selected inventory entries, or None when extraction could place other bytes there."""
+    for info in infos:
+        name = info.filename[:-1] if info.filename.endswith("/") else info.filename
+        if (not name.isascii() or "\\" in name or name.startswith("/")
+                or any(part in ("", ".", "..") for part in name.split("/"))):
+            return None  # Extraction could normalize or alias this name.
+    folded = [info.filename.rstrip("/").lower() for info in infos]
+    hits = [info for info, name in zip(infos, folded) if RECEIPT in name.split("/")]
+    if len(hits) != 1 or hits[0].is_dir() or PurePosixPath(hits[0].filename).name != RECEIPT:
+        return None
+    base = hits[0].filename[:-len(RECEIPT)]
+    if RECEIPT in base.lower().split("/"):
+        return None
+    selected = [hits[0]]
+    for category in categories:
+        path = base + inventory_names[category]
+        key = path.lower()
+        matches = [info for info, name in zip(infos, folded) if name == key or name.startswith(key + "/")]
+        if len(matches) != 1 or matches[0].filename != path or matches[0].is_dir():
+            return None
+        selected.append(matches[0])
+    if any(info.file_size > PREFILTER_MEMBER_BYTES for info in selected):
+        return None
+    return selected
+
+
+def receipt_verdict(legacy, artifact, token, *, plan, plan_path, lane, runner, toolchain, categories):
+    """Return (skip, reason); skip is True only when the legacy gate certainly rejects the candidate."""
+    try:
+        legacy._artifact_transport_identity(artifact)
+    except (KeyError, ValueError) as error:
+        return False, f"transport identity left to legacy: {error}"
+    promoted = bool(artifact.get("_promoted"))
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "partial"
+            with _ranged_archive(artifact, token) as (archive, _stream):
+                selected = receipt_members(archive.infolist(), categories, legacy.INPUT_NAMES)
+                if selected is None:
+                    return False, "archive layout left to legacy"
+                for info in selected:
+                    target = root / Path(*PurePosixPath(info.filename).parts)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(info))  # zipfile checks the size and CRC-32.
+            receipt_path = root / Path(*PurePosixPath(selected[0].filename).parts)
+            try:
+                receipt = legacy.read_json(receipt_path)
+            except ValueError as error:  # Undecodable or non-object receipt bytes.
+                return True, f"receipt is unreadable: {type(error).__name__}"
+            try:
+                legacy.validate_receipt(
+                    receipt_path, plan_path, receipt_path.parent, lane, allow_compatible=True,
+                    allow_cross_pr=promoted, runner=runner, toolchain=toolchain, categories=categories)
+            except ValueError as error:
+                if type(error) is ValueError and str(error).startswith(RECEIPT_LEVEL_REJECTIONS):
+                    return True, str(error)[:240]
+            except Exception:  # noqa: BLE001 - never a skip; the legacy path decides.
+                pass
+    except Exception as error:  # noqa: BLE001 - any ranged failure keeps the full legacy path.
+        return False, f"ranged read left to legacy: {type(error).__name__}"
+    # restore() applies these receipt-field rules after a passing validation;
+    # when they hold here they hold for the same receipt bytes there.
+    try:
+        if any(item["kind"] == "c-abi-sdk" for collection in ("artifacts", "evidence")
+               for item in receipt[collection]) and (
+                receipt["validationCommit"] != plan["validationCommit"]
+                or receipt["validationTree"] != plan["validationTree"]):
+            return True, "c-abi-sdk receipt is not this exact commit and tree"
+        if not promoted and receipt["artifactName"] != artifact["name"]:
+            return True, "receipt artifactName differs from the upload name"
+    except Exception:  # noqa: BLE001 - malformed receipts are left to legacy.
+        pass
+    return False, "receipt-level checks pass"
+
+
+def prefilter(legacy, arguments, rows, token):
+    """Drop only candidates the unchanged legacy gate certainly rejects; keep the order."""
+    started = time.monotonic()
+    plan_path = arguments.plan.resolve()
+    options = {
+        "plan": legacy.read_json(plan_path),
+        "plan_path": plan_path,
+        "lane": arguments.lane,
+        "runner": legacy.parse_mapping(arguments.runner) or None,
+        "toolchain": legacy.parse_mapping(arguments.toolchain) or None,
+        "categories": tuple(legacy.INPUT_NAMES) if arguments.mode == "full" else ("production",),
+    }
+    partial = f"codex-agent-ci-{arguments.lane}-production-"
+    pending = [row for row in rows
+               if not (arguments.mode == "full" and str(row.get("name", "")).startswith(partial))]
+    with ThreadPoolExecutor(max_workers=PREFILTER_WORKERS) as pool:
+        verdicts = dict(zip(map(id, pending), pool.map(
+            lambda row: receipt_verdict(legacy, row, token, **options), pending)))
+    kept = []
+    for row in rows:
+        skip, reason = verdicts.get(id(row), (False, "left to the legacy mode filter"))
+        _log(f"receipt prefilter {'skipped' if skip else 'kept'} artifact {row.get('id')} "
+             f"{row.get('name')}: {reason}")
+        if not skip:
+            kept.append(row)
+    _log(f"receipt prefilter: {len(rows) - len(kept)} skipped, {len(kept)} kept for full legacy verification "
+         f"in {time.monotonic() - started:.1f}s")
+    return kept
+
+
+def install(legacy, arguments=None):
+    """Bind the retrying transport, indexed discovery and (with arguments) the receipt prefilter privately."""
     legacy.api_request = retrying(legacy.api_request)
+    promoted = legacy.promoted_artifacts
 
     def candidates(api_url, repository, workflow, lane, pull_request, token, current_run):
-        return indexed_candidates(legacy, api_url, repository, workflow, lane, pull_request, token, current_run)
+        rows = indexed_candidates(legacy, api_url, repository, workflow, lane, pull_request, token, current_run)
+        return rows if arguments is None else prefilter(legacy, arguments, rows, token)
+
+    def promoted_candidates(api_url, repository, lane, token):
+        rows = promoted(api_url, repository, lane, token)
+        return rows if arguments is None else prefilter(legacy, arguments, rows, token)
 
     legacy.candidate_artifacts = candidates
+    legacy.promoted_artifacts = promoted_candidates
     return legacy
 
 
 def main() -> None:
-    legacy = install(_legacy_module())
+    legacy = _legacy_module()
     arguments = legacy.parser().parse_args()
+    install(legacy, arguments)
     value = legacy.restore(arguments)
     legacy.github_output(arguments.github_output, value)
     print(json.dumps(value, indent=2, sort_keys=True))
