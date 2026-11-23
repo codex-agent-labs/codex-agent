@@ -267,7 +267,7 @@ runs:
             --toolchain "producerLinuxX64CrossBuilder=$X64_PRODUCER_IDENTITY"
           )
         fi
-        lookup=(python3 ci/reuse.py)
+        lookup=(python3 .github/actions/run-ci-lane/lane_reuse.py)
         if [ "$SDK_PREREQUISITE_REUSE" = true ]; then
           lookup=(python3 .github/actions/run-ci-lane/sdk_prerequisite_reuse.py
             --production-destination build/ci/reuse/production
@@ -342,7 +342,7 @@ runs:
             --toolchain "producerLinuxX64CrossBuilder=$X64_PRODUCER_IDENTITY"
           )
         fi
-        python3 ci/reuse.py --plan build/ci/impact-plan.json --lane "$LANE" \
+        python3 .github/actions/run-ci-lane/lane_reuse.py --plan build/ci/impact-plan.json --lane "$LANE" \
           --destination build/ci/reuse/production --mode production --github-output "$GITHUB_OUTPUT" \
           --runner "os=$RUNNER_OS" --runner "arch=$RUNNER_ARCH" --runner "image=$RUNNER_IMAGE" \
           --runner "imageVersion=$RUNNER_IMAGE_VERSION" \
