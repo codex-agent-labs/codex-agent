@@ -208,7 +208,8 @@ def reviewed_runtime_contribution(native, *, plan, plan_sha256, root, consumer,
         if [row for row in policy["originals"] if products._identity(row) in identities] != expected:
             raise ValueError("Protected Runtime review substitutes a native original")
         versions = products._versions(root, revision)
-        if policy["runtimeVersion"] != versions["runtime"]:
+        # The Runtime product release version (gradle/release/versions/runtime.txt).
+        if policy["runtimeVersion"] != versions["runtime-release"]:
             raise ValueError("Reviewed Runtime version differs from current source")
         return raw, policy, originals
 
