@@ -182,7 +182,7 @@ class ContractAttestationWorkflowTest(unittest.TestCase):
             self.assertIn(name, first)
         base = {
             "EVENT_AUTHORIZED": "true", "MERGE_READY": "true", "REMOTE_BUILD_AUTHORIZED": "true",
-            "REMOTE_BUILD_AUTHORIZATION_REASON": "pull-request-final", "RESULTS": "success success",
+            "REMOTE_BUILD_AUTHORIZATION_REASON": "pull-request-final", "RESULTS": "success success", "SOURCE_CHECKS_RESULT": "success", "SOURCE_CHECKS_PASSED": "true",
             "CONTRACT_COMPLETE": "true", "CONTRACT_ATTESTATION_RESULT": "success",
             "CONTRACT_ATTESTATION_ARTIFACT_ID": "700", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "a" * 64,
             "PRODUCT_RESUME_RESULT": "success", "PRODUCT_RESUME_ARTIFACT_ID": "701",

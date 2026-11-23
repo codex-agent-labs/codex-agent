@@ -418,8 +418,16 @@ manual capability manifest or a second language-activation mechanism.
 An unlabeled pull request runs lightweight workflow and impact planning; its
 required merge gate remains failed until readiness is declared. A non-draft
 pull request with `merge-ready` and the explicit `ci:remote-final` label may
-run its affected product, platform, and consumer lanes. `ci:full` broadens an
-already authorized campaign but does not authorize remote builds by itself.
+run its affected product, platform, and consumer lanes. Adding
+`ci:remote-final` alone arms a full campaign (it implies `ci:full`; SDK and
+Runtime recovery campaigns keep requiring an explicit `ci:full`). `ci:full`
+broadens an already authorized campaign but does not authorize remote builds
+by itself.
+The complete `ci/tests` suite runs as eight deterministic shards whose joined
+result must cover every discovered test exactly once. An identical tested tree,
+protected workflow definition and runner environment may instead reuse a pass
+that an earlier same-repository run signed with a native GitHub attestation.
+Product and SDK jobs do not wait for this suite; `CI / merge-gate` requires it.
 Successful lanes from an earlier run of the same pull request may be reused;
 full mode never suppresses required work. A merge group
 reuses the pull-request result when its Git tree is identical, otherwise it

@@ -31,7 +31,27 @@ but no product build or platform test. A non-draft pull request needs both
 product jobs may run. Successful same-PR lanes and artifacts may be reused
 after a later commit. The `ci:full` label only expands an already authorized
 campaign; it neither authorizes product jobs by itself nor skips a required
-lane. Unknown impact fails closed to full validation after authorization.
+lane. `ci:remote-final` implies `ci:full` for ordinary campaigns, so arming
+needs one label event once `merge-ready` is present (SDK and Runtime recovery
+campaigns still require an explicit `ci:full`). Unknown impact fails closed to
+full validation after authorization.
+
+Arming order still matters because CI cancels an in-progress run of the same
+pull request when a newer pull-request event starts one. Push first, add
+`merge-ready`, and add `ci:remote-final` only after the previous event's run
+has been created; any later push or label change cancels the armed campaign.
+Nothing waits for an earlier run to finish: the planner only admits completed
+original runs, and an unauthorized run produces no product outputs.
+
+The complete `ci/tests` suite is required by `CI / merge-gate`, not by product
+or SDK jobs. It runs as eight deterministic shards, each importing the whole
+discovered suite and running a fixed module partition; the join fails unless
+the executed occurrences equal the discovered suite exactly. A fresh pass from
+a same-repository pull request or merge group is recorded with a native GitHub
+attestation. A later run may reuse it only for the same Git tree, protected
+`product-validation.yml` definition, interpreter, runner image, Git, actionlint
+and `CODEX_AGENT_*` variables, after authenticating the original successful
+job, upload and signature. Any miss runs the suite.
 
 The required `CI / merge-gate` check accepts an exact, complete receipt set. A
 merge group whose Git tree is identical to the validated PR tree reuses that

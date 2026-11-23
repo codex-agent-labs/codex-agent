@@ -69,7 +69,7 @@ on:
         type: string
     outputs:
       fullAcceptanceCurrent:
-        value: ${{ jobs.workflow-lint.outputs.full_acceptance_current }}
+        value: ${{ jobs.workflow-lint.outputs.full_acceptance_current == 'true' && jobs.workflow-source-checks.outputs.passed == 'true' && 'true' || 'false' }}
 
 permissions:
   actions: read
@@ -217,7 +217,7 @@ jobs:
 
   workflow-lint:
     if: always() && !inputs.toolingOnly
-    needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]
+    needs: [plan, recovery-controls, workflow-build-logic]
     runs-on: ubuntu-24.04
     outputs:
       full_acceptance_current: ${{ steps.acceptance-kind.outputs.full_acceptance_current }}
@@ -239,15 +239,15 @@ jobs:
           [[ "$PLAN_PUBLISHER" =~ ^[0-9a-f]{40}$ ]] || exit 1
           test "$PLAN_SOURCE" = "$CHECKS_SOURCE"
           test "$PLAN_PUBLISHER" = "$CHECKS_PUBLISHER"
-      - name: Require complete current-source checks
+      # Complete ci/tests source checks (fresh or attested) gate merge-gate and
+      # fullAcceptanceCurrent instead; product and SDK work never wait on them.
+      - name: Require complete current build-logic checks
         if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
         env:
-          SOURCE_RESULT: ${{ needs.workflow-source-checks.result }}
           BUILD_LOGIC_RESULT: ${{ needs.workflow-build-logic.result }}
           BUILD_LOGIC_REQUIRED: ${{ needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' }}
         run: |
           set -euo pipefail
-          test "$SOURCE_RESULT" = success
           if [ "$BUILD_LOGIC_REQUIRED" = true ]; then
             test "$BUILD_LOGIC_RESULT" = success
           else
@@ -263,35 +263,192 @@ jobs:
             echo 'full_acceptance_current=true' >> "$GITHUB_OUTPUT"
           fi
 
-  workflow-source-checks:
-    if: always() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly
+  workflow-source-reuse:
+    if: '!cancelled() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
     needs: [plan]
     runs-on: ubuntu-24.04
+    outputs:
+      reused: ${{ steps.reuse.outputs.reused }}
+      fingerprint: ${{ steps.reuse.outputs.fingerprint }}
+      reason: ${{ steps.reuse.outputs.reason }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      artifact_id: ${{ steps.reuse.outputs.artifact_id }}
     steps:
-      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Native attestation verification needs signer/source digest pins.
+      - id: native-gh
+        continue-on-error: true
+        run: bash .github/actions/restore-reuse-qualification/install-gh.sh
+      - id: reuse
+        name: Authenticate an attested pass for the exact source-check fingerprint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PUBLISHER_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          NATIVE_GH: ${{ steps.native-gh.outcome == 'success' && steps.native-gh.outputs.supported == 'true' }}
+        run: |
+          set -euo pipefail
+          # Any miss, error or unsupported verifier runs the complete suite.
+          if [ "$PLAN_RESULT" != success ] || [ "$NATIVE_GH" != true ] || ! [[ "$PUBLISHER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 -B ci/tests/source_checks.py discover-reuse \
+            --publisher-sha "$PUBLISHER_SHA" --github-output "$GITHUB_OUTPUT"
+
+  workflow-source-shards:
+    if: '!cancelled() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && needs.workflow-source-reuse.outputs.reused != ''true'''
+    needs: [plan, workflow-source-reuse]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - id: actionlint-cache
-        if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
+        if: matrix.shard == 0
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/actionlint
           key: actionlint-v1-${{ runner.os }}-${{ runner.arch }}-v1.7.12
-      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && steps.actionlint-cache.outputs.cache-hit != ''true'''
+      - if: matrix.shard == 0 && steps.actionlint-cache.outputs.cache-hit != 'true'
         run: GOTOOLCHAIN=go1.26.3 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
-        run: '"$HOME/go/bin/actionlint"'
-      - if: ${{ !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly }}
-        run: sudo install -d -m 1777 /private/tmp
-      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly'
-        run: python3 -m unittest discover -s ci/tests -v
-      - if: '!inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && github.event_name == ''pull_request'' && steps.actionlint-cache.outputs.cache-hit != ''true'''
+      - run: sudo install -d -m 1777 /private/tmp
+      - name: Run one deterministic partition of the complete discovered suite
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          lint=()
+          if [ "$SHARD" = 0 ]; then lint=(--actionlint "$HOME/go/bin/actionlint"); fi
+          python3 ci/tests/source_checks.py run-shard --shard "$SHARD" --shards 8 \
+            --report "$RUNNER_TEMP/source-check-shard/shard-$SHARD.json" "${lint[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-source-check-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-check-shard/shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 7
+      - if: matrix.shard == 0 && github.event_name == 'pull_request' && steps.actionlint-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/actionlint
           key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
+
+  workflow-source-checks:
+    if: always() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly
+    needs: [plan, workflow-source-reuse, workflow-source-shards]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
+      reused: ${{ steps.mode.outputs.reused }}
+      fingerprint: ${{ steps.mode.outputs.reused == 'true' && needs.workflow-source-reuse.outputs.fingerprint || steps.accept.outputs.fingerprint }}
+    steps:
+      - id: mode
+        name: Require a complete fresh or attested source-check result
+        env:
+          REUSE_RESULT: ${{ needs.workflow-source-reuse.result }}
+          REUSED: ${{ needs.workflow-source-reuse.outputs.reused }}
+          FINGERPRINT: ${{ needs.workflow-source-reuse.outputs.fingerprint }}
+          SHARDS_RESULT: ${{ needs.workflow-source-shards.result }}
+        run: |
+          set -euo pipefail
+          if [ "$REUSE_RESULT" = success ] && [ "$REUSED" = true ]; then
+            [[ "$FINGERPRINT" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            test "$SHARDS_RESULT" = skipped
+            echo 'reused=true' >> "$GITHUB_OUTPUT"
+          else
+            test "$SHARDS_RESULT" = success
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.mode.outputs.reused == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - if: steps.mode.outputs.reused == 'false'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-source-check-shard-*-attempt-*
+          path: ${{ runner.temp }}/source-check-shards
+      - id: publication
+        if: steps.mode.outputs.reused == 'false'
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PUBLISHER_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          NATIVE_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          NATIVE_WORKFLOW_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          NATIVE_WORKFLOW_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          # Only an exact protected publisher of a same-repository PR or merge
+          # group signs a reusable record; every other fresh pass is not published.
+          publish=false
+          if [ "$PLAN_RESULT" = success ] && [[ "$PUBLISHER_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+             [ "$NATIVE_WORKFLOW_SHA" = "$PUBLISHER_SHA" ] &&
+             [ "$NATIVE_WORKFLOW_REPOSITORY" = codex-agent-labs/codex-agent ] &&
+             [ "$NATIVE_WORKFLOW_PATH" = .github/workflows/product-validation.yml ] &&
+             [ "$GITHUB_REPOSITORY" = codex-agent-labs/codex-agent ] &&
+             { [ "$GITHUB_EVENT_NAME" = merge_group ] || { [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$FORK" = false ]; }; }; then
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - id: accept
+        if: steps.mode.outputs.reused == 'false'
+        name: Prove every discovered test passed exactly once
+        env:
+          PUBLISH: ${{ steps.publication.outputs.publish }}
+          PUBLISHER_SHA: ${{ needs.plan.outputs.publisher_sha }}
+        run: |
+          set -euo pipefail
+          record=()
+          if [ "$PUBLISH" = true ]; then
+            record=(--publisher-sha "$PUBLISHER_SHA" --record "$RUNNER_TEMP/source-check-record/source-checks.json")
+          fi
+          python3 -B ci/tests/source_checks.py accept --reports "$RUNNER_TEMP/source-check-shards" \
+            --shards 8 --github-output "$GITHUB_OUTPUT" "${record[@]}"
+      # Publication only enables later reuse; it never decides this result.
+      - id: attest
+        if: steps.mode.outputs.reused == 'false' && steps.accept.outputs.record == 'true'
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/source-check-record/source-checks.json
+          create-storage-record: false
+      - id: bundle
+        if: steps.mode.outputs.reused == 'false' && steps.accept.outputs.record == 'true' && steps.attest.outcome == 'success'
+        continue-on-error: true
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" "$RUNNER_TEMP/source-check-record/bundle.jsonl"
+      - if: steps.mode.outputs.reused == 'false' && steps.accept.outputs.record == 'true' && steps.bundle.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.accept.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/source-check-record/source-checks.json
+            ${{ runner.temp }}/source-check-record/bundle.jsonl
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 30
+      - id: passed
+        run: echo 'passed=true' >> "$GITHUB_OUTPUT"
 
   workflow-build-logic:
     if: >-
@@ -403,7 +560,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.baseCommit }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || inputs.validationCommit }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') || !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && contains(github.event.pull_request.labels.*.name, 'ci:remote-final') }}
           QUEUE_ENABLED: ${{ vars.CI_MERGE_QUEUE_ENABLED }}
           DISPATCH_APPROVED: ${{ needs.dispatch-authorization.result == 'success' && needs.dispatch-authorization.outputs.approved == 'true' }}
         run: |
@@ -682,7 +839,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.baseCommit }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || inputs.validationCommit }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') || !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly && contains(github.event.pull_request.labels.*.name, 'ci:remote-final') }}
           QUEUE_ENABLED: ${{ vars.CI_MERGE_QUEUE_ENABLED }}
           DISPATCH_APPROVED: ${{ needs.dispatch-authorization.result == 'success' && needs.dispatch-authorization.outputs.approved == 'true' }}
         run: |
@@ -7301,7 +7458,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always() && !inputs.toolingOnly
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, retained-apple-source, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, retained-apple-source, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity, workflow-source-reuse, workflow-source-shards, workflow-source-checks]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -7312,6 +7469,8 @@ jobs:
           REMOTE_BUILD_AUTHORIZED: ${{ needs.plan.outputs.remote_build_authorized }}
           REMOTE_BUILD_AUTHORIZATION_REASON: ${{ needs.plan.outputs.remote_build_authorization_reason }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          SOURCE_CHECKS_RESULT: ${{ needs.workflow-source-checks.result }}
+          SOURCE_CHECKS_PASSED: ${{ needs.workflow-source-checks.outputs.passed }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
           CONTRACT_BINARY_REQUIRED: ${{ needs.plan.outputs.contract_matrix != '{"include":[]}' }}
           CONTRACT_BINARY_RESULT: ${{ needs.contract-validation.outputs.contract_binary_result }}
@@ -7400,6 +7559,9 @@ jobs:
           if grep -Eq 'failure|cancelled' <<<"$RESULTS"; then
             exit 1
           fi
+          # The complete ci/tests suite (fresh shards or an attested pass) is required here.
+          test "$SOURCE_CHECKS_RESULT" = success || exit 1
+          test "$SOURCE_CHECKS_PASSED" = true || exit 1
           if [ "$RETAINED_APPLE_SOURCE" = true ]; then
             if [ "$RETAINED_APPLE_SOURCE_MISS" = true ]; then
               test "$RETAINED_APPLE_SOURCE_RESULT" = success || exit 1

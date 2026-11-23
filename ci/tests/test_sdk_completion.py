@@ -1264,7 +1264,8 @@ class CurrentHeadAcceptanceTest(unittest.TestCase):
                 jobId=13, artifactId=14, artifactSha256="sha256:" + "1" * 64,
                 policySha256="sha256:" + "2" * 64, verifierInputsSha256="sha256:" + "3" * 64))
         names = ("product-validation / sdk-parity / sdk-parity", "product-validation / workflow-lint",
-                 "product-validation / product-resume", "product-validation / sdk-completion-full-reuse")
+                 "product-validation / product-resume", "product-validation / sdk-completion-full-reuse",
+                 "product-validation / workflow-source-checks")
         self.jobs = [dict(id=100 + i, name=name, run_id=21, head_sha="9" * 40,
             status="completed", conclusion="success", started_at="2026-11-01T10:00:00Z",
             completed_at="2026-11-01T10:05:00Z") for i, name in enumerate(names)]
@@ -1328,9 +1329,9 @@ class CurrentHeadAcceptanceTest(unittest.TestCase):
             result = self.call()
             plan.assert_called_once_with(self.plan_path, self.root)
             observe.assert_called_once()
-            self.assertEqual(set(self.jobs[i]["name"] for i in range(4)),
+            self.assertEqual(set(self.jobs[i]["name"] for i in range(5)),
                              set(observe.call_args.kwargs["jobs_by_phase"].values()))
-            self.assertEqual({key: self.producer for key in ("parity", "controls", "resume", "completion")},
+            self.assertEqual({key: self.producer for key in ("parity", "controls", "resume", "completion", "sources")},
                              observe.call_args.args[0])
             for role, value in observe.call_args.kwargs["trusted_workflows_by_phase"].items():
                 self.assertEqual({"sha": "4" * 40, "path": ".github/workflows/" + (
@@ -1343,7 +1344,8 @@ class CurrentHeadAcceptanceTest(unittest.TestCase):
         self.assertEqual(self.report_raw, (self.destination / "hosted-parity-report.json").read_bytes())
         self.assertEqual("current-head-product-acceptance", result["kind"])
         self.assertEqual(self.producer, result["producer"])
-        self.assertEqual({"parity": 100, "controls": 101, "resume": 102, "completion": 103}, result["jobs"])
+        self.assertEqual({"parity": 100, "controls": 101, "resume": 102, "completion": 103, "sources": 104},
+                         result["jobs"])
         self.assertNotIn("lanes", result)
         self.assertEqual(canonical_json_bytes(result), (self.destination / "current-head-acceptance.json").read_bytes())
 

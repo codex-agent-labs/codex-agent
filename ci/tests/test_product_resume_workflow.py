@@ -18,13 +18,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ProductResumeWorkflowTest(unittest.TestCase):
     def test_lint_cache_hits_do_not_require_a_go_setup_action(self):
-        for name in ('recovery-controls', 'workflow-source-checks'):
+        for name in ('recovery-controls', 'workflow-source-shards'):
             job = workflow_job(self.workflow, name)
             self.assertNotIn('actions/setup-go@', job)
             installer = next(step for step in job.split('      - ') if 'go install ' in step)
             self.assertIn("steps.actionlint-cache.outputs.cache-hit != ", installer)
             self.assertIn('GOTOOLCHAIN=go1.26.3 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12', installer)
-            self.assertIn('run: \'"$HOME/go/bin/actionlint"\'', job)
+            if name == 'recovery-controls':
+                self.assertIn('run: \'"$HOME/go/bin/actionlint"\'', job)
+            else:
+                # Shard 0 runs the pinned actionlint inside its fail-closed shard result.
+                self.assertIn("if: matrix.shard == 0 && steps.actionlint-cache.outputs.cache-hit != 'true'", installer)
+                self.assertIn('lint=(--actionlint "$HOME/go/bin/actionlint")', job)
 
     def test_parallel_recovery_checks_run_every_module_and_propagate_any_failure(self):
         job = workflow_job(self.workflow, 'recovery-controls')
@@ -68,7 +73,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertIn('native-workflow-sha: ${{ fromJSON(toJSON(job)).workflow_sha }}', checks)
         self.assertIn('ref: ${{ steps.publication.outputs.source-sha }}', checks)
         lint = workflow_job(self.workflow, 'workflow-lint')
-        self.assertIn('needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]', lint)
+        self.assertIn('needs: [plan, recovery-controls, workflow-build-logic]', lint)
         gate = lint.split('      - name: Require the same protected publication', 1)[1].split('\n      - ', 1)[0]
         script = textwrap.dedent(gate.split('        run: |\n', 1)[1])
         good = dict(PLAN_RESULT='success', CHECKS_RESULT='success', PLAN_SOURCE='a' * 40,
@@ -419,8 +424,9 @@ class ProductResumeWorkflowTest(unittest.TestCase):
         self.assertNotIn("release_tooling.init.gradle", build)
         self.assertEqual(1, self.workflow.count("-Pkotlin.daemon.jvmargs=-Xmx2g"))
         self.assertIn("./gradlew help -Pkotlin.daemon.jvmargs=-Xmx2g", build)
-        self.assertIn("python3 -m unittest discover -s ci/tests -v",
-                      workflow_job(self.workflow, "workflow-source-checks"))
+        self.assertIn("python3 ci/tests/source_checks.py run-shard --shard",
+                      workflow_job(self.workflow, "workflow-source-shards"))
+        self.assertNotIn("gradlew", workflow_job(self.workflow, "workflow-source-shards"))
         self.assertNotRegex(standalone, r"ciProductPhase|verifyRepository|verifyRuntime|verifySdk")
         diagnostics = build.split("      - name: Preserve build-logic test diagnostics\n", 1)[1].split("\n      - ", 1)[0]
         self.assertIn("always() && steps.build-logic.outcome == 'failure'", diagnostics)
@@ -593,7 +599,7 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                            for line in script_match.group("body").splitlines())
         base = {
             "EVENT_AUTHORIZED": "true", "MERGE_READY": "true", "REMOTE_BUILD_AUTHORIZED": "true",
-            "REMOTE_BUILD_AUTHORIZATION_REASON": "pull-request-final", "RESULTS": "success success",
+            "REMOTE_BUILD_AUTHORIZATION_REASON": "pull-request-final", "RESULTS": "success success", "SOURCE_CHECKS_RESULT": "success", "SOURCE_CHECKS_PASSED": "true",
             "CONTRACT_COMPLETE": "true", "CONTRACT_ATTESTATION_RESULT": "success",
             "CONTRACT_ATTESTATION_ARTIFACT_ID": "700", "CONTRACT_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "a" * 64,
             "PRODUCT_RESUME_RESULT": "success", "PRODUCT_RESUME_ARTIFACT_ID": "701",

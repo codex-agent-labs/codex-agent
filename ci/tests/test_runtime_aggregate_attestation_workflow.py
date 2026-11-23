@@ -130,7 +130,7 @@ class RuntimeAggregateAttestationWorkflowTest(unittest.TestCase):
         self.assertIn("runtime-aggregate-attestation", self.gate.split("    runs-on:", 1)[0])
         step = re.split(r"(?=^      - )", self.gate, flags=re.MULTILINE)[1]
         environment = {**os.environ, "EVENT_AUTHORIZED": "true", "REMOTE_BUILD_AUTHORIZED": "true",
-            "MERGE_READY": "true", "RESULTS": "success skipped", "CONTRACT_COMPLETE": "false",
+            "MERGE_READY": "true", "RESULTS": "success skipped", "SOURCE_CHECKS_RESULT": "success", "SOURCE_CHECKS_PASSED": "true", "CONTRACT_COMPLETE": "false",
             "AGGREGATE_STATE": "completed", "AGGREGATE_PAYLOAD_COMPLETE": "true",
             "AGGREGATE_ATTESTATION_RESULT": "success", "AGGREGATE_ATTESTATION_ARTIFACT_ID": "71",
             "AGGREGATE_ATTESTATION_ARTIFACT_DIGEST": "sha256:" + "c" * 64}
