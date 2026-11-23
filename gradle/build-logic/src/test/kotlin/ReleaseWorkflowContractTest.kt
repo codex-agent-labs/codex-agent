@@ -187,6 +187,40 @@ class ReleaseWorkflowContractTest {
     }
 
     @Test
+    fun `ordinary product and Android lanes gate on explicit lint and plan results`() {
+        val ci = workflows.getValue("product-validation.yml")
+        // Implicit success() also covers skipped transitive ancestors such as
+        // recovery-controls and dispatch-authorization, which skip in ordinary mode.
+        val explicit = "!inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && always() && !cancelled() && " +
+            "needs.workflow-lint.result == 'success' && needs.plan.result == 'success' && "
+        mapOf(
+            "product" to listOf("needs.plan.outputs.product_matrix != '[]'"),
+            "android" to listOf(
+                "needs.plan.outputs.reviewed_android != 'true'",
+                "needs.plan.outputs.lane_android == 'true'",
+            ),
+        ).forEach { (name, specific) ->
+            val job = ci.substringAfter("\n  $name:\n").substringBefore("\n    runs-on:")
+            val condition = job.substringAfter("    if: >-\n").substringBefore("\n    needs:").trim()
+            assertTrue(condition.startsWith(explicit), name)
+            assertFalse("||" in condition, name)
+            assertTrue("\n    needs: [workflow-lint, plan]\n" in "$job\n", name)
+            (
+                listOf(
+                    "!inputs.runtimeRecoveryOnly",
+                    "inputs.sdkRecoveryOnly != true",
+                    "needs.plan.outputs.event_authorized == 'true'",
+                    "needs.plan.outputs.remote_build_authorized == 'true'",
+                    "needs.plan.outputs.validation_reused != 'true'",
+                ) + specific
+            ).forEach { assertTrue(it in condition, "$name: $it") }
+        }
+        val lint = ci.substringAfter("\n  workflow-lint:\n").substringBefore("\n  workflow-source-checks:\n")
+        assertTrue("needs: [plan, recovery-controls, workflow-source-checks, workflow-build-logic]" in lint)
+        assertTrue("test \"${'$'}SOURCE_RESULT\" = success" in lint)
+    }
+
+    @Test
     fun `full Android lane reuse does not suppress trusted evidence`() {
         val job = workflows.getValue("product-validation.yml")
             .substringAfter("\n  android-runtime-evidence:")
