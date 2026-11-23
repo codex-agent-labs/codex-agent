@@ -15,6 +15,15 @@ data class IosAppleReleaseVerificationTasks(
     val verifyIosReleaseBudgets: TaskProvider<VerifyIosReleaseBudgetsTask>,
 )
 
+/**
+ * The public SwiftPM binary asset lives on the SDK product release `sdk/v<version>`
+ * (docs/RELEASING.md). GitHub release-download paths percent-encode the tag's `/`,
+ * exactly as ci/sdk_candidate_semantics.verify_public_swift_declaration requires.
+ */
+internal fun codexAgentSwiftPackageReleaseUrl(version: String): String =
+    "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/sdk%2Fv$version/" +
+        "CodexAgent-$version.xcframework.zip"
+
 internal fun Task.dependsOnSwiftPackageProofProducers(
     toolchain: TaskProvider<*>,
     checksum: TaskProvider<*>,
@@ -39,8 +48,7 @@ fun Project.registerIosAppleReleaseVerificationTasks(
     pinnedRustToolchain: String,
 ): IosAppleReleaseVerificationTasks {
     val swiftPackageArchiveName = "CodexAgent-${project.version}.xcframework.zip"
-    val swiftPackageUrl =
-        "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/v${project.version}/$swiftPackageArchiveName"
+    val swiftPackageUrl = codexAgentSwiftPackageReleaseUrl(project.version.toString())
     val packageCodexAgentSwiftPackageBinary = tasks.register<CanonicalAppleZip>("packageCodexAgentSwiftPackageBinary") {
         dependsOn(distribution.prepareCodexAgentReleaseXCFramework)
         archiveFileName.set(swiftPackageArchiveName)

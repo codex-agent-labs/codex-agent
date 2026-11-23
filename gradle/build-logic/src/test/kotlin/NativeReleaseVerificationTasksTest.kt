@@ -2,6 +2,7 @@ import java.io.File
 import java.security.MessageDigest
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import org.gradle.testfixtures.ProjectBuilder
@@ -161,6 +162,40 @@ class NativeReleaseVerificationTasksTest {
             val failure = assertFailsWith<IllegalStateException> { verify.verify() }
             assertTrue(failure.message.orEmpty().contains("checksum mismatch"))
             assertTrue(failure.message.orEmpty().contains(checksum.readText().trim()))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `SwiftPM verifier pins the landed manifest to the encoded SDK product release`() {
+        val expected = "https://github.com/codex-agent-labs/codex-agent/releases/download/" +
+            "sdk%2Fv0.8.0/CodexAgent-0.8.0.xcframework.zip"
+        assertEquals(expected, codexAgentSwiftPackageReleaseUrl("0.8.0"))
+        val landed = File("../../Package.swift").readText()
+        val checksum = Regex("""checksum:\s*"([0-9a-f]{64})"""").findAll(landed).map { it.groupValues[1] }.single()
+        val directory = createTempDirectory("codex-ios-swiftpm-landed").toFile()
+        try {
+            val project = ProjectBuilder.builder().withProjectDir(directory).build()
+            val checksumFile = directory.resolve("checksum.txt").apply { writeText("$checksum\n") }
+            val manifest = directory.resolve("Package.swift").apply { writeText(landed) }
+            val verify = project.tasks.register("verify", VerifySwiftPackageBinaryTask::class.java).get().apply {
+                this.manifest.set(manifest)
+                this.checksumFile.set(checksumFile)
+                expectedUrl.set(codexAgentSwiftPackageReleaseUrl("0.8.0"))
+            }
+            verify.verify()
+            for (stale in listOf(
+                "releases/download/v0.8.0/CodexAgent-0.8.0.xcframework.zip",
+                "releases/download/sdk/v0.8.0/CodexAgent-0.8.0.xcframework.zip",
+            )) {
+                manifest.writeText(landed.replace("releases/download/sdk%2Fv0.8.0/CodexAgent-0.8.0.xcframework.zip", stale))
+                val failure = assertFailsWith<IllegalStateException> { verify.verify() }
+                assertEquals("SwiftPM release URL mismatch", failure.message)
+            }
+            manifest.writeText(landed)
+            checksumFile.writeText("0".repeat(64) + "\n")
+            assertFailsWith<IllegalStateException> { verify.verify() }
         } finally {
             directory.deleteRecursively()
         }
