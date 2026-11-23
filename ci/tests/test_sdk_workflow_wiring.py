@@ -87,6 +87,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
     def test_sdk_entry_restore_is_scoped_and_precedes_evidence_consumers(self):
         child_names = set()
         restored = 0
+        restored_jobs = set()
         for path in (ROOT / ".github/workflows").glob("*.yml"):
             text = path.read_text()
             if path.name != "product-validation.yml" and not path.name.startswith("sdk-"):
@@ -96,6 +97,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if "uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority" not in job:
                     continue
                 restored += 1
+                restored_jobs.add((path.name, name))
                 root = path.name == "product-validation.yml"
                 token = "REUSE_AUTHORITY_READ_TOKEN" if root else "authority_read_token"
                 step = re.search(r"(?ms)^      - (?:if: [^\n]+\n        )?uses: codex-agent-labs/codex-agent/"
@@ -111,8 +113,11 @@ class SdkWorkflowWiringTest(unittest.TestCase):
                 if not root:
                     child_names.add(path.name)
                     self.assertRegex(text, r"(?s)    secrets:\n      authority_read_token:\n.*?required: false\n")
-        # Includes the deployed Core/Android collectors and retained-input readers.
-        self.assertEqual(65, restored)
+        # Includes the deployed Core/Android collectors and retained-input readers,
+        # plus the merge-gate installed-consumer authority restore (e37f84ce).
+        self.assertEqual(66, restored)
+        self.assertEqual(66, len(restored_jobs))
+        self.assertIn(("product-validation.yml", "merge-gate"), restored_jobs)
         parent = (ROOT / ".github/workflows/product-validation.yml").read_text()
         for name in child_names:
             job = next(body for _, body in re.findall(

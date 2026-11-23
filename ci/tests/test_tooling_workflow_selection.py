@@ -26,7 +26,8 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         cls.script = textwrap.dedent(embedded)
 
     def select(self, matrix, *, miss="false", authorized="true", reused="false",
-               full_reuse="false", target_jobs="true"):
+               full_reuse="false", target_jobs="true", ordinary="true",
+               native_ready="false", native_full_reuse="false"):
         with tempfile.TemporaryDirectory(prefix="tooling-workflow-selection-") as temporary:
             output = Path(temporary) / "github-output"
             result = subprocess.run(
@@ -38,6 +39,10 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
                     "PRODUCT_TARGET_JOBS_REQUIRED": target_jobs,
                     "AUTHORIZED": authorized,
                     "VALIDATION_REUSED": reused,
+                    # Retained Node-JS selection inputs (f9779208).
+                    "ORDINARY_MODE": ordinary,
+                    "NATIVE_READY": native_ready,
+                    "NATIVE_FULL_REUSE": native_full_reuse,
                     "GITHUB_OUTPUT": str(output),
                 },
                 text=True,
@@ -46,8 +51,10 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
             values = None
             if output.exists():
                 lines = [line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines()]
-                self.assertEqual({"product_matrix", "contract_matrix"}, {key for key, _ in lines})
+                self.assertEqual(["retained_node_js", "product_matrix", "contract_matrix"],
+                                 [key for key, _ in lines])
                 values = {key: json.loads(value) for key, value in lines}
+                self.assertIs(bool, type(values["retained_node_js"]))
             return result, values
 
     def test_tooling_miss_adds_only_a_disabled_contracts_row(self):
@@ -57,6 +64,24 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         self.assertEqual(original, selected["product_matrix"])
         self.assertEqual({"include": [{"lane": "contracts", "build": False,
                                        "test": False, "metadata": False}]}, selected["contract_matrix"])
+        self.assertIs(False, selected["retained_node_js"])
+
+    def test_retained_node_js_is_selected_only_for_authorized_full_native_reuse(self):
+        node = {"lane": "node-js", "build": False, "test": True, "metadata": False}
+        portable = {"lane": "portable", "build": True, "test": False, "metadata": False}
+        result, selected = self.select([node, portable], native_ready="true", native_full_reuse="true")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIs(True, selected["retained_node_js"])
+        self.assertEqual([portable], selected["product_matrix"])
+        self.assertEqual({"include": []}, selected["contract_matrix"])
+        for ordinary, ready, full in (("false", "true", "true"), ("true", "false", "true"),
+                                      ("true", "true", "false")):
+            with self.subTest(ordinary=ordinary, ready=ready, full=full):
+                result, selected = self.select([node, portable], ordinary=ordinary,
+                                               native_ready=ready, native_full_reuse=full)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIs(False, selected["retained_node_js"])
+                self.assertEqual([node, portable], selected["product_matrix"])
 
     def test_hit_and_empty_miss_preserve_the_original_matrix(self):
         original = [{"lane": "node-js", "build": False, "test": True, "metadata": False}]
@@ -129,7 +154,12 @@ class ToolingWorkflowSelectionTest(unittest.TestCase):
         self.assertIn("Contract product lane is duplicated", result.stderr)
 
     def test_workflow_uses_selected_matrix_and_forces_only_missing_tooling_contracts(self):
-        self.assertIn("product_matrix: ${{ steps.product-selection.outputs.product_matrix }}", self.source)
+        # Since 2ef368af the plan output is the reviewed-Runtime refinement of this selection.
+        self.assertIn("      product_matrix: ${{ steps.reviewed-runtime-selection.outputs.product_matrix }}\n",
+                      self.source)
+        self.assertEqual(1, self.source.count("steps.product-selection.outputs.product_matrix"))
+        reviewed = self.source.split("      - id: reviewed-runtime-selection\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("PRODUCT_MATRIX: ${{ steps.product-selection.outputs.product_matrix }}", reviewed)
         self.assertIn("contract_matrix: ${{ steps.product-selection.outputs.contract_matrix }}", self.source)
         self.assertIn("ORIGINAL_PRODUCT_MATRIX: ${{ steps.impact.outputs.product_matrix }}", self.selection)
         product = self.source.split("\n  product:\n", 1)[1].split("\n  contract-validation:\n", 1)[0]

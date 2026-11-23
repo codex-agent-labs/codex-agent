@@ -153,13 +153,25 @@ class GitHubAppAuthTest(unittest.TestCase):
                     self.assertIn('      authority_read_token:', body)
         self.assertEqual({('product-validation.yml', f'sdk-checkpoint-{wave}')
                           for wave in (4, 6, 7, 8, 9, 10)} |
-                         {('sdk-core-binary-validation.yml', 'sdk-checkpoint-11')}, checkpoint_edges)
+                         {('sdk-core-binary-validation.yml', 'sdk-checkpoint-11'),
+                          ('sdk-android-validation.yml', 'sdk-checkpoint-17'),
+                          ('sdk-android-metadata-validation.yml', 'sdk-checkpoint-18')}, checkpoint_edges)
         parent = (workflows / 'product-validation.yml').read_text().split(
             '  sdk-core-binary-wave:\n', 1)[1].split('\n  sdk-core-package-plan:', 1)[0]
         self.assertIn(named, parent)
         self.assertNotIn('secrets: inherit', parent)
         child = (workflows / 'sdk-core-binary-validation.yml').read_text().split('\njobs:', 1)[0]
         self.assertIn('      PRODUCT_READ_APP_PRIVATE_KEY:\n', child)
+        product = (workflows / 'product-validation.yml').read_text()
+        for caller_job, next_job, child_workflow in (
+                ('sdk-android-validation-result', 'sdk-android-metadata-plan', 'sdk-android-validation.yml'),
+                ('sdk-android-metadata-result', 'sdk-completion', 'sdk-android-metadata-validation.yml')):
+            caller = product.split(f'\n  {caller_job}:\n', 1)[1].split(f'\n  {next_job}:\n', 1)[0]
+            self.assertIn(f'uses: ./.github/workflows/{child_workflow}', caller)
+            self.assertIn(named, caller, caller_job)
+            self.assertNotIn('secrets: inherit', caller)
+            child = (workflows / child_workflow).read_text().split('\njobs:', 1)[0]
+            self.assertIn('      PRODUCT_READ_APP_PRIVATE_KEY:\n', child)
         issuer = (workflows / 'reuse-qualification.yml').read_text().split(
             '  completed-sdk-checkpoint:\n', 1)[1]
         self.assertIn('environment: product-read', issuer)

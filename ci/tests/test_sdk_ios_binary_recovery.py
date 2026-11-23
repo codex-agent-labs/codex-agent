@@ -915,7 +915,13 @@ class IosSuccessfulPackageRecoveryTest(unittest.TestCase):
             return recovery.products._capture_runtime_original_reference_members(self.plan,
                 {**self.producer, 'runId': 72}, source, records, destination,
                 trusted_workflow_sha=self.pin, token='synthetic-token')
-        with self.gates(), patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
+        # On Actions (GITHUB_ACTIONS + RUNNER_TEMP) the job-wide hydrated cache is
+        # shared by every test; subclasses (test_phase9_continuation_reuse) retain
+        # these same members first. A private empty root keeps the range read exercised.
+        hydrated = self.work / 'isolated-hydrated-evidence'
+        self.assertFalse(hydrated.exists())
+        with patch.dict(os.environ, {'CODEX_AGENT_HYDRATED_EVIDENCE': str(hydrated)}), \
+                self.gates(), patch('runtime_reference_archive.urllib.request.build_opener', return_value=ranges), \
                 patch.object(runtime_reference_archive, 'open_reference_archive',
                              wraps=runtime_reference_archive.open_reference_archive) as opened, \
                 patch.object(recovery.products, '_contract_ci_upload_metadata',
