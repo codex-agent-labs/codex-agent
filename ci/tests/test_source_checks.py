@@ -48,7 +48,7 @@ def report(shard, executed, *, suite, tree="a" * 40, commit="b" * 40, passed=Tru
 class SourceCheckWorkflowTest(unittest.TestCase):
     def test_matrix_runner_and_join_pin_the_same_shard_count_and_tool_versions(self):
         shards = job("workflow-source-shards")
-        self.assertIn("        shard: [" + ", ".join(str(index) for index in range(checks.SHARDS)) + "]\n", shards)
+        self.assertIn("        shard:\n" + "".join(f"          - {index}\n" for index in range(checks.SHARDS)), shards)
         self.assertIn("      fail-fast: false\n", shards)
         self.assertIn(f"--shards {checks.SHARDS} ", shards)
         self.assertIn(f"--shards {checks.SHARDS} ", job("workflow-source-checks"))
