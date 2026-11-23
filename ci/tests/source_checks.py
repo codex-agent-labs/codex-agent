@@ -187,8 +187,10 @@ def environment(environ=None) -> dict:
         "implementation": sys.implementation.name,
         "system": platform.system(),
         "machine": platform.machine(),
+        # The hosted image build (ImageVersion) is deliberately excluded: GitHub
+        # serves several builds of one image to parallel shards, while every tool
+        # the suite executes is bound by its own version below.
         "imageOS": environ.get("ImageOS"),
-        "imageVersion": environ.get("ImageVersion"),
         "runnerEnvironment": environ.get("RUNNER_ENVIRONMENT"),
         "git": subprocess.run(["git", "--version"], check=True, stdout=subprocess.PIPE,
                               text=True).stdout.strip(),

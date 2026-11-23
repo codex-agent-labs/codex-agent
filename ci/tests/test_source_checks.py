@@ -294,12 +294,13 @@ class SourceCheckEndToEndTest(unittest.TestCase):
         return subprocess.run([sys.executable, "ci/tests/source_checks.py", *arguments], cwd=self.root,
                               env={**self.environment, **(env or {})}, capture_output=True, text=True, check=check)
 
-    def run_all_shards(self, reports):
+    def run_all_shards(self, reports, shard_env=None):
         for shard in range(checks.SHARDS):
             directory = reports / f"codex-agent-source-check-shard-{shard}-attempt-1"
             lint = ["--actionlint", str(self.actionlint)] if shard == 0 else []
             result = self.run_tool("run-shard", "--shard", str(shard), "--shards", str(checks.SHARDS),
-                                   "--report", str(directory / f"shard-{shard}.json"), *lint, check=False)
+                                   "--report", str(directory / f"shard-{shard}.json"), *lint, check=False,
+                                   env=shard_env(shard) if shard_env else None)
             yield shard, result
 
     def fake_actionlint(self, exit_code=0):
@@ -346,14 +347,40 @@ class SourceCheckEndToEndTest(unittest.TestCase):
                                            env={"CODEX_AGENT_X": "1"}).stdout)
         self.assertNotEqual(record["fingerprint"], changed["fingerprint"])
         changed = json.loads(self.run_tool("fingerprint", "--publisher-sha", self.publisher,
-                                           env={"ImageVersion": "other"}).stdout)
+                                           env={"ImageOS": "other"}).stdout)
         self.assertNotEqual(record["fingerprint"], changed["fingerprint"])
+        # A different hosted build of the same image (seen across parallel shards) is not an input.
+        same = json.loads(self.run_tool("fingerprint", "--publisher-sha", self.publisher,
+                                        env={"ImageVersion": "20261116.133.1"}).stdout)
+        self.assertEqual(record["fingerprint"], same["fingerprint"])
         (self.root / "README").write_text("changed\n")
         git(self.root, "add", "README")
         git(self.root, "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "-q", "-m", "next")
         changed = json.loads(self.run_tool("fingerprint", "--publisher-sha", self.publisher).stdout)
         self.assertNotEqual(record["inputs"]["tree"], changed["inputs"]["tree"])
         self.assertNotEqual(record["fingerprint"], changed["fingerprint"])
+
+    def test_shards_on_different_builds_of_one_image_still_publish_a_record(self):
+        # Campaign 45201645704: shard 1 ran on 20261116.133.1, the rest on 20261116.376.1.
+        self.fake_actionlint()
+        reports = Path(self.temporary.name) / "reports-mixed-image"
+        image = lambda shard: {"ImageOS": "ubuntu24",
+                               "ImageVersion": "20261116.133.1" if shard == 1 else "20261116.376.1"}
+        self.assertEqual([0] * checks.SHARDS,
+                         [result.returncode for _, result in self.run_all_shards(reports, image)])
+        event = Path(self.temporary.name) / "event-mixed.json"
+        event.write_text(json.dumps({"pull_request": {"number": 31}}))
+        output = Path(self.temporary.name) / "output-mixed"
+        self.run_tool("accept", "--reports", str(reports), "--shards", str(checks.SHARDS),
+                      "--publisher-sha", self.publisher,
+                      "--record", str(Path(self.temporary.name) / "mixed/source-checks.json"),
+                      "--github-output", str(output),
+                      env={"GITHUB_REPOSITORY": checks.REPOSITORY,
+                           "GITHUB_SHA": git(self.root, "rev-parse", "HEAD"),
+                           "GITHUB_WORKFLOW_REF": f"{checks.REPOSITORY}/.github/workflows/ci.yml@refs/pull/31/merge",
+                           "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event),
+                           "GITHUB_RUN_ID": "78", "GITHUB_RUN_ATTEMPT": "1", "ImageOS": "ubuntu24"})
+        self.assertIn("record=true\n", output.read_text())
 
     def test_a_failing_test_or_actionlint_fails_its_shard_and_the_join(self):
         for case in ("actionlint", "test"):
