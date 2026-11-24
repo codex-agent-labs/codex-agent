@@ -181,7 +181,7 @@ class NativeMergeTest(unittest.TestCase):
         self.assertEqual(('linux-x64',),reader.selected_native_source_targets(self.value,True))
         with self.assertRaises(ValueError):reader.selected_native_source_targets(self.value,'true')
         parent=(ROOT/'.github/workflows/product-validation.yml').read_text().split('  merge-gate:\n',1)[1]
-        self.assertIn('desktop, retained-native-source, retained-apple-source, sdk-native-wrappers',parent)
+        self.assertIn('desktop, retained-native-source, retained-apple-source, retained-apple-package, sdk-native-wrappers',parent)
         self.assertIn('test "$RETAINED_NATIVE_SOURCE_RESULT" = success || exit 1',parent)
         self.assertIn("native_source_tests=native",parent)
         self.assertIn("needs.plan.outputs.retained_native_source != 'true'",parent)

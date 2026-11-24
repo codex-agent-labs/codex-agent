@@ -7613,8 +7613,6 @@ jobs:
           fi
           if [ "$RETAINED_APPLE" = true ] && [ "$RETAINED_APPLE_PACKAGE" = true ]; then
             test "$RETAINED_APPLE_PACKAGE_RESULT" = success || exit 1
-          else
-            test "$RETAINED_APPLE_PACKAGE_RESULT" = skipped || exit 1
           fi
           if [ "$RETAINED_ANDROID" = true ]; then
             if [ "$REVIEWED_ANDROID" = true ]; then

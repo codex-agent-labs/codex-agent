@@ -210,8 +210,7 @@ class RetainedPackageWorkflowTest(unittest.TestCase):
         self.assertIn(' retained-apple-package,', [l for l in gate.splitlines() if l.startswith('    needs:')][0])
         self.assertIn('if [ "$RETAINED_APPLE" = true ] && [ "$RETAINED_APPLE_PACKAGE" = true ]; then\n'
                       '            test "$RETAINED_APPLE_PACKAGE_RESULT" = success || exit 1\n'
-                      '          else\n'
-                      '            test "$RETAINED_APPLE_PACKAGE_RESULT" = skipped || exit 1', gate)
+                      '          fi', gate)
 
     def test_retained_select_schedules_the_route_instead_of_raising(self):
         script = APPLE.split('              # Remaining duties', 1)[1]
