@@ -84,6 +84,27 @@ class SdkWorkflowTest(unittest.TestCase):
              "sha256": "sha256:c79bdc2bed50b8bd912de44aa0f6c88d26ecc368272bb18ac148463b4d7d7dc4"},
         ), locator.Q2_PARITY_REPORTS)
 
+    def test_q3_raw_report_pins_bind_the_rebuilt_device_original(self):
+        import sdk_apple_upload_locator as locator
+        # Run 45264669881 rebuilt the device validation; its raw reports were
+        # range-read from execution/apple-validation-evidence.zip of this upload.
+        self.assertEqual({"buildKey": "sha256:bb8f0fff94d4304ec323277d4813d71bd8e14bc3875fa7a65a5db51916ea3fd4",
+                          "receiptSha256": "sha256:cbddcbc76444139adb57d08db51d36c1c84f4e9caa21dc15409b6820f27d64bc",
+                          "artifactId": 14872631531,
+                          "artifactSha256": "sha256:71ece97d2225b188b33e4c1d95927f5284b507c9de9302c3ea2150f1baec9573",
+                          "jobId": 138052173408}, locator.Q3_PARITY_SOURCE)
+        self.assertEqual(1610549052, locator.Q3_PARITY_ARCHIVE_BYTES)
+        self.assertEqual((
+            {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+             "sha256": "sha256:b3abdf8f8e436f8e53fcbccab191ebf0715afcbbd4d38968d8e57bfd1ea58ad9"},
+            {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+             "sha256": "sha256:cee8fc680b22bfdfaf19433c79f381f5faf440a9b0c602bb85dc2391400a1a1d"},
+        ), locator.Q3_PARITY_REPORTS)
+        # Each reviewed group names a distinct original; matching stays exactly-one.
+        groups = [locator.RETAINED_PARITY_SOURCE, locator.CURRENT_PARITY_SOURCE, locator.UPDATED_PARITY_SOURCE,
+                  locator.Q2_PARITY_SOURCE, locator.Q3_PARITY_SOURCE]
+        self.assertEqual(5, len({(group["buildKey"], group["receiptSha256"]) for group in groups}))
+
     def test_compact_apple_parity_requires_qualified_original_and_exact_raw_reports(self):
         from reuse_qualification import CompletedFrozenReuse
         import sdk_apple_upload_locator as locator
@@ -121,6 +142,14 @@ class SdkWorkflowTest(unittest.TestCase):
             "jobId": 136912506241,
         }
         self.assertEqual(q2_origin, locator.Q2_PARITY_SOURCE)
+        q3_origin = {
+            "buildKey": "sha256:bb8f0fff94d4304ec323277d4813d71bd8e14bc3875fa7a65a5db51916ea3fd4",
+            "receiptSha256": "sha256:cbddcbc76444139adb57d08db51d36c1c84f4e9caa21dc15409b6820f27d64bc",
+            "artifactId": 14872631531,
+            "artifactSha256": "sha256:71ece97d2225b188b33e4c1d95927f5284b507c9de9302c3ea2150f1baec9573",
+            "jobId": 138052173408,
+        }
+        self.assertEqual(q3_origin, locator.Q3_PARITY_SOURCE)
         row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
         envelope = dict(receipt={"producer": consumer})
         verified = SimpleNamespace(completed_frozen=cap, consumer={"kind": "ci", "producer": consumer},
@@ -140,8 +169,10 @@ class SdkWorkflowTest(unittest.TestCase):
         cases += [(updated_origin, defect) for defect in (None, "key", "authority", "receipt", "upload", "job", "report", "authority-exit")]
         cases += [(q2_origin, defect) for defect in (None, "key", "authority", "receipt", "upload", "job", "report",
                                                      "authority-exit", "ambiguous")]
+        cases += [(q3_origin, defect) for defect in (None, "key", "authority", "receipt", "upload", "job", "report",
+                                                     "authority-exit", "ambiguous")]
         for origin, defect in cases:
-            prefix = ("Q2" if origin is q2_origin else "UPDATED" if origin is updated_origin else
+            prefix = ("Q3" if origin is q3_origin else "Q2" if origin is q2_origin else "UPDATED" if origin is updated_origin else
                       "CURRENT" if origin is current_origin else "RETAINED")
             row = {field: origin[field] for field in ("buildKey", "receiptSha256")}
             artifact = dict(id=origin["artifactId"], digest=origin["artifactSha256"])

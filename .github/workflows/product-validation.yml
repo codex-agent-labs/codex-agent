@@ -7564,7 +7564,7 @@ jobs:
           AGGREGATE_ATTESTATION_RESULT: ${{ needs.runtime-aggregate-attestation.result }}
           AGGREGATE_ATTESTATION_ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           AGGREGATE_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
-          RUNTIME_PHASE10_MAVEN_REQUIRED: ${{ needs.runtime-aggregate-attestation.result == 'success' }}
+          RUNTIME_PHASE10_MAVEN_REQUIRED: ${{ needs.runtime-aggregate-attestation.result == 'success' && needs.contract-phase10-pgp-authority.result == 'success' }}
           RUNTIME_PHASE10_MAVEN_RESULT: ${{ needs.runtime-phase10-maven.result }}
           RUNTIME_PHASE10_MAVEN_ARTIFACT_ID: ${{ needs.runtime-phase10-maven.outputs.sidecarArtifactId }}
           RUNTIME_PHASE10_MAVEN_ARTIFACT_SHA256: ${{ needs.runtime-phase10-maven.outputs.sidecarArtifactSha256 }}

@@ -103,6 +103,24 @@ Q2_PARITY_REPORTS = (
 )
 
 
+# Device reports of the original rebuilt in run 45264669881 (job 138052173408), range-read
+# from its nested ZIP through the ETag-pinned reference transport; exact transport pins only.
+Q3_PARITY_SOURCE = {
+    "buildKey": "sha256:bb8f0fff94d4304ec323277d4813d71bd8e14bc3875fa7a65a5db51916ea3fd4",
+    "receiptSha256": "sha256:cbddcbc76444139adb57d08db51d36c1c84f4e9caa21dc15409b6820f27d64bc",
+    "artifactId": 14872631531,
+    "artifactSha256": "sha256:71ece97d2225b188b33e4c1d95927f5284b507c9de9302c3ea2150f1baec9573",
+    "jobId": 138052173408,
+}
+Q3_PARITY_ARCHIVE_BYTES = 1610549052
+Q3_PARITY_REPORTS = (
+    {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
+     "sha256": "sha256:b3abdf8f8e436f8e53fcbccab191ebf0715afcbbd4d38968d8e57bfd1ea58ad9"},
+    {"relativePath": "reports/swift-parity.json", "bytes": 439042,
+     "sha256": "sha256:cee8fc680b22bfdfaf19433c79f381f5faf440a9b0c602bb85dc2391400a1a1d"},
+)
+
+
 def retained_validation_origin(target, build_key, consumer):
     """Select two reviewed successful uploads; selection grants no admission.
 
