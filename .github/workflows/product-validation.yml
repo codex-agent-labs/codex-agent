@@ -777,6 +777,7 @@ jobs:
       retained_apple: ${{ steps.retained-apple-selection.outputs.enabled }}
       retained_apple_reviewed: ${{ steps.retained-apple-selection.outputs.reviewed }}
       retained_apple_source: ${{ steps.retained-apple-selection.outputs.swift_source }}
+      retained_apple_package: ${{ steps.retained-apple-selection.outputs.package || 'false' }}
       native_wrappers: ${{ steps.impact.outputs.native_wrappers }}
       any_apple: ${{ steps.impact.outputs.any_apple }}
       lane_android: ${{ steps.impact.outputs.lane_android }}
@@ -1111,7 +1112,7 @@ jobs:
           flags = [os.environ[key] for key in ('ORDINARY_MODE', 'AUTHORIZED', 'VALIDATION_REUSED', 'NATIVE_READY', 'NATIVE_FULL_REUSE', 'CANONICAL_CALLBACK')]
           if any(v not in ('', 'true', 'false') for v in flags):
               raise ValueError('Invalid retained Apple selection')
-          enabled = reviewed = swift_source = False
+          enabled = reviewed = swift_source = package = False
           if flags == ['true', 'true', 'false', 'true', 'true', 'true']:
               plan = json.loads(Path('build/ci/impact-plan.json').read_text())
               names = ('ios-framework-device', 'ios-framework-simulator', 'ios-swift-tests')
@@ -1120,6 +1121,7 @@ jobs:
                   _apple_lanes(plan, True)
                   swift_source = any(plan['lanes']['ios-swift-build'][a] for a in ('build', 'test'))
                   reviewed = any(plan['lanes'][lane][a] for lane in ('ios-package', 'ios-privacy-metrics', 'ios-kotlin-tests', 'ios-native-tests', 'ios-rust-device', 'ios-rust-simulator') for a in ('build', 'test', 'metadata'))
+                  package = any(plan['lanes']['ios-package'][a] for a in ('build', 'test', 'metadata'))
           host_source = os.environ.get('HOST_SOURCE_MODE', 'false')
           if host_source not in ('true', 'false'):
               raise ValueError('Invalid retained source-only opt-in')
@@ -1131,7 +1133,7 @@ jobs:
               if any(type(action) is not bool for action in actions):
                   raise ValueError('Swift source-test lane selection must be boolean')
               swift_source = any(actions)
-          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(enabled).lower(), 'reviewed': str(reviewed).lower(), 'swift_source': str(swift_source).lower()})
+          github_output(Path(os.environ['GITHUB_OUTPUT']), {'enabled': str(enabled).lower(), 'reviewed': str(reviewed).lower(), 'swift_source': str(swift_source).lower(), 'package': str(package).lower()})
           PYCODE
 
       - id: source-validation-originals
@@ -3648,6 +3650,26 @@ jobs:
     secrets:
       authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
 
+  retained-apple-package:
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (!inputs.runtimeRecoveryOnly && !inputs.toolingOnly && !inputs.sdkRecoveryOnly &&
+      always() && needs.workflow-lint.result == 'success' && needs.plan.result == 'success' &&
+      needs.plan.outputs.event_authorized == 'true' && needs.plan.outputs.remote_build_authorized == 'true' &&
+      needs.plan.outputs.retained_apple == 'true' && needs.plan.outputs.retained_apple_package == 'true' &&
+      needs.product-resume.result == 'success' && needs.product-resume.outputs.full_reuse == 'true')
+    needs: [workflow-lint, plan, product-resume]
+    uses: ./.github/workflows/apple-runtime-evidence.yml
+    with:
+      planArtifact: ${{ needs.plan.outputs.plan_artifact }}
+      planControlId: ${{ needs.plan.outputs.plan_control_id }}
+      validationCommit: ${{ needs.plan.outputs.validation_commit }}
+      validationTree: ${{ needs.plan.outputs.validation_tree }}
+      resumeOutputs: ${{ toJSON(needs.product-resume.outputs) }}
+      trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
+      retainedPackageOnly: true
+    secrets:
+      authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
+
   apple:
     if: >-
       !inputs.fullReuseAcceptanceOnly && (
@@ -3669,6 +3691,7 @@ jobs:
       retainedAppleChecks: ${{ needs.plan.outputs.retained_apple == 'true' }}
       retainedAppleReviewedChecks: ${{ needs.plan.outputs.retained_apple_reviewed == 'true' }}
       retainedSwiftSourceChecks: ${{ needs.plan.outputs.retained_apple_source == 'true' }}
+      retainedPackageChecks: ${{ needs.plan.outputs.retained_apple_package == 'true' }}
       trustedWorkflowSha: ${{ needs.plan.outputs.publisher_sha }}
 
   consumers:
@@ -7474,7 +7497,7 @@ jobs:
   merge-gate:
     name: CI / merge-gate
     if: always() && !inputs.toolingOnly
-    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, retained-apple-source, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity, workflow-source-reuse, workflow-source-shards, workflow-source-checks]
+    needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, retained-apple-source, retained-apple-package, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity, workflow-source-reuse, workflow-source-shards, workflow-source-checks]
     runs-on: ubuntu-24.04
     steps:
       - name: Require readiness and successful prerequisites
@@ -7521,6 +7544,9 @@ jobs:
           RETAINED_APPLE_SOURCE_MISS: ${{ needs.plan.outputs.retained_apple_source_miss }}
           RETAINED_APPLE_SOURCE: ${{ needs.plan.outputs.retained_apple_source }}
           RETAINED_APPLE_SOURCE_RESULT: ${{ needs.retained-apple-source.result }}
+          RETAINED_APPLE: ${{ needs.plan.outputs.retained_apple }}
+          RETAINED_APPLE_PACKAGE: ${{ needs.plan.outputs.retained_apple_package }}
+          RETAINED_APPLE_PACKAGE_RESULT: ${{ needs.retained-apple-package.result }}
           RETAINED_CONSUMER_MATRIX: ${{ needs.plan.outputs.retained_consumer_matrix }}
           VALIDATION_CONTRIBUTION_SHA256: ${{ needs.sdk-completion.outputs.validation_contribution_sha256 }}
           VALIDATION_CONTRIBUTION_ARTIFACT_ID: ${{ needs.sdk-completion.outputs.validation_contribution_artifact_id }}
@@ -7538,7 +7564,7 @@ jobs:
           AGGREGATE_ATTESTATION_RESULT: ${{ needs.runtime-aggregate-attestation.result }}
           AGGREGATE_ATTESTATION_ARTIFACT_ID: ${{ needs.runtime-aggregate-attestation.outputs.artifact_id }}
           AGGREGATE_ATTESTATION_ARTIFACT_DIGEST: ${{ needs.runtime-aggregate-attestation.outputs.artifact_digest }}
-          RUNTIME_PHASE10_MAVEN_REQUIRED: ${{ needs.runtime-aggregate-attestation.result == 'success' }}
+          RUNTIME_PHASE10_MAVEN_REQUIRED: ${{ needs.runtime-aggregate-attestation.result == 'success' && needs.contract-phase10-pgp-authority.result == 'success' }}
           RUNTIME_PHASE10_MAVEN_RESULT: ${{ needs.runtime-phase10-maven.result }}
           RUNTIME_PHASE10_MAVEN_ARTIFACT_ID: ${{ needs.runtime-phase10-maven.outputs.sidecarArtifactId }}
           RUNTIME_PHASE10_MAVEN_ARTIFACT_SHA256: ${{ needs.runtime-phase10-maven.outputs.sidecarArtifactSha256 }}
@@ -7584,6 +7610,9 @@ jobs:
             else
               test "$RETAINED_APPLE_SOURCE_RESULT" = skipped || exit 1
             fi
+          fi
+          if [ "$RETAINED_APPLE" = true ] && [ "$RETAINED_APPLE_PACKAGE" = true ]; then
+            test "$RETAINED_APPLE_PACKAGE_RESULT" = success || exit 1
           fi
           if [ "$RETAINED_ANDROID" = true ]; then
             if [ "$REVIEWED_ANDROID" = true ]; then
