@@ -86,7 +86,7 @@ class AcquisitionTests(unittest.TestCase):
             from products.inventory import canonical_json_bytes
             original = json.loads(Path(__file__).with_name("completed-reuse.json").read_bytes())
             original["policy"].pop("requalificationBaseline", None)
-            self.assertIn(len(original["gitHistory"]), (154, 155, 156, 157, 158, 159, 160, 161, 162))
+            self.assertIn(len(original["gitHistory"]), (154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164))
             baseline = {"repository": consumer.authority.REPOSITORY,
                 "commit": "79a57b87dbdec7ea0393b1f8e1eddb6bab75cdad",
                 "tree": "3d98d91bdeb41ec2591b7c110526982fb8b66c76"}
@@ -99,7 +99,7 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(expanded), APPROVAL), expanded)
             self.assertEqual(canonical_json_bytes(expanded["gitHistory"][:154]), retained)
             self.assertEqual(consumer.completed_descriptor(canonical_json_bytes(original), APPROVAL), original)
-            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162):
+            for count in (1, 8, 10, 16, 17, 32, 33, 64, 65, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164):
                 value = copy.deepcopy(original)
                 value["gitHistory"] = [{"repository": consumer.authority.REPOSITORY,
                     "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(count)]
@@ -110,7 +110,7 @@ class AcquisitionTests(unittest.TestCase):
                     rows = value["gitHistory"]
                     if fault == "empty": rows.clear()
                     elif fault == "excessive": rows[:] = [{"repository": consumer.authority.REPOSITORY,
-                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(163)]
+                        "commit": f"{index + 1:040x}", "tree": "d" * 40} for index in range(165)]
                     elif fault == "duplicate": rows[-1] = dict(rows[0])
                     elif fault == "extra": rows[0]["untrusted"] = True
                     else: rows[0][fault] = "unreviewed"
