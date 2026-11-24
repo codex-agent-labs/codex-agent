@@ -32,17 +32,24 @@ class SdkWorkflowTest(unittest.TestCase):
     def test_compact_apple_pins_select_retained_completion_not_legacy_recovery_hint(self):
         import sdk_apple_upload_locator as locator
         spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        # The 0.8.0 pointer changed P's inputs: the recipe admits the new P d1de146e
-        # and the two V rebuilt against it in run 44911620337 (sdk-collect-9);
-        # M is still absent and must be rebuilt and natively qualified again.
+        # The 0.8.0 pointer changed P's inputs: the recipe admits the new P d1de146e.
+        # Run 45264669881 rebuilt both V and M (sdk-collect-10, over q2): all three
+        # are new members that the next native completion must qualify.
         self.assertEqual({
-            "ios-arm64": "sha256:d5a148d3c84b857f8c185a785142b7d8a5a672d5e45159f78b50bba783d5e5a9",
-            "ios-simulator-arm64": "sha256:8ce18b2c2935beb12cab0f40480f9bd5eebc35b7fa1381d0aab0ad6a13bbfbc1"},
+            "ios": "sha256:782b097d77aa19b7b63bc586179a361ec25199ea382cad1b5ffe9d9722105626",
+            "ios-arm64": "sha256:cbddcbc76444139adb57d08db51d36c1c84f4e9caa21dc15409b6820f27d64bc",
+            "ios-simulator-arm64": "sha256:2da32a218df272a382f51d06695a59b833b05ddb637f7a5ea83431b60483cde0"},
             {row["target"]: row["receiptSha256"] for row in spec["completedPhases"]
              if row["component"] == "sdk-ios" and row["phase"] in ("validation", "metadata")})
-        self.assertEqual([("ios-arm64", 14717662879, 136912506241), ("ios-simulator-arm64", 14718275316, 136912506233)],
-            [(row["target"], row["artifactId"], row["jobId"]) for row in spec["originals"]
-             if (row["component"], row["phase"]) == ("sdk-ios", "validation")])
+        self.assertEqual([("ios", 14881426928, 138125319055), ("ios-arm64", 14872631531, 138052173408),
+                          ("ios-simulator-arm64", 14872674802, 138052173539)],
+            sorted((row["target"], row["artifactId"], row["jobId"]) for row in spec["originals"]
+                   if (row["component"], row["phase"]) in (("sdk-ios", "validation"), ("sdk-ios", "metadata"))))
+        self.assertEqual(("product-validation / sdk-collect-10", 45264669881, 14886096280),
+            (spec["source"]["jobName"], spec["source"]["producer"]["runId"], spec["source"]["artifactId"]))
+        self.assertEqual({"artifactId": 14721917796, "runId": 44941714877,
+                          "signerCommit": "449b5a6cfe657d91a7edb94288185de0026cc561"},
+            {key: spec["reuseCompletion"][key] for key in ("artifactId", "runId", "signerCommit")})
         self.assertEqual([("sha256:d1de146eb9b7d91c038e33f5c8b272153a9db7b4b1fb6972224b0204c25d70ee",
                            14680642778, 136630805240)],
             [(row["buildKey"], original["artifactId"], original["jobId"])
@@ -68,14 +75,13 @@ class SdkWorkflowTest(unittest.TestCase):
 
     def test_q2_raw_report_pins_bind_the_requalified_device_original(self):
         import sdk_apple_upload_locator as locator
-        spec = json.loads((Path(__file__).parent / "data/requalified-sdk-completed-resume.json").read_bytes())
-        [completed] = [row for row in spec["completedPhases"]
-                       if (row["component"], row["phase"], row["target"]) == ("sdk-ios", "validation", "ios-arm64")]
-        [original] = [row for row in spec["originals"]
-                      if (row["component"], row["phase"], row["target"]) == ("sdk-ios", "validation", "ios-arm64")]
-        self.assertEqual({"buildKey": completed["buildKey"], "receiptSha256": completed["receiptSha256"],
-                          "artifactId": original["artifactId"], "artifactSha256": original["artifactSha256"],
-                          "jobId": original["jobId"]}, locator.Q2_PARITY_SOURCE)
+        # The q2 device original (run 44911620337) stays pinned exactly; the q3 recipe
+        # replaces it with run 45264669881's original, which needs its own reviewed group.
+        self.assertEqual({"buildKey": "sha256:444134535180b521703eb448798a1467a8e258574fdad655dcd0e63b131dd482",
+                          "receiptSha256": "sha256:d5a148d3c84b857f8c185a785142b7d8a5a672d5e45159f78b50bba783d5e5a9",
+                          "artifactId": 14717662879,
+                          "artifactSha256": "sha256:5cbe94dadc743c6256ca643c70e3271bf487052db0da221d2ac53dcfa47cbf93",
+                          "jobId": 136912506241}, locator.Q2_PARITY_SOURCE)
         self.assertEqual(1610549702, locator.Q2_PARITY_ARCHIVE_BYTES)
         self.assertEqual((
             {"relativePath": "reports/objective-c-parity.json", "bytes": 438015,
