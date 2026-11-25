@@ -235,6 +235,9 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-package
+          # Hosted build duties only; the reviewed Apple contribution's public Swift
+          # manifest check against the authenticated package original owns metadata.
+          build-only: 'true'
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}

@@ -187,8 +187,29 @@ class RetainedPackageWorkflowTest(unittest.TestCase):
             'IOS_DEVICE_FRAMEWORK=', 'uses: ./.github/actions/run-ci-lane', 'lane: ios-package')]
         self.assertEqual(sorted(steps), steps)
         self.assertNotIn('force-build', job)
+        self.assertIn("build-only: 'true'", job)
+        self.assertEqual(1, job.count('build-only'))
         self.assertNotIn('reuse-disabled', job)
         self.assertEqual(1, job.count('uses: ./.github/actions/run-ci-lane'))
+
+    def test_build_only_lane_skips_metadata_and_records_build_only_coverage(self):
+        action = (ROOT / '.github/actions/run-ci-lane/action.yml').read_text()
+        guard = action.split('    - name: Reject incompatible reuse controls\n', 1)[1].split('\n    - ', 1)[0]
+        for token in ('BUILD_ONLY: ${{ inputs.build-only }}', 'test "$LANE" = ios-package', 'test "$REUSE_ONLY" != true',
+                      'test "$REUSE_DISABLED" != true', 'test "$TOOLING_ONLY" != true', 'test "$PREPARED_PRODUCTION" != true',
+                      'Unsupported build-only selection'):
+            self.assertIn(token, guard)
+        execution = action.split('    - id: execution\n', 1)[1].split('\n    - ', 1)[0]
+        self.assertIn("inputs.build-only != 'true'", execution)
+        production = action.split('    - id: production-execution\n', 1)[1].split('\n    - ', 1)[0]
+        self.assertNotIn('build-only', production)
+        self.assertIn("CI_LANE_BUILD: 'true'", production)
+        staging = action.split('python3 ci/stage.py --plan build/ci/impact-plan.json --lane "$LANE" \\\n          --output build/ci/lane', 1)[0]
+        staging = staging.rsplit('    - if: >-', 1)[1]
+        self.assertIn('if [ "${{ inputs.contract-tooling-only }}" = true ] || [ "${{ inputs.build-only }}" = true ]; then\n'
+                      '          forced=(--production-only)', staging)
+        import stage
+        self.assertEqual({'build', 'metadata'}, {row[0] for row in stage.OUTPUTS['ios-package']})
 
     def test_broad_select_and_swift_source_never_run_in_the_package_caller(self):
         self.assertIn("if: ${{ !inputs.retainedSwiftSourceOnly && !inputs.retainedPackageOnly }}", _job(APPLE, 'select'))
@@ -199,6 +220,7 @@ class RetainedPackageWorkflowTest(unittest.TestCase):
     def test_product_caller_and_merge_gate_require_the_route_exactly_when_selected(self):
         caller = _job(PRODUCT, 'retained-apple-package')
         for token in ("needs.plan.outputs.retained_apple == 'true' && needs.plan.outputs.retained_apple_package == 'true'",
+                      "needs.plan.outputs.retained_apple_reviewed == 'true'",
                       "needs.product-resume.outputs.full_reuse == 'true'", '!inputs.sdkRecoveryOnly',
                       'retainedPackageOnly: true', 'resumeOutputs: ${{ toJSON(needs.product-resume.outputs) }}',
                       'authority_read_token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}'):
@@ -234,3 +256,28 @@ class RetainedPackageWorkflowTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+from ci.tests import test_ci as _ci  # noqa: E402  (fixture base only; its tests stay in test_ci)
+
+
+class BuildOnlyPackageReceiptTest(_ci.GitFixture):
+    """A build-only ios-package receipt passes only the reviewed build-category check."""
+
+    def test_build_only_receipt_needs_the_production_category(self):
+        plan, plan_path, _ = self.make_plan('README.md', force_full=True)
+        self.assertEqual((True, True), (plan['lanes']['ios-package']['build'], plan['lanes']['ios-package']['metadata']))
+        lane = self.root / 'artifacts/ios-package'
+        lane.mkdir(parents=True)
+        (lane / 'CodexAgent-0.8.0.xcframework.zip').write_bytes(b'zip')
+        (lane / 'lane-result.txt').write_text('lane=ios-package\nresult=passed\n')
+        _ci.create_receipt(_ci.Namespace(plan=plan_path, lane='ios-package', output=lane,
+            workflow_path='.github/workflows/ci.yml', artifact_name=f"codex-agent-ci-ios-package-{plan['validationTree']}",
+            run_id=1, run_attempt=1, runner=['os=macOS', 'arch=ARM64'],
+            toolchain=['xcode=26.6', 'validationActions=build'],
+            artifact=['CodexAgent-0.8.0.xcframework.zip=swift-package-binary'], evidence=['lane-result.txt=lane-result']))
+        receipt = lane / 'lane-receipt.json'
+        self.assertEqual('ios-package', _ci.validate_receipt(receipt, plan_path, lane, allow_compatible=True,
+                                                            categories=('production',))['lane'])
+        with self.assertRaisesRegex(ValueError, 'action coverage mismatch'):
+            _ci.validate_receipt(receipt, plan_path, lane, allow_compatible=True)

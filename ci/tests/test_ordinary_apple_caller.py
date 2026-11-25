@@ -188,7 +188,8 @@ class AppleCompositionTest(unittest.TestCase):
     def test_scoped_aggregate_exempts_only_reviewed_source_lanes_and_keeps_package(self):
         f = self.fixture
         with f.node_scopes(): value = f.contribution()
-        value['apple']['reviewedChecks'] = {'selectedLanes': ['ios-privacy-metrics', 'ios-kotlin-tests', 'ios-native-tests', 'ios-rust-device', 'ios-rust-simulator']}
+        value['apple']['reviewedChecks'] = {'selectedLanes': ['ios-privacy-metrics', 'ios-kotlin-tests', 'ios-native-tests', 'ios-rust-device', 'ios-rust-simulator'],
+                                            'publicManifest': {'result': 'metadata-passed'}}
         required = [*gate._APPLE, 'ios-privacy-metrics', 'ios-swift-build', 'ios-package', 'ios-kotlin-tests', 'ios-native-tests', 'ios-rust-device', 'ios-rust-simulator']
         receipts = f.root/'receipts'; receipts.mkdir()
         for lane in ('ios-package',):
@@ -206,6 +207,44 @@ class AppleCompositionTest(unittest.TestCase):
             (receipts/'ios-package/lane-receipt.json').unlink()
             with self.assertRaises(ValueError): gate.aggregate_retained_validation(f.plan, receipts, f.root/'denied', **options)
             self.assertFalse((f.root/'denied').exists())
+
+    def test_reviewed_package_needs_hosted_build_receipt_and_passed_public_manifest(self):
+        f = self.fixture
+        with f.node_scopes(): value = f.contribution()
+        required = [*gate._APPLE, 'ios-package']
+        receipts = f.root/'package-receipts'; (receipts/'ios-package').mkdir(parents=True)
+        (receipts/'ios-package/lane-receipt.json').write_bytes(gate.canonical_json_bytes({'lane': 'ios-package'}))
+        options = dict(repository_root=f.root, trusted_workflow_sha='4'*40, artifact_id=22,
+            artifact_sha256='sha256:'+'a'*64, contribution_sha256='sha256:'+'b'*64, environ=f.env,
+            apple=True, apple_source_tests=True, completed_frozen_policy=f.root/'policy')
+        calls = []
+        def receipt(path, *args, **kwargs):
+            calls.append(kwargs)
+            return gate.load_json_bytes(path.read_bytes())
+        def run(reviewed, manifest, destination):
+            value['apple']['reviewedChecks'] = {'selectedLanes': [], 'publicManifest': {'result': manifest}}
+            with patch.object(gate, '_authorized_plan', return_value=f.plan_value), \
+                 patch('receipt.required_lanes', return_value=required), \
+                 patch.object(gate, 'observed_validation_contributions', return_value=(value,None,None,None,{})), \
+                 patch.object(gate, 'validate_receipt', side_effect=receipt):
+                return gate.aggregate_retained_validation(f.plan, receipts, f.root/destination,
+                                                          apple_reviewed=reviewed, **options)
+        # Both present: the hosted receipt is checked for build (production inputs) only.
+        self.assertEqual({'ios-package'}, set(run(True, 'metadata-passed', 'both')['laneReceipts']))
+        self.assertEqual({'categories': ('production',), 'allow_compatible': True}, calls[-1])
+        # A recorded manifest failure no longer passes.
+        for manifest in ('metadata-failed', None):
+            with self.subTest(manifest=manifest), self.assertRaisesRegex(ValueError, 'passed public Swift manifest'):
+                run(True, manifest, 'manifest-' + str(manifest))
+            self.assertFalse((f.root/('manifest-' + str(manifest))).exists())
+        # Non-reviewed retained mode keeps today's full-category receipt validation.
+        run(False, 'metadata-failed', 'unreviewed')
+        self.assertEqual({'allow_compatible': True}, calls[-1])
+        # The hosted build receipt stays mandatory.
+        (receipts/'ios-package/lane-receipt.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'missing or unexpected'):
+            run(True, 'metadata-passed', 'missing')
+        self.assertFalse((f.root/'missing').exists())
 
 
     def test_reviewed_source_lanes_reject_unmatched_actions_and_preserve_attribution(self):
