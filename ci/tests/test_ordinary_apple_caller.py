@@ -217,11 +217,24 @@ class AppleCompositionTest(unittest.TestCase):
         selected = helper._selected_lanes(f.plan_value, True)
         self.assertTrue(set(lanes).issubset(selected))
         self.assertEqual({}, helper._selected_lanes(f.plan_value, False))
-        for lane, action in lanes.items():
-            wrong = 'test' if action == 'build' else 'build'
+        for lane, wrong in {'ios-kotlin-tests':'build','ios-rust-device':'test','ios-rust-simulator':'test',
+                            'ios-package':'test'}.items():
             f.plan_value['lanes'][lane][wrong] = True
             with self.assertRaises(ValueError): helper._selected_lanes(f.plan_value, True)
             f.plan_value['lanes'][lane][wrong] = False
+        # The full-plan shape of run 45495092643: vacuous build on native tests and privacy.
+        full = {'ios-native-tests':('build','test','metadata'),'ios-privacy-metrics':('build','test','metadata'),
+                'ios-kotlin-tests':('test','metadata'),'ios-package':('build','metadata'),
+                'ios-rust-device':('build','metadata'),'ios-rust-simulator':('build','metadata')}
+        for lane, actions in full.items():
+            for action in actions: f.plan_value['lanes'][lane][action] = True
+        selected = helper._selected_lanes(f.plan_value, True)
+        self.assertEqual(set(full), set(selected))
+        self.assertTrue(selected['ios-native-tests']['build'] and selected['ios-privacy-metrics']['build'])
+        self.assertEqual({'ios-package'}, set(helper._selected_lanes(f.plan_value, False)))
+        for lane, actions in full.items():
+            for action in actions: f.plan_value['lanes'][lane][action] = False
+        for lane, action in lanes.items(): f.plan_value['lanes'][lane][action] = True
         source = (ROOT/'.github/workflows/apple-runtime-evidence.yml').read_text()
         script = source.split('              # Remaining duties',1)[1]
         script = script.split("python3 -B - <<'PYCODE'\n",1)[1].split('          PYCODE',1)[0]
@@ -245,6 +258,19 @@ class AppleCompositionTest(unittest.TestCase):
                         exec(compile(script,'apple-package-duty-guard','exec'),{})
         for lane in ('ios-package','ios-kotlin-tests','ios-native-tests','ios-rust-device','ios-rust-simulator'):
             for action in ('build','test','metadata'): f.plan_value['lanes'][lane][action] = False
+
+    def test_vacuous_build_lanes_have_no_build_task_or_build_output(self):
+        spec = importlib.util.spec_from_file_location('reviewed_apple_vacuous', ROOT/'.github/actions/run-ci-lane/apple_package_validation.py')
+        helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+        import stage
+        script = (ROOT/'ci/run-lane.sh').read_text()
+        for lane in helper._VACUOUS_BUILD_LANES:
+            case = script.split('\n  ' + lane + ')\n', 1)[1].split('\n    ;;\n', 1)[0]
+            self.assertNotIn('$build', case)
+            self.assertNotIn('CI_LANE_BUILD', case)
+            outputs = stage.OUTPUTS[lane]
+            self.assertTrue(outputs)
+            self.assertNotIn('build', {row[0] for row in outputs})
 
     def test_fixed_workflow_selection_requires_authorized_ordinary_callback(self):
         f = self.fixture

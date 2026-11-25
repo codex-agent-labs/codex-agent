@@ -147,13 +147,19 @@ _REVIEW_IDENTITIES = (_BINARY, _PACKAGE, *(
 _REVIEW_SOURCES = ('gradle/build-logic/src/main/kotlin/AppleReleaseCheckTasks.kt', 'gradle/build-logic/src/main/kotlin/IosAppleReleaseVerificationTasks.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyArchive.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyAuditVerification.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyEvidence.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyManifest.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyPolicy.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyReviewBinding.kt', 'gradle/build-logic/src/main/kotlin/IosPrivacyScanner.kt', 'gradle/build-logic/src/main/kotlin/ReleaseIo.kt', 'gradle/build-logic/src/main/kotlin/ReleaseToolingGradleTasks.kt', 'gradle/build-logic/src/main/kotlin/codexagent.ios-runtime.gradle.kts', 'gradle/release/ios-resource-policy.json', 'gradle/release/privacy-data-flow-review.json', 'gradle/release/privacy-required-reason-review.json')
 
 
+# A full plan also selects "build" for these two lanes because each has a production
+# pathspec, but neither lane has a build duty: ci/run-lane.sh runs no task for it and
+# ci/stage.py declares no build output. Accepting that vacuous action substitutes nothing.
+_VACUOUS_BUILD_LANES = ("ios-native-tests", "ios-privacy-metrics")
+
+
 def _selected_lanes(plan, reviewed):
     selected = {}
     allowed = {"ios-package": {"build", "metadata"}}
     if reviewed:
-        allowed.update({"ios-privacy-metrics": {"test", "metadata"},
+        allowed.update({"ios-privacy-metrics": {"build", "test", "metadata"},
                         "ios-kotlin-tests": {"test", "metadata"},
-                        "ios-native-tests": {"test", "metadata"},
+                        "ios-native-tests": {"build", "test", "metadata"},
                         "ios-rust-device": {"build", "metadata"},
                         "ios-rust-simulator": {"build", "metadata"}})
     for lane, actions in allowed.items():
