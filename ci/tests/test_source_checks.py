@@ -51,28 +51,80 @@ class SourceCheckWorkflowTest(unittest.TestCase):
         self.assertIn("        shard:\n" + "".join(f"          - {index}\n" for index in range(checks.SHARDS)), shards)
         self.assertIn("      fail-fast: false\n", shards)
         self.assertIn(f"--shards {checks.SHARDS} ", shards)
-        self.assertIn(f"--shards {checks.SHARDS} ", job("workflow-source-checks"))
+        for name in ("workflow-source-checks", "workflow-source-record"):
+            self.assertIn(f"--shards {checks.SHARDS} ", job(name))
+            self.assertIn("pattern: codex-agent-source-check-shard-*-attempt-*", job(name))
         self.assertIn("name: codex-agent-source-check-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}", shards)
-        self.assertIn("pattern: codex-agent-source-check-shard-*-attempt-*", job("workflow-source-checks"))
         self.assertEqual(2, WORKFLOW.count(f"actionlint@v{checks.ACTIONLINT_VERSION}"))
         self.assertIn(f"key: actionlint-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-v{checks.ACTIONLINT_VERSION}", shards)
         self.assertEqual(checks.JOB_NAME, "product-validation / workflow-source-checks")
+        self.assertEqual(checks.RECORD_JOB_NAME, "product-validation / workflow-source-record")
 
-    def test_only_the_join_may_sign_and_no_job_runs_unpinned_or_privileged_tools(self):
-        for name in ("workflow-source-reuse", "workflow-source-shards"):
+    def test_no_job_that_runs_tested_code_can_sign(self):
+        # Every job that executes the tested tree (shards, the tested join and
+        # reuse discovery) lacks any OIDC or attestation permission.
+        for name in ("workflow-source-reuse", "workflow-source-shards", "workflow-source-checks"):
             self.assertNotIn("id-token", job(name))
             self.assertNotIn("attestations", job(name))
             self.assertNotIn("secrets.", job(name))
-        joined = job("workflow-source-checks")
-        self.assertIn("      id-token: write\n      attestations: write\n", joined)
-        self.assertNotIn("secrets.", joined)
-        self.assertNotIn("actions/cache", joined)
+            self.assertNotIn("actions/attest", job(name))
+        self.assertIn("    permissions:\n      actions: read\n      contents: read\n    outputs:\n",
+                      job("workflow-source-checks"))
+        # Only the protected record job signs, and nothing in it executes the tested tree.
+        signer = job("workflow-source-record")
+        self.assertEqual(1, WORKFLOW.count("\n  workflow-source-record:\n"))
+        self.assertIn("    permissions:\n      actions: read\n      contents: read\n"
+                      "      id-token: write\n      attestations: write\n", signer)
+        self.assertNotIn("secrets.", signer)
+        self.assertNotIn("actions/cache", signer)
+        self.assertNotIn("uses: ./", signer)
+        self.assertNotIn("PYTHONPATH", signer)
+        self.assertNotIn("working-directory", signer)
+        steps = signer.split("\n      - ")[1:]
+        uses = [line.strip() for step in steps for line in step.splitlines() if line.strip().startswith("uses:")
+                or line.startswith("uses:")]
+        self.assertEqual(["uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"] * 2 + [
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1",
+            "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"], uses)
+        protected = signer.split("      - id: protected\n", 1)[1].split("\n      - ", 1)[0] + "\n"
+        for line in ("repository: ${{ fromJSON(toJSON(job)).workflow_repository }}",
+                     "ref: ${{ fromJSON(toJSON(job)).workflow_sha }}", "path: protected-source",
+                     "fetch-depth: 0", "persist-credentials: false"):
+            self.assertIn(f"          {line}\n", protected)
+        tested = signer.split("      - id: tested\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("          path: tested-tree\n          persist-credentials: false", tested)
+        self.assertNotIn("ref:", tested)
+        self.assertLess(signer.index("id: protected"), signer.index("id: tested"))
+        record = signer.split("      - id: record\n", 1)[1].split("\n      - ", 1)[0]
+        script = record.split("        run: |\n", 1)[1]
+        commands = [line.strip() for line in script.splitlines()
+                    if line.strip() and not line.strip().startswith("#")]
+        self.assertEqual(['set -euo pipefail', 'test "$NATIVE_WORKFLOW_SHA" = "$PUBLISHER_SHA"',
+                          'test "$(git -C protected-source rev-parse \'HEAD^{commit}\')" = "$NATIVE_WORKFLOW_SHA"',
+                          'python3 -I -B protected-source/ci/tests/source_checks.py accept --source tested-tree \\',
+                          '--reports "$RUNNER_TEMP/source-check-shards" --shards 8 --publisher-sha "$PUBLISHER_SHA" \\',
+                          '--record "$RUNNER_TEMP/source-check-record/source-checks.json" '
+                          '--github-output "$GITHUB_OUTPUT"'], commands)
+        self.assertIn("NATIVE_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}", record)
+        # The signed file and the upload name both come from the protected step.
+        self.assertIn("name: ${{ steps.record.outputs.artifact_name }}", signer)
+        self.assertNotIn("steps.accept", signer)
+        for step in steps[steps.index(next(step for step in steps if step.startswith("id: attest"))):]:
+            self.assertIn("steps.record.outcome == 'success' && steps.record.outputs.record == 'true'", step)
+        self.assertIn("create-storage-record: false", signer)
+        # Publication never decides a result: every step after the decision may fail.
+        self.assertEqual(len(steps) - 1, signer.count("continue-on-error: true"))
+        self.assertNotIn("actions/cache", job("workflow-source-checks"))
         self.assertNotIn("actions/cache", job("workflow-source-reuse"))
-        self.assertIn("uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2", joined)
-        self.assertIn("create-storage-record: false", joined)
         self.assertIn("bash .github/actions/restore-reuse-qualification/install-gh.sh", job("workflow-source-reuse"))
+        # The unsigned tested-tree record is never uploaded.
+        self.assertNotIn("upload-artifact", job("workflow-source-checks"))
         # Records are only signed by the exact protected publisher for same-repo PR/merge-group runs.
-        publication = joined.split("      - id: publication\n", 1)[1].split("\n      - ", 1)[0]
+        publication = (signer.split("      - id: publication\n", 1)[1].split("\n      - ", 1)[0]
+                       .split("\n      # ", 1)[0])
+        self.assertEqual(publication, job("workflow-source-checks").split("      - id: publication\n", 1)[1]
+                         .split("\n      - ", 1)[0].replace("        if: steps.mode.outputs.reused == 'false'\n", "", 1))
         for guard in ('[ "$NATIVE_WORKFLOW_SHA" = "$PUBLISHER_SHA" ]',
                       '[ "$NATIVE_WORKFLOW_PATH" = .github/workflows/product-validation.yml ]',
                       '[ "$GITHUB_REPOSITORY" = codex-agent-labs/codex-agent ]',
@@ -100,8 +152,8 @@ class SourceCheckWorkflowTest(unittest.TestCase):
         self.assertIn("    if: '!cancelled() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly"
                       " && needs.workflow-source-reuse.outputs.reused != ''true'''\n", job("workflow-source-shards"))
         # The join and merge gate still run (and fail) when the suite was not completed.
-        self.assertIn("    if: always() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly\n",
-                      job("workflow-source-checks"))
+        self.assertIn("    if: always() && !cancelled() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly"
+                      " && !inputs.sdkRecoveryOnly\n", job("workflow-source-checks"))
         reuse = job("workflow-source-reuse")
         step = reuse.split("      - id: reuse\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
@@ -353,6 +405,30 @@ class SourceCheckEndToEndTest(unittest.TestCase):
         same = json.loads(self.run_tool("fingerprint", "--publisher-sha", self.publisher,
                                         env={"ImageVersion": "20261116.133.1"}).stdout)
         self.assertEqual(record["fingerprint"], same["fingerprint"])
+        # The protected copy, run from its own checkout over the tested tree as
+        # data, re-derives the identical record and upload name.
+        protected = Path(self.temporary.name) / "protected"
+        git(Path(self.temporary.name), "clone", "-q", str(self.root), str(protected))
+        git(protected, "update-ref", checks.PUBLISHER_REF, self.publisher)
+        # Only the protected checkout knows the publisher branch.
+        git(self.root, "update-ref", "-d", checks.PUBLISHER_REF)
+        stray = Path(self.temporary.name) / "workspace"
+        (stray / "tested-tree").mkdir(parents=True)
+        derived_path = Path(self.temporary.name) / "derived/source-checks.json"
+        derived_output = Path(self.temporary.name) / "derived-output"
+        subprocess.run([sys.executable, "-I", "-B", str(protected / "ci/tests/source_checks.py"), "accept",
+                        "--source", str(self.root), "--reports", str(reports), "--shards", str(checks.SHARDS),
+                        "--publisher-sha", self.publisher, "--record", str(derived_path),
+                        "--github-output", str(derived_output)], cwd=stray, check=True, capture_output=True,
+                       env={**self.environment, **producer_env})
+        self.assertEqual(record_path.read_bytes(), derived_path.read_bytes())
+        self.assertEqual(output.read_text(), derived_output.read_text())
+        # Without the protected publisher branch the tested tree alone cannot publish.
+        failed = self.run_tool("accept", "--reports", str(reports), "--shards", str(checks.SHARDS),
+                               "--publisher-sha", self.publisher, "--record", str(derived_path),
+                               env=producer_env, check=False)
+        self.assertNotEqual(0, failed.returncode)
+        git(self.root, "update-ref", checks.PUBLISHER_REF, self.publisher)
         (self.root / "README").write_text("changed\n")
         git(self.root, "add", "README")
         git(self.root, "-c", "user.name=f", "-c", "user.email=f@example.invalid", "commit", "-q", "-m", "next")
@@ -460,13 +536,18 @@ class SourceCheckReuseTest(unittest.TestCase):
         self.assertEqual(70, result["sourceRunId"])
         self.assertEqual(2, result["sourceRunAttempt"])
         observe.assert_called_once()
-        self.assertEqual({"sources": self.producer}, observe.call_args.args[0])
-        self.assertEqual({"sources": checks.JOB_NAME}, observe.call_args.kwargs["jobs_by_phase"])
-        self.assertEqual({"sources": {"path": ".github/workflows/product-validation.yml", "sha": "e" * 40}},
+        # The tested join and the protected signer both succeeded under the exact publisher.
+        self.assertEqual({"sources": self.producer, "record": self.producer}, observe.call_args.args[0])
+        self.assertEqual({"sources": checks.JOB_NAME, "record": checks.RECORD_JOB_NAME},
+                         observe.call_args.kwargs["jobs_by_phase"])
+        trusted = {"path": ".github/workflows/product-validation.yml", "sha": "e" * 40}
+        self.assertEqual({"sources": trusted, "record": trusted},
                          observe.call_args.kwargs["trusted_workflows_by_phase"])
         self.assertEqual((9,), metadata.call_args.args[:1])
         self.assertEqual(checks.artifact_name(self.record["fingerprint"], 2), metadata.call_args.args[2])
+        # The upload is bound to the protected signer's window, not the tested join's.
         window.assert_called_once()
+        self.assertEqual(checks.RECORD_JOB_NAME, window.call_args.args[1])
         executor.assert_called_once_with(ROOT, "e" * 40)
         command, = calls
         for pair in (("--signer-digest", "e" * 40), ("--source-digest", "b" * 40),
@@ -545,13 +626,31 @@ class SourceCheckReuseTest(unittest.TestCase):
             self.assertEqual("no-authenticated-record", result["reason"])
 
     def test_cli_discovery_errors_are_misses_not_passes(self):
-        with tempfile.TemporaryDirectory() as temporary, \
-                patch.object(checks, "discover_reuse", side_effect=OSError("network")):
-            output = Path(temporary) / "output"
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(0, checks.main(["discover-reuse", "--publisher-sha", "e" * 40,
-                                                 "--github-output", str(output)]))
-            self.assertIn("reused=false\n", output.read_text())
+        import http.client
+        for error in (OSError("network"), ImportError("verifier"), http.client.IncompleteRead(b"x", 3),
+                      subprocess.TimeoutExpired("gh", 1)):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(checks, "discover_reuse", side_effect=error):
+                output = Path(temporary) / "output"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(0, checks.main(["discover-reuse", "--publisher-sha", "e" * 40,
+                                                     "--github-output", str(output)]))
+                self.assertIn("reused=false\n", output.read_text())
+                self.assertIn(f"reason=discovery-unavailable:{type(error).__name__}\n", output.read_text())
+
+    def test_a_candidate_import_or_truncated_read_is_a_miss(self):
+        import http.client
+        import product_reuse as products
+        value = checks.fingerprint(self.current)
+        listed = [{"id": 1, "name": checks.artifact_name(value, 1), "expired": False, "created_at": "2026-01-01"}]
+        for error in (ImportError("verifier"), http.client.IncompleteRead(b"x", 3)):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(checks, "current_inputs", return_value=self.current), \
+                    patch.object(products, "paginated_items", side_effect=lambda url, key, token: listed), \
+                    patch.object(checks, "authenticate", side_effect=error):
+                result = checks.discover_reuse("e" * 40, "token", root=ROOT)
+            self.assertFalse(result["reused"])
+            self.assertEqual("no-authenticated-record", result["reason"])
 
     def test_record_location_is_not_actions_cache(self):
         source = (ROOT / "ci/tests/source_checks.py").read_text()

@@ -15,8 +15,12 @@ Three operations exist:
 ``accept``
     Join every shard report, prove that the executed test IDs are pairwise
     disjoint and that their union is exactly the discovered suite, and write
-    an unsigned record bound to the source-check fingerprint.  The workflow
-    then signs the record with GitHub's native Sigstore attestation.
+    an unsigned record bound to the source-check fingerprint.  The tested
+    tree's own copy decides ``workflow-source-checks`` without any signing
+    identity.  ``workflow-source-record`` re-derives the record with the
+    protected publisher's copy (``--source`` names the tested checkout, read
+    only through Git as data) and signs it with GitHub's native Sigstore
+    attestation.
 ``discover-reuse``
     Accept a previously signed record only after authenticating it like other
     reused originals: an exact GitHub upload of an allowed successful original
@@ -35,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -52,6 +57,8 @@ CALLER_WORKFLOW = ".github/workflows/ci.yml"
 EXECUTOR_WORKFLOW = ".github/workflows/product-validation.yml"
 PUBLISHER_REF = "refs/remotes/origin/reuse-authority"
 JOB_NAME = "product-validation / workflow-source-checks"
+# The protected job that re-derives, signs and uploads the record.
+RECORD_JOB_NAME = "product-validation / workflow-source-record"
 SHARDS = 8
 ACTIONLINT_VERSION = "1.7.12"
 ARTIFACT_PREFIX = "codex-agent-source-checks-"
@@ -417,10 +424,16 @@ def producer_from_environment(environ, *, commit: str, tree: str) -> dict:
 
 
 def accept(directory: Path, shards: int, *, publisher_sha: str | None, record: Path | None,
-           environ=None, root: Path = ROOT) -> dict:
-    """Fail unless the complete suite passed; optionally write a signable record."""
+           environ=None, root: Path = ROOT, source: Path | None = None) -> dict:
+    """Fail unless the complete suite passed; optionally write a signable record.
+
+    ``source`` is the tested checkout when it differs from the executing code
+    (``root``): it is only read through Git for its commit, tree and clean
+    status, never imported or executed.  The executor blob is resolved in
+    ``root``.
+    """
     environ = os.environ if environ is None else environ
-    commit, tree = clean_checkout(root)
+    commit, tree = clean_checkout(root if source is None else source)
     suite, env = join_reports(directory, shards, commit=commit, tree=tree)
     result = {"suite": suite}
     if record is not None and env is not None:
@@ -517,17 +530,27 @@ def authenticate(candidate: dict, current: dict, token: str, *, root: Path) -> d
     # executor definition is the one in the current fingerprint.
     if executor_blob(root, publisher_sha) != current["executor"]["blob"]:
         raise ValueError("Source-check publisher executes a different workflow definition")
+    # Both the pass and the protected signing job must have succeeded under the
+    # exact publisher, and the upload must come from the signing job's window.
+    trusted = {"path": EXECUTOR_WORKFLOW, "sha": publisher_sha}
     with products.verification_session(), products._ci_observation_batch(
             (str(producer["runId"]), str(producer["runAttempt"])), share_nested=True):
         observation, = products._observe_ci_producer_jobs(
-            {"sources": producer}, jobs_by_phase={"sources": JOB_NAME}, token=token,
-            trusted_workflows_by_phase={"sources": {"path": EXECUTOR_WORKFLOW, "sha": publisher_sha}})
+            {"sources": producer, "record": producer},
+            jobs_by_phase={"sources": JOB_NAME, "record": RECORD_JOB_NAME}, token=token,
+            trusted_workflows_by_phase={"sources": trusted, "record": dict(trusted)})
         artifact = products._contract_ci_upload_metadata(identifier, digest, name, producer,
                                                          observation["run"], token)
-        products._require_artifact_job_window(observation, JOB_NAME, artifact)
+        products._require_artifact_job_window(observation, RECORD_JOB_NAME, artifact)
     verify_native_attestation(raw, bundle, publisher_sha=publisher_sha, producer=producer)
     return {"sourceRunId": producer["runId"], "sourceRunAttempt": producer["runAttempt"],
             "artifactId": identifier, "artifactSha256": digest, "recordSha256": sha256(raw)}
+
+
+# Discovery is only an optimisation: every one of these is a miss that runs the
+# suite (an unimportable verifier helper or a truncated HTTP read included).
+DISCOVERY_ERRORS = (KeyError, OSError, TypeError, ValueError, ImportError, http.client.HTTPException,
+                    subprocess.SubprocessError)
 
 
 def discover_reuse(publisher_sha: str, token: str, *, root: Path = ROOT) -> dict:
@@ -553,7 +576,7 @@ def discover_reuse(publisher_sha: str, token: str, *, root: Path = ROOT) -> dict
     for candidate in candidates[:MAX_CANDIDATES]:
         try:
             admitted = authenticate(candidate, current, token, root=root)
-        except (KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        except DISCOVERY_ERRORS as error:
             failures.append(f"{candidate.get('id')}:{type(error).__name__}:{error}"[:300])
             continue
         if git(root, "rev-parse", "HEAD^{tree}") != current["tree"]:
@@ -598,6 +621,7 @@ def main(argv=None) -> int:
     join.add_argument("--publisher-sha")
     join.add_argument("--record", type=Path)
     join.add_argument("--github-output")
+    join.add_argument("--source", type=Path)
     reuse = commands.add_parser("discover-reuse")
     reuse.add_argument("--publisher-sha", required=True)
     reuse.add_argument("--github-output")
@@ -621,7 +645,7 @@ def main(argv=None) -> int:
         if (arguments.publisher_sha is None) != (arguments.record is None):
             raise SystemExit("A published record requires its protected publisher")
         value = accept(arguments.reports, arguments.shards, publisher_sha=arguments.publisher_sha,
-                       record=arguments.record)
+                       record=arguments.record, source=arguments.source)
         outputs = {"suite_count": value["suite"]["count"], "record": "record" in value}
         if "record" in value:
             record = value["record"]
@@ -633,7 +657,7 @@ def main(argv=None) -> int:
     if arguments.command == "discover-reuse":
         try:
             value = discover_reuse(arguments.publisher_sha, os.environ.get("GITHUB_TOKEN", ""))
-        except (KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        except DISCOVERY_ERRORS as error:
             # Discovery is only an optimisation: any failure runs the suite.
             value = {"reused": False, "fingerprint": "", "reason": f"discovery-unavailable:{type(error).__name__}"}
         _github_output(arguments.github_output, value)

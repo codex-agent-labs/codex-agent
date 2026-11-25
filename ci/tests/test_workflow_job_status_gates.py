@@ -367,6 +367,35 @@ jobs:
         self.assertIn('test "$PLAN_RESULT" = success', lint)
         self.assertIn('test "$CHECKS_RESULT" = success', lint)
 
+    def test_source_record_signs_only_after_a_fresh_successful_join(self) -> None:
+        text = (WORKFLOWS / "product-validation.yml").read_text(encoding="utf-8")
+        jobs = _jobs(text)
+        checks, record = jobs["workflow-source-checks"], jobs["workflow-source-record"]
+        self.assertEqual(("plan", "workflow-source-checks"), record["needs"])
+        for condition in (checks["if"], record["if"]):
+            self.assertTrue(condition.startswith("always() && !cancelled() && "))
+        for mode_name, mode in _MODES.items():
+            for event in _EVENTS:
+                context = _context(mode, event)
+                own = _Evaluator(checks["if"], context).evaluate()
+                ready = {**context, "needs.plan.result": "success", "needs.workflow-source-checks.result": "success",
+                         "needs.workflow-source-checks.outputs.reused": "false"}
+                signed = _Evaluator(record["if"], ready).evaluate()
+                with self.subTest(mode=mode_name, event=event):
+                    if mode_name in {"toolingOnly", "runtimeRecoveryOnly", "sdkRecoveryOnly"}:
+                        self.assertIs(False, own)
+                        self.assertIs(False, signed)
+                    else:
+                        # Only cancellation (unknown here) can still skip the join.
+                        self.assertIs(_UNKNOWN, own)
+                        self.assertIs(_UNKNOWN, signed)
+                    for field, values in (("needs.plan.result", ("failure", "skipped", "cancelled")),
+                                          ("needs.workflow-source-checks.result", ("failure", "skipped", "cancelled")),
+                                          ("needs.workflow-source-checks.outputs.reused", ("true", ""))):
+                        for value in values:
+                            self.assertIs(False, _Evaluator(record["if"], {**ready, field: value}).evaluate(),
+                                          (field, value))
+
 
 if __name__ == "__main__":
     unittest.main()

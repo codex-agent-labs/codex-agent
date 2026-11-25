@@ -357,14 +357,14 @@ jobs:
           key: ${{ steps.actionlint-cache.outputs.cache-primary-key }}
 
   workflow-source-checks:
-    if: always() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly
+    # Runs the tested tree's own join, so it never holds a signing identity:
+    # workflow-source-record re-derives and signs the record with protected code.
+    if: always() && !cancelled() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly && !inputs.sdkRecoveryOnly
     needs: [plan, workflow-source-reuse, workflow-source-shards]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
-      id-token: write
-      attestations: write
     outputs:
       passed: ${{ steps.passed.outputs.passed }}
       reused: ${{ steps.mode.outputs.reused }}
@@ -430,29 +430,112 @@ jobs:
           set -euo pipefail
           record=()
           if [ "$PUBLISH" = true ]; then
+            # Unsigned and never uploaded: only workflow-source-record publishes.
             record=(--publisher-sha "$PUBLISHER_SHA" --record "$RUNNER_TEMP/source-check-record/source-checks.json")
           fi
           python3 -B ci/tests/source_checks.py accept --reports "$RUNNER_TEMP/source-check-shards" \
             --shards 8 --github-output "$GITHUB_OUTPUT" "${record[@]}"
-      # Publication only enables later reuse; it never decides this result.
+      - id: passed
+        run: echo 'passed=true' >> "$GITHUB_OUTPUT"
+
+  workflow-source-record:
+    # The only source-check job that can sign. It never executes the tested
+    # tree: that tree is checked out as data (Git identity only), and the record
+    # is re-derived from the shard reports by the protected publisher's code.
+    if: >-
+      always() && !cancelled() && !inputs.toolingOnly && !inputs.runtimeRecoveryOnly &&
+      !inputs.sdkRecoveryOnly && needs.plan.result == 'success' &&
+      needs.workflow-source-checks.result == 'success' &&
+      needs.workflow-source-checks.outputs.reused == 'false'
+    needs: [plan, workflow-source-checks]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - id: publication
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PUBLISHER_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          NATIVE_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          NATIVE_WORKFLOW_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          NATIVE_WORKFLOW_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          # Only an exact protected publisher of a same-repository PR or merge
+          # group signs a reusable record; every other fresh pass is not published.
+          publish=false
+          if [ "$PLAN_RESULT" = success ] && [[ "$PUBLISHER_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+             [ "$NATIVE_WORKFLOW_SHA" = "$PUBLISHER_SHA" ] &&
+             [ "$NATIVE_WORKFLOW_REPOSITORY" = codex-agent-labs/codex-agent ] &&
+             [ "$NATIVE_WORKFLOW_PATH" = .github/workflows/product-validation.yml ] &&
+             [ "$GITHUB_REPOSITORY" = codex-agent-labs/codex-agent ] &&
+             { [ "$GITHUB_EVENT_NAME" = merge_group ] || { [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$FORK" = false ]; }; }; then
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      # Publication only enables later reuse; it never decides any result.
+      - id: protected
+        if: steps.publication.outputs.publish == 'true'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          path: protected-source
+          fetch-depth: 0
+          persist-credentials: false
+      - id: tested
+        if: steps.protected.outcome == 'success'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tested-tree
+          persist-credentials: false
+      - id: shards
+        if: steps.tested.outcome == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-agent-source-check-shard-*-attempt-*
+          path: ${{ runner.temp }}/source-check-shards
+      - id: record
+        if: steps.shards.outcome == 'success'
+        continue-on-error: true
+        name: Re-derive the record with the protected source-check code
+        env:
+          PUBLISHER_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          NATIVE_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$NATIVE_WORKFLOW_SHA" = "$PUBLISHER_SHA"
+          test "$(git -C protected-source rev-parse 'HEAD^{commit}')" = "$NATIVE_WORKFLOW_SHA"
+          # Isolated mode: no tested-tree file is on sys.path or executed; the
+          # tested tree only supplies its Git commit, tree and clean status.
+          python3 -I -B protected-source/ci/tests/source_checks.py accept --source tested-tree \
+            --reports "$RUNNER_TEMP/source-check-shards" --shards 8 --publisher-sha "$PUBLISHER_SHA" \
+            --record "$RUNNER_TEMP/source-check-record/source-checks.json" --github-output "$GITHUB_OUTPUT"
       - id: attest
-        if: steps.mode.outputs.reused == 'false' && steps.accept.outputs.record == 'true'
+        if: steps.record.outcome == 'success' && steps.record.outputs.record == 'true'
         continue-on-error: true
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/source-check-record/source-checks.json
           create-storage-record: false
       - id: bundle
-        if: steps.mode.outputs.reused == 'false' && steps.accept.outputs.record == 'true' && steps.attest.outcome == 'success'
+        if: steps.record.outcome == 'success' && steps.record.outputs.record == 'true' && steps.attest.outcome == 'success'
         continue-on-error: true
         env:
           BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
         run: cp "$BUNDLE_PATH" "$RUNNER_TEMP/source-check-record/bundle.jsonl"
-      - if: steps.mode.outputs.reused == 'false' && steps.accept.outputs.record == 'true' && steps.bundle.outcome == 'success'
+      - if: steps.record.outcome == 'success' && steps.record.outputs.record == 'true' && steps.bundle.outcome == 'success'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.accept.outputs.artifact_name }}
+          name: ${{ steps.record.outputs.artifact_name }}
           path: |
             ${{ runner.temp }}/source-check-record/source-checks.json
             ${{ runner.temp }}/source-check-record/bundle.jsonl
@@ -460,8 +543,6 @@ jobs:
           overwrite: false
           compression-level: 0
           retention-days: 30
-      - id: passed
-        run: echo 'passed=true' >> "$GITHUB_OUTPUT"
 
   workflow-build-logic:
     if: >-

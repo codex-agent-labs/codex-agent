@@ -681,11 +681,11 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                         "fullReuseAcceptanceOnly: false"):
             self.assertIn(setting, caller)
         allowed = {'dispatch-authorization', 'workflow-lint', 'workflow-source-reuse', 'workflow-source-shards',
-                   'workflow-source-checks', 'workflow-build-logic',
+                   'workflow-source-checks', 'workflow-source-record', 'workflow-build-logic',
                    'plan', 'contract-validation',
                    'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(114, len(jobs))
+        self.assertEqual(115, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
@@ -708,12 +708,13 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn('python3 ci/tests/source_checks.py run-shard --shard "$SHARD" --shards 8', source_checks)
         self.assertIn('"$HOME/go/bin/actionlint"', source_checks)
         self.assertIn('python3 -B .github/actions/run-ci-lane/build-logic-tests.py', build_checks)
-        for name in ('workflow-source-reuse', 'workflow-source-shards', 'workflow-source-checks'):
+        for name in ('workflow-source-reuse', 'workflow-source-shards', 'workflow-source-checks',
+                     'workflow-source-record'):
             self.assertNotIn('gradlew', self.job(name))
         self.assertNotIn('unittest discover', build_checks)
         self.assertNotIn('source_checks.py', build_checks)
         for name in ('workflow-lint', 'workflow-source-reuse', 'workflow-source-shards',
-                     'workflow-source-checks', 'workflow-build-logic'):
+                     'workflow-source-checks', 'workflow-source-record', 'workflow-build-logic'):
             job = self.job(name)
             self.assertNotIn('fullReuseAcceptanceOnly', job)
             for forbidden in ('ciProductPhase', 'releaseToolingJar', 'sdk-native-worker', 'tooling-attestation@'):
@@ -932,6 +933,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertEqual(['plan'], parents('workflow-source-reuse'))
         self.assertEqual(['plan', 'workflow-source-reuse'], parents('workflow-source-shards'))
         self.assertEqual(['plan', 'workflow-source-reuse', 'workflow-source-shards'], parents('workflow-source-checks'))
+        self.assertEqual(['plan', 'workflow-source-checks'], parents('workflow-source-record'))
         self.assertEqual({'plan', 'contract-validation'}, set(parents('workflow-build-logic')))
         self.assertEqual({'plan', 'recovery-controls', 'workflow-source-checks', 'workflow-build-logic'},
                          set(parents('workflow-lint')))
@@ -939,6 +941,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         # fresh or attested source-check pass; the merge gate also requires it directly.
         source_jobs = {'workflow-source-reuse', 'workflow-source-shards', 'workflow-source-checks'}
         self.assertLessEqual(source_jobs, set(parents('merge-gate')))
+        # Publication only enables later reuse: no gate or consumer waits on the signer.
+        self.assertFalse([name for name in jobs if 'workflow-source-record' in parents(name)])
+        self.assertNotIn('needs.workflow-source-record', self.source)
         for name in ('sdk-parity', 'merge-gate'):
             self.assertIn('workflow-lint', parents(name))
             self.assertIn('sdk-completion-full-reuse', parents(name))
