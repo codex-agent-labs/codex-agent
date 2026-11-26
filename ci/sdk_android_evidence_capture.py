@@ -1823,7 +1823,8 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         raw = read_regular_file_bytes(path, reject_symlink_parents=True)
         lane = load_json_bytes(raw).get("lane")
         value = validate_receipt(path, plan, path.parent, allow_compatible=not (android and lane == "android"),
-            **({"categories": ("test", "metadata")} if android and lane == "android" else {}))
+            **({"categories": ("test", "metadata")} if android and lane == "android" else
+               {"categories": ("production",)} if apple_reviewed and lane == "ios-package" else {}))
         if lane in originals:
             raise ValueError("Duplicate current Android gate lane receipt")
         if android and lane == "android":
@@ -1848,7 +1849,12 @@ def aggregate_retained_validation(plan, receipts, destination, *, repository_roo
         reviewed_lanes = set(contribution["apple"]["reviewedChecks"]["selectedLanes"])
         expected -= reviewed_lanes & {"ios-privacy-metrics", "ios-kotlin-tests", "ios-native-tests",
                                      "ios-rust-device", "ios-rust-simulator"}
-    # ios-package remains required: local reviewed controls do not pass the root Swift URL/checksum gate.
+    # ios-package remains required. With reviewed Apple checks its hosted receipt must cover build,
+    # and the reviewed public Swift manifest (URL/checksum against the authenticated package
+    # original) must pass in place of the lane's metadata action.
+    if (apple_reviewed and "ios-package" in expected
+            and contribution["apple"]["reviewedChecks"]["publicManifest"]["result"] != "metadata-passed"):
+        raise ValueError("Reviewed Apple ios-package metadata requires the passed public Swift manifest")
     if auxiliary_contracts:
         auxiliary = originals.get("contracts")
         if ("contracts" in expected or auxiliary is None

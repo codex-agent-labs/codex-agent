@@ -33,6 +33,11 @@ inputs:
   contract-tooling-only:
     description: Build only release tooling when authenticated Contract phases are already available.
     default: "false"
+  build-only:
+    description: >-
+      Execute and record only the build action of the retained ios-package lane; its receipt
+      declares build-only coverage and the reviewed Apple contribution owns the metadata duty.
+    default: "false"
   reuse-only:
     description: Check and transport exact full or production reuse without executing the lane.
     default: "false"
@@ -81,9 +86,21 @@ runs:
         TOOLING_ONLY: ${{ inputs.contract-tooling-only }}
         TOOLING_PURPOSE: ${{ inputs.tooling-purpose }}
         ANDROID_INSTALLED_CONSUMER: ${{ inputs.android-installed-consumer }}
+        BUILD_ONLY: ${{ inputs.build-only }}
       shell: bash
       run: |
         printf 'PYTHONDONTWRITEBYTECODE=1\n' >> "$GITHUB_ENV"
+        case "$BUILD_ONLY" in
+          false) ;;
+          true)
+            test "$LANE" = ios-package
+            test "$REUSE_ONLY" != true
+            test "$REUSE_DISABLED" != true
+            test "$TOOLING_ONLY" != true
+            test "$PREPARED_PRODUCTION" != true
+            ;;
+          *) echo "Unsupported build-only selection" >&2; exit 1 ;;
+        esac
         case "${ANDROID_INSTALLED_CONSUMER-false}" in
           false) ;;
           true) test "$LANE" = consumer-android ;;
@@ -599,7 +616,8 @@ runs:
           --stacktrace
     - id: execution
       if: >-
-        inputs.contract-tooling-only != 'true' && inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
+        inputs.contract-tooling-only != 'true' && inputs.build-only != 'true' &&
+        inputs.reuse-only != 'true' && steps.reuse.outputs.reused != 'true' &&
         !(inputs.lane == 'consumer-android' && inputs.android-installed-consumer == 'true' && steps.production-execution.outcome == 'success') &&
         steps.production-execution.outcome != 'failure' &&
         steps.portable-runtime-products.outcome != 'failure' &&
@@ -736,7 +754,7 @@ runs:
           restored=(--restored-production build/ci/reuse/production)
         fi
         forced=()
-        if [ "${{ inputs.contract-tooling-only }}" = true ]; then
+        if [ "${{ inputs.contract-tooling-only }}" = true ] || [ "${{ inputs.build-only }}" = true ]; then
           forced=(--production-only)
         elif [ "$PREPARED_PRODUCTION" = true ] && [ "${{ steps.selection.outputs.build }}" != true ]; then
           forced=(--force-production)
