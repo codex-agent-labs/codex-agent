@@ -1003,7 +1003,7 @@ class RetainedAndroidConsumerRoutingTest(unittest.TestCase):
         action = (root / ".github/actions/run-ci-lane/action.yml").read_text()
         execution = action.split("    - id: execution\n", 1)[1].split("      continue-on-error:", 1)[0]
         condition = " ".join(execution.split("if: >-", 1)[1].split())
-        values = {"inputs.contract-tooling-only": "false", "inputs.reuse-only": "false",
+        values = {"inputs.contract-tooling-only": "false", "inputs.build-only": "false", "inputs.reuse-only": "false",
                   "steps.reuse.outputs.reused": "false", "steps.portable-runtime-products.outcome": "skipped",
                   "inputs.force-build": "false", "steps.selection.outputs.test": "true",
                   "steps.selection.outputs.metadata": "false", "steps.selection.outputs.build": "true",

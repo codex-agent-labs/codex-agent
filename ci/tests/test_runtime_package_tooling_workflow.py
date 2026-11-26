@@ -77,10 +77,14 @@ class RuntimePackageToolingWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             base = {'PATH': os.environ['PATH'], 'GITHUB_ENV': str(Path(temporary) / 'env'),
                     'TOOLING_ONLY': 'true', 'LANE': 'contracts', 'REUSE_DISABLED': 'true',
-                    'REUSE_ONLY': 'false', 'PREPARED_PRODUCTION': 'false', 'PRODUCER_IDENTITIES': ''}
+                    'REUSE_ONLY': 'false', 'PREPARED_PRODUCTION': 'false', 'PRODUCER_IDENTITIES': '',
+                    'BUILD_ONLY': 'false'}
             for purpose, overrides, passes in [('full', {}, True), ('runtime-package', {}, True),
                     ('runtime-package', {'TOOLING_ONLY': 'false'}, False),
-                    ('runtime-package', {'LANE': 'desktop-linux-x64'}, False), ('unknown', {}, False)]:
+                    ('runtime-package', {'LANE': 'desktop-linux-x64'}, False), ('unknown', {}, False),
+                    # build-only is confined to the hosted ios-package lane and never combines with tooling.
+                    ('full', {'BUILD_ONLY': 'true'}, False), ('full', {'BUILD_ONLY': ''}, False),
+                    ('full', {'BUILD_ONLY': 'true', 'LANE': 'ios-package'}, False)]:
                 with self.subTest(purpose=purpose, overrides=overrides):
                     result = subprocess.run(['bash', '-e', '-c', code], env={**base, 'TOOLING_PURPOSE': purpose, **overrides},
                                             capture_output=True, text=True, check=False)
