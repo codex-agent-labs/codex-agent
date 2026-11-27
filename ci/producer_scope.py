@@ -137,6 +137,11 @@ def association_reads(run: Mapping[str, Any], commit: Mapping[str, Any], *, pull
     if not isinstance(parents, list) or len(parents) != 2:
         raise ScopeRejected("association-disagrees", "Tested commit is not a two-parent PR merge")
     base = _oid(_sha(parents[0], "parent"), "Tested merge base")
+    if head == commit.get("sha"):
+        # Same head choice as _live_binding: read ancestry for the head it binds.
+        entries = [value for value in run.get("pull_requests") or ()
+                   if isinstance(value, dict) and value.get("number") == number]
+        head = _oid(_sha(entries[0].get("head"), "head") if len(entries) == 1 else None, "Live pull-request head")
     pull = fetch(f"pulls/{number}")
     if not isinstance(pull, dict):
         raise ScopeRejected("malformed", "Pull request response is not an object")
