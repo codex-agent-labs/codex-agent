@@ -55,6 +55,10 @@ class CompletedOwningInputComparisonTest(unittest.TestCase):
                 qualification._changed_inventory_paths({path: "same"}, {path: "same"})
 
 
+PR_31_RUNNER = {"GITHUB_REPOSITORY": "codex-agent-labs/codex-agent", "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REF": "refs/pull/31/merge"}
+
+
 class CompletedFrozenReuseTest(unittest.TestCase):
     def contract_stage_fixture(self, root):
         """Real deterministic objects inside a small synthetic qualified upload."""
@@ -423,6 +427,8 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 runtime_workflow.continuation_from_inspection(inspected, root / 'changed', completed_frozen=cap)
 
     def setUp(self):
+        # Completed reuse requests carry the consumer's admitted PR scope (9.5.0).
+        self.enterContext(patch.dict(os.environ, PR_31_RUNNER))
         self.spec = load_canonical_json_bytes((Path(__file__).parent / "data/hosted-frozen-reuse.json").read_bytes())
         self.spec["request"]["repositoryRevision"] = "d" * 40
         self.receipts = {}
@@ -921,6 +927,62 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary, self.assertRaises(ValueError):
                 self.fetched(Path(temporary).resolve(), proof={**self.proof, field: value})
 
+    @staticmethod
+    def directory(path):
+        path.mkdir()
+        return path
+
+    def test_request_pull_request_is_the_consumer_scope_not_the_frozen_spec(self):
+        self.assertEqual(31, self.spec["request"]["pullRequest"])
+        pr = lambda number: {**PR_31_RUNNER, "GITHUB_REF": f"refs/pull/{number}/merge"}
+        queue = {**PR_31_RUNNER, "GITHUB_EVENT_NAME": "merge_group",
+                 "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-37-" + "f" * 40}
+        request = lambda number: {**copy.deepcopy(self.spec["request"]), "pullRequest": number}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(self.directory(root / "pr"))
+            with patch.dict(os.environ, pr(37), clear=True):
+                # A PR-37 consumer of the RA-pinned PR-31 record is accepted.
+                self.assertEqual(50, len(cap.check_request(request(37))))
+                # The request must name the consumer's scope, not the spec's or another.
+                for number in (31, 38, None):
+                    with self.subTest(number=number), self.assertRaisesRegex(
+                            qualification.QualificationIncompatible, r"admitted scope \[scope:consumer\]"):
+                        cap.check_request(request(number))
+                # Every other field stays exact under the new consumer.
+                for field, value in (("repository", "fork-owner/codex-agent"),
+                                     ("versions", {**self.spec["request"]["versions"], "sdk": "9.9.9"}),
+                                     ("catalogs", {**self.spec["request"]["catalogs"], "stable": [{"new": 1}]}),
+                                     ("repositoryRevision", "e" * 40)):
+                    with self.subTest(field=field), self.assertRaises(qualification.QualificationIncompatible):
+                        cap.check_request({**request(37), field: value})
+                changed = request(37)
+                changed["availableObjects"][0]["objectSha256"] = "sha256:" + "0" * 64
+                with self.assertRaisesRegex(qualification.QualificationIncompatible, "exact frozen candidates"):
+                    cap.check_request(changed)
+            # A merge_group pr-37 consumer is accepted, bound to check_consumer.
+            queued, _ = self.fetched(self.directory(root / "queue"))
+            receipt = next(iter(self.receipts.values()))
+            merge_group = {"kind": "ci", "producer": {**receipt["producer"], "repository": qualification.REPOSITORY,
+                                                      "event": "merge_group", "pullRequest": None}}
+            with patch.dict(os.environ, queue, clear=True):
+                queued.check_consumer(merge_group)
+                self.assertEqual(50, len(queued.check_request(request(37))))
+                with self.assertRaisesRegex(qualification.QualificationIncompatible, "scope:consumer"):
+                    queued.check_request(request(31))
+            # Admitted scope disagreeing with the runner rejects; with no runner
+            # scope the admitted one binds.
+            with patch.dict(os.environ, pr(38), clear=True), \
+                    self.assertRaisesRegex(qualification.QualificationIncompatible, "differs from its runner scope"):
+                queued.check_request(request(37))
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(50, len(queued.check_request(request(37))))
+            # No admitted and no runner scope: rejected.
+            missing, _ = self.fetched(self.directory(root / "missing"))
+            with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
+                    qualification.QualificationIncompatible, "requires the consumer's admitted scope"):
+                missing.check_request(request(31))
+
     def test_current_candidates_catalogs_and_receipts_are_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
             cap, _ = self.fetched(Path(temporary).resolve())
@@ -969,6 +1031,11 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 restore.verify_carrier(root / "carrier", (instance,), consumer, object_root=root)
             # Owner-pinned carriers admit any same-repository PR or merge-queue
             # CI consumer (9.5.0 T4c); foreign repositories and other events still reject.
+            # One capability serves one consumer: its admitted scope cannot change.
+            with self.assertRaisesRegex(qualification.QualificationIncompatible, "changed its scope"):
+                cap.check_consumer({"kind": "ci", "producer": {**producer, "pullRequest": 32}})
+            (root / "fresh-consumer").mkdir()
+            cap, _ = self.fetched(root / "fresh-consumer")
             cap.check_consumer({"kind": "ci", "producer": {**producer, "pullRequest": 32}})
             queue = {"GITHUB_REPOSITORY": "codex-agent-labs/codex-agent", "GITHUB_EVENT_NAME": "merge_group",
                      "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-32-" + "f" * 40}

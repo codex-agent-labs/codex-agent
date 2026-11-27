@@ -844,7 +844,7 @@ class CompletedFrozenReuse:
     private product state. Bodies remain digest-checked when actually consumed.
     Only fetch_completed_frozen can create it after fresh native authentication.
     """
-    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible", "_sdk_context", "_checkpoint")
+    __slots__ = ("_spec", "_receipts", "_verified", "_revision", "_originals", "_files", "_bodies", "_sdk", "_contract", "_body_cache", "_eligible", "_sdk_context", "_checkpoint", "_consumer_scope")
 
     def __init__(self, spec, receipts, verified, *, revision, originals=(), sdk=None, body_cache=None,
                  _checkpoint=None):
@@ -862,6 +862,7 @@ class CompletedFrozenReuse:
         self._verified = verified
         self._revision = revision
         self._eligible = None
+        self._consumer_scope = None
         self._sdk = None if sdk is None else canonical_json_bytes(sdk)
         self._sdk_context = None
         extension = sdk.get("extension") if sdk is not None else None
@@ -909,9 +910,14 @@ class CompletedFrozenReuse:
         spec, phases = self._values()
         if request.get("repositoryRevision") != self._revision:
             raise QualificationIncompatible("Completed reuse request differs from the checked Git revision")
-        for field in ("repository", "pullRequest", "versions", "catalogs"):
+        for field in ("repository", "versions", "catalogs"):
             if request.get(field) != spec["request"][field]:
                 raise QualificationIncompatible(f"Completed reuse requires unchanged {field}")
+        # The owner-pinned (T4c) record keeps its issuer PR; the request's PR is
+        # the consumer's own admitted scope N, never the frozen spec's.
+        if request.get("pullRequest") != self._admitted_scope():
+            raise QualificationIncompatible(
+                "Completed reuse request pullRequest differs from the consumer's admitted scope [scope:consumer]")
         if request.get("sdkRuntimeSource") is not None:
             raise QualificationIncompatible("Frozen reuse cannot elect an external SDK Runtime")
         from products.reuse import _dependency_closure
@@ -969,6 +975,29 @@ class CompletedFrozenReuse:
                 fresh.add(instance)
         return frozenset(fresh)
 
+    def _admitted_scope(self):
+        """The consumer's PR scope N: PR N for pull_request, ``pr-N`` for merge_group.
+
+        The scope ``check_consumer`` admitted when it already ran (it must then
+        agree with the runner environment, if that carries a scope); otherwise
+        the runner environment's scope. Missing or disagreeing scope raises
+        ``QualificationIncompatible``.
+        """
+        import os
+        try:
+            runner = producer_scope.consumer_scope(os.environ)["pullRequest"]
+        except producer_scope.ScopeRejected as error:
+            runner, missing = None, error
+        if self._consumer_scope is None:
+            if runner is None:
+                raise QualificationIncompatible(
+                    f"Completed reuse requires the consumer's admitted scope: {missing}") from None
+            return runner
+        if runner is not None and runner != self._consumer_scope:
+            raise QualificationIncompatible(
+                "Completed reuse consumer differs from its runner scope [scope:consumer]")
+        return self._consumer_scope
+
     def check_consumer(self, consumer):
         self._values()
         if self._checkpoint is not None:
@@ -977,9 +1006,12 @@ class CompletedFrozenReuse:
         # CI consumer; consumer code is bound to the approved verifier separately.
         import os
         try:
-            producer_scope.require_ci_consumer(consumer, os.environ)
+            admitted = producer_scope.require_ci_consumer(consumer, os.environ)
         except producer_scope.ScopeRejected as error:
             raise QualificationIncompatible(str(error)) from None
+        if self._consumer_scope is not None and self._consumer_scope != admitted["pullRequest"]:
+            raise QualificationIncompatible("Completed reuse consumer changed its scope [scope:consumer]")
+        self._consumer_scope = admitted["pullRequest"]
 
     def deferred_objects(self, *, include_contract=False):
         """Body identities that routing may leave at their immutable original sources."""
