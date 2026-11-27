@@ -490,6 +490,17 @@ class SdkWorkflowTest(unittest.TestCase):
                         repository_root=self.repository, environ={}, sdk_validation_tooling=tooling)
                     self.assertEqual(14, len(list((destination / "m11").iterdir())))
                     self.assertTrue((destination / "sdk-parity.json").is_file())
+                    # Timing is job-log only: the published evidence inventory is unchanged.
+                    self.assertEqual({"consumer.log", "m11", "original-phase-identities.json", "sdk-parity.json"},
+                                     {path.name for path in destination.iterdir()})
+                    timings = [json.loads(line.removeprefix("parity-timing ")) for line in
+                               diagnostic.getvalue().splitlines() if line.startswith("parity-timing ")]
+                    self.assertEqual(5, sum(row["step"] == "verify-native" for row in timings))
+                    self.assertEqual(sorted(workflow.NATIVE_BINDINGS),
+                                     sorted(row["language"] for row in timings if row["step"] == "verify-native"))
+                    self.assertEqual([":codex-agent-core:verifyJavaBindingParity", ":verifyImportedSdkBindingParity"],
+                                     [row["task"] for row in timings if row["step"] == "gradle"])
+                    self.assertTrue(all(type(row["elapsedSeconds"]) in {int, float} for row in timings))
                 authenticate.assert_called_once()
                 self.assertEqual(self.revision, tool_auth.call_args.kwargs["policy_revision"])
                 authorizations = [call for call in capture.call_args_list if
@@ -531,6 +542,37 @@ class SdkWorkflowTest(unittest.TestCase):
                     repository_root=self.repository, environ={})
             publish.assert_not_called()
             self.assertFalse(destination.exists())
+
+    def test_java_parity_reports_timing_to_the_job_log_without_new_evidence(self):
+        @contextmanager
+        def originals(*args, **kwargs):
+            yield self.root / "synthetic-verified-input-lifetime"
+
+        def consumer(command, **kwargs):
+            timing = command[command.index("--init-script") + 1]
+            self.assertIn("BuildEventsListenerRegistry", Path(timing).read_text())
+            self.assertNotIn("buildCache", Path(timing).read_text())
+            self.assertNotIn("--parallel", command)
+            output = next(value.split("=", 1)[1] for value in command
+                if value.startswith("-DcodexAgent.importedJavaParityOutput="))
+            Path(output).write_text('{"synthetic":"consumer result is not authority"}\n')
+            kwargs["stdout"].write(b"> Task :codex-agent-core:verifyJavaBindingParity\n"
+                                   b"parity-task-timing :codex-agent-core:verifyJavaBindingParity 1.250 executed\n")
+
+        destination = self.repository / "timed-java-parity"
+        self.discovery.mkdir(parents=True, exist_ok=True)
+        self.state.mkdir(parents=True, exist_ok=True)
+        diagnostic = io.StringIO()
+        with patch.object(workflow, "verified_java_parity_inputs", side_effect=originals), \
+                patch.object(workflow.subprocess, "run", side_effect=consumer), redirect_stderr(diagnostic):
+            workflow.execute_java_parity(self.plan, self.discovery, self.state, destination,
+                repository_root=self.repository, environ={})
+        self.assertEqual({"consumer.log", "java-parity.json"}, {path.name for path in destination.iterdir()})
+        lines = diagnostic.getvalue().splitlines()
+        self.assertIn("parity-task-timing :codex-agent-core:verifyJavaBindingParity 1.250 executed", lines)
+        timing, = [json.loads(line.removeprefix("parity-timing ")) for line in lines if line.startswith("parity-timing ")]
+        self.assertEqual(("gradle", "java", ":codex-agent-core:verifyJavaBindingParity"),
+                         (timing["step"], timing["language"], timing["task"]))
 
     def test_java_parity_authenticates_before_import_and_rejects_missing_or_unfinished_products(self):
         identities = (
