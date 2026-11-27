@@ -174,7 +174,7 @@ jobs:
           printf 'root_fingerprint=%s\n' "$(jq -er '.rootFingerprint' "$RUNNER_TEMP/runtime-root-result.json")" >> "$GITHUB_OUTPUT"
       - name: Preserve detached root delegation
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -304,7 +304,7 @@ jobs:
           PY
       - name: Preserve exact captured original transport
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -365,13 +365,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Download exact same-run root delegation
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.delegate.outputs.artifact_id }}
           merge-multiple: true
           path: delegation
       - name: Download exact same-run captured original
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.capture.outputs.artifact_id }}
           merge-multiple: true
@@ -422,7 +422,7 @@ jobs:
           test "$(jq -er '.delegationInventorySha256' "$RUNNER_TEMP/runtime-library-result.json")" = "$DELEGATION_INVENTORY_SHA256"
       - name: Preserve exact external five-library authorization evidence
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -486,7 +486,7 @@ jobs:
       - name: Preserve unique immutable inputs once
         if: steps.intake.outputs.artifact_id == ''
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -498,7 +498,7 @@ jobs:
 
       - name: Preserve small imported verification timings and failure diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: ignore
           overwrite: false
@@ -545,7 +545,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Receive the authenticated original unique object capture
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.capture-imported.outputs.artifact_id }}
           run-id: ${{ needs.capture-imported.outputs.artifact_run_id }}
@@ -586,7 +586,7 @@ jobs:
             --release-private-key "$RUNNER_TEMP/imported-product-key" > "$RUNNER_TEMP/imported-library-result.json" 2> "$RUNNER_TEMP/imported-library-error.txt"
       - name: Preserve real exact-library authorizations and unchanged public delegation
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -598,7 +598,7 @@ jobs:
 
       - name: Preserve small imported verification timings and failure diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: ignore
           overwrite: false

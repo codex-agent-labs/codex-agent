@@ -107,7 +107,7 @@ jobs:
           --configuration-cache --configuration-cache-problems=fail --no-build-cache --info --stacktrace
       - name: Preserve original nested exceptions even on failure
         if: always() && inputs.diagnosticFixture != 'csharp-package-determinism'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-logic-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: gradle/build-logic/build/test-results/test/*.xml
@@ -116,11 +116,11 @@ jobs:
           overwrite: false
 
       - if: inputs.diagnosticFixture == 'csharp-package-determinism'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12.10'
       - if: inputs.diagnosticFixture == 'csharp-package-determinism'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/codex-agent-dotnet-8.0.419
         with:
@@ -168,7 +168,7 @@ jobs:
               raise SystemExit(1)
           PYCODE
       - if: always() && inputs.diagnosticFixture == 'csharp-package-determinism'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: csharp-package-determinism-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

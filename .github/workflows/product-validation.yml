@@ -343,7 +343,7 @@ jobs:
           if [ "$SHARD" = 0 ]; then lint=(--actionlint "$HOME/go/bin/actionlint"); fi
           python3 ci/tests/source_checks.py run-shard --shard "$SHARD" --shards 8 \
             --report "$RUNNER_TEMP/source-check-shard/shard-$SHARD.json" "${lint[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-source-check-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/source-check-shard/shard-${{ matrix.shard }}.json
@@ -393,7 +393,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - if: steps.mode.outputs.reused == 'false'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: codex-agent-source-check-shard-*-attempt-*
           path: ${{ runner.temp }}/source-check-shards
@@ -498,7 +498,7 @@ jobs:
       - id: shards
         if: steps.tested.outcome == 'success'
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: codex-agent-source-check-shard-*-attempt-*
           path: ${{ runner.temp }}/source-check-shards
@@ -533,7 +533,7 @@ jobs:
         run: cp "$BUNDLE_PATH" "$RUNNER_TEMP/source-check-record/bundle.jsonl"
       - if: steps.record.outcome == 'success' && steps.record.outputs.record == 'true' && steps.bundle.outcome == 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.record.outputs.artifact_name }}
           path: |
@@ -590,7 +590,7 @@ jobs:
           --policy-revision "$TEST_POLICY_REVISION"
       - name: Preserve build-logic test diagnostics
         if: always() && steps.build-logic.outcome == 'failure' && hashFiles('gradle/build-logic/build/test-results/test/TEST-*.xml') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-build-logic-test-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: gradle/build-logic/build/test-results/test/TEST-*.xml
@@ -807,7 +807,7 @@ jobs:
               github_output(Path(os.environ['GITHUB_OUTPUT']), values)
           PYTHON
       - id: upload_plan_control
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -816,7 +816,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - id: upload_plan
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -1349,7 +1349,7 @@ jobs:
           PYTHON
       - id: upload_native_resume
         if: steps.product-reuse.outputs.native_resume_ready == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -1359,7 +1359,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - id: upload_plan_control
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -1368,7 +1368,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - id: upload_plan
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -1377,7 +1377,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: steps.product-reuse.outputs.full_reuse == 'true' && steps.product-reuse.outputs.product_reuse_reason == 'verified-full-reuse'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -1606,7 +1606,7 @@ jobs:
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
           checkpoint-owner: ${{ inputs.sdkCheckpoints && 'true' || 'false' }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.plan.outputs.native_sdk_direct != 'true'
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
@@ -1748,7 +1748,7 @@ jobs:
       - name: Preserve the resumed state and all original transport evidence
         id: upload_resume
         if: needs.plan.outputs.native_sdk_direct != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -1883,7 +1883,7 @@ jobs:
             --sdk-original-workflow-sha "${{ needs.plan.outputs.publisher_sha }}" \
             --expected-build-key "$BUILD_KEY" --destination build/runtime-supervisor
       - id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-supervisor-linux-arm64-${{ steps.execute.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}
           path: build/runtime-supervisor/supervisor
@@ -1893,7 +1893,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-supervisor-diagnostics-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: |
@@ -1979,7 +1979,7 @@ jobs:
           supervisor-id: ${{ needs.runtime-linux-arm64-supervisor.outputs.artifact_id }}
           supervisor-sha256: ${{ needs.runtime-linux-arm64-supervisor.outputs.artifact_digest }}
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-worker
@@ -1989,7 +1989,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: |
@@ -2138,7 +2138,7 @@ jobs:
           build-key: ${{ matrix.buildKey }}
           revision: ${{ needs.plan.outputs.validation_commit }}
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-worker
@@ -2148,7 +2148,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: |
@@ -2297,7 +2297,7 @@ jobs:
           build-key: ${{ matrix.buildKey }}
           revision: ${{ needs.plan.outputs.validation_commit }}
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-worker
@@ -2307,7 +2307,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: |
@@ -2456,7 +2456,7 @@ jobs:
           build-key: ${{ matrix.buildKey }}
           revision: ${{ needs.plan.outputs.validation_commit }}
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-worker
@@ -2466,7 +2466,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-diagnostics-${{ matrix.component }}-${{ matrix.phase }}-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: |
@@ -2689,7 +2689,7 @@ jobs:
             --destination build/runtime-retained-native --github-output "$GITHUB_OUTPUT"
       - id: retained-upload
         if: steps.retained.outputs.native_attestation_matrix == '{"include":[]}'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-retained-native-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-retained-native
@@ -2737,7 +2737,7 @@ jobs:
         with:
           repository-root: ${{ github.workspace }}/trusted-source
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/runtime-preparation-plan
@@ -2760,7 +2760,7 @@ jobs:
           tooling-artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           tooling-artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           tooling-transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -2812,7 +2812,7 @@ jobs:
         with:
           repository-root: ${{ github.workspace }}/trusted-source
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/runtime-attestation-plan
@@ -2858,7 +2858,7 @@ jobs:
             --state-wave "$STATE_WAVE" --trusted-source-sha "$TRUSTED_SOURCE_SHA" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" --validation-tree "$VALIDATION_TREE"
       - name: Preserve the exact native handoff and external original evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -2933,13 +2933,13 @@ jobs:
           target: aggregate
           build-key: ${{ needs.runtime-continuation.outputs.aggregate_key }}
       - if: needs.runtime-native-attestation.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: codex-agent-runtime-release-handoff-*-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-native-handoffs
           merge-multiple: false
       - if: needs.runtime-continuation.outputs.retained_native_artifact_id != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.runtime-continuation.outputs.retained_native_artifact_id }}
           path: build/runtime-retained-native
@@ -2994,7 +2994,7 @@ jobs:
             --expected-build-key "$BUILD_KEY" --variant-trust-root build/runtime-variant-trust \
             --destination build/runtime-aggregate-worker
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-runtime-worker-runtime-aggregate-metadata-aggregate-${{ steps.identity.outputs.key_hex }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/runtime-aggregate-worker
@@ -3224,7 +3224,7 @@ jobs:
         with:
           repository-root: ${{ github.workspace }}/trusted-source
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/runtime-preparation-plan
@@ -3247,7 +3247,7 @@ jobs:
           tooling-artifact-id: ${{ needs.contract-validation.outputs.tooling_artifact_id }}
           tooling-artifact-sha256: ${{ needs.contract-validation.outputs.tooling_artifact_sha256 }}
           tooling-transport-producer: ${{ needs.contract-validation.outputs.tooling_transport_producer }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -3300,19 +3300,19 @@ jobs:
         with:
           repository-root: ${{ github.workspace }}/trusted-source
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/runtime-aggregate-attestation-plan
           merge-multiple: true
       - if: needs.runtime-native-attestation.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: codex-agent-runtime-release-handoff-*-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-aggregate-native-handoffs
           merge-multiple: false
       - if: needs.runtime-continuation.outputs.retained_native_artifact_id != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.runtime-continuation.outputs.retained_native_artifact_id }}
           path: ${{ runner.temp }}/runtime-aggregate-retained-native
@@ -3374,7 +3374,7 @@ jobs:
             "$@"
       - name: Preserve the exact aggregate handoff and external original evidence
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -3480,7 +3480,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/runtime-plan
@@ -3560,7 +3560,7 @@ jobs:
               --keys-directory "$GITHUB_WORKSPACE/gradle/release/keys" ${fresh[@]+"${fresh[@]}"} ${tooling[@]+"${tooling[@]}"}
             printf 'input_root=%s\n' "$destination" >> "$GITHUB_OUTPUT"
       - id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-sdk-inputs-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: ${{ steps.staged.outputs.input_root }}
@@ -3582,7 +3582,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           packages: platform-tools
       - id: lane
@@ -3598,7 +3598,7 @@ jobs:
           metadata: ${{ needs.plan.outputs.lane_android_metadata }}
 
       - if: needs.plan.outputs.retained_android == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.plan.outputs.plan_artifact }}
           path: build/ci/android-source-plan
@@ -3615,7 +3615,7 @@ jobs:
                         Path(os.environ['RUNNER_TEMP']) / 'android-source-checks')
           PYCODE
       - if: needs.plan.outputs.retained_android == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-ci-android-source-checks-${{ needs.plan.outputs.validation_tree }}
           path: ${{ runner.temp }}/android-source-checks
@@ -5034,7 +5034,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
       - if: needs.sdk-ios-package.result != 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/failure-plan
@@ -5058,7 +5058,7 @@ jobs:
           github_output(Path(os.environ['GITHUB_OUTPUT']), {'wave_failed': failed})
           PYTHON
       - if: steps.failed.outputs.wave_failed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-sdk-wave-5-failure-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/failed-package.json
@@ -5435,7 +5435,7 @@ jobs:
           PY
       - id: retained-plan
         if: steps.retained-candidate.outputs.candidate == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || needs.plan.outputs.plan_id }}
           path: build/sdk-native-retained-plan
@@ -5524,7 +5524,7 @@ jobs:
           dart-pub-cache: ${{ steps.dart-cache.outputs.pub-cache }}
       - name: Retain caller Dart cache diagnostics even on failure
         if: always() && steps.dart-cache.outputs.diagnostics != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-sdk-dart-cache-${{ matrix.target }}-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: ${{ steps.dart-cache.outputs.diagnostics }}
@@ -5958,7 +5958,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-apple-plan
@@ -6031,7 +6031,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/failure-plan
@@ -6053,7 +6053,7 @@ jobs:
               trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'], token=os.environ['GITHUB_TOKEN'])
           github_output(Path(os.environ['GITHUB_OUTPUT']), outcome)
           PYTHON
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-sdk-wave-9-outcomes-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/validation-outcomes.json
@@ -6109,7 +6109,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-apple-plan
@@ -6163,7 +6163,7 @@ jobs:
           path: candidate-source
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-apple-plan
@@ -6226,7 +6226,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-apple-plan
@@ -6387,7 +6387,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-apple-plan
@@ -6456,7 +6456,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-apple-plan
@@ -6863,11 +6863,11 @@ jobs:
           build-key: ${{ matrix.buildKey }}
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
       - name: Restore dependency-only Gradle cache for test consumers
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches/modules-2
           key: gradle-main-dependencies-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.gradle.kts', 'gradle/**/*.toml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties') }}
-      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           packages: platform-tools
       - name: Compile only APK consumers of authenticated Android artifacts
@@ -6884,7 +6884,7 @@ jobs:
                   {name: selected[name] for name in POLICY_PROPERTIES}, root / 'build/sdk-android-apk')
           PY
       - id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-sdk-android-apk-${{ needs.plan.outputs.validation_tree }}
           path: build/sdk-android-apk
@@ -6894,7 +6894,7 @@ jobs:
           retention-days: 90
       - name: Preserve test-consumer execution diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdk-android-apk-diagnostics-${{ github.run_attempt }}
           path: |
@@ -7098,7 +7098,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.plan.outputs.tooling_required == 'true'
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -7110,7 +7110,7 @@ jobs:
         with:
           plan-path: ${{ runner.temp }}/sdk-apple-plan/impact-plan.json
           tooling-policy: ${{ steps.tooling.outputs.tooling-policy }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.tooling.outputs.plan-directory == ''
         with:
           artifact-ids: ${{ env.CODEX_AGENT_PLAN_CONTROL_ID || needs.plan.outputs.plan_id }}
@@ -7194,7 +7194,7 @@ jobs:
           PYCODE
       - id: validation-contributions-upload
         if: (needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true') && steps.validation-contributions.outputs.sha256 != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/validation-contributions/canonical-contributions.json
@@ -7269,7 +7269,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
           path: ${{ runner.temp }}/sdk-partial-plan
@@ -7391,7 +7391,7 @@ jobs:
           [[ "$TREE" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
           echo "name=codex-agent-sdk-partial-catalog-v1-pull-request-$PR-$TREE-attempt-$ATTEMPT" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.catalog.outputs.phaseCount != '0'
         with:
           name: ${{ steps.identity.outputs.name }}
@@ -7458,7 +7458,7 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ needs.plan.outputs.validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.plan.outputs.tooling_required == 'true'
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_id }}
@@ -7528,7 +7528,7 @@ jobs:
           [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
           echo "name=codex-agent-product-catalog-v1-pull-request-$PR-$TREE-attempt-$ATTEMPT" >> "$GITHUB_OUTPUT"
       - id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.identity.outputs.name }}
           path: build/ci/sdk-catalog
@@ -7802,17 +7802,17 @@ jobs:
           authority-read-token: ${{ secrets.REUSE_AUTHORITY_READ_TOKEN }}
           installed-consumers: ${{ needs.plan.outputs.retained_consumers == 'true' }}
       - if: ${{ !inputs.fullReuseAcceptanceOnly }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.plan.outputs.plan_artifact }}
           path: build/ci/plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ !inputs.fullReuseAcceptanceOnly }}
         with:
           pattern: codex-agent-ci-*
           path: build/ci/receipts
       - if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_node_js != 'true' && (needs.plan.outputs.validation_reused != 'true' && needs.plan.outputs.lane_node_js == 'true') }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-sdk-javascript-parity-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/receipts/sdk-javascript
@@ -7890,7 +7890,7 @@ jobs:
           PYCODE
       - name: Preserve distinct current validation contributions
         if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true' || needs.plan.outputs.retained_apple_source == 'true' || needs.plan.outputs.reviewed_runtime == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-current-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/ci/current-validation-contributions
@@ -7917,7 +7917,7 @@ jobs:
               --receipts build/ci/receipts --output build/ci/validation-receipt.json "${auxiliary[@]}"
           fi
       - if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_node_js != 'true' && (needs.plan.outputs.validation_reused != 'true' && (needs.plan.outputs.lane_ios_swift_tests_test == 'true' || needs.plan.outputs.native_wrappers == 'true')) }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.sdk-parity.outputs.artifact_id }}
           github-token: ${{ github.token }}
@@ -7961,7 +7961,7 @@ jobs:
           fi
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
         with:
           if-no-files-found: error
@@ -7971,7 +7971,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: ${{ !inputs.fullReuseAcceptanceOnly && (steps.restore-reused-native-wrapper-release.outputs.restored == 'true') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: true
@@ -7982,7 +7982,7 @@ jobs:
           retention-days: 90
       - name: Read only the current plan control
         if: inputs.fullReuseAcceptanceOnly
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.plan.outputs.plan_control_id }}
           path: build/ci/current-plan
@@ -8018,7 +8018,7 @@ jobs:
             --destination build/ci/current-head-acceptance
       - name: Preserve distinct current-head acceptance evidence
         if: inputs.fullReuseAcceptanceOnly
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false

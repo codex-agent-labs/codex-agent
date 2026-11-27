@@ -86,7 +86,7 @@ jobs:
             --expected-attestation-sha256 "$ATTESTATION_SHA256" \
             --expected-signature-sha256 "$SIGNATURE_SHA256"
       - name: Retain the exact Runtime original and unsigned capture for independent approval
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -145,7 +145,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Download independently approved Runtime capture
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-runtime-promoted-capture-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-promoted-capture
@@ -173,7 +173,7 @@ jobs:
             --expected-signature-sha256 "$SIGNATURE_SHA256" \
             --expected-capture-inventory-sha256 "$CAPTURE_INVENTORY_SHA256"
       - name: Preserve the immutable signed Runtime promoted catalog
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false

@@ -102,7 +102,7 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ inputs.planControlId }}
           path: build/ci
@@ -141,7 +141,7 @@ jobs:
             --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
             --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
             --completed-frozen-policy "${CODEX_AGENT_COMPLETED_REUSE_POLICY:?native authority required}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-retained-swift-source-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
           path: build/ci/retained-swift-source/controls
@@ -150,7 +150,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-swift-source-diagnostics-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
           path: build/ci/retained-swift-source/failure.log
@@ -178,12 +178,12 @@ jobs:
       - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
         with:
           authority-read-token: ${{ secrets.authority_read_token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ inputs.planControlId }}
           path: build/ci-retained-package
           merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.planArtifact }}
           path: build/ci
@@ -223,7 +223,7 @@ jobs:
           test -d "$frameworks/simulator/CodexAgent.framework"
           printf 'IOS_DEVICE_FRAMEWORK=%s\nIOS_SIMULATOR_FRAMEWORK=%s\n' \
             "$frameworks/device/CodexAgent.framework" "$frameworks/simulator/CodexAgent.framework" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-agent-retained-apple-package-inputs-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
           path: build/ci/retained-package/retained-apple-package-inputs.json
@@ -280,7 +280,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.planArtifact }}
           path: build/ci
@@ -429,7 +429,7 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: needs.select.outputs.framework_device_build == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-device.outputs.artifact_name }}
           path: build/ci/device-rust
@@ -462,7 +462,7 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: needs.select.outputs.framework_simulator_build == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-simulator.outputs.artifact_name }}
           path: build/ci/simulator-rust
@@ -495,7 +495,7 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: needs.select.outputs.kotlin_test == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-simulator.outputs.artifact_name }}
           path: build/ci/simulator-rust
@@ -528,7 +528,7 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: needs.select.outputs.swift_build_action == 'true' || needs.select.outputs.swift_build_test == 'true' || needs.select.outputs.swift_tests_test == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-simulator.outputs.artifact_name }}
           path: build/ci/framework
@@ -561,17 +561,17 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: needs.select.outputs.swift_tests_test == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-device.outputs.artifact_name }}
           path: build/ci/device-framework
       - if: needs.select.outputs.swift_tests_test == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-simulator.outputs.artifact_name }}
           path: build/ci/simulator-framework
       - if: needs.select.outputs.swift_tests_test == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.swift-build.outputs.artifact_name }}
           path: build/ci/swift-compilation
@@ -612,12 +612,12 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
       - if: needs.select.outputs.package_build == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-device.outputs.artifact_name }}
           path: build/ci/device-framework
       - if: needs.select.outputs.package_build == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-simulator.outputs.artifact_name }}
           path: build/ci/simulator-framework
@@ -649,11 +649,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-device.outputs.artifact_name }}
           path: build/ci/privacy-inputs/device
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.framework-simulator.outputs.artifact_name }}
           path: build/ci/privacy-inputs/simulator
@@ -710,11 +710,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-device.outputs.artifact_name }}
           path: build/ci/consumer-rust/device
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-simulator.outputs.artifact_name }}
           path: build/ci/consumer-rust/simulator
@@ -745,11 +745,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.validationCommit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-device.outputs.artifact_name }}
           path: build/ci/consumer-rust/device
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.rust-simulator.outputs.artifact_name }}
           path: build/ci/consumer-rust/simulator
