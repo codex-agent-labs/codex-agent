@@ -25,6 +25,7 @@ REPO = producer_scope.REPOSITORY
 API = "https://api.github.com/repos/" + REPO
 PUBLISHER, TREE, COMMIT = "d" * 40, "b" * 40, "a" * 40
 RUN_HEAD, BASE_SHA, PR_HEAD, CONSUMER = "9" * 40, "8" * 40, "c" * 40, "e" * 40
+CONSUMER_HEAD = "f" * 40
 RUN = 500
 TREES = {"ci": "3" * 40, ".github": "4" * 40}
 ENVIRONMENT = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "pull_request",
@@ -77,7 +78,9 @@ class GitHub:
             "pulls/33": self.pull,
             f"compare/{RUN_HEAD}...{PR_HEAD}?per_page=1": self.compare(RUN_HEAD),
             f"compare/{BASE_SHA}...main?per_page=1": self.compare(BASE_SHA)}
-        self.trees = {CONSUMER: dict(TREES), TREE: dict(TREES)}
+        self.trees = {CONSUMER: dict(TREES), TREE: dict(TREES), RUN_HEAD: dict(TREES), CONSUMER_HEAD: dict(TREES)}
+        self.merged = TREE
+        self.merges = []
         self.reads = []
 
     @staticmethod
@@ -94,6 +97,11 @@ class GitHub:
         if path not in self.association:
             raise AssertionError(path)
         return deepcopy(self.association[path])
+
+    def merge_tree(self, base, head, tree):
+        self.merges.append((base, head, tree))
+        if self.merged != tree:
+            raise producer_scope.ScopeRejected("merge-tree", "fixture merge differs")
 
     def control_trees(self, revision):
         if revision not in self.trees:
@@ -128,10 +136,10 @@ class GitHub:
         return self.plan
 
     def candidates(self, rejected=None):
-        return list(reuse.candidates(33, current_run=RUN + 10, trusted_workflow_sha=PUBLISHER,
+        return [policy for policy, _ in reuse.candidates(33, current_run=RUN + 10, trusted_workflow_sha=PUBLISHER,
             api_json=self.api_json, jobs=self.list_jobs, download=self.download,
             association_fetch=self.association_fetch, consumer=producer_scope.consumer_scope(ENVIRONMENT),
-            reject=(rejected.append if rejected is not None else lambda reason: None)))
+            reject=(rejected.append if rejected is not None else lambda reason: None))]
 
 
 class CandidateTest(unittest.TestCase):
@@ -295,12 +303,15 @@ class DiscoveryTest(unittest.TestCase):
                 trusted_workflow_sha=PUBLISHER, completed_parity=completion._completed_parity,
                 api_json=github.api_json, jobs=github.list_jobs, download=github.download,
                 association_fetch=github.association_fetch, control_trees=github.control_trees,
+                merge_tree=github.merge_tree, consumer_head=lambda commit: CONSUMER_HEAD,
                 log=(logs.append if logs is not None else lambda _: None))
         return result, observe
 
     def test_identical_inputs_reuse_without_a_fresh_parity_process(self):
+        github = GitHub()
         with tempfile.TemporaryDirectory() as temporary:
-            result, observe = self.discover(Path(temporary).resolve())
+            result, observe = self.discover(Path(temporary).resolve(), github=github)
+        self.assertEqual([(BASE_SHA, RUN_HEAD, TREE)], github.merges)  # GitHub-recorded base and head
         self.assertEqual("passed", result["result"])
         self.assertEqual(33, result["producer"]["pullRequest"])
         self.assertEqual((RUN, 2), (result["producer"]["runId"], result["producer"]["runAttempt"]))
@@ -333,12 +344,48 @@ class DiscoveryTest(unittest.TestCase):
                 self.assertIsNone(result)
                 observe.assert_not_called()
                 self.assertTrue(any("[scope:control-tree]" in line for line in logs), logs)
+        for missing in (CONSUMER, CONSUMER_HEAD):
+            github = GitHub()
+            del github.trees[missing]
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temporary:
+                result, observe = self.discover(Path(temporary).resolve(), github=github)
+                self.assertIsNone(result)
+                observe.assert_not_called()
+
+    def test_proposed_tree_must_be_bound_to_the_recorded_run_head(self):
+        # B1 re-review: a crafted merge commit names a clean tree; the
+        # recomputed merge or the run head's control trees reject it.
+        for name, change, reason in (
+                ("merge differs", lambda github: setattr(github, "merged", "1" * 40), "[scope:merge-tree]"),
+                ("run head .github differs", lambda github: github.trees.update(
+                    {RUN_HEAD: {**TREES, ".github": "5" * 40}}), "[scope:control-tree]"),
+                ("run head ci differs", lambda github: github.trees.update(
+                    {RUN_HEAD: {**TREES, "ci": "6" * 40}}), "[scope:control-tree]")):
+            github = GitHub()
+            change(github)
+            logs = []
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                result, observe = self.discover(Path(temporary).resolve(), github=github, logs=logs)
+                self.assertIsNone(result)
+                observe.assert_not_called()
+                self.assertTrue(any(reason in line for line in logs), logs)
+
+    def test_merge_queue_consumer_head_must_be_the_pr_head(self):
         github = GitHub()
-        del github.trees[CONSUMER]
-        with tempfile.TemporaryDirectory() as temporary:
-            result, observe = self.discover(Path(temporary).resolve(), github=github)
-        self.assertIsNone(result)
-        observe.assert_not_called()
+        environment = {**ENVIRONMENT, "GITHUB_EVENT_NAME": "merge_group",
+                       "GITHUB_REF": f"refs/heads/gh-readonly-queue/main/pr-33-{'1' * 40}"}
+        state = self.state()
+        state.plan["event"] = "merge_group"
+        state.consumer["producer"].update(event="merge_group", pullRequest=None)
+        logs = []
+        for pr_head, expected in ((PR_HEAD, None), (CONSUMER_HEAD, "reused")):
+            github.pull["head"]["sha"] = pr_head
+            with self.subTest(pr_head=pr_head), patch.object(self, "state", return_value=state), \
+                    patch.object(self, "environment", environment), tempfile.TemporaryDirectory() as temporary:
+                github.association[f"compare/{RUN_HEAD}...{pr_head}?per_page=1"] = github.compare(RUN_HEAD)
+                result, _ = self.discover(Path(temporary).resolve(), github=github, logs=logs)
+                self.assertEqual(expected, result and "reused")
+        self.assertTrue(any("PR side is not the PR head" in line for line in logs), logs)
 
     def test_no_candidate_runs_fresh(self):
         github = GitHub()
@@ -400,6 +447,100 @@ class GitControlTreeTest(unittest.TestCase):
             for revision in ("1" * 40, "HEAD"):
                 with self.subTest(revision=revision), self.assertRaises(producer_scope.ScopeRejected):
                     reuse.git_control_trees(root, revision)
+
+
+class RecomputedMergeTest(unittest.TestCase):
+    """B1 re-review regressions in a real temporary git repository."""
+
+    ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@example.invalid", "GIT_CONFIG_NOSYSTEM": "1",
+           "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+
+    def git(self, *args, stdin=None):
+        return subprocess.run(["git", "-C", str(self.root), *args], check=True, capture_output=True, text=True,
+                              input=stdin, env={**self.ENV, "HOME": str(self.root)}).stdout.strip()
+
+    def commit(self, files, message, *, parent=None):
+        if parent is not None:
+            self.git("checkout", "-q", "--detach", parent)
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.git("init", "-q")
+        reviewed = "jobs:\n  product-validation:\n    uses: ./.github/workflows/product-validation.yml\n"
+        self.malicious = ("jobs:\n  pv:\n    uses: ./.github/workflows/product-validation.yml\n"
+                          "  fake:\n    name: product-validation / sdk-parity / sdk-parity\n")
+        self.base = self.commit({"ci/tool.py": "print('x')\n", ".github/workflows/ci.yml": reviewed,
+                                 "product/src.txt": "v1\n"}, "main")
+        # Producer PR head X2 carries the malicious ci.yml; consumer PR head Y reverts it.
+        self.x2 = self.commit({"product/src.txt": "v2\n", ".github/workflows/ci.yml": self.malicious}, "x2",
+                              parent=self.base)
+        self.y = self.commit({".github/workflows/ci.yml": reviewed}, "y", parent=self.x2)
+        clean = self.git("rev-parse", self.y + "^{tree}")
+        self.consumer = self.git("commit-tree", clean, "-p", self.base, "-p", self.y, "-m", "consumer merge")
+        # The attacker's crafted C': real parents [base, X2], clean tree T'.
+        self.crafted_tree = clean
+        self.crafted = self.git("commit-tree", clean, "-p", self.base, "-p", self.x2, "-m", "crafted")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_crafted_merge_is_rejected_by_the_recomputed_merge(self):
+        genuine = reuse.recomputed_merge_tree(self.root, self.base, self.x2)
+        self.assertNotEqual(self.crafted_tree, genuine)
+        with self.assertRaises(producer_scope.ScopeRejected) as raised:
+            reuse.require_recomputed_merge(self.root, self.base, self.x2, self.crafted_tree)
+        self.assertEqual("merge-tree", raised.exception.reason)
+        # The old check alone is fooled: T' carries the reviewed control trees.
+        producer_scope.require_equal_control_trees(reuse.git_control_trees(self.root, self.crafted_tree),
+                                                   reuse.git_control_trees(self.root, self.consumer))
+
+    def test_crafted_merge_is_rejected_by_the_run_head_control_trees(self):
+        consumer_head = reuse.consumer_pull_request_head(self.root, self.consumer)
+        self.assertEqual(self.y, consumer_head)
+        with self.assertRaises(producer_scope.ScopeRejected) as raised:
+            producer_scope.require_equal_control_trees(reuse.git_control_trees(self.root, self.x2),
+                                                       reuse.git_control_trees(self.root, consumer_head))
+        self.assertEqual("control-tree", raised.exception.reason)
+        self.assertIn("'.github'", str(raised.exception))
+        with self.assertRaises(producer_scope.ScopeRejected):
+            reuse.consumer_pull_request_head(self.root, self.base)  # not a two-parent merge
+
+    def test_genuine_merge_is_accepted(self):
+        producer_head = self.commit({"product/src.txt": "v3\n"}, "reviewed head", parent=self.y)
+        tree = reuse.recomputed_merge_tree(self.root, self.base, producer_head)
+        reuse.require_recomputed_merge(self.root, self.base, producer_head, tree)
+        producer_scope.require_equal_control_trees(
+            reuse.git_control_trees(self.root, producer_head),
+            reuse.git_control_trees(self.root, reuse.consumer_pull_request_head(self.root, self.consumer)))
+        producer_scope.require_equal_control_trees(reuse.git_control_trees(self.root, tree),
+                                                   reuse.git_control_trees(self.root, self.consumer))
+
+    def test_conflicting_merge_is_rejected(self):
+        moved = self.commit({"product/src.txt": "main moved\n"}, "main moved", parent=self.base)
+        with self.assertRaises(producer_scope.ScopeRejected) as raised:
+            reuse.recomputed_merge_tree(self.root, moved, self.x2)
+        self.assertEqual("merge-tree", raised.exception.reason)
+        self.assertIn("do not merge cleanly", str(raised.exception))
+
+    def test_too_old_git_is_rejected_never_skipped(self):
+        genuine = reuse.recomputed_merge_tree(self.root, self.base, self.y)
+        for version in ((2, 37), (1, 99)):
+            with self.subTest(version=version), self.assertRaises(producer_scope.ScopeRejected) as raised:
+                reuse.require_recomputed_merge(self.root, self.base, self.y, genuine, version=lambda _: version)
+            self.assertEqual("merge-tree", raised.exception.reason)
+        with patch.object(reuse, "_git", return_value=Mock(stdout="git version 2.37.9\n")), \
+                self.assertRaises(producer_scope.ScopeRejected):
+            reuse.require_recomputed_merge(self.root, self.base, self.y, genuine)
+        self.assertGreaterEqual(reuse.git_version(self.root), reuse.MERGE_TREE_MINIMUM)
 
 
 class WiringTest(unittest.TestCase):

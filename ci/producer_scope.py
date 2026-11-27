@@ -44,7 +44,7 @@ REASONS = frozenset({
     "run-identity", "attempt", "job", "artifact-expired", "artifact-window", "artifact-identity",
     "association-missing", "association-ambiguous", "association-disagrees", "ancestry",
     "base-not-main", "not-merged", "merge-group-ref", "foreign-scope", "producer-tree-unapproved",
-    "consumer", "branch", "control-tree",
+    "consumer", "branch", "control-tree", "merge-tree",
 })
 
 

@@ -23,6 +23,12 @@ Before that gate, every proposal must also pass (9.5.0 security fixes):
   consumer revision's (B1). A PR-controlled producer ``ci.yml`` could define
   its own job graph; with equal trees the producer ran the consumer's own
   reviewed workflow definitions. No landed/main alternative applies here.
+* the proposed tree is bound to GitHub-recorded evidence, never to the
+  proposal alone (B1 re-review): ``git merge-tree --write-tree`` of the
+  verified base and ``run.head_sha`` must merge cleanly to exactly
+  ``producer.tree`` (``[scope:merge-tree]``), and the control trees of
+  ``run.head_sha`` must equal those of the consumer's own PR head. A crafted
+  commit with the real parents and a clean tree therefore rejects.
 
 Any rejection, missing candidate or API failure returns ``None``: the caller
 then runs parity fresh exactly as before. Nothing here grants acceptance.
@@ -117,6 +123,70 @@ def git_control_trees(root: Path, revision: str) -> dict[str, str]:
     return trees
 
 
+MERGE_TREE_MINIMUM = (2, 38)
+
+
+def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], check=check, capture_output=True, text=True,
+                          timeout=120)
+
+
+def git_version(root: Path) -> tuple[int, int]:
+    """The runner's ``git`` (major, minor) version."""
+    try:
+        text = _git(root, "--version").stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise producer_scope.ScopeRejected("merge-tree", "git version is unreadable") from error
+    match = re.match(r"git version ([0-9]+)\.([0-9]+)", text)
+    if match is None:
+        raise producer_scope.ScopeRejected("merge-tree", f"git version is unrecognised: {text.strip()!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def recomputed_merge_tree(root: Path, base: str, head: str, *, version=git_version) -> str:
+    """The clean ``git merge-tree --write-tree`` result of ``base`` and ``head``.
+
+    Requires git >= 2.38; an older git, a conflict or any other failure rejects
+    (the check is never skipped).
+    """
+    for label, value in (("base", base), ("head", head)):
+        if not isinstance(value, str) or _OID.fullmatch(value) is None:
+            raise producer_scope.ScopeRejected("merge-tree", f"Merge {label} is not an exact object ID")
+    found = version(root)
+    if tuple(found) < MERGE_TREE_MINIMUM:
+        raise producer_scope.ScopeRejected(
+            "merge-tree", f"git {found[0]}.{found[1]} cannot recompute the merge (needs >= 2.38)")
+    try:
+        merged = _git(root, "merge-tree", "--write-tree", "--no-messages", base, head, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise producer_scope.ScopeRejected("merge-tree", "Merge recomputation failed") from error
+    if merged.returncode == 1:
+        raise producer_scope.ScopeRejected("merge-tree", "Producer base and head do not merge cleanly")
+    lines = merged.stdout.splitlines()
+    if merged.returncode != 0 or len(lines) != 1 or _OID.fullmatch(lines[0]) is None:
+        raise producer_scope.ScopeRejected("merge-tree", "Merge recomputation did not yield one tree")
+    return lines[0]
+
+
+def require_recomputed_merge(root: Path, base: str, head: str, tree: str, *, version=git_version) -> None:
+    """The proposed producer tree is the clean merge of the verified base and run head."""
+    if recomputed_merge_tree(root, base, head, version=version) != tree:
+        raise producer_scope.ScopeRejected("merge-tree", "Producer tree is not the merge of its base and run head")
+
+
+def consumer_pull_request_head(root: Path, consumer_commit: str) -> str:
+    """The PR-side (second) parent of the consumer's two-parent merge commit."""
+    if not isinstance(consumer_commit, str) or _OID.fullmatch(consumer_commit) is None:
+        raise producer_scope.ScopeRejected("control-tree", "Consumer commit is not an exact object ID")
+    try:
+        listed = _git(root, "rev-list", "--parents", "-n", "1", consumer_commit, "--").stdout.split()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise producer_scope.ScopeRejected("control-tree", "Consumer merge parents are unreadable") from error
+    if len(listed) != 3 or listed[0] != consumer_commit or any(_OID.fullmatch(oid) is None for oid in listed):
+        raise producer_scope.ScopeRejected("control-tree", "Consumer commit is not a two-parent merge")
+    return listed[2]
+
+
 def candidates(pull_request: int, *, current_run: int, trusted_workflow_sha: str,
                api_json: Callable[[str], Any], jobs: Callable[[str], list],
                download: Callable[[Mapping[str, Any]], bytes],
@@ -124,7 +194,9 @@ def candidates(pull_request: int, *, current_run: int, trusted_workflow_sha: str
                reject: Callable[[str], None] = lambda reason: None) -> Iterator[dict[str, Any]]:
     """Yield caller-shaped parity policies proposed from PR N's earlier CI runs, newest first.
 
-    Each yielded policy already passed ``producer_scope.admit`` for ``consumer``.
+    Yields ``(policy, evidence)``; each policy already passed
+    ``producer_scope.admit`` for ``consumer``, and ``evidence`` holds the
+    verified tested-merge ``base`` and GitHub-recorded run ``head``.
     """
     if type(pull_request) is not int or pull_request < 1 or type(current_run) is not int or current_run < 1:
         raise ValueError("Parity discovery requires an exact PR scope and current run")
@@ -167,6 +239,9 @@ def _admit(policy, attempt_jobs, parity, pull_request, api_json, association_fet
     }, consumer)
     if verdict.get("rule") != "same-scope" or verdict.get("scope") != pull_request:
         raise ParityCandidateRejected("Parity candidate is not admitted within the consumer's own scope")
+    if binding["head"] != run.get("head_sha"):
+        raise ParityCandidateRejected("Parity candidate binding differs from its recorded run head")
+    return {"base": binding["base"], "head": run["head_sha"]}
 
 
 def _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, download,
@@ -208,14 +283,14 @@ def _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, 
                 "runId": run_id, "runAttempt": attempt},
                 "workflowSha": trusted_workflow_sha, "jobId": selected[0]["id"],
                 "artifactId": parity["id"], "artifactSha256": parity["digest"]}
-            _admit(policy, attempt_jobs, parity, pull_request, api_json, association_fetch, consumer)
-            return policy
+            evidence = _admit(policy, attempt_jobs, parity, pull_request, api_json, association_fetch, consumer)
+            return policy, evidence
     raise ParityCandidateRejected("Parity candidate has no successful parity job for its upload")
 
 
 def discover(root: Path, state: Any, *, environ: Mapping[str, str], token: str, trusted_workflow_sha: str,
              completed_parity: Callable[..., dict[str, Any]], api_json=None, jobs=None, download=None,
-             association_fetch=None, control_trees=None,
+             association_fetch=None, control_trees=None, merge_tree=None, consumer_head=None,
              log=lambda message: print(message, file=sys.stderr, flush=True)) -> dict[str, Any] | None:
     """Return authenticated original parity for the current state, or None to run fresh."""
     from products.inventory import canonical_json_bytes
@@ -229,16 +304,28 @@ def discover(root: Path, state: Any, *, environ: Mapping[str, str], token: str, 
         association_fetch = _association_fetch("https://api.github.com", producer_scope.REPOSITORY, token)
     if control_trees is None:
         control_trees = lambda revision: git_control_trees(root, revision)
+    if merge_tree is None:
+        merge_tree = lambda base, head, tree: require_recomputed_merge(root, base, head, tree)
+    if consumer_head is None:
+        consumer_head = lambda commit: consumer_pull_request_head(root, commit)
     scope = reuse_scope(state.plan, state.consumer, environ)
     consumer = producer_scope.consumer_scope(environ)
     try:
         consumer_trees = control_trees(state.plan["validationCommit"])
+        head = consumer_head(state.plan["validationCommit"])
+        if consumer["event"] == "merge_group":
+            # The queue group head's PR side must be PR N's current head.
+            pull = api_json(f"{_API}/pulls/{scope}")
+            if not isinstance(pull, dict) or not isinstance(pull.get("head"), dict) or pull["head"].get("sha") != head:
+                raise producer_scope.ScopeRejected("control-tree",
+                                                   "Merge-queue group head's PR side is not the PR head")
+        consumer_head_trees = control_trees(head)
     except producer_scope.ScopeRejected as error:
         log(f"sdk-parity reuse: consumer control trees unavailable ({error}); running fresh")
         return None
     current_run = state.consumer["producer"]["runId"]
     trials = 0
-    for policy in candidates(scope, current_run=current_run, trusted_workflow_sha=trusted_workflow_sha,
+    for policy, evidence in candidates(scope, current_run=current_run, trusted_workflow_sha=trusted_workflow_sha,
                              api_json=api_json, jobs=jobs, download=download,
                              association_fetch=association_fetch, consumer=consumer,
                              reject=lambda reason: log(f"sdk-parity reuse candidate rejected: {reason}")):
@@ -246,7 +333,11 @@ def discover(root: Path, state: Any, *, environ: Mapping[str, str], token: str, 
             break
         trials += 1
         try:
-            # B1: the producer ran the consumer's own reviewed ci/ and .github trees.
+            # B1: bind the proposed tree to GitHub-recorded evidence (the run head
+            # and the verified base), then require the consumer's own reviewed
+            # ci/ and .github trees at both the producer head and the merge.
+            merge_tree(evidence["base"], evidence["head"], policy["producer"]["tree"])
+            producer_scope.require_equal_control_trees(control_trees(evidence["head"]), consumer_head_trees)
             producer_scope.require_equal_control_trees(control_trees(policy["producer"]["tree"]), consumer_trees)
         except producer_scope.ScopeRejected as error:
             log(f"sdk-parity reuse candidate rejected: run {policy['producer']['runId']}: {error}")
