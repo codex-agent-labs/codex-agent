@@ -954,7 +954,7 @@ def main(argv=None):
     parser.add_argument("--runtime-contract-policy", type=Path)
     parser.add_argument("--runtime-contract-manifest", type=Path)
     parser.add_argument("--parity-policy", type=Path)
-    parser.add_argument("--discover-parity", action="store_true",
+    parser.add_argument("--discover-parity", action="store_true", default=None,
                         help="With --hosted-parity: reuse exact-input parity from this PR scope, else report none")
     parser.add_argument("--parity-archive", type=Path)
     parser.add_argument("--local", action="store_true",
@@ -985,7 +985,7 @@ def main(argv=None):
         parser.error("Parity discovery requires --hosted-parity, a publisher SHA and routing output, without a policy")
     if args.hosted_parity:
         if (args.local or args.sdk or args.repository or args.runtime or args.gradle
-                or (args.parity_policy is None) != (not args.discover_parity) or args.parity_archive is not None
+                or (args.parity_policy is None) != bool(args.discover_parity) or args.parity_archive is not None
                 or args.completed_frozen_policy is None or args.state_root is None
                 or args.partial_catalog_destination is not None
                 or args.github_output is not None and not args.discover_parity):

@@ -403,7 +403,9 @@ def _observe_tested_commit(
                  if producer_scope.unassociated_pull_request_run(run) else None)
         return {"run": run, "testedCommit": tested, "association": reads}
     observed = _historical_ci_observation(observations or {},
-        ("tested-commit", api, repository, token, expected_commit, attempt, pull_request), attempt, fetch)
+        # Reads are shared per commit; durable evidence names its PR, so a caller
+        # claiming another PR is rejected by its own validation below.
+        ("tested-commit", api, repository, token, expected_commit, attempt), attempt, fetch)
     return _validate_tested_commit(run, observed["testedCommit"], expected_commit=expected_commit,
         expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch,
         association_reads=observed["association"])
