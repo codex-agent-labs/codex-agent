@@ -20,7 +20,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
     def test_cpp_failure_diagnostics_are_scoped_and_collect_both_failures(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = re.search(r"(?ms)^  cpp-failure-diagnostics:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)", source)[0]
-        for required in ("ci:cpp-failure-diagnostics", "pull_request.number == 31", "head.repo.fork == false",
+        for required in ("ci:cpp-failure-diagnostics", "pull_request.base.ref == 'main'", "head.repo.fork == false",
                          "runs-on: windows-2025", "persist-credentials: false", "GIT_CONFIG_VALUE_0: 'false'",
                          "uses: ./.github/actions/setup-msvc", "cpp-mock-linkage", "cpp-leaf-codegen", "overwrite: false",
                          "ci:cpp-clang-diagnostic", "cpp-clang-leaf", "ci:cpp-policy-diagnostic", "cpp-policy-cmake"):
@@ -135,7 +135,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
     def test_native_diagnostics_are_narrow_and_collect_before_failure(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = source.split("  native-validation-diagnostics:\n", 1)[1].split("  windows-control-diagnostics:\n", 1)[0]
-        for required in ("ci:native-validation-diagnostics", "pull_request.number == 31",
+        for required in ("ci:native-validation-diagnostics", "pull_request.base.ref == 'main'",
                          "head.repo.fork == false", "persist-credentials: false",
                          "runs-on: windows-2025", "uses: ./.github/actions/setup-msvc",
                          "uses: ./.github/actions/provision-sdk-dart-cache",
@@ -196,7 +196,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
         from ci.tests import native_windows_diagnostic as diagnostic
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = source.split("  windows-control-diagnostics:\n", 1)[1].split("  core-validation-diagnostics:\n", 1)[0]
-        for required in ("ci:windows-control-diagnostics", "pull_request.number == 31",
+        for required in ("ci:windows-control-diagnostics", "pull_request.base.ref == 'main'",
                          "head.repo.fork == false", "persist-credentials: false",
                          "runs-on: windows-2025", "GIT_CONFIG_VALUE_0: 'false'", "overwrite: false",
                          "windows-control-diagnostics-${{ runner.os }}-"):
@@ -463,7 +463,7 @@ class CoreValidationWorkflowTest(unittest.TestCase):
     def test_narrow_diagnostics_are_read_only_and_separate_from_product_proofs(self):
         source = WORKFLOW.with_name("portable-reuse-proof.yml").read_text()
         block = source.split("  core-validation-diagnostics:\n", 1)[1].split("  recovery-diagnostics:\n", 1)[0]
-        for required in ("ci:core-validation-diagnostics", "pull_request.number == 31",
+        for required in ("ci:core-validation-diagnostics", "pull_request.base.ref == 'main'",
                          "head.repo.fork == false", "persist-credentials: false", "'archiveBodyBytesRead': 0",
                          "GIT_CONFIG_KEY_0: core.autocrlf", "GIT_CONFIG_VALUE_0: 'false'"):
             self.assertIn(required, block)

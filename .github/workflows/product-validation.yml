@@ -720,10 +720,16 @@ jobs:
               since = datetime.fromisoformat(run_git(repository, '--no-replace-objects', 'show', '-s',
                   '--format=%cI', search_floor).strip()).astimezone(timezone.utc).isoformat()
               event = load_json_bytes(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
-              branch = event['pull_request']['head']['ref']
-              query = urlencode(dict(event='pull_request', branch=branch, created='>=' + since))
-              runs = paginated_items('https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs?' + query,
-                                     'workflow_runs', os.environ['GITHUB_TOKEN'])
+              # merge_group payloads carry no pull_request: search only the current
+              # run and the fixed reviewed candidates (every upload is still gated).
+              runs = []
+              if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
+                  branch = event['pull_request']['head']['ref']
+                  query = urlencode(dict(event='pull_request', branch=branch, created='>=' + since))
+                  runs = paginated_items('https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs?' + query,
+                                         'workflow_runs', os.environ['GITHUB_TOKEN'])
+              elif os.environ['GITHUB_EVENT_NAME'] != 'merge_group' or 'pull_request' in event:
+                  raise ValueError('Tooling-only search requires a pull_request or merge_group event')
               run_ids = tuple(dict.fromkeys([int(os.environ['GITHUB_RUN_ID']),
                   *sorted((run['id'] for run in runs), reverse=True),
                   *((40333301688, 40171845008) if purpose == 'full' else ())]))

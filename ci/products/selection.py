@@ -239,6 +239,7 @@ _CONTROL_ONLY_FILES = frozenset({
     "ci/hydrated_evidence.py",
     "ci/hosted_reuse_proof.py",
     "ci/reuse_qualification.py",
+    "ci/producer_scope.py",  # Durable reuse scope (T1-T6); admission control, never a payload producer.
     "ci/completed_sdk_reuse.py",
     ".github/workflows/approved-reuse.yml",
     ".github/workflows/reuse-qualification.yml",

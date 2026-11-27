@@ -39,6 +39,7 @@ def _verify_original_ci_proof(proof_path, signature, public_key, signing, receip
     authenticated complete uploads before signing; retained stages/receipts and
     the main aggregate signature still undergo their independent full gates.
     """
+    import producer_scope
     from product_reuse import (
         _CATALOG_LIMIT, _OID, _matching_ci_jobs, _require_artifact_job_window,
         _runtime_prior_workflow_sha, run_matches_pr,
@@ -84,7 +85,8 @@ def _verify_original_ci_proof(proof_path, signature, public_key, signing, receip
                 or any(not isinstance(run.get(field), dict)
                        or run[field].get("full_name") != producer["repository"] or run[field].get("fork") is not False
                        for field in ("repository", "head_repository"))
-                or producer["event"] == "pull_request" and not run_matches_pr(run, producer["pullRequest"])
+                or producer["event"] == "pull_request" and not (run_matches_pr(run, producer["pullRequest"])
+                    or producer_scope.unassociated_pull_request_run(run))
                 or commit.get("sha") != producer["commit"]
                 or not isinstance(commit.get("tree"), dict) or commit["tree"].get("sha") != producer["tree"]
                 or _runtime_prior_workflow_sha(run, workflow_sha) is None):
@@ -93,18 +95,16 @@ def _verify_original_ci_proof(proof_path, signature, public_key, signing, receip
         if not isinstance(trigger_head, str) or _OID.fullmatch(trigger_head) is None:
             raise ValueError("Original aggregate proof lacks its triggering head")
         if producer["event"] == "pull_request":
-            requests = [request for request in require_array(run.get("pull_requests"), "Original aggregate pull requests")
-                        if isinstance(request, dict) and request.get("number") == producer["pullRequest"]]
-            if len(requests) != 1:
-                raise ValueError("Original aggregate proof pull request is ambiguous")
-            heads = [requests[0].get(field) for field in ("base", "head")]
-            if any(not isinstance(head, dict) or not isinstance(head.get("sha"), str)
-                   or _OID.fullmatch(head["sha"]) is None for head in heads):
-                raise ValueError("Original aggregate proof lacks exact pull-request base/head")
-            original_head = trigger_head if trigger_head != producer["commit"] else heads[1]["sha"]
-            parents = require_array(commit.get("parents"), "Original aggregate tested merge parents")
-            if [parent.get("sha") if isinstance(parent, dict) else None for parent in parents] != [heads[0]["sha"], original_head]:
-                raise ValueError("Original aggregate proof tested merge differs from its original base/head")
+            require_array(run.get("pull_requests"), "Original aggregate pull requests")
+            require_array(commit.get("parents"), "Original aggregate tested merge parents")
+            # Signed observations carry no fresh API authority: a live association
+            # is rechecked; a dropped one was bound durably by the signer and the
+            # tested merge must still bind the triggering head.
+            try:
+                producer_scope.signed_binding(run, commit, expected_commit=producer["commit"],
+                                              pull_request=producer["pullRequest"])
+            except producer_scope.ScopeRejected as error:
+                raise ValueError(f"Original aggregate proof pull-request binding is invalid: {error}") from None
         elif trigger_head != producer["commit"]:
             raise ValueError("Original aggregate proof merge group differs from its tested commit")
         jobs = require_array(observation["jobs"], "Original aggregate jobs")

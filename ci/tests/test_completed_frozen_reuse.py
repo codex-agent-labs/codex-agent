@@ -967,9 +967,16 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual(captured, restored)
             with self.assertRaises((ValueError, FileNotFoundError)):
                 restore.verify_carrier(root / "carrier", (instance,), consumer, object_root=root)
-            with self.assertRaisesRegex(ValueError, "original PR scope"):
-                restore.verify_carrier(root / "carrier", (instance,), {"kind": "ci", "producer": {
-                    **producer, "pullRequest": 32}}, object_root=root, completed_frozen=cap)
+            # Owner-pinned carriers admit any same-repository PR or merge-queue
+            # CI consumer (9.5.0 T4c); foreign repositories and other events still reject.
+            cap.check_consumer({"kind": "ci", "producer": {**producer, "pullRequest": 32}})
+            cap.check_consumer({"kind": "ci", "producer": {**producer, "event": "merge_group", "pullRequest": None}})
+            for foreign in ({**producer, "repository": "fork-owner/codex-agent"},
+                            {**producer, "event": "push", "pullRequest": None},
+                            {**producer, "event": "merge_group"}):
+                with self.subTest(foreign=foreign), self.assertRaisesRegex(ValueError, "same-repository CI consumer"):
+                    restore.verify_carrier(root / "carrier", (instance,), {"kind": "ci", "producer": foreign},
+                        object_root=root, completed_frozen=cap)
 
     def test_only_proved_reference_bodies_and_aliases_are_deferred(self):
         from runtime_reference_transport import selected_reference_paths

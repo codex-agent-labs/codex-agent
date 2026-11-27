@@ -22,6 +22,7 @@ from products.inventory import (
 )
 from products.receipt import validate_phase_receipt
 from runtime_reference_transport import measured, count
+import producer_scope
 
 
 REPOSITORY = "codex-agent-labs/codex-agent"
@@ -459,7 +460,8 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     if (require_integer(run.get("id"), "Issuer run", 1) != run_id
             or require_integer(run.get("run_attempt"), "Issuer attempt", 1) != run_attempt
             or run.get("path") != producer["workflowPath"] or run.get("event") != "pull_request"
-            or not products.run_matches_pr(run, 31)
+            # An unassociated (merged) run is bound durably to PR 31 by the tested merge below.
+            or not (products.run_matches_pr(run, 31) or producer_scope.unassociated_pull_request_run(run))
             or any(not isinstance(run.get(field), dict)
                    or run[field].get("full_name") != REPOSITORY or run[field].get("fork") is not False
                    for field in ("repository", "head_repository"))):
@@ -468,7 +470,8 @@ def _fetch_qualification_archive(destination, *, artifact_id, artifact_sha256, r
     if checkpoint is not None:
         products._require_ci_workflow_reference(run, checkpoint["collectorWorkflow"], checkpoint["collectorWorkflowSha"])
     tested = products._validate_tested_commit(run, source,
-        expected_commit=source_commit, expected_tree=tree, pull_request=31)
+        expected_commit=source_commit, expected_tree=tree, pull_request=31,
+        association=products._association_fetch("https://api.github.com", REPOSITORY, token))
     if any(not isinstance(row, dict) for row in jobs):
         raise ValueError("Qualification issuer jobs are malformed")
     selected = products._matching_ci_jobs(jobs, job)
@@ -970,10 +973,12 @@ class CompletedFrozenReuse:
         self._values()
         if self._checkpoint is not None:
             self._checkpoint.check(consumer=consumer)
-        producer = consumer.get("producer", {})
-        if (consumer.get("kind") != "ci" or producer.get("repository") != REPOSITORY
-                or producer.get("pullRequest") != 31 or producer.get("event") != "pull_request"):
-            raise QualificationIncompatible("Completed frozen carrier requires its original PR scope")
+        # Owner-pinned carriers (T4c) admit any same-repository PR or merge-queue
+        # CI consumer; consumer code is bound to the approved verifier separately.
+        try:
+            producer_scope.require_ci_consumer(consumer)
+        except producer_scope.ScopeRejected as error:
+            raise QualificationIncompatible(str(error)) from None
 
     def deferred_objects(self, *, include_contract=False):
         """Body identities that routing may leave at their immutable original sources."""
@@ -1898,22 +1903,21 @@ def completed_frozen_options(arguments, *, defer=False, _artifact_listing=None):
             witness = None
             if checkpoint_output is not None:
                 from completed_sdk_reuse import checkpoint_consumer
-                if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
-                        or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
-                        or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
-                        or os.environ.get("GITHUB_SHA") != plan["validationCommit"]):
-                    raise ValueError("Checkpoint caller differs from the actual current CI source")
+                try:
+                    producer_scope.require_consumer_environment(os.environ, plan)
+                except producer_scope.ScopeRejected as error:
+                    raise ValueError("Checkpoint caller differs from the actual current CI source") from error
                 witness = checkpoint_scope.enter_context(checkpoint_consumer(checkpoint_owner, checkpoint_output,
                     Path(temporary).resolve() / "checkpoint", root=root,
                     consumer=products._consumer(plan, os.environ), job=os.environ.get("GITHUB_JOB"),
                     token=os.environ.get("GITHUB_TOKEN", "")))
             if historical_output is not None:
                 from completed_sdk_reuse import historical_checkpoint_consumer, discover_historical_checkpoint
-                if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
-                        or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
-                        or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
-                        or os.environ.get("GITHUB_SHA") != plan["validationCommit"]
-                        or os.environ.get("GITHUB_JOB") not in {"plan", "product-resume"}):
+                try:
+                    producer_scope.require_consumer_environment(os.environ, plan)
+                except producer_scope.ScopeRejected as error:
+                    raise ValueError("Historical caller differs from the actual current CI source") from error
+                if os.environ.get("GITHUB_JOB") not in {"plan", "product-resume"}:
                     raise ValueError("Historical caller differs from the actual current CI source")
                 selection, archive_bytes = historical_output, None
                 if selection == "auto":
@@ -2077,9 +2081,10 @@ def issue_sdk_checkpoint(work, selectors, token, *, preceding_selector=""):
         held = [(current_path, current_bytes), (history_path, history_bytes)]
     elif preceding_selector:
         checkpoint_selection(policy, previous)  # Explicit invalid input never falls back.
+    scope = producer_scope.current_pull_request(os.environ)
     if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
             or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
-            or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
+            or scope is None or producer.get("event") != "pull_request" or producer.get("pullRequest") != scope
             or os.environ.get("GITHUB_SHA") != producer.get("commit")
             or os.environ.get("GITHUB_RUN_ID") != str(producer.get("runId"))
             or os.environ.get("GITHUB_RUN_ATTEMPT") != str(producer.get("runAttempt"))
@@ -2164,11 +2169,12 @@ def _observe_current_completed_issuer(root, revision, token):
             or os.environ.get("QUALIFICATION_ISSUER_SHA") != revision
             or os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
             or os.environ.get("GITHUB_EVENT_NAME") != "pull_request"
-            or os.environ.get("GITHUB_REF") != "refs/pull/31/merge"
+            or producer_scope.current_pull_request(os.environ) is None
             or os.environ.get("GITHUB_SHA") != revision
             or os.environ.get("GITHUB_JOB") != "completed-sdk"
             or run_git(root, "rev-parse", "HEAD").strip() != revision):
         raise ValueError("Completed checkpoint requires the actual ordinary native issuer")
+    pull_request = producer_scope.current_pull_request(os.environ)
     run_id = require_integer(int(os.environ["GITHUB_RUN_ID"]), "Completed issuer run", 1)
     attempt = require_integer(int(os.environ["GITHUB_RUN_ATTEMPT"]), "Completed issuer attempt", 1)
     tree = _commit(run_git(root, "rev-parse", revision + "^{tree}").strip())
@@ -2179,14 +2185,15 @@ def _observe_current_completed_issuer(root, revision, token):
         lambda: products.paginated_items(url + "/jobs", "jobs", token)))
     if (run.get("id") != run_id or run.get("run_attempt") != attempt
             or run.get("path") != ".github/workflows/portable-reuse-proof.yml"
-            or run.get("event") != "pull_request" or not products.run_matches_pr(run, 31)
+            or run.get("event") != "pull_request" or not products.run_matches_pr(run, pull_request)
             or (run.get("status"), run.get("conclusion")) != ("in_progress", None)
             or any(type(run.get(field)) is not dict
                    or run[field].get("full_name") != REPOSITORY or run[field].get("fork") is not False
                    for field in ("repository", "head_repository"))):
         raise ValueError("Ordinary completed issuer differs from its current protected run")
     products._require_ci_workflow_reference(run, f"{REPOSITORY}/{ISSUER_WORKFLOW}@{revision}", revision)
-    products._validate_tested_commit(run, source, expected_commit=revision, expected_tree=tree, pull_request=31)
+    products._validate_tested_commit(run, source, expected_commit=revision, expected_tree=tree,
+        pull_request=pull_request)
     selected = products._matching_ci_jobs(jobs, "completion / completed-sdk")
     if (len(selected) != 1 or selected[0].get("run_id") != run_id
             or selected[0].get("head_sha") != run["head_sha"]
@@ -2194,7 +2201,7 @@ def _observe_current_completed_issuer(root, revision, token):
         raise ValueError("Ordinary completed issuer job is missing, ambiguous or not current")
     require_integer(selected[0].get("id"), "Current completed issuer job", 1)
     producer = {"repository": REPOSITORY, "workflowPath": run["path"], "event": "pull_request",
-        "pullRequest": 31, "commit": revision, "tree": tree, "runId": run_id, "runAttempt": attempt}
+        "pullRequest": pull_request, "commit": revision, "tree": tree, "runId": run_id, "runAttempt": attempt}
     return {"producer": producer, "job": selected[0]}
 
 

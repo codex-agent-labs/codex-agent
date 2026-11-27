@@ -13,7 +13,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:reuse-cache-proof' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority

@@ -15,7 +15,7 @@ jobs:
        github.event.label.name == 'ci:storage-consumer-diagnostics' ||
        github.event.label.name == 'ci:storage-consumer-macos-x64') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     strategy:
@@ -174,7 +174,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-native-artifact-validation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: macos-26-intel
@@ -217,7 +217,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-native-windows-artifact-validation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: windows-2025
@@ -268,7 +268,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-adapter-artifact-validation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     strategy:
@@ -419,7 +419,7 @@ jobs:
     if: >-
       always() && github.event.label.name == 'ci:phase9-adapter-artifact-validation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-24.04
@@ -453,7 +453,7 @@ jobs:
       (github.event.label.name == 'ci:phase9-runtime-mutation-preflight' ||
        github.event.label.name == 'ci:phase9-runtime-windows-preflight') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     strategy:
@@ -512,7 +512,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-runtime-windows-binary' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: windows-2025
@@ -561,7 +561,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-ios-package-check' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: macos-26
@@ -610,7 +610,7 @@ jobs:
       (github.event.label.name == 'ci:phase9-xcode-probe' ||
        github.event.label.name == 'ci:phase9-xcode-provision') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: macos-26
@@ -656,7 +656,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-ios-mutation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: macos-26
@@ -720,7 +720,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:github-read-app-proof' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     environment: product-read
@@ -797,7 +797,7 @@ jobs:
        github.event.label.name == 'ci:dart-validation-diagnostics' ||
        github.event.label.name == 'ci:dart-lifecycle-diagnostics') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: windows-2025
@@ -885,7 +885,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:windows-control-diagnostics' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: windows-2025
@@ -949,7 +949,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:core-validation-diagnostics' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     strategy:
@@ -1069,7 +1069,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:reuse-recovery-diagnostics' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-24.04
@@ -1226,7 +1226,7 @@ jobs:
     if: >-
       (github.event.label.name == 'ci:reuse-refresh-proof' || github.event.label.name == 'ci:reuse-requalified-proof') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     permissions:
@@ -1243,7 +1243,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:reuse-completed-proof' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     permissions:
@@ -1262,7 +1262,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:reuse-qualification-proof' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     uses: codex-agent-labs/codex-agent/.github/workflows/approved-reuse.yml@reuse-authority
@@ -1273,7 +1273,7 @@ jobs:
     if: >-
       (github.event.label.name == 'ci:cpp-failure-diagnostics' || github.event.label.name == 'ci:cpp-clang-diagnostic' || github.event.label.name == 'ci:cpp-policy-diagnostic') &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: windows-2025
@@ -1342,7 +1342,7 @@ jobs:
     if: >-
       github.event.label.name == 'ci:phase9-sdk-host-validation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     strategy:
@@ -1753,7 +1753,7 @@ jobs:
     if: >-
       always() && github.event.label.name == 'ci:phase9-sdk-host-validation' &&
       github.repository == 'codex-agent-labs/codex-agent' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-24.04
