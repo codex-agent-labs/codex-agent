@@ -13,6 +13,7 @@ if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import product_reuse as products
+import producer_scope
 from sdk_metadata_policy import add_metadata_admission_arguments, metadata_admission_options
 from reuse_qualification import add_completed_frozen_argument, completed_frozen_options
 from products.inventory import (
@@ -345,12 +346,14 @@ def _repository_report(result, *, runtime_only=False):
 
 
 @products.measured
-def _completed_parity(root, revision, result, policy_path, archive, token):
+def _completed_parity(root, revision, result, policy_path, archive, token, *, admitted_scope=None):
     """Consume original hosted parity, never a serialized success-marker authority.
 
     Called only after current-key replay inside the live native capability scope.
     The successful original verifier supplies semantics; current content and
     unchanged verifier inputs establish applicability without re-running it.
+    ``admitted_scope`` (9.5.0) is the consumer's own PR scope N for a
+    discovered, not owner-pinned, policy: its producer must be a PR-N run.
     """
     from products.tooling import _COMPILER_INPUTS
     policy_path = Path(policy_path).absolute()
@@ -362,7 +365,8 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
             or policy["kind"] != "completed-sdk-parity"):
         raise ValueError("Unsupported original SDK parity policy")
     producer = products.validate_producer(policy["producer"], "Original SDK parity producer")
-    if producer["event"] != "pull_request" or producer["pullRequest"] != 31:
+    if producer["event"] != "pull_request" or producer["pullRequest"] != (31 if admitted_scope is None else
+            require_integer(admitted_scope, "Discovered parity PR scope", 1)):
         raise ValueError("Original SDK parity requires its authorized PR scope")
     job_name = "product-validation / sdk-parity / sdk-parity"
     observation, = products._observe_ci_producer_jobs(
@@ -404,7 +408,7 @@ def _completed_parity(root, revision, result, policy_path, archive, token):
 
 
 def require_hosted_sdk_parity(plan_path, discovery_root, state_root, *, repository_root,
-                              parity_policy, environ=None, completed_frozen=None, **options):
+                              parity_policy, environ=None, completed_frozen=None, discover_parity=None, **options):
     """Reuse an independently approved original policy inside current hosted replay.
 
     The policy is caller-owned authority, never selected from transported parity
@@ -425,14 +429,25 @@ def require_hosted_sdk_parity(plan_path, discovery_root, state_root, *, reposito
             raise ValueError("Hosted parity replay changed its native authority")
         completed_frozen.check_consumer(state.consumer)
         report = _repository_report(state.prior)
-        report["sdkParity"] = _completed_parity(root, state.plan["validationCommit"],
-            state.prior, parity_policy, None, environment["GITHUB_TOKEN"])
+        if discover_parity is None:
+            report["sdkParity"] = _completed_parity(root, state.plan["validationCommit"],
+                state.prior, parity_policy, None, environment["GITHUB_TOKEN"])
+        else:
+            # Exact-input discovery (9.5.0): no admissible original means run fresh.
+            report["sdkParity"] = discover_parity(root, state, environ=environment,
+                token=environment["GITHUB_TOKEN"], completed_parity=_completed_parity)
+            if report["sdkParity"] is None:
+                return
         report["verificationContext"] = {"kind": "hosted-original-parity-reuse", "producer": state.producer}
         reports.append(report)
 
+    if (parity_policy is None) == (discover_parity is None):
+        raise ValueError("Hosted parity requires exactly one pinned policy or exact-input discovery")
     products.inspect_products(plan_path, discovery_root, state_root, repository_root=root,
         environ=environment, completed_frozen=completed_frozen,
         _verified_state_consumer=consume, **options)
+    if discover_parity is not None and not reports:
+        return None
     if len(reports) != 1:
         raise ValueError("Hosted parity requires one authenticated selected-state continuation")
     if products._git_value(root, "rev-parse", "HEAD^{commit}") != reports[0]["verificationContext"]["producer"]["commit"]:
@@ -673,7 +688,8 @@ def validate_current_head_report(report, producer):
     if (parity["result"] != "passed" or any(require_integer(parity[key], key, 0) != value
             for key, value in counts.items()) or original["repository"] != producer["repository"]
             or original["workflowPath"] != ".github/workflows/ci.yml"
-            or original["event"] != "pull_request" or original["pullRequest"] != 31):
+            or original["event"] != "pull_request" or original["pullRequest"] not in {
+                31, producer["pullRequest"], producer_scope.current_pull_request(os.environ)} - {None}):
         raise ValueError("Current-head report lacks complete authenticated original parity")
     for key in ("reportSha256", "artifactSha256", "policySha256", "verifierInputsSha256"):
         require_sha256(parity[key], "Original parity " + key)
@@ -938,6 +954,8 @@ def main(argv=None):
     parser.add_argument("--runtime-contract-policy", type=Path)
     parser.add_argument("--runtime-contract-manifest", type=Path)
     parser.add_argument("--parity-policy", type=Path)
+    parser.add_argument("--discover-parity", action="store_true", default=None,
+                        help="With --hosted-parity: reuse exact-input parity from this PR scope, else report none")
     parser.add_argument("--parity-archive", type=Path)
     parser.add_argument("--local", action="store_true",
                         help="Verify current local repository inputs through completed original evidence; no CI identity")
@@ -962,11 +980,15 @@ def main(argv=None):
         parser.error("Standalone Contract inputs require --runtime --local")
     if args.sdk and (not args.local or args.repository or args.parity_policy is None or args.parity_archive is None):
         parser.error("--sdk requires --local and both original parity inputs, without --repository")
+    if args.discover_parity and (not args.hosted_parity or args.parity_policy is not None
+            or args.github_output is None or not args.sdk_original_workflow_sha):
+        parser.error("Parity discovery requires --hosted-parity, a publisher SHA and routing output, without a policy")
     if args.hosted_parity:
         if (args.local or args.sdk or args.repository or args.runtime or args.gradle
-                or args.parity_policy is None or args.parity_archive is not None
+                or (args.parity_policy is None) != bool(args.discover_parity) or args.parity_archive is not None
                 or args.completed_frozen_policy is None or args.state_root is None
-                or args.partial_catalog_destination is not None or args.github_output is not None):
+                or args.partial_catalog_destination is not None
+                or args.github_output is not None and not args.discover_parity):
             parser.error("Hosted parity requires current state, native policy and original parity policy only")
     elif not args.sdk and (args.parity_policy is not None or args.parity_archive is not None):
         parser.error("Original parity inputs require --sdk --local")
@@ -1006,6 +1028,8 @@ def main(argv=None):
             options = {**tooling, **apple, **admissions, **completed,
                 **({"sdk_original_workflow_sha": args.sdk_original_workflow_sha}
                    if args.sdk_original_workflow_sha is not None else {})}
+            if args.hosted_parity and args.discover_parity:
+                return _discover_hosted_parity(args, options)
             if args.hosted_parity:
                 result = require_hosted_sdk_parity(args.plan, args.discovery_root, args.state_root,
                     repository_root=args.repository_root, environ=os.environ,
@@ -1041,6 +1065,28 @@ def main(argv=None):
             github_output(args.github_output, result)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
+    return 0
+
+
+def _discover_hosted_parity(args, options):
+    """Print the reused report and route reused=true, or route reused=false to run fresh.
+
+    Any discovery failure falls back to the unchanged fresh parity job; it never
+    accepts anything. The pinned-policy route above is unaffected.
+    """
+    from functools import partial
+    import sdk_parity_reuse
+    try:
+        result = require_hosted_sdk_parity(args.plan, args.discovery_root, args.state_root,
+            repository_root=args.repository_root, environ=os.environ, parity_policy=None,
+            discover_parity=partial(sdk_parity_reuse.discover,
+                trusted_workflow_sha=args.sdk_original_workflow_sha), **options)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(f"sdk-parity reuse unavailable, running fresh: {error}", file=sys.stderr, flush=True)
+        result = None
+    if result is not None:
+        print(canonical_json_bytes(result).decode().strip(), flush=True)
+    github_output(args.github_output, {"reused": result is not None})
     return 0
 
 

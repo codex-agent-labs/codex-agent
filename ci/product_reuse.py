@@ -40,6 +40,7 @@ from impact import validate_legacy_lane_projection, validate_remote_build_author
 from receipt import safe_extract
 from runtime_reference_transport import measured, measured_volume, count, report_api_error
 from reuse import github_output, run_matches_pr
+import producer_scope
 from runtime_reference_transport import api_json, download_artifact, download_artifact_to_file, paginated_items
 
 
@@ -393,17 +394,47 @@ def _observe_tested_commit(
     # Share only the immutable Git response, never a caller's admission verdict.
     # Live runs and each new acquisition still require a fresh observation.
     observations = _CI_OBSERVATIONS.get() if run.get("status") == "completed" else None
-    commit = _historical_ci_observation(observations or {},
-        ("tested-commit", api, repository, token, expected_commit, attempt), attempt,
-        lambda: {"run": run, "testedCommit": api_json(
-            f"{api}/repos/{repository}/git/commits/{expected_commit}", token)})["testedCommit"]
-    return _validate_tested_commit(run, commit, expected_commit=expected_commit,
-        expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch)
+    def fetch():
+        tested = api_json(f"{api}/repos/{repository}/git/commits/{expected_commit}", token)
+        # Durable (merged PR) or live (open PR) association evidence is read
+        # once with the commit, then validated per caller.
+        reads = (producer_scope.association_reads(run, tested, pull_request=pull_request,
+                    fetch=_association_fetch(api, repository, token))
+                 if producer_scope.association_reads_required(run, pull_request) else None)
+        return {"run": run, "testedCommit": tested, "association": reads}
+    observed = _historical_ci_observation(observations or {},
+        # Reads are shared per commit; durable evidence names its PR, so a caller
+        # claiming another PR is rejected by its own validation below.
+        ("tested-commit", api, repository, token, expected_commit, attempt), attempt, fetch)
+    return _validate_tested_commit(run, observed["testedCommit"], expected_commit=expected_commit,
+        expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch,
+        association_reads=observed["association"])
+
+
+def _association_fetch(api, repository, token):
+    """Fixed same-repository reads for durable pull-request association only."""
+    if repository != producer_scope.REPOSITORY:
+        raise ValueError("Durable pull-request association requires the canonical repository")
+    def fetch(path):
+        url = f"{api}/repos/{repository}/{path}"
+        if path.startswith("commits/") and path.endswith("/pulls"):
+            import json
+            from reuse import api_request
+            from runtime_reference_transport import token_for
+            return json.loads(api_request(url, token_for(url, token)))
+        return api_json(url, token)
+    return fetch
 
 
 def _validate_tested_commit(run, commit, *, expected_commit, expected_tree, pull_request,
-                           allow_dispatch=False):
-    """Check a freshly fetched Git observation against the caller's exact run pins."""
+                           allow_dispatch=False, association=None, association_reads=None):
+    """Check a freshly fetched Git observation against the caller's exact run pins.
+
+    A pull_request run binds its PR through the live association, or, once
+    GitHub drops it for a merged PR, through durable evidence fetched by
+    ``association`` (or pre-read ``association_reads``). Without either, an
+    empty live association still rejects.
+    """
     if any(not isinstance(value, str) or _OID.fullmatch(value) is None
            for value in (expected_commit, expected_tree)):
         raise ValueError("Tested Git commit/tree identity is malformed")
@@ -412,28 +443,10 @@ def _validate_tested_commit(run, commit, *, expected_commit, expected_tree, pull
             or tree.get("sha") != expected_tree):
         raise ValueError("Tested Git commit/tree differs from its original identity")
     if run.get("event") == "pull_request":
-        requests = [value for value in require_array(run.get("pull_requests"), "Original CI pull requests")
-                    if isinstance(value, dict) and value.get("number") == pull_request]
-        if len(requests) != 1:
-            raise ValueError("Original CI attempt has ambiguous pull-request identity")
-        identities = []
-        for field in ("base", "head"):
-            value = requests[0].get(field)
-            oid = value.get("sha") if isinstance(value, dict) else None
-            if not isinstance(oid, str) or re.fullmatch(r"[0-9a-f]{40}", oid) is None:
-                raise ValueError("Original CI attempt lacks exact pull-request base/head")
-            identities.append(oid)
-        parents = require_array(commit.get("parents"), "Tested merge parents")
-        trigger_head = run.get("head_sha")
-        if not isinstance(trigger_head, str) or _OID.fullmatch(trigger_head) is None:
-            raise ValueError("Original CI attempt lacks exact triggering head")
-        # GitHub updates a historical run's pull_requests[].head.sha when the
-        # PR moves; run.head_sha retains the head that triggered this attempt.
-        original_head = trigger_head if trigger_head != expected_commit else identities[1]
-        if [value.get("sha") if isinstance(value, dict) else None for value in parents] != [
-            identities[0], original_head,
-        ]:
-            raise ValueError("Tested merge does not bind the original CI pull-request base/head")
+        require_array(run.get("pull_requests"), "Original CI pull requests")
+        require_array(commit.get("parents"), "Tested merge parents")
+        producer_scope.pull_request_binding(run, commit, expected_commit=expected_commit,
+            pull_request=pull_request, fetch=association, reads=association_reads)
     elif (run.get("event") not in ({"merge_group", "workflow_dispatch"} if allow_dispatch else {"merge_group"})
           or run.get("head_sha") != expected_commit):
         raise ValueError("Merge-group attempt does not match its tested commit")
@@ -464,8 +477,9 @@ def _same_pr_run(
         or any(not isinstance(run.get(field), dict)
                or run[field].get("full_name") != repository or run[field].get("fork") is not False
                for field in ("repository", "head_repository"))
-        or not run_matches_pr(run, pull_request)
+        or not (run_matches_pr(run, pull_request) or producer_scope.unassociated_pull_request_run(run))
     ):
+        # An unassociated run is bound durably to this PR by _observe_tested_commit below.
         raise ValueError("Same-PR product catalog did not come from an allowed successful CI run")
     attempt = require_integer(run.get("run_attempt"), "product catalog workflow run attempt", 1)
     if attempt != expected_attempt:
@@ -860,8 +874,11 @@ def _fresh_ci_observation(producer, token):
     """One invocation's independent reads; callers retain their own role gates."""
     from products.restore import bounded_verify
     producer = load_canonical_json_bytes(canonical_json_bytes(validate_producer(producer)))
-    if (producer["repository"], producer["workflowPath"], producer["event"], producer["pullRequest"]) != (
-            "codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request", 31):
+    # PR-31 originals are owner-pinned identities; otherwise only the executing
+    # run's own PR scope may be observed (same-run checkpoints of a new PR).
+    if ((producer["repository"], producer["workflowPath"], producer["event"]) != (
+            "codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request")
+            or producer["pullRequest"] not in {31, producer_scope.current_pull_request(os.environ)}):
         raise ValueError("Fresh checkpoint observation requires its exact CI producer")
     base = f"https://api.github.com/repos/{producer['repository']}"
     attempt = f"{base}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}"
@@ -870,7 +887,8 @@ def _fresh_ci_observation(producer, token):
         lambda: api_json(attempt, token),
         lambda: paginated_items(attempt + "/jobs", "jobs", token)))
     _validate_tested_commit(run, commit, expected_commit=producer["commit"],
-        expected_tree=producer["tree"], pull_request=producer["pullRequest"])
+        expected_tree=producer["tree"], pull_request=producer["pullRequest"],
+        association=_association_fetch("https://api.github.com", producer["repository"], token))
     observation = _FreshCIObservation(producer, token,
         {"run": run, "testedCommit": commit, "jobs": jobs}, _FRESH_CI_OBSERVATION)
     try:
@@ -1013,7 +1031,9 @@ def _observe_ci_producer_jobs(
                        or run[field].get("full_name") != repository
                        or run[field].get("fork") is not False
                        for field in ("repository", "head_repository"))
-                or producer["event"] == "pull_request" and not run_matches_pr(run, producer["pullRequest"])):
+                # An unassociated run was bound durably to this PR with its tested commit.
+                or producer["event"] == "pull_request" and not (run_matches_pr(run, producer["pullRequest"])
+                    or producer_scope.unassociated_pull_request_run(run))):
             raise ValueError("Contract original CI attempt does not match its producer")
         for phase in original["phases"]:
             workflow, sha = workflows[phase]

@@ -137,7 +137,7 @@ CONTROL_FILES |= CACHE_FIXED_FILES
 SDK_FROZEN_REVISION = "ca7dd6d02193df66c1bcba9867255321e74a1fe6"
 SDK_REGISTRY = "ci/products/registry.py"
 # Reviewed SDK package selector; non-SDK inventories remain frozen.
-SDK_SELECTION_REVISION = "8324aba46be110b6753c3a9c6bc745c821dbb772"
+SDK_SELECTION_REVISION = "65c8300ee0b85f8fcc48860c522ef44d057a091c"
 SDK_SELECTOR = "ci/products/selection.py"
 # Exact reviewed caller syntax only; actual PR authorization remains below.
 SDK_RECOVERY_CALLER = (
